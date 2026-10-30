@@ -6,14 +6,24 @@
 #      Tags has those tags reach AWS after `cdkd deploy` — `Tags` was a
 #      silent-drop before #609. Resolves the ARNs from cdkd state outputs,
 #      calls `s3tables ListTagsForResource`, asserts the tags are present.
-#   2. (issue #974) A CC-routed AWS::S3Tables::Table (IcebergMetadata set →
-#      silent-drop → Cloud Control) stores the bare TableARN as its physical
-#      id, but CFn `Ref` for a Table returns the table NAME. Asserts the Ref
-#      resolves to the table name (via a CfnOutput AND a consuming SSM
-#      parameter round-trip), not the bare ARN.
+#   2. (issues #974 / #5316) CloudFormation's `Ref` for an
+#      AWS::S3Tables::Table returns its TableARN. Asserts the Ref resolves to
+#      the TableARN for the SDK-routed Table (composite physical id) and for a
+#      CC-routed one (IcebergMetadata set → silent-drop → Cloud Control, the
+#      bare TableARN as physical id), via a CfnOutput AND a consuming SSM
+#      parameter round-trip, never the table name.
 #   3. (issue #2613) Phase 1b redeploys with changed tag values: the
 #      TableBucket and the SDK-routed Table update in place, through the
 #      provider's update() and its recorded-region guard.
+#   4. (issue #5313) Phase 1c redeploys with a new TableName and Namespace:
+#      the SDK-routed Table is renamed in place on AWS (same TableARN, as
+#      CloudFormation does) and the state records the new composite id; its
+#      Ref reader keeps the unchanged TableARN.
+#   5. (issue #5316) Phase 1d seeds both Ref readers' records and AWS values
+#      with the table name an older cdkd resolved the Ref to, and drops the
+#      Table's recorded TableARN (a pre-v0.201.0 record), redeploys the same
+#      template, and asserts each reader is rewritten to the TableARN and the
+#      Table's TableARN is re-read from AWS and recorded.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -95,6 +105,7 @@ cleanup() {
   # The consuming SSM parameter (issue #974) has a deterministic name, so a
   # partial-failure that left it behind is swept here directly.
   aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/iceberg-table-ref" >/dev/null 2>&1 || true
+  aws ssm delete-parameter --region "${REGION}" --name "/${STACK}/table-ref" >/dev/null 2>&1 || true
   set -eu
 }
 
@@ -122,8 +133,9 @@ cleanup
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
-# CDKD_S3T_TEAM unset: Phase 1 asserts the base `platform` tag value.
-env -u CDKD_S3T_TEAM node "${LOCAL_DIST}" deploy "${STACK}" \
+# CDKD_S3T_* unset: Phase 1 asserts the base `platform` tag value and the
+# base table name / namespace.
+env -u CDKD_S3T_TEAM -u CDKD_S3T_TABLE_NAME -u CDKD_S3T_TABLE_NS node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -159,6 +171,22 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    OK: AWS::S3Tables::Table routed via SDK provider (provisionedBy=sdk)"
+
+# --- Assertion: SDK-routed Table `Ref` resolves to the TableARN (#5316) --
+# cdkd's composite physical id `<bucketArn>|<namespace>|<name>` holds no
+# segment of the ARN; the Ref comes from the recorded TableARN attribute.
+# Before #5316 it was the trailing table name.
+TABLE_REF=$(echo "${STATE}" | jq -r '.outputs.TableRef // ""')
+if [ "${TABLE_REF}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: Ref(Table) output is '${TABLE_REF}', expected the TableARN '${TABLE_ARN}' (issue #5316: CloudFormation's Ref of an S3 Tables table is its ARN)" >&2
+  exit 1
+fi
+TABLE_REF_PARAM_P1="$(aws ssm get-parameter --region "${REGION}" --name "/${STACK}/table-ref" --query 'Parameter.Value' --output text)"
+if [ "${TABLE_REF_PARAM_P1}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: SSM parameter /${STACK}/table-ref is '${TABLE_REF_PARAM_P1}', expected the TableARN '${TABLE_ARN}' (issue #5316: Ref(Table) reached a consuming resource as something else)" >&2
+  exit 1
+fi
+echo "    OK: Ref(Table) == TableARN in the output and in the consuming SSM parameter (issue #5316)"
 
 # --- Assertion: Tags reached AWS via ListTagsForResource --------------
 # Capture stdout + stderr + exit code separately so a failed AWS CLI
@@ -250,15 +278,15 @@ if [ "${BUCKET_PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    OK: AWS::S3Tables::TableBucket routed via SDK provider (provisionedBy=sdk)"
 
-# --- Assertion: CC-routed Table `Ref` resolves to the table NAME (#974)
+# --- Assertion: CC-routed Table `Ref` resolves to the TableARN (#974 / #5316)
 # The IcebergTable carries IcebergMetadata, which is a silent-drop on the
 # SDK provider, so cdkd routes it through Cloud Control. CC's Table
-# primaryIdentifier is the bare single-segment TableARN (pipe-free, ends in
-# a UUID), and CFn `Ref` for a Table returns the table NAME — so before the
-# #974 fix the Ref leaked the ARN. Assert (1) the table DID route via CC,
-# and (2) both the CfnOutput Ref and the consuming SSM parameter's value
-# equal the table name, not the ARN.
-EXPECTED_TABLE_NAME="cdkd_integ_cc_tbl"
+# primaryIdentifier is the bare single-segment TableARN, and CloudFormation's
+# `Ref` for a Table returns that ARN (issue #5316; #974 had made cdkd return
+# the table name). Assert (1) the table DID route via CC, and (2) both the
+# CfnOutput Ref and the consuming SSM parameter's value equal the TableARN
+# (`Fn::GetAtt TableARN`), not the table name.
+ICEBERG_TABLE_NAME="cdkd_integ_cc_tbl"
 
 ICEBERG_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::S3Tables::Table" and (.value.properties.IcebergMetadata != null)) | .value.provisionedBy] | first // "sdk"')
 if [ "${ICEBERG_PROVISIONED_BY}" != "cc-api" ]; then
@@ -268,14 +296,24 @@ if [ "${ICEBERG_PROVISIONED_BY}" != "cc-api" ]; then
 fi
 echo "    OK: IcebergMetadata Table routed via Cloud Control (provisionedBy=cc-api)"
 
+EXPECTED_ICEBERG_ARN=$(echo "${STATE}" | jq -r '.outputs.IcebergTableArn // ""')
+case "${EXPECTED_ICEBERG_ARN}" in
+  arn:*:s3tables:*/table/*) ;;
+  *)
+    echo "FAIL: IcebergTableArn output is '${EXPECTED_ICEBERG_ARN}', expected an S3 Tables table ARN" >&2
+    echo "${STATE}" | jq .outputs
+    exit 1
+    ;;
+esac
+
 # (a) The CfnOutput Ref value.
 ICEBERG_REF=$(echo "${STATE}" | jq -r '.outputs.IcebergTableRef // ""')
-if [ "${ICEBERG_REF}" != "${EXPECTED_TABLE_NAME}" ]; then
-  echo "FAIL: Ref(IcebergTable) output is '${ICEBERG_REF}', expected the table name '${EXPECTED_TABLE_NAME}' (issue #974 — Ref leaked the ARN instead of the name)" >&2
+if [ "${ICEBERG_REF}" != "${EXPECTED_ICEBERG_ARN}" ] || [ "${ICEBERG_REF}" = "${ICEBERG_TABLE_NAME}" ]; then
+  echo "FAIL: Ref(IcebergTable) output is '${ICEBERG_REF}', expected the TableARN '${EXPECTED_ICEBERG_ARN}' (issue #5316)" >&2
   echo "${STATE}" | jq .outputs
   exit 1
 fi
-echo "    OK: Ref(IcebergTable) output == table name '${EXPECTED_TABLE_NAME}' (issue #974 fix)"
+echo "    OK: Ref(IcebergTable) output == TableARN '${EXPECTED_ICEBERG_ARN}' (issue #5316)"
 
 # (b) The consuming SSM parameter's value on AWS — proves the resolved Ref
 # round-trips through a real resource write, not just cdkd's own outputs map.
@@ -297,11 +335,11 @@ if [ "${SSM_RC}" -ne 0 ]; then
   cat /tmp/s3tables-ssm-err >&2 || true
   exit 1
 fi
-if [ "${SSM_VALUE}" != "${EXPECTED_TABLE_NAME}" ]; then
-  echo "FAIL: SSM parameter '${REF_PARAM_NAME}' value is '${SSM_VALUE}', expected the table name '${EXPECTED_TABLE_NAME}' (Ref(IcebergTable) leaked the ARN into a consuming resource)" >&2
+if [ "${SSM_VALUE}" != "${EXPECTED_ICEBERG_ARN}" ]; then
+  echo "FAIL: SSM parameter '${REF_PARAM_NAME}' value is '${SSM_VALUE}', expected the TableARN '${EXPECTED_ICEBERG_ARN}' (Ref(IcebergTable) reached a consuming resource as something else)" >&2
   exit 1
 fi
-echo "    OK: consuming SSM parameter value == table name '${EXPECTED_TABLE_NAME}' (Ref reached AWS correctly)"
+echo "    OK: consuming SSM parameter value == TableARN (Ref reached AWS correctly)"
 
 # --- Phase 1b: in-place tag update (issue #2613) ---------------------
 # Only the `bucket-team` / `team` tag values change, so the redeploy reaches
@@ -328,7 +366,8 @@ PRE_TABLE_ID="$(state_physical_id Table)"
 require_value "Table physicalId before Phase 1b" "${PRE_TABLE_ID}"
 
 echo "==> Phase 1b: redeploy with changed bucket-team / team tag values"
-CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_S3T_TABLE_NAME -u CDKD_S3T_TABLE_NS CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -352,6 +391,133 @@ if [ "${POST_TABLE_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
   exit 1
 fi
 echo "    OK: TableBucket and Table tags updated in place (issue #2613)"
+
+# --- Phase 1c: in-place rename (issue #5313) -------------------------
+# Only the Table's TableName and Namespace change (the tag values stay at
+# Phase 1b's), so the redeploy reaches the provider's update() with a rename
+# alone. CloudFormation renames in place through RenameTable and keeps the
+# TableARN; before the fix cdkd sent nothing, so AWS kept the old name while
+# the state recorded the new one.
+RENAMED_TABLE="cdkd_integ_tbl_renamed"
+RENAMED_NS="cdkd_integ_ns2"
+echo "==> Phase 1c: redeploy renaming the Table and moving it to ${RENAMED_NS}"
+CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+LIVE_TABLE_JSON="$(aws s3tables get-table --region "${REGION}" --table-arn "${TABLE_ARN}" --output json)"
+LIVE_NAME="$(printf '%s' "${LIVE_TABLE_JSON}" | jq -r '.name // ""')"
+LIVE_NS="$(printf '%s' "${LIVE_TABLE_JSON}" | jq -r '.namespace[0] // ""')"
+if [ "${LIVE_NAME}" != "${RENAMED_TABLE}" ] || [ "${LIVE_NS}" != "${RENAMED_NS}" ]; then
+  echo "FAIL: table ${TABLE_ARN} is '${LIVE_NS}.${LIVE_NAME}' on AWS after Phase 1c, expected '${RENAMED_NS}.${RENAMED_TABLE}' (issue #5313: the rename did not reach AWS)" >&2
+  exit 1
+fi
+echo "    OK: table renamed on AWS to ${RENAMED_NS}.${RENAMED_TABLE} under the same TableARN"
+
+RENAMED_TABLE_ID="$(state_physical_id Table)"
+EXPECTED_RENAMED_ID="${TABLE_BUCKET_ARN}|${RENAMED_NS}|${RENAMED_TABLE}"
+if [ "${RENAMED_TABLE_ID}" != "${EXPECTED_RENAMED_ID}" ]; then
+  echo "FAIL: Table physicalId is '${RENAMED_TABLE_ID}' after Phase 1c, expected '${EXPECTED_RENAMED_ID}' (issue #5313)" >&2
+  exit 1
+fi
+RENAMED_TABLE_ARN="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.outputs.TableArn // ""')"
+if [ "${RENAMED_TABLE_ARN}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: TableArn output is '${RENAMED_TABLE_ARN}' after Phase 1c, expected the unchanged '${TABLE_ARN}' (a rename is in place, not a replacement)" >&2
+  exit 1
+fi
+RENAMED_TEAM="$(tag_value "${TABLE_ARN}" team)"
+if [ "${RENAMED_TEAM}" != "${UPDATED_TEAM_TAG}" ]; then
+  echo "FAIL: team tag is '${RENAMED_TEAM}' after Phase 1c, expected '${UPDATED_TEAM_TAG}'" >&2
+  exit 1
+fi
+assert_gone "a table still answers to the old name cdkd_integ_ns.cdkd_integ_tbl after Phase 1c" \
+  aws s3tables get-table --region "${REGION}" --table-bucket-arn "${TABLE_BUCKET_ARN}" \
+  --namespace cdkd_integ_ns --name cdkd_integ_tbl
+echo "    OK: state records ${EXPECTED_RENAMED_ID}; TableArn and tags unchanged; old name gone (issue #5313)"
+
+# The Table's `Ref` is its TableARN, which the rename keeps (issue #5316), so
+# the Ref output and its reader still hold the ARN.
+RENAMED_TABLE_REF="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.outputs.TableRef // ""')"
+if [ "${RENAMED_TABLE_REF}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: TableRef output is '${RENAMED_TABLE_REF}' after Phase 1c, expected the unchanged TableARN '${TABLE_ARN}' (issue #5316)" >&2
+  exit 1
+fi
+TABLE_REF_PARAM="$(aws ssm get-parameter --region "${REGION}" --name "/${STACK}/table-ref" --query 'Parameter.Value' --output text)"
+if [ "${TABLE_REF_PARAM}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: SSM parameter /${STACK}/table-ref is '${TABLE_REF_PARAM}' after Phase 1c, expected the unchanged TableARN '${TABLE_ARN}' (issue #5316)" >&2
+  exit 1
+fi
+echo "    OK: the Table's Ref and its reader keep the TableARN across the rename"
+
+# --- Phase 1d: a reader recorded by an older cdkd converges (issue #5316) --
+# Before #5316 cdkd resolved the Table's `Ref` to the table name, so a stack
+# deployed then recorded that name in the reader's state and on AWS. Seed both
+# readers (the SDK-routed table's and the Cloud Control one's, issue #974's
+# value) with their table's name, redeploy the unchanged Phase 1c template,
+# and assert the diff sees each reader's resolved Ref (the ARN) differ from
+# its record and rewrites it on AWS.
+SEED_STATE="$(mktemp)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+  | jq --arg v "${RENAMED_TABLE}" --arg cc "${ICEBERG_TABLE_NAME}" '
+      def seed($id; $val):
+        if .resources[$id].properties.Value == null then error("\($id).properties.Value missing") else . end
+        | .resources[$id].properties.Value = $val
+        | if .resources[$id].observedProperties.Value != null
+          then .resources[$id].observedProperties.Value = $val else . end;
+      seed("TableRefParam"; $v) | seed("IcebergTableRefParam"; $cc)
+      | if .resources.Table.attributes.TableARN == null then error("Table.attributes.TableARN missing") else . end
+      | del(.resources.Table.attributes.TableARN)' > "${SEED_STATE}"
+SEEDED_VALUE="$(jq -r '.resources.TableRefParam.properties.Value + "," + .resources.IcebergTableRefParam.properties.Value' "${SEED_STATE}")"
+SEEDED_TABLE_ARN="$(jq -r '.resources.Table.attributes.TableARN // "absent"' "${SEED_STATE}")"
+if [ "${SEEDED_VALUE}" != "${RENAMED_TABLE},${ICEBERG_TABLE_NAME}" ] || [ "${SEEDED_TABLE_ARN}" != "absent" ]; then
+  echo "FAIL: could not seed the reader records with '${RENAMED_TABLE},${ICEBERG_TABLE_NAME}' and drop Table's TableARN (got '${SEEDED_VALUE}', TableARN '${SEEDED_TABLE_ARN}')" >&2
+  rm -f "${SEED_STATE}"
+  exit 1
+fi
+aws s3 cp "${SEED_STATE}" "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null
+rm -f "${SEED_STATE}"
+aws ssm put-parameter --region "${REGION}" --name "/${STACK}/table-ref" --type String \
+  --value "${RENAMED_TABLE}" --overwrite >/dev/null
+aws ssm put-parameter --region "${REGION}" --name "${REF_PARAM_NAME}" --type String \
+  --value "${ICEBERG_TABLE_NAME}" --overwrite >/dev/null
+
+echo "==> Phase 1d: redeploy over a reader recorded with the table name"
+CDKD_S3T_TEAM="${UPDATED_TEAM_TAG}" CDKD_S3T_TABLE_NAME="${RENAMED_TABLE}" \
+  CDKD_S3T_TABLE_NS="${RENAMED_NS}" node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+
+CONVERGED_PARAM="$(aws ssm get-parameter --region "${REGION}" --name "/${STACK}/table-ref" --query 'Parameter.Value' --output text)"
+if [ "${CONVERGED_PARAM}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: SSM parameter /${STACK}/table-ref is '${CONVERGED_PARAM}' after Phase 1d, expected the TableARN '${TABLE_ARN}' (issue #5316: a reader recorded with the table name was not rewritten)" >&2
+  exit 1
+fi
+CONVERGED_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+CONVERGED_RECORD="$(printf '%s' "${CONVERGED_STATE}" | jq -r '.resources.TableRefParam.properties.Value // ""')"
+if [ "${CONVERGED_RECORD}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: TableRefParam records Value '${CONVERGED_RECORD}' after Phase 1d, expected the TableARN '${TABLE_ARN}' (issue #5316)" >&2
+  exit 1
+fi
+# The seed dropped Table's TableARN, the shape a table created before cdkd
+# recorded it has (go-to-k/cdkd#739). The deploy's heal re-read the table from
+# AWS and recorded the ARN again. Either the Ref reader (read as Fn::GetAtt
+# TableARN) or the TableArn output can trigger that heal; the Ref arm itself is
+# pinned by the reader assertions above, which would hold the composite id
+# without it.
+HEALED_TABLE_ARN="$(printf '%s' "${CONVERGED_STATE}" | jq -r '.resources.Table.attributes.TableARN // ""')"
+if [ "${HEALED_TABLE_ARN}" != "${TABLE_ARN}" ]; then
+  echo "FAIL: Table records TableARN '${HEALED_TABLE_ARN}' after Phase 1d, expected the healed '${TABLE_ARN}' (issue #5316: a record with no TableARN was not re-read from AWS)" >&2
+  exit 1
+fi
+CONVERGED_CC_PARAM="$(aws ssm get-parameter --region "${REGION}" --name "${REF_PARAM_NAME}" --query 'Parameter.Value' --output text)"
+if [ "${CONVERGED_CC_PARAM}" != "${EXPECTED_ICEBERG_ARN}" ]; then
+  echo "FAIL: SSM parameter ${REF_PARAM_NAME} is '${CONVERGED_CC_PARAM}' after Phase 1d, expected the TableARN '${EXPECTED_ICEBERG_ARN}' (issue #5316: a Cloud Control table's reader recorded with the name was not rewritten)" >&2
+  exit 1
+fi
+echo "    OK: readers recorded with the table name are rewritten to the TableARN on both routes (issue #5316)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"

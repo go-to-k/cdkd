@@ -14,6 +14,7 @@ import {
   ResourceNotFoundException,
 } from '@aws-sdk/client-secrets-manager';
 import { getLogger } from '../../utils/logger.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import {
   coerceCfnBoolean,
   coerceCfnInteger,
@@ -24,14 +25,20 @@ import {
 } from '../config-shape.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
   createMaskedLogSinks,
   isSecretDerivedValue,
+  maskerOrIdentity,
   withDerivedNameMasks,
   MASK_WALK_DEPTH_CAP_MARKER,
   type MaskedLogSinks,
@@ -314,7 +321,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
 
     const name =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 512, allowedPattern: /[^a-zA-Z0-9-/_]/g });
+      generatedNameFor('AWS::SecretsManager::Secret', logicalId);
 
     try {
       // Build the secret value from GenerateSecretString or SecretString
@@ -409,7 +416,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -419,7 +426,8 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
             logicalId,
             name,
             cause
-          )
+          ),
+        true
       );
     }
   }
@@ -545,11 +553,9 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       // Truthy gate matches create() — Type is the partner identifier for
       // Secrets Manager managed external secrets and is rarely user-set;
       // passing an empty string would be a no-op on AWS side.
-      // DELIBERATELY NOT reset on removal (issue #1160
-      // secretsmanager batch): a template-removed Type still keeps its live
-      // value — the umbrella's UNCERTAIN bucket tracks it (partner-managed
-      // secrets; no documented clear sentinel, and probing one requires a
-      // partner-linked secret we cannot fabricate).
+      // A Type REMOVED from the template is NOT reset: real CloudFormation
+      // updates the secret in place and KEEPS the live Type (go-to-k/cdkd#1160
+      // A/B with `DatadogApiKey`), so cdkd sends nothing, as for Description.
       if (properties['Type']) updateParams.Type = properties['Type'] as string;
 
       await this.smClient.send(new UpdateSecretCommand(updateParams));
@@ -605,17 +611,38 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
             );
           }
         }
-        // Add new replica regions
+        // Add new replica regions, and re-send every kept region whose
+        // KmsKeyId changed (added, removed or swapped): ReplicateSecretToRegions
+        // on a region the secret already replicates to re-keys that replica in
+        // place, which is what CloudFormation does (#5302).
         if (newReplicas && newReplicas.length > 0) {
-          const oldRegionSet = new Set((oldReplicas || []).map((r) => r['Region'] as string));
-          const regionsToAdd = newReplicas.filter((r) => !oldRegionSet.has(r['Region'] as string));
+          // No key, '' and the AWS managed key's alias are one key: readCurrentState
+          // (a `drift --revert` base) spells a default-key replica with the alias,
+          // a template leaves it out.
+          const AWS_MANAGED_SECRETS_KEY = 'alias/aws/secretsmanager';
+          const replicaKey = (k: unknown): string =>
+            k === undefined || k === '' || k === AWS_MANAGED_SECRETS_KEY
+              ? AWS_MANAGED_SECRETS_KEY
+              : JSON.stringify(k);
+          const oldKeyByRegion = new Map(
+            (oldReplicas || []).map((r) => [r['Region'] as string, replicaKey(r['KmsKeyId'])])
+          );
+          const regionsToAdd = newReplicas.filter((r) => {
+            const region = r['Region'] as string;
+            return (
+              !oldKeyByRegion.has(region) ||
+              oldKeyByRegion.get(region) !== replicaKey(r['KmsKeyId'])
+            );
+          });
           if (regionsToAdd.length > 0) {
             await this.smClient.send(
               new ReplicateSecretToRegionsCommand({
                 SecretId: physicalId,
                 AddReplicaRegions: regionsToAdd.map((r) => ({
                   Region: r['Region'] as string,
-                  KmsKeyId: r['KmsKeyId'] as string | undefined,
+                  // '' is the readCurrentState placeholder for no key: AWS
+                  // rejects it as a key id, so send no key (the AWS managed one).
+                  KmsKeyId: (r['KmsKeyId'] as string | undefined) || undefined,
                 })),
               })
             );
@@ -658,7 +685,7 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -674,18 +701,38 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * through the operation's masker (issue #2177). The `cause` stays unmasked,
-   * and a message the mask changed is stamped so the retry classifiers read
-   * that chain (`wrapMaskedAwsError`, issue #4244). A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's masker, and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" (`ResourceExistsException` on a taken name) is restated
+   * ({@link relayedNameCollision}) from the create only (`relayCollision`):
+   * elsewhere "it" would read as this secret. A cdkd-authored or transport error keeps
+   * its text, masked (issue #2177), stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The delete tests its typed
+   * not-found before it wraps. A method, so `gen-update-wrap-coverage` sees the
+   * catch that throws it as a wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
-    build: (maskedText: string) => ProvisioningError
+    build: (text: string) => ProvisioningError,
+    relayCollision = false
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = relayCollision ? relayedNameCollision(failure.detail) : '';
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
@@ -762,6 +809,40 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   }
 
   /**
+   * Secrets Manager refuses `DeleteSecret` on a primary that still has replica
+   * regions (`InvalidParameterException`). CloudFormation removes them first
+   * (`RemoveRegionsFromReplication` deletes each replica), so on that refusal
+   * read the secret's `ReplicationStatus` and return the regions `delete()`
+   * removes before it retries (#5323). Only the refusal path pays the extra
+   * calls; an ordinary delete makes none. Returns undefined for any other
+   * error, when the read fails, or when the secret has no replica to remove.
+   */
+  private async replicaRegionsBlockingDelete(
+    error: unknown,
+    physicalId: string
+  ): Promise<string[] | undefined> {
+    // AWS's text: "You can't delete secret <arn> that still has replica regions [...]".
+    // The class alone is not enough: another InvalidParameterException must not
+    // cost the secret its replicas.
+    const refusal = error as { name?: unknown; message?: unknown } | null;
+    if (
+      refusal?.name !== 'InvalidParameterException' ||
+      typeof refusal.message !== 'string' ||
+      !/replica/i.test(refusal.message)
+    ) {
+      return undefined;
+    }
+    // A failed read leaves the delete's own refusal as the reported cause.
+    const resp = await this.smClient
+      .send(new DescribeSecretCommand({ SecretId: physicalId }))
+      .catch(() => undefined);
+    const regions = (resp?.ReplicationStatus ?? [])
+      .map((r) => r.Region)
+      .filter((r): r is string => typeof r === 'string' && r.length > 0);
+    return regions.length > 0 ? regions : undefined;
+  }
+
+  /**
    * Delete a Secrets Manager secret
    */
   async delete(
@@ -773,13 +854,38 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
   ): Promise<void> {
     this.logger.debug(`Deleting secret ${logicalId}: ${physicalId}`);
 
-    try {
-      await this.smClient.send(
+    const deleteSecret = (): Promise<unknown> =>
+      this.smClient.send(
         new DeleteSecretCommand({
           SecretId: physicalId,
           ForceDeleteWithoutRecovery: true,
         })
       );
+    // Set only when RemoveRegionsFromReplication itself failed, so the wrap
+    // below names that step and how to finish it by hand.
+    let unremovedReplicaRegions: string[] | undefined;
+    try {
+      try {
+        await deleteSecret();
+      } catch (error) {
+        const regions = await this.replicaRegionsBlockingDelete(error, physicalId);
+        if (!regions) throw error;
+        try {
+          await this.smClient.send(
+            new RemoveRegionsFromReplicationCommand({
+              SecretId: physicalId,
+              RemoveReplicaRegions: regions,
+            })
+          );
+        } catch (removeError) {
+          unremovedReplicaRegions = regions;
+          throw removeError;
+        }
+        this.logger.debug(
+          safeMsg`Removed replica regions ${regions.join(', ')} from secret ${physicalId} before deleting it`
+        );
+        await deleteSecret();
+      }
       this.logger.debug(`Successfully deleted secret ${logicalId}`);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
@@ -795,13 +901,31 @@ export class SecretsManagerSecretProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete secret ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      const regions = unremovedReplicaRegions?.join(' ');
+      const step = regions
+        ? ` (removing its replica regions ${regions} first, which DeleteSecret requires).` +
+          ` Remove them, then re-run destroy: aws secretsmanager remove-regions-from-replication` +
+          ` --secret-id ${mask(physicalId)} --remove-replica-regions ${regions}`
+        : '';
+      const thrown = this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete secret ${logicalId}: ${text}${step}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

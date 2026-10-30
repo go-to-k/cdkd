@@ -311,6 +311,33 @@ describe('recordUnderPrefix (strict)', () => {
     });
   });
 
+  it('keeps no byte of an unparseable body in the read error or its cause (issue #5247)', async () => {
+    const body = '{"password":hunter2SECRET,"x":1}';
+    // Premise: V8 itself quotes the token for this body.
+    let v8: unknown;
+    try {
+      JSON.parse(body);
+    } catch (e) {
+      v8 = e;
+    }
+    expect((v8 as Error).message).toContain('hunter2');
+
+    bodies.set(KEY_B, body);
+    const err = await backend.recordUnderPrefix('team-b', 'App', 'us-east-1').catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'CrossPrefixReadError', key: KEY_B });
+    const chain: string[] = [];
+    for (let e: unknown = err; e instanceof Error; e = e.cause) {
+      chain.push(e.name, e.message, String(e.stack));
+    }
+    expect(chain.join('\n')).not.toContain('hunter2');
+    // The readers classify by the cause's CLASS name, which the stand-in keeps.
+    expect((err as Error).message).toContain('(SyntaxError)');
+    expect(((err as Error).cause as Error).name).toBe('SyntaxError');
+    expect(((err as Error).cause as Error).message).toBe(
+      `invalid JSON; ${Buffer.byteLength(body, 'utf8')} byte(s) read`
+    );
+  });
+
   it('is a holder for an empty record whose journal holds a proven failed-CREATE orphan', async () => {
     bodies.set(KEY_B, record());
     bodies.set(

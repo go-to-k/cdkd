@@ -27,8 +27,9 @@ deploy (one deploy behind).
 
 For the #1160 leg, phases 1-2 set non-default `HealthCheckGracePeriod` (90) /
 `MaxInstanceLifetime` (604800) / `TerminationPolicies` (`['OldestInstance']`)
-on the ASG; toggling `CDKD_TEST_REMOVAL=true` keeps the phase-2 instance type
-and drops those three properties from the template.
+/ `AvailabilityZoneImpairmentPolicy` (zonal shift on, `ReplaceUnhealthy`) on
+the ASG; toggling `CDKD_TEST_REMOVAL=true` keeps the phase-2 instance type
+and drops those four properties from the template.
 
 `desiredCapacity` / `min` / `max` are all 0 so no EC2 instances launch — the
 deploy is cheap and the destroy is fast (no instance teardown wait).
@@ -37,19 +38,20 @@ deploy is cheap and the destroy is fast (no instance teardown wait).
 
 1. Phase 1: the LaunchTemplate is at version 1, the ASG's live
    `LaunchTemplate.Version` (`aws autoscaling describe-auto-scaling-groups`) is
-   "1", and the three non-default ASG properties are live. The group metrics
+   "1", and the four non-default ASG properties are live. The group metrics
    (`GroupMinSize`, `GroupMaxSize`) and the SNS notifications
    (`EC2_INSTANCE_LAUNCH`, `EC2_INSTANCE_TERMINATE`) are live after this first
    deploy (issue #3995).
 2. UPDATE phase (`CDKD_TEST_UPDATE=true`, changes only `instanceType`): the
    LaunchTemplate advances to version 2 AND the ASG's live
    `LaunchTemplate.Version` is "2" in the same deploy — NOT "1" (the #985
-   one-deploy-behind symptom). The three non-default ASG properties pass
+   one-deploy-behind symptom). The four non-default ASG properties pass
    through unchanged (kept fields are never spuriously reset).
-3. REMOVAL phase (`CDKD_TEST_REMOVAL=true`, drops the three ASG properties):
-   the live values return to the CFn defaults — `HealthCheckGracePeriod` 0,
-   `MaxInstanceLifetime` cleared, `TerminationPolicies` `['Default']` (the
-   issue #1160 assertion).
+3. REMOVAL phase (`CDKD_TEST_REMOVAL=true`, drops the four ASG properties):
+   what CloudFormation does — `MaxInstanceLifetime` cleared and no
+   `AvailabilityZoneImpairmentPolicy` reported (issue #1160), while
+   `HealthCheckGracePeriod` stays 90 and `TerminationPolicies` stays
+   `['OldestInstance']` (issue #5004).
    Issue #4013: the ASG carries two `GroupMetrics` (all at `1Minute`) and
    this phase drops `GroupMaxSize` from the FIRST; `EnabledMetrics` must be
    exactly `GroupDesiredCapacity GroupMinSize`. Then `cdkd drift` must report

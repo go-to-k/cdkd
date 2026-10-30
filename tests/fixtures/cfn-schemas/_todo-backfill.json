@@ -23,35 +23,14 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::ApiGateway::Deployment": [
-      "DeploymentCanarySettings"
-    ],
     "AWS::AutoScaling::AutoScalingGroup": [
       "AvailabilityZoneIds",
       "InstanceId",
       "InstanceLifecyclePolicy",
       "PlacementGroup"
     ],
-    "AWS::BedrockAgentCore::Runtime": [
-      "CapacityProviderConfiguration",
-      "FilesystemConfigurations",
-      "PlatformVersion",
-      "RequestHeaderConfiguration",
-      "Tags"
-    ],
-    "AWS::CloudTrail::Trail": [
-      "AdvancedEventSelectors",
-      "AggregationConfigurations"
-    ],
-    "AWS::CloudWatch::Alarm": [
-      "ActionConfiguration",
-      "EvaluationWindow",
-      "WarmUpConfiguration"
-    ],
     "AWS::CodeBuild::Project": [
-      "ResourceAccessRole",
-      "Triggers",
-      "Visibility"
+      "Triggers"
     ],
     "AWS::Cognito::UserPool": [
       "IssuerConfiguration",
@@ -116,10 +95,6 @@
       "Tenancy",
       "Volumes"
     ],
-    "AWS::EC2::NatGateway": [
-      "AvailabilityMode",
-      "AvailabilityZoneAddresses"
-    ],
     "AWS::EC2::Route": [
       "OdbNetworkArn"
     ],
@@ -142,26 +117,11 @@
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
     ],
-    "AWS::EC2::VPCGatewayAttachment": [
-      "VpnGatewayId"
-    ],
     "AWS::ECS::Service": [
       "GatewayConnectors"
     ],
-    "AWS::EFS::MountTarget": [
-      "IpAddress",
-      "IpAddressType",
-      "Ipv6Address"
-    ],
     "AWS::ElastiCache::CacheCluster": [
       "SnapshotArns"
-    ],
-    "AWS::Glue::Connection": [
-      "Tags"
-    ],
-    "AWS::Kinesis::Stream": [
-      "RecordDistributionStrategy",
-      "WarmThroughputMiBps"
     ],
     "AWS::KinesisFirehose::DeliveryStream": [
       "DatabaseSourceConfiguration",
@@ -304,21 +264,12 @@
     "AWS::RDS::DBProxyEndpoint": [
       "EndpointNetworkType"
     ],
-    "AWS::Route53::HostedZone": [
-      "DelegationSetId"
-    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "BucketNamePrefix",
       "BucketNamespace",
       "MetadataConfiguration",
       "MetadataTableConfiguration"
-    ],
-    "AWS::S3Express::DirectoryBucket": [
-      "BucketEncryption",
-      "InventoryConfigurations",
-      "LifecycleConfiguration",
-      "MetricsConfigurations"
     ],
     "AWS::S3Tables::Table": [
       "Compaction",
@@ -333,12 +284,6 @@
       "ReplicationConfiguration",
       "StorageClassConfiguration",
       "UnreferencedFileRemoval"
-    ],
-    "AWS::WAFv2::WebACL": [
-      "ApplicationConfig",
-      "DataProtectionConfig",
-      "MonetizationConfig",
-      "OnSourceDDoSProtectionConfig"
     ]
   },
   "bogusTolerated": {

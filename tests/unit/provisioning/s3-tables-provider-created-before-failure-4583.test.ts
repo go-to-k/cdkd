@@ -38,6 +38,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::S3Tables::Table';
 const BUCKET_ARN = 'arn:aws:s3tables:us-east-1:123:bucket/my-bucket';
@@ -87,5 +91,21 @@ describe('S3TablesProvider createTable createdBeforeFailure mark (go-to-k/cdkd#4
     const error = await failure(provider, noName);
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'Tbl', TYPE)).toBeUndefined();
+  });
+
+  it('reports the composite id to the sink once CreateTable returned (#5511)', async () => {
+    const sink = new CreatedResourceSink('Tbl', TYPE);
+    mockSend.mockResolvedValueOnce({});
+    await expect(collectCreatedResources(sink, () => provider.create('Tbl', TYPE, props))).rejects.toThrow();
+    expect(sink.report).toEqual({ physicalId: PHYSICAL_ID });
+  });
+
+  it('reports nothing when CreateTable itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Tbl', TYPE);
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error('table exists'), { name: 'ConflictException' })
+    );
+    await expect(collectCreatedResources(sink, () => provider.create('Tbl', TYPE, props))).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
   });
 });

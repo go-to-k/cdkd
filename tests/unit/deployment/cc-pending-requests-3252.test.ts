@@ -30,6 +30,7 @@ import type {
 import type { AbandonedRequestOutcome } from '../../../src/provisioning/cloud-control-provider.js';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { Logger } from '../../../src/types/config.js';
+import { generateResourceName, withStackScope } from '../../../src/provisioning/resource-name.js';
 
 function pendingOp(logicalId: string, token: string): FailedOperation {
   return {
@@ -115,6 +116,7 @@ function logger() {
 
 const base = {
   stackName: 'S',
+  stackInstanceId: undefined,
   region: 'us-east-1',
   command: 'deploy',
   // A unique (AWS-minted) identifier unless a case says otherwise; the
@@ -477,6 +479,119 @@ describe('resolvePendingCloudControlRequests (#3252)', () => {
     });
     expect(reader.resumeAbandonedRequest).not.toHaveBeenCalled();
   });
+
+  // go-to-k/cdkd#5064: `params.stackInstanceId` must reach `identifierUnique`
+  // (and, in production, `ccIdentifierIsUnique`'s own naming check) — never a
+  // bare `undefined`, which would always ask the LEGACY (pre-v13) question.
+  it('#5064: forwards the record stack instance id to identifierUnique', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const journal = memoryJournal(journalOf(pendingOp('Logs', 't1')));
+    const identifierUnique = vi.fn().mockResolvedValue(true);
+
+    await resolvePendingCloudControlRequests({
+      ...base,
+      stackInstanceId: STACK_INSTANCE_ID,
+      identifierUnique,
+      journal,
+      loaded: structuredClone(journal.current()),
+      reader: () => readerOf({ t1: { status: 'succeeded', identifier: 'my-group' } }),
+      logger: logger(),
+    });
+
+    expect(identifierUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ stackInstanceId: STACK_INSTANCE_ID })
+    );
+  });
+
+  // go-to-k/cdkd#5064: with no record yet, the id comes from a source the
+  // settle calls ONCE and only when it compares an identifier.
+  it('#5064: reads a lazy stack instance id once, only when an identifier is compared', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const journal = memoryJournal(
+      journalOf(pendingOp('Logs', 't1'), pendingOp('Bus', 't2'), pendingOp('Gone', 't3'))
+    );
+    const identifierUnique = vi.fn().mockResolvedValue(true);
+    const source = vi.fn(() => Promise.resolve<string | undefined>(STACK_INSTANCE_ID));
+    await resolvePendingCloudControlRequests({
+      ...base,
+      stackInstanceId: source,
+      identifierUnique,
+      journal,
+      loaded: structuredClone(journal.current()),
+      reader: () =>
+        readerOf({
+          t1: { status: 'succeeded', identifier: 'a' },
+          t2: { status: 'succeeded', identifier: 'b' },
+          t3: { status: 'failed' },
+        }),
+      logger: logger(),
+    });
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(identifierUnique).toHaveBeenCalledTimes(2);
+    for (const call of identifierUnique.mock.calls) {
+      expect(call[0]).toMatchObject({ stackInstanceId: STACK_INSTANCE_ID });
+    }
+
+    // Nothing made: no comparison, no read.
+    const quiet = memoryJournal(journalOf(pendingOp('Gone', 't3')));
+    const unread = vi.fn(() => Promise.resolve<string | undefined>(STACK_INSTANCE_ID));
+    await resolvePendingCloudControlRequests({
+      ...base,
+      stackInstanceId: unread,
+      journal: quiet,
+      loaded: structuredClone(quiet.current()),
+      reader: () => readerOf({ t3: { status: 'failed' } }),
+      logger: logger(),
+    });
+    expect(unread).not.toHaveBeenCalled();
+  });
+
+  it('#5064: a lazy source that refuses stops the settle before the journal is rewritten', async () => {
+    const journal = memoryJournal(journalOf(pendingOp('Logs', 't1')));
+    await expect(
+      resolvePendingCloudControlRequests({
+        ...base,
+        stackInstanceId: () => Promise.reject(new Error('sibling unreadable')),
+        journal,
+        loaded: structuredClone(journal.current()),
+        reader: () => readerOf({ t1: { status: 'succeeded', identifier: 'a' } }),
+        logger: logger(),
+      })
+    ).rejects.toThrow('sibling unreadable');
+    expect(journal.writes).toBe(0);
+  });
+
+  // go-to-k/cdkd#5064 phase 2: the bound is one past the higher of the op's
+  // generation and the record's high-water mark.
+  it('#5064 phase 2: forwards one past the highest generation the op or the record names', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    for (const [opGeneration, record, through] of [
+      [undefined, undefined, 1],
+      [4, undefined, 5],
+      [1, { physicalId: 'other', nameGeneration: 2, nameGenerationHigh: 6 }, 7],
+    ] as const) {
+      const journal = memoryJournal(
+        journalOf({
+          ...pendingOp('Logs', 't1'),
+          ...(opGeneration !== undefined && { nameGeneration: opGeneration }),
+        })
+      );
+      const identifierUnique = vi.fn().mockResolvedValue(true);
+      await resolvePendingCloudControlRequests({
+        ...base,
+        stackInstanceId: STACK_INSTANCE_ID,
+        identifierUnique,
+        journal,
+        loaded: structuredClone(journal.current()),
+        reader: () => readerOf({ t1: { status: 'succeeded', identifier: 'my-group' } }),
+        logger: logger(),
+        ...(record !== undefined && { stateResources: { Logs: record } }),
+      });
+      expect(identifierUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ nameGenerationsThrough: through })
+      );
+    }
+  });
 });
 
 describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (#3252)', () => {
@@ -495,6 +610,7 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
       attemptedProperties,
       logicalId: 'Thing',
       stackName: 'MyStack',
+      stackInstanceId: undefined,
     });
   };
 
@@ -537,8 +653,77 @@ describe('ccIdentifierIsUnique: may a delete or takeover trust the identifier? (
         attemptedProperties: undefined,
         logicalId: 'Thing',
         stackName: 'MyStack',
+        stackInstanceId: undefined,
       })
     ).toBe(false);
+  });
+
+  // go-to-k/cdkd#5064: a v13 stack's un-named resource is minted
+  // `{stack}-{logicalId}-{12 hex}` (`generateResourceName` under
+  // `withStackScope`), which `looksLikeCdkdGeneratedName` only recognizes
+  // given the SAME `stackInstanceId` — so `ccIdentifierIsUnique` must forward
+  // it rather than always asking the legacy (undefined-id) question.
+  it('#5064: a suffixed generated name is recognized only with the record id in hand', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const suffixedName = withStackScope(
+      { stackName: 'MyStack', stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
+      () => generateResourceName('Thing', { maxLength: 64 })
+    );
+    ccSchema.fields = ['Id'];
+    ccSchema.readOnly = new Set(['Id']);
+
+    // The id is not in the sent bag at all — only `looksLikeCdkdGeneratedName`
+    // can recognize it, and only when it is handed the SAME instance id.
+    expect(
+      await ccIdentifierIsUnique({
+        resourceType: 'AWS::Test::Thing',
+        identifier: suffixedName,
+        attemptedProperties: {},
+        logicalId: 'Thing',
+        stackName: 'MyStack',
+        stackInstanceId: STACK_INSTANCE_ID,
+      })
+    ).toBe(false);
+    expect(
+      await ccIdentifierIsUnique({
+        resourceType: 'AWS::Test::Thing',
+        identifier: suffixedName,
+        attemptedProperties: {},
+        logicalId: 'Thing',
+        stackName: 'MyStack',
+        stackInstanceId: undefined,
+      })
+    ).toBe(true);
+  });
+
+  // go-to-k/cdkd#5064 phase 2: a re-added logical id's create derives a later
+  // generation; the journaled op names it, and every generation up to one past
+  // it reads as generated -- NOT unique, the safe answer (the resource is kept).
+  it('#5064 phase 2: a later generation reads as generated up to the bound, unique past it', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const gen3 = withStackScope(
+      {
+        stackName: 'MyStack',
+        stackInstanceId: STACK_INSTANCE_ID,
+        nameGenerations: new Map([['Thing', 3]]),
+      },
+      () => generateResourceName('Thing', { maxLength: 64 })
+    );
+    ccSchema.fields = ['Id'];
+    ccSchema.readOnly = new Set(['Id']);
+    const ask = (nameGenerationsThrough: number | undefined) =>
+      ccIdentifierIsUnique({
+        resourceType: 'AWS::Test::Thing',
+        identifier: gen3,
+        attemptedProperties: {},
+        logicalId: 'Thing',
+        stackName: 'MyStack',
+        stackInstanceId: STACK_INSTANCE_ID,
+        nameGenerationsThrough,
+      });
+    expect(await ask(3)).toBe(false);
+    expect(await ask(4)).toBe(false);
+    expect(await ask(2)).toBe(true);
   });
 });
 

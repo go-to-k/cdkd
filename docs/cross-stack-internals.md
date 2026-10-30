@@ -391,13 +391,16 @@ though it is informational and never destroy-blocking -- see the section above.
 resolveImportValue(exportName):
   if exportIndex:
     entry = await exportIndex.lookup(exportName)
+    if entry is from ANOTHER region:                   ← one GET, cross-region only
+      local = await stateBackend.getState(entry.producerStack, consumerRegion)
+      if local exports exportName: entry = local's export
     if entry and entry.producerStack != context.stackName:
       recordImport(exportName, entry.producerStack, entry.producerRegion)
       return reresolve(entry.value, entry.producerRegion)  ← O(1) hot path
     // else fall through to scan (cache miss or self-ref)
 
   allStacks = await stateBackend.listStacks()          ← O(N) cold path
-  for ref in allStacks:
+  for ref in allStacks, consumer-region records first:
     if ref.stackName == context.stackName: continue
     state = await stateBackend.getState(ref.stackName, ref.region)
     if state.outputs[exportName]:
@@ -415,6 +418,20 @@ resolveImportValue(exportName):
 
   throw "export not found"
 ```
+
+### Same region first
+
+A producer in the consumer's own region wins over a same-named export in
+another region ([#5176](https://github.com/go-to-k/cdkd/issues/5176)). Two
+CDK Stages deployed to two regions under one shared stackName publish the
+SAME export names, and the run's one index is keyed by export name, so the
+later deploy's entry replaces the earlier one's. A cross-region index entry
+therefore costs one read of that producer name's record in the consumer's
+region; a same-region entry, which is every single-region app's case, costs
+nothing. With no same-region producer, a cross-region import still resolves
+as before, in the producer's region. The index-miss scan reads the
+consumer's region (and region-less legacy records) first, so it reads the
+same records in a different order.
 
 ### `reresolve` — a redacted secret is resolved before the consumer sees it
 

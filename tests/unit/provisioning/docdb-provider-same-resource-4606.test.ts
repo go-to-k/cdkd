@@ -644,6 +644,7 @@ describe('the success settle with DocDBProvider: a reused identifier is not dele
       logger,
     } as unknown as RollbackExecutorContext;
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => structuredClone(journal)),
         reduceRollbackJournalToFailedOperations: vi.fn().mockResolvedValue(1),

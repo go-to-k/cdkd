@@ -499,8 +499,8 @@ describe('runDetached', () => {
   // pastes into an issue carried every `-e KEY=value` pair -- while the debug
   // line eleven lines earlier already redacted the same argv.
   //
-  // The message SHAPE below is not invented: it was measured against this
-  // repo's Node (24.15.0) with a whitespace-bearing `-e` value, which
+  // The message SHAPE below is not invented: it was measured on Node
+  // 24.15.0 with a whitespace-bearing `-e` value, which
   // reproduces verbatim in `err.message`.
   function execFileFailureLikeNode(stderr = '') {
     return (cmd: string, args: string[]): Error & { stderr?: string } =>

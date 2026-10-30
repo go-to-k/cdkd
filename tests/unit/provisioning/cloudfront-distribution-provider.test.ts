@@ -1352,6 +1352,214 @@ describe('CloudFrontDistributionProvider', () => {
     });
   });
 
+  // CloudFront refuses a TrustedKeyGroups / TrustedSigners wrapper without
+  // `Enabled` as MalformedXML ("Value null at '...trustedKeyGroups.enabled'"),
+  // and treats `Enabled: true` with an empty list as enabled (issue #5393).
+  describe('TrustedKeyGroups / TrustedSigners carry Enabled (#5393)', () => {
+    const createDcb = async (
+      dcbExtra: Record<string, unknown>,
+      cacheBehaviorExtra?: Record<string, unknown>
+    ): Promise<{ dcb: Record<string, unknown>; cb?: Record<string, unknown> }> => {
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+      await provider.create('MyDistribution', 'AWS::CloudFront::Distribution', {
+        DistributionConfig: {
+          Enabled: true,
+          DefaultCacheBehavior: {
+            TargetOriginId: 'o',
+            ViewerProtocolPolicy: 'redirect-to-https',
+            ...dcbExtra,
+          },
+          ...(cacheBehaviorExtra
+            ? {
+                CacheBehaviors: [
+                  {
+                    PathPattern: '/private/*',
+                    TargetOriginId: 'o',
+                    ViewerProtocolPolicy: 'redirect-to-https',
+                    ...cacheBehaviorExtra,
+                  },
+                ],
+              }
+            : {}),
+        },
+      });
+      const config = mockSend.mock.calls[0][0].input.DistributionConfig;
+      return { dcb: config.DefaultCacheBehavior, cb: config.CacheBehaviors?.Items?.[0] };
+    };
+
+    it('a declared TrustedKeyGroups list is sent with Enabled: true', async () => {
+      const { dcb } = await createDcb({ TrustedKeyGroups: ['kg-1', 'kg-2'] });
+      expect(dcb['TrustedKeyGroups']).toEqual({
+        Enabled: true,
+        Quantity: 2,
+        Items: ['kg-1', 'kg-2'],
+      });
+      // An undeclared sibling is not invented on create.
+      expect(dcb['TrustedSigners']).toBeUndefined();
+    });
+
+    it('a declared TrustedSigners list is sent with Enabled: true', async () => {
+      const { dcb } = await createDcb({ TrustedSigners: ['self'] });
+      expect(dcb['TrustedSigners']).toEqual({ Enabled: true, Quantity: 1, Items: ['self'] });
+    });
+
+    it('an empty declared list is sent disabled, not Enabled: true', async () => {
+      const { dcb } = await createDcb({ TrustedKeyGroups: [], TrustedSigners: [] });
+      expect(dcb['TrustedKeyGroups']).toEqual({ Enabled: false, Quantity: 0, Items: [] });
+      expect(dcb['TrustedSigners']).toEqual({ Enabled: false, Quantity: 0, Items: [] });
+    });
+
+    it('CacheBehaviors[*] get the same Enabled derivation', async () => {
+      const { cb } = await createDcb({}, { TrustedKeyGroups: ['kg-1'] });
+      expect(cb?.['TrustedKeyGroups']).toEqual({ Enabled: true, Quantity: 1, Items: ['kg-1'] });
+    });
+
+    it('an Enabled carried in by a non-CFn object shape is overridden by the list (never lifts a restriction)', async () => {
+      const { dcb } = await createDcb({
+        TrustedKeyGroups: { Enabled: false, Quantity: 1, Items: ['kg-1'] },
+        TrustedSigners: { Enabled: true, Quantity: 0, Items: [] },
+      });
+      expect(dcb['TrustedKeyGroups']).toEqual({ Enabled: true, Quantity: 1, Items: ['kg-1'] });
+      expect(dcb['TrustedSigners']).toEqual({ Enabled: false, Quantity: 0, Items: [] });
+    });
+
+    it('Enabled follows the listed entries, not a Quantity an object shape carried in', async () => {
+      const { dcb } = await createDcb({
+        TrustedKeyGroups: { Quantity: 0, Items: ['kg-1'] },
+      });
+      // Quantity is re-derived from the entries too, so the wrapper is consistent.
+      expect(dcb['TrustedKeyGroups']).toEqual({ Enabled: true, Quantity: 1, Items: ['kg-1'] });
+    });
+
+    it('update after the template REMOVES a declared list sends the disabled default', async () => {
+      mockSend.mockResolvedValueOnce({
+        ETag: 'ETAG1',
+        DistributionConfig: {
+          CallerReference: 'ref',
+          Enabled: true,
+          DefaultCacheBehavior: {
+            TargetOriginId: 'o',
+            ViewerProtocolPolicy: 'allow-all',
+            TrustedKeyGroups: { Enabled: true, Quantity: 1, Items: ['kg-1'] },
+          },
+        },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: { TargetOriginId: 'o', ViewerProtocolPolicy: 'allow-all' },
+          },
+        },
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: {
+              TargetOriginId: 'o',
+              ViewerProtocolPolicy: 'allow-all',
+              TrustedKeyGroups: ['kg-1'],
+            },
+          },
+        }
+      );
+
+      const dcb = mockSend.mock.calls[1][0].input.DistributionConfig.DefaultCacheBehavior;
+      expect(dcb.TrustedKeyGroups).toEqual({ Enabled: false, Quantity: 0 });
+    });
+
+    describe('readCurrentState', () => {
+      const readDcb = async (
+        trusted: Record<string, unknown>
+      ): Promise<Record<string, unknown>> => {
+        mockSend.mockResolvedValueOnce({
+          ETag: 'E1',
+          DistributionConfig: {
+            CallerReference: 'ref',
+            Enabled: true,
+            DefaultCacheBehavior: {
+              TargetOriginId: 'o',
+              ViewerProtocolPolicy: 'allow-all',
+              ...trusted,
+            },
+          },
+        });
+        mockSend.mockResolvedValueOnce({
+          Distribution: { ARN: 'arn:aws:cloudfront::111122223333:distribution/EDFDVBD6EXAMPLE' },
+        });
+        mockSend.mockResolvedValueOnce({ Tags: { Items: [] } });
+        const result = bagOf(
+          await provider.readCurrentState(
+            'EDFDVBD6EXAMPLE',
+            'MyDistribution',
+            'AWS::CloudFront::Distribution'
+          )
+        );
+        return (result!['DistributionConfig'] as Record<string, unknown>)[
+          'DefaultCacheBehavior'
+        ] as Record<string, unknown>;
+      };
+
+      it('an enabled, non-empty list reads back as the bare CFn list', async () => {
+        const dcb = await readDcb({
+          TrustedKeyGroups: { Enabled: true, Quantity: 1, Items: ['kg-1'] },
+        });
+        expect(dcb['TrustedKeyGroups']).toEqual(['kg-1']);
+      });
+
+      it('a listed restriction switched off out of band keeps its wrapper, so drift sees it', async () => {
+        const dcb = await readDcb({
+          TrustedKeyGroups: { Enabled: false, Quantity: 1, Items: ['kg-1'] },
+          TrustedSigners: { Enabled: false, Quantity: 1, Items: ['self'] },
+        });
+        expect(dcb['TrustedKeyGroups']).toEqual({ Enabled: false, Quantity: 1, Items: ['kg-1'] });
+        expect(dcb['TrustedSigners']).toEqual({ Enabled: false, Quantity: 1, Items: ['self'] });
+      });
+    });
+
+    it('update sends Enabled: true for a declared list (absent stays the disabled default)', async () => {
+      // GetDistributionConfig -> UpdateDistribution -> GetDistribution
+      mockSend.mockResolvedValueOnce({
+        ETag: 'ETAG1',
+        DistributionConfig: { CallerReference: 'ref', Enabled: true },
+      });
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({
+        Distribution: { Id: 'EDFDVBD6EXAMPLE', DomainName: 'd1.cloudfront.net' },
+      });
+
+      await provider.update(
+        'MyDistribution',
+        'EDFDVBD6EXAMPLE',
+        'AWS::CloudFront::Distribution',
+        {
+          DistributionConfig: {
+            Enabled: true,
+            DefaultCacheBehavior: {
+              TargetOriginId: 'o',
+              ViewerProtocolPolicy: 'allow-all',
+              TrustedKeyGroups: ['kg-1'],
+            },
+          },
+        },
+        { DistributionConfig: { Enabled: true } }
+      );
+
+      const dcb = mockSend.mock.calls[1][0].input.DistributionConfig.DefaultCacheBehavior;
+      expect(dcb.TrustedKeyGroups).toEqual({ Enabled: true, Quantity: 1, Items: ['kg-1'] });
+      expect(dcb.TrustedSigners).toEqual({ Enabled: false, Quantity: 0 });
+    });
+  });
+
   describe('delete', () => {
     it('should disable first if enabled, then delete with IfMatch', async () => {
       // GetDistributionConfigCommand (initial)

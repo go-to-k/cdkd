@@ -503,6 +503,11 @@ export interface ProtectionCompensationOptions {
   readonly region?: string | undefined;
   /** Issues the `UpdateTable(DeletionProtectionEnabled: true)`. */
   readonly reEnable: () => Promise<void>;
+  /**
+   * The delete's `DeleteContext.maskSecrets`, for the failed re-enable's
+   * report (go-to-k/cdkd#2319; see `compensateProtectionFlip`).
+   */
+  readonly mask?: ((text: string) => string) | undefined;
 }
 
 /**
@@ -543,6 +548,7 @@ export async function compensateRemovedDeletionProtection(
     logicalId: opts.logicalId,
     physicalId: opts.physicalId,
     logger: opts.logger,
+    mask: opts.mask,
     reEnable: opts.reEnable,
     site: {
       subject: `DynamoDB ${opts.typeLabel}`,

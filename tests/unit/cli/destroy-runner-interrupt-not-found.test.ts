@@ -62,6 +62,7 @@ import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { assertRegionMatch } from '../../../src/provisioning/region-check.js';
 import { isMarkedNonRetryable, markNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { markNotGone } from '../../../src/provisioning/not-gone.js';
 import { CloudControlWaitAbandonedError } from '../../../src/provisioning/cloud-control-provider.js';
 import { nestedStackChildFailureMessage } from '../../../src/provisioning/nested-stack-messages.js';
 
@@ -93,7 +94,10 @@ function makeState(logicalId: string): StackState {
   };
 }
 
-function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>) {
+// `current` is what the under-lock re-read (#5220) sees; pass the same
+// StackState the case hands to `runDestroyForStack` so it matches (nothing
+// changed).
+function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>, current: StackState) {
   const saveState = vi.fn().mockResolvedValue('"etag"');
   const deleteState = vi.fn().mockResolvedValue(undefined);
   return {
@@ -103,6 +107,7 @@ function makeCtx(mockProviderDelete: ReturnType<typeof vi.fn>) {
       stateBackend: {
         saveState,
         deleteState,
+        getState: vi.fn(async () => ({ state: current, etag: 'e' })),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
@@ -133,7 +138,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     expect(interrupt.message).toContain('NotFoundException');
 
     const mockProviderDelete = vi.fn().mockRejectedValue(interrupt);
-    const { ctx, deleteState } = makeCtx(mockProviderDelete);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
 
     const result = await runDestroyForStack(
       'TestStack',
@@ -159,7 +164,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     );
 
     const mockProviderDelete = vi.fn().mockRejectedValue(wrapped);
-    const { ctx, deleteState } = makeCtx(mockProviderDelete);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
 
     const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
 
@@ -197,7 +202,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     expect(refusal?.message).toContain('NotFoundException');
 
     const mockProviderDelete = vi.fn().mockRejectedValue(refusal);
-    const { ctx, saveState, deleteState } = makeCtx(mockProviderDelete);
+    const { ctx, saveState, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
 
     const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
 
@@ -239,7 +244,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     expect(isMarkedNonRetryable(abandoned)).toBe(false);
 
     const mockProviderDelete = vi.fn().mockRejectedValue(abandoned);
-    const { ctx, saveState, deleteState } = makeCtx(mockProviderDelete);
+    const { ctx, saveState, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
 
     const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
 
@@ -251,13 +256,86 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     expect(Object.keys((lastSave![2] as StackState).resources)).toContain(NEEDLE_LOGICAL_ID);
   });
 
+  it('keeps the state row for a NOT-GONE-marked failure carrying the needle (go-to-k/cdkd#5228)', async () => {
+    // A provider's typed verdict that the failure is not its resource's
+    // not-found (another object's `*NotFound` class). Apart from retryability
+    // by design, so the non-retryable guard does not cover it.
+    const notGone = markNotGone(
+      new ProvisioningError(
+        `Failed to delete ECS cluster ${NEEDLE_LOGICAL_ID}: KeyNotFoundFault`,
+        'AWS::ECS::Cluster',
+        NEEDLE_LOGICAL_ID,
+        `phys-${NEEDLE_LOGICAL_ID}`
+      )
+    );
+    expect(notGone.message).toContain('NotFoundException');
+    expect(isMarkedNonRetryable(notGone)).toBe(false);
+
+    const mockProviderDelete = vi.fn().mockRejectedValue(notGone);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
+
+    const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
+
+    expect(result.deletedCount).toBe(0);
+    expect(result.errorCount).toBe(1);
+    expect(deleteState).not.toHaveBeenCalled();
+  });
+
+  describe('a TRANSIENT failure carrying the needle (go-to-k/cdkd#5228)', () => {
+    // A throttle on a resource whose logical id spells the needle: the
+    // provider marks it not gone, which must neither cost it a retry nor let
+    // the exhausted failure read as "already deleted".
+    const throttle = (): Error =>
+      new ProvisioningError(
+        `Failed to delete ECS cluster ${NEEDLE_LOGICAL_ID}: Rate exceeded`,
+        'AWS::ECS::Cluster',
+        NEEDLE_LOGICAL_ID,
+        `phys-${NEEDLE_LOGICAL_ID}`
+      );
+
+    async function destroyUnderFakeTimers(error: () => Error) {
+      vi.useFakeTimers();
+      const mockProviderDelete = vi.fn().mockImplementation(() => Promise.reject(error()));
+      const { ctx, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
+      let settled = false;
+      const run = runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx).finally(() => {
+        settled = true;
+      });
+      // The retry backoff is 5s, 10s, 20s: step well past it, never near the
+      // minutes-long slow-delete warning.
+      for (let i = 0; i < 200 && !settled; i++) await vi.advanceTimersByTimeAsync(1_000);
+      return { result: await run, mockProviderDelete, deleteState };
+    }
+
+    it('is retried, and once the retries run out the state row is kept', async () => {
+      const { result, mockProviderDelete, deleteState } = await destroyUnderFakeTimers(() =>
+        markNotGone(throttle())
+      );
+
+      // 1 attempt + 3 retries: the mark cost no retry.
+      expect(mockProviderDelete).toHaveBeenCalledTimes(4);
+      expect(result.deletedCount).toBe(0);
+      expect(result.errorCount).toBe(1);
+      expect(deleteState).not.toHaveBeenCalled();
+    });
+
+    it('CONTROL — unmarked, the exhausted throttle WAS read as already deleted', async () => {
+      const { result, mockProviderDelete, deleteState } = await destroyUnderFakeTimers(throttle);
+
+      expect(mockProviderDelete).toHaveBeenCalledTimes(4);
+      expect(result.deletedCount).toBe(1);
+      expect(result.errorCount).toBe(0);
+      expect(deleteState).toHaveBeenCalled();
+    });
+  });
+
   it('INVERTED CONTROL — a genuine not-found IS still read as already deleted', async () => {
     // The guard must not disable the arm it fences. Without this the first two
     // cases pass with the whole substring match deleted.
     const mockProviderDelete = vi
       .fn()
       .mockRejectedValue(new Error('Requested resource not found'));
-    const { ctx, deleteState } = makeCtx(mockProviderDelete);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete, makeState('Table'));
 
     const result = await runDestroyForStack('TestStack', makeState('Table'), ctx);
 
@@ -282,7 +360,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     );
     expect(message).toContain('NotFoundException');
 
-    const unmarked = makeCtx(vi.fn().mockRejectedValue(new Error(message)));
+    const unmarked = makeCtx(vi.fn().mockRejectedValue(new Error(message)), makeState(NEEDLE_LOGICAL_ID));
     const dropped = await runDestroyForStack(
       'TestStack',
       makeState(NEEDLE_LOGICAL_ID),
@@ -290,7 +368,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     );
     expect(dropped.deletedCount).toBe(1);
 
-    const marked = makeCtx(vi.fn().mockRejectedValue(markNonRetryable(new Error(message))));
+    const marked = makeCtx(vi.fn().mockRejectedValue(markNonRetryable(new Error(message))), makeState(NEEDLE_LOGICAL_ID));
     const kept = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), marked.ctx);
     expect(kept.deletedCount).toBe(0);
     expect(kept.errorCount).toBe(1);
@@ -304,7 +382,7 @@ describe('an interrupted delete is never read as "already deleted"', () => {
     const mockProviderDelete = vi
       .fn()
       .mockRejectedValue(new Error('Requested resource not found'));
-    const { ctx, deleteState } = makeCtx(mockProviderDelete);
+    const { ctx, deleteState } = makeCtx(mockProviderDelete, makeState(NEEDLE_LOGICAL_ID));
 
     const result = await runDestroyForStack('TestStack', makeState(NEEDLE_LOGICAL_ID), ctx);
 

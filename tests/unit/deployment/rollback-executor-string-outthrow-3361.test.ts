@@ -251,6 +251,7 @@ describe('journaled orphans with an unconvertible rejection (#3361)', () => {
     const { ctx } = makeCtx({ delete: vi.fn() });
 
     const outcome = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'S',
       region: REGION,

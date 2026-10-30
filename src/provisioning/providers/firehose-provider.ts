@@ -3,12 +3,17 @@ import {
   CreateDeliveryStreamCommand,
   DeleteDeliveryStreamCommand,
   DescribeDeliveryStreamCommand,
+  type DescribeDeliveryStreamCommandOutput,
   ListTagsForDeliveryStreamCommand,
   ResourceNotFoundException,
   UpdateDestinationCommand,
+  StartDeliveryStreamEncryptionCommand,
+  StopDeliveryStreamEncryptionCommand,
   TagDeliveryStreamCommand,
   UntagDeliveryStreamCommand,
   type CreateDeliveryStreamCommandInput,
+  type DeliveryStreamDescription,
+  type DeliveryStreamEncryptionConfiguration,
   type S3DestinationConfiguration,
   type ExtendedS3DestinationConfiguration,
   type ExtendedS3DestinationUpdate,
@@ -32,6 +37,8 @@ import {
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import {
   CdkdError,
   ProvisioningError,
@@ -40,6 +47,7 @@ import {
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -53,9 +61,121 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
+import { generatedNameFor } from '../resource-name.js';
+import { startInterruptWatch } from '../interrupt-watch.js';
+import { safeMsg } from '../../utils/display-safe.js';
+import { isDeepStrictEqual } from 'node:util';
+import {
+  enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
+} from '../../deployment/resource-deadline.js';
+
+const ENCRYPTION_KEY = 'DeliveryStreamEncryptionConfigurationInput';
+
+/** One read of a declared `DeliveryStreamEncryptionConfigurationInput`. */
+type EncryptionInputRead =
+  /** Not declared (`undefined` / `null`). On an UPDATE this is a REMOVAL. */
+  | { kind: 'absent' }
+  | { kind: 'usable'; keyType: string; keyArn?: string }
+  /** Declared but not an object with a string `KeyType` (and a string `KeyARN`, if any). */
+  | { kind: 'unusable' };
+
+/**
+ * Read a `DeliveryStreamEncryptionConfigurationInput` block, accepting the
+ * `KeyArn` spelling the create path also reads.
+ *
+ * `readCurrentState` spells "not encrypted" as an EMPTY `{}` placeholder, so
+ * with `emptyIsAbsent` that reads as absent: set for a recorded previous side
+ * (`cdkd drift --accept` can write the readback into a record) and for a
+ * desired bag that is a readback (`desiredFromAwsReadback`). A TEMPLATE `{}`
+ * stays unusable (the CFn schema requires `KeyType`), and so does a replayed
+ * state record's: `replayingState` never licenses removing live config.
+ */
+function readEncryptionInput(value: unknown, emptyIsAbsent: boolean): EncryptionInputRead {
+  if (value === undefined || value === null) return { kind: 'absent' };
+  if (typeof value !== 'object' || Array.isArray(value)) return { kind: 'unusable' };
+  const block = value as Record<string, unknown>;
+  if (emptyIsAbsent && Object.keys(block).length === 0) return { kind: 'absent' };
+  const keyType = block['KeyType'];
+  const keyArn = block['KeyArn'] || block['KeyARN'];
+  if (typeof keyType !== 'string' || keyType.length === 0) return { kind: 'unusable' };
+  if (keyArn !== undefined && keyArn !== null && keyArn !== '' && typeof keyArn !== 'string') {
+    return { kind: 'unusable' };
+  }
+  return typeof keyArn === 'string' && keyArn.length > 0
+    ? { kind: 'usable', keyType, keyArn }
+    : { kind: 'usable', keyType };
+}
+
+/** `true` when the desired and the recorded block ask AWS for the same thing. */
+function sameEncryptionInput(next: unknown, nextRead: EncryptionInputRead, prev: unknown): boolean {
+  const b = readEncryptionInput(prev, true);
+  if (nextRead.kind === 'unusable' || b.kind === 'unusable') {
+    return JSON.stringify(next) === JSON.stringify(prev);
+  }
+  if (nextRead.kind === 'absent' || b.kind === 'absent') return nextRead.kind === b.kind;
+  return nextRead.keyType === b.keyType && nextRead.keyArn === b.keyArn;
+}
+
+/**
+ * `true` when the stream's reported encryption is ENABLED with the requested
+ * key. A KeyARN is compared only for a customer-managed key: AWS reports none
+ * for `AWS_OWNED_CMK`.
+ */
+function encryptionMatches(
+  live: DeliveryStreamEncryptionConfiguration | undefined,
+  desired: { keyType: string; keyArn?: string }
+): boolean {
+  if (live?.Status !== 'ENABLED' || live.KeyType !== desired.keyType) return false;
+  return desired.keyType !== 'CUSTOMER_MANAGED_CMK' || live.KeyARN === desired.keyArn;
+}
+
+/**
+ * The CFn input shape of the stream's reported encryption, as
+ * `readCurrentState` emits it: `{KeyARN?, KeyType}` while the stream is
+ * encrypted or becoming so (ENABLED, ENABLING, DISABLING_FAILED), else the
+ * `{}` placeholder. A KeyType AWS still reports beside DISABLED or
+ * ENABLING_FAILED is not encryption in effect.
+ */
+function liveEncryptionAsCfn(
+  live: DeliveryStreamEncryptionConfiguration | undefined
+): Record<string, unknown> {
+  const status = live?.Status;
+  if (status !== 'ENABLED' && status !== 'ENABLING' && status !== 'DISABLING_FAILED') return {};
+  return {
+    ...(live?.KeyARN !== undefined && { KeyARN: live.KeyARN }),
+    ...(live?.KeyType !== undefined && { KeyType: live.KeyType }),
+  };
+}
+
+/** Polling cadence and cap for an encryption transition (measured at ~80-95 s). */
+const ENCRYPTION_POLL_INTERVAL_MS = 5000;
+const ENCRYPTION_POLL_MAX_ATTEMPTS = 120;
+
+/**
+ * Polling cadence and cap for the create-time wait for ACTIVE. The engine's
+ * per-resource deadline ends the wait first under the default 30 min timeout;
+ * the cap bounds it where no deadline encloses the call.
+ */
+const ACTIVE_POLL_INTERVAL_MS = 5000;
+const ACTIVE_POLL_MAX_ATTEMPTS = 360;
+/**
+ * What the wait leaves of the resource deadline for its last read and its
+ * throw to settle before the deadline fires (go-to-k/cdkd#5509).
+ */
+const ACTIVE_DEADLINE_MARGIN_MS = 2000;
+
+/** Errors for an `ENABLING_FAILED` / `DISABLING_FAILED` report: AWS ended the transition. */
+const terminalEncryptionFailures = new WeakSet<object>();
 
 /**
  * `true` for `undefined` / `null` (ABSENT, the empty list) or a list of tag
@@ -86,25 +206,67 @@ function isReadableTagList(value: unknown): boolean {
 }
 
 /**
- * CFn destination property names that this provider can apply
- * in-place via UpdateDestinationCommand. Other destination types
- * still hard-reject in update() with a tightened error pointing at
- * the per-shape reverse-mapper follow-up issue (#549).
+ * The destinations whose `S3BackupMode` cannot change after the stream is
+ * created (go-to-k/cdkd#5386), each with the `DescribeDeliveryStream`
+ * description member that reports the live mode. Their `UpdateDestination`
+ * shapes (`ElasticsearchDestinationUpdate`,
+ * `AmazonopensearchserviceDestinationUpdate`,
+ * `AmazonOpenSearchServerlessDestinationUpdate`) have no `S3BackupMode`
+ * member, so the change has nothing to be sent through.
  *
- * Membership grows as each follow-up PR lands. Keep alphabetical
- * to minimize merge conflicts when multiple follow-ups race.
+ * CloudFormation behaves the same way, and `S3BackupMode` is not a
+ * create-only property in its schema. Measured in us-east-1 on 2026-10-27: a
+ * stack with an `AmazonOpenSearchServerlessDestinationConfiguration` at
+ * `FailedDocumentsOnly`, updated to `AllDocuments`, ended `UPDATE_COMPLETE`
+ * with the same stream, its `VersionId` still 1 and its mode still
+ * `FailedDocumentsOnly`. (The two domain-backed destinations could not be
+ * created without a live OpenSearch domain; they share the schema and the
+ * update shape's gap.) cdkd keeps that outcome, records the declared value as
+ * CloudFormation's stored template does, and warns instead of staying silent.
  */
-const SUPPORTED_UPDATE_DESTINATIONS: ReadonlySet<string> = new Set([
-  'AmazonOpenSearchServerlessDestinationConfiguration',
-  'AmazonopensearchserviceDestinationConfiguration',
-  'ElasticsearchDestinationConfiguration',
-  'ExtendedS3DestinationConfiguration',
-  'HttpEndpointDestinationConfiguration',
-  'IcebergDestinationConfiguration',
-  'RedshiftDestinationConfiguration',
-  'SnowflakeDestinationConfiguration',
-  'SplunkDestinationConfiguration',
-]);
+const FIXED_BACKUP_MODE_DESTINATIONS: Readonly<
+  Record<
+    string,
+    | 'ElasticsearchDestinationDescription'
+    | 'AmazonopensearchserviceDestinationDescription'
+    | 'AmazonOpenSearchServerlessDestinationDescription'
+  >
+> = {
+  ElasticsearchDestinationConfiguration: 'ElasticsearchDestinationDescription',
+  AmazonopensearchserviceDestinationConfiguration: 'AmazonopensearchserviceDestinationDescription',
+  AmazonOpenSearchServerlessDestinationConfiguration:
+    'AmazonOpenSearchServerlessDestinationDescription',
+};
+
+/** The mode Firehose applies when these destinations declare none. */
+const DEFAULT_OPENSEARCH_BACKUP_MODE = 'FailedDocumentsOnly';
+
+/**
+ * The destination key whose `S3BackupMode` changed between the two bags but
+ * cannot be applied in place (go-to-k/cdkd#5386), or `undefined`. Only a
+ * destination both bags declare as an object is compared: a destination switch
+ * is refused earlier, and with `changedProperties` set (the deploy's in-place
+ * update) a destination the engine did not report as changed is skipped.
+ */
+function unappliedS3BackupModeDestination(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  destKey: string | undefined,
+  changedProperties: ReadonlySet<string> | undefined
+): string | undefined {
+  if (destKey === undefined || !Object.hasOwn(FIXED_BACKUP_MODE_DESTINATIONS, destKey)) {
+    return undefined;
+  }
+  if (changedProperties !== undefined && !changedProperties.has(destKey)) return undefined;
+  const desired = properties[destKey];
+  const previous = previousProperties[destKey];
+  if (!isPlainRecord(desired) || !isPlainRecord(previous)) return undefined;
+  return isDeepStrictEqual(desired['S3BackupMode'], previous['S3BackupMode']) ? undefined : destKey;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
@@ -129,6 +291,37 @@ export class FirehoseProvider implements ResourceProvider {
   private createClient: FirehoseClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('FirehoseProvider');
+
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -193,7 +386,8 @@ export class FirehoseProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Firehose delivery stream ${logicalId}`);
 
@@ -219,7 +413,10 @@ export class FirehoseProvider implements ResourceProvider {
     let createdStreamName: string | undefined;
     try {
       const input: CreateDeliveryStreamCommandInput = {
-        DeliveryStreamName: deliveryStreamName || logicalId,
+        // go-to-k/cdkd#5095: a stack with an instance id generates the name;
+        // a legacy stack keeps the bare logical id.
+        DeliveryStreamName:
+          deliveryStreamName || generatedNameFor('AWS::KinesisFirehose::DeliveryStream', logicalId),
         DeliveryStreamType: deliveryStreamType as
           | 'DirectPut'
           | 'KinesisStreamAsSource'
@@ -294,6 +491,9 @@ export class FirehoseProvider implements ResourceProvider {
                 httpConfig['S3Configuration'] as Record<string, unknown>
               )
             : undefined,
+          SecretsManagerConfiguration: httpConfig['SecretsManagerConfiguration'] as
+            | HttpEndpointDestinationConfiguration['SecretsManagerConfiguration']
+            | undefined,
         } as HttpEndpointDestinationConfiguration;
       }
 
@@ -316,6 +516,18 @@ export class FirehoseProvider implements ResourceProvider {
             | undefined,
           ProcessingConfiguration: rsConfig['ProcessingConfiguration'] as
             | RedshiftDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+          RetryOptions: rsConfig['RetryOptions'] as
+            | RedshiftDestinationConfiguration['RetryOptions']
+            | undefined,
+          S3BackupMode: rsConfig['S3BackupMode'] as string | undefined,
+          S3BackupConfiguration: rsConfig['S3BackupConfiguration']
+            ? this.mapS3DestinationConfiguration(
+                rsConfig['S3BackupConfiguration'] as Record<string, unknown>
+              )
+            : undefined,
+          SecretsManagerConfiguration: rsConfig['SecretsManagerConfiguration'] as
+            | RedshiftDestinationConfiguration['SecretsManagerConfiguration']
             | undefined,
         } as RedshiftDestinationConfiguration;
       }
@@ -351,6 +563,12 @@ export class FirehoseProvider implements ResourceProvider {
           ProcessingConfiguration: esConfig['ProcessingConfiguration'] as
             | ElasticsearchDestinationConfiguration['ProcessingConfiguration']
             | undefined,
+          VpcConfiguration: esConfig['VpcConfiguration'] as
+            | ElasticsearchDestinationConfiguration['VpcConfiguration']
+            | undefined,
+          DocumentIdOptions: esConfig['DocumentIdOptions'] as
+            | ElasticsearchDestinationConfiguration['DocumentIdOptions']
+            | undefined,
         } as ElasticsearchDestinationConfiguration;
       }
 
@@ -385,6 +603,12 @@ export class FirehoseProvider implements ResourceProvider {
           ProcessingConfiguration: aosConfig['ProcessingConfiguration'] as
             | AmazonopensearchserviceDestinationConfiguration['ProcessingConfiguration']
             | undefined,
+          VpcConfiguration: aosConfig['VpcConfiguration'] as
+            | AmazonopensearchserviceDestinationConfiguration['VpcConfiguration']
+            | undefined,
+          DocumentIdOptions: aosConfig['DocumentIdOptions'] as
+            | AmazonopensearchserviceDestinationConfiguration['DocumentIdOptions']
+            | undefined,
         } as AmazonopensearchserviceDestinationConfiguration;
       }
 
@@ -416,6 +640,12 @@ export class FirehoseProvider implements ResourceProvider {
           ProcessingConfiguration: splunkConfig['ProcessingConfiguration'] as
             | SplunkDestinationConfiguration['ProcessingConfiguration']
             | undefined,
+          BufferingHints: splunkConfig['BufferingHints'] as
+            | SplunkDestinationConfiguration['BufferingHints']
+            | undefined,
+          SecretsManagerConfiguration: splunkConfig['SecretsManagerConfiguration'] as
+            | SplunkDestinationConfiguration['SecretsManagerConfiguration']
+            | undefined,
         } as SplunkDestinationConfiguration;
       }
 
@@ -445,6 +675,9 @@ export class FirehoseProvider implements ResourceProvider {
             | undefined,
           ProcessingConfiguration: aossConfig['ProcessingConfiguration'] as
             | AmazonOpenSearchServerlessDestinationConfiguration['ProcessingConfiguration']
+            | undefined,
+          VpcConfiguration: aossConfig['VpcConfiguration'] as
+            | AmazonOpenSearchServerlessDestinationConfiguration['VpcConfiguration']
             | undefined,
         } as AmazonOpenSearchServerlessDestinationConfiguration;
       }
@@ -477,6 +710,7 @@ export class FirehoseProvider implements ResourceProvider {
         response.DeliveryStreamARN?.split('/').pop() ||
         '';
       createdStreamName = physicalId;
+      reportCreatedResource(logicalId, resourceType, physicalId); // go-to-k/cdkd#5511
       const arn = response.DeliveryStreamARN;
 
       this.logger.debug(
@@ -485,7 +719,12 @@ export class FirehoseProvider implements ResourceProvider {
 
       // Wait for delivery stream to become ACTIVE before returning.
       // SubscriptionFilter and other dependents fail if the stream is still CREATING.
-      await this.waitForActive(physicalId, logicalId);
+      await this.waitForActive(
+        physicalId,
+        logicalId,
+        resourceType,
+        maskerOrIdentity(context?.maskSecrets)
+      );
 
       return {
         physicalId,
@@ -497,12 +736,17 @@ export class FirehoseProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              undefined,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              maskerOrIdentity(context?.maskSecrets),
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Firehose delivery stream ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  undefined,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the stream exists and no state record will hold it;
       // never before CreateDeliveryStream returned (another owner's name).
@@ -556,9 +800,9 @@ export class FirehoseProvider implements ResourceProvider {
    *     `TypeName`, `IndexRotationPeriod`, `BufferingHints`,
    *     `RetryOptions`, `S3Configuration` → `S3Update`,
    *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`,
-   *     `DocumentIdOptions`. `VpcConfiguration` is read-only on
-   *     AWS-side Update — diffs to that field will not be forwarded
-   *     and surface on the next `cdkd drift` run.
+   *     `DocumentIdOptions`. `VpcConfiguration` has no Update member;
+   *     it is create-only in the CloudFormation schema, so the diff
+   *     plans a replacement for a change there.
    *
    *   - `AmazonOpenSearchServerlessDestinationConfiguration` (#549) —
    *     `AmazonOpenSearchServerlessDestinationUpdate` payload
@@ -567,6 +811,11 @@ export class FirehoseProvider implements ResourceProvider {
    *     `CollectionEndpoint`, `IndexName`, `BufferingHints`,
    *     `RetryOptions`, `S3Configuration` → `S3Update`,
    *     `ProcessingConfiguration`, `CloudWatchLoggingOptions`.
+   *
+   *   - `S3BackupMode` on the three OpenSearch / Elasticsearch
+   *     destinations has no Update member: a change is not sent, as
+   *     CloudFormation does, and is warned (#5386,
+   *     {@link warnUnappliedS3BackupMode}).
    *
    *   - `HttpEndpointDestinationConfiguration` (#549) —
    *     `HttpEndpointDestinationUpdate` payload produced by
@@ -581,7 +830,7 @@ export class FirehoseProvider implements ResourceProvider {
    *     `ElasticsearchDestinationUpdate` payload produced by
    *     {@link mapElasticsearchConfigToUpdate}. Legacy variant of
    *     `Amazonopensearchservice*`; same field shape sans
-   *     `VpcConfiguration` (also read-only on Update).
+   *     `VpcConfiguration` (also create-only, so replaced).
    *
    *   - `IcebergDestinationConfiguration` (#549) —
    *     `IcebergDestinationUpdate` payload produced by
@@ -609,12 +858,14 @@ export class FirehoseProvider implements ResourceProvider {
    *     `S3BackupMode`, `S3Configuration` → `S3Update`,
    *     `SecretsManagerConfiguration`, `BufferingHints`).
    *
-   * The legacy `S3DestinationConfiguration` (deprecated by AWS in
-   * favor of `ExtendedS3DestinationConfiguration`) stays rejected
-   * with a tightened error — CDK constructs always emit Extended.
-   * Templates that still pin the legacy shape should migrate to
-   * Extended; in-place update of the deprecated shape isn't a
-   * priority follow-up.
+   *   - **`DeliveryStreamEncryptionConfigurationInput`** (#5357) —
+   *     `StartDeliveryStreamEncryption` / `StopDeliveryStreamEncryption`,
+   *     waiting for the asynchronous transition; see
+   *     {@link applyEncryptionUpdate}. Runs after the destination update.
+   *
+   *   - The legacy `S3DestinationConfiguration` (#5439) —
+   *     `S3DestinationUpdate` payload produced by
+   *     {@link mapS3ConfigToUpdate}; see {@link applyS3DestinationUpdate}.
    *
    * Destination-type SWITCHES (e.g. ExtendedS3 → Redshift) are immutable
    * on AWS; cdkd surfaces `ResourceUpdateNotSupportedError` so the caller
@@ -646,7 +897,8 @@ export class FirehoseProvider implements ResourceProvider {
         physicalId,
         resourceType,
         properties,
-        previousProperties
+        previousProperties,
+        context
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched: the destination-switch
@@ -655,12 +907,17 @@ export class FirehoseProvider implements ResourceProvider {
       // ProvisioningError already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Firehose delivery stream ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -670,9 +927,49 @@ export class FirehoseProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Firehose delivery stream ${logicalId}: ${physicalId}`);
+
+    // Like the destination checks below, refused before any mutating call.
+    const desiredEncryption = readEncryptionInput(
+      properties[ENCRYPTION_KEY],
+      context?.desiredFromAwsReadback === true
+    );
+    // go-to-k/cdkd#5380: an earlier update's Start / Stop that did not finish
+    // left the key unsettled, so the stream may hold either block although the
+    // template and the record agree. `applyEncryptionUpdate` reads the stream
+    // and sends only what it lacks. An unusable block is not forced: it was
+    // never sent, and refusing it now would fail a deploy that sent nothing.
+    const encryptionChanged =
+      !sameEncryptionInput(
+        properties[ENCRYPTION_KEY],
+        desiredEncryption,
+        previousProperties[ENCRYPTION_KEY]
+      ) ||
+      (context?.unsettledProperties?.has(ENCRYPTION_KEY) === true &&
+        desiredEncryption.kind !== 'unusable');
+    let encryptionSkipped = false;
+    if (encryptionChanged && desiredEncryption.kind === 'unusable') {
+      const message =
+        `${ENCRYPTION_KEY} of Firehose delivery stream ${logicalId} is not an object with a ` +
+        `string KeyType (and a string KeyARN, if any)`;
+      // A state record has no template-side remedy: leave the stream's
+      // encryption as it is and record the previous block (issue #3141).
+      if (context?.replayingState !== true) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${message} — nothing was updated`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      this.logger.warn(safeMsg`${message}; its encryption is left unchanged`);
+      encryptionSkipped = true;
+    }
 
     // Validate destination shape BEFORE issuing any mutating call so a
     // Tags+rejected-destination combined diff does not write Tags then
@@ -691,21 +988,9 @@ export class FirehoseProvider implements ResourceProvider {
       );
     }
 
+    // Every destination key findDestinationKey returns has an in-place
+    // UpdateDestination branch below.
     const activeDest = destKey ?? prevDestKey;
-    if (activeDest && !SUPPORTED_UPDATE_DESTINATIONS.has(activeDest)) {
-      // Some other destination type — check whether it actually changed,
-      // and reject only if it did. Tags-only diffs against e.g. a Splunk
-      // delivery stream should NOT throw.
-      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
-      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
-      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `In-place update for '${activeDest}' on AWS::KinesisFirehose::DeliveryStream is not yet implemented in cdkd (AWS exposes UpdateDestination for it). Re-deploy with cdkd deploy --replace.`
-        );
-      }
-    }
 
     // Now that destination validity is established, apply Tags
     // (TagDeliveryStream / UntagDeliveryStream is independent of
@@ -744,6 +1029,14 @@ export class FirehoseProvider implements ResourceProvider {
       const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
       if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
         await this.applyExtendedS3DestinationUpdate(logicalId, physicalId, nextDest);
+      }
+    }
+
+    if (activeDest === 'S3DestinationConfiguration') {
+      const nextDest = (properties[activeDest] ?? {}) as Record<string, unknown>;
+      const prevDest = (previousProperties[activeDest] ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(nextDest) !== JSON.stringify(prevDest)) {
+        await this.applyS3DestinationUpdate(logicalId, physicalId, nextDest);
       }
     }
 
@@ -815,9 +1108,34 @@ export class FirehoseProvider implements ResourceProvider {
       }
     }
 
+    if (encryptionChanged && desiredEncryption.kind !== 'unusable') {
+      await this.applyEncryptionUpdate(
+        logicalId,
+        physicalId,
+        resourceType,
+        desiredEncryption,
+        maskerOrIdentity(context?.maskSecrets),
+        context?.markUnsettled
+      );
+    }
+
     // Pull current AWS state for the result envelope.
     const description = await this.getClient().send(
       new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    // go-to-k/cdkd#5386: named after the last call that could fail, so a
+    // failed update (and its retry) never prints it, and confirmed against
+    // this same read rather than a second one.
+    this.warnUnappliedS3BackupMode(
+      logicalId,
+      properties,
+      unappliedS3BackupModeDestination(
+        properties,
+        previousProperties,
+        destKey,
+        context?.changedProperties
+      ),
+      description.DeliveryStreamDescription
     );
     const desc = description.DeliveryStreamDescription;
     return {
@@ -826,7 +1144,67 @@ export class FirehoseProvider implements ResourceProvider {
       attributes: {
         ...(desc?.DeliveryStreamARN !== undefined && { Arn: desc.DeliveryStreamARN }),
       },
+      ...(encryptionSkipped && {
+        effectiveProperties: this.withRecordedEncryption(
+          properties,
+          previousProperties[ENCRYPTION_KEY],
+          desc?.DeliveryStreamEncryptionConfiguration
+        ),
+      }),
     };
+  }
+
+  /**
+   * Warn that the `S3BackupMode` change {@link unappliedS3BackupModeDestination}
+   * found was not applied (go-to-k/cdkd#5386), unless the live stream already
+   * holds the declared mode. The state records the declared value, never
+   * applied, so a template-to-state difference alone also fires on a rollback
+   * revert, on a template reverted to what AWS holds, and on a mode declared at
+   * the value AWS already has. `live` is the update's own closing
+   * `DescribeDeliveryStream` answer. When it does not report the destination's
+   * mode, the warning is kept: it cannot be confirmed either way, and the
+   * update itself has succeeded.
+   */
+  private warnUnappliedS3BackupMode(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    destKey: string | undefined,
+    live: DeliveryStreamDescription | undefined
+  ): void {
+    if (destKey === undefined) return;
+    const declared = (properties[destKey] as Record<string, unknown>)['S3BackupMode'];
+    const desired = declared ?? DEFAULT_OPENSEARCH_BACKUP_MODE;
+    const member = FIXED_BACKUP_MODE_DESTINATIONS[destKey];
+    const liveMode: unknown =
+      member === undefined ? undefined : live?.Destinations?.[0]?.[member]?.S3BackupMode;
+    if (liveMode !== undefined && liveMode === desired) return;
+    if (liveMode === undefined) {
+      this.logger.debug(
+        safeMsg`Firehose delivery stream ${logicalId} reported no S3BackupMode for ${destKey}; warning unconfirmed`
+      );
+    }
+    const kept =
+      typeof liveMode === 'string' ? `its current mode (${liveMode})` : 'its current mode';
+    this.logger.warn(
+      safeMsg`${logicalId} (AWS::KinesisFirehose::DeliveryStream): ${destKey}.S3BackupMode changed, but Firehose cannot change the backup mode of an existing delivery stream, so the stream keeps ${kept}, as CloudFormation does. To apply it, replace the stream, for example by giving it a new DeliveryStreamName or a new logical id.`
+    );
+  }
+
+  /**
+   * The desired bag with the encryption block an update SKIPPED replaced by
+   * what the stream holds: an absent previous drops the key, and a present one
+   * records the live reading, in the shape `readCurrentState` emits. The
+   * recorded previous is never trusted as-is: on a rollback it can be a block a
+   * failed update never applied.
+   */
+  private withRecordedEncryption(
+    properties: Record<string, unknown>,
+    previous: unknown,
+    live: DeliveryStreamEncryptionConfiguration | undefined
+  ): Record<string, unknown> {
+    const { [ENCRYPTION_KEY]: _skipped, ...rest } = properties;
+    if (previous === undefined || previous === null) return rest;
+    return { ...rest, [ENCRYPTION_KEY]: liveEncryptionAsCfn(live) };
   }
 
   /**
@@ -836,7 +1214,8 @@ export class FirehoseProvider implements ResourceProvider {
    * {@link mapExtendedS3ConfigToUpdate} produces the
    * `ExtendedS3DestinationUpdate` payload (CFn property names →
    * SDK camelCase, omitting `Prefix` / `BufferingHints` / etc. when the
-   * source is undefined so an empty diff doesn't clear AWS-side fields).
+   * source is undefined), which keeps a removed sub-field live as
+   * CloudFormation does (#1160).
    */
   private async applyExtendedS3DestinationUpdate(
     logicalId: string,
@@ -864,6 +1243,44 @@ export class FirehoseProvider implements ResourceProvider {
         CurrentDeliveryStreamVersionId: currentVersionId,
         DestinationId: destinationId,
         ExtendedS3DestinationUpdate: this.mapExtendedS3ConfigToUpdate(nextConfig),
+      })
+    );
+  }
+
+  /**
+   * The legacy `S3DestinationConfiguration` (go-to-k/cdkd#5439):
+   * `UpdateDestination` with an `S3DestinationUpdate` payload from
+   * {@link mapS3ConfigToUpdate}, as CloudFormation does. Measured in
+   * us-east-1: a change set changing `BufferingHints` / `Prefix` /
+   * `CompressionFormat` planned `Replacement: False` and kept the stream ARN,
+   * and one removing `Prefix` and `BufferingHints` beside a sibling change
+   * kept both live values, so a removed sub-field is not sent (#1160).
+   */
+  private async applyS3DestinationUpdate(
+    logicalId: string,
+    physicalId: string,
+    nextConfig: Record<string, unknown>
+  ): Promise<void> {
+    const description = await this.getClient().send(
+      new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+    );
+    const desc = description.DeliveryStreamDescription;
+    const currentVersionId = desc?.VersionId;
+    const destinationId = desc?.Destinations?.[0]?.DestinationId;
+    if (!currentVersionId || !destinationId) {
+      throw new ProvisioningError(
+        `DescribeDeliveryStream for ${physicalId} did not return VersionId or DestinationId; UpdateDestination cannot proceed.`,
+        'AWS::KinesisFirehose::DeliveryStream',
+        logicalId,
+        physicalId
+      );
+    }
+    await this.getClient().send(
+      new UpdateDestinationCommand({
+        DeliveryStreamName: physicalId,
+        CurrentDeliveryStreamVersionId: currentVersionId,
+        DestinationId: destinationId,
+        S3DestinationUpdate: this.mapS3ConfigToUpdate(nextConfig),
       })
     );
   }
@@ -923,6 +1340,235 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
+   * Apply a changed `DeliveryStreamEncryptionConfigurationInput` (issue
+   * #5357): `StartDeliveryStreamEncryption` for a new or changed block,
+   * `StopDeliveryStreamEncryption` for a removed one, as CloudFormation does
+   * (both measured on a CFn stack, a removal alone and beside a Tags change).
+   *
+   * Both calls only START an asynchronous transition (ENABLING / DISABLING,
+   * measured at 80-95 s), so the update waits for its end state. An earlier
+   * transition is waited out first, and the call is skipped when the stream
+   * already holds the requested state, since AWS answers
+   * `InvalidArgumentException` to a Start with the customer-managed key already
+   * in use and to a Stop on a stream that is not encrypted. That includes
+   * `ENABLING_FAILED` after a rejected Start: measured, it reports no KeyType
+   * and a Stop there is refused as "already disabled".
+   */
+  private async applyEncryptionUpdate(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desired: { kind: 'absent' } | { kind: 'usable'; keyType: string; keyArn?: string },
+    mask: MaskerFn,
+    markUnsettled: ((propertyName: string) => void) | undefined
+  ): Promise<void> {
+    const settled = await this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
+      what: 'settle',
+      done: (enc) => enc?.Status !== 'ENABLING' && enc?.Status !== 'DISABLING',
+    });
+    if (desired.kind === 'absent') {
+      if (settled?.Status !== 'ENABLED' && settled?.Status !== 'DISABLING_FAILED') return;
+      this.refuseToStartTransition(logicalId, physicalId, resourceType, 'disable');
+      // go-to-k/cdkd#5380: after the refusal, before the call: from here a
+      // failure leaves the stream in a state the record may not describe.
+      markUnsettled?.(ENCRYPTION_KEY);
+      await this.getClient().send(
+        new StopDeliveryStreamEncryptionCommand({ DeliveryStreamName: physicalId })
+      );
+      await this.warnIfUnfinished(logicalId, 'StopDeliveryStreamEncryption', markUnsettled, () =>
+        this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
+          what: 'disable',
+          done: (enc) => enc === undefined || enc.Status === 'DISABLED',
+          inProgress: 'DISABLING',
+          failed: 'DISABLING_FAILED',
+          staleFailure: settled.Status === 'DISABLING_FAILED',
+        })
+      );
+      return;
+    }
+    if (encryptionMatches(settled, desired)) return;
+    this.refuseToStartTransition(logicalId, physicalId, resourceType, 'enable');
+    markUnsettled?.(ENCRYPTION_KEY);
+    await this.getClient().send(
+      new StartDeliveryStreamEncryptionCommand({
+        DeliveryStreamName: physicalId,
+        DeliveryStreamEncryptionConfigurationInput: {
+          KeyType: desired.keyType as DeliveryStreamEncryptionConfigurationInput['KeyType'],
+          ...(desired.keyArn !== undefined && { KeyARN: desired.keyArn }),
+        },
+      })
+    );
+    await this.warnIfUnfinished(logicalId, 'StartDeliveryStreamEncryption', markUnsettled, () =>
+      this.waitForEncryption(logicalId, physicalId, resourceType, mask, {
+        what: 'enable',
+        done: (enc) => encryptionMatches(enc, desired),
+        inProgress: 'ENABLING',
+        failed: 'ENABLING_FAILED',
+        staleFailure: settled?.Status === 'ENABLING_FAILED',
+      })
+    );
+  }
+
+  /**
+   * Run the wait that follows an accepted Start / Stop, and when it fails
+   * (a `*_FAILED` report, a timeout, the resource deadline, Ctrl-C) warn before
+   * rethrowing. A throwing `update()` leaves the PREVIOUS block in state, while
+   * the stream can still finish the transition, or after a `*_FAILED` hold
+   * neither setting. On a deploy the call was preceded by `markUnsettled`
+   * (go-to-k/cdkd#5380), so the record names the key unsettled and the next
+   * deploy reads the stream and converges it, whichever template it applies.
+   * Elsewhere (a rollback revert, `drift --revert`) nothing marks it, so the
+   * warning points at `cdkd drift`.
+   */
+  private async warnIfUnfinished<T>(
+    logicalId: string,
+    call: 'StartDeliveryStreamEncryption' | 'StopDeliveryStreamEncryption',
+    markUnsettled: ((propertyName: string) => void) | undefined,
+    wait: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await wait();
+    } catch (error) {
+      const outcome =
+        typeof error === 'object' && error !== null && terminalEncryptionFailures.has(error)
+          ? 'AWS reported the change failed, so the stream may no longer match'
+          : 'the stream may still finish the change, so it may no longer match';
+      this.logger.warn(
+        safeMsg`Firehose delivery stream ${logicalId}: ${call} was sent but the encryption change did not finish; ${outcome} the previous setting cdkd keeps recorded. `.concat(
+          markUnsettled === undefined
+            ? "Run 'cdkd drift' to compare, then 'cdkd drift --revert' to apply the recorded setting or 'cdkd drift --accept' to record the stream's."
+            : `cdkd records ${ENCRYPTION_KEY} as unsettled, so the next 'cdkd deploy' reads the stream and applies the template's setting. To keep the stream as it ends up instead, run 'cdkd drift --accept' once the stream no longer reads ENABLING or DISABLING (an accept during the transition keeps the key unsettled).`
+        )
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Refuse to START an encryption transition once the engine's per-resource
+   * deadline has run out, or after Ctrl-C. The deadline does not cancel this
+   * update: the engine has already failed the resource and moved on, so a
+   * Start / Stop sent now would change the stream with nobody waiting on it.
+   * A signal that landed during the settle wait's last read is caught here:
+   * that wait returns on a settled report before it re-checks, and the latch
+   * is sticky, so a fresh watch reads it.
+   */
+  private refuseToStartTransition(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    what: 'enable' | 'disable'
+  ): void {
+    const watch = startInterruptWatch(`Firehose ${logicalId} encryption ${what}`);
+    try {
+      if (watch.isInterrupted()) throw watch.onInterrupted();
+    } finally {
+      watch.dispose();
+    }
+    // `remainingMs` reads the clock, so it can reach 0 before the timer that
+    // sets `expired` has run.
+    if (!enclosingDeadlineExpired() && enclosingDeadlineRemainingMs() > 0) return;
+    throw markNonRetryable(
+      new ProvisioningError(
+        `The resource timeout expired before encryption could be ${what}d on Firehose ` +
+          `delivery stream ${logicalId}; no encryption call was sent`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * Poll `DescribeDeliveryStream` until `done` accepts the reported
+   * encryption, and return it. A `failed` report is terminal and names AWS's
+   * failure description, masked, and non-retryable: a retry would only issue
+   * the same call against the same key. When the stream already reported
+   * `failed` before the call (`staleFailure`), that report counts only after
+   * the `inProgress` status has been seen, so an earlier failure is never
+   * blamed on this call. Ctrl-C stops the wait with an `InterruptedWaitError`.
+   * Either way the update is not recorded, so a redeploy of the same template
+   * re-reads the stream and issues only what is still missing.
+   */
+  private async waitForEncryption(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    mask: MaskerFn,
+    opts: {
+      what: 'settle' | 'enable' | 'disable';
+      done: (enc: DeliveryStreamEncryptionConfiguration | undefined) => boolean;
+      inProgress?: 'ENABLING' | 'DISABLING';
+      failed?: 'ENABLING_FAILED' | 'DISABLING_FAILED';
+      staleFailure?: boolean;
+    }
+  ): Promise<DeliveryStreamEncryptionConfiguration | undefined> {
+    const { what, done, inProgress, failed } = opts;
+    const watch = startInterruptWatch(`Firehose ${logicalId} encryption ${what}`);
+    try {
+      let last: string | undefined;
+      let sawInProgress = false;
+      for (let attempt = 1; attempt <= ENCRYPTION_POLL_MAX_ATTEMPTS; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The engine's deadline does not cancel this update, so a wait that
+        // outlived it would keep polling with nobody waiting on it. Checked
+        // before the read, so the wait ends as the deadline does.
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `The resource timeout expired while waiting to ${what} encryption on Firehose ` +
+                `delivery stream ${logicalId} (last status: ${last ?? 'none reported'})`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        const resp = await this.getClient().send(
+          new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+        );
+        const enc = resp.DeliveryStreamDescription?.DeliveryStreamEncryptionConfiguration;
+        if (done(enc)) return enc;
+        last = enc?.Status;
+        if (last !== undefined && last === inProgress) sawInProgress = true;
+        if (failed !== undefined && last === failed && (sawInProgress || !opts.staleFailure)) {
+          const failure = enc?.FailureDescription;
+          const terminal = markNonRetryable(
+            new ProvisioningError(
+              `Failed to ${what} encryption on Firehose delivery stream ${logicalId}: AWS reports ` +
+                `${failed}` +
+                (failure ? ` (${mask(`${failure.Type ?? ''}: ${failure.Details ?? ''}`)})` : ''),
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+          terminalEncryptionFailures.add(terminal);
+          throw terminal;
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, Math.min(ENCRYPTION_POLL_INTERVAL_MS, enclosingDeadlineRemainingMs()))
+          )
+        );
+      }
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Timed out waiting to ${what} encryption on Firehose delivery stream ${logicalId} ` +
+            `(last status: ${last ?? 'none reported'})`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /**
    * Return the key of the destination property present on a properties
    * record, or `undefined` if none is present. AWS allows exactly one
    * destination configuration per delivery stream, so the first match is
@@ -939,11 +1585,7 @@ export class FirehoseProvider implements ResourceProvider {
       'SplunkDestinationConfiguration',
       'AmazonOpenSearchServerlessDestinationConfiguration',
       // Every destination key supports in-place update via UpdateDestination
-      // (#477 + #549 follow-ups), with the sole exception of the legacy
-      // `S3DestinationConfiguration` listed above — AWS deprecated that
-      // shape in favor of `ExtendedS3DestinationConfiguration`, CDK
-      // constructs always emit Extended, and the rejection branch in
-      // update() points users at that migration.
+      // (#477, #549 follow-ups, #5439 for the legacy S3 shape).
       'IcebergDestinationConfiguration',
       'SnowflakeDestinationConfiguration',
     ];
@@ -987,13 +1629,24 @@ export class FirehoseProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Firehose delivery stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Firehose delivery stream ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
 
     // Issue #3872: the delivery stream keeps its NAME while it is DELETING
@@ -1167,6 +1820,22 @@ export class FirehoseProvider implements ResourceProvider {
       ] as ExtendedS3DestinationConfiguration['DataFormatConversionConfiguration'];
     }
 
+    // A dynamic-partitioning Prefix (`!{partitionKeyFromQuery:...}`) is refused
+    // without `DynamicPartitioningConfiguration`, so dropping it fails the create.
+    if (config['DynamicPartitioningConfiguration'] !== undefined) {
+      result.DynamicPartitioningConfiguration = config[
+        'DynamicPartitioningConfiguration'
+      ] as ExtendedS3DestinationConfiguration['DynamicPartitioningConfiguration'];
+    }
+
+    if (config['FileExtension'] !== undefined) {
+      result.FileExtension = config['FileExtension'] as string;
+    }
+
+    if (config['CustomTimeZone'] !== undefined) {
+      result.CustomTimeZone = config['CustomTimeZone'] as string;
+    }
+
     return result;
   }
 
@@ -1177,6 +1846,16 @@ export class FirehoseProvider implements ResourceProvider {
    * to `ExtendedS3DestinationConfiguration` but every field is optional
    * — only the fields present in `config` are forwarded so undefined
    * keys do not clobber AWS-side state.
+   *
+   * Omitting a sub-field REMOVED from the template is CloudFormation
+   * parity, not a gap (#1160): `UpdateDestination` merges, and a live
+   * CloudFormation A/B kept every removed sub-field (`Prefix`,
+   * `ErrorOutputPrefix`, `BufferingHints`, `CompressionFormat`,
+   * `FileExtension`, `CustomTimeZone`, `CloudWatchLoggingOptions`,
+   * `ProcessingConfiguration`, and the nested S3 configuration's fields on
+   * an HttpEndpoint destination) whether or not a sibling change forced the
+   * update. Every destination's reverse-mapper below relies on this; do not
+   * add a reset-on-removal here.
    *
    * `S3BackupConfiguration` is mapped through {@link mapS3ConfigToUpdate}
    * so its own optional fields likewise round-trip cleanly.
@@ -1237,6 +1916,21 @@ export class FirehoseProvider implements ResourceProvider {
       result.DataFormatConversionConfiguration = config[
         'DataFormatConversionConfiguration'
       ] as ExtendedS3DestinationUpdate['DataFormatConversionConfiguration'];
+    }
+    // On a stream with dynamic partitioning enabled, an `UpdateDestination`
+    // that omits this block reads as "disable it" and is refused ("Enabling
+    // or disabling Dynamic Partitioning is not supported"), so it is forwarded
+    // on every update, like the rest of the desired shape.
+    if (config['DynamicPartitioningConfiguration'] !== undefined) {
+      result.DynamicPartitioningConfiguration = config[
+        'DynamicPartitioningConfiguration'
+      ] as ExtendedS3DestinationUpdate['DynamicPartitioningConfiguration'];
+    }
+    if (config['FileExtension'] !== undefined) {
+      result.FileExtension = config['FileExtension'] as string;
+    }
+    if (config['CustomTimeZone'] !== undefined) {
+      result.CustomTimeZone = config['CustomTimeZone'] as string;
     }
     return result;
   }
@@ -1479,9 +2173,9 @@ export class FirehoseProvider implements ResourceProvider {
    * `!== undefined` gated. CFn `S3Configuration` → SDK `S3Update`.
    * `VpcConfiguration` is intentionally NOT included — the SDK Update
    * shape has no field for it (AWS treats Vpc placement as immutable
-   * post-create). VpcConfiguration-only diffs will surface on the next
-   * `cdkd drift` run if the user re-applies a different Vpc on the
-   * console side.
+   * post-create), and the CloudFormation schema lists it as create-only,
+   * so a change there plans a replacement. `S3BackupMode` has no field
+   * either and is not create-only: see {@link warnUnappliedS3BackupMode}.
    */
   private mapAmazonopensearchserviceConfigToUpdate(
     config: Record<string, unknown>
@@ -2008,8 +2702,9 @@ export class FirehoseProvider implements ResourceProvider {
 
   /**
    * Map CFn `S3DestinationConfiguration` to the `S3DestinationUpdate`
-   * shape used by AWS `UpdateDestinationCommand` (#477; consumed by
-   * {@link mapExtendedS3ConfigToUpdate} for the `S3BackupUpdate` field).
+   * shape used by AWS `UpdateDestinationCommand` (#477): the top-level
+   * legacy destination ({@link applyS3DestinationUpdate}, #5439) and every
+   * nested `S3Update` / `S3BackupUpdate` slot.
    * Every field optional — only present keys are forwarded.
    */
   private mapS3ConfigToUpdate(config: Record<string, unknown>): S3DestinationUpdate {
@@ -2062,6 +2757,32 @@ export class FirehoseProvider implements ResourceProvider {
    * Firehose tags use the standard `Tag[]` array shape (`Key`/`Value`).
    */
   /**
+   * go-to-k/cdkd#5380: the encryption key is still in transition while the
+   * stream reads ENABLING / DISABLING, which `liveEncryptionAsCfn` reports as
+   * a settled value. A failed read answers it as still in transition too: the
+   * caller keeps the name, which only costs a re-send on the next deploy.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    if (!names.has(ENCRYPTION_KEY)) return new Set();
+    try {
+      const resp = await this.getClient().send(
+        new DescribeDeliveryStreamCommand({ DeliveryStreamName: physicalId })
+      );
+      const status = resp.DeliveryStreamDescription?.DeliveryStreamEncryptionConfiguration?.Status;
+      return status === 'ENABLING' || status === 'DISABLING'
+        ? new Set([ENCRYPTION_KEY])
+        : new Set();
+    } catch {
+      return new Set([ENCRYPTION_KEY]);
+    }
+  }
+
+  /**
    * Read the AWS-current Firehose delivery stream configuration in CFn-property shape.
    *
    * Surfaces top-level configuration that has a clean 1:1 mapping back to
@@ -2101,9 +2822,10 @@ export class FirehoseProvider implements ResourceProvider {
    * `DeliveryStreamEncryptionConfigurationInput` is also surfaced. AWS
    * returns the read-side shape `DeliveryStreamEncryptionConfiguration`
    * (with extra `Status` / `FailureDescription` fields); we reverse-map
-   * to the CFn input shape (`KeyARN` + `KeyType`) and always emit a
-   * `{}` placeholder so the v3 baseline catches console-side encryption
-   * enables on a previously-default stream.
+   * to the CFn input shape (`KeyARN` + `KeyType`) while the stream is
+   * encrypted or becoming so, and otherwise emit a `{}` placeholder so the
+   * v3 baseline catches console-side encryption enables on a
+   * previously-default stream (`liveEncryptionAsCfn`).
    *
    * Tags are surfaced via a follow-up `ListTagsForDeliveryStream` call
    * with `aws:*` filtered out and always emitted as `[]` placeholder when
@@ -2193,11 +2915,10 @@ export class FirehoseProvider implements ResourceProvider {
     // Surface those when AWS reports them; emit `{}` placeholder always so
     // the v3 baseline catches a console-side enable on a previously-default
     // stream (PR #145 always-emit pattern).
-    const enc = desc.DeliveryStreamEncryptionConfiguration;
-    const encOut: Record<string, unknown> = {};
-    if (enc?.KeyARN !== undefined) encOut['KeyARN'] = enc.KeyARN;
-    if (enc?.KeyType !== undefined) encOut['KeyType'] = enc.KeyType;
-    result['DeliveryStreamEncryptionConfigurationInput'] = encOut;
+    // Only while encryption is in effect or being enabled (issue #5357).
+    result['DeliveryStreamEncryptionConfigurationInput'] = liveEncryptionAsCfn(
+      desc.DeliveryStreamEncryptionConfiguration
+    );
 
     // Tags via ListTagsForDeliveryStream.
     // Always emit `Tags` (even as `[]`) per docs/provider-rules.md#readcurrentstate-for-drift-detection
@@ -2270,26 +2991,120 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a delivery stream to become ACTIVE.
-   * Firehose CreateDeliveryStream returns immediately while the stream is still CREATING.
+   * Wait for a delivery stream to become ACTIVE (go-to-k/cdkd#5509).
+   * CreateDeliveryStream returns while the stream is still CREATING, and a
+   * stream left CREATING cannot be deleted or used by dependents
+   * (`ResourceInUseException`), so a create that returned early would be
+   * recorded as done while the next step fails. CloudFormation waits for
+   * ACTIVE and fails the resource on CREATING_FAILED; so does this: a
+   * `*_FAILED` report throws with AWS's failure description, masked, and the
+   * wait ends with an error when the engine's per-resource deadline runs out,
+   * on Ctrl-C, or at the poll cap. Each throw is non-retryable: the stream
+   * exists, so a retried create would only collide with it. `create()` records
+   * the stream through `markCreatedBeforeFailure`, so it is not orphaned.
+   *
+   * The wait aims to throw its deadline error while time is still left:
+   * `withResourceDeadline` rejects with its own timeout error the moment it
+   * fires and drops a later provider error, and the created-id mark rides
+   * only on the provider's error, so a wait that ran into the deadline
+   * would leave the stream recorded nowhere. It stops sleeping
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the deadline, and each read is
+   * aborted at that same point, so a read held up by SDK retries or a slow
+   * connection ends in the same error. The margin is what the throw has to
+   * reach the wrapper; an event loop stalled for longer still loses the race
+   * (the engine-level gap is go-to-k/cdkd#5511).
    */
-  private async waitForActive(streamName: string, logicalId: string): Promise<void> {
-    const maxAttempts = 30;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const resp = await this.getClient().send(
-        new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName })
-      );
-      const status = resp.DeliveryStreamDescription?.DeliveryStreamStatus;
-      if (status === 'ACTIVE') {
-        this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
-        return;
+  private async waitForActive(
+    streamName: string,
+    logicalId: string,
+    resourceType: string,
+    mask: MaskerFn
+  ): Promise<void> {
+    const watch = startInterruptWatch(`Firehose ${logicalId} create`);
+    try {
+      let last: string | undefined;
+      // The engine's deadline does not cancel this create, so the wait ends
+      // itself before the deadline fires (see above).
+      let deadlineNear = false;
+      for (let attempt = 1; attempt <= ACTIVE_POLL_MAX_ATTEMPTS; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= ACTIVE_DEADLINE_MARGIN_MS) {
+          deadlineNear = true;
+          break;
+        }
+        const resp = await this.describeBeforeDeadline(streamName);
+        if (resp === 'deadline') {
+          deadlineNear = true;
+          break;
+        }
+        const description = resp.DeliveryStreamDescription;
+        last = description?.DeliveryStreamStatus;
+        if (last === 'ACTIVE') {
+          this.logger.debug(`Firehose ${logicalId} is ACTIVE`);
+          return;
+        }
+        if (last !== undefined && last.endsWith('_FAILED')) {
+          const failure = description?.FailureDescription;
+          throw markNonRetryable(
+            new ProvisioningError(
+              `Firehose delivery stream ${logicalId} did not become ACTIVE: AWS reports ${last}` +
+                (failure ? ` (${mask(`${failure.Type ?? ''}: ${failure.Details ?? ''}`)})` : ''),
+              resourceType,
+              logicalId,
+              streamName
+            )
+          );
+        }
+        this.logger.debug(
+          `Firehose ${logicalId} status: ${last} (attempt ${attempt}/${ACTIVE_POLL_MAX_ATTEMPTS})`
+        );
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= ACTIVE_POLL_INTERVAL_MS + ACTIVE_DEADLINE_MARGIN_MS) {
+          deadlineNear = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, ACTIVE_POLL_INTERVAL_MS));
       }
-      this.logger.debug(
-        `Firehose ${logicalId} status: ${status} (attempt ${attempt}/${maxAttempts})`
+      throw markNonRetryable(
+        new ProvisioningError(
+          (deadlineNear
+            ? `The resource timeout would expire while waiting for Firehose delivery stream ${logicalId} to become ACTIVE `
+            : `Timed out waiting for Firehose delivery stream ${logicalId} to become ACTIVE `) +
+            `(last status: ${last ?? 'none reported'})`,
+          resourceType,
+          logicalId,
+          streamName
+        )
       );
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } finally {
+      watch.dispose();
     }
-    this.logger.warn(`Firehose ${logicalId} did not reach ACTIVE after ${maxAttempts} attempts`);
+  }
+
+  /**
+   * One `DescribeDeliveryStream` read for {@link waitForActive}, aborted
+   * {@link ACTIVE_DEADLINE_MARGIN_MS} before the enclosing resource deadline
+   * (`'deadline'` then). Outside any deadline the read is unbounded.
+   */
+  private async describeBeforeDeadline(
+    streamName: string
+  ): Promise<DescribeDeliveryStreamCommandOutput | 'deadline'> {
+    const command = new DescribeDeliveryStreamCommand({ DeliveryStreamName: streamName });
+    const remaining = enclosingDeadlineRemainingMs();
+    if (!Number.isFinite(remaining)) return this.getClient().send(command);
+    const abort = new AbortController();
+    const timer = setTimeout(
+      () => abort.abort(),
+      Math.max(0, remaining - ACTIVE_DEADLINE_MARGIN_MS)
+    );
+    try {
+      return await this.getClient().send(command, { abortSignal: abort.signal });
+    } catch (error) {
+      if (abort.signal.aborted) return 'deadline';
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 
@@ -2402,6 +3217,9 @@ function mapExtendedS3DescriptionToCfn(desc: Record<string, unknown>): Record<st
     pickDefinedDeep(desc['DataFormatConversionConfiguration']) ?? {};
   out['DynamicPartitioningConfiguration'] =
     pickDefinedDeep(desc['DynamicPartitioningConfiguration']) ?? {};
+  // AWS omits both from the description when they were never set.
+  if (desc['FileExtension'] !== undefined) out['FileExtension'] = desc['FileExtension'];
+  if (desc['CustomTimeZone'] !== undefined) out['CustomTimeZone'] = desc['CustomTimeZone'];
   // S3BackupConfiguration: AWS returns S3BackupDescription (deprecated
   // shape); reverse-map to the modern Configuration shape via the same
   // top-level helper. Field names align since the deprecated shape and

@@ -2,6 +2,7 @@ import type { CloudFormationTemplate } from '../types/resource.js';
 import type { PropertyChange, ResourceChange, ResourceState } from '../types/state.js';
 import { safeMsg, terminalSafe } from '../utils/display-safe.js';
 import { CdkdError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   formatSecurityChanges,
   isScrutinizedProperty,
@@ -60,13 +61,17 @@ export interface SecurityDiffTemplates {
 /**
  * A synthetic property change the diff added for a value that did not change
  * in the template: a reference to a replaced or updated resource, or a `NoEcho`
- * parameter that may have moved. The CDK CLI's template diff does not see these
- * (its replacement propagation runs after the IAM changes are taken), so they
- * are left out here too.
+ * parameter that may have moved, or a property a failed update left unsettled
+ * (go-to-k/cdkd#5380). The CDK CLI's template diff does not see these (its
+ * replacement propagation runs after the IAM changes are taken), so they are
+ * left out here too.
  */
 function isSyntheticChange(pc: PropertyChange): boolean {
   return (
-    pc.replacementPropagated === true || pc.inPlacePropagated === true || pc.noEchoPromoted === true
+    pc.replacementPropagated === true ||
+    pc.inPlacePropagated === true ||
+    pc.noEchoPromoted === true ||
+    pc.unsettled === true
   );
 }
 
@@ -242,7 +247,7 @@ export async function diffSecurity(args: {
     return { broadening, rendered: terminalSafe(table + unjudgedNote) };
   } catch (error) {
     throw new CdkdError(
-      safeMsg`Could not compute the security diff of stack ${args.stackName}, so whether its changes broaden permissions is unknown: ${error instanceof Error ? error.message : String(error)}`,
+      safeMsg`Could not compute the security diff of stack ${args.stackName}, so whether its changes broaden permissions is unknown: ${describeAwsFailure(error).detail}`,
       'SECURITY_DIFF_FAILED'
     );
   }

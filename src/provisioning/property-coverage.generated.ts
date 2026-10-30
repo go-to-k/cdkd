@@ -105,7 +105,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>(['Description', 'RestApiId']),
       silentDrop: new Map<string, string>([
-        ['DeploymentCanarySettings', 'not yet implemented by cdkd'],
+        [
+          'DeploymentCanarySettings',
+          'API Gateway requires StageName for a canary deployment ("Non null and non empty stageName must be provided for canary deployment"), and StageName is not handled here, so a valid canary Deployment routes to Cloud Control; declare AWS::ApiGateway::Stage with CanarySetting for an SDK-routed canary',
+        ],
         [
           'StageDescription',
           'CFn-only convenience for inline-creating a Stage; declare AWS::ApiGateway::Stage with the Description property instead',
@@ -544,21 +547,20 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'AgentRuntimeArtifact',
         'AgentRuntimeName',
         'AuthorizerConfiguration',
+        'CapacityProviderConfiguration',
         'ClientToken',
         'Description',
         'EnvironmentVariables',
+        'FilesystemConfigurations',
         'LifecycleConfiguration',
         'NetworkConfiguration',
+        'PlatformVersion',
         'ProtocolConfiguration',
+        'RequestHeaderConfiguration',
         'RoleArn',
+        'Tags',
       ]),
-      silentDrop: new Map<string, string>([
-        ['CapacityProviderConfiguration', 'not yet implemented by cdkd'],
-        ['FilesystemConfigurations', 'not yet implemented by cdkd'],
-        ['PlatformVersion', 'not yet implemented by cdkd'],
-        ['RequestHeaderConfiguration', 'not yet implemented by cdkd'],
-        ['Tags', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'AgentRuntimeArn',
@@ -707,6 +709,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudTrail::Trail',
     {
       handled: new Set<string>([
+        'AdvancedEventSelectors',
+        'AggregationConfigurations',
         'CloudWatchLogsLogGroupArn',
         'CloudWatchLogsRoleArn',
         'EnableLogFileValidation',
@@ -723,10 +727,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'TrailName',
       ]),
-      silentDrop: new Map<string, string>([
-        ['AdvancedEventSelectors', 'not yet implemented by cdkd'],
-        ['AggregationConfigurations', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnsTopicArn']),
       ccRouteUnavailable: false,
@@ -736,6 +737,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudWatch::Alarm',
     {
       handled: new Set<string>([
+        'ActionConfiguration',
         'ActionsEnabled',
         'AlarmActions',
         'AlarmDescription',
@@ -744,7 +746,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DatapointsToAlarm',
         'Dimensions',
         'EvaluateLowSampleCountPercentile',
+        'EvaluationCriteria',
+        'EvaluationInterval',
         'EvaluationPeriods',
+        'EvaluationWindow',
         'ExtendedStatistic',
         'InsufficientDataActions',
         'MetricName',
@@ -758,20 +763,9 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ThresholdMetricId',
         'TreatMissingData',
         'Unit',
+        'WarmUpConfiguration',
       ]),
-      silentDrop: new Map<string, string>([
-        ['ActionConfiguration', 'not yet implemented by cdkd'],
-        [
-          'EvaluationCriteria',
-          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
-        ],
-        [
-          'EvaluationInterval',
-          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
-        ],
-        ['EvaluationWindow', 'not yet implemented by cdkd'],
-        ['WarmUpConfiguration', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -813,6 +807,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'LogsConfig',
         'Name',
         'QueuedTimeoutInMinutes',
+        'ResourceAccessRole',
         'SecondaryArtifacts',
         'SecondarySources',
         'SecondarySourceVersions',
@@ -821,13 +816,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceVersion',
         'Tags',
         'TimeoutInMinutes',
+        'Visibility',
         'VpcConfig',
       ]),
-      silentDrop: new Map<string, string>([
-        ['ResourceAccessRole', 'not yet implemented by cdkd'],
-        ['Triggers', 'not yet implemented by cdkd'],
-        ['Visibility', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>([['Triggers', 'not yet implemented by cdkd']]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: true,
@@ -1191,6 +1183,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'AllocationId',
+        'AvailabilityMode',
+        'AvailabilityZoneAddresses',
         'ConnectivityType',
         'PrivateIpAddress',
         'SecondaryAllocationIds',
@@ -1198,20 +1192,15 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SecondaryPrivateIpAddresses',
         'SubnetId',
         'Tags',
+        'VpcId',
       ]),
       silentDrop: new Map<string, string>([
-        ['AvailabilityMode', 'not yet implemented by cdkd'],
-        ['AvailabilityZoneAddresses', 'not yet implemented by cdkd'],
         [
           'MaxDrainDurationSeconds',
-          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and cdkd rejects NatGateway updates outright — routed via Cloud Control instead',
-        ],
-        [
-          'VpcId',
-          'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
+          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and the cdkd NatGateway update releases only the AvailabilityZoneAddresses of a regional gateway, never the secondary addresses of a zonal one — routed via Cloud Control instead',
         ],
       ]),
-      createOnlyDrops: new Set<string>(['AvailabilityMode', 'VpcId']),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'AutoProvisionZones',
         'AutoScalingIps',
@@ -1430,8 +1419,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::EC2::VPCGatewayAttachment',
     {
-      handled: new Set<string>(['InternetGatewayId', 'VpcId']),
-      silentDrop: new Map<string, string>([['VpnGatewayId', 'not yet implemented by cdkd']]),
+      handled: new Set<string>(['InternetGatewayId', 'VpcId', 'VpnGatewayId']),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['AttachmentType']),
       ccRouteUnavailable: false,
@@ -1592,13 +1581,16 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::EFS::MountTarget',
     {
-      handled: new Set<string>(['FileSystemId', 'SecurityGroups', 'SubnetId']),
-      silentDrop: new Map<string, string>([
-        ['IpAddress', 'not yet implemented by cdkd'],
-        ['IpAddressType', 'not yet implemented by cdkd'],
-        ['Ipv6Address', 'not yet implemented by cdkd'],
+      handled: new Set<string>([
+        'FileSystemId',
+        'IpAddress',
+        'IpAddressType',
+        'Ipv6Address',
+        'SecurityGroups',
+        'SubnetId',
       ]),
-      createOnlyDrops: new Set<string>(['IpAddress', 'IpAddressType', 'Ipv6Address']),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
     },
@@ -1899,8 +1891,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::Glue::Connection',
     {
-      handled: new Set<string>(['CatalogId', 'ConnectionInput']),
-      silentDrop: new Map<string, string>([['Tags', 'not yet implemented by cdkd']]),
+      handled: new Set<string>(['CatalogId', 'ConnectionInput', 'Tags']),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Name']),
       ccRouteUnavailable: false,
@@ -2164,6 +2156,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DesiredShardLevelMetrics',
         'MaxRecordSizeInKiB',
         'Name',
+        'RecordDistributionStrategy',
         'RetentionPeriodHours',
         'ShardCount',
         'StreamEncryption',
@@ -2171,8 +2164,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
       ]),
       silentDrop: new Map<string, string>([
-        ['RecordDistributionStrategy', 'not yet implemented by cdkd'],
-        ['WarmThroughputMiBps', 'not yet implemented by cdkd'],
+        [
+          'WarmThroughputMiBps',
+          'AWS accepts it only on an account enrolled in the Kinesis minimum throughput billing commitment, so the SDK path is not wired (go-to-k/cdkd#1695); Cloud Control forwards it.',
+        ],
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'WarmThroughputObject']),
@@ -2523,7 +2518,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       silentDrop: new Map<string, string>([
         [
           'ResourcePolicyDocument',
-          'covered by the separate account-wide AWS::Logs::ResourcePolicy resource type; logs:PutResourcePolicy is account-scoped, not per-log-group, so it has no CreateLogGroup / PutRetentionPolicy counterpart — routed via Cloud Control instead',
+          'not driven by this provider by decision (issue #1412): no CreateLogGroup / PutRetentionPolicy member carries it, and both policy lifecycles — the account-scoped AWS::Logs::ResourcePolicy type and the log-group-scoped logs:PutResourcePolicy (resourceArn + policyScope RESOURCE) — are ones this provider does not take on — routed via Cloud Control, whose handler applies it',
         ],
       ]),
       createOnlyDrops: new Set<string>(),
@@ -2953,6 +2948,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Route53::HostedZone',
     {
       handled: new Set<string>([
+        'DelegationSetId',
         'HostedZoneConfig',
         'HostedZoneFeatures',
         'HostedZoneTags',
@@ -2960,8 +2956,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'QueryLoggingConfig',
         'VPCs',
       ]),
-      silentDrop: new Map<string, string>([['DelegationSetId', 'not yet implemented by cdkd']]),
-      createOnlyDrops: new Set<string>(['DelegationSetId']),
+      silentDrop: new Map<string, string>(),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'NameServers']),
       ccRouteUnavailable: false,
     },
@@ -3053,13 +3049,17 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
   [
     'AWS::S3Express::DirectoryBucket',
     {
-      handled: new Set<string>(['BucketName', 'DataRedundancy', 'LocationName', 'Tags']),
-      silentDrop: new Map<string, string>([
-        ['BucketEncryption', 'not yet implemented by cdkd'],
-        ['InventoryConfigurations', 'not yet implemented by cdkd'],
-        ['LifecycleConfiguration', 'not yet implemented by cdkd'],
-        ['MetricsConfigurations', 'not yet implemented by cdkd'],
+      handled: new Set<string>([
+        'BucketEncryption',
+        'BucketName',
+        'DataRedundancy',
+        'InventoryConfigurations',
+        'LifecycleConfiguration',
+        'LocationName',
+        'MetricsConfigurations',
+        'Tags',
       ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'AvailabilityZoneName']),
       ccRouteUnavailable: false,
@@ -3364,25 +3364,24 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::WAFv2::WebACL',
     {
       handled: new Set<string>([
+        'ApplicationConfig',
         'AssociationConfig',
         'CaptchaConfig',
         'ChallengeConfig',
         'CustomResponseBodies',
+        'DataProtectionConfig',
         'DefaultAction',
         'Description',
+        'MonetizationConfig',
         'Name',
+        'OnSourceDDoSProtectionConfig',
         'Rules',
         'Scope',
         'Tags',
         'TokenDomains',
         'VisibilityConfig',
       ]),
-      silentDrop: new Map<string, string>([
-        ['ApplicationConfig', 'not yet implemented by cdkd'],
-        ['DataProtectionConfig', 'not yet implemented by cdkd'],
-        ['MonetizationConfig', 'not yet implemented by cdkd'],
-        ['OnSourceDDoSProtectionConfig', 'not yet implemented by cdkd'],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Capacity', 'Id', 'LabelNamespace']),
       ccRouteUnavailable: false,

@@ -68,7 +68,7 @@ import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 import { recordLogOnlyValue } from '../../../src/deployment/secret-redaction.js';
 import {
   generateResourceNameWithFallback,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 
 const REGION = 'us-east-1';
@@ -103,8 +103,19 @@ const record = (
 ): ResourceState =>
   ({ physicalId, resourceType, properties, attributes: {}, dependencies: [], ...extra }) as ResourceState;
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// Every state-builder below (and each inline literal) sets this, so
+// `makeCtx`'s default `getState` has one place to echo it back from.
+let lastMadeState: StackState | undefined;
+
 /** A record a pre-v11 binary wrote: the `NoEcho` value in plaintext, no marker. */
 function preV11State(): StackState {
+  const state = preV11StateRaw();
+  lastMadeState = state;
+  return state;
+}
+
+function preV11StateRaw(): StackState {
   return {
     version: 10,
     stackName: 'NoEchoStack',
@@ -144,6 +155,9 @@ function makeCtx(providerDelete: ReturnType<typeof vi.fn>, withTemplate: boolean
     stateBackend: {
       saveState: vi.fn().mockResolvedValue('"etag"'),
       deleteState: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn(async () =>
+        lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+      ),
       listStacks: vi.fn().mockResolvedValue([]),
     } as unknown as S3StateBackend,
     lockManager: {
@@ -258,7 +272,7 @@ describe('cdkd destroy masks a name taken from a NoEcho value since CHANGED (go-
   const ROLE_PADDING = '-padding-past-the-iam-limit-0123456789abcdef0123456789';
   const OLD_ROLE_LEAF = `OldRoleTok1${ROLE_PADDING}`;
   // What the deploy derived, in the stack's naming scope.
-  const OLD_ROLE_ID = withStackName('NoEchoStack', () =>
+  const OLD_ROLE_ID = withStackScope({ stackName: 'NoEchoStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
     generateResourceNameWithFallback(OLD_ROLE_LEAF, 'Role', { maxLength: 64 })
   );
   const CHANGED_TEMPLATE = {
@@ -305,6 +319,7 @@ describe('cdkd destroy masks a name taken from a NoEcho value since CHANGED (go-
       outputs: {},
       lastModified: 1,
     } as StackState;
+    lastMadeState = state;
     const ctx = {
       ...makeCtx(providerDelete, false),
       ...(withTemplate && {
@@ -392,12 +407,15 @@ describe('cdkd destroy judges a journaled orphan with the NoEcho values too (go-
       return Promise.resolve(undefined);
     });
     const base = makeCtx(providerDelete, withTemplate);
+    const state = { ...preV11State(), resources: {} } as StackState;
     const ctx = {
       ...base,
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn().mockResolvedValue(undefined),
-        getState: vi.fn().mockResolvedValue(null),
+        // Under-lock re-read (#5220): the same (empty) record, so it must
+        // not pre-empt the journaled-orphan behavior this case is about.
+        getState: vi.fn().mockResolvedValue({ state, etag: 'e' }),
         loadRollbackJournal: vi.fn().mockResolvedValue(journal),
         dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(0),
         listStacks: vi.fn().mockResolvedValue([]),
@@ -409,7 +427,6 @@ describe('cdkd destroy judges a journaled orphan with the NoEcho values too (go-
         }),
       } as unknown as ProviderRegistry,
     };
-    const state = { ...preV11State(), resources: {} } as StackState;
     const result = await runDestroyForStack('NoEchoStack', state, ctx);
     expect(result.errorCount).toBe(0);
     expect(providerDelete).toHaveBeenCalledTimes(1);
@@ -469,6 +486,7 @@ describe("cdkd destroy masks the prompt's list of kept orphans (go-to-k/cdkd#386
       resources: {},
       orphans,
     } as unknown as StackState;
+    lastMadeState = state;
     await runDestroyForStack('NoEchoStack', state, makeCtx(vi.fn(), withTemplate));
     infoSink.write = () => undefined;
     return rows;

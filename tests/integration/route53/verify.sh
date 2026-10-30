@@ -23,7 +23,14 @@
 # (no untag diff), and `applyQueryLoggingConfig` returned early on an absent
 # block, so a live query-logging config kept writing to CloudWatch — and kept
 # billing — with `cdkd diff` reporting no changes. Real CloudFormation removes
-# both (live A/B, 2026-08-10).
+# both (live A/B, 2026-08-10). It also drops HostedZoneFeatures and asserts
+# the feature reads DISABLED when the deploy returns (#5465). The feature then
+# STAYS disabled for the rest of the run, although every later deploy
+# (2.5d, 2.7) uses a template declaring it again: Phase 2.5's `cdkd import`
+# records the TEMPLATE's properties (`import.ts`), so state already says
+# `true` and no later deploy diffs a toggle. The enable-plus-records-in-one-
+# deploy case is Phase 1's: the zone's create waits for ENABLED (~4 min)
+# before the record sets that depend on it are created in the same deploy.
 #
 # Phase 2.7 (issue #3741) renames three records in two redeploys --
 # CDKD_TEST_RENAME=name (a Name change), then name,swap (a SetIdentifier
@@ -90,6 +97,9 @@ EXPECTED_GEO_REGION="us-east-1"
 SET_IDENTIFIER="geo-use1"
 CIDR_SET_IDENTIFIER="cidr-office"
 EXPECTED_CIDR_LOCATION="office"
+# Issue #2762: CallerReference prefix of the reusable delegation set this
+# fixture creates for the zone's DelegationSetId (cleanup() sweeps by it).
+DS_CALLER_PREFIX="cdkd-integ-route53-${ACCOUNT_ID}-"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -128,6 +138,23 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  # Issue #2762: the reusable delegation set(s) this fixture created, this
+  # run's and any an interrupted earlier run left. Only once the zone is gone:
+  # Route 53 refuses to delete a set a zone still uses.
+  if [ "${destroy_rc}" -eq 0 ]; then
+    # A leftover only once it is an hour old: a younger one can be a parallel
+    # run's set between its create and its first deploy.
+    local ds
+    for ds in $(aws route53 list-reusable-delegation-sets --output json 2>/dev/null \
+      | jq -r --arg p "${DS_CALLER_PREFIX}" --arg mine "${CDKD_TEST_DELEGATION_SET_ID:-}" \
+        --argjson cutoff "$(( $(date +%s) - 3600 ))" \
+        '.DelegationSets[]? | select(.CallerReference | startswith($p))
+          | select((.Id | sub("^/delegationset/"; "")) == $mine
+            or ((.CallerReference | ltrimstr($p) | tonumber? // 0) < $cutoff)) | .Id'); do
+      aws route53 delete-reusable-delegation-set --id "${ds##*/}" >/dev/null 2>&1 \
+        || echo "WARN: could not delete reusable delegation set ${ds}" >&2
+    done
+  fi
   set -eu
 }
 
@@ -152,6 +179,19 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# Issue #2762: the zone's DelegationSetId (see the stack). Exported, so every
+# deploy below synthesizes the same value.
+DS_ID_RAW=$(aws route53 create-reusable-delegation-set \
+  --caller-reference "${DS_CALLER_PREFIX}$(date +%s)" \
+  --query 'DelegationSet.Id' --output text)
+CDKD_TEST_DELEGATION_SET_ID="${DS_ID_RAW##*/}"
+if [ -z "${CDKD_TEST_DELEGATION_SET_ID}" ] || [ "${CDKD_TEST_DELEGATION_SET_ID}" = "None" ]; then
+  echo "FAIL: create-reusable-delegation-set returned no id ('${DS_ID_RAW}')" >&2
+  exit 1
+fi
+export CDKD_TEST_DELEGATION_SET_ID
+echo "    Reusable delegation set: ${CDKD_TEST_DELEGATION_SET_ID}"
 
 # --- Phase 1: deploy --------------------------------------------------
 echo "==> Phase 1: deploy with the local binary"
@@ -424,8 +464,22 @@ if [ "${PIPE_DRIFT_BUCKET}" != "clean" ]; then
   rm -f "${PIPE_DRIFT_JSON}"
   exit 1
 fi
+# Issue #2762: the same run reads the zone back, DelegationSetId included.
+DRIFT_ZONE_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::Route53::HostedZone") | .key] | if length == 1 then .[0] else empty end')
+ZONE_DRIFT_BUCKET=$(jq -r --arg id "${DRIFT_ZONE_ID}" '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' \
+  "${PIPE_DRIFT_JSON}" 2>/dev/null || true)
+if [ -z "${DRIFT_ZONE_ID}" ] || [ "${ZONE_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report hosted zone '${DRIFT_ZONE_ID}' clean (bucket '${ZONE_DRIFT_BUCKET}', rc=${PIPE_DRIFT_RC}) -- the DelegationSetId (#2762) or HostedZoneFeatures (#5465) readback disagrees with its baseline:" >&2
+  cat "${PIPE_DRIFT_JSON}" >&2
+  rm -f "${PIPE_DRIFT_JSON}"
+  exit 1
+fi
 rm -f "${PIPE_DRIFT_JSON}"
 echo "    OK: cdkd drift read PipeRecord back and reported it clean"
+echo "    OK: cdkd drift reported hosted zone ${DRIFT_ZONE_ID} clean (#2762)"
 
 # --- Assertion: GeoProximityLocation reached AWS ----------------------
 # list-resource-record-sets returns every record; find the geoproximity
@@ -480,30 +534,52 @@ if [ "${ACTUAL_CIDR_LOCATION}" != "${EXPECTED_CIDR_LOCATION}" ]; then
 fi
 echo "    OK: CidrRoutingConfig reached AWS (CollectionId='${ACTUAL_CIDR_COLLECTION}', LocationName='${ACTUAL_CIDR_LOCATION}') — silent-drop CLOSED by #609"
 
-# --- Assertion: HostedZoneFeatures.AcceleratedRecoveryStatus reached AWS
-# The fixture's `addPropertyOverride('HostedZoneFeatures.AcceleratedRecoveryStatus', 'ENABLED')`
-# is wired through the post-create UpdateHostedZoneFeatures control-plane
-# call. GetHostedZone surfaces it under `HostedZone.Features.AcceleratedRecoveryStatus`.
-# AcceleratedRecovery enabling is an ASYNC AWS-side state transition — the
-# field reports `ENABLING` immediately after UpdateHostedZoneFeatures
-# returns success (or `ENABLING_HOSTED_ZONE_LOCKED` while the zone is
-# locked for the transition) and only eventually settles to `ENABLED`.
-# Accepting any of the three proves the wire reached AWS and the atomicity guard (DeleteHostedZone on
-# UHF failure) didn't trip; the final-state poll is out of scope (would
-# add ~minutes to integ time for no extra correctness signal — cdkd's
-# job is the wire-up, not waiting for AWS-side eventual consistency).
+# --- Assertion: HostedZoneFeatures.EnableAcceleratedRecovery reached AWS
+# The fixture's `hostedZoneFeatures: { enableAcceleratedRecovery: true }`
+# (template member `EnableAcceleratedRecovery`, issue #5465) is wired through
+# the post-create UpdateHostedZoneFeatures control-plane call. GetHostedZone
+# surfaces it under `HostedZone.Features.AcceleratedRecoveryStatus`. Pre-#5465
+# the provider read the undeclared `AcceleratedRecoveryStatus` key instead, so
+# the CloudFormation member never reached AWS and this read came back `None`.
+# Enabling is an ASYNC AWS-side transition (ENABLING_HOSTED_ZONE_LOCKED ->
+# ENABLING -> ENABLED, ~4 min measured). CloudFormation's create returns only
+# once it reads ENABLED, and so does cdkd's since #5465, so the deploy above
+# must leave it settled: a transitional status here means the create returned
+# early, leaving the zone locked against the record sets created after it.
 ACCEL_RECOVERY=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
   --query 'HostedZone.Features.AcceleratedRecoveryStatus' --output text 2>/dev/null)
 
 case "${ACCEL_RECOVERY}" in
-  ENABLED|ENABLING|ENABLING_HOSTED_ZONE_LOCKED) ;;
+  ENABLED) ;;
+  ENABLING|ENABLING_HOSTED_ZONE_LOCKED)
+    echo "FAIL: HostedZone.Features.AcceleratedRecoveryStatus is '${ACCEL_RECOVERY}' after the deploy returned -- the create did not wait for ENABLED (#5465)" >&2
+    exit 1
+    ;;
   *)
-    echo "FAIL: HostedZone.Features.AcceleratedRecoveryStatus is '${ACCEL_RECOVERY}', expected 'ENABLED', 'ENABLING' or 'ENABLING_HOSTED_ZONE_LOCKED' (silent-drop NOT closed)" >&2
+    echo "FAIL: HostedZone.Features.AcceleratedRecoveryStatus is '${ACCEL_RECOVERY}', expected 'ENABLED' (declared EnableAcceleratedRecovery never sent, #5465)" >&2
     aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" | jq '.HostedZone'
     exit 1
     ;;
 esac
-echo "    OK: HostedZone.Features.AcceleratedRecoveryStatus == '${ACCEL_RECOVERY}' on AWS (silent-drop CLOSED by #609)"
+echo "    OK: HostedZone.Features.AcceleratedRecoveryStatus == 'ENABLED' on AWS when the deploy returned (#609 / #5465)"
+
+# --- Assertion: DelegationSetId on the SDK route (issue #2762) --------
+# Before the fix the SDK provider did not handle `DelegationSetId`, so
+# declaring it routed the zone through Cloud Control instead. GetHostedZone
+# reports `DelegationSet.Id` only for a zone on a reusable delegation set.
+ZONE_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::Route53::HostedZone")
+  | .provisionedBy // "<absent>"] | join(" ")')
+if [ "${ZONE_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::Route53::HostedZone routing layer is '${ZONE_PROVISIONED_BY}', expected 'sdk' (DelegationSetId still routes it to Cloud Control, #2762)" >&2
+  exit 1
+fi
+LIVE_DS_ID=$(aws route53 get-hosted-zone --id "${ZONE_ID}" \
+  --query 'DelegationSet.Id' --output text 2>/dev/null)
+if [ "${LIVE_DS_ID}" != "/delegationset/${CDKD_TEST_DELEGATION_SET_ID}" ]; then
+  echo "FAIL: hosted zone DelegationSet.Id is '${LIVE_DS_ID}', expected '/delegationset/${CDKD_TEST_DELEGATION_SET_ID}' (#2762)" >&2
+  exit 1
+fi
+echo "    OK: hosted zone is on reusable delegation set ${CDKD_TEST_DELEGATION_SET_ID} (#2762)"
 
 # --- Assertion: the baseline tags + query logging config are live -----
 # Both are the BASELINE half of the #1160 route53 removal checks below. Asserting
@@ -539,7 +615,7 @@ echo "    OK: baseline query logging config is live"
 # absent block so the live config kept writing to CloudWatch — and kept
 # billing — with `cdkd diff` reporting no changes. Real CloudFormation removes
 # both (live A/B, 2026-08-10).
-echo "==> Phase 2: REMOVAL redeploy (drop the Dropped tag + QueryLoggingConfig)"
+echo "==> Phase 2: REMOVAL redeploy (drop the Dropped tag + QueryLoggingConfig + HostedZoneFeatures)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -576,6 +652,19 @@ if [ "${REMOVAL_QLC}" != "0" ]; then
   exit 1
 fi
 echo "    OK: query logging config deleted (#1160 QueryLoggingConfig removal reset)"
+
+# Issue #5465: the removal phase also drops HostedZoneFeatures, which
+# CloudFormation answers by disabling the feature and returning once it reads
+# DISABLED (live A/B, 2026-10-28: UPDATE_COMPLETE after ~3.5 min, status
+# DISABLED at completion). cdkd's update must do the same: a transitional
+# status here means the update returned early; ENABLED means no disable was sent.
+REMOVAL_ACCEL=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
+  --query 'HostedZone.Features.AcceleratedRecoveryStatus' --output text 2>/dev/null)
+if [ "${REMOVAL_ACCEL}" != "DISABLED" ]; then
+  echo "FAIL: AcceleratedRecoveryStatus is '${REMOVAL_ACCEL}' after the removal redeploy, expected 'DISABLED' (removed HostedZoneFeatures not disabled, or not waited for, #5465)" >&2
+  exit 1
+fi
+echo "    OK: AcceleratedRecoveryStatus == 'DISABLED' when the removal redeploy returned (#5465)"
 
 # --- Phase 2.5: the IMPORT path records NameServers too (issue #1875) ------
 # Everything above adopts the deploy-CREATED record. `importHostedZone` is a
@@ -966,11 +1055,12 @@ expect_records() { # usage: expect_records <json> <name> <type> <setId> <expecte
   fi
 }
 
-# While the zone's AcceleratedRecovery feature (enabled in Phase 1) is still
-# transitioning, Route 53 refuses EVERY record mutation ("is marked disabled for
-# mutation"), and the transition can outlast the deploy's retry budget -- a
-# pre-fix run's rollback hit exactly that. Wait for it to settle so the renames
-# below fail only for their own reasons.
+# While the zone's AcceleratedRecovery feature is transitioning, Route 53
+# refuses EVERY record mutation ("is marked disabled for mutation"), and the
+# transition can outlast the deploy's retry budget -- a pre-fix run's rollback
+# hit exactly that. Since #5465 a deploy that toggles the feature waits for it
+# to settle; this guard stays so the renames below fail only for their own
+# reasons, whatever the phases before them left.
 ACCEL_SETTLED=""
 for _ in $(seq 1 90); do
   ACCEL_NOW=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region "${REGION}" \
@@ -1159,5 +1249,11 @@ if [ "${LEFTOVER_LG}" != "0" ]; then
 fi
 echo "    OK: query-logging log group is gone"
 
+# Issue #2762: the delegation set is verify.sh's, not the stack's, so destroy
+# leaves it; delete it here so a leak is a FAIL rather than cleanup()'s WARN.
+aws route53 delete-reusable-delegation-set --id "${CDKD_TEST_DELEGATION_SET_ID}" >/dev/null
+assert_gone "reusable delegation set ${CDKD_TEST_DELEGATION_SET_ID} still exists" aws route53 get-reusable-delegation-set --id "${CDKD_TEST_DELEGATION_SET_ID}"
+echo "    OK: reusable delegation set is gone"
+
 echo ""
-echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + clean destroy)"
+echo "==> route53 test passed (HostedZoneFeatures + GeoProximityLocation + CidrRoutingConfig backfills closed + #1160 HostedZoneTags / QueryLoggingConfig removal resets + #3741 record renames + #3890 '|' in a record name + #2762 DelegationSetId + clean destroy)"

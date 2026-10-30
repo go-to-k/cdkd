@@ -14,7 +14,7 @@ import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, type SynthesisOptions } from '../../synthesis/synthesizer.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { resolveApp } from '../config-loader.js';
-import { matchStacks, renderNoStackMatch } from '../stack-matcher.js';
+import { matchStacks, renderNoStackMatch, stacksForDependency } from '../stack-matcher.js';
 import { toYaml } from '../../utils/yaml.js';
 import { displaySafe, stringifyJsonPayload } from '../../utils/display-safe.js';
 
@@ -48,21 +48,21 @@ interface DependencyRecord {
  * (which the synthesizer would have rejected anyway).
  */
 function sortByDependency(stacks: StackInfo[]): StackInfo[] {
-  const byName = new Map(stacks.map((s) => [s.stackName, s]));
-  const visited = new Set<string>();
+  // By stack OBJECT: two Stages deployed to different regions share a physical
+  // name, and both are listed, as `cdk ls` lists them (#5176).
+  const visited = new Set<StackInfo>();
   const result: StackInfo[] = [];
 
-  const visit = (stack: StackInfo, ancestors: Set<string>): void => {
-    if (visited.has(stack.stackName)) return;
-    if (ancestors.has(stack.stackName)) return; // cycle guard
-    ancestors.add(stack.stackName);
+  const visit = (stack: StackInfo, ancestors: Set<StackInfo>): void => {
+    if (visited.has(stack)) return;
+    if (ancestors.has(stack)) return; // cycle guard
+    ancestors.add(stack);
     for (const depName of stack.dependencyNames) {
-      const dep = byName.get(depName);
-      if (dep) visit(dep, ancestors);
+      for (const dep of stacksForDependency(depName, stack, stacks)) visit(dep, ancestors);
     }
-    ancestors.delete(stack.stackName);
-    if (!visited.has(stack.stackName)) {
-      visited.add(stack.stackName);
+    ancestors.delete(stack);
+    if (!visited.has(stack)) {
+      visited.add(stack);
       result.push(stack);
     }
   };
@@ -230,7 +230,8 @@ async function listCommand(
   // Filter by patterns if provided. Patterns match against displayName (when
   // they contain '/') or stackName (otherwise) — same routing rules as
   // deploy / diff / destroy (see src/cli/stack-matcher.ts).
-  const selected = patterns.length > 0 ? matchStacks(allStacks, patterns) : allStacks;
+  const selected =
+    patterns.length > 0 ? matchStacks(allStacks, patterns, { dedupe: 'identity' }) : allStacks;
 
   if (selected.length === 0) {
     throw new Error(renderNoStackMatch(patterns, allStacks));

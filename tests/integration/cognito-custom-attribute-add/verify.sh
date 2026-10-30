@@ -11,8 +11,20 @@
 # Phases:
 #   1. Deploy a pool with custom attributes tenantId + level. Assert AWS reports
 #      exactly those two custom attributes.
-#   2. Re-deploy with CDKD_TEST_UPDATE=true (adds custom:region). Assert AWS now
-#      reports all three (the added attribute reached AWS, not just cdkd state).
+#   2. Re-deploy with CDKD_TEST_UPDATE=true (adds custom:region and renames the
+#      pool). Assert AWS now reports all three custom attributes (the added
+#      attribute reached AWS, not just cdkd state), and that the SAME pool id
+#      now carries the new name (issue #5358: update() never sent PoolName).
+#      The same phase also removes the pool's tag, its OPTIONAL software-token
+#      MFA and its ADMIN_ONLY account recovery (issue #1160). Assert, as a
+#      CloudFormation A/B measured: the tag is untagged, MFA is OFF, and the
+#      account recovery setting is kept with a warning naming it.
+#   2b. Re-deploy with CDKD_TEST_USERNAME_CHANGE=true too (adds
+#      UsernameConfiguration, which UpdateUserPool has no member for). Assert
+#      the deploy is REFUSED naming UsernameConfiguration, as CloudFormation
+#      refuses it (issue #5358: the change used to deploy "successfully" and
+#      be dropped; UpdateUserPool cannot carry it, so the live value is not
+#      re-read here — the refusal is the whole assertion).
 #   3. Destroy + assert the pool is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -59,15 +71,18 @@ STACK="CdkdCognitoCustomAttributeAddExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 POOL_NAME="cdkd-cognito-attr-add-test"
+RENAMED_POOL_NAME="cdkd-cognito-attr-add-test-renamed"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
+# Either name: Phase 2 renames the pool, and cleanup / the destroy check must
+# find it under whichever name it holds.
 pool_id() {
   aws cognito-idp list-user-pools --max-results 60 --region "${REGION}" \
-    --query "UserPools[?Name=='${POOL_NAME}'].Id | [0]" --output text 2>/dev/null
+    --query "UserPools[?Name=='${POOL_NAME}' || Name=='${RENAMED_POOL_NAME}'].Id | [0]" --output text 2>/dev/null
 }
 
 cleanup() {
@@ -85,6 +100,7 @@ cleanup() {
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
+  [ -n "${P2_LOG:-}" ] && rm -f "${P2_LOG}"
   set -eu
 }
 
@@ -140,10 +156,88 @@ if [ "${COUNT_P1}" != "2" ]; then
 fi
 echo "    pool has tenantId + level"
 
+# Read once, and checked: an empty --resource-arn would hang the AWS CLI.
+POOL_ARN="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'UserPool.Arn' --output text)"
+case "${POOL_ARN}" in
+  arn:*) ;;
+  *) echo "FAIL: could not read the ARN of pool ${PID}, got '${POOL_ARN}'" >&2; exit 1 ;;
+esac
+removed_tag_value() {
+  aws cognito-idp list-tags-for-resource --resource-arn "${POOL_ARN}" --region "${REGION}" \
+    --query "Tags.\"cdkd-1160-removed\"" --output text
+}
+mfa_state() {
+  aws cognito-idp get-user-pool-mfa-config --user-pool-id "$1" --region "${REGION}" \
+    --query '[MfaConfiguration, SoftwareTokenMfaConfiguration.Enabled]' --output text
+}
+recovery_names() {
+  aws cognito-idp describe-user-pool --user-pool-id "$1" --region "${REGION}" \
+    --query 'UserPool.AccountRecoverySetting.RecoveryMechanisms[].Name' --output text
+}
+
+# Issue #1160 baseline: the three members Phase 2 removes are really there.
+TAG_P1="$(removed_tag_value "${PID}")"
+MFA_P1="$(mfa_state "${PID}")"
+REC_P1="$(recovery_names "${PID}")"
+echo "    tag / MFA / recovery (Phase 1): '${TAG_P1}' / '${MFA_P1}' / '${REC_P1}'"
+if [ "${TAG_P1}" != "phase1" ] || [ "$(echo "${MFA_P1}" | awk '{print $1}')" != "OPTIONAL" ] \
+  || [ "${REC_P1}" != "admin_only" ]; then
+  echo "FAIL: Phase 1 baseline for the #1160 removal arm is not in place" >&2
+  exit 1
+fi
+
 # --- Phase 2: add custom:region (must actually reach AWS) -------------
 echo "==> Phase 2: re-deploy adding custom:region (AddCustomAttributes)"
+P2_LOG="$(mktemp -t cdkd-cognito-attr-add-p2.XXXXXX)"
+set +e
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P2_LOG}" 2>&1
+P2_RC=$?
+set -e
+cat "${P2_LOG}"
+if [ "${P2_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 2 deploy failed (rc=${P2_RC})" >&2
+  exit 1
+fi
+
+# Issue #1160: the removals. Before the fix all three stayed silently.
+TAG_P2="$(removed_tag_value "${PID}")"
+if [ "${TAG_P2}" != "None" ]; then
+  echo "FAIL: tag cdkd-1160-removed still on the pool after its removal (issue #1160), got '${TAG_P2}'" >&2
+  exit 1
+fi
+echo "    removed tag untagged"
+MFA_P2="$(mfa_state "${PID}")"
+if [ "$(echo "${MFA_P2}" | awk '{print $1}')" != "OFF" ] || [ "$(echo "${MFA_P2}" | awk '{print $2}')" = "True" ]; then
+  echo "FAIL: MFA not turned off after MfaConfiguration + EnabledMfas were removed (issue #1160), got '${MFA_P2}'" >&2
+  exit 1
+fi
+echo "    MFA turned off (${MFA_P2})"
+if ! grep -qF "cdkd turned MFA OFF" "${P2_LOG}"; then
+  echo "FAIL: no warning announcing that the removal turned MFA off (issue #1160)" >&2
+  exit 1
+fi
+REC_P2="$(recovery_names "${PID}")"
+if [ "${REC_P2}" != "admin_only" ]; then
+  echo "FAIL: account recovery changed after its removal (CloudFormation keeps it, issue #1160), got '${REC_P2}'" >&2
+  exit 1
+fi
+if ! grep -qF "no longer declares AccountRecoverySetting," "${P2_LOG}"; then
+  echo "FAIL: no warning naming the kept AccountRecoverySetting (issue #1160)" >&2
+  exit 1
+fi
+echo "    account recovery kept, with the warning"
+rm -f "${P2_LOG}"
+
+NAME_P2="$(aws cognito-idp describe-user-pool --user-pool-id "${PID}" --region "${REGION}" \
+  --query 'UserPool.Name' --output text)"
+echo "    pool name (Phase 2): ${NAME_P2}"
+if [ "${NAME_P2}" != "${RENAMED_POOL_NAME}" ]; then
+  echo "FAIL: expected pool ${PID} renamed to ${RENAMED_POOL_NAME} in place (rename dropped? issue #5358), got '${NAME_P2}'" >&2
+  exit 1
+fi
+echo "    pool renamed in place (same id ${PID})"
 
 COUNT_P2="$(custom_attr_count "${PID}")"
 echo "    custom attribute count (Phase 2): ${COUNT_P2}"
@@ -158,6 +252,27 @@ if [ "${REGION_ATTR}" != "custom:region" ]; then
 fi
 echo "    custom:region added (reached AWS, not just cdkd state)"
 
+# --- Phase 2b: a UsernameConfiguration change must be REFUSED ---------
+echo "==> Phase 2b: re-deploy adding UsernameConfiguration (must be refused, issue #5358)"
+P2B_LOG="$(mktemp -t cdkd-cognito-attr-add-p2b.XXXXXX)"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_USERNAME_CHANGE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${P2B_LOG}" 2>&1
+P2B_RC=$?
+set -e
+if [ "${P2B_RC}" -eq 0 ]; then
+  tail -20 "${P2B_LOG}" >&2
+  echo "FAIL: Phase 2b deploy succeeded — the UsernameConfiguration change was dropped instead of refused (issue #5358)" >&2
+  exit 1
+fi
+if ! grep -qF "UsernameConfiguration cannot be changed on an existing user pool" "${P2B_LOG}"; then
+  tail -20 "${P2B_LOG}" >&2
+  echo "FAIL: Phase 2b deploy failed (rc=${P2B_RC}) but not with the UsernameConfiguration refusal" >&2
+  exit 1
+fi
+echo "    deploy refused (rc=${P2B_RC}) naming UsernameConfiguration"
+rm -f "${P2B_LOG}"
+
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
@@ -171,4 +286,4 @@ echo "    pool deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — Cognito add-custom-attribute reaches AWS via AddCustomAttributes, all 3 phases passed"
+echo "[verify] PASS — Cognito add-custom-attribute reaches AWS via AddCustomAttributes, the pool renames in place, a UsernameConfiguration change is refused, and removed tags / MFA / account recovery behave as CloudFormation; all phases passed"

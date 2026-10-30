@@ -514,8 +514,10 @@ fi
 # subscription was still live; SNS answers that with `InvalidParameter ...
 # Subscription already exists with different attributes` (measured), so the
 # deploy failed either way and the AWS end state is identical. Only the ABSENCE
-# of SNS's message proves the create was never issued.
-if printf '%s' "${DEPLOY_TXT}" | grep -q 'already exists with different attributes'; then
+# of SNS's message proves the create was never issued. SNS's text reaches only
+# the debug log since go-to-k/cdkd#2319 (this deploy is not --verbose), so the
+# create wrap's own prefix is the marker that is printed.
+if printf '%s' "${DEPLOY_TXT}" | grep -qE 'already exists with different attributes|Failed to create SNS subscription'; then
   echo "FAIL: phase 3: cdkd issued a Subscribe after the refused readback." >&2
   echo "    SNS refused it ('already exists with different attributes'): the create" >&2
   echo "    must not be attempted at all." >&2

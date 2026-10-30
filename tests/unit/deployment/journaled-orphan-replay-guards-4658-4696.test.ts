@@ -353,6 +353,7 @@ describe('the success settle proves an orphan once (go-to-k/cdkd#4655 / #4658)',
       logger,
     } as unknown as RollbackExecutorContext;
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: stateBackend as never,
       stackName: 'A',
       region: REGION,

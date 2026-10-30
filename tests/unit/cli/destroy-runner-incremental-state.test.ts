@@ -96,11 +96,14 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
   const mockAcquireLock = vi.fn();
   const mockReleaseLock = vi.fn();
 
-  function makeCtx() {
+  // `current` is what the under-lock re-read (#5220) sees; pass the same
+  // StackState the case hands to `runDestroyForStack` so it matches.
+  function makeCtx(current?: StackState) {
     return {
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        getState: vi.fn(async () => (current ? { state: current, etag: 'e' } : null)),
         // No other stack imports from us — the strong-ref pre-flight /
         // lock-protected scans short-circuit on an empty stack list.
         listStacks: vi.fn().mockResolvedValue([]),
@@ -146,7 +149,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
 
     mockProviderDelete.mockResolvedValue(undefined);
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.deletedCount).toBe(2);
     expect(result.errorCount).toBe(0);
@@ -173,7 +176,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
     );
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.deletedCount).toBe(1);
     expect(result.errorCount).toBe(1);
@@ -191,7 +194,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
 
     mockProviderDelete.mockRejectedValue(new Error('NotFoundException: resource is gone'));
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.deletedCount).toBe(1);
     expect(result.errorCount).toBe(0);
@@ -205,7 +208,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     mockProviderDelete.mockResolvedValue(undefined);
     mockSaveState.mockReset().mockRejectedValue(new Error('S3 write denied'));
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     // Destroy completed cleanly despite every persist failing.
     expect(result.deletedCount).toBe(1);
@@ -224,7 +227,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     mockProviderDelete.mockRejectedValue(new Error('boom'));
     mockSaveState.mockReset().mockRejectedValue(new Error('S3 write denied'));
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.errorCount).toBe(1);
     expect(mockDeleteState).not.toHaveBeenCalled();
@@ -245,7 +248,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
 
     mockProviderDelete.mockResolvedValue(undefined);
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.deletedCount).toBe(1);
     expect(result.retainedCount).toBe(1);
@@ -269,7 +272,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
     );
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.errorCount).toBe(1);
     const banner = warnSpy.mock.calls
@@ -303,7 +306,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
     );
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.errorCount).toBe(1);
     // State preserved, not deleted.
@@ -349,7 +352,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       logicalId === 'Failing' ? Promise.reject(new Error('boom')) : Promise.resolve()
     );
 
-    await runDestroyForStack('TestStack', state, makeCtx());
+    await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockSaveState.mock.calls.length).toBeGreaterThanOrEqual(1);
     for (let i = 0; i < mockSaveState.mock.calls.length; i++) {
@@ -371,7 +374,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     );
     mockProviderDelete.mockResolvedValue(undefined);
 
-    await runDestroyForStack('TestStack', state, makeCtx());
+    await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(mockSaveState).toHaveBeenCalledTimes(2);
     expect(savedStateAt(0).outputs).toEqual({});
@@ -396,7 +399,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
         : Promise.resolve('"etag"');
     });
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.deletedCount).toBe(3);
     expect(result.errorCount).toBe(0);
@@ -417,7 +420,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
     const state = makeState({ A: res(), B: res(), C: res() });
     mockProviderDelete.mockResolvedValue(undefined);
 
-    const result = await runDestroyForStack('TestStack', state, makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx(state));
 
     expect(result.deletedCount).toBe(3);
     expect(result.errorCount).toBe(0);
@@ -467,7 +470,7 @@ describe('runDestroyForStack incremental state persistence (issue #804)', () => 
       await mockDeleteState(CHILD_KEY, REGION);
     });
 
-    const result = await runDestroyForStack(PARENT, state, makeCtx());
+    const result = await runDestroyForStack(PARENT, state, makeCtx(state));
 
     expect(result.deletedCount).toBe(1);
     expect(result.errorCount).toBe(0);

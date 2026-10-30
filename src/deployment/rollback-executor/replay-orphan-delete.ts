@@ -1,4 +1,4 @@
-import { withReplayDeletePrinting } from './replay-scope.js';
+import { noteRolledBackCreate, withReplayDeletePrinting } from './replay-scope.js';
 import { prepareCreateRollbackFinalSnapshot } from './names.js';
 import {
   safe,
@@ -49,6 +49,10 @@ export async function replayOrphanFlag(s: ReplayOpScope): Promise<void> {
     // contradict the instruction. The two Retain arms are the only
     // minters.
     delete stateResources[op.logicalId];
+    // go-to-k/cdkd#5064: the resource keeps its name in AWS, so the next
+    // create of the logical id asks for the next generation's. A re-run that
+    // finds no record took nothing back.
+    if (record) noteRolledBackCreate(s, op, record);
     // go-to-k/cdkd#4438: the orphaned resource still holds this stack's
     // create token, so the stack's next create of it must not send it again.
     await noteRetainedResource(op.resourceType, op.logicalId);
@@ -133,6 +137,7 @@ export async function replayOrphanRetain(s: ReplayOpScope): Promise<void> {
     onOrphan?.(orphaned);
   }
   delete stateResources[op.logicalId];
+  noteRolledBackCreate(s, op, record);
   // go-to-k/cdkd#4438: the kept resource still holds this stack's create
   // token, so the stack's next create of it must not send it again.
   await noteRetainedResource(op.resourceType, op.logicalId);
@@ -307,7 +312,11 @@ export async function replayDelete(s: ReplayOpScope): Promise<void> {
       mask,
     }
   );
+  const deletedRecord = stateResources[op.logicalId];
   delete stateResources[op.logicalId];
+  // go-to-k/cdkd#5064: the next create of the logical id asks for a new name,
+  // never the one this just-deleted resource held (CloudFormation parity).
+  noteRolledBackCreate(s, op, deletedRecord);
   logger.info(`  Rollback: ${safe(op.logicalId)} deleted successfully`);
   await afterOp?.(op.logicalId);
   ctx.recordEvent?.({

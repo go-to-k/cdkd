@@ -6,8 +6,8 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 /**
  * Integ fixture for issue
  * [#3208](https://github.com/go-to-k/cdkd/issues/3208) — `cdkd deploy
- * --replace` must complete a SAME-NAME replacement of a cdkd-named ELBv2
- * target group.
+ * --replace` must complete a SAME-NAME replacement of a named ELBv2 target
+ * group.
  *
  * covers: AWS::ElasticLoadBalancingV2::TargetGroup
  *
@@ -36,20 +36,22 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
  * `--replace` now COMPLETES such a replacement; the unit tests only pin the
  * predicate.
  *
- * WHY THE TARGET GROUP MUST STAY UNNAMED — AND SO KEEP THE SAME NAME
+ * WHY THE TARGET GROUP DECLARES ONE NAME AND KEEPS IT
  *
- * The collision IS the test. cdkd mints `<stackName>-<logicalId>` for a target
- * group the template does not name (`FALLBACK_NAME_RULES` /
- * `generateResourceNameWithFallback`, `nameProperty: 'Name'`, `maxLength: 32`),
- * and it mints the SAME name on every deploy because the inputs are the stack
- * name and the logical id — neither of which changes here. So the replacement's
- * create asks AWS for a name the OLD target group still holds, and ELBv2
- * refuses with the exception above.
+ * The collision IS the test. The target group declares `name`
+ * (`TG_DECLARED_NAME`, set by verify.sh fresh per run) and no phase changes
+ * it, so the replacement's create asks AWS for a name the OLD target group
+ * still holds, and ELBv2 refuses with the exception above.
  *
- * Declaring a `name` and CHANGING it between phases would replace the target
- * group under a DIFFERENT name. That create never collides, the fallback is
- * never reached, and the run would pass identically on a tree with and without
- * the fix — a vacuous test. Hence: no `name` property, on any phase.
+ * It was first UNNAMED, which collided the same way while cdkd minted the same
+ * `<stackName>-<logicalId>-<suffix>` on every deploy. Since go-to-k/cdkd#5064
+ * phase 2 a replacement of an un-named resource on a stack with a stack
+ * instance id creates at the NEXT name generation — a new name, created first
+ * — so nothing collides, the fallback is never reached, and the run would pass
+ * identically on a tree with and without the fix: a vacuous test. CHANGING a
+ * declared name between phases would be the same. A declared name keeps the
+ * same-name collision; cdkd sends it verbatim (`--prefix-user-supplied-names`
+ * is off by default).
  *
  * WHY `Port` IS THE CHANGED PROPERTY
  *
@@ -64,8 +66,9 @@ import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
  * does not, and `verify.sh` can therefore use the ARN as a positive
  * "replacement really happened" sentinel while asserting the name held.
  *
- * `TG_PORT` is the only seam. Unset it synthesizes 8080; `TG_PORT=8081`
- * synthesizes 8081 and nothing else moves.
+ * `TG_PORT` is the only seam that moves between phases. Unset it synthesizes
+ * 8080; `TG_PORT=8081` synthesizes 8081 and nothing else moves.
+ * `TG_DECLARED_NAME` is the same on every synth of a run.
  *
  * WHY A VPC, AND WHY IT IS FREE
  *
@@ -102,6 +105,17 @@ export class Elbv2SameNameReplacementStack extends cdk.Stack {
       );
     }
 
+    // Required, and validated against what ELBv2 accepts verbatim: an absent
+    // name leaves the target group un-named (the vacuous test above), and one
+    // cdkd's sanitize-and-truncate would rewrite is not the name verify.sh
+    // asserts.
+    const name = process.env['TG_DECLARED_NAME'];
+    if (name === undefined || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?$/.test(name)) {
+      throw new Error(
+        `TG_DECLARED_NAME must be 1-32 characters of [A-Za-z0-9-], not starting or ending with '-' (got '${String(name)}'); verify.sh sets it per run`
+      );
+    }
+
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
       natGateways: 0,
@@ -114,12 +128,9 @@ export class Elbv2SameNameReplacementStack extends cdk.Stack {
       ],
     });
 
-    // UNNAMED on purpose — see the header. cdkd fills
-    // `${this.stackName}-Tg`, which is 20 characters against the type's
-    // 32-character cap, so `generateResourceName` never takes its
-    // truncate-plus-hash branch and `verify.sh` can assert a plain
-    // `<stack>-` prefix.
+    // NAMED on purpose, with the same name on every phase — see the header.
     const targetGroup = new elbv2.CfnTargetGroup(this, 'Tg', {
+      name,
       protocol: 'HTTP',
       targetType: 'ip',
       vpcId: vpc.vpcId,

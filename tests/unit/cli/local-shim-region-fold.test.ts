@@ -21,14 +21,21 @@ import { adoptDeprecatedRegionFlag } from '../../../src/cli/region-options.js';
  * This is the BEHAVIOURAL half of the fence, deliberately live rather than a
  * source scan: it drives commander's real parser through
  * `adoptDeprecatedRegionFlag`'s `preAction` hook and reads the option bag the
- * action would have received. Removing the fold from any ONE of the four turns
- * its rows red. The STRUCTURAL half — "a fifth shim cannot be added unfolded" —
+ * action would have received. Removing the fold from any ONE of the six turns
+ * its rows red. The STRUCTURAL half — "a seventh shim cannot be added unfolded" —
  * lives in `cli-region-fold.test.ts`, which is where the rest of this class is
  * fenced.
  */
 
-/** The four commands whose handler cdk-local owns. */
-const SHIMS = ['start-service', 'start-alb', 'start-cloudfront', 'start-agentcore'] as const;
+/** The six commands whose handler cdk-local owns. */
+const SHIMS = [
+  'start-service',
+  'start-alb',
+  'start-cloudfront',
+  'start-agentcore',
+  'start-web-function',
+  'start-microvm',
+] as const;
 
 /**
  * The `cdkd local` tree with every subcommand's action stubbed out.

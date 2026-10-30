@@ -4,7 +4,7 @@ import {
   acquireIdempotencyToken,
   resetIdempotencyTokensForTests,
 } from '../../../src/provisioning/providers/idempotency-token.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 /**
  * Issue #2039. The whole value of the module is that ONE property holds: the
@@ -59,11 +59,11 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
     const before = process.env['AWS_REGION'];
     try {
       process.env['AWS_REGION'] = 'us-east-1';
-      const east = withStackName('Stack', () =>
+      const east = withStackScope({ stackName: 'Stack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       );
       process.env['AWS_REGION'] = 'eu-west-1';
-      const west = withStackName('Stack', () =>
+      const west = withStackScope({ stackName: 'Stack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       );
       // cdkd identifies a resource as {stackName}/{region}/{logicalId}; sharing
@@ -77,10 +77,10 @@ describe('acquireIdempotencyToken (issue #2039)', () => {
   });
 
   it('separates two stacks deployed by one process that share a logical id', () => {
-    const inStackA = withStackName('StackA', () =>
+    const inStackA = withStackScope({ stackName: 'StackA', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
     );
-    const inStackB = withStackName('StackB', () =>
+    const inStackB = withStackScope({ stackName: 'StackB', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
     );
 

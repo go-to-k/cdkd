@@ -768,6 +768,7 @@ export const CDKD_TOP_LEVEL_COMMANDS = [
   'events',
   'gc',
   'orphan',
+  'refactor',
   'import',
   'publish-assets',
   'force-unlock',

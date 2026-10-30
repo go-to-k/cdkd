@@ -26,7 +26,7 @@ import {
 } from '../../../src/deployment/rollback-executor.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { awsSdkError } from '../_aws-sdk-error.js';
+import { awsSdkError, relayedAwsSdkError } from '../_aws-sdk-error.js';
 import {
   PASTE_PAYLOADS,
   expectNoCommandBesideDisplay,
@@ -267,7 +267,7 @@ describe('the reverse-replacement refusals describe every untrusted value beside
       // The new queue holds a DIFFERENT name, so the holder is not proven and
       // the refusal quotes the new resource's (payload) id in its diagnosis.
       // The AWS text echoes the payload too.
-      const create = vi.fn().mockRejectedValue(awsSdkError(`Queue ${payload} already exists`));
+      const create = vi.fn().mockRejectedValue(relayedAwsSdkError(`Queue ${payload} already exists`));
       const { ctx, lines, events } = makeCtx({ create, delete: vi.fn() });
       if (arm === 'child-revert') ctx.nestedChildRevert = true;
       if (arm === 'child-own') ctx.nestedChildStack = 'Top~Child';
@@ -311,6 +311,37 @@ describe('the reverse-replacement refusals describe every untrusted value beside
       });
     }
   }, 600_000);
+
+  it('an escaped SDK collision is named on its own line with no pasteable flag (go-to-k/cdkd#2319, #3950)', async () => {
+    // A raw SDK error (no provider wrap) is reduced to its class plus a
+    // pointer. The line also displays a payload physical id's description,
+    // so the pointer must not carry `--verbose`.
+    const create = vi.fn().mockRejectedValue(awsSdkError('Queue x already exists'));
+    const { ctx, lines, events } = makeCtx({ create, delete: vi.fn() });
+    const payload = PAYLOADS[0]!;
+    await replayRollback(
+      [
+        {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: QUEUE,
+          physicalId: payload,
+          previousState: res({ physicalId: `${payload}-old`, properties: { QueueName: 'q', a: 1 } }),
+        },
+      ],
+      { B: res({ physicalId: payload, properties: { QueueName: 'q2', a: 2 } }) },
+      'S',
+      ctx,
+      { isInterrupted: () => false }
+    );
+    const [message] = refusalOf(events, lines, 'another resource holds the colliding name');
+    const collision = message!.split('\n').find((r) => r.startsWith('Underlying collision: '));
+    expect(collision).toBe(
+      `Underlying collision: "ResourceConflictException. Re-run with verbose logging for AWS's own message."`
+    );
+    expect(message).not.toContain('--verbose');
+    expect(message).not.toContain('Queue x already exists');
+  });
 });
 
 describe('sibling messages in the rollback executor keep untrusted values off a command line (go-to-k/cdkd#4214)', () => {

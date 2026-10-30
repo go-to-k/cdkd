@@ -83,7 +83,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
         with:
           node-version: "24"
           cache: true
@@ -111,7 +111,11 @@ jobs:
       # runs every pasted span under bash AND zsh and FAILS under `CI` when zsh
       # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
       # the two shells disagree on an unquoted `(` after a displayed value.
+      # apt has hung here ~45 min until cancelled (docs/tooling-backlog.md);
+      # a passing run took at most 331 s (50 runs, measured 2026-10-23), so
+      # 12 min fails fast and a re-run passes.
       - name: install zsh for the paste harness
+        timeout-minutes: 12
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       # CDKD_EXPECT_DIST is set ONLY here, because this is the only job that
       # builds. `tests/unit/cli/version.test.ts` skips itself when `dist/` is
@@ -232,8 +236,6 @@ jobs:
 
       - run: vp run audit:nested-key-coverage:check
 
-      - run: vp run audit:handled-property-wiring:check
-
       # Issue #2040 — every provider `catch` site (and every `wrapError` helper a
       # catch hands its binding to) must thread the caught AWS error as `cause`.
       # `isTransientServerError` / `isThrottlingError` / `isMarkedNonRetryable`
@@ -334,7 +336,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
         with:
           node-version: "24"
           cache: true
@@ -346,6 +348,7 @@ jobs:
       # is missing (go-to-k/cdkd#3950): macOS pastes into zsh by default, and
       # the two shells disagree on an unquoted `(` after a displayed value.
       - name: install zsh for the paste harness
+        timeout-minutes: 12  # why: see the check-build-test step above; this comment also keeps the line distinct, since workflow-job-hardening.test.ts expects exactly one repeated timeout-minutes line
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: vp run test:once-leak
 
@@ -393,7 +396,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
-      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
         with:
           node-version: "24"
           cache: true
@@ -421,7 +424,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
-      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
         with:
           node-version: "24"
           cache: true

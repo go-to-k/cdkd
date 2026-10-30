@@ -10,7 +10,7 @@ import type {
 } from '../types/state.js';
 import { acceptedCreateOnlyDropsOf } from '../types/state.js';
 import { getLogger } from '../utils/logger.js';
-import { ReplacementRulesRegistry } from './replacement-rules.js';
+import { ReplacementRulesRegistry, type ReplacementSiblings } from './replacement-rules.js';
 import { TemplateParser } from './template-parser.js';
 import {
   getCreateOnlyPropertyPaths,
@@ -38,6 +38,7 @@ import { safeMsg } from '../utils/display-safe.js';
 import type { LockRecoveryContext } from '../state/lock-contention-message.js';
 import { isPlainReferenceTo } from '../deployment/recreate-target-readers.js';
 import { isKnownTokenFreeState } from '../state/token-free-state.js';
+import { unsettledPropertiesOf } from '../state/unsettled-properties.js';
 import {
   readProvenancePromotions,
   type ReadProvenanceSources,
@@ -136,6 +137,11 @@ export type CanonicalizePropertiesFn = (
  */
 const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
   'AWS::EC2::LaunchTemplate': new Set(['LatestVersionNumber', 'DefaultVersionNumber']),
+  // Issue #5446: an InstanceType / UserData update stops and starts the
+  // instance, which gives an instance without an Elastic IP a new public
+  // address and DNS name (its private address and DNS name stay). The update
+  // records the new pair, so a reader re-resolves against it.
+  'AWS::EC2::Instance': new Set(['PublicIp', 'PublicDnsName']),
 });
 
 /**
@@ -243,6 +249,22 @@ export type NoEchoCompareFn = (input: {
 }) => { desired: Record<string, unknown>; current: Record<string, unknown> } | undefined;
 
 /**
+ * The sibling bags a synthetic (propagated) change hands a conditional
+ * replacement predicate (issue #5446: an instance's `SecurityGroupIds`
+ * replaces only without a `SubnetId`).
+ */
+export function siblingsOf(change: {
+  currentProperties?: Record<string, unknown> | undefined;
+  desiredProperties?: Record<string, unknown> | undefined;
+}): ReplacementSiblings | undefined {
+  // Without the bags a predicate answers its non-destructive default.
+  if (change.currentProperties === undefined || change.desiredProperties === undefined) {
+    return undefined;
+  }
+  return { oldProperties: change.currentProperties, newProperties: change.desiredProperties };
+}
+
+/**
  * Diff calculator for comparing desired state (template) with current state
  */
 export class DiffCalculator {
@@ -258,13 +280,15 @@ export class DiffCalculator {
     resourceType: string,
     propertyPath: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings?: ReplacementSiblings
   ): boolean | undefined {
     return this.replacementRules.conditionalReplacementVerdict(
       resourceType,
       propertyPath,
       oldValue,
-      newValue
+      newValue,
+      siblings
     );
   }
 
@@ -715,12 +739,31 @@ export class DiffCalculator {
               desiredResource.Type,
               key,
               oldValue,
-              newValue
+              newValue,
+              { oldProperties: currentCompared, newProperties: desiredCompared }
             ),
             maskedExpressionChanged: true,
           });
           this.logger.debug(
             safeMsg`${logicalId}: ${key} is recorded masked and its template expression or a resolved input changed`
+          );
+        }
+        // go-to-k/cdkd#5380: a key an earlier failed update left unsettled
+        // may hold either side in AWS, so it is an in-place change even when
+        // the template and the record agree: the deploy re-sends it and the
+        // provider converges it against AWS.
+        const listed = new Set(propertyChanges.map((pc) => pc.path));
+        for (const key of unsettledPropertiesOf(currentResource)) {
+          if (listed.has(key)) continue;
+          propertyChanges.push({
+            path: key,
+            oldValue: currentCompared[key],
+            newValue: desiredCompared[key],
+            requiresReplacement: false,
+            unsettled: true,
+          });
+          this.logger.debug(
+            safeMsg`${logicalId}: ${key} is unsettled after a failed update and is sent again`
           );
         }
 
@@ -843,7 +886,8 @@ export class DiffCalculator {
         syntheticCreateOnlyPaths,
         upstreams.some((id) =>
           isPlainReferenceTo(templateValue, id, desiredTemplate.Resources[id]?.Type)
-        )
+        ),
+        siblingsOf(change)
       );
     }
     do {
@@ -1071,9 +1115,18 @@ export class DiffCalculator {
     resourceType: string,
     propKey: string,
     syntheticCreateOnlyPaths: ReadonlyMap<string, SyntheticCreateOnly>,
-    plainReference: boolean
+    plainReference: boolean,
+    siblings?: ReplacementSiblings
   ): boolean {
-    if (this.replacementRules.requiresReplacement(resourceType, propKey, undefined, undefined)) {
+    if (
+      this.replacementRules.requiresReplacement(
+        resourceType,
+        propKey,
+        undefined,
+        undefined,
+        siblings
+      )
+    ) {
       return true;
     }
     if (this.replacementRules.isClassified(resourceType, propKey)) return false;
@@ -1226,7 +1279,8 @@ export class DiffCalculator {
                   desiredTemplate.Resources[dependentId]?.Properties?.[propKey],
                   replacedId,
                   desiredTemplate.Resources[replacedId]?.Type
-                )
+                ),
+                siblingsOf(change)
               ) ||
               namesRecreatedParent(
                 change.resourceType,
@@ -1288,10 +1342,11 @@ export class DiffCalculator {
    *      `PhysicalResourceId` (go-to-k/cdkd#3722); or
    *   5. `Up` is a template PARAMETER in `freshParameters`, read by `Ref` or
    *      `${Param}` (go-to-k/cdkd#3717).
-   * (Any other `Ref` resolves to a physical id an in-place update keeps, so
-   * Ref-only dependents of other types are left NO_CHANGE; likewise a GetAtt
-   * of a computed attribute NOT in the allow list, e.g. a Lambda `Arn` on a
-   * Description edit.)
+   * (Any other `Ref` resolves to a value an in-place update keeps, so
+   * Ref-only dependents of other types are left NO_CHANGE — an S3 Tables
+   * Table renamed in place among them, whose `Ref` is its unchanged TableARN
+   * (go-to-k/cdkd#5316); likewise a GetAtt of a computed attribute NOT in the
+   * allow list, e.g. a Lambda `Arn` on a Description edit.)
    *
    * Promotion is safe even when speculative: the deploy engine re-resolves the
    * promoted resource against the in-flight state and skips the provider call
@@ -1466,7 +1521,8 @@ export class DiffCalculator {
             change.resourceType,
             propKey,
             syntheticCreateOnlyPaths,
-            false
+            false,
+            siblingsOf(change)
           ),
           inPlacePropagated: true,
           // go-to-k/cdkd#4043: only a `NoEcho` parameter's value may have
@@ -1714,7 +1770,8 @@ export class DiffCalculator {
           resourceType,
           key,
           oldValue,
-          newValue
+          newValue,
+          { oldProperties: currentProperties, newProperties: desiredProperties }
         );
 
         // Schema fallback: only where the registry has NO explicit opinion (so
@@ -1779,15 +1836,23 @@ export class DiffCalculator {
     resourceType: string,
     key: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings: ReplacementSiblings
   ): Promise<boolean> {
-    if (this.replacementRules.requiresReplacement(resourceType, key, oldValue, newValue)) {
+    if (
+      this.replacementRules.requiresReplacement(resourceType, key, oldValue, newValue, siblings)
+    ) {
       return true;
     }
     if (
       this.replacementRules.isClassified(resourceType, key) &&
-      this.replacementRules.conditionalReplacementVerdict(resourceType, key, oldValue, newValue) ===
-        undefined
+      this.replacementRules.conditionalReplacementVerdict(
+        resourceType,
+        key,
+        oldValue,
+        newValue,
+        siblings
+      ) === undefined
     ) {
       return false;
     }

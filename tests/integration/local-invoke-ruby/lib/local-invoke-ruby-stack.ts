@@ -8,6 +8,19 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Every Lambda here declares the HOST's architecture (issue #2287; the rule
+ * and its fence are in `.claude/rules/testing.md`). A `lambda.Function`
+ * with no `architecture` is `X86_64`, so on an arm64 host its container
+ * runs under CPU emulation, where the Go RIE inside the base image faults.
+ * The asset is portable bytecode and the base image is multi-arch, so the
+ * host-derived form is native on both. The inline-rejection `CfnFunction`
+ * never starts a container, but carries the same declaration so the fence
+ * has one rule.
+ */
+const HOST_ARCHITECTURE =
+  process.arch === 'arm64' ? lambda.Architecture.ARM_64 : lambda.Architecture.X86_64;
+
+/**
  * Fixture stack for `cdkd local invoke` Ruby integ test (issue #248).
  *
  * Two Lambdas:
@@ -32,6 +45,7 @@ export class LocalInvokeRubyStack extends cdk.Stack {
       runtime: lambda.Runtime.RUBY_3_3,
       handler: 'index.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
+      architecture: HOST_ARCHITECTURE,
       environment: {
         GREETING: 'hello',
       },
@@ -49,6 +63,7 @@ export class LocalInvokeRubyStack extends cdk.Stack {
       runtime: 'ruby3.3',
       handler: 'index.handler',
       role: inlineRole.roleArn,
+      architectures: [HOST_ARCHITECTURE.name],
       code: {
         zipFile: [
           'def handler(event:, context:)',

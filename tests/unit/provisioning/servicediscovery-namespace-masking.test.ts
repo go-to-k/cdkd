@@ -16,6 +16,7 @@ import {
   createSecretMasker,
 } from '../../../src/deployment/secret-redaction.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /**
  * Issue #2063, ServiceDiscovery half — the SIX namespace arms issue #2050's
@@ -40,7 +41,11 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
  *    it is tested here too.
  *
  * Every assertion is on the STRING that escaped, never on a masker having been
- * passed.
+ * passed. Since go-to-k/cdkd#2319 AWS's text never reaches the thrown message
+ * (it is persisted to `deployments/{runId}.jsonl`): the message names the
+ * error class, or the operation's `ErrorCode`, plus the `--verbose` pointer,
+ * and the text goes to the `debug` line, which is where the masking is
+ * asserted.
  */
 
 const mockSend = vi.fn();
@@ -139,6 +144,13 @@ function expectPayloadCarriedThePlaintext(cls: abstract new (...args: never[]) =
   const call = mockSend.mock.calls.find((c) => c[0] instanceof cls);
   expect(call).toBeDefined();
   expect(payloadHasSecretLeaf((call![0] as { input: unknown }).input)).toBe(true);
+}
+
+/** The debug line carrying the withheld AWS text of the wrap `prefix` opens. */
+function debugLine(prefix: string): string {
+  const line = logger.debug.mock.calls.map((c) => String(c[0])).find((l) => l.startsWith(prefix));
+  expect(line).toBeDefined();
+  return line!;
 }
 
 function loggedLines(): string {
@@ -243,9 +255,10 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
 
         expectPayloadCarriedThePlaintext(arm.submit);
 
-        expect(thrown.message).toContain(arm.sentence);
-        expect(thrown.message).toContain(SECRET_MASK);
-        expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+        expect(thrown.message).toBe(`${arm.sentence}: InvalidInput. ${VERBOSE_POINTER}`);
+        const line = debugLine(`${arm.sentence}: InvalidInput: `);
+        expect(line).toContain(SECRET_MASK);
+        expect(line).not.toContain(SECRET_PLAINTEXT);
       });
 
       it(`leaves ${arm.label} untouched when the caller threads no masker`, async () => {
@@ -255,8 +268,8 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
 
         // The back-compatible default the SecretMaskingContext contract
         // mandates: absent means unmasked, and the sentence still lands.
-        expect(thrown.message).toContain(arm.sentence);
-        expect(thrown.message).toContain(SECRET_PLAINTEXT);
+        expect(thrown.message).toBe(`${arm.sentence}: InvalidInput. ${VERBOSE_POINTER}`);
+        expect(debugLine(`${arm.sentence}: InvalidInput: `)).toContain(SECRET_PLAINTEXT);
       });
     }
   });
@@ -279,9 +292,10 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
 
         expectPayloadCarriedThePlaintext(arm.submit);
 
-        expect(thrown.message).toContain(arm.sentence);
-        expect(thrown.message).toContain(SECRET_MASK);
-        expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+        expect(thrown.message).toBe(`${arm.sentence}: InvalidInput. ${VERBOSE_POINTER}`);
+        const line = debugLine(`${arm.sentence}: InvalidInput: `);
+        expect(line).toContain(SECRET_MASK);
+        expect(line).not.toContain(SECRET_PLAINTEXT);
       });
 
       it(`leaves ${arm.label} untouched when the caller threads no masker`, async () => {
@@ -297,8 +311,8 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
           )
         );
 
-        expect(thrown.message).toContain(arm.sentence);
-        expect(thrown.message).toContain(SECRET_PLAINTEXT);
+        expect(thrown.message).toBe(`${arm.sentence}: InvalidInput. ${VERBOSE_POINTER}`);
+        expect(debugLine(`${arm.sentence}: InvalidInput: `)).toContain(SECRET_PLAINTEXT);
       });
     }
 
@@ -330,9 +344,12 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
 
       expectPayloadCarriedThePlaintext(TagResourceCommand);
 
-      expect(thrown.message).toContain('Failed to update HTTP namespace Ns');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+      expect(thrown.message).toBe(
+        `Failed to update HTTP namespace Ns: InvalidInput. ${VERBOSE_POINTER}`
+      );
+      const line = debugLine('Failed to update HTTP namespace Ns: InvalidInput: ');
+      expect(line).toContain(SECRET_MASK);
+      expect(line).not.toContain(SECRET_PLAINTEXT);
     });
   });
 
@@ -340,7 +357,7 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
    * The site the issue did not name. Distinct from every test above: the submit
    * SUCCEEDS, so no arm catch ever sees a raw error — and the
    * `ProvisioningError` `pollOperation` builds is re-thrown verbatim past the
-   * arm's `wrapMaskedError`. Masking the arm alone leaves this open.
+   * arm's `wrapCaughtError`. Masking the arm alone leaves this open.
    */
   describe('pollOperation — the operation`s own ErrorMessage', () => {
     const OPERATION_ARMS = [
@@ -372,10 +389,13 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
         // Non-vacuity, and what makes this NOT a duplicate of the arm tests:
         // the submit succeeded, so the arm's catch never saw a raw error.
         expect(mockSend.mock.calls.some((c) => c[0] instanceof GetOperationCommand)).toBe(true);
-        expect(thrown.message).toContain('Operation failed for');
-
-        expect(thrown.message).toContain(SECRET_MASK);
+        expect(thrown.message).toMatch(/^Operation failed for (Ns|Svc): /);
+        expect(thrown.message).toContain(VERBOSE_POINTER);
+        expect(thrown.message).not.toContain('InvalidInput');
         expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+
+        const line = debugLine('Operation failed for ');
+        expect(line).toContain(SECRET_MASK);
         expect(loggedLines()).not.toContain(SECRET_PLAINTEXT);
       });
 
@@ -385,7 +405,8 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
         const thrown = await captureThrow(() => arm.run());
 
         expect(thrown.message).toContain('Operation failed for');
-        expect(thrown.message).toContain(SECRET_PLAINTEXT);
+        expect(thrown.message).not.toContain(SECRET_PLAINTEXT);
+        expect(debugLine('Operation failed for ')).toContain(SECRET_PLAINTEXT);
       });
     }
 
@@ -422,9 +443,8 @@ describe('ServiceDiscoveryProvider namespace secret masking (#2063)', () => {
         provider.create('Ns', HTTP_NS, { Name: 'ns-http' }, { maskSecrets: shortMasker })
       );
 
-      expect(thrown.message).toContain('Operation failed for');
-      expect(thrown.message).toContain(SECRET_MASK);
-      expect(thrown.message).not.toContain(shortSecret);
+      expect(thrown.message).toBe(`Operation failed for Ns: ${VERBOSE_POINTER}`);
+      expect(debugLine('Operation failed for Ns: ')).toBe(`Operation failed for Ns: ${SECRET_MASK}`);
     });
   });
 });

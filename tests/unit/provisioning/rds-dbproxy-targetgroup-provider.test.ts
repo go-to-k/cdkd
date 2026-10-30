@@ -46,10 +46,31 @@ import { getLogger } from '../../../src/utils/logger.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxyTargetGroup';
 const TARGET_GROUP_ARN =
   'arn:aws:rds:us-east-1:123456789012:target-group:prx-tg-09349c65b2d618cdf';
+
+// An AWS-authored access denial: RDS words it with the caller's assumed-role
+// ARN, which a thrown (and so persisted) message must not carry (#2319).
+const DENIED =
+  'User: arn:aws:sts::111122223333:assumed-role/deployer/s3cr3t is not authorized to perform: rds:X';
+const denied = (): Error =>
+  Object.assign(new Error(DENIED), {
+    name: 'AccessDenied',
+    $fault: 'client',
+    $metadata: { httpStatusCode: 403 },
+  });
 
 describe('RDSDBProxyTargetGroupProvider', () => {
   let provider: RDSDBProxyTargetGroupProvider;
@@ -172,7 +193,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       mockSend
         .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
         .mockResolvedValueOnce(describeOk) // Describe
-        .mockRejectedValueOnce(new Error('AccessDenied: rds:AddTagsToResource')) // AddTags
+        .mockRejectedValueOnce(denied()) // AddTags
         .mockResolvedValueOnce({}); // Deregister (cleanup)
 
       const error = await provider
@@ -185,7 +206,7 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           () => new Error('create resolved'),
           (e: unknown) => e as Error
         );
-      expect(error.message).toMatch(/CREATE \(add tags\) failed for TG: AccessDenied/);
+      expect(error.message).toBe(`CREATE (add tags) failed for TG: AccessDenied. ${VERBOSE_POINTER}`);
       // go-to-k/cdkd#4583: the deregister retired the registration; nothing to journal.
       expect(createdBeforeFailure(error, 'TG', RESOURCE_TYPE)).toBeUndefined();
       expect(names()[3]).toBe('DeregisterDBProxyTargetsCommand');
@@ -201,8 +222,8 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       mockSend
         .mockResolvedValueOnce({ DBProxyTargets: [] })
         .mockResolvedValueOnce(describeOk)
-        .mockRejectedValueOnce(new Error('AccessDenied: rds:AddTagsToResource'))
-        .mockRejectedValueOnce(new Error('Throttling'));
+        .mockRejectedValueOnce(denied())
+        .mockRejectedValueOnce(denied());
 
       const error = await provider
         .create('TG', RESOURCE_TYPE, {
@@ -214,7 +235,14 @@ describe('RDSDBProxyTargetGroupProvider', () => {
           () => new Error('create resolved'),
           (e: unknown) => e as Error
         );
-      expect(error.message).toMatch(/^CREATE \(add tags\) failed for TG: AccessDenied/);
+      expect(error.message).toMatch(
+        /^CREATE \(add tags\) failed for TG: AccessDenied\. Re-run with --verbose/
+      );
+      // The cleanup failure is appended by its class too (#2319).
+      expect(error.message).toContain(
+        `could not be deregistered (AccessDenied. ${VERBOSE_POINTER.replace(/\.$/, '')}). Manual cleanup:`
+      );
+      expect(error.message).not.toContain('111122223333');
       expect(error.message).toContain(
         'aws rds deregister-db-proxy-targets --db-proxy-name AuroraProxy ' +
           '--target-group-name default --db-instance-identifiers i-1 i-2'
@@ -222,6 +250,61 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       // go-to-k/cdkd#4583: the registration is still live, so the ARN (the id
       // delete() takes) is journaled for --revert-failed.
       expect(createdBeforeFailure(error, 'TG', RESOURCE_TYPE)).toBe(TARGET_GROUP_ARN);
+    });
+
+    it('reports the target group ARN before the tag call and keeps it when the deregister fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('TG', RESOURCE_TYPE);
+      let reportAtTags: unknown = 'not-called';
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockResolvedValueOnce(describeOk) // Describe
+        .mockImplementationOnce(async () => {
+          reportAtTags = sink.report;
+          throw denied();
+        }) // AddTags
+        .mockRejectedValueOnce(denied()); // Deregister (cleanup)
+      await collectCreatedResources(sink, () =>
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+          Tags: [{ Key: 'team', Value: 'db' }],
+        })
+      ).catch(() => undefined);
+      expect(reportAtTags).toEqual({ physicalId: TARGET_GROUP_ARN });
+      expect(sink.report).toEqual({ physicalId: TARGET_GROUP_ARN });
+    });
+
+    it('retracts the report when the deregister retired the registration (#5511)', async () => {
+      const sink = new CreatedResourceSink('TG', RESOURCE_TYPE);
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockResolvedValueOnce(describeOk) // Describe
+        .mockRejectedValueOnce(denied()) // AddTags
+        .mockResolvedValueOnce({}); // Deregister (cleanup)
+      await collectCreatedResources(sink, () =>
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+          Tags: [{ Key: 'team', Value: 'db' }],
+        })
+      ).catch(() => undefined);
+      expect(names()[3]).toBe('DeregisterDBProxyTargetsCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when the Describe fails: the ARN is unknown (#5511)', async () => {
+      const sink = new CreatedResourceSink('TG', RESOURCE_TYPE);
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockRejectedValueOnce(new Error('Throttling')) // Describe
+        .mockRejectedValueOnce(new Error('Throttling')); // Deregister (cleanup)
+      await collectCreatedResources(sink, () =>
+        provider.create('TG', RESOURCE_TYPE, {
+          DBProxyName: 'AuroraProxy',
+          DBClusterIdentifiers: ['my-cluster'],
+        })
+      ).catch(() => undefined);
+      expect(sink.report).toBeUndefined();
     });
 
     it('a failed Describe whose cleanup also fails marks nothing: the ARN is unknown (go-to-k/cdkd#4583)', async () => {
@@ -1933,6 +2016,182 @@ describe('RDSDBProxyTargetGroupProvider', () => {
       const said = String(warn.mock.calls[0]![0]);
       expect(said).toContain("holds a TargetGroupName other than 'default'");
       expect(said).not.toContain('aws rds');
+    });
+  });
+
+  // go-to-k/cdkd#2319: every create / update / delete wrap is persisted to
+  // `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its
+  // class plus the --verbose pointer; AWS's text (the caller's role ARN) goes
+  // to the masked debug line and stays on `cause` for the retry classifiers.
+  describe('thrown wraps withhold AWS text (#2319)', () => {
+    const mask = (t: string): string => t.replaceAll('s3cr3t', '***');
+    const debugLines = (): string[] =>
+      vi.mocked(getLogger().child('x').debug).mock.calls.map((c) => String(c[0]));
+    const describeOk = {
+      TargetGroups: [{ TargetGroupArn: TARGET_GROUP_ARN, TargetGroupName: 'default' }],
+    };
+    const POOL = { MaxConnectionsPercent: 50 };
+    type Case = {
+      op: string;
+      /** Resolved calls the operation makes before the one that fails. */
+      before: unknown[];
+      run: (p: RDSDBProxyTargetGroupProvider) => Promise<unknown>;
+    };
+    const create = (props: Record<string, unknown>) => (p: RDSDBProxyTargetGroupProvider) =>
+      p.create('TG', RESOURCE_TYPE, { DBProxyName: 'P', ...props }, { maskSecrets: mask });
+    const update =
+      (props: Record<string, unknown>, prev: Record<string, unknown>) =>
+      (p: RDSDBProxyTargetGroupProvider) =>
+        p.update(
+          'TG',
+          TARGET_GROUP_ARN,
+          RESOURCE_TYPE,
+          { DBProxyName: 'P', ...props },
+          { DBProxyName: 'P', ...prev },
+          { maskSecrets: mask }
+        );
+    const cases: Case[] = [
+      {
+        op: 'CREATE (pool config)',
+        before: [],
+        run: create({ ConnectionPoolConfigurationInfo: POOL }),
+      },
+      { op: 'CREATE (register targets)', before: [], run: create({ DBClusterIdentifiers: ['c'] }) },
+      { op: 'CREATE (describe)', before: [], run: create({}) },
+      {
+        op: 'CREATE (add tags)',
+        before: [describeOk],
+        run: create({ Tags: [{ Key: 'k', Value: 'v' }] }),
+      },
+      {
+        op: 'UPDATE (pool config)',
+        before: [],
+        run: update({ ConnectionPoolConfigurationInfo: POOL }, {}),
+      },
+      {
+        op: 'UPDATE (deregister)',
+        before: [],
+        run: update({ DBClusterIdentifiers: [] }, { DBClusterIdentifiers: ['c'] }),
+      },
+      {
+        op: 'UPDATE (register)',
+        before: [],
+        run: update({ DBClusterIdentifiers: ['c'] }, { DBClusterIdentifiers: [] }),
+      },
+      { op: 'UPDATE (remove tags)', before: [], run: update({}, { Tags: [{ Key: 'k', Value: 'v' }] }) },
+      { op: 'UPDATE (add tags)', before: [], run: update({ Tags: [{ Key: 'k', Value: 'v' }] }, {}) },
+      {
+        op: 'DELETE',
+        before: [],
+        run: (p) =>
+          p.delete(
+            'TG',
+            TARGET_GROUP_ARN,
+            RESOURCE_TYPE,
+            { DBProxyName: 'P', TargetGroupName: 'default', DBClusterIdentifiers: ['c'] },
+            { expectedRegion: 'us-east-1', maskSecrets: mask }
+          ),
+      },
+    ];
+    const failWith = async (c: Case, error: unknown): Promise<Error> => {
+      for (const r of c.before) mockSend.mockResolvedValueOnce(r);
+      mockSend.mockRejectedValueOnce(error);
+      mockSend.mockResolvedValue({});
+      return c.run(provider).then(
+        () => new Error('resolved'),
+        (e: unknown) => e as Error
+      );
+    };
+
+    beforeEach(() => {
+      vi.mocked(getLogger().child('x').debug).mockClear();
+    });
+
+    it.each(cases)('$op: an AWS-authored failure is named by its class', async (c) => {
+      const failure = await failWith(c, denied());
+
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure.message).toBe(`${c.op} failed for TG: AccessDenied. ${VERBOSE_POINTER}`);
+      expect(failure.message).not.toContain('111122223333');
+      expect((failure.cause as Error).message).toBe(DENIED);
+      expect(hasRedactedCause(failure)).toBe(true);
+      // `not authorized to perform` is retryable (IAM propagation), read on the chain.
+      expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+      expect(debugLines()).toContain(`${c.op} failed for TG: ${mask(DENIED)}`);
+      expect(debugLines().join('\n')).not.toContain('s3cr3t');
+    });
+
+    it.each(cases)('$op: a cdkd-authored failure keeps its text', async (c) => {
+      const failure = await failWith(c, new Error('socket hang up near arn:aws:rds:x'));
+
+      expect(failure.message).toBe(`${c.op} failed for TG: socket hang up near arn:aws:rds:x`);
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+
+    it('a failed cleanup names its class and logs its text masked', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyTargets: [] }) // Register
+        .mockResolvedValueOnce(describeOk) // Describe
+        .mockRejectedValueOnce(denied()) // AddTags
+        .mockRejectedValueOnce(denied()); // Deregister (cleanup)
+
+      const failure = await create({
+        DBClusterIdentifiers: ['c'],
+        Tags: [{ Key: 'k', Value: 'v' }],
+      })(provider).then(
+        () => new Error('resolved'),
+        (e: unknown) => e as Error
+      );
+
+      expect(failure.message).toContain(
+        `could not be deregistered (AccessDenied. ${VERBOSE_POINTER.replace(/\.$/, '')}). Manual cleanup:`
+      );
+      expect(failure.message).not.toContain('111122223333');
+      expect(debugLines()).toContain(
+        `Deregistering the targets a failed create registered failed: ${mask(DENIED)}`
+      );
+      expect(debugLines().join('\n')).not.toContain('s3cr3t');
+    });
+
+    it('a gone proxy is logged with its names masked', async () => {
+      mockSend.mockRejectedValueOnce(new DBProxyNotFoundFault({ message: 'gone', $metadata: {} }));
+
+      await provider.delete(
+        'TG',
+        TARGET_GROUP_ARN,
+        RESOURCE_TYPE,
+        { DBProxyName: 'q7z', DBClusterIdentifiers: 'prod-cluster' },
+        // A whole-value masker: only the per-value layer (go-to-k/cdkd#2007) can hide a
+        // name below the substring floor.
+        { expectedRegion: 'us-east-1', maskSecrets: (t) => (t === 'q7z' ? '***' : t) }
+      );
+
+      expect(debugLines()).toContain('***/default is already gone; the record needs no deregistration');
+      expect(debugLines().join('\n')).not.toContain('q7z');
+    });
+
+    it('a non-Error throw is withheld, unstamped', async () => {
+      const failure = await failWith(cases[1]!, 'plain string rejection');
+
+      expect(failure.message).toBe(
+        `CREATE (register targets) failed for TG: a non-Error value of type string. ${VERBOSE_POINTER}`
+      );
+      expect(failure.cause).toBeUndefined();
+      expect(hasRedactedCause(failure)).toBe(false);
+    });
+
+    it('an "already exists" is still stated once the text is withheld', async () => {
+      const exists = Object.assign(new Error('A target for c already exists in group default'), {
+        name: 'InvalidDBProxyStateFault',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      });
+      const failure = await failWith(cases[1]!, exists);
+
+      expect(failure.message).toBe(
+        `CREATE (register targets) failed for TG: InvalidDBProxyStateFault. ${VERBOSE_POINTER} ` +
+          'AWS reports that it already exists.'
+      );
     });
   });
 });

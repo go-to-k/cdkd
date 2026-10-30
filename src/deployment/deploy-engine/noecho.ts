@@ -536,6 +536,79 @@ function noEchoAttributeNamesFor(
 }
 
 /**
+ * go-to-k/cdkd#5498: an attempted item name (`unsettledItems`, an index name or
+ * a tag key) a `NoEcho` parameter served is `***` in the persisted record, by
+ * VALUE: the names sit in no template position, and a mask-only plaintext (or
+ * one under the needle floor) is not value-scanned by `scrubResourceRecord`.
+ * A masked name never matches a live item (`isUsableAttemptedName`), so the
+ * item it named is kept, never removed.
+ */
+function withNoEchoItemsMasked(
+  run: NoEchoRunState,
+  deps: NoEchoDeps,
+  logicalId: string,
+  record: ResourceState
+): ResourceState {
+  const items = (record as { unsettledItems?: unknown }).unsettledItems;
+  if (typeof items !== 'object' || items === null || Array.isArray(items)) return record;
+  const secrets = deps.perResourceSecrets().get(logicalId);
+  const plaintexts =
+    secrets === undefined
+      ? []
+      : noEchoParameterPlaintextsOf(secrets).filter((plaintext) => plaintext !== '');
+  // A positioned value is matched as a substring too, whatever its length: a
+  // value under the needle floor is no needle, and over-masking only keeps an
+  // item (a `***` name never matches a live one).
+  const positioned = new Set<string>();
+  for (const json of run.noEchoPositionedValues.get(logicalId) ?? []) {
+    let value: unknown;
+    try {
+      value = JSON.parse(json);
+    } catch {
+      continue;
+    }
+    if (typeof value === 'string' && value !== '') positioned.add(value);
+  }
+  if (plaintexts.length === 0 && positioned.size === 0) return record;
+  return withAttemptedItemsMasked(record, [...positioned, ...plaintexts]);
+}
+
+/**
+ * go-to-k/cdkd#5498: `record` with every attempted item name
+ * (`unsettledItems`) that contains one of `needles` replaced by `***`, or
+ * `record` itself when none does. Shared by the deploy's persist arm and
+ * `cdkd scrub`'s `NoEcho` arm.
+ */
+export function withAttemptedItemsMasked<R extends ResourceState>(
+  record: R,
+  needles: readonly string[]
+): R {
+  const items = (record as { unsettledItems?: unknown }).unsettledItems;
+  if (typeof items !== 'object' || items === null || Array.isArray(items)) return record;
+  const usable = needles.filter((needle) => needle !== '' && needle !== '***');
+  if (usable.length === 0) return record;
+  let changed = false;
+  const masked: Record<string, unknown> = {};
+  for (const [path, entries] of Object.entries(items as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) {
+      masked[path] = entries;
+      continue;
+    }
+    masked[path] = [
+      ...new Set(
+        entries.map((entry) => {
+          if (typeof entry !== 'string') return entry;
+          const served = usable.some((needle) => entry.includes(needle));
+          if (served) changed = true;
+          return served ? '***' : entry;
+        })
+      ),
+    ];
+  }
+  return changed ? { ...record, unsettledItems: masked } : record;
+}
+
+/**
  * The `NoEcho` half of a save (go-to-k/cdkd#4043, #2449), applied to a record
  * the dynamic-reference scrub already redacted (`scrubbed`) from its
  * in-memory form (`record`, whose `properties` still hold what was resolved):
@@ -557,6 +630,7 @@ export function applyNoEchoPersist(
   secrets?: RecordedSecretValues,
   carried = false
 ): ResourceState {
+  scrubbed = withNoEchoItemsMasked(run, deps, logicalId, scrubbed);
   const sources = noEchoPositionSources(run, resources);
   if (sources === undefined) return scrubbed;
   const leaves = noEchoLeavesFor(run, deps, logicalId, record, templateProps, sources);

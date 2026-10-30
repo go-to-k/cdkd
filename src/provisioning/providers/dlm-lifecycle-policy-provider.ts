@@ -16,9 +16,10 @@ import {
   type Exclusions,
 } from '@aws-sdk/client-dlm';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -34,7 +35,17 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { createMaskedLogSinks, type MaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
   AmbiguousCreateLatch,
@@ -98,6 +109,37 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
   private createClient: DLMClient | undefined;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('DLMLifecyclePolicyProvider');
+
+  /**
+   * The failure wrap the create / update / delete / getAttribute catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error keeps its text, masked, stamped only
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error`
+   * throw is withheld like an AWS one, unstamped (it has no chain). The delete
+   * checks `ResourceNotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -352,12 +394,17 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DLM Lifecycle Policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -490,12 +537,17 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DLM Lifecycle Policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -526,13 +578,24 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DLM Lifecycle Policy ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DLM Lifecycle Policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -562,12 +625,17 @@ export class DLMLifecyclePolicyProvider implements ResourceProvider {
       return await this.fetchPolicyArn(physicalId);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to resolve Arn for DLM Lifecycle Policy ${physicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        undefined,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to resolve Arn for DLM Lifecycle Policy ${physicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

@@ -144,6 +144,7 @@
       "resourceType": "AWS::ApiGateway::Account",
       "integs": [
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-stage-props",
         "apigw-stage-throttling",
         "wafv2"
@@ -151,6 +152,9 @@
       "signals": {
         "apigateway": [
           "l1",
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-stage-props": [
@@ -177,7 +181,8 @@
           "l1"
         ],
         "apigateway": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "local-start-api": [
           "l2"
@@ -189,15 +194,21 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "l1",
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -209,6 +220,9 @@
         ],
         "apigw-stage-throttling": [
           "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1"
         ]
       }
     },
@@ -217,15 +231,21 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "l1",
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -236,6 +256,10 @@
           "literal"
         ],
         "apigw-stage-throttling": [
+          "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1",
           "literal"
         ]
       }
@@ -252,6 +276,7 @@
           "literal"
         ],
         "apigateway": [
+          "l1",
           "literal"
         ],
         "apigw-stage-throttling": [
@@ -264,15 +289,20 @@
       "integs": [
         "api-cognito",
         "apigateway",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-gateway-response",
         "apigw-stage-props",
-        "apigw-stage-throttling"
+        "apigw-stage-throttling",
+        "apigw-vpclink-integration-target"
       ],
       "signals": {
         "api-cognito": [
           "literal"
         ],
         "apigateway": [
+          "literal"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
           "literal"
         ],
         "apigw-gateway-response": [
@@ -284,6 +314,9 @@
         ],
         "apigw-stage-throttling": [
           "literal"
+        ],
+        "apigw-vpclink-integration-target": [
+          "l1"
         ]
       }
     },
@@ -295,6 +328,7 @@
         "cc-api-fallback-transitions",
         "drift-revert",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -323,6 +357,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-invoke-stage": [
+          "l2"
         ],
         "local-start-api": [
           "l2"
@@ -374,6 +411,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -387,6 +425,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-invoke-stage": [
+          "l2"
         ],
         "local-start-api": [
           "l1",
@@ -412,6 +453,7 @@
       "integs": [
         "apigatewayv2-update-removal",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -423,6 +465,9 @@
           "l1"
         ],
         "export": [
+          "l2"
+        ],
+        "local-invoke-stage": [
           "l2"
         ],
         "local-start-api": [
@@ -450,6 +495,7 @@
         "apigatewayv2-update-removal",
         "drift-revert",
         "export",
+        "local-invoke-stage",
         "local-start-api",
         "local-start-api-container",
         "local-start-api-websocket",
@@ -468,6 +514,10 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "local-invoke-stage": [
+          "l1",
+          "l2"
         ],
         "local-start-api": [
           "l2"
@@ -498,10 +548,14 @@
     {
       "resourceType": "AWS::AppSync::ApiKey",
       "integs": [
-        "appsync"
+        "appsync",
+        "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ]
       }
@@ -510,12 +564,16 @@
       "resourceType": "AWS::AppSync::DataSource",
       "integs": [
         "appsync",
+        "import-migrate-appsync",
         "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
           "l1",
           "literal"
+        ],
+        "import-migrate-appsync": [
+          "l1"
         ],
         "secret-derived-immutable-names": [
           "l1",
@@ -527,10 +585,14 @@
       "resourceType": "AWS::AppSync::GraphQLApi",
       "integs": [
         "appsync",
+        "import-migrate-appsync",
         "secret-derived-immutable-names"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ],
         "secret-derived-immutable-names": [
@@ -542,10 +604,14 @@
     {
       "resourceType": "AWS::AppSync::GraphQLSchema",
       "integs": [
-        "appsync"
+        "appsync",
+        "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ]
       }
@@ -553,10 +619,14 @@
     {
       "resourceType": "AWS::AppSync::Resolver",
       "integs": [
-        "appsync"
+        "appsync",
+        "import-migrate-appsync"
       ],
       "signals": {
         "appsync": [
+          "l1"
+        ],
+        "import-migrate-appsync": [
           "l1"
         ]
       }
@@ -654,11 +724,15 @@
       "resourceType": "AWS::CertificateManager::Certificate",
       "integs": [
         "acm-certificate",
+        "created-before-failure-revert",
         "replaced-delete-failed-rollback"
       ],
       "signals": {
         "acm-certificate": [
           "l2"
+        ],
+        "created-before-failure-revert": [
+          "literal"
         ],
         "replaced-delete-failed-rollback": [
           "literal"
@@ -673,6 +747,7 @@
         "custom-resource-resolved-secret",
         "destroy-nested-cross-region",
         "export-nested-stack",
+        "generated-name-lifecycle",
         "import-nested-stack",
         "list-parameters",
         "nested-stack",
@@ -702,6 +777,9 @@
           "literal"
         ],
         "export-nested-stack": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "import-nested-stack": [
@@ -853,7 +931,6 @@
         "perf-cross-backend-check",
         "replacement-immutable-name",
         "scheduled-task",
-        "sdk-to-cc-autoroute",
         "throttle-wide-dag"
       ],
       "signals": {
@@ -884,10 +961,6 @@
         ],
         "scheduled-task": [
           "l2"
-        ],
-        "sdk-to-cc-autoroute": [
-          "l1",
-          "literal"
         ],
         "throttle-wide-dag": [
           "l1",
@@ -933,9 +1006,13 @@
     {
       "resourceType": "AWS::CodeCommit::Repository",
       "integs": [
+        "cc-required-name-generation",
         "codecommit"
       ],
       "signals": {
+        "cc-required-name-generation": [
+          "literal"
+        ],
         "codecommit": [
           "literal"
         ]
@@ -945,6 +1022,7 @@
       "resourceType": "AWS::Cognito::UserPool",
       "integs": [
         "api-cognito",
+        "apigateway",
         "appsync",
         "bedrock-agentcore",
         "cc-write-only-create-only",
@@ -961,6 +1039,9 @@
       ],
       "signals": {
         "api-cognito": [
+          "l2"
+        ],
+        "apigateway": [
           "l2"
         ],
         "appsync": [
@@ -1023,7 +1104,8 @@
       "resourceType": "AWS::DocDB::DBCluster",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
@@ -1031,6 +1113,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "lambda-esm-documentdb": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1038,7 +1124,8 @@
       "resourceType": "AWS::DocDB::DBInstance",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
@@ -1046,6 +1133,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "lambda-esm-documentdb": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -1053,13 +1144,17 @@
       "resourceType": "AWS::DocDB::DBSubnetGroup",
       "integs": [
         "docdb-fix-forward-orphan",
-        "docdb-neptune"
+        "docdb-neptune",
+        "lambda-esm-documentdb"
       ],
       "signals": {
         "docdb-fix-forward-orphan": [
           "l1"
         ],
         "docdb-neptune": [
+          "l1"
+        ],
+        "lambda-esm-documentdb": [
           "l1"
         ]
       }
@@ -1069,6 +1164,7 @@
       "integs": [
         "dynamodb-globaltable",
         "dynamodb-globaltable-implied-stream",
+        "dynamodb-globaltable-replica-settings",
         "globaltable-fix-forward-orphan",
         "lambda",
         "rollback-replay-effective-props"
@@ -1081,6 +1177,10 @@
         ],
         "dynamodb-globaltable-implied-stream": [
           "l1",
+          "literal"
+        ],
+        "dynamodb-globaltable-replica-settings": [
+          "l2",
           "literal"
         ],
         "globaltable-fix-forward-orphan": [
@@ -1114,6 +1214,7 @@
         "dynamodb-ttl-attr-change",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "import-attribute-readback",
         "import-heal-prefix-record",
@@ -1123,10 +1224,13 @@
         "multi-resource",
         "multi-stack-deps",
         "perf-cross-backend-check",
+        "refactor-command",
+        "refactor-move",
         "remove-protection",
         "rename-refactor",
         "rollback-same-id-recreate",
         "s3-event-notification",
+        "schema-v14-to-v15-migration",
         "serverless-api",
         "sns-event-source",
         "tags-propagation"
@@ -1187,6 +1291,10 @@
         "full-stack-demo": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
+        ],
         "glue-update-hardening": [
           "l2"
         ],
@@ -1216,6 +1324,12 @@
           "l2",
           "literal"
         ],
+        "refactor-command": [
+          "l2"
+        ],
+        "refactor-move": [
+          "l2"
+        ],
         "remove-protection": [
           "l2",
           "literal"
@@ -1229,6 +1343,9 @@
           "literal"
         ],
         "s3-event-notification": [
+          "l2"
+        ],
+        "schema-v14-to-v15-migration": [
           "l2"
         ],
         "serverless-api": [
@@ -1277,7 +1394,8 @@
           "l2"
         ],
         "ec2-instance": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "ec2-instance-fanout": [
           "l1"
@@ -1303,7 +1421,9 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -1334,13 +1454,16 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1365,7 +1488,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -1458,6 +1587,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -1465,6 +1597,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -1478,6 +1613,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1535,7 +1673,9 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -1564,13 +1704,16 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1593,7 +1736,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -1680,6 +1829,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -1687,6 +1839,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -1699,6 +1854,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -1782,7 +1940,9 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -1813,13 +1973,16 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -1843,7 +2006,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -1938,6 +2107,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -1945,6 +2117,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -1958,6 +2133,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2012,7 +2190,9 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -2043,13 +2223,16 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2074,7 +2257,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -2167,6 +2356,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2174,6 +2366,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -2187,6 +2382,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2244,10 +2442,12 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
+        "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-neptune",
@@ -2255,6 +2455,7 @@
         "drift-revert-vpc",
         "ec2-instance",
         "ec2-instance-fanout",
+        "ec2-sg-source-group-name",
         "ec2-vpc",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
@@ -2263,6 +2464,7 @@
         "emr-instance-fleets",
         "export",
         "fsx-lustre",
+        "generated-name-security-group",
         "lambda-capacity-provider-default-name",
         "local-start-alb-from-state",
         "multi-stack-deps",
@@ -2290,6 +2492,9 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
           "l2"
         ],
@@ -2301,6 +2506,9 @@
         ],
         "cc-final-snapshot-handlers": [
           "l2"
+        ],
+        "codebuild-project": [
+          "l1"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -2323,6 +2531,10 @@
         ],
         "ec2-instance-fanout": [
           "l2"
+        ],
+        "ec2-sg-source-group-name": [
+          "l1",
+          "literal"
         ],
         "ec2-vpc": [
           "l2"
@@ -2350,6 +2562,10 @@
         ],
         "fsx-lustre": [
           "l2",
+          "literal"
+        ],
+        "generated-name-security-group": [
+          "l1",
           "literal"
         ],
         "lambda-capacity-provider-default-name": [
@@ -2454,11 +2670,14 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2484,16 +2703,19 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -2521,7 +2743,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -2535,6 +2763,9 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "codebuild-project": [
+          "l1"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -2611,6 +2842,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -2624,6 +2858,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -2641,6 +2878,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2722,7 +2962,9 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -2751,13 +2993,16 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -2780,7 +3025,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -2867,6 +3118,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -2874,6 +3128,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -2887,6 +3144,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -2938,11 +3198,14 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2969,16 +3232,20 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
+        "generated-name-security-group",
         "import-attribute-readback-final",
         "import-attribute-readback-network",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "list-parameters",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "propagation-races-2",
@@ -3008,7 +3275,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -3022,6 +3295,9 @@
         ],
         "cc-protection-flip-eks": [
           "l2"
+        ],
+        "codebuild-project": [
+          "l1"
         ],
         "deletion-ordering-complex": [
           "l2"
@@ -3110,6 +3386,13 @@
           "l2",
           "literal"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
+        "generated-name-security-group": [
+          "l1",
+          "literal"
+        ],
         "import-attribute-readback-final": [
           "l1"
         ],
@@ -3123,6 +3406,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -3140,6 +3426,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -3218,7 +3507,9 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "batch",
+        "bedrock-agentcore",
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
@@ -3249,13 +3540,16 @@
         "fsx-ontap",
         "fsx-openzfs",
         "fsx-windows",
+        "generated-name-lifecycle",
         "import-migrate-vpc",
         "infra-security",
         "lambda-capacity-provider-default-name",
+        "lambda-esm-documentdb",
         "launchtemplate-asg-inplace",
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
         "rds-aurora",
@@ -3279,7 +3573,13 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "batch": [
+          "l2"
+        ],
+        "bedrock-agentcore": [
           "l2"
         ],
         "bench-cdk-sample": [
@@ -3319,7 +3619,8 @@
           "l2"
         ],
         "ec2-route-targets": [
-          "l1"
+          "l1",
+          "literal"
         ],
         "ec2-vpc": [
           "l2"
@@ -3373,6 +3674,9 @@
         "fsx-windows": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2"
+        ],
         "import-migrate-vpc": [
           "l2"
         ],
@@ -3380,6 +3684,9 @@
           "l2"
         ],
         "lambda-capacity-provider-default-name": [
+          "l2"
+        ],
+        "lambda-esm-documentdb": [
           "l2"
         ],
         "launchtemplate-asg-inplace": [
@@ -3393,6 +3700,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "nlb-quic-server-id": [
           "l2"
         ],
         "nlb-source-nat": [
@@ -3513,6 +3823,7 @@
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
+        "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
         "local-start-alb",
@@ -3538,6 +3849,10 @@
         ],
         "ecs-service-update-props": [
           "l2"
+        ],
+        "ecs-taskdef-tags-launch-type": [
+          "l1",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "l1"
@@ -3579,6 +3894,7 @@
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-service-update-props",
+        "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
         "local-start-alb",
@@ -3597,6 +3913,10 @@
         ],
         "ecs-service-update-props": [
           "l2",
+          "literal"
+        ],
+        "ecs-taskdef-tags-launch-type": [
+          "l1",
           "literal"
         ],
         "local-ecs-service-connect": [
@@ -3636,6 +3956,7 @@
         "ecs-fargate",
         "ecs-schedule-targets",
         "ecs-service-update-props",
+        "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
         "local-engine-role-identity",
         "local-run-task",
@@ -3662,6 +3983,10 @@
         ],
         "ecs-service-update-props": [
           "l2"
+        ],
+        "ecs-taskdef-tags-launch-type": [
+          "l1",
+          "literal"
         ],
         "local-ecs-service-connect": [
           "l1"
@@ -3886,15 +4211,20 @@
       "integs": [
         "alb",
         "deletion-ordering-complex",
+        "generated-name-lifecycle",
         "local-engine-role-identity",
         "local-start-alb",
-        "local-start-alb-from-state"
+        "local-start-alb-from-state",
+        "nlb-quic-server-id"
       ],
       "signals": {
         "alb": [
           "literal"
         ],
         "deletion-ordering-complex": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "local-engine-role-identity": [
@@ -3906,6 +4236,10 @@
         ],
         "local-start-alb-from-state": [
           "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -3914,13 +4248,16 @@
       "integs": [
         "alb",
         "alb-advanced",
+        "apigw-vpclink-integration-target",
         "deletion-ordering-complex",
         "drift-revert-vpc",
         "ecs-bluegreen",
+        "generated-name-lifecycle",
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
         "remove-protection",
@@ -3936,6 +4273,9 @@
         "alb-advanced": [
           "l2"
         ],
+        "apigw-vpclink-integration-target": [
+          "l2"
+        ],
         "deletion-ordering-complex": [
           "l2",
           "literal"
@@ -3946,6 +4286,10 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "import-attribute-readback-network": [
           "l1"
@@ -3960,6 +4304,10 @@
         ],
         "local-start-alb-from-state": [
           "l2",
+          "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
           "literal"
         ],
         "nlb-source-nat": [
@@ -3991,10 +4339,12 @@
         "deletion-ordering-complex",
         "drift-revert-arrays",
         "elbv2-same-name-replacement",
+        "generated-name-lifecycle",
         "import-attribute-readback-network",
         "local-engine-role-identity",
         "local-start-alb",
         "local-start-alb-from-state",
+        "nlb-quic-server-id",
         "partial-create-handback",
         "perf-cross-backend-check",
         "replacement-rename-onto-holder"
@@ -4014,6 +4364,9 @@
           "l1",
           "literal"
         ],
+        "generated-name-lifecycle": [
+          "literal"
+        ],
         "import-attribute-readback-network": [
           "l1"
         ],
@@ -4025,6 +4378,10 @@
           "literal"
         ],
         "local-start-alb-from-state": [
+          "literal"
+        ],
+        "nlb-quic-server-id": [
+          "l1",
           "literal"
         ],
         "partial-create-handback": [
@@ -4077,6 +4434,7 @@
         "eventbridge",
         "eventbridge-api-destination",
         "eventbridge-input-transformer",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "nested-stack-secret",
         "partial-create-handback",
@@ -4098,6 +4456,10 @@
           "l2"
         ],
         "eventbridge-input-transformer": [
+          "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "l2",
           "literal"
         ],
@@ -4287,6 +4649,7 @@
     {
       "resourceType": "AWS::IAM::Group",
       "integs": [
+        "iam-access-key",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4296,6 +4659,9 @@
         "infra-security"
       ],
       "signals": {
+        "iam-access-key": [
+          "l2"
+        ],
         "iam-managed-policy": [
           "l2"
         ],
@@ -4375,6 +4741,7 @@
     {
       "resourceType": "AWS::IAM::ManagedPolicy",
       "integs": [
+        "generated-name-lifecycle",
         "iam-managed-policy",
         "iam-profile-policy-fix-forward-orphan",
         "iam-recreate-reattach",
@@ -4385,6 +4752,9 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "generated-name-lifecycle": [
+          "literal"
+        ],
         "iam-managed-policy": [
           "literal"
         ],
@@ -4421,6 +4791,7 @@
         "asset-migration",
         "cdk-cross-account-lookup-role",
         "export",
+        "generated-name-lifecycle",
         "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-recreate-reattach",
@@ -4440,6 +4811,9 @@
         ],
         "export": [
           "l2",
+          "literal"
+        ],
+        "generated-name-lifecycle": [
           "literal"
         ],
         "getstackoutput-crossregion": [
@@ -4479,6 +4853,7 @@
         "agentcore-tools",
         "apigateway",
         "apigatewayv2-update-removal",
+        "apigw-cloudwatch-role-redeploy",
         "apigw-stage-props",
         "appsync",
         "batch",
@@ -4507,6 +4882,7 @@
         "eventbridge-scheduler",
         "export",
         "gc-custom-asset-names",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "iam-managed-policy",
         "iam-oidc-provider",
@@ -4540,6 +4916,10 @@
         "local-run-task-from-state",
         "local-start-alb-from-state",
         "local-start-api-websocket",
+        "local-start-microvm",
+        "local-start-microvm-from-state",
+        "local-start-web-function",
+        "local-start-web-function-from-state",
         "log-pipeline",
         "macro-expansion",
         "migrate-from-cfn",
@@ -4578,7 +4958,8 @@
         "tags-propagation",
         "throttle-wide-dag",
         "update-replace",
-        "vpc-lambda-cr-race"
+        "vpc-lambda-cr-race",
+        "wide-web-functions"
       ],
       "signals": {
         "agentcore-tools": [
@@ -4589,6 +4970,9 @@
         ],
         "apigatewayv2-update-removal": [
           "l2"
+        ],
+        "apigw-cloudwatch-role-redeploy": [
+          "literal"
         ],
         "apigw-stage-props": [
           "l2"
@@ -4682,6 +5066,10 @@
           "literal"
         ],
         "gc-custom-asset-names": [
+          "literal"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
           "literal"
         ],
         "glue-update-hardening": [
@@ -4788,6 +5176,20 @@
           "literal"
         ],
         "local-start-api-websocket": [
+          "literal"
+        ],
+        "local-start-microvm": [
+          "l2"
+        ],
+        "local-start-microvm-from-state": [
+          "l2",
+          "literal"
+        ],
+        "local-start-web-function": [
+          "l2"
+        ],
+        "local-start-web-function-from-state": [
+          "l2",
           "literal"
         ],
         "log-pipeline": [
@@ -4918,6 +5320,10 @@
         ],
         "vpc-lambda-cr-race": [
           "l2"
+        ],
+        "wide-web-functions": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -4996,11 +5402,15 @@
       "resourceType": "AWS::KMS::Alias",
       "integs": [
         "composite-stack",
+        "dynamodb-globaltable-replica-settings",
         "infra-security",
         "kms-encryption"
       ],
       "signals": {
         "composite-stack": [
+          "literal"
+        ],
+        "dynamodb-globaltable-replica-settings": [
           "literal"
         ],
         "infra-security": [
@@ -5018,13 +5428,17 @@
         "composite-stack",
         "cross-backend-same-stack",
         "drift-revert",
+        "dynamodb-globaltable-replica-settings",
+        "dynamodb-ondemand",
         "dynamodb-streams",
+        "ec2-instance",
         "ecr-scanning",
         "eventbridge",
         "infra-security",
         "kms-encryption",
         "loggroup-kms-associate",
         "propagation-races-2",
+        "s3-directory-bucket",
         "s3-replication-and-filter",
         "s3-vectors"
       ],
@@ -5042,7 +5456,17 @@
         "drift-revert": [
           "l2"
         ],
+        "dynamodb-globaltable-replica-settings": [
+          "l2",
+          "literal"
+        ],
+        "dynamodb-ondemand": [
+          "l2"
+        ],
         "dynamodb-streams": [
+          "l2"
+        ],
+        "ec2-instance": [
           "l2"
         ],
         "ecr-scanning": [
@@ -5055,6 +5479,7 @@
           "l2"
         ],
         "kms-encryption": [
+          "l1",
           "l2",
           "literal"
         ],
@@ -5063,6 +5488,9 @@
         ],
         "propagation-races-2": [
           "l1"
+        ],
+        "s3-directory-bucket": [
+          "l2"
         ],
         "s3-replication-and-filter": [
           "l2",
@@ -5079,6 +5507,7 @@
         "cache-streaming",
         "cc-write-only-create-only",
         "destroy-nested-cross-region",
+        "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
         "kinesis-esm-filter",
         "kinesis-stream-mode-switch",
@@ -5099,6 +5528,10 @@
           "l2"
         ],
         "destroy-nested-cross-region": [
+          "l2",
+          "literal"
+        ],
+        "dynamodb-globaltable-replica-settings": [
           "l2",
           "literal"
         ],
@@ -5196,6 +5629,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "import-attribute-readback",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka"
       ],
       "signals": {
@@ -5212,6 +5646,10 @@
           "literal"
         ],
         "import-attribute-readback": [
+          "l1",
+          "literal"
+        ],
+        "lambda-esm-documentdb": [
           "l1",
           "literal"
         ],
@@ -5261,6 +5699,7 @@
         "fifo-sqs-event-source",
         "full-stack-demo",
         "gc-custom-asset-names",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
         "iam-role-prefixed-name-update",
@@ -5277,6 +5716,7 @@
         "lambda-destinations",
         "lambda-durable-replacement",
         "lambda-env-removal",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka",
         "lambda-event-invoke-config-update",
         "lambda-fix-forward-orphan",
@@ -5470,6 +5910,10 @@
           "l2",
           "literal"
         ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
+        ],
         "iam-propagation-stress": [
           "l2"
         ],
@@ -5523,6 +5967,9 @@
         "lambda-env-removal": [
           "l2",
           "literal"
+        ],
+        "lambda-esm-documentdb": [
+          "l2"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
@@ -5770,10 +6217,14 @@
     {
       "resourceType": "AWS::Lambda::MicrovmImage",
       "integs": [
-        "lambda-microvm-image"
+        "lambda-microvm-image",
+        "local-start-microvm-from-state"
       ],
       "signals": {
         "lambda-microvm-image": [
+          "literal"
+        ],
+        "local-start-microvm-from-state": [
           "literal"
         ]
       }
@@ -5879,10 +6330,20 @@
     {
       "resourceType": "AWS::Lambda::WebFunctionEndpoint",
       "integs": [
-        "lambda-web-function-revision-replace"
+        "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
+        "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
+          "l1",
+          "literal"
+        ],
+        "wide-web-functions": [
           "l1",
           "literal"
         ]
@@ -5891,10 +6352,20 @@
     {
       "resourceType": "AWS::Lambda::WebFunctionRevision",
       "integs": [
-        "lambda-web-function-revision-replace"
+        "lambda-web-function-revision-replace",
+        "local-start-web-function-from-state",
+        "wide-web-functions"
       ],
       "signals": {
         "lambda-web-function-revision-replace": [
+          "l1",
+          "literal"
+        ],
+        "local-start-web-function-from-state": [
+          "l1",
+          "literal"
+        ],
+        "wide-web-functions": [
           "l1",
           "literal"
         ]
@@ -5918,7 +6389,9 @@
         "ecs-fargate",
         "ecs-service-update-props",
         "fallback-recreate-children",
+        "fsx-lustre",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "local-start-alb-from-state",
         "log-pipeline",
@@ -5931,13 +6404,16 @@
         "perf-cross-backend-check",
         "remove-protection",
         "retain-orphan-redeploy",
+        "rollback-replacement-retain",
         "rollback-same-id-recreate",
         "route53",
         "scheduled-task",
+        "sdk-to-cc-autoroute",
         "secret-derived-immutable-names",
         "stepfunctions-logging",
         "tags-propagation",
-        "type-change-replacement"
+        "type-change-replacement",
+        "wide-independent"
       ],
       "signals": {
         "apigatewayv2-update-removal": [
@@ -5992,8 +6468,16 @@
           "l1",
           "literal"
         ],
+        "fsx-lustre": [
+          "l2",
+          "literal"
+        ],
         "full-stack-demo": [
           "l2"
+        ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
         ],
         "glue-update-hardening": [
           "l1"
@@ -6037,6 +6521,10 @@
         "retain-orphan-redeploy": [
           "literal"
         ],
+        "rollback-replacement-retain": [
+          "l1",
+          "literal"
+        ],
         "rollback-same-id-recreate": [
           "l2",
           "literal"
@@ -6046,6 +6534,10 @@
         ],
         "scheduled-task": [
           "l2"
+        ],
+        "sdk-to-cc-autoroute": [
+          "l1",
+          "literal"
         ],
         "secret-derived-immutable-names": [
           "l1",
@@ -6058,6 +6550,10 @@
           "l2"
         ],
         "type-change-replacement": [
+          "literal"
+        ],
+        "wide-independent": [
+          "l2",
           "literal"
         ]
       }
@@ -6237,9 +6733,14 @@
     {
       "resourceType": "AWS::Route53::HostedZone",
       "integs": [
+        "ec2-vpc",
         "route53"
       ],
       "signals": {
+        "ec2-vpc": [
+          "l1",
+          "literal"
+        ],
         "route53": [
           "l2"
         ]
@@ -6268,6 +6769,7 @@
         "cc-getatt-readback",
         "ci-cd",
         "cloudtrail-trail",
+        "codebuild-project",
         "composite-stack",
         "conditions",
         "context-test",
@@ -6281,6 +6783,7 @@
         "event-driven",
         "export",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "glue-update-hardening",
         "import-value-strong-ref",
         "infra-security",
@@ -6290,6 +6793,7 @@
         "local-invoke-from-state",
         "local-start-cloudfront",
         "local-start-cloudfront-from-state",
+        "local-start-microvm-from-state",
         "log-pipeline",
         "lost-child-after-failed-deploy",
         "migrate-from-cfn",
@@ -6306,6 +6810,7 @@
         "rollback-replay-effective-props",
         "s3-analytics-inventory",
         "s3-cloudfront",
+        "s3-directory-bucket",
         "s3-event-notification",
         "s3-fix-forward-orphan",
         "s3-lifecycle",
@@ -6318,7 +6823,8 @@
         "synthetics-canary",
         "tags-propagation",
         "update-policy-mutations",
-        "update-replace"
+        "update-replace",
+        "vpc-lambda-cr-race"
       ],
       "signals": {
         "asset-migration": [
@@ -6341,6 +6847,9 @@
           "literal"
         ],
         "cloudtrail-trail": [
+          "l2"
+        ],
+        "codebuild-project": [
           "l2"
         ],
         "composite-stack": [
@@ -6386,6 +6895,10 @@
         "full-stack-demo": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
+        ],
         "glue-update-hardening": [
           "l2"
         ],
@@ -6412,6 +6925,10 @@
           "l2"
         ],
         "local-start-cloudfront-from-state": [
+          "l2",
+          "literal"
+        ],
+        "local-start-microvm-from-state": [
           "l2",
           "literal"
         ],
@@ -6467,6 +6984,9 @@
         "s3-cloudfront": [
           "l2"
         ],
+        "s3-directory-bucket": [
+          "l2"
+        ],
         "s3-event-notification": [
           "l2"
         ],
@@ -6512,6 +7032,9 @@
         "update-replace": [
           "l2",
           "literal"
+        ],
+        "vpc-lambda-cr-race": [
+          "l2"
         ]
       }
     },
@@ -6671,6 +7194,7 @@
         "eventbridge-pipes",
         "export",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "iam-propagation-stress",
         "import-attribute-readback",
         "importvalue-chain",
@@ -6685,6 +7209,8 @@
         "noecho-parameter-masking",
         "partial-create-handback",
         "perf-cross-backend-check",
+        "refactor-command",
+        "refactor-move",
         "replacement-fanout",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6703,7 +7229,8 @@
         "throttle-wide-dag",
         "type-change-replacement",
         "unrecognized-key-autoroute",
-        "update-policy-mutations"
+        "update-policy-mutations",
+        "wide-independent"
       ],
       "signals": {
         "bench-sdk": [
@@ -6765,6 +7292,10 @@
         "full-stack-demo": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l2",
+          "literal"
+        ],
         "iam-propagation-stress": [
           "l2"
         ],
@@ -6812,6 +7343,12 @@
           "l2",
           "literal"
         ],
+        "refactor-command": [
+          "l2"
+        ],
+        "refactor-move": [
+          "l2"
+        ],
         "replacement-fanout": [
           "l2",
           "literal"
@@ -6821,6 +7358,7 @@
           "literal"
         ],
         "retain-orphan-redeploy": [
+          "l1",
           "literal"
         ],
         "s3-lifecycle": [
@@ -6876,6 +7414,10 @@
           "literal"
         ],
         "update-policy-mutations": [
+          "l2",
+          "literal"
+        ],
+        "wide-independent": [
           "l2",
           "literal"
         ]
@@ -6946,6 +7488,7 @@
         "eventsourcemapping-race",
         "fifo-sqs-event-source",
         "full-stack-demo",
+        "generated-name-lifecycle",
         "getstackoutput-crossregion",
         "iam-propagation-stress",
         "iam-role-policies-drift-clean",
@@ -6963,6 +7506,8 @@
         "noecho-parameter-masking",
         "perf-cross-backend-check",
         "pipes-fix-forward-orphan",
+        "refactor-command",
+        "refactor-move",
         "rename-refactor",
         "replacement-rename-onto-holder",
         "retain-orphan-redeploy",
@@ -6990,7 +7535,8 @@
         "sns-subscription-filter",
         "sns-subscription-update",
         "sqs-esm-max-concurrency",
-        "tags-propagation"
+        "tags-propagation",
+        "wide-independent"
       ],
       "signals": {
         "appsync": [
@@ -7072,6 +7618,11 @@
         "full-stack-demo": [
           "l2"
         ],
+        "generated-name-lifecycle": [
+          "l1",
+          "l2",
+          "literal"
+        ],
         "getstackoutput-crossregion": [
           "l1"
         ],
@@ -7127,6 +7678,12 @@
         ],
         "pipes-fix-forward-orphan": [
           "l1"
+        ],
+        "refactor-command": [
+          "l2"
+        ],
+        "refactor-move": [
+          "l2"
         ],
         "rename-refactor": [
           "l2",
@@ -7220,6 +7777,10 @@
         ],
         "tags-propagation": [
           "l2"
+        ],
+        "wide-independent": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -7280,6 +7841,7 @@
         "docdb-neptune",
         "drift-revert",
         "dynamic-ref-cross-region",
+        "ec2-instance",
         "elasticache-replicationgroup-getatt",
         "eventbridge",
         "export-nested-stack",
@@ -7310,6 +7872,7 @@
         "list-parameters",
         "local-engine-role-identity",
         "local-invoke-from-cfn-stack-multi-stack",
+        "local-start-microvm-from-state",
         "lost-child-after-failed-deploy",
         "microservices",
         "multi-region-same-stack",
@@ -7330,6 +7893,8 @@
         "recreate-nested-logical-id-collision",
         "recreate-target-readers",
         "redshift-cluster-getatt",
+        "refactor-command",
+        "refactor-move",
         "remove-protection-journaled-orphan",
         "rename-refactor",
         "replacement-fanout",
@@ -7345,6 +7910,7 @@
         "s3-tables",
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
+        "schema-v12-to-v13-migration",
         "schema-v5-to-v6-migration",
         "schema-v6-to-v7-migration",
         "schema-v7-to-v8-migration",
@@ -7354,14 +7920,17 @@
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
         "secrets-dynamic-ref",
+        "shared-stackname-multi-region",
         "stale-attribute-heal",
         "state-info-command",
         "tags-propagation",
+        "termination-protection",
         "throttle-wide-dag",
         "type-change-replacement",
         "update-policy-mutations",
         "vpc-lookup",
-        "wait-condition-handle"
+        "wait-condition-handle",
+        "wide-independent"
       ],
       "signals": {
         "bench-sdk": [
@@ -7445,6 +8014,9 @@
           "l1"
         ],
         "dynamic-ref-cross-region": [
+          "l1"
+        ],
+        "ec2-instance": [
           "l1"
         ],
         "elasticache-replicationgroup-getatt": [
@@ -7552,6 +8124,10 @@
         "local-invoke-from-cfn-stack-multi-stack": [
           "l2"
         ],
+        "local-start-microvm-from-state": [
+          "l2",
+          "literal"
+        ],
         "lost-child-after-failed-deploy": [
           "l1",
           "literal"
@@ -7623,6 +8199,12 @@
         "redshift-cluster-getatt": [
           "l1"
         ],
+        "refactor-command": [
+          "l2"
+        ],
+        "refactor-move": [
+          "l2"
+        ],
         "remove-protection-journaled-orphan": [
           "l1",
           "literal"
@@ -7676,6 +8258,9 @@
         "schema-v11-to-v12-migration": [
           "l1"
         ],
+        "schema-v12-to-v13-migration": [
+          "l1"
+        ],
         "schema-v5-to-v6-migration": [
           "l2"
         ],
@@ -7709,6 +8294,10 @@
           "l1",
           "l2"
         ],
+        "shared-stackname-multi-region": [
+          "l2",
+          "literal"
+        ],
         "stale-attribute-heal": [
           "l1",
           "literal"
@@ -7717,6 +8306,10 @@
           "l2"
         ],
         "tags-propagation": [
+          "l2",
+          "literal"
+        ],
+        "termination-protection": [
           "l2",
           "literal"
         ],
@@ -7736,6 +8329,10 @@
         ],
         "wait-condition-handle": [
           "l2"
+        ],
+        "wide-independent": [
+          "l2",
+          "literal"
         ]
       }
     },
@@ -7772,6 +8369,7 @@
         "full-stack-demo",
         "iam-access-key",
         "import-secret-observed",
+        "lambda-esm-documentdb",
         "lambda-esm-self-managed-kafka",
         "local-invoke-from-state",
         "local-run-task-from-state",
@@ -7780,7 +8378,9 @@
         "secrets-array-nested",
         "secrets-dynamic-ref",
         "secrets-rotation-schedule",
-        "secretsmanager-update-value-source"
+        "secretsmanager-replica-rekey",
+        "secretsmanager-update-value-source",
+        "servicediscovery"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
@@ -7805,6 +8405,9 @@
         "import-secret-observed": [
           "l2",
           "literal"
+        ],
+        "lambda-esm-documentdb": [
+          "l2"
         ],
         "lambda-esm-self-managed-kafka": [
           "l2",
@@ -7836,9 +8439,17 @@
           "l2",
           "literal"
         ],
+        "secretsmanager-replica-rekey": [
+          "l1",
+          "literal"
+        ],
         "secretsmanager-update-value-source": [
+          "l1",
           "l2",
           "literal"
+        ],
+        "servicediscovery": [
+          "l1"
         ]
       }
     },
@@ -7982,6 +8593,7 @@
     "AWS::ApiGateway::RequestValidator",
     "AWS::ApiGateway::RestApi",
     "AWS::ApiGateway::UsagePlanKey",
+    "AWS::ApiGatewayV2::VpcLink",
     "AWS::AppConfig::Application",
     "AWS::AppConfig::ConfigurationProfile",
     "AWS::AppConfig::Deployment",
@@ -8015,6 +8627,7 @@
     "AWS::EC2::TransitGateway",
     "AWS::EC2::TransitGatewayAttachment",
     "AWS::EC2::VPCCidrBlock",
+    "AWS::EC2::VPNGateway",
     "AWS::EC2::Volume",
     "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",

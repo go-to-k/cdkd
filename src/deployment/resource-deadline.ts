@@ -165,6 +165,11 @@ export async function withResourceDeadline<T>(
         outer?.resume();
       },
       expired: () => timedOut || (outer?.expired() ?? false),
+      remainingMs: () =>
+        Math.min(
+          timedOut ? 0 : Math.max(0, opts.timeoutMs - elapsed()),
+          outer?.remainingMs() ?? Number.POSITIVE_INFINITY
+        ),
     };
 
     // Run the operation eagerly. If the timeout has already fired by the
@@ -195,6 +200,8 @@ interface DeadlineControl {
   resume(): void;
   /** Whether this deadline, or one enclosing it, has already timed out. */
   expired(): boolean;
+  /** What is left of the tightest enclosing budget, in ms (0 once expired). */
+  remainingMs(): number;
 }
 
 const deadlineScope = new AsyncLocalStorage<DeadlineControl>();
@@ -224,4 +231,15 @@ export async function whileEnclosingDeadlinesPaused<T>(fn: () => Promise<T>): Pr
  */
 export function enclosingDeadlineExpired(): boolean {
   return deadlineScope.getStore()?.expired() ?? false;
+}
+
+/**
+ * What is left of the tightest deadline enclosing the caller, in milliseconds:
+ * `Infinity` outside any deadline, `0` once one has expired. A provider that
+ * WAITS while a guard it lowered is down bounds its wait by this (issue
+ * #5155): the deadline does not cancel the operation it wraps, so a wait that
+ * outlives it would leave the guard down with nothing left to restore it.
+ */
+export function enclosingDeadlineRemainingMs(): number {
+  return deadlineScope.getStore()?.remainingMs() ?? Number.POSITIVE_INFINITY;
 }

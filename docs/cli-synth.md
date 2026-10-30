@@ -44,7 +44,7 @@ which template reaches stdout and which stack cdkd checks for annotations.
 | `-c`, `--context <key=value...>` | | Context values. Repeatable. |
 | `--profile <profile>` | | AWS profile. |
 | `--role-arn <arn>` | `CDKD_ROLE_ARN` | Role to assume before any AWS call. |
-| `--verbose` | `false` | Debug-level logging. Also writes `<stackName>.template.json` into `--output` for each selected stack. |
+| `--verbose` | `false` | Debug-level logging. Also writes `<stackName>.template.json` into `--output` for each selected stack (`<stackName>.<region>.template.json` when two selected stacks share a physical name). |
 | `-y`, `--yes` | `false` | Accepted, but `cdkd synth` asks no confirmation. |
 | `--region <region>` | | Deprecated and hidden. See [Region resolution](cli-reference-region.md). |
 

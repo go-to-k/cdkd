@@ -84,7 +84,7 @@ describe('composite-id decode messages, per site (issue #1657)', () => {
         provider().delete('MyAttach', 'lonely', 'AWS::EC2::VPCGatewayAttachment')
       ).rejects.toThrow(
         'Invalid physicalId format for VPCGatewayAttachment MyAttach: ' +
-          'expected "<internetGatewayId>|<vpcId>", got "lonely"'
+          'expected "<gatewayId>|<vpcId>", got "lonely"'
       );
       noSend();
     });

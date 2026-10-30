@@ -430,9 +430,10 @@ at such a position, so it does not call the position drifted:
   still reports the resource drifted (exit `1`), with the cause alongside.
 
 A secret changed *at* a masked position cannot be seen; that is inherent to a
-position cdkd cannot name. Two shapes keep reporting as drift: a masked element
-of a list declared unordered, which is sorted apart from its live counterpart,
-and a masked binary value, which only a string can match.
+position cdkd cannot name, and so is a value there that changed type (a string
+become a number or an object). One shape keeps reporting as drift: a masked
+element of a list declared unordered, which is sorted apart from its live
+counterpart.
 
 A position reported as not compared is left alone by both remediation modes:
 `--accept` writes nothing over it, and `--revert` sends AWS's own value there
@@ -554,16 +555,22 @@ and Cloud Control's response is usually the same shape, but for some resource
 types it diverges enough to fire false drift on every run. Two guards protect
 the fallback:
 
-1. **Deny-list.** Types with verified structural divergence short-circuit to
-   `drift unknown` before the Cloud Control call fires. Current entries are
+1. **Deny-list.** Types with verified structural divergence, or a physical id
+   Cloud Control cannot address, short-circuit to `drift unknown` before the
+   Cloud Control call fires. Current entries are
    `AWS::ApiGateway::RestApi` (its `Body` / `BodyS3Location` are write-only
    inputs the response omits, while cdkd state preserves them),
    `AWS::CloudFormation::Stack` (cdkd deploys a nested stack itself, so no
    CloudFormation stack exists and the row's id is a cdkd-local placeholder;
    a nested row is decided before this point, as described under
-   [Nested stacks](cli-drift-nested-stacks.md)), and
+   [Nested stacks](cli-drift-nested-stacks.md)),
+   `AWS::CloudWatch::AnomalyDetector` (its physical id is a cdkd-derived
+   descriptor, not the type's identifier),
    `AWS::EC2::LaunchTemplate` (the response carries version-bumped
-   `LaunchTemplateData` plus a synthetic `LatestVersionNumber`).
+   `LaunchTemplateData` plus a synthetic `LatestVersionNumber`), and
+   `AWS::EMR::InstanceFleetConfig` and `AWS::EMR::InstanceGroupConfig` (the
+   physical id is the bare fleet / group id, and Cloud Control needs the
+   cluster id with it).
 2. **Strip pass.** Known AWS-managed timestamp, owner and generated-id fields
    (`CreationDate`, `LastModifiedTime`, `OwnerId`, `RevisionId`, and
    similar) are removed from Cloud Control responses before the comparator
@@ -623,6 +630,16 @@ while non-drifted properties carry their AWS-current values on both sides, so
 a diff-based `update()` (SNS, IAM Role) sees `newVal === oldVal` for them and
 does not touch AWS for those keys. `--revert` undoes exactly the delta
 `cdkd drift` reported and leaves non-drifted attributes alone.
+
+Some readbacks omit a top-level property while it is at its default, so a
+baseline captured then has no such key. A provider names those keys
+(`getDriftAbsentMeansDefaultKeys`, issue
+[#5399](https://github.com/go-to-k/cdkd/issues/5399)): drift compares each one
+even when the `observedProperties` baseline lacks it, and `--revert` sends it
+absent, so the provider resets it as it does for a property removed from the
+template. A GlobalTable recorded on the AWS owned key and moved to a KMS key
+out of band reports `SSESpecification`, and the revert returns every region to
+the AWS owned key.
 
 Per-resource failures are collected and surface as `PartialFailureError` at
 the end of the run; one resource's failure does not abort the rest. cdkd state's

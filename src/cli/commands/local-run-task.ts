@@ -13,7 +13,18 @@ import {
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn, redactedAwsCause } from '../../utils/local-aws-failure.js';
-import { displayIdent, plainIdentOr, ROLE_ARN_MAX_CODE_POINTS } from '../../utils/display-safe.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
+import {
+  displayIdent,
+  plainIdentOr,
+  ROLE_ARN_MAX_CODE_POINTS,
+  safeMsg,
+} from '../../utils/display-safe.js';
 import { VALUE_NOT_SHOWN } from '../../provisioning/import-helpers.js';
 import { applyRoleArnForLocal } from '../../local/local-role-arn.js';
 import {
@@ -247,7 +258,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
           } catch (err) {
             getLogger().debug(
               `Failed to remove profile credentials tmpdir ${channels.profileCredsFile.hostPath}: ${
-                err instanceof Error ? err.message : String(err)
+                describeAwsFailure(err).detail
               }`
             );
           }
@@ -261,7 +272,7 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
             afterContainersStopped: disposeCreds,
           });
         } catch (err) {
-          getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+          getLogger().debug(`cleanup failed: ${describeAwsFailure(err).detail}`);
         }
         // Idempotent (`rm --force`); covers a `cleanupEcsRun` that threw first.
         await disposeCreds();
@@ -925,7 +936,9 @@ export function pickCandidateStack(
     if (stacks.length === 1) return stacks[0];
     return undefined;
   }
-  const matched = matchStacks(stacks, [stackPattern]);
+  // By identity: two Stage stacks sharing a physical name are not unique,
+  // never the first one's (#5176).
+  const matched = matchStacks(stacks, [stackPattern], { dedupe: 'identity' });
   if (matched.length === 1) return matched[0];
   return undefined;
 }
@@ -975,7 +988,7 @@ async function resolveStackAccountId(source: StackAccountSource): Promise<string
  * `cdkd local invoke --env-vars`: top-level keys are container names, with
  * `Parameters` reserved for global entries.
  */
-function readEnvOverridesFile(
+export function readEnvOverridesFile(
   filePath: string | undefined
 ): Record<string, Record<string, string | null> | undefined> | undefined {
   if (!filePath) return undefined;
@@ -984,15 +997,19 @@ function readEnvOverridesFile(
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read --env-vars file '${filePath}': ${err instanceof Error ? err.message : String(err)}`
+      `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`
     );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the file, which holds env values
+    // (often secrets), so the message names only the failure's offset and
+    // size; V8's text goes to `debug` only (issue #5254).
+    getLogger().debug(safeMsg`--env-vars file failed to parse: ${parseFailureDebugDetail(err)}`);
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${err instanceof Error ? err.message : String(err)}`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

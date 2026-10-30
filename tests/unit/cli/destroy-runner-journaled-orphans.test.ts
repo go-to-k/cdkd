@@ -91,11 +91,17 @@ function res(extra: Partial<ResourceState> = {}): ResourceState {
   };
 }
 
+// The under-lock re-read (#5220) needs to see the record each test actually
+// destroys; every case builds that record through `makeState`, so tracking
+// its last call here is the one place the default `getState` mock (below)
+// needs to echo it back from, instead of each of the 42 call sites doing so.
+let lastMadeState: StackState | undefined;
+
 function makeState(
   resources: Record<string, ResourceState>,
   orphans?: StackState['orphans']
 ): StackState {
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -104,6 +110,8 @@ function makeState(
     ...(orphans && { orphans }),
     lastModified: 1,
   };
+  lastMadeState = state;
+  return state;
 }
 
 function journalOf(failedOperations: unknown[]) {
@@ -177,7 +185,12 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
     mockDropFailed.mockReset().mockResolvedValue(0);
     mockResourceIdentity.mockReset().mockResolvedValue('created-token');
     mockListStacks.mockReset().mockResolvedValue([]);
-    mockGetState.mockReset().mockResolvedValue(null);
+    // Default under-lock re-read (#5220): the same record this run was
+    // handed, for TestStack itself; unrelated-stack lookups (holder scans)
+    // keep seeing no record unless a case overrides this.
+    mockGetState.mockReset().mockImplementation(async (name: string) =>
+      name === 'TestStack' && lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+    );
     infoSpy.mockReset();
     warnSpy.mockReset();
   });
@@ -419,19 +432,21 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
       { stackName: 'TestStack', region: REGION },
       { stackName: 'B', region: REGION },
     ]);
+    const bState = {
+      ...makeState({
+        Imported: res({ physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream' }),
+      }),
+      stackName: 'B',
+    };
+    const state = makeState({ R: res() });
     mockGetState.mockImplementation(async (name: string) =>
       name === 'B'
-        ? {
-            state: {
-              ...makeState({
-                Imported: res({ physicalId: 'orphan-stream', resourceType: 'AWS::Kinesis::Stream' }),
-              }),
-              stackName: 'B',
-            },
-          }
-        : null
+        ? { state: bState }
+        : name === 'TestStack'
+          ? { state, etag: 'e' }
+          : null
     );
-    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
     expect(deleted()).toEqual(['phys-r']);
     expect(mockResourceIdentity).not.toHaveBeenCalled();
     expect(result.errorCount).toBe(0);
@@ -452,11 +467,12 @@ describe('runDestroyForStack: proven failed-CREATE orphans in the journal (go-to
       { stackName: 'TestStack', region: REGION },
       { stackName: 'B', region: REGION },
     ]);
+    const state = makeState({ R: res() });
     mockGetState.mockImplementation(async (name: string) => {
       if (name === 'B') throw new Error('AccessDenied');
-      return null;
+      return name === 'TestStack' ? { state, etag: 'e' } : null;
     });
-    const result = await runDestroyForStack('TestStack', makeState({ R: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', state, makeCtx());
     expect(deleted()).not.toContain('orphan-stream');
     expect(mockResourceIdentity).not.toHaveBeenCalled();
     expect(result.errorCount).toBeGreaterThan(0);

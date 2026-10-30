@@ -58,6 +58,19 @@ export const CC_API_FALLBACK_DENY_LIST: Record<string, string> = {
   'AWS::CloudWatch::AnomalyDetector':
     "the physicalId is a cdkd-derived metric descriptor, not the primaryIdentifier Cloud Control's GetResource requires",
 
+  // AWS::EMR::InstanceFleetConfig / InstanceGroupConfig: the SDK providers
+  // have no `readCurrentState` and record the bare fleet / group id as the
+  // physicalId. Registry versions created 2025-10-23 gave both types Cloud
+  // Control handlers keyed by a COMPOSITE primaryIdentifier (`ClusterId` +
+  // `InstanceFleetId`, `InstanceGroupId` + `JobFlowId`), so `GetResource`
+  // refuses the bare id with a ValidationException ("Identifier if-... is
+  // not valid for identifier [...]") on every run: a permanent read failure
+  // (exit 2) where it used to be drift unknown (#5179, the #4668 class).
+  'AWS::EMR::InstanceFleetConfig':
+    "the physicalId is the bare fleet id, not the composite primaryIdentifier Cloud Control's GetResource requires",
+  'AWS::EMR::InstanceGroupConfig':
+    "the physicalId is the bare instance group id, not the composite primaryIdentifier Cloud Control's GetResource requires",
+
   // AWS::EC2::LaunchTemplate: `LaunchTemplateData` ships with deeply
   // structured sub-objects that CC API normalizes into a versioned shape
   // — every UpdateLaunchTemplate (and even GetLaunchTemplate) bumps the

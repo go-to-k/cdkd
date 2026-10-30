@@ -136,7 +136,7 @@
  * `src/provisioning/providers`, #2040's subject; widened over `src/` on
  * 2026-10-02 the run flagged 17 sites in 10 files: 10 sat behind a composer
  * the rule could not see yet, 4 were genuine drops under `src/local/`
- * (threaded since), and 3 are the deliberate omissions in {@link EXEMPTIONS}. The providers subtree
+ * (threaded since), and 3 were deliberate omissions, now among {@link EXEMPTIONS}. The providers subtree
  * keeps its own file floor so the original subject cannot drop out of a scan
  * that is otherwise large enough.
  *
@@ -203,7 +203,7 @@ const MIN_THREADED_CONSTRUCTIONS = 350;
  * the population drifting off composers until only the self-probe exercises
  * the arm.
  */
-const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 16;
+const MIN_COMPOSER_THREADED_CONSTRUCTIONS = 18;
 /** Minimum size of the DERIVED error-class table. */
 const MIN_ERROR_CLASSES = 20;
 
@@ -300,6 +300,42 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
     reason:
       'a local metadata-file read failure, not an AWS error: same path-echo reason as ' +
       'assembly-reader.ts (go-to-k/cdkd#3617)',
+  },
+  {
+    file: 'state/s3-state-backend.ts',
+    errorClass: 'StateError',
+    within: 'parseStateBody',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of the state body, not an AWS error: no classifier reads it, and V8's " +
+      '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5247)',
+  },
+  {
+    file: 'state/lock-manager.ts',
+    errorClass: 'LockError',
+    within: 'getLockRecord',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of `lock.json`, not an AWS error: no classifier reads it, and V8's " +
+      '`SyntaxError` quotes a window of that body, which a `Caused by:` line would print (go-to-k/cdkd#5254)',
+  },
+  {
+    file: 'synthesis/assembly-reader.ts',
+    errorClass: 'SynthesisError',
+    within: 'readManifest',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of `manifest.json`, not an AWS error: its cause is a snippet-free " +
+      "`SyntaxError` stand-in, because V8's own quotes a window of the file (go-to-k/cdkd#5254)",
+  },
+  {
+    file: 'synthesis/macro-expander.ts',
+    errorClass: 'MacroExpansionError',
+    within: 'parseTemplateBody',
+    count: 1,
+    reason:
+      "a `JSON.parse` failure of the Processed-stage template, not an AWS error: no classifier reads " +
+      "it, and V8's `SyntaxError` quotes a window of the template (go-to-k/cdkd#5254)",
   },
   {
     file: 'local/docker-image-builder.ts',

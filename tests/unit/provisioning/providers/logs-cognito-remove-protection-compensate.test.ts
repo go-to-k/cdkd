@@ -60,6 +60,7 @@ import {
   userPoolProtectionSite,
 } from '../../../../src/provisioning/providers/deletion-protection-compensation.js';
 import { WITHHELD_AWS_COMMAND } from '../../../../src/provisioning/replacement-protection-advice.js';
+import { isAwsAuthoredFailure, VERBOSE_POINTER } from '../../../../src/utils/aws-failure-text.js';
 import { ResourceNotFoundException as LogsNotFound } from '@aws-sdk/client-cloudwatch-logs';
 import { ResourceNotFoundException as CognitoNotFound } from '@aws-sdk/client-cognito-identity-provider';
 
@@ -174,6 +175,28 @@ function iamDeny(): Error {
     { name: 'AccessDeniedException', $metadata: { httpStatusCode: 400 } }
   );
 }
+
+/**
+ * The site's delete failure names `text`. Both wraps withhold an AWS-authored
+ * failure's text into their `cause` and name it by its class at the top
+ * (go-to-k/cdkd#2319), so the site must be the wrap, never the raw error, and
+ * AWS's text must NOT be in the thrown (persisted) message.
+ */
+const DELETE_WRAP: Record<string, RegExp> = {
+  'Cognito UserPool': /^Failed to delete Cognito User Pool \S+: /,
+  'Logs LogGroup': /^Failed to delete log group \S+: /,
+};
+const says =
+  (site: Site, text: string) =>
+  (error: unknown): boolean => {
+    if (!(error instanceof Error)) return false;
+    const cause = error.cause;
+    if (!(cause instanceof Error) || !cause.message.includes(text)) return false;
+    const authored = isAwsAuthoredFailure(cause);
+    if (authored && error.message.includes(text)) return false;
+    const tail = authored ? `${cause.name}. ${VERBOSE_POINTER}` : cause.message;
+    return DELETE_WRAP[site.name]!.test(error.message) && error.message.endsWith(`: ${tail}`);
+  };
 
 function notFound(): Error {
   const e = new Error('The specified resource does not exist.');
@@ -292,6 +315,25 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     expect(reEnableCalls(site)).toHaveLength(0);
   });
 
+  it("masks the failed readback's debug line with the delete's maskSecrets (#5180)", async () => {
+    script(site, {
+      observe: new Error(`read failed on ${site.physicalId}`),
+      del: terminalRefusal(),
+    });
+    await expect(
+      del(site.make(), {
+        ...CTX,
+        maskSecrets: (text: string) => text.split(site.physicalId).join('***'),
+      })
+    ).rejects.toThrow('domain configured');
+    const line = childLogger.debug.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.startsWith(`Could not read ${site.guardName}`));
+    expect(line).toBe(
+      `Could not read ${site.guardName} on *** before disabling it: read failed on ***`
+    );
+  });
+
   it('does not compensate a flip AWS rejected', async () => {
     // An AWS-authored refusal (`$metadata` set): only that PROVES the flip did
     // not land. A client-side failure may have, and is compensated (#4066).
@@ -350,13 +392,13 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     const provider = site.make();
     script(site, { observe: true, del: iamDeny() });
     for (let i = 0; i < 3; i += 1) {
-      await expect(runDeleteAttempt(false, () => del(provider))).rejects.toThrow(
-        'not authorized to perform'
+      await expect(runDeleteAttempt(false, () => del(provider))).rejects.toSatisfy(
+        says(site, 'not authorized to perform')
       );
       expect(reEnableCalls(site)).toHaveLength(0);
     }
-    await expect(runDeleteAttempt(true, () => del(provider))).rejects.toThrow(
-      'not authorized to perform'
+    await expect(runDeleteAttempt(true, () => del(provider))).rejects.toSatisfy(
+      says(site, 'not authorized to perform')
     );
     const reEnables = reEnableCalls(site);
     expect(reEnables).toHaveLength(1);
@@ -413,6 +455,19 @@ describe.each(SITES)('$name: --remove-protection compensation (issue #2204)', (s
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`Restore it with: ${site.restoreCommand}.`)
     );
+  });
+
+  // go-to-k/cdkd#2319: the class is AWS-authored text, so the delete's masker
+  // must reach the re-enable report. The Logs delete is another lane's file.
+  it.skipIf(site.name !== 'Cognito UserPool')('masks a secret spelled in the failed re-enable class', async () => {
+    script(site, { observe: true, del: terminalRefusal(), reEnable: Object.assign(new Error('denied'), { name: 'Denieds3cr3tException', $fault: 'client', $metadata: { httpStatusCode: 400 } }) });
+    await expect(del(undefined, { ...CTX, maskSecrets: (t: string) => t.split('s3cr3t').join('***') })).rejects.toThrow('domain configured');
+    const reported = [...childLogger.error.mock.calls, ...childLogger.warn.mock.calls]
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('re-enable'));
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toContain('(Denied***Exception. Re-run with --verbose');
+    expect(reported[0]).not.toContain('s3cr3t');
   });
 
   it('a not-found re-enable is a WARN that names the check first, not an ERROR claiming it is live', async () => {
@@ -581,5 +636,139 @@ describe('logGroupProtectionSite / userPoolProtectionSite', () => {
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`${lg.restoreCommand}. (AccessDenied)`)
     );
+  });
+});
+
+// Cognito's user pool id is AWS-assigned, so only the log group's flip line
+// names a template value.
+describe.each(SITES.filter((s) => s.resourceType === 'AWS::Logs::LogGroup'))(
+  '$name: the rejected flip-off line is masked (#5180)',
+  (site) => {
+    it("routes the id and AWS's text through the delete's maskSecrets", async () => {
+      script(site, {
+        observe: true,
+        disable: new Error(`cannot modify ${site.physicalId}`),
+        del: terminalRefusal(),
+      });
+      await site
+        .make()
+        .delete('Res', site.physicalId, site.resourceType, undefined, {
+          ...CTX,
+          maskSecrets: (text: string) => text.split(site.physicalId).join('***'),
+        })
+        .catch(() => undefined);
+      const line = childLogger.debug.mock.calls
+        .map((c) => String(c[0]))
+        .find((l) => l.startsWith(`Could not disable ${site.guardName}`));
+      expect(line).toBe(`Could not disable ${site.guardName} on ***: cannot modify ***`);
+    });
+  }
+);
+
+// AWS's validation text can quote an echoed, template-authored member
+// (USER_POOL_ECHO_MEMBERS), so the user pool's flip debug lines are masked too
+// even though the pool id itself is AWS-assigned (#5180).
+describe('Cognito UserPool: the flip-off debug lines are masked (#5180)', () => {
+  const site = SITES.find((s) => s.resourceType === 'AWS::Cognito::UserPool')!;
+  const secret = 'Your code is {####} s3cr3t-template';
+  const ctx = { ...CTX, maskSecrets: (text: string) => text.split(secret).join('***') };
+
+  /** Debug lines after a delete whose N-th disable write throws `errors[N]`. */
+  async function debugAfter(
+    errors: ReadonlyArray<Error | undefined>,
+    mask: (text: string) => string = ctx.maskSecrets
+  ): Promise<string[]> {
+    let disables = 0;
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === site.describe) return site.describeReply(disables === 0);
+      if (name === site.modify && site.isDisable(cmd)) {
+        const e = errors[disables++];
+        if (e) throw e;
+        return {};
+      }
+      if (name === site.del) throw terminalRefusal();
+      return {};
+    });
+    await site
+      .make()
+      .delete('Res', site.physicalId, site.resourceType, undefined, { ...ctx, maskSecrets: mask })
+      .catch(() => undefined);
+    return childLogger.debug.mock.calls.map((c) => String(c[0]));
+  }
+
+  it('masks the refused-flip line and the flip catch line', async () => {
+    const refused = Object.assign(new Error(`Invalid message template: ${secret}`), {
+      name: 'NotAuthorizedException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    const lines = await debugAfter([refused, refused]);
+    const left = lines.find((l) => l.startsWith('UpdateUserPool did not turn DeletionProtection off'));
+    const caught = lines.find((l) => l.startsWith('Could not disable DeletionProtection for'));
+    expect(left).toBe(
+      `UpdateUserPool did not turn DeletionProtection off on ${site.physicalId}: Invalid message template: ***`
+    );
+    expect(caught).toBe(
+      `Could not disable DeletionProtection for ${site.physicalId}: Invalid message template: ***`
+    );
+  });
+
+  it('masks the refused-echo line before the bare flip', async () => {
+    const refusedEcho = Object.assign(new Error(`Invalid message template: ${secret}`), {
+      name: 'InvalidParameterException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    const lines = await debugAfter([refusedEcho]);
+    expect(lines.find((l) => l.startsWith('UpdateUserPool refused the echoed configuration'))).toBe(
+      `UpdateUserPool refused the echoed configuration of ${site.physicalId}: Invalid message template: ***`
+    );
+  });
+  // A secret spanning a line break survives only the per-value pass (`safeMsg`
+  // flattens it), and a needle spanning the template's seam only the
+  // finished-line pass: each pass of the two safeMsg lines is pinned alone.
+  it.each([
+    ['did not turn DeletionProtection off', 'NotAuthorizedException', 2],
+    ['refused the echoed configuration', 'InvalidParameterException', 1],
+  ] as const)('masks the "%s" line per value AND as a whole', async (needle, name, writes) => {
+    const broken = 'line\nbreak';
+    const err = Object.assign(new Error(`bad ${broken}`), { name, $metadata: { httpStatusCode: 400 } });
+    const perValue = await debugAfter(
+      Array.from({ length: writes }, () => err),
+      (t) => t.split(broken).join('***')
+    );
+    expect(perValue.find((l) => l.includes(needle))).toMatch(/: bad \*\*\*$/);
+    childLogger.debug.mockClear();
+    const plain = Object.assign(new Error('bad'), { name, $metadata: { httpStatusCode: 400 } });
+    const seam = `${site.physicalId}: bad`;
+    const whole = await debugAfter(
+      Array.from({ length: writes }, () => plain),
+      (t) => t.split(seam).join('***')
+    );
+    expect(whole.find((l) => l.includes(needle))).toMatch(/ \*\*\*$/);
+  });
+
+  // The compensating write-back echoes the pool too, so its refusal can quote
+  // the same members. Reached when the re-read guard already reads ON.
+  it.each([
+    ['per value', 'line\nbreak', (t: string) => t.split('line\nbreak').join('***')],
+    ['as a whole', 'bad', (t: string) => t.split(`${site.physicalId} failed: bad`).join('***')],
+  ] as const)('masks the failed write-back line %s', async (_l, text, mask) => {
+    cognitoSend.mockImplementation(async (cmd: Cmd) => {
+      const name = cmd.constructor.name;
+      if (name === site.describe) return site.describeReply(true);
+      if (name === site.modify && !site.isDisable(cmd)) {
+        throw Object.assign(new Error(text), { name: 'AccessDeniedException' });
+      }
+      if (name === site.del) throw terminalRefusal();
+      return {};
+    });
+    await site
+      .make()
+      .delete('Res', site.physicalId, site.resourceType, undefined, { ...CTX, maskSecrets: mask })
+      .catch(() => undefined);
+    const line = childLogger.debug.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.startsWith('Writing DeletionProtection back on'));
+    expect(line).toMatch(/\*\*\*$/);
   });
 });

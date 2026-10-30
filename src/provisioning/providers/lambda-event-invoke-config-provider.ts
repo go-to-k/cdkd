@@ -15,7 +15,13 @@ import {
 } from '../../utils/lambda-function-name.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { packCompositeId, type CompositeIdOptions } from '../composite-id.js';
@@ -31,6 +37,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
   type MaskerFn,
@@ -104,19 +111,34 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked (issue #2177): AWS quotes a rejected request value back (a
-   * function name, a destination ARN). The `cause` stays unmasked, and a
-   * message the mask changed is stamped so the retry classifiers read that
-   * chain (`wrapMaskedAwsError`, issue #4244). A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's masker, and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}). A cdkd-authored or
+   * transport error keeps its text, masked (issue #2177), stamped only when the
+   * mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is
+   * withheld like an AWS one, unstamped (it has no chain). The delete tests its
+   * typed not-found before it wraps. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
-    build: (maskedText: string) => ProvisioningError
+    build: (text: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
@@ -189,7 +211,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         );
         return resp.Configuration?.FunctionArn?.replace(/:\$LATEST$/, '');
       } catch (error) {
-        throw this.wrapMaskedError(
+        throw this.wrapCaughtError(
           log.mask,
           error,
           (text) =>
@@ -378,7 +400,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       return { physicalId, attributes: {} };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -459,7 +481,7 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
       log.debug(`Successfully updated Lambda EventInvokeConfig ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -514,13 +536,24 @@ export class LambdaEventInvokeConfigProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Lambda EventInvokeConfig ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Lambda EventInvokeConfig ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this config is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

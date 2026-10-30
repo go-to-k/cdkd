@@ -16,7 +16,7 @@ Steps 6, 8 and 10-12 live in `references/*.md`, read at the step that uses them.
 
 Run each check and report pass/fail:
 
-0. **Worktree pre-flight**: `mise trust`, then `[ -d node_modules ] || pnpm install`.
+0. **Worktree pre-flight**: `mise trust`, then `[ -d node_modules ] || vp install`.
    `mise trust` is unconditional — an untrusted `.mise.toml` makes every
    `mise exec` in this run die with a config-parse error naming no cause. A fresh
    worktree has no `node_modules`, so typecheck / lint / build / test all fail
@@ -48,7 +48,7 @@ Run each check and report pass/fail:
      `mergeable=CONFLICTING state=DIRTY` the CI workflow NEVER fires, however
      long you wait, and neither close+reopen nor a force-push of unchanged
      content re-triggers it. Resolution:
-     `git fetch origin main && git rebase origin/main`, resolve, force-push.
+     `git fetch origin main && git merge origin/main`, resolve, push (no force).
    - Only once the state is `CLEAN` / `UNSTABLE` / `BLOCKED` / `BEHIND`:
      `gh pr checks <PR>` — all pass; if pending, wait and recheck.
 
@@ -73,8 +73,8 @@ Run each check and report pass/fail:
      ```
      Anything dirty was stale before you ran the above: stage it into the PR and
      re-run `/check-docs`. If `audit:coverage:check` fails, run
-     `vp run audit:coverage:regenerate` (heavy, needs AWS credentials with
-     `cloudformation:ListTypes` + `DescribeType`) and commit the cache. A new
+     `vp run audit:coverage:regenerate` (needs AWS credentials with
+     `cloudformation:ListTypes`) and commit the cache. A new
      `registry.register(...)` also needs an integ fixture covering it; nothing
      blocks on that, so check it here.
 
@@ -155,7 +155,7 @@ After all checks pass, land the work:
 ```bash
 git add -A
 git diff --cached --quiet || git commit -m "..."
-git push        # after a rebase: --force-with-lease
+git push        # never --force: merge, not rebase
 ```
 
 No marker is recorded — nothing mechanical consults this run, which makes the

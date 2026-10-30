@@ -103,7 +103,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import {
-  withStackName,
+  withStackScope,
   withSkipPrefix,
 } from '../../../src/provisioning/resource-name.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
@@ -141,7 +141,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('with withSkipPrefix(true) + user-supplied RoleName → unprefixed CreateRole', async () => {
       mockHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRRole', 'AWS::IAM::Role', {
             RoleName: 'my-role',
@@ -156,7 +156,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('without withSkipPrefix + user-supplied RoleName → prefixed CreateRole (pre-PR default)', async () => {
       mockHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.create('CRRole', 'AWS::IAM::Role', {
           RoleName: 'my-role',
           AssumeRolePolicyDocument: ASSUME_ROLE,
@@ -168,7 +168,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('with withSkipPrefix(true) but no user-supplied RoleName → still prefixed (logical-id fallback)', async () => {
       mockHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRRole', 'AWS::IAM::Role', {
             AssumeRolePolicyDocument: ASSUME_ROLE,
@@ -199,7 +199,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       // New computed name with flag still on = 'my-role'.
       // → no replacement, in-place UpdateRoleCommand fires.
       iamSend.mockResolvedValue({}); // UpdateRoleCommand + sibling no-op responses
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.update(
             'CRRole',
@@ -224,7 +224,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       // New computed name with flag still off = 'MyStack-my-role'.
       // → no replacement.
       iamSend.mockResolvedValue({});
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.update(
           'CRRole',
           'MyStack-my-role',
@@ -253,7 +253,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       iamSend.mockResolvedValue({
         Role: { Arn: 'arn:aws:iam::123:role/new', RoleId: 'AIDANEW' },
       });
-      const result = await withStackName('MyStack', () =>
+      const result = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.update(
             'CRRole',
@@ -276,7 +276,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('with withSkipPrefix(true) + user-supplied UserName → unprefixed CreateUser', async () => {
       iamSend.mockResolvedValueOnce({ User: { Arn: 'arn:aws:iam::123:user/x', UserId: 'AIDA' } });
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRUser', 'AWS::IAM::User', { UserName: 'my-user' })
         )
@@ -287,7 +287,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('without withSkipPrefix + user-supplied UserName → prefixed CreateUser', async () => {
       iamSend.mockResolvedValueOnce({ User: { Arn: 'arn:aws:iam::123:user/x', UserId: 'AIDA' } });
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.create('CRUser', 'AWS::IAM::User', { UserName: 'my-user' })
       );
       const create = iamSend.mock.calls.find((c) => c[0] instanceof CreateUserCommand);
@@ -300,7 +300,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('with withSkipPrefix(true) + user-supplied GroupName → unprefixed CreateGroup', async () => {
       iamSend.mockResolvedValueOnce({ Group: { Arn: 'arn:aws:iam::123:group/x' } });
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRGroup', 'AWS::IAM::Group', { GroupName: 'my-group' })
         )
@@ -311,7 +311,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('without withSkipPrefix + user-supplied GroupName → prefixed CreateGroup', async () => {
       iamSend.mockResolvedValueOnce({ Group: { Arn: 'arn:aws:iam::123:group/x' } });
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.create('CRGroup', 'AWS::IAM::Group', { GroupName: 'my-group' })
       );
       const create = iamSend.mock.calls.find((c) => c[0] instanceof CreateGroupCommand);
@@ -326,7 +326,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       iamSend.mockResolvedValueOnce({
         InstanceProfile: { Arn: 'arn:aws:iam::123:instance-profile/x' },
       });
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRIP', 'AWS::IAM::InstanceProfile', {
             InstanceProfileName: 'my-ip',
@@ -344,7 +344,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
       iamSend.mockResolvedValueOnce({
         InstanceProfile: { Arn: 'arn:aws:iam::123:instance-profile/x' },
       });
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.create('CRIP', 'AWS::IAM::InstanceProfile', {
           InstanceProfileName: 'my-ip',
           Roles: [],
@@ -378,7 +378,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('with withSkipPrefix(true) + user-supplied LB Name → unprefixed CreateLoadBalancer', async () => {
       mockLBHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRLB', 'AWS::ElasticLoadBalancingV2::LoadBalancer', {
             Name: 'my-lb',
@@ -394,7 +394,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('without withSkipPrefix + user-supplied LB Name → prefixed', async () => {
       mockLBHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.create('CRLB', 'AWS::ElasticLoadBalancingV2::LoadBalancer', {
           Name: 'my-lb',
           Subnets: ['subnet-aaa', 'subnet-bbb'],
@@ -424,7 +424,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('with withSkipPrefix(true) + user-supplied TG Name → unprefixed CreateTargetGroup', async () => {
       mockTGHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           provider.create('CRTG', 'AWS::ElasticLoadBalancingV2::TargetGroup', {
             Name: 'my-tg',
@@ -441,7 +441,7 @@ describe('--no-prefix-user-supplied-names per-provider verification', () => {
 
     it('without withSkipPrefix + user-supplied TG Name → prefixed', async () => {
       mockTGHappyPath();
-      await withStackName('MyStack', () =>
+      await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.create('CRTG', 'AWS::ElasticLoadBalancingV2::TargetGroup', {
           Name: 'my-tg',
           Protocol: 'HTTP',

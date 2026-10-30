@@ -428,7 +428,11 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       expect(warned).toContain(
         `Failed to clean up stage ${SECRET_MASK} after a post-create patch failure:`
       );
-      expect(warned).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: the class at warn, AWS's text at debug, masked there.
+      expect(warned).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+      expect(warned).not.toContain('Invalid value');
+      expect(debugged()).toContain(MASKED_ECHO);
+      expect(debugged()).not.toContain(LONG);
       expect(warned).not.toContain(LONG);
       expect(warned).not.toContain(TINY_A);
     });
@@ -455,7 +459,11 @@ describe('ApiGatewayProvider masked log sinks (issue #2177)', () => {
       expect(warned).toContain(
         `Failed to clean up partially-created API Gateway Method Mth (${SECRET_MASK}/${SECRET_MASK}/GET):`
       );
-      expect(warned).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: the class at warn, AWS's text at debug, masked there.
+      expect(warned).toContain(`BadRequestException. ${VERBOSE_POINTER}`);
+      expect(warned).not.toContain('Invalid value');
+      expect(debugged()).toContain(MASKED_ECHO);
+      expect(debugged()).not.toContain(LONG);
       expect(warned).not.toContain(LONG);
       expect(warned).not.toContain(TINY_A);
       expect(warned).not.toContain(TINY_B);

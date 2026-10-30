@@ -1,3 +1,9 @@
+import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
+import {
+  currentNameGeneration,
+  getCurrentStackInstanceId,
+} from '../../provisioning/resource-name.js';
+import { nameGenerationField } from '../../state/name-generation.js';
 import { isDeepStrictEqual } from 'node:util';
 import { recoveryCommandFlags } from '../../state/lock-contention-message.js';
 import type { CloudControlProvider } from '../../provisioning/cloud-control-provider.js';
@@ -41,7 +47,7 @@ import {
   probeFoundSameId,
 } from '../replacement-name-holder.js';
 import { withCurrentResourceSecrets } from '../resource-secrets-scope.js';
-import { markNonRetryable } from '../retryable-errors.js';
+import { markNonRetryable, markRedactedCause } from '../retryable-errors.js';
 import { markRefusedBeforeApplying } from '../prior-attempt-scope.js';
 import {
   type RecordedSecretValues,
@@ -333,6 +339,11 @@ export async function provisionCreate(
   );
   stateResources[logicalId] = {
     physicalId: result.physicalId,
+    // go-to-k/cdkd#5064 phase 2: the generation this create's name was
+    // derived at -- past a retired one for a re-added logical id, else 0
+    // (written as nothing). Never on a legacy stack.
+    ...(getCurrentStackInstanceId() !== undefined &&
+      nameGenerationField(currentNameGeneration(logicalId) ?? 0)),
     resourceType,
     properties: recordedProperties,
     // #2790: the evidence that a kept create-only key never reached AWS.
@@ -355,6 +366,9 @@ export async function provisionCreate(
     ...templateAttrs,
     provisionedBy: createDecision.provisionedBy,
   };
+  // go-to-k/cdkd#5511: state now holds the resource, so no failure after
+  // this point journals it as an orphan.
+  clearCreatedReport();
   engine.recordInlinePolicyWrite(logicalId, 'create');
   // go-to-k/cdkd#4656: does the provider echo a create-only value a `NoEcho`
   // parameter fed exactly? Read once, against the masked record.
@@ -402,6 +416,48 @@ export async function provisionCreate(
     safeMsg`${createPrefix}${formatResourceLine('created', logicalId, resourceType)}`
   );
   return;
+}
+
+/**
+ * go-to-k/cdkd#5064 phase 2: a replacement's create of its new resource, which
+ * on a stack with an instance id asks for the NEXT generation's generated name
+ * (bound by the caller): checked by the generated-name guard as a plain create
+ * is ({@link refuseUnlicensedGeneratedName}), and its outcome noted so the
+ * deploy's end keeps the intent of a create whose outcome is unknown. A create
+ * the guard was not asked about runs as before.
+ */
+export async function guardedReplacementCreate<T>(
+  engine: DeployEngine,
+  input: {
+    logicalId: string;
+    resourceType: string;
+    stackName: string;
+    createdVia: ProvisionedBy | undefined;
+    resolvedProps: Record<string, unknown>;
+    /**
+     * The create keeps the old record's generation (a resource that went with
+     * its re-created parent): the guard planned the NEXT one's name, which this
+     * create does not send, so it is not asked.
+     */
+    keepsName?: boolean;
+  },
+  create: () => Promise<T>
+): Promise<T> {
+  const guard = engine.generatedNameGuard;
+  if (input.keepsName === true || guard?.candidate(input.logicalId) === undefined) {
+    return create();
+  }
+  await refuseUnlicensedGeneratedName(engine, input);
+  guard.noteSent(input.logicalId);
+  let result: T;
+  try {
+    result = await create();
+  } catch (error) {
+    guard.noteFailed(input.logicalId, error);
+    throw error;
+  }
+  guard.noteReturned(input.logicalId);
+  return result;
 }
 
 /**
@@ -575,14 +631,17 @@ async function refuseTakenCreateName(
   // Marked refused-before-applying (go-to-k/cdkd#4356): every arm refuses
   // BEFORE the create call, so nothing was created, and the deploy then
   // journals no failed op the rollback could misdescribe.
-  const refuse = (message: string, cause?: unknown): never => {
+  // `redactedCause`: the message withholds AWS text `cause` carries, so the
+  // classifiers read the chain (`markRedactedCause`, go-to-k/cdkd#2319).
+  const refuse = (message: string, cause?: unknown, redactedCause = false): never => {
+    const refusal = new CdkdError(
+      maskName(message),
+      'NAMED_CREATE_COLLISION',
+      cause instanceof Error ? cause : undefined
+    );
     throw markNonRetryable(
       markRefusedBeforeApplying(
-        new CdkdError(
-          maskName(message),
-          'NAMED_CREATE_COLLISION',
-          cause instanceof Error ? cause : undefined
-        )
+        redactedCause && cause instanceof Error ? markRedactedCause(refusal) : refusal
       )
     );
   };
@@ -646,13 +705,19 @@ async function refuseTakenCreateName(
         probeError
       );
     }
-    return refuse(
+    // go-to-k/cdkd#2319: as the replacement probe's twin in `replacement.ts`,
+    // an AWS-authored failure is named by its class (the thrown message is
+    // persisted, and an `AccessDenied` names the caller's ARN), with AWS's
+    // text in `debug`; a cdkd-authored or transport failure keeps its text.
+    const failure = describeAwsFailure(probeError);
+    const failureText = (text: string): string =>
       `${subject} is created with ${named}, and ${adoptsText}, but cdkd could not check ` +
-        `whether another resource already holds it: ` +
-        `${displayAwsMessage(maskName(describeAwsFailure(probeError).detail))}. ` +
-        `Nothing was created. Re-run the deploy once the check can succeed.`,
-      probeError
-    );
+      `whether another resource already holds it: ${text}${text.endsWith('.') ? '' : '.'} ` +
+      `Nothing was created. Re-run the deploy once the check can succeed.`;
+    const awsText = displayAwsMessage(maskName(failure.detail));
+    if (!failure.redacted) return refuse(failureText(awsText), probeError);
+    engine.logger.debug(maskName(failureText(awsText)));
+    return refuse(failureText(displaySafe(maskName(failure.summary))), probeError, true);
   }
   if (found === null) return;
   const holderId = found.physicalId;

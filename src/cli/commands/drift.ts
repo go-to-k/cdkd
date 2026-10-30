@@ -78,7 +78,7 @@ import { CloudControlProvider } from '../../provisioning/cloud-control-provider.
 import {
   PATTERN_B_NAME_PROPERTIES,
   derivesPatternBName,
-  withStackName,
+  withStackScope,
 } from '../../provisioning/resource-name.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -89,12 +89,14 @@ import {
   displayAwsMessage,
   displayIdent,
   displaySafe,
+  displayStackName,
   isPasteableIdent,
   safeMsg,
   stringifyJsonPayload,
   truncateCodePoints,
 } from '../../utils/display-safe.js';
 import { shellQuote } from '../../state/lock-contention-message.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   commandHole,
   pasteableCommand,
@@ -159,6 +161,7 @@ import {
   recordLogOnlyValue,
   recordMaskOnlyValue,
   recordMaskOnlyValuesIn,
+  spelledKeysOf,
   recordNoEchoAttributeValues,
   recordPhysicalNameCopy,
   redactForState,
@@ -174,6 +177,19 @@ import {
   type ResourceProvider,
 } from '../../types/resource.js';
 import type { ResourceState, StackState } from '../../types/state.js';
+import { stackInstanceIdCarriedFrom } from '../../types/state.js';
+import { nameScopeOf } from '../../state/name-generation.js';
+import {
+  settleUnsettledPrevious,
+  withUnprovenUnsettled,
+} from '../../deployment/unsettled-convergence.js';
+import {
+  unsettledItemsOf,
+  unsettledPropertiesOf,
+  withUnsettledProperties,
+  withoutUnsettledProperties,
+  unsettledItemsField,
+} from '../../state/unsettled-properties.js';
 import {
   secretNamedRecordNeedles,
   secretNamePrintingBag,
@@ -1448,7 +1464,14 @@ async function driftCommand(
     // resource's refusal is not reported as a partial failure on top of it.
     let outcome: false | void;
     if (options.accept) {
-      outcome = await runAccept(reports, stateBackend, stateConfig, awsClients, options);
+      outcome = await runAccept(
+        reports,
+        stackRegionScope,
+        stateBackend,
+        stateConfig,
+        awsClients,
+        options
+      );
     } else {
       try {
         outcome = await runRevert(
@@ -2931,9 +2954,12 @@ function partitionNoEchoParameterChanges(
  * - the mask is the fail-closed class, not a `NoEcho` one
  *   ({@link isUncertifiedBaselineMaskPosition}) — a `NoEcho` mask keeps the
  *   issue #2274 disposition;
- * - the two sides are equal once each masked string is allowed to match any
- *   live string ({@link equalModuloMask}). Anything else — a length change, a
- *   reorder, an edit beside the mask — stays real drift.
+ * - the two sides are equal once each mask is allowed to match any present,
+ *   non-null live value ({@link equalModuloMask}): a string, number or boolean
+ *   since go-to-k/cdkd#5315 (a Step Functions `${name}` placed outside quotes
+ *   reads back as a JSON number), and a container since go-to-k/cdkd#5333 (a
+ *   definition whose KEY held a secret is masked whole). Anything else — a
+ *   length change, a reorder, an edit beside the mask — stays real drift.
  *
  * Runs on the COMPARISON values, before {@link redactDriftChanges}: after it
  * the AWS side is itself a mask or an expression and the equality means
@@ -3347,7 +3373,15 @@ async function runDriftForStack(
     );
   }
 
-  return await withStackName(stackName, async () => {
+  // go-to-k/cdkd#5064: detection derives names in the stack's lifetime.
+  // `runRevert` runs after this scope closes; every `update()` it reaches
+  // keeps the recorded name of a resource the template does not name.
+  const namingScope = nameScopeOf(
+    stackName,
+    stackInstanceIdOf(result.state, displayStackName(stackName)),
+    result.state
+  );
+  return await withStackScope(namingScope, async () => {
     const outcomes: DriftOutcome[] = [];
     const state: StackState = result.state;
     const logger = getLogger();
@@ -4144,13 +4178,23 @@ async function runDriftForStack(
             : canonicalized;
           // Issue #4081: a declared Pattern B name the live one is DERIVED from
           // (the legacy stack-name prefix, a sanitize rewrite) is the same name.
-          // Inside this function's `withStackName` scope, which the check needs.
+          // Inside this function's `withStackScope`, which the check needs.
           const nameBaseline = canonicalizeDerivedPatternBName(
             resource.resourceType,
             paired.baseline,
             paired.aws
           );
-          const changes = calculateResourceDrift(nameBaseline, paired.aws, {
+          // go-to-k/cdkd#5399: a key the provider says the readback omits at
+          // its default is compared even when the observed baseline lacks it,
+          // which the comparator's baseline-keys-only top-level walk skips.
+          const comparedBaseline = useObserved
+            ? withAbsentDefaultKeys(
+                nameBaseline,
+                paired.aws,
+                driftAbsentMeansDefaultKeys(provider, resource.resourceType, resource.properties)
+              )
+            : nameBaseline;
+          const changes = calculateResourceDrift(comparedBaseline, paired.aws, {
             ignorePaths: observedIgnorePaths.length
               ? [...ignorePaths, ...observedIgnorePaths]
               : ignorePaths,
@@ -4181,6 +4225,27 @@ async function runDriftForStack(
             resource.properties ?? {},
             baseline
           );
+          // go-to-k/cdkd#5332: a provider that compares a secret-bearing value at
+          // ANOTHER position (Step Functions folds `DefinitionSubstitutions` into
+          // `Definition`) names where it landed, so the position mask follows it
+          // and a value shorter than the value scan's needle floor is still
+          // masked. Into `maskSecretPaths`, the masking-only set: these positions
+          // are readable back, so they must not license the exact-leaf drop that
+          // `secretPaths` also drives.
+          if (provider.getDriftSecretPathAliases) {
+            for (const alias of provider.getDriftSecretPathAliases(
+              resource.resourceType,
+              resource.properties ?? {},
+              // The `***` positions too: a NoEcho value substituted into a
+              // folded leaf is as secret as a dynamic reference.
+              new Set([
+                ...(secretResolutionFailed ? seededSecretPaths : secretPaths),
+                ...maskSecretPaths,
+              ])
+            )) {
+              maskSecretPaths.add(alias);
+            }
+          }
           const reported = redactDriftChanges(
             partitioned.kept,
             secrets,
@@ -4572,7 +4637,7 @@ export function buildReadCurrentStateContext(
  * output instead, which on a stack deployed with the legacy
  * `--prefix-user-supplied-names` is `<stack>-<name>`: a name difference on
  * every run, and an exit 1, with nothing drifted. {@link derivesPatternBName}
- * decides it under either prefix setting, in the CALLER's `withStackName`
+ * decides it under either prefix setting, in the CALLER's `withStackScope`
  * scope, so a live name it does not reproduce (another stack's prefix, a
  * different name) stays reported.
  *
@@ -4677,6 +4742,9 @@ export function setAtPath(target: Record<string, unknown>, path: string, value: 
  */
 async function runAccept(
   reports: StackDriftReport[],
+  // go-to-k/cdkd#5380: only to ask a provider whether an unsettled key is
+  // still in transition before the accept clears it.
+  regionScope: (region: string) => { clients: AwsClients; registry: ProviderRegistry },
   stateBackend: S3StateBackend,
   stateConfig: { bucket: string; prefix: string },
   awsClients: AwsClients,
@@ -4990,10 +5058,25 @@ async function runAccept(
         // what the user accepted: a marked coordinate is `***` in what is
         // written, whatever a changed parent path carried there.
         const written = maskMarkedNoEchoBaselineWithLeaves(redactedBaseline, existing, hasObserved);
+        // go-to-k/cdkd#5380: the baseline now records what AWS holds, so what
+        // a failed deploy left unsettled on this resource is settled, except a
+        // key AWS is still changing (the readback is not where it will end).
+        // No post-update proof as on the deploy / revert side (#5487): an
+        // accept writes the live readback AS the record, so record == live by
+        // construction; only a value still moving can disagree later.
+        const settled = await settleUnsettled(
+          existing,
+          outcome.logicalId,
+          () =>
+            regionScope(report.region).registry.getProviderFor({
+              resourceType: outcome.resourceType,
+              provisionedBy: existing.provisionedBy,
+            }).provider
+        );
         resources[outcome.logicalId] = hasObserved
-          ? { ...existing, observedProperties: written.baseline }
+          ? { ...settled, observedProperties: written.baseline }
           : {
-              ...existing,
+              ...settled,
               properties: written.baseline,
               ...(written.noEchoLeaves !== undefined && { noEchoLeaves: written.noEchoLeaves }),
             };
@@ -5019,6 +5102,7 @@ async function runAccept(
       const { skippedOutputs: _droppedByAccept, ...carriedState } = report.state;
       const newState: StackState = {
         ...carriedState,
+        ...stackInstanceIdCarriedFrom(report.state),
         resources,
         lastModified: Date.now(),
       };
@@ -6096,8 +6180,10 @@ function corroboratedLeafCount(
  * certified the alignment ({@link equalModuloMask} held on these very
  * positions), so the live subtree is copied in wholesale.
  *
- * Every live STRING standing where the baseline held the mask is registered as
- * a mask-only needle — at EVERY uncertified path, overlaid or not — as the mask
+ * Every live value standing where the baseline held the mask is registered as
+ * a mask-only needle ({@link recordMaskOnlyLiveSubtree}: its strings, its keys
+ * the record does not spell, a number or boolean by its spelling) — at EVERY
+ * uncertified path, overlaid or not — as the mask
  * walk does for the leaves it copies: the value cdkd could not name may be a
  * secret, and the send bag is what the provider's log lines see. Registration
  * is POSITIONAL where the two sides line up, and covers every live string under
@@ -6113,7 +6199,10 @@ export function overlayLiveAtUncertifiedPaths(
   awsProperties: Record<string, unknown>,
   baseline: Record<string, unknown>,
   secrets: RecordedSecretValues,
-  overlaidTopLevelKeys: ReadonlySet<string>
+  overlaidTopLevelKeys: ReadonlySet<string>,
+  // The keys the record spells ({@link spelledKeysOf}); a live KEY among them
+  // is not registered. Absent: every key is (over-masking fails safe).
+  spelledKeys?: ReadonlySet<string>
 ): Record<string, unknown> {
   if (uncertifiedPaths.length === 0) return send;
   let out = send;
@@ -6135,13 +6224,17 @@ export function overlayLiveAtUncertifiedPaths(
       // No alignment to register by position, so register every live string
       // under the path: over-masking fails safe, and for an overlaid key the
       // mask walk after this one still refuses rather than guesses.
-      if (live !== undefined) recordMaskOnlyValuesIn(live, secrets);
+      if (live !== undefined) recordMaskOnlyLiveSubtree(live, secrets, spelledKeys);
       continue;
     }
     const needles: string[] = [];
     const collect = (b: unknown, l: unknown): void => {
-      if (b === SECRET_MASK && typeof l === 'string') {
-        needles.push(l);
+      if (b === SECRET_MASK) {
+        // A mask matches any live value since go-to-k/cdkd#5333 (a definition
+        // whose KEY held a secret is masked whole), so a CONTAINER here is
+        // aligned too: what it holds, keys included, must reach the masker.
+        if (typeof l === 'string') needles.push(l);
+        else recordMaskOnlyLiveSubtree(l, secrets, spelledKeys);
         return;
       }
       if (Array.isArray(b) && Array.isArray(l)) {
@@ -6165,6 +6258,43 @@ export function overlayLiveAtUncertifiedPaths(
     if (overlaidTopLevelKeys.has(topLevelKey)) out = withValueAtPath(out, path, live);
   }
   return out;
+}
+
+/**
+ * Register every string leaf, and every object KEY the record does not spell,
+ * of a live value cdkd could not name as a mask-only needle
+ * (go-to-k/cdkd#5342); a number or boolean live value by its spelling.
+ * `recordMaskOnlyValuesIn` walks values only, and a Step Functions state NAMED
+ * by a secret is a key, which a provider's validation error echoes
+ * (`at /States/<name>`).
+ */
+function recordMaskOnlyLiveSubtree(
+  live: unknown,
+  secrets: RecordedSecretValues,
+  spelledKeys?: ReadonlySet<string>
+): void {
+  // A NUMBER / BOOLEAN standing where the mask was: a secret substituted
+  // outside quotes (go-to-k/cdkd#5315) reads back as one. Its spelling is the
+  // needle; the mask-only floor still applies.
+  if (typeof live === 'number' || typeof live === 'boolean') {
+    recordMaskOnlyValue(secrets, String(live));
+    return;
+  }
+  recordMaskOnlyValuesIn(live, secrets);
+  const seen = new Set<object>();
+  const walk = (node: unknown): void => {
+    if (node === null || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (spelledKeys?.has(key) !== true) recordMaskOnlyValue(secrets, key);
+      walk(value);
+    }
+  };
+  walk(live);
 }
 
 /**
@@ -6341,7 +6471,8 @@ export function preserveLiveValuesAtMaskedLeaves(
   send: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
   secrets: RecordedSecretValues,
-  corroborationSource: Record<string, unknown> = send
+  corroborationSource: Record<string, unknown> = send,
+  spelledKeys?: ReadonlySet<string>
 ): { properties: Record<string, unknown>; unpreservablePaths: string[] } {
   if (!carriesSecretMask(send)) return { properties: send, unpreservablePaths: [] };
   const unpreservablePaths: string[] = [];
@@ -6353,12 +6484,11 @@ export function preserveLiveValuesAtMaskedLeaves(
         return value;
       }
       changed = true;
-      // REGISTER before returning — see the note above. A non-string live value
-      // is not registrable (the redaction walk matches by string value), and is
-      // the same stated residual the sibling carries: it is still copied,
-      // because sending the mask is worse, and it is unmaskable if a provider
-      // later echoes it back changed.
+      // REGISTER before returning — see the note above: a string by itself, a
+      // container by its strings and the keys the record does not spell, a
+      // number or boolean by its spelling (go-to-k/cdkd#5342).
       if (typeof live === 'string') recordMaskOnlyValue(secrets, live);
+      else recordMaskOnlyLiveSubtree(live, secrets, spelledKeys);
       return live;
     }
     if (Array.isArray(value)) {
@@ -6472,14 +6602,21 @@ export function preserveLiveValuesAtMaskedLeaves(
  * `observedProperties` — see {@link mergeUntemplatedValue} for why that is the
  * only baseline on which it is correct, and why the fix has to live on this
  * side rather than on `previousProperties`.
+ *
+ * `absentMeansDefault` (go-to-k/cdkd#5399) names the drifted top-level keys
+ * the baseline records at their default by leaving them out (see
+ * {@link driftAbsentMeansDefaultKeys}). Such a key is sent ABSENT instead of
+ * keeping the AWS value, so the provider's `update()` resets it the way it
+ * resets a property a template removed.
  */
 export function buildRevertNewProperties(
   drifts: readonly PropertyDrift[],
   desiredProperties: Record<string, unknown>,
   awsProperties: Record<string, unknown>,
-  options: { preserveUntemplated?: boolean } = {}
+  options: { preserveUntemplated?: boolean; absentMeansDefault?: readonly string[] } = {}
 ): Record<string, unknown> {
   const preserveUntemplated = options.preserveUntemplated === true;
+  const absentMeansDefault = options.absentMeansDefault ?? [];
   // A plain spread on purpose (every provider receives this bag, and spread
   // defines an own `__proto__` key correctly); the overlays below go through
   // `defineOwnKey` because a top-level drift at a key literally named
@@ -6524,6 +6661,10 @@ export function buildRevertNewProperties(
             : desiredValue
         );
       }
+    } else if (absentMeansDefault.includes(topLevelKey)) {
+      // go-to-k/cdkd#5399: the baseline recorded this key at its default by
+      // omitting it, so the revert sends it absent and `update()` resets it.
+      delete result[topLevelKey];
     } else {
       // Drift surfaced on a key that's no longer in `desiredProperties`
       // (defensive — drift was computed against `desiredProperties`, so
@@ -6532,6 +6673,53 @@ export function buildRevertNewProperties(
     }
   }
   return result;
+}
+
+/**
+ * The provider's {@link ResourceProvider.getDriftAbsentMeansDefaultKeys} for
+ * this record (go-to-k/cdkd#5399), or none. `properties` is the record's
+ * template intent. A record whose `properties` is not a plain object (a
+ * malformed state file) names no key: to the hook, `{}` would read as a
+ * template on the default, which licenses resetting the live value.
+ */
+export function driftAbsentMeansDefaultKeys(
+  provider: Pick<ResourceProvider, 'getDriftAbsentMeansDefaultKeys'>,
+  resourceType: string,
+  properties: unknown
+): readonly string[] {
+  if (provider.getDriftAbsentMeansDefaultKeys === undefined || !isPlainRecord(properties)) {
+    return [];
+  }
+  const keys = provider.getDriftAbsentMeansDefaultKeys(resourceType, properties);
+  // The contract is top-level property names: a dotted path would match no
+  // top-level key on either path and silently do nothing, so it is dropped
+  // where a provider author can see it.
+  const dotted = keys.filter((key) => key.includes('.'));
+  if (dotted.length === 0) return keys;
+  getLogger().debug(
+    safeMsg`${resourceType}: getDriftAbsentMeansDefaultKeys returned non-top-level name(s) ` +
+      safeMsg`${dotted.join(', ')}; ignored (top-level property names only).`
+  );
+  return keys.filter((key) => !key.includes('.'));
+}
+
+/**
+ * The comparison baseline with each of `keys` the baseline lacks and the AWS
+ * side holds added as an own `undefined`, so the comparator's baseline-keys
+ * top-level walk compares it (go-to-k/cdkd#5399). The input by identity when
+ * no key applies, and a copy otherwise, so no other reader of the baseline
+ * sees the added key.
+ */
+export function withAbsentDefaultKeys(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  keys: readonly string[]
+): Record<string, unknown> {
+  const missing = keys.filter((key) => !hasOwnKey(baseline, key) && hasOwnKey(aws, key));
+  if (missing.length === 0) return baseline;
+  const out: Record<string, unknown> = { ...baseline };
+  for (const key of missing) defineOwnKey(out, key, undefined);
+  return out;
 }
 
 /**
@@ -6822,6 +7010,9 @@ async function runRevert(
         string,
         { physicalId: string; attributes: Record<string, unknown> | undefined }
       >();
+      // go-to-k/cdkd#5380: the reverted records whose `unsettledProperties`
+      // the same write clears.
+      const settledByRevert = new Map<string, ResourceState>();
       // Issue #1914: one resolver per stack, re-resolving the secret expressions
       // the state baseline stores so the provider is handed the concrete value.
       // Deliberately NOT the drift-detection run's map: that one is keyed
@@ -7165,7 +7356,17 @@ async function runRevert(
                     outcome.changes,
                     desiredProperties,
                     outcome.awsProperties,
-                    { preserveUntemplated: stateResource.observedProperties === undefined }
+                    stateResource.observedProperties === undefined
+                      ? { preserveUntemplated: true }
+                      : {
+                          // go-to-k/cdkd#5399: the keys detection compared while
+                          // the observed baseline lacked them.
+                          absentMeansDefault: driftAbsentMeansDefaultKeys(
+                            provider,
+                            outcome.resourceType,
+                            stateResource.properties
+                          ),
+                        }
                   );
                   // Issue #3595: nothing is reverted at an uncertified-baseline
                   // position — AWS's own value goes back — and this runs FIRST, so the
@@ -7179,7 +7380,8 @@ async function runRevert(
                     outcome.awsProperties,
                     desiredProperties,
                     secrets,
-                    new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? ''))
+                    new Set(outcome.changes.map((change) => change.path.split('.', 1)[0] ?? '')),
+                    spelledKeysOf(stateResource.properties ?? {})
                   );
                   // Issue #1914: a token cdkd could not resolve must never be WRITTEN
                   // over whatever AWS holds — see the helper for why the "it is already
@@ -7216,7 +7418,8 @@ async function runRevert(
                     tokenPreserved,
                     outcome.awsProperties,
                     secrets,
-                    certifiedOverlay
+                    certifiedOverlay,
+                    spelledKeysOf(stateResource.properties ?? {})
                   );
                   if (maskPreserved.unpreservablePaths.length > 0) {
                     // REFUSE the resource rather than send the mask. `totalUnresolvable`
@@ -7326,6 +7529,21 @@ async function runRevert(
                   return;
                 }
                 try {
+                  // go-to-k/cdkd#5487: the deploy's convergence step. The
+                  // previous side is already AWS's; this refuses a name AWS is
+                  // still changing (the catch below reports it) and re-reads
+                  // the unsettled ones.
+                  const revertPrevious = await settleUnsettledPrevious({
+                    provider,
+                    logicalId: outcome.logicalId,
+                    physicalId: stateResource.physicalId,
+                    resourceType: outcome.resourceType,
+                    recordedProperties: stateResource.properties ?? {},
+                    names: unsettledPropertiesOf(stateResource),
+                    attemptedItems: unsettledItemsOf(stateResource),
+                    previous: outcome.awsProperties,
+                    desired: newProperties,
+                  });
                   const updateResult = await withRetry(
                     () =>
                       provider.update(
@@ -7333,7 +7551,7 @@ async function runRevert(
                         stateResource.physicalId,
                         outcome.resourceType,
                         newProperties,
-                        outcome.awsProperties,
+                        revertPrevious,
                         // The desired bag here is `observedProperties ?? properties`
                         // overlaid onto the AWS-current snapshot — an AWS READBACK, not
                         // a template (issue #1732). Several `readCurrentState`
@@ -7415,6 +7633,32 @@ async function runRevert(
                     { logger: maskingRetryLogger(logger, secrets) }
                   );
                   totalSucceeded++;
+                  // go-to-k/cdkd#5380: AWS now holds the baseline, so what a
+                  // failed deploy left unsettled here is settled.
+                  // A key AWS is still changing stays (go-to-k/cdkd#5380).
+                  // Settled only on proof (go-to-k/cdkd#5487): AWS no longer
+                  // changing the name and holding the reverted value under
+                  // drift's comparator, as on the deploy side.
+                  const unsettledNames = unsettledPropertiesOf(stateResource);
+                  if (unsettledNames.size > 0) {
+                    const settled = await withUnprovenUnsettled(
+                      withoutUnsettledProperties(stateResource),
+                      {
+                        provider,
+                        logicalId: outcome.logicalId,
+                        physicalId: stateResource.physicalId,
+                        resourceType: outcome.resourceType,
+                        recordedProperties: stateResource.properties ?? {},
+                        names: unsettledNames,
+                        desired: newProperties,
+                        attemptedItems: unsettledItemsOf(stateResource),
+                      },
+                      (message) => logger.warn(maskSecretsInText(message, secrets))
+                    );
+                    if (unsettledPropertiesOf(settled).size < unsettledNames.size) {
+                      settledByRevert.set(outcome.logicalId, settled);
+                    }
+                  }
                   // Issue #1819: the revert landed, but the provider may have left
                   // something behind (a replacement whose old resource survives). The
                   // revert still counts as succeeded — the resource IS at the desired
@@ -7710,8 +7954,27 @@ async function runRevert(
         //
         // The same write carries each revert's returned identity
         // (go-to-k/cdkd#4476), applied after the narrowing to the same record.
-        if (narrowedByLogicalId.size > 0 || reRecordedByLogicalId.size > 0) {
+        if (
+          narrowedByLogicalId.size > 0 ||
+          reRecordedByLogicalId.size > 0 ||
+          settledByRevert.size > 0
+        ) {
           const resources: Record<string, ResourceState> = { ...report.state.resources };
+          let settledCount = 0;
+          for (const [logicalId, settled] of settledByRevert) {
+            const existing = resources[logicalId];
+            if (!existing) continue;
+            // go-to-k/cdkd#5498: a name the revert kept keeps its attempted
+            // items (`withUnprovenUnsettled` carried them onto `settled`).
+            resources[logicalId] = {
+              ...withUnsettledProperties(
+                withoutUnsettledProperties(existing),
+                unsettledPropertiesOf(settled)
+              ),
+              ...unsettledItemsField(settled, unsettledPropertiesOf(settled)),
+            };
+            settledCount++;
+          }
           let recordedCount = 0;
           for (const [logicalId, delta] of narrowedByLogicalId) {
             const existing = resources[logicalId];
@@ -7778,7 +8041,7 @@ async function runRevert(
             };
           }
 
-          if (recordedCount === 0 && reRecordedCount === 0) {
+          if (recordedCount === 0 && reRecordedCount === 0 && settledCount === 0) {
             // Every reported narrowing was on a key state does not track, or was
             // a value on a template-only baseline — nothing to persist.
             return;
@@ -7794,6 +8057,11 @@ async function runRevert(
               `the identity the revert returned on ${reRecordedCount} resource(s)`
             );
           }
+          if (settledCount > 0) {
+            recordedParts.push(
+              `that a failed deploy's unsettled properties are settled on ${settledCount} resource(s)`
+            );
+          }
           const recordedWhat = recordedParts.join(' and ');
 
           // `skippedOutputs` (issue #2740) is dropped here for the same reason
@@ -7807,6 +8075,7 @@ async function runRevert(
           const { skippedOutputs: _droppedByRevert, ...carriedState } = report.state;
           const newState: StackState = {
             ...carriedState,
+            ...stackInstanceIdCarriedFrom(report.state),
             resources,
             lastModified: Date.now(),
           };
@@ -7838,6 +8107,9 @@ async function runRevert(
             const unrecorded = [
               ...(recordedCount > 0 ? ['the value the provider actually applied'] : []),
               ...(reRecordedCount > 0 ? ['the identity the revert returned'] : []),
+              ...(settledCount > 0
+                ? ["that a failed deploy's unsettled properties are settled"]
+                : []),
             ].join(' and ');
             logger.warn(
               `Reverted ${report.stackName} (${report.region}), but could not record ${unrecorded}: ` +
@@ -8493,6 +8765,14 @@ interface StackDriftJson {
    * a schema for them would invite exactly that.
    */
   warnings?: string[];
+  /**
+   * go-to-k/cdkd#5380: resources whose record names properties a failed
+   * deploy's update left unsettled (AWS may hold either side), with those
+   * property names. OMITTED when empty. Informational: the next `cdkd deploy`
+   * sends them again, and a successful `--accept` / `--revert` of the
+   * resource clears them.
+   */
+  unsettled?: Array<{ logicalId: string; type: string; properties: string[] }>;
   /** Issue #323: Custom Resources (drift not applicable); nested stack rows covered by their own block (#4533). */
   skipped: Array<{ logicalId: string; type: string }>;
   /**
@@ -8527,8 +8807,70 @@ interface StackDriftJson {
   }>;
 }
 
+/**
+ * go-to-k/cdkd#5380: `record` after a successful `--accept` / `--revert` of
+ * it: its `unsettledProperties` keep only the names its provider reports AWS
+ * is still changing (`unsettledInTransition`), and the field goes when none
+ * is. A provider without the hook has none in transition; a hook that throws
+ * keeps every name, which only costs the next deploy a re-send. Returns
+ * `record` itself when nothing would change.
+ */
+async function settleUnsettled(
+  record: ResourceState,
+  logicalId: string,
+  providerOf: () => ResourceProvider | undefined
+): Promise<ResourceState> {
+  const names = unsettledPropertiesOf(record);
+  if (names.size === 0) return record;
+  let kept: ReadonlySet<string> = new Set();
+  try {
+    const provider = providerOf();
+    if (provider?.unsettledInTransition !== undefined) {
+      kept = await provider.unsettledInTransition(
+        record.physicalId,
+        logicalId,
+        record.resourceType,
+        names,
+        record.properties
+      );
+    }
+  } catch {
+    kept = names;
+  }
+  const keep = [...names].filter((name) => kept.has(name));
+  if (keep.length === names.size) return record;
+  // go-to-k/cdkd#5498: a kept name keeps its attempted items; a cleared one's go.
+  return {
+    ...withUnsettledProperties(withoutUnsettledProperties(record), keep),
+    ...unsettledItemsField(record, keep),
+  };
+}
+
+/**
+ * go-to-k/cdkd#5380: the stack's records that carry `unsettledProperties`, in
+ * logical-id order, for both renderings of the report.
+ */
+function unsettledRowsOf(
+  report: StackDriftReport
+): Array<{ logicalId: string; type: string; properties: string[] }> {
+  const rows: Array<{ logicalId: string; type: string; properties: string[] }> = [];
+  const resources = report.state.resources ?? {};
+  for (const logicalId of Object.keys(resources).sort()) {
+    const record = resources[logicalId];
+    const names = unsettledPropertiesOf(record);
+    if (names.size === 0) continue;
+    rows.push({
+      logicalId,
+      type: typeof record?.resourceType === 'string' ? record.resourceType : 'unknown',
+      properties: [...names].sort(),
+    });
+  }
+  return rows;
+}
+
 function writeJsonReport(reports: StackDriftReport[]): void {
   const payload: StackDriftJson[] = reports.map((r) => {
+    const unsettled = unsettledRowsOf(r);
     const drifted: StackDriftJson['drifted'] = [];
     const clean: StackDriftJson['clean'] = [];
     const deleted: StackDriftJson['deleted'] = [];
@@ -8599,6 +8941,7 @@ function writeJsonReport(reports: StackDriftReport[]): void {
       region: r.region,
       // Omitted when empty — see the field's doc.
       ...(r.warnings.length > 0 && { warnings: r.warnings }),
+      ...(unsettled.length > 0 && { unsettled }),
       drifted,
       deleted,
       clean,
@@ -9100,6 +9443,26 @@ export function writeHumanReport(reports: StackDriftReport[]): void {
           );
         }
         process.stdout.write('\n');
+      }
+    }
+
+    // go-to-k/cdkd#5380: what a failed deploy left unsettled, whatever the
+    // comparison above found (AWS may since have finished either way).
+    const unsettledRows = unsettledRowsOf(report);
+    if (unsettledRows.length > 0) {
+      process.stdout.write(
+        `\n! ${reportHeading(report)}: a failed deploy left properties unsettled on ` +
+          `${unsettledRows.length} resource${unsettledRows.length === 1 ? '' : 's'} ` +
+          `(AWS may hold the recorded value or the attempted one). The next 'cdkd deploy' ` +
+          `sends them again; a successful --accept or --revert of the resource clears them.\n`
+      );
+      for (const row of unsettledRows) {
+        const names = row.properties
+          .map((name) => safeMsg`${reportIdent(name, IDENT_MAX_CODE_POINTS)}`)
+          .join(', ');
+        process.stdout.write(
+          `    ! ${reportResource({ logicalId: row.logicalId, resourceType: row.type })}: ${names}\n`
+        );
       }
     }
 

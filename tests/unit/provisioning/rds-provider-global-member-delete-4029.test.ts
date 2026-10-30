@@ -42,6 +42,9 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { isMarkedNotGone } from '../../../src/provisioning/not-gone.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 const CLUSTER = 'AWS::RDS::DBCluster';
 const ARN = 'arn:aws:rds:us-east-1:111122223333:cluster:db-1';
@@ -180,6 +183,8 @@ describe('RDSProvider cluster delete detaches a global-cluster member first (iss
     expect(error).toBeInstanceOf(Error);
     expect(error!.message).toContain('detaching db-1 from global cluster my-global failed');
     expect(isMarkedNonRetryable(error)).toBe(true);
+    // go-to-k/cdkd#5228: the not-gone mark is what the classifiers refuse.
+    expect(isMarkedNotGone(error)).toBe(true);
     expect(names()).not.toContain('DeleteDBClusterCommand');
   });
 
@@ -193,6 +198,62 @@ describe('RDSProvider cluster delete detaches a global-cluster member first (iss
     expect(error!.message).toContain('could not confirm db-1 left global cluster my-global');
     expect(isMarkedNonRetryable(error)).toBe(true);
     expect(names()).not.toContain('DeleteDBClusterCommand');
+  });
+
+  // go-to-k/cdkd#2319: the wrap is persisted to `deployments/{runId}.jsonl`,
+  // so an AWS-authored failure is named by its class plus the --verbose
+  // pointer, and AWS's text (the caller's role ARN) goes to debug only.
+  it.each([
+    {
+      arm: 'RemoveFromGlobalCluster',
+      phrase: 'detaching db-1 from global cluster my-global failed',
+    },
+    {
+      arm: 'DescribeGlobalClusters',
+      phrase: 'could not confirm db-1 left global cluster my-global',
+    },
+  ])('$arm: an AWS-authored failure is named by its class (#2319)', async ({ arm, phrase }) => {
+    const text = 'User: arn:aws:sts::111122223333:assumed-role/deployer/s is not authorized';
+    const denied = Object.assign(new Error(text), {
+      name: 'AccessDenied',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403 },
+    });
+    script(arm === 'RemoveFromGlobalCluster' ? { remove: denied } : { memberPolls: [denied] });
+    const debug = vi.mocked(getLogger().child('x').debug);
+    debug.mockClear();
+
+    const error = await provider
+      .delete('Db', 'db-1', CLUSTER, { GlobalClusterIdentifier: GLOBAL })
+      .then(() => undefined, (e: unknown) => e as Error);
+
+    expect(error!.message).toBe(
+      `Failed to delete DBCluster Db: ${phrase} (AccessDenied. ${VERBOSE_POINTER})`
+    );
+    expect(error!.message).not.toContain('111122223333');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(debug.mock.calls.map((c) => String(c[0]))).toContain(`${phrase} (${text})`);
+  });
+
+  it('the detach failure debug line goes through the delete masker (#2319)', async () => {
+    const denied = Object.assign(new Error('User: role/deployer/s3cr3t is not authorized'), {
+      name: 'AccessDenied',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403 },
+    });
+    script({ remove: denied });
+    const debug = vi.mocked(getLogger().child('x').debug);
+    debug.mockClear();
+    await provider
+      .delete('Db', 'db-1', CLUSTER, { GlobalClusterIdentifier: GLOBAL }, {
+        maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***'),
+      })
+      .catch(() => undefined);
+    const lines = debug.mock.calls.map((c) => String(c[0]));
+    expect(lines).toContain(
+      'detaching db-1 from global cluster my-global failed (User: role/deployer/*** is not authorized)'
+    );
+    expect(lines.join('\n')).not.toContain('s3cr3t');
   });
 
   it('a busy or throttled detach is waited through, then the delete runs', async () => {

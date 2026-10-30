@@ -19,6 +19,12 @@
 #      LastUpdatedTime moves but the budget name-addressed entity persists;
 #      replacement would be visible as a delete+create window and a reset
 #      notification set — asserted via the exact expected notification set).
+#   2b. `cdkd drift` compares the unchanged budget through the provider's own
+#       read-back and reports no drift (issue #5183).
+#   2c. Raise the limit out of band (update-budget); drift reports exactly
+#       Budget.BudgetLimit.Amount 2 -> 3 and exits 1 (issue #5183).
+#   2d. `drift --revert` restores the limit, keeps the notification set, and
+#       drift is clean afterwards (issue #5183).
 #   3. Destroy + assert the budget is gone and the cdkd state file is removed.
 #
 # Required env vars:
@@ -79,7 +85,7 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  rm -f "${DRIFT_OUT:-}"
+  rm -f "${DRIFT_OUT:-}" "${OOB_BUDGET:-}"
   aws budgets delete-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" >/dev/null 2>&1 || true
   local qurl
   qurl=$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
@@ -215,15 +221,15 @@ if [ "${PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    budget routed via SDK provider (provisionedBy=sdk)"
 
-# --- Phase 2b: drift over a type with NO Cloud Control READ handler --------
-# Issues go-to-k/cdkd#2151 / go-to-k/cdkd#2154, moved here from the
-# cloudwatch-anomaly-detector fixture once AWS gave that type Cloud Control
-# handlers (go-to-k/cdkd#4668). `AWS::Budgets::Budget` is NON_PROVISIONABLE in
-# the CloudFormation registry and its SDK provider implements no
-# `readCurrentState`, so drift takes the Cloud Control fallback, which has no
-# READ handler to call. Beside it sits an SQS queue drift CAN compare. Before
-# #2151 that fallback's throw escaped the command with exit 1 and no report.
-echo "==> Phase 2b: drift completes despite a resource with no Cloud Control READ handler"
+# --- Phase 2b: drift compares the budget through its own read-back ---------
+# go-to-k/cdkd#5183. The provider reads the budget back (DescribeBudget, the
+# notifications, each notification's subscribers, the tags), so drift COMPARES
+# it: an unchanged budget must be clean even though AWS reorders subscribers,
+# returns the limit as "2.0" and may add the defaulted `ThresholdType`. Before
+# #5183 the type was deny-listed (go-to-k/cdkd#5179) and this row printed
+# `? CostBudget` with "(1 resource checked, 1 unsupported)". The SQS queue
+# beside it is the go-to-k/cdkd#2151 sibling: it must be compared too.
+echo "==> Phase 2b: drift compares the unchanged budget and finds no drift"
 # Removed by `cleanup`: a second `trap ... EXIT` would REPLACE the teardown.
 DRIFT_OUT="$(mktemp)"
 set +e
@@ -234,41 +240,137 @@ DRIFT_RC=$?
 set -e
 cat "${DRIFT_OUT}"
 
-# 1. The command produced a per-resource report for the budget.
-if ! grep -q '? CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
-  echo "FAIL: drift printed no drift-unknown line for CostBudget (go-to-k/cdkd#2151)" >&2
+# 1. Compared, not reported unsupported (the pre-#5183 outcome).
+if grep -qF '? CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift reported CostBudget as drift unknown; the provider's read-back must compare it (go-to-k/cdkd#5183)" >&2
   exit 1
 fi
-echo "    OK: CostBudget reported as drift unknown rather than aborting the run"
+echo "    OK: CostBudget was not reported as drift unknown"
 
-# 2. The sibling was compared. The FULL parenthetical: a bare
-#    `1 resource checked` is a substring of #2154's `0 of 1 resource checked`.
-if ! grep -qF '(1 resource checked, 1 unsupported)' "${DRIFT_OUT}"; then
-  echo "FAIL: the SQS sibling was not compared -- expected '(1 resource checked, 1 unsupported)' (go-to-k/cdkd#2151)" >&2
+# 2. Not drifted: subscriber order, the "2.0" amount and the defaulted
+#    ThresholdType are not drift (go-to-k/cdkd#5179's false drift).
+if grep -qF '~ CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift reported false drift on the unchanged CostBudget (go-to-k/cdkd#5183, go-to-k/cdkd#5179)" >&2
   exit 1
 fi
-echo "    OK: the sibling SQS queue was still compared"
+echo "    OK: CostBudget not reported as drifted"
 
-# 3. Exit 0: a type with no READ handler is permanent, not actionable.
+# 3. Both rows compared. The FULL parenthetical: a bare `2 resources checked`
+#    is a substring of #2154's `0 of 2 resources checked`.
+if ! grep -qF 'no drift detected (2 resources checked, 0 unsupported)' "${DRIFT_OUT}"; then
+  echo "FAIL: expected 'no drift detected (2 resources checked, 0 unsupported)' -- the budget and the SQS sibling must both be compared (go-to-k/cdkd#5183, go-to-k/cdkd#2151)" >&2
+  exit 1
+fi
+echo "    OK: the budget and the sibling SQS queue were both compared"
+
+# 4. Exit 0 on a clean stack.
 if [ "${DRIFT_RC}" -ne 0 ]; then
-  echo "FAIL: drift exited ${DRIFT_RC}, expected 0 -- a type with no READ handler is not an actionable failure (go-to-k/cdkd#2151)" >&2
+  echo "FAIL: drift exited ${DRIFT_RC} on an unchanged stack, expected 0 (go-to-k/cdkd#5183)" >&2
   exit 1
 fi
 echo "    OK: exit 0"
 
-# 4. Not misreported as the actionable read-failure cause.
-if grep -q 'NOT fully compared' "${DRIFT_OUT}"; then
-  echo "FAIL: CostBudget was reported as a read FAILURE; a type with no READ handler must report drift unknown (go-to-k/cdkd#2151)" >&2
-  exit 1
-fi
-echo "    OK: classified as drift unknown, not as a read failure"
+# --- Phase 2c: an out-of-band limit change is drift --------------------------
+# go-to-k/cdkd#5183. Raise the limit 2 -> 3 USD with the Budgets API directly,
+# sending back the budget exactly as DescribeBudget returned it apart from the
+# amount (minus the read-only spend / health members: the same members the
+# provider's read-back, and so `drift --revert` in Phase 2d, sends), so the limit is the
+# only difference. Drift must report it on `Budget.BudgetLimit.Amount` and
+# exit 1. The destroy below does not depend on the budget matching state.
+echo "==> Phase 2c: an out-of-band BudgetLimit change (2 -> 3 USD) is reported as drift"
+OOB_BUDGET="$(mktemp)"
+aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
+  --show-filter-expression --query 'Budget' --output json \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const b=JSON.parse(s);delete b.CalculatedSpend;delete b.LastUpdatedTime;delete b.HealthStatus;b.BudgetLimit={Amount:"3",Unit:b.BudgetLimit.Unit};process.stdout.write(JSON.stringify(b))})' \
+  > "${OOB_BUDGET}"
+aws budgets update-budget --account-id "${ACCOUNT_ID}" --new-budget "file://${OOB_BUDGET}"
+LIMIT_OOB="$(aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
+  --query 'Budget.BudgetLimit.Amount' --output text)"
+case "${LIMIT_OOB}" in
+  3|3.0|3.00*) ;;
+  *) echo "FAIL: the out-of-band update-budget did not set the limit to 3 USD, got '${LIMIT_OOB}'" >&2; exit 1 ;;
+esac
+echo "    budget limit changed out of band to ${LIMIT_OOB} USD"
 
-# 5. go-to-k/cdkd#2154's negative control: something WAS compared.
-if grep -q 'NOTHING was compared' "${DRIFT_OUT}"; then
-  echo "FAIL: the stack warned 'NOTHING was compared' although the queue was compared (go-to-k/cdkd#2154)" >&2
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+DRIFT_RC=$?
+set -e
+cat "${DRIFT_OUT}"
+
+if ! grep -qF '~ CostBudget (AWS::Budgets::Budget)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift did not report the out-of-band limit change on CostBudget (go-to-k/cdkd#5183)" >&2
   exit 1
 fi
-echo "    OK: the glyph is kept for a stack where something WAS compared"
+if ! grep -qE '^ +\+ Budget\.BudgetLimit\.Amount: 3$' "${DRIFT_OUT}" \
+  || ! grep -qE '^ +- Budget\.BudgetLimit\.Amount: 2$' "${DRIFT_OUT}"; then
+  echo "FAIL: expected the change 'Budget.BudgetLimit.Amount: 2 -> 3' in the drift report (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
+echo "    OK: CostBudget drifted on Budget.BudgetLimit.Amount (2 -> 3)"
+# Only the limit: an unchanged member reading as drift is the #5179 class.
+CHANGE_LINES="$(grep -cE '^ {4}[-+] [A-Za-z][A-Za-z0-9.]*: ' "${DRIFT_OUT}" || true)"
+if [ "${CHANGE_LINES}" != "2" ]; then
+  echo "FAIL: expected exactly the two BudgetLimit.Amount change lines, got ${CHANGE_LINES} (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
+echo "    OK: the limit is the only reported change"
+if [ "${DRIFT_RC}" -ne 1 ]; then
+  echo "FAIL: drift exited ${DRIFT_RC} on a drifted stack, expected 1 (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
+echo "    OK: exit 1"
+
+# --- Phase 2d: --revert puts the limit back and keeps everything else ------
+# go-to-k/cdkd#5183. `drift --revert` sends the readback for every member that
+# did not drift, so the read-back is what `UpdateBudget` receives: the limit
+# must return to 2 USD, the notification and both subscribers must survive,
+# and the stack must then drift clean.
+echo "==> Phase 2d: drift --revert restores BudgetLimit 2 USD"
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --revert --yes
+LIMIT_REVERT="$(aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
+  --query 'Budget.BudgetLimit.Amount' --output text)"
+case "${LIMIT_REVERT}" in
+  2|2.0|2.00*) ;;
+  *) echo "FAIL: expected --revert to restore BudgetLimit 2 USD, got '${LIMIT_REVERT}' (go-to-k/cdkd#5183)" >&2; exit 1 ;;
+esac
+echo "    BudgetLimit restored to ${LIMIT_REVERT} USD"
+SUBSCRIBERS_REVERT="$(aws budgets describe-subscribers-for-notification \
+  --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
+  --notification NotificationType=ACTUAL,ComparisonOperator=GREATER_THAN,Threshold=90 \
+  --query 'sort(Subscribers[].Address)' --output json | tr -d ' \n')"
+if [ "${SUBSCRIBERS_REVERT}" != '["cdkd-integ-2@example.com","cdkd-integ@example.com"]' ]; then
+  echo "FAIL: --revert changed the notification's subscribers, got ${SUBSCRIBERS_REVERT} (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
+echo "    notification and both subscribers kept"
+# The fixture's FilterExpression is read back only on ShowFilterExpression; a
+# readback without it would have sent UpdateBudget an unfiltered budget.
+FILTER_REVERT="$(aws budgets describe-budget --account-id "${ACCOUNT_ID}" --budget-name "${BUDGET_NAME}" \
+  --show-filter-expression --query 'Budget.FilterExpression.Dimensions.[Key, join(`|`, Values)]' --output text)"
+# Text output, not JSON piped through `tr -d ' '`: the value has spaces in it.
+if [ "${FILTER_REVERT}" != "$(printf 'SERVICE\tAmazon Simple Queue Service')" ]; then
+  echo "FAIL: --revert dropped the budget's FilterExpression, got ${FILTER_REVERT} (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
+echo "    FilterExpression kept"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+DRIFT_RC=$?
+set -e
+cat "${DRIFT_OUT}"
+if [ "${DRIFT_RC}" -ne 0 ] || ! grep -qF 'no drift detected (2 resources checked, 0 unsupported)' "${DRIFT_OUT}"; then
+  echo "FAIL: drift after --revert is not clean (rc=${DRIFT_RC}) (go-to-k/cdkd#5183)" >&2
+  exit 1
+fi
+echo "    OK: drift clean after --revert"
 
 # --- Phase 3: destroy ---------------------------------------------------
 echo "==> Phase 3: destroy"

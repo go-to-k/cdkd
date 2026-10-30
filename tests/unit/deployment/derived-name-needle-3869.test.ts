@@ -48,7 +48,7 @@ const { maskSecretsInText, recordLogOnlyValue } = await import(
 const { withPrintingSecrets, withCurrentResourceSecrets, getCurrentResourceSecrets } =
   await import('../../../src/deployment/resource-secrets-scope.js');
 const { currentLogLineMasker } = await import('../../../src/utils/log-line-masker.js');
-const { withStackName } = await import('../../../src/provisioning/resource-name.js');
+const { withStackScope } = await import('../../../src/provisioning/resource-name.js');
 const { buildFinalSnapshotIdentifier } = await import(
   '../../../src/provisioning/final-snapshot.js'
 );
@@ -84,7 +84,7 @@ describe('secretNameNeedlesOf — is a record named from a secret, and what does
   it('a name resolved this deploy and REWRITTEN by its provider: every derived spelling', () => {
     const secret = 'alice@example.com';
     const bag: Bag = new Map([[secret, REF]]);
-    withStackName('MyStack', () => {
+    withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const needles = secretNameNeedlesOf(
         'Role',
         {

@@ -124,6 +124,7 @@ async function settle(opts: SettleOptions = {}) {
     logger,
   } as unknown as RollbackExecutorContext;
   const out = await settleJournaledOrphansOnSuccess({
+    stackInstanceId: undefined,
     stateBackend: stateBackend as never,
     stackName: 'S',
     region: REGION,

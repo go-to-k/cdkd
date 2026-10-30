@@ -556,11 +556,15 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     return { state: loaded!.state, divergentBodyRegion: loaded!.divergentBodyRegion };
   }
 
-  function makeCtx(divergentBodyRegion?: unknown): Parameters<typeof runDestroyForStack>[2] {
+  function makeCtx(
+    divergentBodyRegion?: unknown,
+    // The record the under-lock re-read (#5220) returns: the one destroyed.
+    reread?: StackState
+  ): Parameters<typeof runDestroyForStack>[2] {
     return {
       ...(divergentBodyRegion !== undefined && { divergentBodyRegion }),
       stateBackend: {
-        getState: vi.fn().mockResolvedValue(null),
+        getState: vi.fn(async () => (reread === undefined ? null : { state: reread, etag: 'e' })),
         deleteState,
         saveState,
         listStacks: vi.fn().mockResolvedValue([]),
@@ -629,7 +633,7 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     // from the key's, which is what both assertions discriminate against.
     const { state } = await loadRecord(ABSENT, RESOURCE);
 
-    const result = await runDestroyForStack(STACK, state, makeCtx());
+    const result = await runDestroyForStack(STACK, state, makeCtx(undefined, state));
 
     expect(result.deletedCount).toBe(1);
     const context = providerDelete.mock.calls[0]![4] as { expectedRegion?: string };
@@ -895,7 +899,7 @@ describe('runDestroyForStack acts on the KEY region (go-to-k/cdkd#3328)', () => 
     // resource-bearing destroy.
     const { state } = await loadRecord(KEY_REGION, RESOURCE);
 
-    const result = await runDestroyForStack(STACK, state, makeCtx());
+    const result = await runDestroyForStack(STACK, state, makeCtx(undefined, state));
 
     expect(result.errorCount).toBe(0);
     expect(result.deletedCount).toBe(1);

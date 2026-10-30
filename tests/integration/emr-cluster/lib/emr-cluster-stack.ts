@@ -33,11 +33,23 @@ import type { Construct } from 'constructs';
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
  *   - StepConcurrencyLevel is DROPPED from the template (live value 5, set by
  *     the UPDATE phase; AWS's default is 1). ModifyCluster keeps a field it is
- *     not sent and cdkd sends no reset, so the value must stay 5 and the
- *     deploy must name the removal in a warning instead of dropping it
- *     silently.
+ *     not sent and cdkd sends no reset, as CloudFormation leaves it (CFn A/B
+ *     on #1160), so the value must stay 5 and the deploy must name the
+ *     removal in a warning instead of dropping it silently.
  *   - A `removal` tag is ADDED in the same deploy, a companion change proving
  *     the update ran with the removal beside it.
+ *
+ * INSTANCES-REPLACE phase (CDKD_TEST_INSTANCES_REPLACE=true, issue #5418):
+ *   - `Instances.AdditionalMasterSecurityGroups` gains a fixture-owned SG.
+ *     CloudFormation replaces the cluster for that change, so cdkd must too:
+ *     a new ClusterId, the old cluster terminated.
+ *   - The replacement also carries a core instance group (1x m5.xlarge), so
+ *     the IN-PLACE phase below has a group to resize.
+ *
+ * INSTANCES-IN-PLACE phase (CDKD_TEST_INSTANCES_REPLACE=true
+ * CDKD_TEST_INSTANCES_IN_PLACE=true, issue #5422): the core group's
+ * `InstanceCount` 1 -> 2 and `UnhealthyNodeReplacement: false` added. Both are
+ * changes CloudFormation applies in place, so the ClusterId must not change.
  *
  * NOTE: `VisibleToAllUsers` is intentionally NOT toggled/asserted here — AWS
  * deprecated it, so `SetVisibleToAllUsers(false)` is a no-op and the value
@@ -50,6 +62,14 @@ export class EmrClusterStack extends cdk.Stack {
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    // go-to-k/cdkd#5418: Phase 3c of `verify.sh` adds an
+    // `Instances.AdditionalMasterSecurityGroups` entry, which CloudFormation
+    // answers by REPLACING the cluster.
+    const isInstancesReplace = process.env.CDKD_TEST_INSTANCES_REPLACE === 'true';
+    // go-to-k/cdkd#5422: Phase 3d resizes the replacement's core group and
+    // sets UnhealthyNodeReplacement, both applied in place.
+    const isInstancesInPlace =
+      isInstancesReplace && process.env.CDKD_TEST_INSTANCES_IN_PLACE === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -95,6 +115,17 @@ export class EmrClusterStack extends cdk.Stack {
       description: 'cdkd integ EMR managed SG (shared master/slave)',
       allowAllOutbound: true,
     });
+
+    // go-to-k/cdkd#5418: a fixture-owned additional master SG, present only in
+    // the Phase 3c template. EMR attaches it to the master node without adding
+    // rules to it, so it deletes cleanly after the clusters terminate.
+    const extraMasterSg = isInstancesReplace
+      ? new ec2.SecurityGroup(this, 'ExtraMasterSg', {
+          vpc,
+          description: 'cdkd integ EMR additional master SG (issue 5418)',
+          allowAllOutbound: true,
+        })
+      : undefined;
 
     const cluster = new emr.CfnCluster(this, 'Cluster', {
       name: 'cdkd-integ-emr',
@@ -151,9 +182,22 @@ export class EmrClusterStack extends cdk.Stack {
         // Provide the managed SG for both roles (see EmrSg comment above).
         emrManagedMasterSecurityGroup: emrSg.securityGroupId,
         emrManagedSlaveSecurityGroup: emrSg.securityGroupId,
-        // Single-node cluster: master only, stays alive with no steps.
+        ...(extraMasterSg && {
+          additionalMasterSecurityGroups: [extraMasterSg.securityGroupId],
+        }),
+        // Single-node cluster: master only, stays alive with no steps (the
+        // Phase 3c replacement adds a core group, see below).
         keepJobFlowAliveWhenNoSteps: true,
         terminationProtected: false,
+        ...(isInstancesInPlace && { unhealthyNodeReplacement: false }),
+        ...(isInstancesReplace && {
+          coreInstanceGroup: {
+            instanceCount: isInstancesInPlace ? 2 : 1,
+            instanceType: 'm5.xlarge',
+            market: 'ON_DEMAND',
+            name: 'Core',
+          },
+        }),
         masterInstanceGroup: {
           instanceCount: 1,
           instanceType: 'm5.xlarge',

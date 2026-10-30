@@ -6,11 +6,12 @@ const bucketLayout: Diagram = {
   id: 'state-bucket-layout',
   title: 'Objects in the cdkd state bucket',
   description:
-    'The state bucket, cdkd-state-{accountId}, holds five groups of objects. Under the state prefix cdkd/, each stack and region has a directory with state.json (the state record), lock.json (present while a command holds the lock), rollback-journal.json (after a failed or interrupted deploy), create-tokens.json (the create-token ledger) and deployments/ (the deployment event history). Also under the state prefix, _index/{region}/exports.json is the exports index. Outside the prefix are cdkd-bootstrap/{region}.json (the asset-storage marker), custom-resource-responses/ (one object per custom resource call) and cdkd-migrate-tmp/ (transient CloudFormation templates).',
-  rows: [['bucket'], ['stack', 'index'], ['marker', 'responses', 'tmp']],
+    'The state bucket, cdkd-state-{accountId}, holds five groups of objects. Under the state prefix cdkd/, each stack and region has a directory with state.json (the state record), lock.json (present while a command holds the lock), rollback-journal.json (after a failed or interrupted deploy), create-tokens.json (the create-token ledger), stack-instance.json (the write-ahead stack instance id of a first deploy) and deployments/ (the deployment event history). Also under the state prefix, _index/{region}/exports.json is the exports index, and _refactor/pending.json lists the moves an unfinished cdkd refactor started. Outside the prefix are cdkd-bootstrap/{region}.json (the asset-storage marker), custom-resource-responses/ (one object per custom resource call) and cdkd-migrate-tmp/ (transient CloudFormation templates).',
+  rows: [['bucket'], ['stack', 'index', 'refactor'], ['marker', 'responses', 'tmp']],
   edges: [
     { from: 'bucket', to: 'stack' },
     { from: 'bucket', to: 'index' },
+    { from: 'bucket', to: 'refactor' },
     { from: 'bucket', to: 'marker' },
     { from: 'bucket', to: 'responses' },
     { from: 'bucket', to: 'tmp' },
@@ -26,6 +27,7 @@ const bucketLayout: Diagram = {
         'lock.json: while a command holds the lock',
         'rollback-journal.json: after a failed or interrupted deploy',
         'create-tokens.json: create-token ledger',
+        'stack-instance.json: write-ahead stack instance id',
         'deployments/: deployment event history',
       ],
     },
@@ -33,6 +35,11 @@ const bucketLayout: Diagram = {
       id: 'index',
       title: 'cdkd/_index/{region}/',
       detail: ['exports.json: exports index'],
+    },
+    {
+      id: 'refactor',
+      title: 'cdkd/_refactor/',
+      detail: ['pending.json: unfinished refactor moves'],
     },
     {
       id: 'marker',

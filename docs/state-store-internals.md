@@ -25,10 +25,19 @@ taken name (or matches only its own idempotency token), and a create through
 Cloud Control refuses an existing name.
 
 When one of those creates would use a name cdkd generated, cdkd looks the name
-up first. If a resource already holds it, the create goes ahead only when this
-stack's own evidence names that resource:
+up first. On a stack with a `stackInstanceId` the same check covers a planned
+replacement, whose new resource takes the next name generation: the lookup is
+at that next-generation name and the ledger below records it, so a re-run
+after a crash takes back what the killed run made. If a resource already holds
+the name, the create goes ahead only when this stack's own evidence names that
+resource. On a stack with a `stackInstanceId`, only the first three sources
+below count: what left the stack (rollback orphans, `retained.json`, the
+history) is never taken back implicitly, as CloudFormation never takes back a
+resource that left a stack, and `cdkd import` adopts it instead. A stack
+without one reads all of them:
 
-- its state record (under any logical id), or its rollback orphans;
+- its state record (under any logical id), or (legacy stacks only) its rollback
+  orphans;
 - its rollback journal: a completed operation, or a failed one that recorded
   the resource's physical id;
 - its create-token ledger, which records the names of the deploy's planned
@@ -65,9 +74,17 @@ stack's own evidence names that resource:
   `cdkd import` remedy, never adopted;
 - `retained.json`, the resources this stack let go of under this prefix while
   they still exist (`RemovalPolicy.RETAIN`): kept by `cdkd destroy`, or by a
-  deploy that removed them from the template. The next deploy under the same
-  prefix that creates them again takes them back, and drops them from that
-  list once its record names them. Another prefix or another bucket does not
+  deploy that removed them from the template. On a stack without a
+  `stackInstanceId`, a later deploy that creates them again takes them back,
+  and drops them from that list once its record names them. On a stack with
+  one, a re-added logical id takes the generation after the one it retired at
+  (`retiredNameGenerations`), so its name differs and the list licenses
+  nothing; a destroy ends the lifetime, so the redeploy's generated names
+  differ too (#5064), never asks for them and warns once, naming
+  `cdkd import`. A destroy, and on such a stack a deploy that removes a
+  resource, list every kept resource whose name cdkd generated, except a name-adopting
+  type made through Cloud Control: an entry licenses by type and physical
+  id alone, and a type no create adopts licenses nothing. Another prefix or another bucket does not
   see the list, so a redeploy there is refused. A deploy records what it
   kept in one write when it ends, beside its final state save; a destroy,
   once its record is gone, beside the marker's release. A crash before that
@@ -164,9 +181,10 @@ earlier record versions after an upgrade; without them that source licenses
 nothing.
 
 **After `cdkd state orphan`.** The orphan drops the record and empties the
-kept list, so nothing this stack records names its resources any more: a
-redeploy under the same prefix that would create one of them again by its
-generated name is refused, and `cdkd import <stack> --resource
+kept list, so nothing this stack records names its resources any more. The
+redeploy is a new lifetime whose generated names differ (#5064), so it creates
+new resources beside them; where a name still collides (a declared name, or a
+stack whose record predates the suffix) the create is refused, and `cdkd import <stack> --resource
 <logicalId>=<physicalId>` (the command the refusal prints) adopts it. This is
 deliberate: the orphan is how a record is handed over, and cdkd does not take
 the resources back on its own.

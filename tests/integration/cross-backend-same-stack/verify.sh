@@ -9,16 +9,17 @@
 #      retention at 7 days. Capture A's queue URL, log group name and role name
 #      from A's state.
 #   2. Deploy deployment B of the SAME stack under PREFIX_B with retention 3,
-#      rollback ON (the default). Every name is cdkd-generated from the stack
-#      name and logical id, so B asks AWS for A's names: the Role collides, the
-#      Queue and the LogGroup may be handed back. The stack registry marker A's
-#      first deploy claimed (`_cdkd-registry/<region>/<stack>.json`) names
-#      PREFIX_A, so B is refused before any create.
+#      rollback ON (the default). The stack registry marker A's first deploy
+#      claimed (`_cdkd-registry/<region>/<stack>.json`) names PREFIX_A, so B is
+#      refused before any create.
 #   2b. CROSS-BUCKET: deploy B of the SAME stack into a per-run SECOND bucket.
-#      No marker or record of A is there, so B's creates run, and each create
-#      that would adopt A's queue or log group by its generated name is refused
-#      before it is sent (nothing of B's names them): the log group keeps A's
-#      retention and A's queue survives. The second bucket is deleted exactly.
+#      No marker or record of A is there, so B is a first deploy with its OWN
+#      stack instance id (go-to-k/cdkd#5064), and its generated names differ
+#      from A's: nothing collides, B creates its own queue and log group and
+#      SUCCEEDS, adopting nothing of A's (before #5064 it asked for A's names
+#      and each adopting create was refused). A's log group keeps its
+#      retention and A's queue survives. B is destroyed there, its kept log
+#      group deleted, and the second bucket deleted exactly.
 #   3. OBSERVE (unique `OBSERVE:` lines): B's exit code, which resources failed
 #      with which awsErrorCode and what B's rollback did (B's deployments/*.jsonl),
 #      whether A's queue still exists, the log group's retention, and what B's
@@ -37,13 +38,17 @@
 #      KEEP the key (warn, exit 2), since PREFIX_A's record may hold it.
 #   5c. A pre-fix pair whose redeploy under PREFIX_B (an empty record, so not a
 #      first deploy, and a plan that only creates) ADDS the Queue A holds: the
-#      create is refused before it is sent, so nothing is adopted and A's queue
-#      survives.
+#      empty record is A's, stack instance id included, so B derives A's queue
+#      name; the create is refused before it is sent, so nothing is adopted and
+#      A's queue survives.
 #   6. Destroy A: its RETAIN log group is kept and recorded as kept under
 #      PREFIX_A (`retained.json`).
-#   6b. RETAIN-REDEPLOY: redeploy A under PREFIX_A: the log group create takes
-#      the kept log group back (licensed by that record), and the record then
-#      forgets it. Destroy A again and delete the retained log group.
+#   6b. RETAIN-REDEPLOY: redeploy A under PREFIX_A. The destroy deleted A's
+#      record and its stack instance id, so this is a NEW lifetime with new
+#      names (go-to-k/cdkd#5064): it creates a NEW log group beside the kept
+#      one, takes nothing back (before #5064 it took the kept log group back),
+#      leaves the kept one untouched and still recorded, and warns once naming
+#      `cdkd import`. Destroy A again and delete both retained log groups.
 #   7. Seed an EMPTY record, a failed first deploy's journal and a registry
 #      marker naming PREFIX_B (what a failed first deploy there leaves): a fresh
 #      deploy under PREFIX_A must re-claim the stale marker, print the note
@@ -131,6 +136,10 @@ fi
 # Set only from what THIS run's state recorded; the trap acts on nothing else.
 QUEUE_URL_A=""
 LOG_GROUP_NAME=""
+# Log groups other lifetimes / deployments created (go-to-k/cdkd#5064: each
+# lifetime names its own): B's in the second bucket, and A's after phases 6 and
+# 7 started new lifetimes. RETAIN, so the trap deletes each by name.
+EXTRA_LOG_GROUPS=""
 ROLE_NAME_A=""
 # Every KMS key id this run's deploys recorded (the trap schedules any left).
 KEY_IDS=""
@@ -162,14 +171,14 @@ state_physical_id() {
     '[(.resources // {})[] | select(.resourceType == $t) | .physicalId] | first // ""'
 }
 
-# The log group's current retention in days, "None" when it has none, or
-# "<absent>" when no log group of that exact name exists.
-log_group_retention() {
-  local out
-  out="$(aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP_NAME}" --region "${REGION}" \
-    --query "logGroups[?logGroupName=='${LOG_GROUP_NAME}'] | [0].retentionInDays" --output text)" || return 1
-  if [ "$(aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP_NAME}" --region "${REGION}" \
-    --query "length(logGroups[?logGroupName=='${LOG_GROUP_NAME}'])" --output text)" = "0" ]; then
+# A log group's current retention in days, "None" when it has none, or
+# "<absent>" when no log group of that exact name exists. Default: A's.
+log_group_retention() { # usage: log_group_retention [<name>]
+  local out name="${1:-${LOG_GROUP_NAME}}"
+  out="$(aws logs describe-log-groups --log-group-name-prefix "${name}" --region "${REGION}" \
+    --query "logGroups[?logGroupName=='${name}'] | [0].retentionInDays" --output text)" || return 1
+  if [ "$(aws logs describe-log-groups --log-group-name-prefix "${name}" --region "${REGION}" \
+    --query "length(logGroups[?logGroupName=='${name}'])" --output text)" = "0" ]; then
     echo "<absent>"
   else
     echo "${out}"
@@ -237,6 +246,14 @@ sweep_named() {
         done
         aws iam delete-role --role-name "${role}" >/dev/null 2>&1
         ;;
+    esac
+  done
+  # go-to-k/cdkd#5064: a RETAINed log group of a deploy whose record was never
+  # read (B's in the second bucket, when its deploy or read failed) carries a
+  # name no state recorded: swept by this run's stack prefix.
+  for lg in $(aws logs describe-log-groups --log-group-name-prefix "/cdkd/${STACK}-" --region "${REGION}" --query 'logGroups[].logGroupName' --output text 2>/dev/null); do
+    case "${lg}" in
+      "/cdkd/${STACK}"-?*) aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 ;;
     esac
   done
 }
@@ -311,10 +328,12 @@ cleanup() {
       aws kms schedule-key-deletion --key-id "${key_id}" --pending-window-in-days 7 --region "${REGION}" >/dev/null 2>&1
     fi
   done
-  # The RETAINed log group, by the exact name A's state recorded.
-  case "${LOG_GROUP_NAME:-}" in
-    "/cdkd/${STACK}"-?*) aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}" >/dev/null 2>&1 ;;
-  esac
+  # The RETAINed log groups, by the exact names this run's states recorded.
+  for lg in "${LOG_GROUP_NAME:-}" ${EXTRA_LOG_GROUPS:-}; do
+    case "${lg}" in
+      "/cdkd/${STACK}"-?*) aws logs delete-log-group --log-group-name "${lg}" --region "${REGION}" >/dev/null 2>&1 ;;
+    esac
+  done
   if [ "${DEPLOYED_A:-}" = "1" ]; then
     sweep_named
   fi
@@ -485,13 +504,13 @@ echo "    OK: B was refused before any create; A's queue exists and its log grou
 
 echo ""
 echo "==> Phase 2b: CROSS-BUCKET -- deploy B of the SAME stack into a second, per-run bucket"
-# Nothing in the second bucket knows A: no marker, no record. B's creates run,
-# and each that would adopt A's queue or log group by its generated name must
-# be refused BEFORE it is sent (go-to-k/cdkd#4705 C): the log group keeps A's
-# retention and A's queue survives. B runs WITHOUT the Role
-# (CDKD_4705_B_NO_ROLE=1), whose native EntityAlreadyExists could otherwise end
-# the deploy before the queue and log group are admitted; B's KMS key is B's
-# own, and its rollback deletes it.
+# Nothing in the second bucket knows A: no marker, no record. B is a first
+# deploy there with its own stack instance id (go-to-k/cdkd#5064), so every name
+# it generates differs from A's: it must SUCCEED, creating its own resources and
+# adopting none of A's, and leave A's log group retention and queue alone. B
+# runs WITHOUT the Role (CDKD_4705_B_NO_ROLE=1), as before #5064 (when its
+# EntityAlreadyExists could end the deploy early), so the arm creates the
+# least it can; B's KMS key is B's own, and B's destroy schedules it.
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 case "${ACCOUNT_ID}" in
   [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
@@ -528,12 +547,35 @@ echo "OBSERVE: cross-bucket-deploy-rc=${XB_RC} b-runs=${XB_RUNS} b-adoptions=${X
 for id in $(printf '%s' "${XB_EVENTS}" | jq -r 'select(.eventType == "RESOURCE_SUCCEEDED" and .resourceType == "AWS::KMS::Key") | .physicalId // empty' 2>/dev/null || true); do
   KEY_IDS="${KEY_IDS} ${id}"
 done
-if [ "${XB_RC}" -eq 0 ]; then
-  echo "FAIL: deployment B of ${STACK} in a second bucket SUCCEEDED; its adopting creates must be refused (go-to-k/cdkd#4705)" >&2
+# B's own names, from its record in the second bucket: its RETAIN log group is
+# deleted by name after B's destroy (and by the trap until then).
+XB_STATE="$( (aws s3 cp "s3://${BUCKET_X}/${PREFIX_B}/${STACK}/${REGION}/state.json" - 2>/dev/null || true))"
+XB_QUEUE_URL="$(printf '%s' "${XB_STATE}" | jq -r '[(.resources // {})[] | select(.resourceType == "AWS::SQS::Queue") | .physicalId] | first // ""' 2>/dev/null || true)"
+XB_LOG_GROUP="$(printf '%s' "${XB_STATE}" | jq -r '[(.resources // {})[] | select(.resourceType == "AWS::Logs::LogGroup") | .physicalId] | first // ""' 2>/dev/null || true)"
+[ -z "${XB_LOG_GROUP}" ] || EXTRA_LOG_GROUPS="${EXTRA_LOG_GROUPS} ${XB_LOG_GROUP}"
+echo "OBSERVE: cross-bucket-queue=${XB_QUEUE_URL:-<none>} cross-bucket-log-group=${XB_LOG_GROUP:-<none>}"
+if [ "${XB_RC}" -ne 0 ]; then
+  echo "FAIL: deployment B of ${STACK} in a second bucket FAILED (rc=${XB_RC}; output above): with its own stack instance id its names differ from A's, so nothing collides (go-to-k/cdkd#5064)" >&2
   exit 1
 fi
-if ! grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
-  echo "FAIL: deployment B in a second bucket was not refused at an adopting create ('${ADOPT_REFUSAL_NEEDLE}'; output above) (go-to-k/cdkd#4705)" >&2
+if grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
+  echo "FAIL: deployment B in a second bucket hit an adopting-create refusal ('${ADOPT_REFUSAL_NEEDLE}'): it asked for one of A's names (go-to-k/cdkd#5064)" >&2
+  exit 1
+fi
+case "${XB_QUEUE_URL}" in
+  https://*/"${STACK}"-?*) ;;
+  *) echo "FAIL: B's record in the second bucket names no ${STACK}-* queue (got '${XB_QUEUE_URL}')" >&2; exit 1 ;;
+esac
+case "${XB_LOG_GROUP}" in
+  "/cdkd/${STACK}"-?*) ;;
+  *) echo "FAIL: B's record in the second bucket names no /cdkd/${STACK}-* log group (got '${XB_LOG_GROUP}')" >&2; exit 1 ;;
+esac
+if [ "${XB_QUEUE_URL}" = "${QUEUE_URL_A}" ] || [ "${XB_LOG_GROUP}" = "${LOG_GROUP_NAME}" ]; then
+  echo "FAIL: B in the second bucket records A's queue or log group (${XB_QUEUE_URL} / ${XB_LOG_GROUP}): the two deployments share a stack instance id (go-to-k/cdkd#5064)" >&2
+  exit 1
+fi
+if [ "$(log_group_retention "${XB_LOG_GROUP}")" != "${RETENTION_B}" ]; then
+  echo "FAIL: B's own log group ${XB_LOG_GROUP} does not carry B's retention ${RETENTION_B}" >&2
   exit 1
 fi
 # Not vacuous: B's run must have left its events in the second bucket.
@@ -553,11 +595,26 @@ if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attrib
   echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's cross-bucket deploy (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
+CDKD_4705_B_NO_ROLE=1 CDKD_4705_RETENTION_DAYS="${RETENTION_B}" node "${LOCAL_DIST}" destroy "${STACK}" \
+  --region "${REGION}" --state-bucket "${BUCKET_X}" --state-prefix "${PREFIX_B}" --force
+if gone_probe aws sqs get-queue-attributes --queue-url "${QUEUE_URL_A}" --attribute-names QueueArn --region "${REGION}"; then
+  echo "FAIL: A's queue ${QUEUE_URL_A} is gone after B's destroy in the second bucket (go-to-k/cdkd#5064)" >&2
+  exit 1
+fi
+aws logs delete-log-group --log-group-name "${XB_LOG_GROUP}" --region "${REGION}"
 aws s3 rb "s3://${BUCKET_X}" --force >/dev/null
-assert_gone "the second bucket ${BUCKET_X} still exists after its removal" \
-  aws s3api head-bucket --bucket "${BUCKET_X}"
+# A bucket delete is eventually consistent: HeadBucket can still answer 200
+# right after `rb` returns, so the probe is retried, bounded (12 x 5s).
+for attempt in $(seq 1 12); do
+  gone_probe aws s3api head-bucket --bucket "${BUCKET_X}" && break
+  if [ "${attempt}" = 12 ]; then
+    echo "FAIL: the second bucket ${BUCKET_X} still exists after its removal" >&2
+    exit 1
+  fi
+  sleep 5
+done
 BUCKET_X=""
-echo "    OK: B in a second bucket was refused at its adopting creates; A's queue and log group retention are untouched; the bucket is deleted"
+echo "    OK: B in a second bucket deployed under its own names and adopted nothing; A's queue and log group retention are untouched; B is destroyed and the bucket deleted"
 
 echo ""
 echo "==> Phase 4: a pre-fix pair (A's record copied to ${PREFIX_B}) makes cdkd destroy under ${PREFIX_A} refuse"
@@ -565,8 +622,15 @@ echo "==> Phase 4: a pre-fix pair (A's record copied to ${PREFIX_B}) makes cdkd 
 EMPTY_RECORD="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY_A}" - | jq -c '.resources = {} | .outputs = {} | del(.orphans)')"
 case "${EMPTY_RECORD}" in
   '{'*'"resources":{}'*) ;;
-  *) echo "FAIL: could not build an empty record from A's (got '${EMPTY_RECORD}')" >&2; exit 1 ;;
+  *) echo "FAIL: could not build an empty record from A's (${#EMPTY_RECORD} bytes)" >&2; exit 1 ;;
 esac
+# go-to-k/cdkd#5064: A's record carries its stack instance id, and so does this
+# copy -- which is what makes phase 5c's B derive A's queue name. Checked
+# without printing the id.
+if [ "$(printf '%s' "${EMPTY_RECORD}" | jq -r '(.stackInstanceId // "") | length > 0')" != "true" ]; then
+  echo "FAIL: A's record carries no stackInstanceId; phase 5c's B would derive other names and assert nothing" >&2
+  exit 1
+fi
 # A pair that PREDATES the registry: remove the marker A's first deploy claimed
 # (an older cdkd wrote none), so the destroy falls back to its one-time scan.
 aws s3 rm "s3://${STATE_BUCKET}/${MARKER_KEY}" >/dev/null
@@ -770,29 +834,56 @@ fi
 echo "    OK: both records are gone, the marker is released, and the kept log group is recorded under ${PREFIX_A}"
 
 echo ""
-echo "==> Phase 6b: RETAIN-REDEPLOY -- redeploy A under ${PREFIX_A}: its create takes the kept log group back"
+echo "==> Phase 6b: RETAIN-REDEPLOY -- redeploy A under ${PREFIX_A}: a new lifetime leaves the kept log group alone"
 set +e
-CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
+CDKD_4705_RETENTION_DAYS="${RETENTION_B}" node "${LOCAL_DIST}" deploy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --yes >"${RUN_LOG}" 2>&1
 READOPT_RC=$?
 set -e
 sed 's/^/  /' "${RUN_LOG}"
 KEY_ID_6B="$( (state_physical_id "${STATE_KEY_A}" 'AWS::KMS::Key') || true)"
 [ -z "${KEY_ID_6B}" ] || KEY_IDS="${KEY_IDS} ${KEY_ID_6B}"
-READOPTED="$( (state_physical_id "${STATE_KEY_A}" 'AWS::Logs::LogGroup') || true)"
+NEW_LOG_GROUP="$( (state_physical_id "${STATE_KEY_A}" 'AWS::Logs::LogGroup') || true)"
+[ -z "${NEW_LOG_GROUP}" ] || EXTRA_LOG_GROUPS="${EXTRA_LOG_GROUPS} ${NEW_LOG_GROUP}"
 KEPT_AFTER="$( (aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_A}" - 2>/dev/null || true) | jq -r '[.resources[]? | .physicalId] | join(",")' 2>/dev/null || true)"
-echo "OBSERVE: readopt-rc=${READOPT_RC} record-log-group=${READOPTED:-<none>} kept-after-redeploy=${KEPT_AFTER:-<none>} marker=$(marker_prefix)"
+echo "OBSERVE: redeploy-rc=${READOPT_RC} record-log-group=${NEW_LOG_GROUP:-<none>} kept-after-redeploy=${KEPT_AFTER:-<none>} marker=$(marker_prefix)"
 if [ "${READOPT_RC}" -ne 0 ] || grep -qF "${ADOPT_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
-  echo "FAIL: redeploying A under ${PREFIX_A} did not take its own kept log group back (rc=${READOPT_RC}; output above) (go-to-k/cdkd#4705)" >&2
+  echo "FAIL: redeploying A under ${PREFIX_A} after its destroy failed or hit an adopting-create refusal (rc=${READOPT_RC}; output above): a new lifetime's names differ from the kept log group's (go-to-k/cdkd#5064)" >&2
   exit 1
 fi
-if [ "${READOPTED}" != "${LOG_GROUP_NAME}" ]; then
-  echo "FAIL: A's record names log group '${READOPTED}', not the kept ${LOG_GROUP_NAME} (go-to-k/cdkd#4705)" >&2
+# The kept-resource warning (deploy-flow.ts, go-to-k/cdkd#5064): the marker
+# carries the count, the sentinel is its independent `cdkd import` clause.
+if ! grep -qF "adopt it with 'cdkd import'" "${RUN_LOG}"; then
+  echo "FAIL: the new lifetime's first deploy did not warn that an earlier deployment kept a resource (no 'cdkd import' clause; output above) (go-to-k/cdkd#5064)" >&2
   exit 1
 fi
-case "${KEPT_AFTER}" in
-  *"${LOG_GROUP_NAME}"*)
-    echo "FAIL: the kept-resource record still lists ${LOG_GROUP_NAME} after the redeploy took it back (go-to-k/cdkd#4705)" >&2
+if ! grep -F "adopt it with 'cdkd import'" "${RUN_LOG}" | grep -qF "kept 1 resource(s) here"; then
+  echo "FAIL: the kept-resource warning does not say exactly 1 resource was kept (wording drifted?) (go-to-k/cdkd#5064)" >&2
+  exit 1
+fi
+case "${NEW_LOG_GROUP}" in
+  "/cdkd/${STACK}"-?*) ;;
+  *) echo "FAIL: A's new record names no /cdkd/${STACK}-* log group (got '${NEW_LOG_GROUP}')" >&2; exit 1 ;;
+esac
+if [ "${NEW_LOG_GROUP}" = "${LOG_GROUP_NAME}" ]; then
+  echo "FAIL: the new lifetime took the kept log group ${LOG_GROUP_NAME} back; it must create its own under a new name (go-to-k/cdkd#5064)" >&2
+  exit 1
+fi
+# The kept log group is untouched: still there, still A's first retention
+# (this deploy asks for RETENTION_B, so an adoption would have rewritten it).
+if [ "$(log_group_retention)" != "${RETENTION_A}" ]; then
+  echo "FAIL: the kept log group ${LOG_GROUP_NAME} is gone or rewritten (retention '$(log_group_retention)', expected ${RETENTION_A}) after the new lifetime's deploy (go-to-k/cdkd#5064)" >&2
+  exit 1
+fi
+if [ "$(log_group_retention "${NEW_LOG_GROUP}")" != "${RETENTION_B}" ]; then
+  echo "FAIL: the new log group ${NEW_LOG_GROUP} does not carry this deploy's retention ${RETENTION_B}" >&2
+  exit 1
+fi
+# Not taken back, so still recorded as kept.
+case ",${KEPT_AFTER}," in
+  *",${LOG_GROUP_NAME},"*) ;;
+  *)
+    echo "FAIL: the kept-resource record no longer lists ${LOG_GROUP_NAME} (got '${KEPT_AFTER}'), as if the redeploy had taken it back (go-to-k/cdkd#5064)" >&2
     exit 1
     ;;
 esac
@@ -800,13 +891,14 @@ if [ "$(marker_prefix)" != "${PREFIX_A}" ]; then
   echo "FAIL: A's redeploy did not claim the registry marker again (go-to-k/cdkd#4705)" >&2
   exit 1
 fi
-CDKD_4705_RETENTION_DAYS="${RETENTION_A}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
+CDKD_4705_RETENTION_DAYS="${RETENTION_B}" node "${LOCAL_DIST}" destroy "${STACK}" --region "${REGION}" \
   --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_A}" --force
 assert_gone "state ${STATE_KEY_A} still exists after the Phase 6b destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
 aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"
+aws logs delete-log-group --log-group-name "${NEW_LOG_GROUP}" --region "${REGION}"
 aws s3 rm "s3://${STATE_BUCKET}/${RETAINED_KEY_A}" >/dev/null
-echo "    OK: the redeploy took the kept log group back and the record forgot it; destroyed again, the log group is deleted"
+echo "    OK: the new lifetime created ${NEW_LOG_GROUP} beside the untouched kept ${LOG_GROUP_NAME} and warned; destroyed again, both log groups are deleted"
 
 echo ""
 echo "==> Phase 7: an EMPTY leftover record under ${PREFIX_B} (a failed first deploy's) does not block ${PREFIX_A}"
@@ -828,6 +920,9 @@ sed 's/^/  /' "${RUN_LOG}"
 echo "OBSERVE: stale-leftover-deploy-rc=${STALE_RC}"
 KEY_ID_P7="$( (state_physical_id "${STATE_KEY_A}" 'AWS::KMS::Key') || true)"
 [ -z "${KEY_ID_P7}" ] || KEY_IDS="${KEY_IDS} ${KEY_ID_P7}"
+# A third lifetime, so its own log group name (go-to-k/cdkd#5064).
+P7_LOG_GROUP="$( (state_physical_id "${STATE_KEY_A}" 'AWS::Logs::LogGroup') || true)"
+[ -z "${P7_LOG_GROUP}" ] || EXTRA_LOG_GROUPS="${EXTRA_LOG_GROUPS} ${P7_LOG_GROUP}"
 if [ "${STALE_RC}" -ne 0 ] || grep -qF "${DEPLOY_REFUSAL_NEEDLE}" "${RUN_LOG}"; then
   echo "FAIL: a fresh deploy under ${PREFIX_A} was refused or failed beside an EMPTY leftover record under ${PREFIX_B} (rc=${STALE_RC}; output above) (go-to-k/cdkd#4705)" >&2
   exit 1
@@ -853,7 +948,10 @@ if [ "${STALE_DESTROY_RC}" -ne 0 ] || grep -qF "${DESTROY_REFUSAL_NEEDLE}" "${RU
 fi
 assert_gone "state ${STATE_KEY_A} still exists after the Phase 7 destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY_A}"
-aws logs delete-log-group --log-group-name "${LOG_GROUP_NAME}" --region "${REGION}"
+case "${P7_LOG_GROUP}" in
+  "/cdkd/${STACK}"-?*) aws logs delete-log-group --log-group-name "${P7_LOG_GROUP}" --region "${REGION}" ;;
+  *) echo "FAIL: phase 7's record named no /cdkd/${STACK}-* log group (got '${P7_LOG_GROUP}')" >&2; exit 1 ;;
+esac
 aws s3 rm "s3://${STATE_BUCKET}/${PREFIX_A}/${STACK}/${REGION}/retained.json" >/dev/null
 aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY_B}" >/dev/null
 aws s3 rm "s3://${STATE_BUCKET}/${JOURNAL_KEY_B}" >/dev/null
@@ -870,4 +968,4 @@ trap - EXIT INT TERM
 sweep_prefix "${PREFIX_A}" "${STATE_KEY_A}" "${JOURNAL_KEY_A}"
 sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 rescan
-echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, one in another bucket was refused at its adopting creates, a destroy and a rollback of a paired record were refused, a create of A's queue under B was refused before it was sent, a redeploy took its own kept log group back, an empty leftover and a stale marker blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"
+echo "[verify] PASS — a second deployment of ${STACK} under another state prefix was refused before any create, one in another bucket deployed under its own names and adopted nothing, a destroy and a rollback of a paired record were refused, a create of A's queue under B was refused before it was sent, a redeploy after destroy left the kept log group alone, an empty leftover and a stale marker blocked nothing, and deployment A's queue and log group stayed untouched (#4705)"

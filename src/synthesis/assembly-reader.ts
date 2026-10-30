@@ -14,6 +14,7 @@ import {
   displayIdent,
   displaySafe,
   displayStackName,
+  safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
 import {
@@ -24,6 +25,13 @@ import {
 } from '../utils/assembly-path.js';
 import { nullPrototypeRecord } from '../utils/own-keys.js';
 import { CdkdError, SynthesisError } from '../utils/error-handler.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  jsonParseFailureStandIn,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 import { collectStackMessages, type StackMessage } from './stack-messages.js';
 import { renderStagePath, stageLoadError, stageScopedError } from './failed-stages.js';
 
@@ -212,14 +220,33 @@ export class AssemblyReader {
   readManifest(assemblyDir: string): AssemblyManifest {
     const manifestPath = join(assemblyDir, 'manifest.json');
 
+    let content: string | undefined;
     try {
-      const content = readFileSync(manifestPath, 'utf-8');
+      content = readFileSync(manifestPath, 'utf-8');
       const manifest = JSON.parse(content) as AssemblyManifest;
       this.logger.debug(`Loaded manifest: version=${displaySafe(manifest.version)}`);
       return manifest;
     } catch (error) {
+      // V8's `SyntaxError` quotes a window of the manifest, so the message
+      // names only the failure's offset and size, and the cause is a
+      // snippet-free `SyntaxError` STAND-IN (issue #5254): `formatError`
+      // prints a cause on its `Caused by:` line, and `manifestReadFailureText`
+      // classifies a Stage manifest's failure by `cause instanceof
+      // SyntaxError`, which the stand-in keeps. V8's text goes to `debug`
+      // only. `content` is set exactly when the read succeeded.
+      if (error instanceof SyntaxError && content !== undefined) {
+        const bytes = utf8ByteLength(content);
+        this.logger.debug(
+          safeMsg`Cloud assembly manifest ${manifestPath} failed to parse: ${parseFailureDebugDetail(error)}`
+        );
+        throw new SynthesisError(
+          `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ` +
+            `${describeJsonParseFailure(error, bytes)}`,
+          jsonParseFailureStandIn(error, bytes)
+        );
+      }
       throw new SynthesisError(
-        `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ${displaySafe(error instanceof Error ? error.message : String(error))}`,
+        `Failed to read cloud assembly manifest from ${displaySafe(manifestPath)}: ${displaySafe(describeAwsFailure(error).detail)}`,
         error instanceof Error ? error : undefined
       );
     }

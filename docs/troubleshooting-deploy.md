@@ -50,7 +50,7 @@ See the
 ### The type cannot be updated in place at all
 
 ```
-ResourceUpdateNotSupportedError: AWS::EC2::NatGateway (MyNat) cannot be updated in place: use cdkd deploy with --replace, or change the resource definition to create a new version.
+ResourceUpdateNotSupportedError: AWS::EC2::SubnetRouteTableAssociation (MyAssoc) cannot be updated in place: destroy + redeploy the association. (SubnetId, RouteTableId) is immutable.
 ```
 
 For such a type, every change is a replacement. The end of the message names
@@ -65,11 +65,13 @@ cdkd deploy MyStack --replace
 
 ```
 ProvisioningError: Failed to create resource MyFunction
-Caused by: Failed to create Lambda function MyFunction: <the AWS error>
+Caused by: Failed to create Lambda function MyFunction: <ErrorClass>. Re-run with --verbose for AWS's own message.
 ```
 
-The AWS error on the `Caused by:` line tells you which problem you have. Two
-are common.
+The `Caused by:` line names the AWS error class only, because AWS's text can
+name your account and role. Re-run with `--verbose`: AWS's own message, on the
+debug line that starts `Failed to create Lambda function MyFunction:`, tells
+you which problem you have. Two are common.
 
 ### `Error occurred while GetObject. S3 Error Code: NoSuchKey.`
 
@@ -112,9 +114,19 @@ ISSUED status within 600s.
 ```
 
 A DNS-validated certificate reaches `ISSUED` only once its validation records
-exist in your DNS zone. On a first deploy they usually do not exist yet, so
-cdkd's 10-minute wait runs out. While it waits, cdkd prints the records the
-certificate needs. Before it reports the error, cdkd deletes the certificate
+exist in your DNS zone.
+
+With `CertificateValidation.fromDns(hostedZone)` (a `HostedZoneId` on the
+domain's `DomainValidationOptions` entry), cdkd writes the record into that
+Route 53 zone itself, as CloudFormation does, so a first deploy needs nothing
+from you. The caller needs `route53:ChangeResourceRecordSets` on the zone. The
+record is left in place when the certificate is deleted: it is shared by every
+certificate for the domain, and CloudFormation leaves it too.
+
+For a domain without a `HostedZoneId` (a zone outside Route 53 or outside the
+account, or `fromDns()` without a zone), the records usually do not exist on a
+first deploy, so cdkd's 10-minute wait runs out. While it waits, cdkd prints the
+records the certificate needs. Before it reports the error, cdkd deletes the certificate
 it requested, so a failed attempt leaves nothing behind.
 
 Add the printed CNAME records to your DNS zone, then re-run:

@@ -134,3 +134,18 @@ export function sdkCallLogConfig(): { logger: typeof CALL_LOG_LOGGER } | undefin
   }
   return { logger: CALL_LOG_LOGGER };
 }
+
+/** Every level a no-op: what an S3 client config carries while the call log is off. */
+const SILENT_LOGGER = { debug: noop, info: noop, warn: noop, error: noop };
+
+/**
+ * The `logger` for an S3 client config. S3 clients carry a logger to silence
+ * the SDK's "Are you using a Stream of unknown length" warning, which arrives
+ * on `warn`. A silent logger in their config would also replace the call log's
+ * counting logger, and every state, lock and marker call would go uncounted,
+ * so while the call log is on its logger (whose `warn` is a no-op too) is used
+ * instead.
+ */
+export function quietS3Logger(): typeof CALL_LOG_LOGGER | typeof SILENT_LOGGER {
+  return sdkCallLogConfig()?.logger ?? SILENT_LOGGER;
+}

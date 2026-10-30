@@ -21,7 +21,7 @@
 // `extractDeploymentEventError` below is a runtime function rather than a type
 // -- the guard it needs cannot live in a caller, because every caller reaches
 // it from inside a catch that is already the last handler (go-to-k/cdkd#3348).
-import { safeStringify } from '../utils/aws-failure-text.js';
+import { describeAwsFailure, safeStringify } from '../utils/aws-failure-text.js';
 
 /**
  * The cdkd command that produced a deployment run. `'rollback'` (issue
@@ -155,7 +155,12 @@ export type DeploymentEventType =
 export interface DeploymentEventError {
   /** `Error.name` of the outermost thrown error. */
   name: string;
-  /** `Error.message` of the outermost thrown error. */
+  /**
+   * `Error.message` of the outermost thrown error — or, when AWS wrote that
+   * error (a raw SDK error reached the recorder), its class plus the
+   * `--verbose` pointer: AWS words a denial with the caller's ARN, and this
+   * store outlives the run (go-to-k/cdkd#2319).
+   */
   message: string;
   /**
    * AWS service error code (e.g. `AccessDeniedException`), taken from the
@@ -363,8 +368,9 @@ export interface DeploymentRunIndexFile {
 
 /**
  * Walk an error's `.cause` chain (bounded) and extract metadata for a
- * deployment event. The outermost error supplies `name` / `message`
- * (matching what the user sees in the log); the innermost AWS-SDK-shaped
+ * deployment event. The outermost error supplies `name` / `message` (the
+ * message reduced to its class plus the `--verbose` pointer when AWS wrote
+ * it, go-to-k/cdkd#2319); the innermost AWS-SDK-shaped
  * error (the one carrying `$metadata`) supplies `awsErrorCode` /
  * `requestId` when present.
  */
@@ -386,9 +392,17 @@ export function extractDeploymentEventError(err: unknown): DeploymentEventError 
     // (go-to-k/cdkd#3348).
     return { name: 'UnknownError', message: safeStringify(err) };
   }
+  // go-to-k/cdkd#2319: a provider that rethrows the raw SDK error (or a raw
+  // error `withRetry`, a not-found classifier or a rollback replay rethrows)
+  // makes AWS's own text the outermost message, and an `AccessDenied` there
+  // names the caller's account, role and session. `summary` is that message
+  // unchanged for a cdkd-authored or transport error, and the error class
+  // plus the `--verbose` pointer for an AWS-authored one. Only this persisted copy is reduced: the caller's
+  // own log line and rethrow keep the error as it was. A non-`Error` value
+  // keeps the branch above: no AWS SDK throws one.
   const result: DeploymentEventError = {
     name: err.name || 'Error',
-    message: err.message,
+    message: describeAwsFailure(err).summary,
   };
   // Find the deepest AWS-shaped error in the cause chain (bounded depth
   // so a pathological self-referencing chain cannot loop forever).

@@ -67,8 +67,10 @@ s3://cdkd-state-{accountId}/
 │   │   ├── lock.json                  while a command holds the lock
 │   │   ├── rollback-journal.json      after a failed or interrupted deploy
 │   │   ├── create-tokens.json         create-token ledger
+│   │   ├── stack-instance.json        a first deploy's stack instance id
 │   │   └── deployments/               deployment event history
-│   └── _index/{region}/exports.json   exports index
+│   ├── _index/{region}/exports.json   exports index
+│   └── _refactor/pending.json         unfinished refactor moves
 ├── cdkd-bootstrap/{region}.json       asset-storage marker
 ├── custom-resource-responses/         one object per custom resource call
 └── cdkd-migrate-tmp/                  transient CloudFormation templates
@@ -83,8 +85,10 @@ one feature each:
 | `lock.json` | Who is working on the stack | The command releases the [lock](state-management-locking.md) |
 | `rollback-journal.json` | What a failed deploy completed | The next successful deploy, a clean rollback, or a destroy |
 | `create-tokens.json` | Tokens for retrying an interrupted create | Deleted with `state.json` |
+| `stack-instance.json` | A first deploy's [stack instance id](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack), written before its first create | Deleted once `state.json` holds the id, or with `state.json` |
 | `deployments/` | [Deployment events](deployment-events.md) | Kept after a destroy unless you pass `--purge-events` |
 | `_index/{region}/exports.json` | Exported values of every stack in the region | Rewritten by each deploy |
+| `_refactor/pending.json` | The moves a [`cdkd refactor`](cli-refactor.md#if-a-refactor-is-interrupted) started between stacks and has not finished | Deleted when the last listed move finishes |
 | `cdkd-bootstrap/{region}.json` | The region's asset bucket and ECR repository names | `cdkd bootstrap --destroy` |
 | `custom-resource-responses/{requestId}.json` | One custom resource handler's response | Deleted after the call, or by a [lifecycle rule](cli-bootstrap.md#re-running-bootstrap) within days |
 | `cdkd-migrate-tmp/` | A template too large to send inline to CloudFormation | Deleted by the command that uploaded it |
@@ -252,7 +256,7 @@ resource, keyed by its logical ID from the template.
 
 | Field | Meaning |
 | --- | --- |
-| `version` | The [schema version](state-management-schema-versions.md); currently `12` |
+| `version` | The [schema version](state-management-schema-versions.md); currently `13` |
 | `stackName`, `region` | The stack, and the region its resources are in |
 | `resources` | One entry per resource, keyed by logical ID |
 | `outputs` | Each stack output's name and resolved value |
@@ -261,19 +265,29 @@ resource, keyed by its logical ID from the template.
 | `outputReads` | The outputs of other stacks that this stack read with `Fn::GetStackOutput` |
 | `skippedOutputs` | Outputs the last deploy [could not resolve](state-management-schema-versions.md#an-output-the-deploy-could-not-resolve) |
 | `orphans` | Resources a rollback left in AWS and stopped listing under `resources` |
+| `supersededResources` | The old copy of a replaced resource whose delete has not succeeded yet |
 | `parentStack`, `parentLogicalId`, `parentRegion` | Present only on a nested stack's record |
+| `stackInstanceId` | The id of the stack's [current lifetime](state-management-schema-versions.md#stackinstanceid-the-lifetime-of-a-stack); absent on a stack created before the field existed |
+| `retiredNameGenerations` | For each logical ID whose resource left the stack, the [name generation](state-management-schema-versions.md#name-generations-a-new-name-for-each-replacement) it left at; only on a stack with a `stackInstanceId` |
 | `lastModified` | Time of the last write, in Unix milliseconds |
 
-Three of these fields change what a command does:
+Four of these fields change what a command does:
 
 - `exportNames` decides which outputs another stack can import. Only a name in
   this list can satisfy an `Fn::ImportValue`.
 - `imports` blocks the destroy of the stack that produces the export, for as
   long as this stack still reads it. `outputReads` is informational and blocks
   nothing.
-- `orphans` lets a later deploy adopt the listed resources again. A rollback
-  adds a resource here when the resource's `Retain` policy told the rollback
-  to keep it.
+- `orphans` lists resources a rollback kept because their `Retain` policy told
+  it to. On a stack without a `stackInstanceId`, a later deploy adopts them
+  again; on a stack with one, a later deploy only warns about them and creates
+  new resources under new names, and `cdkd import` adopts one.
+- `supersededResources` lists the old copy of a replaced resource that was
+  still in use when the deploy tried to delete it, such as a target group a
+  listener still pointed at. Every later `cdkd deploy` retries the delete once
+  its own changes are done and drops the entry when it succeeds, and
+  `cdkd destroy` deletes the resource after the stack's own resources. While
+  the delete keeps failing, the entry stays and each attempt warns.
 
 An `outputs` value is not always a string. Where CloudFormation defines an
 attribute as a list, such as a Route 53 hosted zone's `NameServers`, the
@@ -296,6 +310,7 @@ JSON.
 | `provisionedBy` | `sdk` or `cc-api`: [which route](state-management-schema-versions.md#provisionedby-which-route-owns-a-resource) created the resource |
 | `observedBaselineRefused` | `cdkd import` did not record `observedProperties` for this resource |
 | `constructPath` | The resource's CDK construct path at its last deploy; informational |
+| `nameGeneration`, `nameGenerationHigh` | The resource's [name generation](state-management-schema-versions.md#name-generations-a-new-name-for-each-replacement), and the highest one a rolled-back replacement reached; absent means `0` and none |
 
 How commands use these fields:
 

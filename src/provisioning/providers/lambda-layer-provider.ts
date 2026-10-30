@@ -7,15 +7,21 @@ import {
   ResourceNotFoundException,
   type PublishLayerVersionCommandOutput,
   type LayerVersionContentInput,
+  type S3ObjectStorageMode,
   type Runtime,
   type Architecture,
 } from '@aws-sdk/client-lambda';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -30,8 +36,10 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
+  type MaskerFn,
 } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
@@ -161,6 +169,36 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   }
 
   /**
+   * The failure wrap this provider's create and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's masker, and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}). A cdkd-authored or
+   * transport error keeps its text, masked (issue #2177), stamped only when the
+   * mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is
+   * withheld like an AWS one, unstamped (it has no chain). The delete tests its
+   * typed not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
    * The client `PublishLayerVersion` goes through: SDK retries on, except a
    * 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
    * call -- and every other provider sharing `getAwsClients().lambda` -- keeps
@@ -248,7 +286,7 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     const layerName =
       (properties['LayerName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::Lambda::LayerVersion', logicalId);
     // Built per call; never cached on the provider, which serves concurrent
     // resources. A generated name is not secret-derived, so the pair adds a
     // needle only when the template's `LayerName` is.
@@ -278,6 +316,10 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
       if (content['S3Key']) contentInput.S3Key = content['S3Key'] as string;
       if (content['S3ObjectVersion'])
         contentInput.S3ObjectVersion = content['S3ObjectVersion'] as string;
+      // `COPY` (the Lambda default) or `REFERENCE`; dropping it published a
+      // template's REFERENCE layer as a COPY (issue #5300).
+      if (content['S3ObjectStorageMode'])
+        contentInput.S3ObjectStorageMode = content['S3ObjectStorageMode'] as S3ObjectStorageMode;
 
       // Issue #2080: after an earlier ambiguous attempt, name the version it
       // may have published before a second PublishLayerVersion is sent.
@@ -324,11 +366,8 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
         },
       };
     } catch (error) {
-      // AWS quotes a rejected request value back (issue #2177); a message the
-      // mask changed is stamped so the retry classifiers read the unmasked
-      // `cause` (issue #4244).
       const cause = error instanceof Error ? error : undefined;
-      throw wrapMaskedAwsError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -468,13 +507,24 @@ export class LambdaLayerVersionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Lambda layer version ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Lambda layer version ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this version is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

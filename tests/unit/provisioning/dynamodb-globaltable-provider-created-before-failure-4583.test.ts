@@ -50,6 +50,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { DynamoDBGlobalTableProvider } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TABLE_NAME = 'my-table';
 const TABLE_ARN = 'arn:aws:dynamodb:us-east-1:123:table/my-table';
@@ -134,5 +138,46 @@ describe('DynamoDBGlobalTableProvider create() created-before-failure mark (#458
     const error = await createError(noKeySchema);
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, LOGICAL_ID, RESOURCE_TYPE)).toBeUndefined();
+  });
+
+  // go-to-k/cdkd#5511: the sink holds the table name (and TableId) once
+  // CreateTable returned, before the ACTIVE wait.
+  it('reports the table name and TableId before the ACTIVE wait', async () => {
+    const sink = new CreatedResourceSink(LOGICAL_ID, RESOURCE_TYPE);
+    let atWait: unknown = 'unset';
+    route({
+      UpdateTimeToLiveCommand: accessDenied('UpdateTimeToLive'),
+      DeleteTableCommand: accessDenied('DeleteTable'),
+    });
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'CreateTableCommand') {
+        return { TableDescription: { TableId: 'tid-1' } };
+      }
+      if (cmd.constructor.name === 'DescribeTableCommand' && atWait === 'unset') {
+        atWait = sink.report;
+      }
+      return base(cmd);
+    });
+    await collectCreatedResources(sink, () => createError());
+    expect(atWait).toEqual({ physicalId: TABLE_NAME, createdResourceIdentity: 'tid-1' });
+    expect(sink.report).toEqual({ physicalId: TABLE_NAME, createdResourceIdentity: 'tid-1' });
+  });
+
+  it('leaves nothing reported when the cleanup DeleteTable succeeded', async () => {
+    const sink = new CreatedResourceSink(LOGICAL_ID, RESOURCE_TYPE);
+    route({ UpdateTimeToLiveCommand: accessDenied('UpdateTimeToLive') });
+    await collectCreatedResources(sink, () => createError());
+    expect(sentNames()).toContain('DeleteTableCommand');
+    expect(sink.report).toBeUndefined();
+  });
+
+  it("reports nothing when CreateTable's own call fails", async () => {
+    const sink = new CreatedResourceSink(LOGICAL_ID, RESOURCE_TYPE);
+    const exists = new Error('Table already exists: my-table');
+    exists.name = 'ResourceInUseException';
+    route({ CreateTableCommand: exists });
+    await collectCreatedResources(sink, () => createError());
+    expect(sink.report).toBeUndefined();
   });
 });

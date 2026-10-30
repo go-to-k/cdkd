@@ -15,18 +15,30 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  type DBCluster,
 } from '@aws-sdk/client-neptune';
+import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
+import { markNotGone } from '../not-gone.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
@@ -48,7 +60,11 @@ import {
   protectionFlipKey,
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
+  deleteAfterProtectionFlipWithFinalSnapshot,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
+import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 
 /**
  * The attribute map a Neptune DB cluster records (issue #3650), under
@@ -136,6 +152,7 @@ function isDbIdentifier(id: string): boolean {
 export class NeptuneProvider implements ResourceProvider {
   private neptuneClient?: NeptuneClient;
   private createClient?: NeptuneClient;
+  private ec2Client?: EC2Client;
   private readonly providerRegion: string | undefined;
   private logger = getLogger().child('NeptuneProvider');
   /**
@@ -225,6 +242,17 @@ export class NeptuneProvider implements ResourceProvider {
     return this.neptuneClient;
   }
 
+  /** Only a removed DBCluster `VpcSecurityGroupIds` reaches EC2 (issue #1160). */
+  private getEc2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.ec2Client;
+  }
+
   /**
    * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance` go
    * through: SDK retries on, except a 5xx
@@ -250,15 +278,17 @@ export class NeptuneProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
-        return this.createDBSubnetGroup(logicalId, resourceType, properties);
+        return this.createDBSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::Neptune::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties);
+        return this.createDBCluster(logicalId, resourceType, properties, mask);
       case 'AWS::Neptune::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties);
+        return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -274,7 +304,7 @@ export class NeptuneProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::Neptune::DBSubnetGroup':
@@ -283,7 +313,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::Neptune::DBCluster':
         return this.updateDBCluster(
@@ -291,7 +322,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::Neptune::DBInstance':
         return this.updateDBInstance(
@@ -299,7 +331,8 @@ export class NeptuneProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       default:
         throw new ProvisioningError(
@@ -340,7 +373,8 @@ export class NeptuneProvider implements ResourceProvider {
   private async createDBSubnetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBSubnetGroup ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -348,7 +382,7 @@ export class NeptuneProvider implements ResourceProvider {
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::Neptune::DBSubnetGroup', logicalId);
 
     try {
       await this.getCreateClient().send(
@@ -373,12 +407,17 @@ export class NeptuneProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        dbSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Neptune DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            dbSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -388,7 +427,8 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBSubnetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -443,12 +483,17 @@ export class NeptuneProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Neptune DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -482,12 +527,17 @@ export class NeptuneProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Neptune DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Neptune DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -497,7 +547,8 @@ export class NeptuneProvider implements ResourceProvider {
   private async createDBCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -505,7 +556,7 @@ export class NeptuneProvider implements ResourceProvider {
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::Neptune::DBCluster', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
@@ -550,6 +601,8 @@ export class NeptuneProvider implements ResourceProvider {
       );
       clusterCreated = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
+      // go-to-k/cdkd#5511: reported before the available wait.
+      reportCreatedResource(logicalId, resourceType, dbClusterIdentifier, createdResourceId);
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -562,7 +615,7 @@ export class NeptuneProvider implements ResourceProvider {
 
       // Wait for cluster to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(dbClusterIdentifier);
+        await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
       }
 
       const described = await this.describeDBCluster(dbClusterIdentifier);
@@ -575,12 +628,17 @@ export class NeptuneProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbClusterIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Neptune DBCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbClusterIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateDBCluster returned (another owner's name).
@@ -602,20 +660,23 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
-      // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
-      // cluster. readCurrentState always-emits `[]` for clusters that
-      // legitimately have no VPC SGs; the round-trip must NOT translate
-      // that placeholder into a destructive SDK call.
-      const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
-      const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
-
+      // Its own ProvisioningError names the cause; the catch passes it through.
+      const vpcSgIds = await this.dbClusterSecurityGroupsToSend(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
       // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
       // absent input field means "no change"), so a property REMOVED from
       // the template is sent as an explicit reset only where CloudFormation resets
@@ -632,12 +693,12 @@ export class NeptuneProvider implements ResourceProvider {
       //     a RANDOM window at create; there is no documented "reset to
       //     random" sentinel (doc-checked 2026-07-27: the Modify docs only
       //     describe the create-time random default).
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
-      //   * Port / DBPort — Neptune documents a fixed default (8182), but
-      //     resetting the port is connection-breaking for every client;
-      //     leave unchanged.
+      //   * Port / DBPort — a real CloudFormation A/B (#1160) showed
+      //     CloudFormation KEEPS the live port when `DBPort` is removed (8183
+      //     stayed 8183, not the 8182 default), so a removal sends nothing.
+      //     DocDB differs: there CloudFormation resets it to 27017.
+      // A removed VpcSecurityGroupIds IS reset, to the VPC's default security
+      // group (`dbClusterSecurityGroupsToSend`).
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -660,7 +721,7 @@ export class NeptuneProvider implements ResourceProvider {
           // #5004: a removed IamAuthEnabled is KEPT by CloudFormation (no reset).
           // CFn property `IamAuthEnabled` maps to `EnableIAMDatabaseAuthentication`.
           EnableIAMDatabaseAuthentication: properties['IamAuthEnabled'] as boolean | undefined,
-          ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
+          ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
           Port:
             properties['DBPort'] != null
               ? Number(properties['DBPort'])
@@ -674,6 +735,28 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Successfully updated Neptune DBCluster ${logicalId}`);
 
       const described = await this.describeDBCluster(physicalId);
+
+      // A changed VpcSecurityGroupIds also moves every member instance to
+      // `modifying` within about a second, and a member's own Modify* in the
+      // same deploy is then refused ("Database instance is not in available
+      // state"). CloudFormation reports the update only once it has settled, so
+      // wait here, but ONLY when the sent list differs from the previous one:
+      // an unchanged list (re-sent on every update) adds no time. `--no-wait`
+      // skips it, exactly as create() skips waitForClusterAvailable.
+      if (
+        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])
+      ) {
+        await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterSecurityGroupChange(
+              member.DBInstanceIdentifier,
+              logicalId
+            );
+          }
+        }
+      }
 
       if (described?.DBClusterArn) {
         await this.applyTagDiff(
@@ -691,13 +774,19 @@ export class NeptuneProvider implements ResourceProvider {
         attributes: clusterAttributes(described),
       };
     } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Neptune DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -766,6 +855,7 @@ export class NeptuneProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
@@ -785,7 +875,9 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for Neptune DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for Neptune DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -794,14 +886,24 @@ export class NeptuneProvider implements ResourceProvider {
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
-      await this.getClient().send(
-        new DeleteDBClusterCommand({
-          DBClusterIdentifier: physicalId,
-          ...(finalSnapshotId
-            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
-            : { SkipFinalSnapshot: true }),
-        })
-      );
+      // Issue #5155: a final snapshot needs `available`, which the flip above
+      // briefly takes away. Only a flip of this run AND a snapshot wait, and
+      // never once AWS accepted the delete (a re-entry after a failed wait).
+      const sendDelete = () =>
+        this.getClient().send(
+          new DeleteDBClusterCommand({
+            DBClusterIdentifier: physicalId,
+            ...(finalSnapshotId
+              ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+              : { SkipFinalSnapshot: true }),
+          })
+        );
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        // Issue #5184: waits, then retries a delete AWS refuses as not `available`.
+        await this.deleteAfterProtectionFlip(logicalId, physicalId, sendDelete);
+      } else {
+        await sendDelete();
+      }
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
@@ -839,12 +941,17 @@ export class NeptuneProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Neptune DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Neptune DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -854,7 +961,8 @@ export class NeptuneProvider implements ResourceProvider {
   private async createDBInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -862,7 +970,7 @@ export class NeptuneProvider implements ResourceProvider {
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::Neptune::DBInstance', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
@@ -890,6 +998,8 @@ export class NeptuneProvider implements ResourceProvider {
       );
       instanceCreated = true;
       createdResourceId = response.DBInstance?.DbiResourceId;
+      // go-to-k/cdkd#5511: reported before the available wait.
+      reportCreatedResource(logicalId, resourceType, dbInstanceIdentifier, createdResourceId);
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -902,7 +1012,7 @@ export class NeptuneProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       const described = await this.describeDBInstance(dbInstanceIdentifier);
@@ -915,12 +1025,17 @@ export class NeptuneProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbInstanceIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Neptune DBInstance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbInstanceIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
@@ -942,7 +1057,8 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Neptune DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -960,22 +1076,33 @@ export class NeptuneProvider implements ResourceProvider {
       //     synthesizing it from a removal risks a wrong-family apply.
       //   * PreferredMaintenanceWindow — AWS assigns a RANDOM window at
       //     create; no documented "reset to random" sentinel.
-      await this.getClient().send(
-        new ModifyDBInstanceCommand({
-          DBInstanceIdentifier: physicalId,
-          DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
-          DBParameterGroupName: properties['DBParameterGroupName'] as string | undefined,
-          PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
-            | string
-            | undefined,
-          // #5004: CloudFormation KEEPS the live value of a removed
-          // AutoMinorVersionUpgrade (no reset).
-          AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-          // Not a CloudFormation property (#5004): never reset on removal.
-          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          ApplyImmediately: true,
-        })
-      );
+      // #5194: a cluster change in the same deploy can leave this member not
+      // `available` for a moment; only that refusal is waited out and resent.
+      await modifyDbInstanceWhenAvailable({
+        send: () =>
+          this.getClient().send(
+            new ModifyDBInstanceCommand({
+              DBInstanceIdentifier: physicalId,
+              DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
+              DBParameterGroupName: properties['DBParameterGroupName'] as string | undefined,
+              PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
+                | string
+                | undefined,
+              // #5004: CloudFormation KEEPS the live value of a removed
+              // AutoMinorVersionUpgrade (no reset).
+              AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+              // Not a CloudFormation property (#5004): never reset on removal.
+              DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+              ApplyImmediately: true,
+            })
+          ),
+        readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label: 'Neptune DBInstance',
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
 
       this.logger.debug(`Successfully updated Neptune DBInstance ${logicalId}`);
 
@@ -998,12 +1125,17 @@ export class NeptuneProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Neptune DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1067,6 +1199,7 @@ export class NeptuneProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBInstance(physicalId))?.DeletionProtection === true,
@@ -1086,7 +1219,9 @@ export class NeptuneProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for ${physicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -1127,17 +1262,71 @@ export class NeptuneProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Neptune DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Neptune DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * The failure wrap the DBSubnetGroup / DBCluster / DBInstance create, update
+   * and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The delete catches test not-found
+   * before they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
 
   /**
    * Apply a diff between old and new CFn-shape Tags arrays via Neptune's
@@ -1325,6 +1514,102 @@ export class NeptuneProvider implements ResourceProvider {
     return response.DBClusters?.[0];
   }
 
+  /**
+   * The `VpcSecurityGroupIds` a DBCluster update sends, or `undefined` to omit
+   * it (ModifyDBCluster keeps the live groups then):
+   *
+   * - A non-empty declared list is sent as declared.
+   * - An EMPTY list is omitted: `[]` would detach every group, and
+   *   `readCurrentState` emits `[]` for a cluster with none, which
+   *   `drift --revert` hands back as the desired bag.
+   * - A list the previous template declared and the desired one omits is a
+   *   removal (issue #1160). A real CloudFormation A/B showed CloudFormation
+   *   then attaches the VPC's `default` security group in place of the
+   *   declared ones, so cdkd looks that group up and sends it. A previous
+   *   EMPTY list attached nothing, and a `drift --revert` baseline is a
+   *   readback rather than a template, so neither counts as a removal.
+   */
+  private async dbClusterSecurityGroupsToSend(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<string[] | undefined> {
+    const desired = properties['VpcSecurityGroupIds'] as string[] | undefined;
+    if (desired !== undefined) return desired.length > 0 ? desired : undefined;
+    const previous = previousProperties['VpcSecurityGroupIds'];
+    if (context?.desiredFromAwsReadback === true) return undefined;
+    if (!Array.isArray(previous) || previous.length === 0) return undefined;
+
+    // `missing` names what the lookup did not find (terminal); `awsError` is a
+    // failed call (left retryable).
+    let groupId: string | undefined;
+    let missing: string | undefined;
+    let awsError: unknown;
+    try {
+      const subnetGroupName = (await this.describeDBCluster(physicalId))?.DBSubnetGroup;
+      const vpcId = subnetGroupName
+        ? (
+            await this.getClient().send(
+              new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: subnetGroupName })
+            )
+          ).DBSubnetGroups?.[0]?.VpcId
+        : undefined;
+      if (!subnetGroupName) missing = 'the cluster reports no DB subnet group';
+      else if (!vpcId) missing = `DB subnet group ${subnetGroupName} reports no VPC`;
+      else {
+        const groups = await this.getEc2Client().send(
+          new DescribeSecurityGroupsCommand({
+            Filters: [
+              { Name: 'vpc-id', Values: [vpcId] },
+              { Name: 'group-name', Values: ['default'] },
+            ],
+          })
+        );
+        groupId = groups.SecurityGroups?.[0]?.GroupId;
+        if (!groupId) missing = `VPC ${vpcId} has no security group named default`;
+      }
+    } catch (error) {
+      awsError = error;
+    }
+    if (groupId === undefined) {
+      // go-to-k/cdkd#2319: the thrown message is persisted, so an AWS failure
+      // contributes only its summary (an EC2 UnauthorizedOperation names the
+      // caller's ARN). The full text goes to debug, masked, and the retry
+      // classifier reads it on `cause`.
+      const mask = context?.maskSecrets ?? ((text: string) => text);
+      const failure = missing === undefined ? describeAwsFailure(awsError) : undefined;
+      if (failure?.redacted === true) {
+        this.logger.debug(
+          safeMsg`${logicalId}: the VPC default security group lookup failed: ${mask(failure.detail)}`
+        );
+      }
+      const shown = mask(failure?.summary ?? '');
+      const refusal = new ProvisioningError(
+        `Failed to update Neptune DBCluster ${logicalId}: VpcSecurityGroupIds was removed from the template, so the cluster moves to its VPC's default security group (as CloudFormation does), but cdkd could not find that group: ${missing ?? shown}. Declare VpcSecurityGroupIds in the template to choose the cluster's security groups.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        awsError instanceof Error ? awsError : undefined
+      );
+      if (missing !== undefined) throw markNonRetryable(refusal);
+      // Stamped whenever the message lost text the cause still holds: the
+      // AWS-authored summary, or a masker edit (the classifier must not miss
+      // retry wording a secret overlapped).
+      const withheld =
+        awsError instanceof Error &&
+        (failure?.redacted === true || shown !== (failure?.summary ?? ''));
+      throw withheld ? markRedactedCause(refusal) : refusal;
+    }
+    // A warning, not info: the default group may grant wider access.
+    this.logger.warn(
+      safeMsg`${logicalId}: VpcSecurityGroupIds was removed from the template; attaching the VPC's default security group ${groupId}, as CloudFormation does.`
+    );
+    return [groupId];
+  }
+
   private async describeDBInstance(dbInstanceIdentifier: string) {
     const response = await this.getClient().send(
       new DescribeDBInstancesCommand({
@@ -1335,9 +1620,138 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available (no SDK waiter — manual poll).
+   * Issue #1160: wait out a member instance's `modifying` after its cluster's
+   * security groups changed. Only that transition is waited out: a member in
+   * a lasting state (maintenance, upgrading, storage-optimization, ...) or
+   * deleted out of band does not hold the update, as CloudFormation reports
+   * the cluster updated in those cases too.
+   */
+  private async waitForMemberAfterSecurityGroupChange(
+    dbInstanceIdentifier: string,
+    clusterLogicalId: string,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      let status: string | undefined;
+      try {
+        status = (await this.describeDBInstance(dbInstanceIdentifier))?.DBInstanceStatus;
+      } catch (error) {
+        if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) return;
+        throw error;
+      }
+      if (status !== 'modifying') return;
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    // The member's identifier is the physical id of ANOTHER resource, which
+    // this cluster's masking bag does not cover (it can be secret-derived), so
+    // only the cluster's logical id is named.
+    throw new Error(
+      safeMsg`Timed out waiting for a member instance of Neptune DBCluster ${clusterLogicalId} to finish applying its new VPC security groups`
+    );
+  }
+
+  /**
+   * A cluster read inside the security-group wait (issue #5419). A vanished
+   * cluster or a terminal status (`isTerminalDbWaitStatus`) never reaches the
+   * awaited state, so fail now rather than after the 30-minute budget.
+   */
+  private requireClusterWhileWaiting(cluster: DBCluster | undefined, logicalId: string): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
+    if (cluster === undefined) {
+      throw new Error(
+        safeMsg`DescribeDBClusters returned no cluster for Neptune DBCluster ${logicalId} while waiting for its new VPC security groups`
+      );
+    }
+    if (isTerminalDbWaitStatus(cluster.Status)) {
+      throw new Error(
+        safeMsg`Neptune DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new VPC security groups`
+      );
+    }
+    return cluster;
+  }
+
+  /**
+   * Wait until the cluster is out of `modifying` AND reports exactly `expected` as
+   * its VPC security groups, all `active` (issue #1160). Being out of
+   * `modifying` alone can still read before the group swap has started; the
+   * group statuses cannot.
+   */
+  private async waitForSecurityGroupsApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    expected: readonly string[],
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const want = [...new Set(expected)].sort().join(' ');
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId
+      );
+      const groups = cluster.VpcSecurityGroups ?? [];
+      const ids = groups
+        .map((group) => group.VpcSecurityGroupId ?? '')
+        .sort()
+        .join(' ');
+      // `modifying` is the swap's own transition; any lasting state (backing-up,
+      // maintenance, ...) is not this change's to wait out.
+      const settled =
+        cluster.Status !== 'modifying' &&
+        groups.every((group) => group.Status === 'active') &&
+        ids === want;
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`Neptune DBCluster ${logicalId} security groups not settled yet (status ${cluster.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for Neptune DBCluster ${logicalId} to apply its new VPC security groups`
+    );
+  }
+
+  /**
+   * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
+   * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
+   * and their bounds).
+   */
+  private async deleteAfterProtectionFlip(
+    logicalId: string,
+    physicalId: string,
+    send: () => Promise<unknown>
+  ): Promise<void> {
+    await deleteAfterProtectionFlipWithFinalSnapshot({
+      stateFault: 'InvalidDBClusterStateFault',
+      send,
+      noun: 'cluster',
+      label: 'Neptune DBCluster',
+      logicalId,
+      read: async () => {
+        const current = await this.describeDBCluster(physicalId);
+        return current === undefined
+          ? undefined
+          : { deletionProtection: current.DeletionProtection, status: current.Status };
+      },
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
+  }
+
+  /**
+   * Wait for a Neptune DBCluster to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1351,6 +1765,12 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Neptune DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`Neptune DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1395,9 +1815,12 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available (manual poll).
+   * Wait for a Neptune DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1411,6 +1834,12 @@ export class NeptuneProvider implements ResourceProvider {
       this.logger.debug(`Neptune DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`Neptune DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1731,4 +2160,17 @@ export class NeptuneProvider implements ResourceProvider {
     // DB subnet group reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * Whether the VpcSecurityGroupIds a cluster update SENDS differs from the
+ * previous template's list (order-insensitive). `sent === undefined` sends
+ * nothing, so nothing changes.
+ */
+function securityGroupListChanged(sent: readonly string[] | undefined, previous: unknown): boolean {
+  if (sent === undefined) return false;
+  const before = Array.isArray(previous)
+    ? previous.filter((id): id is string => typeof id === 'string')
+    : [];
+  return [...sent].sort().join(' ') !== [...before].sort().join(' ');
 }

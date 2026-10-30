@@ -12,9 +12,50 @@ import {
 } from '@aws-sdk/client-docdb';
 import type { Logger } from '../../types/config.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import type { ProvisioningError } from '../../utils/error-handler.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { planTagDiff, tagPlanWarning } from '../tag-list.js';
+
+/**
+ * The failure wrap both DocumentDB providers' create, update and delete
+ * catches throw, through a `wrapCaughtError` method of each class (so
+ * `gen-update-wrap-coverage` sees the catch as a wrap).
+ *
+ * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+ * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+ * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+ * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+ * masker, and the wrap is stamped `markRedactedCause`, so the retry
+ * classifiers read the withheld text on the `cause` chain. An "already
+ * exists" is restated ({@link relayedNameCollision}), so a create-first
+ * replacement still recognises the collision. A cdkd-authored or transport
+ * error keeps its text, masked, stamped only when the mask changed it
+ * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like an
+ * AWS one, unstamped (it has no chain).
+ *
+ * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+ * side-effect-free constructor call.
+ */
+export function wrapDocDBFailure(
+  logger: Logger,
+  mask: ((text: string) => string) | undefined,
+  error: unknown,
+  build: (text: string) => ProvisioningError
+): ProvisioningError {
+  const m = maskerOrIdentity(mask);
+  const failure = describeAwsFailure(error);
+  if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+  logger.debug(m(build(m(failure.detail)).message));
+  const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+  return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+}
 
 export function isDocDBNotFoundError(error: unknown, faultName: string): boolean {
   if (!(error instanceof Error)) return false;

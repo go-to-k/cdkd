@@ -20,9 +20,9 @@
  *    behavioural cases would be fourteen near-identical fixtures pinning one
  *    fact.
  *
- * The fence carries the two KNOWN exceptions by name rather than counting to
- * two, so a future reader learns why each is exempt instead of adjusting a
- * number. Both are real and neither is an oversight -- read their entries.
+ * The fence carries its one KNOWN exception by name rather than by count, so a
+ * future reader learns why it is exempt instead of adjusting a number. A second,
+ * `cleanupFailedCreateRemnant`'s catch, was converted by go-to-k/cdkd#5254.
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
@@ -76,7 +76,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
+import {
+  CloudControlOperationFailedError,
+  CloudControlProvider,
+} from '../../../src/provisioning/cloud-control-provider.js';
 
 const SOURCE = readFileSync(
   join(process.cwd(), 'src/provisioning/cloud-control-provider.ts'),
@@ -153,7 +156,44 @@ describe('cloud-control-provider bare String() out-throw (#3309)', () => {
     expect(logged).not.toContain('convert object to primitive');
   });
 
-  it('leaves exactly the two documented exceptions, and no sixteenth site', () => {
+  it('warns about a remnant whose cleanup rejected with a value that cannot be stringified (go-to-k/cdkd#5254)', async () => {
+    // `cleanupFailedCreateRemnant`'s catch, converted from the bare ternary.
+    // `delete()` wraps every failure today, so the remnant delete is stubbed
+    // to reject with the shape `String()` throws for. Under the bare form the
+    // cleanup throws `TypeError: Cannot convert object to primitive value`
+    // out of its catch, replacing the create failure the caller rethrows.
+    vi.spyOn(provider, 'delete').mockRejectedValue(
+      Object.assign(Object.create(null) as object, { code: 'ECONNRESET' })
+    );
+    const createFailure = new CloudControlOperationFailedError(
+      'stabilization failed',
+      'AWS::Synthetics::Canary',
+      'Canary',
+      'cdkd-remnant',
+      'GeneralServiceException',
+      'CREATE'
+    );
+    const cleanup = (
+      provider as unknown as {
+        cleanupFailedCreateRemnant(
+          error: unknown,
+          resourceType: string,
+          logicalId: string,
+          mask: (s: string) => string
+        ): Promise<void>;
+      }
+    ).cleanupFailedCreateRemnant(createFailure, 'AWS::Synthetics::Canary', 'Canary', (s) => s);
+
+    await expect(cleanup).resolves.toBeUndefined();
+    const warned = mockLoggerWarn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain(
+      'Failed to delete the remnant cdkd-remnant left by the failed CREATE of Canary ' +
+        '(a retry may fail with AlreadyExists until it is removed manually): ' +
+        'a value that could not be converted to text'
+    );
+  });
+
+  it('leaves exactly the one documented exception, and no sixteenth site', () => {
     const matches = [...SOURCE.matchAll(BARE_STRINGIFY)];
     const withContext = matches.map((m) => {
       const before = SOURCE.slice(0, m.index ?? 0);
@@ -174,21 +214,18 @@ describe('cloud-control-provider bare String() out-throw (#3309)', () => {
     const comments = withContext.filter((m) => m.isComment);
     expect(comments, 'the explanatory comment should still quote the banned form').toHaveLength(1);
 
-    // ONE is live and deliberately so: `cleanupFailedCreateRemnant`'s catch.
-    // Its bare arm is UNREACHABLE (every throw into it comes from
-    // `this.delete(...)`, which wraps into a `ProvisioningError`), and
-    // converting it would be a REGRESSION -- that `message` feeds
-    // `isNotFoundMessage`, a PROSE matcher a wire-name reduction would blind.
-    // Both reasons are recorded at the site.
+    // NONE is live. `cleanupFailedCreateRemnant`'s catch kept the bare form
+    // as an unreachable carve-out until go-to-k/cdkd#5254 converted it to
+    // `describeAwsFailure(cleanupError).detail`, byte-identical for every value
+    // `String()` converts.
     const live = withContext.filter((m) => !m.isComment);
-    expect(live).toHaveLength(1);
-    const remnantLine = SOURCE.split('\n')[live[0]!.line - 1] ?? '';
-    expect(remnantLine).toContain('cleanupError');
+    expect(live).toHaveLength(0);
 
-    // Non-vacuity, and the assertion that actually buys it: the two length
-    // checks above already imply a non-zero match count, so a bare
+    // Non-vacuity, and the assertion that actually buys it: the comment
+    // check above already implies a non-zero match count, so a bare
     // `toBeGreaterThan(0)` would be dead. What a silently-stopped regex CANNOT
     // fake is the replacement's presence.
     expect(SOURCE).toContain('describeAwsFailure(error).detail');
+    expect(SOURCE).toContain('describeAwsFailure(cleanupError).detail');
   });
 });

@@ -1,6 +1,7 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { resolveBucketRegion } from './aws-region-resolver.js';
 import { awsClientDefaults } from './aws-client-defaults.js';
+import { quietS3Logger } from './sdk-call-log.js';
 
 /**
  * Shared "rebuild a region-corrected S3 client for the state bucket" helper.
@@ -192,7 +193,7 @@ export async function rebuildClientForBucketRegion(
     ...(rebuiltCredentials !== undefined && { credentials: rebuiltCredentials }),
     // Suppress "Are you using a Stream of unknown length" warning,
     // matching the suppression in AwsClients.
-    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    logger: quietS3Logger(),
   });
 
   if (opts.destroyOldClient) {

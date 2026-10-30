@@ -1,6 +1,6 @@
 ---
 title: cdkd local start-cloudfront
-description: "Serve a CloudFront distribution from your CDK app on localhost: its CloudFront Functions, cache-behaviour routing, S3 origins, Lambda Function URL origins and Lambda@Edge."
+description: "Serve a CloudFront distribution from your CDK app on localhost: its CloudFront Functions, cache-behaviour routing, S3 origins, Lambda Function URL and Web Function origins, and Lambda@Edge."
 ---
 
 # cdkd local start-cloudfront
@@ -12,9 +12,9 @@ to check a rewrite function, a cache-behaviour path pattern or a
 single-page-app fallback in seconds.
 
 A distribution made of S3 origins and CloudFront Functions needs no Docker.
-Docker is needed only when the distribution has a Lambda Function URL origin
-or a Lambda@Edge function, because cdkd runs those Lambda functions in local
-containers.
+Docker is needed only when the distribution has a Lambda Function URL origin,
+a Lambda Web Function endpoint origin or a Lambda@Edge function, because cdkd
+runs those functions in local containers.
 
 ## Serve a distribution
 
@@ -140,9 +140,11 @@ content-delivery network itself, so nothing is cached at an edge.
 | CloudFront Functions | Inside the cdkd process, in a sandbox | No |
 | Lambda@Edge, all four stages | One warm container per function | Yes |
 | Lambda Function URL origins | The Lambda function in a container | Yes |
+| Lambda Web Function endpoint origins | The endpoint's revision in a container | Yes |
 | S3 origins | From local files, or from the deployed bucket | No |
 | Path routing | By the cache behaviours' path patterns | No |
 | `DefaultRootObject`, `CustomErrorResponses` | Applied | No |
+| Response headers policies | Applied, except Server-Timing and AWS-managed policies | No |
 | Other custom origins | Not fetched | — |
 | CDN caching, edge locations, cache keys | Not reproduced | — |
 
@@ -155,6 +157,30 @@ unknown path returns `index.html`. That works locally as it does deployed.
 
 As on CloudFront, a URI that ends in `/` is not given an index document. Only
 the root path resolves to `DefaultRootObject`.
+
+### Response headers policies
+
+A cache behaviour's response headers policy is applied to the origin's
+responses and to responses a Lambda@Edge request stage generates, after the
+viewer-response function and the Lambda@Edge response stages:
+
+| Policy section | Local behaviour |
+| --- | --- |
+| CORS | A matching `OPTIONS` preflight is answered before the origin, without the policy's other headers; other responses get the CORS headers |
+| Security headers | Added: `Strict-Transport-Security`, `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `X-XSS-Protection` |
+| Custom headers | Added |
+| Remove headers | Removed first, so a header the policy also adds is still sent |
+| Server-Timing | Not added: its metrics describe CloudFront's edge and cache |
+
+A header with `Override` set replaces the origin's header; without it, the
+header is added only when the origin sent none. `Strict-Transport-Security` is
+sent over plain HTTP too, so a test can assert on it, though browsers ignore
+it there.
+
+A response a viewer-request CloudFront Function generates does not get the
+policy's headers. A header whose value is not a literal in the template, such
+as a CDK token, is skipped with a warning. An AWS-managed policy cannot be read
+locally, so it is not applied.
 
 ## Origins
 
@@ -170,8 +196,9 @@ same flag handles both:
 
 - **An S3 bucket with no `BucketDeployment` in the app**, because the files
   are uploaded some other way.
-- **A custom origin that is neither S3 nor a Lambda Function URL**, such as
-  an API on another domain. cdkd does not fetch from it.
+- **A custom origin that is neither S3, a Lambda Function URL nor a Lambda
+  Web Function endpoint**, such as an API on another domain. cdkd does not
+  fetch from it.
 
 `--origin <id>=<dir>` serves that origin from a local directory:
 
@@ -186,6 +213,37 @@ the ID filled in.
 
 For an S3 bucket you can also pass `--from-state` or `--from-cfn-stack`, which
 reads the files from the deployed bucket. See [State sources](#state-sources).
+
+### Lambda Web Function endpoint origins
+
+An origin whose domain is an `AWS::Lambda::WebFunctionEndpoint`'s `DomainName`
+(an `HttpOrigin` on `endpoint.getAtt('DomainName')`, usually with an origin
+access control of origin type `lambda`) is run locally. cdkd starts the
+endpoint's revision the way
+[`cdkd local start-web-function`](local-start-web-function.md) does and
+forwards each origin request to it:
+
+- The revision is the one the endpoint's weights pick. A weighted split across
+  revisions is not reproduced, and the endpoint's `AuthType` is not enforced;
+  cdkd warns about each at startup.
+- The container gets the revision's `ServiceConfig` environment and its code
+  from `cdk.out`, including code uploaded with an `extract: false`
+  `BucketDeployment`.
+- The request keeps its method, path, query string, body and viewer headers,
+  with the client address appended to `X-Forwarded-For`. The origin access
+  control's signing is skipped.
+- The response goes through the viewer-response function, the Lambda@Edge
+  response stages and the response headers policy, as on CloudFront.
+- A server that cannot be reached answers `502`, and one slower than the
+  origin's read timeout answers `504`.
+
+The server runs at the runtime's cloud architecture (`linux/arm64`); this
+command has no `--platform` flag.
+
+A distribution with such an origin needs Docker: when Docker is unavailable or
+the revision's server does not start, the command fails at startup. To serve
+the rest of the distribution without it, stand in for the origin with
+`--origin <id>=<dir>`, which serves a local directory and starts no container.
 
 ### Files outside the origin directory
 
@@ -307,8 +365,8 @@ mutually exclusive. With either, cdkd:
 
 - reads an S3 origin's files from the deployed bucket,
 - answers `cf.kvs()` reads from the deployed KeyValueStore,
-- resolves the environment variables of Function URL origin Lambda functions
-  and Lambda@Edge functions.
+- resolves the environment variables of Function URL origin Lambda functions,
+  Web Function endpoint origin revisions and Lambda@Edge functions.
 
 ```bash
 cdkd local start-cloudfront MyStack/MyDistribution --from-state
@@ -348,18 +406,20 @@ Changes under `cdk.out`, `node_modules` and `.git` are ignored. The
 
 ### What a reload does not change
 
-- **Lambda containers.** The containers behind Function URL origins and
-  Lambda@Edge functions are not rebuilt. Restart the command to pick up a
+- **Lambda containers.** The containers behind Function URL origins, Web
+  Function endpoint origins and Lambda@Edge functions are not rebuilt. Restart the command to pick up a
   change to their code.
 - **A Lambda@Edge association added since startup.** It is skipped with a
   warning. Restart to pick it up.
+- **A Web Function endpoint origin added since startup.** Requests for it
+  answer `502` with a message to restart the command.
 - **Anything, when synthesis fails.** cdkd prints a warning and the previous
   version keeps serving.
 
 ## Limitations
 
-- Custom origins that are neither S3 nor a Lambda Function URL are not
-  fetched. Point `--origin` at a directory to stand in for one.
+- Custom origins that are neither S3, a Lambda Function URL nor a Lambda Web
+  Function endpoint are not fetched. Point `--origin` at a directory to stand in for one.
 - The `cloudfront-js-2.0` `cf.fetch` API is not available.
 - A Lambda@Edge function that cannot be started is skipped with a warning, and
   its stage does not run. The rest of the distribution is served.
@@ -375,8 +435,8 @@ Changes under `cdk.out`, `node_modules` and `.git` are ignored. The
 | `130` | Stopped by {kbd:ctrl+c}, or the picker was cancelled. |
 
 An error here is a distribution that does not exist, a synthesis failure, a
-`--kvs-file` key that cannot be resolved, a Lambda container that failed to
-start, or a refused state flag.
+`--kvs-file` key that cannot be resolved, a Lambda or Web Function container
+that failed to start, or a refused state flag.
 
 Stopping the command closes the server and removes every Lambda container. The
 [CLI Reference](cli-reference.md) has the exit-code table for every command.
@@ -385,6 +445,8 @@ Stopping the command closes the server and removes every Lambda container. The
 
 - [`cdkd local invoke`](local-invoke.md): how the Lambda behind a Function
   URL origin or a Lambda@Edge stage is run
+- [`cdkd local start-web-function`](local-start-web-function.md): how the
+  revision behind a Web Function endpoint origin is run
 - [`cdkd local start-api`](local-start-api.md): for a distribution whose
   origin is an API
 - [`cdkd local start-alb`](local-start-alb.md): the Application Load Balancer

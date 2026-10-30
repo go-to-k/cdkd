@@ -106,3 +106,52 @@ describe('equalIdNamesSameResource with property bags (issue #3892)', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * go-to-k/cdkd#5137: a Lambda permission's id is a StatementId AWS scopes to
+ * its function, so the same id on two different functions is two statements.
+ * Only two readable unqualified spellings with different function names prove
+ * it; every doubt keeps the same-resource reading.
+ */
+describe('equalIdNamesDifferentResources: AWS::Lambda::Permission (go-to-k/cdkd#5137)', () => {
+  const check = (oldFn: unknown, newFn: unknown): boolean =>
+    equalIdNamesDifferentResources({
+      resourceType: 'AWS::Lambda::Permission',
+      physicalId: 'ApiPermission',
+      oldProperties: { FunctionName: oldFn },
+      newProperties: { FunctionName: newFn },
+    });
+  const ARN = (name: string): string => `arn:aws:lambda:us-east-1:123456789012:function:${name}`;
+
+  it('is true for two different function names, in any unqualified spelling', () => {
+    expect(check('old-fn', 'changed-name')).toBe(true);
+    expect(check(ARN('old-fn'), ARN('changed-name'))).toBe(true);
+    expect(check('123456789012:function:old-fn', 'changed-name')).toBe(true);
+  });
+
+  it.each([
+    ['the same function', 'fn', 'fn'],
+    ['one function spelled as a name and as an ARN', 'fn', ARN('fn')],
+    ['a qualified ARN', `${ARN('old-fn')}:live`, 'changed-name'],
+    ['a {{resolve:...}} expression', '{{resolve:ssm:FnName}}', 'changed-name'],
+    ['an unresolved intrinsic', { Ref: 'Fn' }, 'changed-name'],
+    ['a redaction mask', SECRET_MASK, 'changed-name'],
+    ['an absent name', undefined, 'changed-name'],
+  ])('is false for %s', (_n, oldFn, newFn) => {
+    expect(check(oldFn, newFn)).toBe(false);
+    expect(check(newFn, oldFn)).toBe(false);
+  });
+
+  it('makes equalIdNamesSameResource read the equal id as two statements', () => {
+    expect(
+      equalIdNamesSameResource({
+        oldType: 'AWS::Lambda::Permission',
+        newType: 'AWS::Lambda::Permission',
+        createLayer: 'sdk',
+        oldProperties: { FunctionName: 'old-fn' },
+        newProperties: { FunctionName: 'changed-name' },
+        physicalId: 'ApiPermission',
+      })
+    ).toBe(false);
+  });
+});

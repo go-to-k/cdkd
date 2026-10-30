@@ -27,6 +27,9 @@ cdkd state resources MyStack
 # the whole record, with properties
 cdkd state show MyStack
 
+# pick a stack with the keyboard, then view its resources or record
+cdkd state browse
+
 # stop tracking one resource; it stays in AWS
 cdkd state orphan MyStack --resource MyQueue
 
@@ -39,7 +42,7 @@ cdkd state refresh-observed MyStack
 
 ## Subcommands
 
-Four subcommands only read. This page documents them. They never wait for a
+Five subcommands only read. This page documents them. They never wait for a
 stack's lock, so they work while a deploy is running.
 
 | Subcommand | Use it to |
@@ -48,6 +51,7 @@ stack's lock, so they work while a deploy is running.
 | [`list`](#cdkd-state-list) | List the stacks in the bucket. |
 | [`resources`](#cdkd-state-resources) | List one stack's resources with their physical ids. |
 | [`show`](#cdkd-state-show) | Read one stack's whole record. |
+| [`browse`](#cdkd-state-browse) | Pick a stack with the keyboard and view its resources or record. |
 
 Four subcommands write. Each one asks for confirmation first, and
 [cdkd state: writing subcommands](cli-state-writing.md) documents them.
@@ -474,6 +478,41 @@ Three things to know when you read the block:
 - **A nested stack's resource shows `ProvisionedBy: cc-api` that you did not
   ask for.** An older cdkd release could record that. See
   [When a nested resource shows the wrong `provisionedBy`](cli-state-malformed.md#when-a-nested-resource-shows-the-wrong-provisionedby).
+
+## `cdkd state browse`
+
+Pick a stack from the state bucket with the keyboard, then view it, without
+copying its name into another command.
+
+![cdkd state browse: the stack list, typing "data" to filter it, picking DataStack, and its Resources view printed above the menu.](https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/state-browse.gif)
+
+```bash
+cdkd state browse
+cdkd state browse --state-prefix staging
+```
+
+The first list holds every stack in the bucket, as `cdkd state list` prints
+it. Pick one, then pick a view:
+
+| View | Prints what this command prints |
+| --- | --- |
+| Resources | `cdkd state resources <stack>` |
+| Resources with dependencies and attributes | `cdkd state resources <stack> --long` |
+| Full state record | `cdkd state show <stack>` |
+
+The view prints below the menu, and the menu comes back for the same stack.
+
+| Key | Does |
+| --- | --- |
+| {kbd:up} / {kbd:down} | Move. |
+| Any letter or digit | Filter the list to the entries that contain what you typed. {kbd:backspace} removes a character. |
+| {kbd:enter} | Pick. Keys pressed while a view is still printing are dropped. |
+| {kbd:esc} | Go back: from a stack's menu to the stack list, and from the stack list out of the command. |
+| {kbd:ctrl+c} | Quit; the command exits `0`. |
+
+It needs an interactive terminal. In a pipe or a CI job it exits `1` before
+any AWS call, naming `cdkd state list`, `cdkd state resources` and
+`cdkd state show`, which work there. It takes the [shared options](#shared-options).
 
 ## Exit codes
 

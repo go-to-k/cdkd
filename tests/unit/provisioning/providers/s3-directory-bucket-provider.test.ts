@@ -126,6 +126,35 @@ describe('S3DirectoryBucketProvider', () => {
       });
     });
 
+    it('sends Location.Type LocalZone for SingleLocalZone, with the zone id unchanged (#5317)', async () => {
+      mockEc2Send.mockRejectedValue(new Error('InvalidParameterValue'));
+      mockSend.mockResolvedValueOnce({ Account: '123456789012' }).mockResolvedValueOnce({});
+
+      await provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {
+        BucketName: 'my-bucket--usw2-lax1-az1--x-s3',
+        DataRedundancy: 'SingleLocalZone',
+        LocationName: 'usw2-lax1-az1--x-s3',
+      });
+
+      expect(mockSend.mock.calls[1][0].input.CreateBucketConfiguration).toEqual({
+        Bucket: { Type: 'Directory', DataRedundancy: 'SingleLocalZone' },
+        Location: { Name: 'usw2-lax1-az1', Type: 'LocalZone' },
+      });
+    });
+
+    it('sends Location.Type AvailabilityZone when DataRedundancy is absent (#5317)', async () => {
+      mockSend.mockResolvedValueOnce({ Account: '123456789012' }).mockResolvedValueOnce({});
+
+      await provider.create('DirectoryBucket', 'AWS::S3Express::DirectoryBucket', {
+        BucketName: 'my-bucket--use1-az4--x-s3',
+        LocationName: 'us-east-1c--x-s3',
+      });
+
+      expect(mockSend.mock.calls[1][0].input.CreateBucketConfiguration.Location.Type).toBe(
+        'AvailabilityZone'
+      );
+    });
+
     it('should auto-generate bucket name when BucketName is not provided', async () => {
       mockSend
         .mockResolvedValueOnce({ Account: '123456789012' }) // GetCallerIdentityCommand (resolved before CreateBucket, #4583)

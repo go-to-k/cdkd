@@ -1,24 +1,35 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-04T22:38:45.494Z",
+  "generatedAt": "2026-10-29T11:15:42.872Z",
   "summary": {
-    "tier2Count": 1467,
-    "schemasRead": 1467,
-    "withCreateOnly": 1277,
+    "tier2Count": 1633,
+    "schemasRead": 1633,
+    "withCreateOnly": 1427,
     "schemasWithNoProperties": 0,
-    "candidateCount": 99,
-    "guardedCount": 72,
-    "unguardedCount": 27,
+    "candidateCount": 118,
+    "guardedCount": 88,
+    "unguardedCount": 30,
     "signalCounts": {
-      "snapshot-or-backup": 12,
-      "retention-window": 9,
-      "storage-capacity": 15,
-      "deletion-protection": 10,
-      "encryption-at-rest": 13,
-      "data-store-noun": 65
+      "snapshot-or-backup": 16,
+      "retention-window": 10,
+      "storage-capacity": 21,
+      "deletion-protection": 13,
+      "encryption-at-rest": 18,
+      "data-store-noun": 68
     }
   },
   "candidates": [
+    {
+      "typeName": "AWS::AgentRegistry::Registry",
+      "createOnlyProperties": [
+        "/properties/AuthorizerType",
+        "/properties/EncryptionConfiguration"
+      ],
+      "signals": [
+        "encryption-at-rest"
+      ],
+      "guarded": true
+    },
     {
       "typeName": "AWS::AIOps::InvestigationGroup",
       "createOnlyProperties": [
@@ -86,6 +97,18 @@
         "/properties/EncryptionConfiguration",
         "/properties/ServiceName",
         "/properties/Tags"
+      ],
+      "signals": [
+        "encryption-at-rest"
+      ],
+      "guarded": false
+    },
+    {
+      "typeName": "AWS::AppSync::ApiCache",
+      "createOnlyProperties": [
+        "/properties/ApiId",
+        "/properties/AtRestEncryptionEnabled",
+        "/properties/TransitEncryptionEnabled"
       ],
       "signals": [
         "encryption-at-rest"
@@ -217,6 +240,18 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::CloudWatch::Space",
+      "createOnlyProperties": [
+        "/properties/AgentCoreEvaluationRoleArn",
+        "/properties/DataAccessRoleArn",
+        "/properties/DomainId"
+      ],
+      "signals": [
+        "encryption-at-rest"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::CodeArtifact::Domain",
       "createOnlyProperties": [
         "/properties/DomainName",
@@ -324,10 +359,10 @@
       "guarded": true
     },
     {
-      "typeName": "AWS::DynamoDB::Backup",
+      "typeName": "AWS::DocDBElastic::ClusterSnapshot",
       "createOnlyProperties": [
-        "/properties/BackupName",
-        "/properties/TableName"
+        "/properties/ClusterArn",
+        "/properties/SnapshotName"
       ],
       "signals": [
         "snapshot-or-backup"
@@ -344,6 +379,17 @@
         "data-store-noun"
       ],
       "guarded": false
+    },
+    {
+      "typeName": "AWS::EC2::Snapshot",
+      "createOnlyProperties": [
+        "/properties/Description",
+        "/properties/VolumeId"
+      ],
+      "signals": [
+        "storage-capacity"
+      ],
+      "guarded": true
     },
     {
       "typeName": "AWS::EC2::TransitGatewayMulticastDomain",
@@ -396,6 +442,21 @@
       "guarded": false
     },
     {
+      "typeName": "AWS::ECS::Gateway",
+      "createOnlyProperties": [
+        "/properties/Configuration/HostSharedAlb/NetworkConfiguration/IpAddressType",
+        "/properties/Configuration/HostSharedAlb/NetworkConfiguration/Subnets",
+        "/properties/Configuration/HostSharedAlb/Port",
+        "/properties/Configuration/HostSharedAlb/Protocol",
+        "/properties/Configuration/HostSharedAlb/Scheme",
+        "/properties/GatewayName"
+      ],
+      "signals": [
+        "deletion-protection"
+      ],
+      "guarded": false
+    },
+    {
       "typeName": "AWS::EKS::Cluster",
       "createOnlyProperties": [
         "/properties/AccessConfig/BootstrapClusterCreatorAdminPermissions",
@@ -437,10 +498,25 @@
     {
       "typeName": "AWS::ElastiCache::ServerlessCache",
       "createOnlyProperties": [
+        "/properties/ConnectionType",
         "/properties/KmsKeyId",
+        "/properties/NetworkType",
         "/properties/ServerlessCacheName",
         "/properties/SnapshotArnsToRestore",
         "/properties/SubnetIds"
+      ],
+      "signals": [
+        "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::ElastiCache::Snapshot",
+      "createOnlyProperties": [
+        "/properties/CacheClusterId",
+        "/properties/KmsKeyId",
+        "/properties/ReplicationGroupId",
+        "/properties/SnapshotName"
       ],
       "signals": [
         "snapshot-or-backup"
@@ -473,6 +549,47 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::EventsV2::EventBus",
+      "createOnlyProperties": [
+        "/properties/Name"
+      ],
+      "signals": [
+        "encryption-at-rest",
+        "storage-capacity"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::FSx::Backup",
+      "createOnlyProperties": [
+        "/properties/FileSystemId"
+      ],
+      "signals": [
+        "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::FSx::FileCache",
+      "createOnlyProperties": [
+        "/properties/CopyTagsToDataRepositoryAssociations",
+        "/properties/DataRepositoryAssociations",
+        "/properties/FileCacheType",
+        "/properties/FileCacheTypeVersion",
+        "/properties/KmsKeyId",
+        "/properties/LustreConfiguration/DeploymentType",
+        "/properties/LustreConfiguration/MetadataConfiguration",
+        "/properties/LustreConfiguration/PerUnitStorageThroughput",
+        "/properties/SecurityGroupIds",
+        "/properties/StorageCapacity",
+        "/properties/SubnetIds"
+      ],
+      "signals": [
+        "storage-capacity"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::FSx::Volume",
       "createOnlyProperties": [
         "/properties/BackupId",
@@ -496,6 +613,16 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::HealthAgent::Domain",
+      "createOnlyProperties": [
+        "/properties/Name"
+      ],
+      "signals": [
+        "data-store-noun"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::HealthImaging::Datastore",
       "createOnlyProperties": [
         "/properties/DatastoreName",
@@ -510,9 +637,7 @@
     {
       "typeName": "AWS::HealthLake::FHIRDatastore",
       "createOnlyProperties": [
-        "/properties/DatastoreName",
         "/properties/DatastoreTypeVersion",
-        "/properties/IdentityProviderConfiguration",
         "/properties/PreloadDataConfig",
         "/properties/SseConfiguration"
       ],
@@ -572,6 +697,23 @@
       ],
       "signals": [
         "data-store-noun"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::Kinesis::Channel",
+      "createOnlyProperties": [
+        "/properties/ChannelName",
+        "/properties/EncryptionConfiguration",
+        "/properties/S3DestinationConfiguration/DeadLetterQueueS3Configuration",
+        "/properties/S3DestinationConfiguration/StorageConfiguration",
+        "/properties/S3TablesDestinationConfiguration/DeadLetterQueueS3Configuration",
+        "/properties/S3TablesDestinationConfiguration/S3TablesConfigurationList",
+        "/properties/ServiceExecutionRoleARN",
+        "/properties/StreamConfigurationList"
+      ],
+      "signals": [
+        "encryption-at-rest"
       ],
       "guarded": true
     },
@@ -689,6 +831,18 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::MemoryDB::Snapshot",
+      "createOnlyProperties": [
+        "/properties/ClusterName",
+        "/properties/KmsKeyId",
+        "/properties/SnapshotName"
+      ],
+      "signals": [
+        "snapshot-or-backup"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::MSK::Channel",
       "createOnlyProperties": [
         "/properties/ChannelName",
@@ -794,6 +948,7 @@
       "typeName": "AWS::NeptuneGraph::Graph",
       "createOnlyProperties": [
         "/properties/GraphName",
+        "/properties/ImportTask",
         "/properties/KmsKeyIdentifier",
         "/properties/ReplicaCount",
         "/properties/VectorSearchConfiguration"
@@ -1077,6 +1232,18 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::Redshift::Snapshot",
+      "createOnlyProperties": [
+        "/properties/ClusterIdentifier",
+        "/properties/SnapshotIdentifier"
+      ],
+      "signals": [
+        "snapshot-or-backup",
+        "storage-capacity"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::RedshiftServerless::Namespace",
       "createOnlyProperties": [
         "/properties/NamespaceName"
@@ -1200,6 +1367,18 @@
       "guarded": true
     },
     {
+      "typeName": "AWS::SageMaker::CodeRepository",
+      "createOnlyProperties": [
+        "/properties/CodeRepositoryName",
+        "/properties/GitConfig/Branch",
+        "/properties/GitConfig/RepositoryUrl"
+      ],
+      "signals": [
+        "data-store-noun"
+      ],
+      "guarded": false
+    },
+    {
       "typeName": "AWS::SageMaker::Domain",
       "createOnlyProperties": [
         "/properties/AuthMode",
@@ -1229,6 +1408,17 @@
       ],
       "signals": [
         "data-store-noun"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::SMSVOICE::NotifyConfiguration",
+      "createOnlyProperties": [
+        "/properties/DisplayName",
+        "/properties/UseCase"
+      ],
+      "signals": [
+        "deletion-protection"
       ],
       "guarded": true
     },
@@ -1267,12 +1457,42 @@
       "guarded": false
     },
     {
+      "typeName": "AWS::StorageGateway::Volume",
+      "createOnlyProperties": [
+        "/properties/GatewayARN",
+        "/properties/KMSEncrypted",
+        "/properties/KMSKey",
+        "/properties/NetworkInterfaceId",
+        "/properties/SnapshotId",
+        "/properties/SourceVolumeARN",
+        "/properties/TargetName",
+        "/properties/VolumeSizeInBytes"
+      ],
+      "signals": [
+        "data-store-noun"
+      ],
+      "guarded": true
+    },
+    {
       "typeName": "AWS::Timestream::Database",
       "createOnlyProperties": [
         "/properties/DatabaseName"
       ],
       "signals": [
         "data-store-noun"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::Timestream::InfluxDBBackup",
+      "createOnlyProperties": [
+        "/properties/DbResourceId",
+        "/properties/Name",
+        "/properties/RetentionDays"
+      ],
+      "signals": [
+        "retention-window",
+        "storage-capacity"
       ],
       "guarded": true
     },
@@ -1325,6 +1545,27 @@
       "signals": [
         "data-store-noun",
         "retention-window"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::Transfer::HostKey",
+      "createOnlyProperties": [
+        "/properties/HostKeyBody",
+        "/properties/ServerId"
+      ],
+      "signals": [
+        "storage-capacity"
+      ],
+      "guarded": true
+    },
+    {
+      "typeName": "AWS::WellArchitected::AgentProfile",
+      "createOnlyProperties": [
+        "/properties/Name"
+      ],
+      "signals": [
+        "deletion-protection"
       ],
       "guarded": true
     },

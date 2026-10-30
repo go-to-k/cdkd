@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { timePhase, timePhaseSync } from '../utils/phase-timings.js';
 import {
   S3Client,
   GetObjectCommand,
@@ -14,6 +15,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   STATE_SCHEMA_VERSIONS_READABLE,
   describeRegionValueKind,
+  stackInstanceIdCarriedFrom,
   type StackState,
 } from '../types/state.js';
 import type { StateBackendConfig } from '../types/config.js';
@@ -29,6 +31,11 @@ import {
   parseCreateTokenLedger,
   type CreateTokenLedgerDoc,
 } from './create-token-ledger.js';
+import {
+  STACK_INSTANCE_SIBLING_FILE,
+  parseStackInstanceSibling,
+  stackInstanceSiblingBody,
+} from './stack-instance-id.js';
 import type { FailedOperation } from '../deployment/rollback-executor.js';
 import { getLogger } from '../utils/logger.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
@@ -46,7 +53,10 @@ import {
   safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { VERBOSE_POINTER, describeAwsFailure } from '../utils/aws-failure-text.js';
+import { markRedactedCause } from '../deployment/retryable-errors/marks.js';
+import { currentLogLineMasker } from '../utils/log-line-masker.js';
+import { describeJsonParseFailure, utf8ByteLength } from '../utils/json-parse-failure.js';
 import { UNRENDERABLE } from './lock-contention-message.js';
 // The LEAF directly, not the re-export: this module needs one pure function,
 // and routing it through `malformed-resources-bag.ts` would add an edge to a
@@ -81,6 +91,14 @@ function errorDetail(error: unknown): string {
   return (
     displaySafe(error instanceof Error ? error.message : error, { asciiOnly: true }) || UNRENDERABLE
   );
+}
+
+/**
+ * `text` without one final period, for a clause that a message continues
+ * with a sentence of its own (`<clause>. The state record was left ...`).
+ */
+function withoutFinalPeriod(text: string): string {
+  return text.endsWith('.') ? text.slice(0, -1) : text;
 }
 
 /**
@@ -204,6 +222,10 @@ const KEPT_AT_CLOCK_TOLERANCE_MS = 2_000;
 const ROLLBACK_JOURNAL_OBJECT_DESCRIPTION =
   'the rollback journal, whose `failedOperations[].attemptedProperties` records the properties of the failed write verbatim';
 
+/** `objectDescription` for the write-ahead stack instance id (go-to-k/cdkd#5064). */
+const STACK_INSTANCE_OBJECT_DESCRIPTION =
+  "the write-ahead stack instance id, from which a stack's generated resource names derive";
+
 /** `objectDescription` for a stack's state record (go-to-k/cdkd#2346 sites 1-3). */
 const STATE_RECORD_OBJECT_DESCRIPTION =
   "the stack's state record, which carries every resource's recorded properties and attributes";
@@ -236,6 +258,15 @@ export class S3StateBackend {
   private readonly journalsReadAbsent = new Set<string>();
   /** Per journal key, how many times a non-read access asked for it. */
   private readonly journalTouches = new Map<string, number>();
+  /**
+   * go-to-k/cdkd#5064: by sibling key, the id a `stack-instance.json` this
+   * process read or wrote holds, until a state save carrying it deletes it.
+   */
+  private readonly pendingStackInstanceSiblings = new Map<string, string>();
+  /** {@link prefetchStackInstanceSibling}'s reads, by sibling key; each taken once. */
+  private readonly siblingPrefetches = new Map<string, Promise<string | null>>();
+  /** The version each sibling this process wrote got, by sibling key (go-to-k/cdkd#5200). */
+  private readonly siblingVersionsWritten = new Map<string, string>();
 
   constructor(s3Client: S3Client, config: StateBackendConfig, clientOpts: S3ClientOptions = {}) {
     this.s3Client = s3Client;
@@ -381,6 +412,10 @@ export class S3StateBackend {
    * Get the create-token ledger S3 key -- a sibling of `state.json`
    * (go-to-k/cdkd#4438, `src/state/create-token-ledger.ts`).
    */
+  private getStackInstanceKey(stackName: string, region: string): string {
+    return `${this.config.prefix}/${stackName}/${region}/${STACK_INSTANCE_SIBLING_FILE}`;
+  }
+
   private getCreateTokenLedgerKey(stackName: string, region: string): string {
     return `${this.config.prefix}/${stackName}/${region}/create-tokens.json`;
   }
@@ -486,9 +521,13 @@ export class S3StateBackend {
         bucket: this.config.bucket,
         operation: 'HeadBucket',
       });
-      throw new StateError(
-        `Failed to verify state bucket '${this.config.bucket}': ${normalized.message}`,
-        normalized
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to verify state bucket '${this.config.bucket}': ${text}`,
+            normalized
+          )
       );
     }
   }
@@ -661,9 +700,13 @@ export class S3StateBackend {
         if (error instanceof StateError) throw error;
         // The ASCII allowlist. `parseStateBody`'s own `StateError` is
         // rethrown above, so what reaches here is an AWS / stream failure.
-        throw new StateError(
-          `Failed to get state for stack ${shownStackName} (${shownRegionName}): ${errorDetail(error)}`,
-          error instanceof Error ? error : undefined
+        throw this.wrapS3Failure(
+          error,
+          (text) =>
+            new StateError(
+              `Failed to get state for stack ${shownStackName} (${shownRegionName}): ${text}`,
+              error instanceof Error ? error : undefined
+            )
         );
       }
       this.logger.debug(`No state at new key for stack: ${shownStackName} (${shownRegionName})`);
@@ -707,14 +750,22 @@ export class S3StateBackend {
    * @param stackName Stack name
    * @param region Target region (load-bearing — part of the S3 key)
    * @param state State to save
-   * @param options Optimistic-lock ETag + legacy-migration flag
+   * @param options Optimistic-lock ETag + legacy-migration flag.
+   *   `deferCleanup`: the write-ahead stack instance id's sibling, which a
+   *   save carrying that id makes obsolete, is deleted in the background and
+   *   its promise handed here instead of awaited (go-to-k/cdkd#5200). The
+   *   caller awaits it before it releases the stack lock. It never rejects.
    * @returns New ETag (with quotes, e.g., `"abc123"`)
    */
   async saveState(
     stackName: string,
     region: string,
     state: StackState,
-    options: { expectedEtag?: string; migrateLegacy?: boolean } = {}
+    options: {
+      expectedEtag?: string;
+      migrateLegacy?: boolean;
+      deferCleanup?: (cleanup: Promise<void>) => void;
+    } = {}
   ): Promise<string> {
     await this.ensureClientForBucket();
     const newKey = this.getStateKey(stackName, region);
@@ -723,6 +774,7 @@ export class S3StateBackend {
     // Normalize the body: schema version + region are load-bearing on disk.
     const body: StackState = {
       ...state,
+      ...stackInstanceIdCarriedFrom(state),
       version: STATE_SCHEMA_VERSION_CURRENT,
       stackName,
       region,
@@ -733,19 +785,24 @@ export class S3StateBackend {
         `Saving state: ${this.stackRef(stackName, region)}${expectedEtag ? `, expected ETag: ${expectedEtag}` : ''}`
       );
 
-      const bodyString = JSON.stringify(body, null, 2);
-      const response = await this.s3Client.send(
-        new PutObjectCommand({
-          Bucket: this.config.bucket,
-          ...(await this.ownerParam()),
-          Key: newKey,
-          Body: bodyString,
-          ContentLength: Buffer.byteLength(bodyString),
-          ContentType: 'application/json',
-          // The legacy ETag is for a different key; only forward it when we're
-          // updating in-place at the new key.
-          ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
-        })
+      // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+      const bodyString = timePhaseSync('state saves (every stack)', 'serialize', () =>
+        JSON.stringify(body, null, 2)
+      );
+      const response = await timePhase('state saves (every stack)', 'put state.json', async () =>
+        this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: newKey,
+            Body: bodyString,
+            ContentLength: Buffer.byteLength(bodyString),
+            ContentType: 'application/json',
+            // The legacy ETag is for a different key; only forward it when we're
+            // updating in-place at the new key.
+            ...(!migrateLegacy && expectedEtag && { IfMatch: expectedEtag }),
+          })
+        )
       );
 
       if (!response.ETag) {
@@ -780,9 +837,29 @@ export class S3StateBackend {
         }
       }
 
+      // go-to-k/cdkd#5064: the record now carries the write-ahead id, so its
+      // sibling has done its job. Only when the saved body carries THAT id:
+      // a save without it leaves the sibling for the re-run to read. Started
+      // before the ledger mark below, which writes a different object.
+      // Never rejects.
+      const siblingKey = this.getStackInstanceKey(stackName, region);
+      const pendingId = this.pendingStackInstanceSiblings.get(siblingKey);
+      let siblingCleanup: Promise<void> | undefined;
+      if (pendingId !== undefined && body.stackInstanceId === pendingId) {
+        this.pendingStackInstanceSiblings.delete(siblingKey);
+        siblingCleanup = timePhase(
+          'state saves (every stack)',
+          'after save: drop instance-id sibling',
+          () => this.dropStackInstanceSiblingAfterSave(stackName, region)
+        );
+        if (options.deferCleanup !== undefined) options.deferCleanup(siblingCleanup);
+      }
       // The create-token ledger records that this lineage has a state record
       // (go-to-k/cdkd#4438). Never throws.
-      await notifyStateSaved(stackName, region);
+      await timePhase('state saves (every stack)', 'after save: ledger mark', () =>
+        notifyStateSaved(stackName, region)
+      );
+      if (options.deferCleanup === undefined) await siblingCleanup;
       return response.ETag;
     } catch (error) {
       if ((error as { name: string }).name === 'PreconditionFailed') {
@@ -796,9 +873,13 @@ export class S3StateBackend {
         bucket: this.config.bucket,
         operation: 'PutObject',
       });
-      throw new StateError(
-        `Failed to save state for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}`,
-        normalized
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to save state for stack ${this.stackRef(stackName, region)}: ${text}`,
+            normalized
+          )
       );
     }
   }
@@ -826,6 +907,11 @@ export class S3StateBackend {
     // system back to the next deploy, while a record that outlives its ledger
     // only makes an interrupted create's re-run refuse.
     await this.deleteCreateTokenLedger(stackName, region);
+    // go-to-k/cdkd#5064: the stack's lifetime ends with its record, so a
+    // write-ahead id that outlived it must not be read back by the stack's
+    // next first deploy. Fail-closed, like the ledger above: a surviving id
+    // would make the recreated stack ask for the names its predecessor held.
+    await this.deleteStackInstanceSibling(stackName, region);
     try {
       this.logger.debug(`Deleting state: ${this.stackRef(stackName, region)}`);
 
@@ -879,9 +965,13 @@ export class S3StateBackend {
         bucket: this.config.bucket,
         operation: 'DeleteObject',
       });
-      throw new StateError(
-        `Failed to delete state for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}`,
-        normalized
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to delete state for stack ${this.stackRef(stackName, region)}: ${text}`,
+            normalized
+          )
       );
     } finally {
       // Sweep the rollback journal (issue #1183) so `cdkd destroy` /
@@ -904,7 +994,14 @@ export class S3StateBackend {
       // journal — strictly worse than the reverse. `deleteRollbackJournal` is
       // best-effort and never throws, so it cannot replace the in-flight
       // StateError.
-      await this.deleteRollbackJournal(stackName, region);
+      // The sibling's earlier versions go beside it (go-to-k/cdkd#5064);
+      // `purgeNoncurrentVersions` never throws either.
+      await Promise.all([
+        this.deleteRollbackJournal(stackName, region),
+        this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
+          objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
+        }),
+      ]);
     }
   }
 
@@ -1086,11 +1183,13 @@ export class S3StateBackend {
         bucket: this.config.bucket,
         operation: 'DeleteObject',
       });
-      throw new StateError(
-        `Failed to delete legacy state for stack ` +
-          `${displayStackName(stackName)}: ` +
-          `${errorDetail(normalized)}`,
-        normalized
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to delete legacy state for stack ${displayStackName(stackName)}: ${text}`,
+            normalized
+          )
       );
     }
   }
@@ -1183,7 +1282,10 @@ export class S3StateBackend {
         bucket: this.config.bucket,
         operation: 'ListObjectsV2',
       });
-      throw new StateError(`Failed to list stacks: ${normalized.message}`, normalized);
+      throw this.wrapS3Failure(
+        normalized,
+        (text) => new StateError(`Failed to list stacks: ${text}`, normalized)
+      );
     }
   }
 
@@ -1286,7 +1388,15 @@ export class S3StateBackend {
       try {
         value = JSON.parse(body);
       } catch (error) {
-        throw new CrossPrefixReadError(key, error);
+        // A snippet-free STAND-IN, not the raw error (issue #5247): V8's
+        // `SyntaxError` quotes a window of this body, which a chain walker
+        // (scrub's `describeFailure` prints every link) would render. The
+        // readers key only on the CLASS name and `$metadata`
+        // (`errorName`, `isAccessDenied`, `isNotImplemented`), so the
+        // stand-in keeps the name and carries no `$metadata`, as V8's did not.
+        const standIn = new Error(describeJsonParseFailure(error, utf8ByteLength(body)));
+        standIn.name = error instanceof Error && error.name ? error.name : 'SyntaxError';
+        throw new CrossPrefixReadError(key, standIn);
       }
       if (value === null || typeof value !== 'object' || Array.isArray(value)) {
         throw new CrossPrefixReadError(key, new TypeError('not a JSON object'));
@@ -1499,6 +1609,86 @@ export class S3StateBackend {
    * one state prefix of this bucket the stack and region belong to. Outside
    * every prefix, so no `--state-prefix` can address it.
    */
+  /**
+   * `{prefix}/_refactor/pending.json` (go-to-k/cdkd#5212): the moves a
+   * `cdkd refactor` has started between stacks of this prefix and not yet
+   * finished. Written BEFORE the first state write of a move and removed
+   * after the last, so a run interrupted anywhere in between leaves it; every
+   * `cdkd deploy` / `cdkd destroy` reads it once per run (beside its own state
+   * read) and refuses a stack a listed move involves. Ids only. Not a
+   * `state.json`, so state listings and gc skip it.
+   */
+  refactorMarkerKey(): string {
+    return `${this.config.prefix}/_refactor/pending.json`;
+  }
+
+  /** The refactor marker with its ETag, or null when there is none. */
+  async getRefactorMarker(): Promise<{ body: unknown; etag: string } | null> {
+    await this.ensureClientForBucket();
+    try {
+      const response = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: this.refactorMarkerKey(),
+        })
+      );
+      const text = (await response.Body?.transformToString()) ?? '';
+      let body: unknown;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = undefined;
+      }
+      return { body, etag: response.ETag ?? '' };
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Write the refactor marker conditionally: create it when `etag` is null
+   * (`If-None-Match: *`), replace the version read otherwise (`If-Match`), and
+   * delete it (conditionally) when `body` lists nothing. `'conflict'` when
+   * another run changed it in between.
+   */
+  async saveRefactorMarker(
+    body: { moves: unknown[] },
+    etag: string | null
+  ): Promise<'saved' | 'conflict'> {
+    await this.ensureClientForBucket();
+    const key = this.refactorMarkerKey();
+    try {
+      if (body.moves.length === 0) {
+        if (etag === null) return 'saved';
+        await this.s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: key,
+            IfMatch: etag,
+          })
+        );
+        return 'saved';
+      }
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+          Body: JSON.stringify(body, null, 2),
+          ContentType: 'application/json',
+          ...(etag === null ? { IfNoneMatch: '*' } : { IfMatch: etag }),
+        })
+      );
+      return 'saved';
+    } catch (error) {
+      if (isConditionFailure(error)) return 'conflict';
+      throw error;
+    }
+  }
+
   registryMarkerKey(stackName: string, region: string): string {
     return `${REGISTRY_ROOT}/${region}/${stackName}.json`;
   }
@@ -1786,20 +1976,28 @@ export class S3StateBackend {
       );
       for (const err of response.Errors ?? []) {
         // The key embeds a stack name and S3 supplies the code and message, so
-        // all three are guarded before they reach a thrown message (issue #3027).
+        // all three are guarded before they reach a line (issue #3027). The
+        // thrown message names each key's failure by its CODE only: S3's
+        // per-key `Message` is AWS's own text, and goes to `debug`
+        // (go-to-k/cdkd#2319).
         const shownKey =
           err.Key === undefined
             ? '<unknown>'
             : displayIdent(err.Key, { maxCodePoints: STACK_REF_MAX_CODE_POINTS });
-        failures.push(
-          `${shownKey} (${displaySafe(err.Code ?? 'Error', { asciiOnly: true }) || UNRENDERABLE}: ` +
-            `${displaySafe(err.Message ?? '', { asciiOnly: true })})`
+        const code = err.Code ?? 'Error';
+        const mask = currentLogLineMasker();
+        const shownCode =
+          displaySafe(mask ? mask(code) : code, { asciiOnly: true }) || UNRENDERABLE;
+        failures.push(`${shownKey} (${shownCode})`);
+        this.logger.debug(
+          safeMsg`DeleteObjects failed for ${shownKey} (${shownCode}): ${displaySafe(err.Message ?? '', { asciiOnly: true })}`
         );
       }
     }
     if (failures.length > 0) {
       throw new StateError(
-        `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ${failures.join('; ')}`
+        `Failed to delete ${failures.length} object(s) from bucket '${this.config.bucket}': ` +
+          `${failures.join('; ')}. ${VERBOSE_POINTER}`
       );
     }
   }
@@ -1977,10 +2175,14 @@ export class S3StateBackend {
       // The SDK's own text (an AccessDenied names the object's ARN) carries
       // the raw stack name: name the stack through `stackRef` instead.
       const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
-      throw new StateError(
-        `Failed to renew the create-token ledger of stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}. ` +
-          'The state record was left in place; re-run once the ledger can be written.',
-        normalized
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to renew the create-token ledger of stack ${this.stackRef(stackName, region)}: ${withoutFinalPeriod(text)}. ` +
+              'The state record was left in place; re-run once the ledger can be written.',
+            normalized
+          )
       );
     }
   }
@@ -2007,12 +2209,287 @@ export class S3StateBackend {
         bucket: this.config.bucket,
         operation: 'DeleteObject',
       });
-      throw new StateError(
-        `Failed to delete the create-token ledger for stack ${this.stackRef(stackName, region)}: ${errorDetail(normalized)}. ` +
-          'The state record was left in place; re-run once the ledger can be deleted.',
-        normalized
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to delete the create-token ledger for stack ${this.stackRef(stackName, region)}: ${withoutFinalPeriod(text)}. ` +
+              'The state record was left in place; re-run once the ledger can be deleted.',
+            normalized
+          )
       );
     }
+  }
+
+  /**
+   * The stack instance id for a stack's FIRST state write (state schema v13,
+   * go-to-k/cdkd#5064). Call it only while the stack has no `state.json`,
+   * under the stack lock: an ordinary deploy, whose record carries the id
+   * (or none, as a legacy stack), never reaches here.
+   *
+   * A `stack-instance.json` sibling an earlier run wrote is READ BACK and its
+   * id returned: a re-run after a crash must never mint a fresh one. Without
+   * one a fresh `crypto.randomUUID()` is minted and, with `writeAhead`
+   * (a deploy, before its first create), written with `If-None-Match: *`; a
+   * lost race (412) reads the winner's back. `cdkd import` passes
+   * `writeAhead: false`: it creates nothing, and its state save is its first
+   * write. The first state save carrying the id deletes the sibling.
+   *
+   * Throws a `StateError` naming the stack (never the id) when the sibling
+   * cannot be read or written, or holds a body this binary cannot read, so
+   * the deploy stops before any create.
+   *
+   * INVARIANT: only a binary that also derives generated names from the id
+   * may mint one. A record carrying an id says its resources were named with
+   * it; an id minted beside the legacy `{stack}-{logicalId}` names would make
+   * the next binary derive different names, and an IAM provider re-deriving
+   * its name inside `update()` would replace the live resource.
+   */
+  async stackInstanceIdForFirstWrite(
+    stackName: string,
+    region: string,
+    options: { writeAhead: boolean }
+  ): Promise<string> {
+    const key = this.getStackInstanceKey(stackName, region);
+    const read = async (): Promise<string | null> => this.readSiblingId(key, stackName, region);
+    // The first read only: a lost race below reads the winner back afresh.
+    const prefetched = this.siblingPrefetches.get(key);
+    this.siblingPrefetches.delete(key);
+    try {
+      const existing = await (prefetched ?? read());
+      if (existing !== null) {
+        this.pendingStackInstanceSiblings.set(key, existing);
+        this.logger.debug(
+          safeMsg`Reusing the write-ahead stack instance id of ${displayStackName(stackName)}`
+        );
+        return existing;
+      }
+      const minted = randomUUID();
+      if (!options.writeAhead) return minted;
+      await this.ensureClientForBucket();
+      const body = stackInstanceSiblingBody(minted);
+      const put = async (): Promise<{ VersionId?: string | undefined }> =>
+        this.s3Client.send(
+          new PutObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: key,
+            Body: body,
+            ContentLength: Buffer.byteLength(body),
+            ContentType: 'application/json',
+            IfNoneMatch: '*',
+          })
+        );
+      let written: { VersionId?: string | undefined } | undefined;
+      try {
+        try {
+          written = await put();
+        } catch (error) {
+          // 409 ConditionalRequestConflict is a concurrent write in flight, not
+          // "one exists": asked once more, it answers (as `ensureRetainedTombstone`).
+          if (!isConditionalConflict(error)) throw error;
+          written = await put();
+        }
+      } catch (error) {
+        if (isNotImplemented(error)) {
+          // An endpoint without conditional writes: the read above, under the
+          // stack lock, stands in for the condition.
+          await this.putRawObject(key, body);
+          this.pendingStackInstanceSiblings.set(key, minted);
+          return minted;
+        }
+        if (!isConditionFailure(error)) throw error;
+        // Another writer got there first: its id is the stack's.
+        const winner = await read();
+        if (winner === null) throw error;
+        this.pendingStackInstanceSiblings.set(key, winner);
+        return winner;
+      }
+      this.pendingStackInstanceSiblings.set(key, minted);
+      // The ONE version of the sibling, which this write created: the post-save
+      // drop removes exactly it (go-to-k/cdkd#5200).
+      const versionId = written?.VersionId;
+      if (typeof versionId === 'string' && versionId !== '' && versionId !== 'null') {
+        this.siblingVersionsWritten.set(key, versionId);
+      }
+      return minted;
+    } catch (error) {
+      if (error instanceof StateError) throw error;
+      throw this.stackInstanceSiblingError(stackName, region, error, 'write');
+    }
+  }
+
+  /**
+   * The refusal for a sibling read (`read`) or a first write's read-or-write
+   * (`write`) that failed in S3. The SDK's own text can carry the raw key, so
+   * the stack is named through `stackRef`, and never the id.
+   */
+  private stackInstanceSiblingError(
+    stackName: string,
+    region: string,
+    error: unknown,
+    access: 'read' | 'write'
+  ): StateError {
+    const normalized = normalizeAwsError(error, { bucket: this.config.bucket });
+    return this.wrapS3Failure(
+      normalized,
+      (text) =>
+        new StateError(
+          `Failed to ${access === 'write' ? 'read or write' : 'read'} the write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+            `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json): ${withoutFinalPeriod(text)}. ` +
+            (access === 'write'
+              ? 'Nothing was created; re-run once the state bucket can be written.'
+              : 'Nothing was changed; re-run once the state bucket can be read.'),
+          normalized
+        )
+    );
+  }
+
+  /**
+   * Start the read {@link stackInstanceIdForFirstWrite} opens with, so a
+   * first deploy's read overlaps its diff instead of waiting for the approval
+   * (go-to-k/cdkd#5200). The caller holds the stack lock, and only a lock
+   * holder writes the sibling, so the answer is still current when the write
+   * consults it. A failure is reported there, as an unprefetched read's is.
+   */
+  prefetchStackInstanceSibling(stackName: string, region: string): void {
+    const key = this.getStackInstanceKey(stackName, region);
+    if (this.siblingPrefetches.has(key)) return;
+    const read = this.readSiblingId(key, stackName, region);
+    read.catch(() => undefined);
+    this.siblingPrefetches.set(key, read);
+  }
+
+  /** The id the sibling at `key` holds, `null` when absent; a body this binary cannot read throws. */
+  private async readSiblingId(
+    key: string,
+    stackName: string,
+    region: string
+  ): Promise<string | null> {
+    const body = await this.getRawObject(key);
+    if (body === null) return null;
+    const id = parseStackInstanceSibling(body);
+    if (id === null) {
+      throw new StateError(
+        `The write-ahead stack instance id of stack ${this.stackRef(stackName, region)} ` +
+          `(${STACK_INSTANCE_SIBLING_FILE} beside its state.json) is in a format this cdkd version ` +
+          'cannot read; upgrade cdkd, or delete that object if it is damaged'
+      );
+    }
+    return id;
+  }
+
+  /**
+   * The id a stack's `stack-instance.json` sibling holds, READ ONLY: never
+   * mints, never writes, never marks the sibling for the post-save delete.
+   * For a caller that must RECOGNIZE a first deploy's generated names while
+   * the stack has no `state.json` (the Cloud Control pending-request settle,
+   * go-to-k/cdkd#5064); an ordinary deploy, whose record carries the id, never
+   * calls it. `undefined` when there is no sibling. Throws a `StateError`
+   * naming the stack (never the id) when it cannot be read or holds a body
+   * this binary cannot read.
+   */
+  async readStackInstanceSibling(stackName: string, region: string): Promise<string | undefined> {
+    try {
+      return (
+        (await this.readSiblingId(
+          this.getStackInstanceKey(stackName, region),
+          stackName,
+          region
+        )) ?? undefined
+      );
+    } catch (error) {
+      if (error instanceof StateError) throw error;
+      throw this.stackInstanceSiblingError(stackName, region, error, 'read');
+    }
+  }
+
+  /**
+   * Delete the stack's `stack-instance.json`. An absent one is fine; any other
+   * failure throws a `StateError`, so {@link deleteState} stops before the
+   * record goes with the id still readable.
+   */
+  async deleteStackInstanceSibling(stackName: string, region: string): Promise<void> {
+    await this.ensureClientForBucket();
+    const key = this.getStackInstanceKey(stackName, region);
+    this.pendingStackInstanceSiblings.delete(key);
+    try {
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.config.bucket,
+          ...(await this.ownerParam()),
+          Key: key,
+        })
+      );
+    } catch (error) {
+      if (isNoSuchKey(error) || (error as { name?: string }).name === 'NotFound') return;
+      const normalized = normalizeAwsError(error, {
+        bucket: this.config.bucket,
+        operation: 'DeleteObject',
+      });
+      throw this.wrapS3Failure(
+        normalized,
+        (text) =>
+          new StateError(
+            `Failed to delete the write-ahead stack instance id for stack ${this.stackRef(stackName, region)}: ${withoutFinalPeriod(text)}. ` +
+              'The state record was left in place; re-run once that object can be deleted.',
+            normalized
+          )
+      );
+    }
+  }
+
+  /**
+   * After the first state save carrying the id: delete the sibling and purge
+   * its earlier versions. Best-effort and never throws: the record is
+   * authoritative now, and a sibling that survives is read only while the
+   * stack has no record, which {@link deleteState} (deleting it first) ends.
+   */
+  private async dropStackInstanceSiblingAfterSave(
+    stackName: string,
+    region: string
+  ): Promise<void> {
+    // go-to-k/cdkd#5200: a sibling this process wrote is deleted by the
+    // version its write created, which removes it without writing a delete
+    // marker. Its `If-None-Match: *` write succeeded, so nothing current sat
+    // under it (at most an earlier lifetime's delete marker), and removing it
+    // brings no older copy back. The purge below still runs, for versions an
+    // earlier lifetime's purge left. Any doubt takes the general path.
+    const key = this.getStackInstanceKey(stackName, region);
+    const versionId = this.siblingVersionsWritten.get(key);
+    this.siblingVersionsWritten.delete(key);
+    let deleted = false;
+    if (versionId !== undefined) {
+      try {
+        await this.ensureClientForBucket();
+        await this.s3Client.send(
+          new DeleteObjectCommand({
+            Bucket: this.config.bucket,
+            ...(await this.ownerParam()),
+            Key: key,
+            VersionId: versionId,
+          })
+        );
+        deleted = true;
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not delete the written version of the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
+        );
+      }
+    }
+    if (!deleted) {
+      try {
+        await this.deleteStackInstanceSibling(stackName, region);
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`Could not delete the write-ahead stack instance id of ${displayStackName(stackName)}: ${describeAwsFailure(error).summary}`
+        );
+        return;
+      }
+    }
+    await this.purgeNoncurrentVersions([this.getStackInstanceKey(stackName, region)], {
+      objectDescription: STACK_INSTANCE_OBJECT_DESCRIPTION,
+    });
   }
 
   /**
@@ -2446,9 +2923,40 @@ export class S3StateBackend {
   }
 
   /**
-   * Read the legacy key and classify what is there — {@link LegacyStateProbe}
-   * says what each answer means and which consumer acts on it.
+   * The `StateError` a failed S3 call throws, with the failure named by its
+   * CLASS (go-to-k/cdkd#2319).
+   *
+   * A thrown state message is persisted: a `listStacks` failure inside the
+   * `Fn::ImportValue` fallback scan, or a `saveState` failure, ends the deploy
+   * and reaches `deployments/{runId}.jsonl` through
+   * `extractDeploymentEventError`, which keeps a cdkd-authored message whole.
+   * On an `AccessDenied` S3's text names the caller's assumed-role ARN and
+   * account id. So an AWS-authored failure reaches `build` as
+   * `<Class>. Re-run with --verbose for AWS's own message.`; AWS's own text
+   * goes to `debug` (the ASCII allowlist, and the logger's bound-secret mask);
+   * the wrap is stamped `markRedactedCause` so a retry classifier reads the
+   * withheld text on the `cause` chain. The class is AWS-authored text too, so
+   * it takes the same two guards: the allowlist, and the secret mask bound for
+   * the current async context (a deploy binds one around each resource, whose
+   * resolution is what calls `listStacks`). `build` must thread `error` as
+   * `cause`, and runs twice, so it must stay a side-effect-free constructor.
+   *
+   * Anything else -- `normalizeAwsError`'s rewrite of S3's body-less
+   * `Unknown`, a transport error -- is cdkd- or Node-authored, and keeps its
+   * text exactly as before.
    */
+  private wrapS3Failure(error: unknown, build: (text: string) => StateError): StateError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return build(errorDetail(error));
+    this.logger.debug(
+      build(displaySafe(failure.detail, { asciiOnly: true }) || UNRENDERABLE).message
+    );
+    const mask = currentLogLineMasker();
+    const summary = mask ? mask(failure.summary) : failure.summary;
+    const wrapped = build(displaySafe(summary, { asciiOnly: true }) || UNRENDERABLE);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   /**
    * A stack name safe to put in a log line. Names reach this class from S3
    * key segments, which anyone able to write the bucket controls, so every
@@ -2549,7 +3057,9 @@ export class S3StateBackend {
     // folds because it compares two AWS-supplied regions, not a record against
     // its own key.
     if (raw === region) return { state };
-    if (raw === undefined) return { state: { ...state, region } };
+    if (raw === undefined) {
+      return { state: { ...state, ...stackInstanceIdCarriedFrom(state), region } };
+    }
 
     // The VALUE is withheld from this warn, which prints at default verbosity.
     // It is body content, and a region a record supplies is precisely the
@@ -2589,9 +3099,16 @@ export class S3StateBackend {
           ? `${kind}, which renders as nothing — its kind above is the whole of it.`
           : `${displayIdent(raw)}.`)
     );
-    return { state: { ...state, region }, divergentBodyRegion: raw };
+    return {
+      state: { ...state, ...stackInstanceIdCarriedFrom(state), region },
+      divergentBodyRegion: raw,
+    };
   }
 
+  /**
+   * Read the legacy key and classify what is there — {@link LegacyStateProbe}
+   * says what each answer means and which consumer acts on it.
+   */
   private async probeLegacyState(stackName: string): Promise<LegacyStateProbe> {
     try {
       const response = await this.s3Client.send(
@@ -2775,9 +3292,13 @@ export class S3StateBackend {
       // Same guard as the new-key path above, and reachable from the same
       // command: `getState` falls back here, so a `state show` on a legacy
       // record takes this refusal (issue #3003).
-      throw new StateError(
-        `Failed to get legacy state for stack ${this.displayName(stackName)}: ${errorDetail(error)}`,
-        error instanceof Error ? error : undefined
+      throw this.wrapS3Failure(
+        error,
+        (text) =>
+          new StateError(
+            `Failed to get legacy state for stack ${this.displayName(stackName)}: ${text}`,
+            error instanceof Error ? error : undefined
+          )
       );
     }
   }
@@ -2793,30 +3314,30 @@ export class S3StateBackend {
     try {
       root = JSON.parse(bodyString);
     } catch (error) {
-      // Sanitized for the same reason `probeLegacyState` sanitizes its own
-      // `JSON.parse` failure: V8's `SyntaxError` quotes the offending INPUT,
-      // so this message carries bytes of the state body — a file anyone with
-      // `s3:PutObject` on the bucket can write. cdkd's output is
-      // line-oriented, so an unsanitized newline here invents a line that
-      // reads like a row of the very diagnostic a reader trusts most
-      // (issue #3003).
-      // ASCII allowlist. V8's `SyntaxError` says its own words in ASCII and
-      // QUOTES the offending input, so the non-ASCII content here is body
-      // bytes from a file anyone with `s3:PutObject` can write -- the value
-      // the allowlist exists for, not the "legitimately non-ASCII diagnostic"
-      // the denylist protects. `formatError`'s cause line is the opposite
-      // case and takes the denylist, because a cause can be AWS's own wording.
-      const raw = error instanceof Error ? error.message : String(error);
-      const detail = displaySafe(raw, { asciiOnly: true }) || UNRENDERABLE;
-      // `docs/troubleshooting.md` quotes this message, and
+      // V8's `SyntaxError` quotes a window of the offending INPUT, and before
+      // `cdkd scrub` this body holds plaintext property and output values, so
+      // the message names only the failure's offset and size (issue #5247;
+      // `describeJsonParseFailure` owns the rule). V8's full text goes to
+      // `debug` only, ASCII-allowlisted as `probeLegacyState` does its own
+      // (issue #3003: the body is writable by anyone with `s3:PutObject`, and
+      // an unsanitized newline forges a line).
+      this.logger.debug(
+        safeMsg`State file for stack ${this.displayName(stackName)} failed to parse: ${displaySafe(describeAwsFailure(error).detail, { asciiOnly: true }) || UNRENDERABLE}`
+      );
+      // `docs/troubleshooting-locks-state.md` quotes this message, and
       // `scripts/check-docs-error-strings.ts` fails when it can no longer
-      // derive it from here. Three revisions of this comment tried to say
-      // WHICH edit breaks that and each named a different wrong cause, so it
-      // no longer tries: the checker is the authority, it runs in CI, and it
-      // says so when an edit here un-anchors the sample.
+      // derive it from here: the checker is the authority, and it runs in CI.
+      //
+      // NO `cause`, deliberately (issue #5247): the `SyntaxError` carries the
+      // same body window, and `formatError` prints a cause on its `Caused by:`
+      // line while the CLI's last-resort handler inspects the whole chain. No
+      // reader keys on this cause -- `getState` rethrows a `StateError`
+      // unchanged, and the retry classifiers and `extractDeploymentEventError`
+      // look for AWS markers a `SyntaxError` never carries -- and a snippet-free
+      // wrapper would only print this message's own detail a second time.
       throw new StateError(
-        `State file for stack ${this.displayName(stackName)} is not valid JSON: ${detail}`,
-        error instanceof Error ? error : undefined
+        `State file for stack ${this.displayName(stackName)} is not valid JSON: ` +
+          `${describeJsonParseFailure(error, utf8ByteLength(bodyString))}`
       );
     }
 

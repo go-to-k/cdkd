@@ -1,0 +1,299 @@
+{
+  "_about": "Name-property limits for every FALLBACK_NAME_RULES type (go-to-k/cdkd#5095 added the types whose SDK provider alone named them) (go-to-k/cdkd#5064). schema* fields are copied from AWS's public CloudFormation schema bundle (CloudformationSchema.zip, 2026-10-19); apiMaxLength is the service API's limit where the schema is silent or bounds only an ARN form.",
+  "types": {
+    "AWS::S3::Bucket": {
+      "nameProperty": "BucketName",
+      "apiMaxLength": 63,
+      "apiSource": "S3 bucket naming rules"
+    },
+    "AWS::SQS::Queue": {
+      "nameProperty": "QueueName",
+      "apiMaxLength": 80,
+      "apiSource": "CreateQueue QueueName"
+    },
+    "AWS::SNS::Topic": {
+      "nameProperty": "TopicName",
+      "apiMaxLength": 256,
+      "apiSource": "CreateTopic Name"
+    },
+    "AWS::Lambda::Function": {
+      "nameProperty": "FunctionName",
+      "apiMaxLength": 64,
+      "apiSource": "CreateFunction FunctionName (name form)"
+    },
+    "AWS::Lambda::LayerVersion": {
+      "nameProperty": "LayerName",
+      "apiMaxLength": 64,
+      "apiSource": "PublishLayerVersion LayerName (name form)"
+    },
+    "AWS::Lambda::CapacityProvider": {
+      "nameProperty": "CapacityProviderName",
+      "schemaMaxLength": 140,
+      "schemaPattern": "^(arn:aws[a-zA-Z-]*:lambda:(eusc-)?[a-z]{2}((-gov)|(-iso([a-z]?)))?-[a-z]+-\\d{1}:\\d{12}:capacity-provider:[a-zA-Z0-9-_]+)|[a-zA-Z0-9-_]+$",
+      "apiMaxLength": 64,
+      "apiSource": "measured: CreateCapacityProvider refuses a name over 64 (go-to-k/cdkd#5064)"
+    },
+    "AWS::IAM::Role": {
+      "nameProperty": "RoleName",
+      "apiMaxLength": 64,
+      "apiSource": "CreateRole RoleName"
+    },
+    "AWS::IAM::Policy": {
+      "nameProperty": "PolicyName",
+      "schemaMaxLength": 128
+    },
+    "AWS::IAM::ManagedPolicy": {
+      "nameProperty": "ManagedPolicyName",
+      "apiMaxLength": 128,
+      "apiSource": "CreatePolicy PolicyName"
+    },
+    "AWS::IAM::User": {
+      "nameProperty": "UserName",
+      "apiMaxLength": 64,
+      "apiSource": "CreateUser UserName"
+    },
+    "AWS::IAM::Group": {
+      "nameProperty": "GroupName",
+      "apiMaxLength": 128,
+      "apiSource": "CreateGroup GroupName"
+    },
+    "AWS::IAM::InstanceProfile": {
+      "nameProperty": "InstanceProfileName",
+      "apiMaxLength": 128,
+      "apiSource": "CreateInstanceProfile InstanceProfileName"
+    },
+    "AWS::DynamoDB::Table": {
+      "nameProperty": "TableName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateTable TableName"
+    },
+    "AWS::ECR::Repository": {
+      "nameProperty": "RepositoryName",
+      "schemaMaxLength": 256,
+      "schemaPattern": "^(?=.{2,256}$)([a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(\\/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*)*)$"
+    },
+    "AWS::ECS::Cluster": {
+      "nameProperty": "ClusterName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateCluster clusterName"
+    },
+    "AWS::ECS::Service": {
+      "nameProperty": "ServiceName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateService serviceName"
+    },
+    "AWS::Logs::LogGroup": {
+      "nameProperty": "LogGroupName",
+      "schemaMaxLength": 512,
+      "schemaPattern": "^[.\\-_/#A-Za-z0-9]{1,512}\\Z"
+    },
+    "AWS::CloudWatch::Alarm": {
+      "nameProperty": "AlarmName",
+      "apiMaxLength": 255,
+      "apiSource": "PutMetricAlarm AlarmName"
+    },
+    "AWS::Events::Rule": {
+      "nameProperty": "Name",
+      "apiMaxLength": 64,
+      "apiSource": "PutRule Name"
+    },
+    "AWS::Kinesis::Stream": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 128,
+      "schemaPattern": "^[a-zA-Z0-9_.-]+$"
+    },
+    "AWS::StepFunctions::StateMachine": {
+      "nameProperty": "StateMachineName",
+      "schemaMaxLength": 80
+    },
+    "AWS::SecretsManager::Secret": {
+      "nameProperty": "Name",
+      "apiMaxLength": 512,
+      "apiSource": "CreateSecret Name"
+    },
+    "AWS::SSM::Parameter": {
+      "nameProperty": "Name",
+      "apiMaxLength": 1011,
+      "apiSource": "PutParameter Name, ARN included"
+    },
+    "AWS::Cognito::UserPool": {
+      "nameProperty": "UserPoolName",
+      "schemaMaxLength": 128
+    },
+    "AWS::ElastiCache::SubnetGroup": {
+      "nameProperty": "CacheSubnetGroupName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateCacheSubnetGroup"
+    },
+    "AWS::ElastiCache::CacheCluster": {
+      "nameProperty": "ClusterName",
+      "apiMaxLength": 40,
+      "apiSource": "CreateCacheCluster CacheClusterId"
+    },
+    "AWS::RDS::DBSubnetGroup": {
+      "nameProperty": "DBSubnetGroupName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateDBSubnetGroup"
+    },
+    "AWS::RDS::DBCluster": {
+      "nameProperty": "DBClusterIdentifier",
+      "schemaMaxLength": 63,
+      "schemaPattern": "^[a-zA-Z]{1}(?:-?[a-zA-Z0-9]){0,62}$"
+    },
+    "AWS::RDS::DBInstance": {
+      "nameProperty": "DBInstanceIdentifier",
+      "schemaMaxLength": 63,
+      "schemaPattern": "^$|^[a-zA-Z]{1}(?:-?[a-zA-Z0-9]){0,62}$"
+    },
+    "AWS::DocDB::DBSubnetGroup": {
+      "nameProperty": "DBSubnetGroupName",
+      "schemaMaxLength": 255,
+      "schemaPattern": "[a-zA-Z][0-9a-zA-Z-:._ ]*"
+    },
+    "AWS::DocDB::DBCluster": {
+      "nameProperty": "DBClusterIdentifier",
+      "apiMaxLength": 63,
+      "apiSource": "CreateDBCluster"
+    },
+    "AWS::DocDB::DBInstance": {
+      "nameProperty": "DBInstanceIdentifier",
+      "apiMaxLength": 63,
+      "apiSource": "CreateDBInstance"
+    },
+    "AWS::Neptune::DBSubnetGroup": {
+      "nameProperty": "DBSubnetGroupName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateDBSubnetGroup"
+    },
+    "AWS::Neptune::DBCluster": {
+      "nameProperty": "DBClusterIdentifier",
+      "schemaMaxLength": 63,
+      "schemaPattern": "^[a-zA-Z]{1}(?:-?[a-zA-Z0-9]){0,62}$"
+    },
+    "AWS::Neptune::DBInstance": {
+      "nameProperty": "DBInstanceIdentifier",
+      "apiMaxLength": 63,
+      "apiSource": "CreateDBInstance"
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": {
+      "nameProperty": "Name",
+      "apiMaxLength": 32,
+      "apiSource": "CreateLoadBalancer Name"
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup": {
+      "nameProperty": "Name",
+      "apiMaxLength": 32,
+      "apiSource": "CreateTargetGroup Name"
+    },
+    "AWS::WAFv2::WebACL": {
+      "nameProperty": "Name",
+      "schemaPattern": "^[0-9A-Za-z_-]{1,128}$"
+    },
+    "AWS::CodeBuild::Project": {
+      "nameProperty": "Name",
+      "apiMaxLength": 150,
+      "apiSource": "CreateProject name"
+    },
+    "AWS::S3Express::DirectoryBucket": {
+      "nameProperty": "BucketName",
+      "schemaMaxLength": 63,
+      "schemaPattern": "^[a-z0-9][a-z0-9//.//-]*[a-z0-9]$"
+    },
+    "AWS::CodeCommit::Repository": {
+      "nameProperty": "RepositoryName",
+      "schemaMaxLength": 100
+    },
+    "AWS::RDS::DBProxy": {
+      "nameProperty": "DBProxyName",
+      "schemaMaxLength": 64,
+      "schemaPattern": "[0-z]*",
+      "schemaPatternUnanchored": "The registry's [0-z]* omits '-', which the RDS API accepts (letters, digits and hyphens): matched unanchored, as a character the name must contain"
+    },
+    "AWS::RDS::DBProxyEndpoint": {
+      "nameProperty": "DBProxyEndpointName",
+      "schemaMaxLength": 64,
+      "schemaPattern": "[0-z]*",
+      "schemaPatternUnanchored": "The registry's [0-z]* omits '-', which the RDS API accepts (letters, digits and hyphens): matched unanchored, as a character the name must contain"
+    },
+    "AWS::Scheduler::Schedule": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 64,
+      "schemaPattern": "^[0-9a-zA-Z-_.]+$"
+    },
+    "AWS::AutoScaling::AutoScalingGroup": {
+      "nameProperty": "AutoScalingGroupName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateAutoScalingGroup AutoScalingGroupName"
+    },
+    "AWS::DynamoDB::GlobalTable": {
+      "nameProperty": "TableName",
+      "apiMaxLength": 255,
+      "apiSource": "CreateTable TableName"
+    },
+    "AWS::ECS::TaskDefinition": {
+      "nameProperty": "Family",
+      "apiMaxLength": 255,
+      "apiSource": "RegisterTaskDefinition family"
+    },
+    "AWS::Lambda::NetworkConnector": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 140,
+      "schemaPattern": "^(arn:aws[a-zA-Z-]*:lambda:(eusc-)?[a-z]{2}((-gov)|(-iso([a-z]?)))?-[a-z]+-\\d{1}:\\d{12}:network-connector:[a-zA-Z0-9-_]+(:[1-9][0-9]*)?)|[a-zA-Z0-9_-]{1,64}$",
+      "apiMaxLength": 64,
+      "apiSource": "the schema description: 1 to 64 characters for a name"
+    },
+    "AWS::Pipes::Pipe": {
+      "nameProperty": "Name",
+      "schemaMaxLength": 64,
+      "schemaPattern": "^[\\.\\-_A-Za-z0-9]+$"
+    },
+    "AWS::S3Vectors::VectorBucket": {
+      "nameProperty": "VectorBucketName",
+      "schemaMaxLength": 63,
+      "schemaMinLength": 3
+    },
+    "AWS::ServiceDiscovery::Service": {
+      "nameProperty": "Name",
+      "apiMaxLength": 63,
+      "apiSource": "CreateService Name (ServiceName pattern: one DNS label is at most 63 characters)"
+    },
+    "AWS::EC2::SecurityGroup": {
+      "nameProperty": "GroupName",
+      "apiMaxLength": 255,
+      "apiForbiddenPrefix": "sg-",
+      "apiSource": "CreateSecurityGroup GroupName: up to 255 characters, cannot start with sg-"
+    },
+    "AWS::CloudTrail::Trail": {
+      "nameProperty": "TrailName",
+      "schemaMaxLength": 128,
+      "schemaMinLength": 3,
+      "schemaPattern": "(^[a-zA-Z0-9]$)|(^[a-zA-Z0-9]([a-zA-Z0-9\\._-])*[a-zA-Z0-9]$)"
+    },
+    "AWS::Glue::Job": {
+      "nameProperty": "Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateJob Name"
+    },
+    "AWS::Glue::Crawler": {
+      "nameProperty": "Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateCrawler Name"
+    },
+    "AWS::Glue::Connection": {
+      "nameProperty": "ConnectionInput.Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateConnection ConnectionInput.Name"
+    },
+    "AWS::Glue::Trigger": {
+      "nameProperty": "Name",
+      "apiMaxLength": 255,
+      "apiSource": "CreateTrigger Name"
+    },
+    "AWS::KinesisFirehose::DeliveryStream": {
+      "nameProperty": "DeliveryStreamName",
+      "schemaMaxLength": 64,
+      "schemaMinLength": 1,
+      "schemaPattern": "[a-zA-Z0-9._-]+"
+    }
+  }
+}

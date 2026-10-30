@@ -33,7 +33,9 @@ The rollback works in the same order the deploy did:
 
 A deploy deletes the old resource first under `--recreate-via-*`, on the
 delete-first path of `--replace`, and when it falls back to a replacement
-after AWS rejected an update.
+after AWS rejected an update. On a stack with a `stackInstanceId`, the first
+and last of those create first for a resource your template does not name,
+because the new resource gets the next generated name.
 
 ### When the old name is still taken
 
@@ -63,6 +65,11 @@ Only `UpdateReplacePolicy` has this effect; `DeletionPolicy` does not.
 
 So when the deploy kept the old resource, both copies survive the rollback,
 and the state record names the old one.
+
+A copy that keeps a fixed name still holds it after the rollback, so the next
+deploy that asks for that name is refused. The refusal says that this stack's
+event history records the kept copy under that name. If the holder is that copy
+and you no longer need it, delete it; otherwise choose another name.
 
 One combination fails: the old resource has to be re-created, and its name is
 held by a new resource that is retained. The operation fails and the journal
@@ -186,6 +193,11 @@ would have given it. You do not pass
 [`--prefix-user-supplied-names`](cli-deploy-tuning.md) again: the journal
 records whether the deploy ran with that flag, and the rollback uses the same
 setting.
+
+On a stack with a `stackInstanceId`, a replaced resource your template does
+not name is re-created under the generated name it had before the deploy, not
+the next one the replacement used. The state record also remembers the
+replacement's name, so the next replacement picks a name neither copy held.
 
 ### Edge cases
 

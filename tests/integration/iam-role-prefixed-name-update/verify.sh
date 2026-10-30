@@ -23,15 +23,20 @@
 #      Description resets to '' (CloudFormation resets it) while
 #      MaxSessionDuration is RETAINED at 7200 (CloudFormation keeps it, issue
 #      #5004 A/B; IAM UpdateRole merges absent fields and cdkd sends none).
-#   4. Re-deploy with CDKD_TEST_ROLE_PATH=true (issue #4739): the unnamed
-#      PathRole, whose name cdkd generates, moves from `/` to `/cdkd-4739/`.
-#      `Path` is createOnly and the name does not change, so the deploy must be
-#      REFUSED with the replacement-collision guidance (pre-fix: an in-place
-#      update whose re-create failed `EntityAlreadyExists`), leaving AWS as it was.
-#   5. The same deploy with --replace: the role is deleted and re-created under
-#      the same name on the new path, the function runs as the new ARN, and
-#      the DefaultPolicy and the customer managed policy attached by name are
-#      back on it (go-to-k/cdkd#4461).
+#   4. Re-deploy with CDKD_TEST_ROLE_PATH=true (issues #4739, go-to-k/cdkd#5064):
+#      the unnamed PathRole, whose name cdkd generates, moves from `/` to
+#      `/cdkd-4739/`. `Path` is createOnly, so this is a REPLACEMENT, and on a
+#      stack with a stackInstanceId it creates the new role at the NEXT name
+#      generation (1) — a NEW name — FIRST, then deletes the old one. So a
+#      plain deploy (no --replace) must SUCCEED: the new role carries the name
+#      derived from state.json's stackInstanceId at generation 1, its record
+#      says `nameGeneration: 1`, the old role is gone, the function runs as the
+#      new ARN, and the DefaultPolicy and the customer managed policy attached
+#      by name follow it (go-to-k/cdkd#4461). (Before #5064 phase 2 the same
+#      name collided: refused without --replace, delete-first with it.)
+#   5. The same deploy again, no flags: the replaced role is stable (same
+#      RoleId and name, still generation 1) — no --replace is needed, and
+#      nothing replaces it a second time.
 #   6. Destroy + assert the roles, the function and cdkd state are gone.
 #
 # Required env vars:
@@ -79,8 +84,10 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ROLE_NAME="${STACK}-role"
 FN_NAME="${STACK}-path-fn"
-# cdkd's generated name for the unnamed PathRole: `${STACK}-<logicalId>`, where
-# CDK suffixes the logical id with a hash.
+# cdkd's generated name for the unnamed PathRole: `${STACK}-<logicalId>` (CDK
+# suffixes the logical id with a hash) cut to 64 - 13 characters, then `-` and
+# the 12-hex stack instance suffix of the record's name generation
+# (go-to-k/cdkd#5064). The cut keeps this prefix.
 PATH_ROLE_PREFIX="${STACK}-PathRole"
 # The customer managed policy attached to PathRole through its own `Roles`.
 PATH_MANAGED_NAME="${STACK}-path-managed"
@@ -89,6 +96,34 @@ PATH_MANAGED_NAME="${STACK}-path-managed"
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+# The 12-hex suffix cdkd gives a generated name at name generation <g> of
+# <logicalId> (go-to-k/cdkd#5064): sha256(id NUL logicalId)[:12] at 0,
+# sha256(id NUL logicalId NUL g)[:12] above, the id being state.json's
+# stackInstanceId. Read from S3 into node's stdin: the id is never printed.
+state_name_suffix() { # usage: state_name_suffix <logicalId> <generation>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+const { createHash } = require("node:crypto");
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const [logicalId, generation] = process.argv.slice(1);
+  const id = JSON.parse(raw).stackInstanceId;
+  if (typeof id !== "string" || id === "" || !/^(0|[1-9][0-9]*)$/.test(generation ?? "")) {
+    process.stderr.write("state.json carries no stackInstanceId, or the generation is not a number\n");
+    process.exit(1);
+  }
+  const hash = createHash("sha256").update(id).update("\0").update(logicalId);
+  if (generation !== "0") hash.update("\0").update(generation);
+  process.stdout.write(hash.digest("hex").slice(0, 12));
+});' "$1" "$2"
+}
+
+# One field of PathRole's state record (`physicalId`, `nameGeneration`, ...),
+# `none` when absent.
+path_role_record() { # usage: path_role_record <field>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - \
+    | jq -r --arg k "${PATH_ROLE_LID}" --arg f "$1" '.resources[$k][$f] // "none"'
+}
 
 delete_role() {
   for p in $(aws iam list-role-policies --role-name "${ROLE_NAME}" \
@@ -172,6 +207,7 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   echo "FAIL: local binary not built at ${LOCAL_DIST} — run 'vp run build' from repo root first" >&2
   exit 1
 fi
+command -v jq >/dev/null || { echo "FAIL: jq required" >&2; exit 1; }
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
@@ -217,9 +253,21 @@ if [ "${PATH_P1}" != "/" ] || [ "${PATH_ROLE_ARN_P1}" != "${FN_ROLE_P1}" ]; then
   echo "FAIL: expected ${PATH_ROLE_NAME} on path / with the function's ARN, got '${PATH_P1}' / '${PATH_ROLE_ARN_P1}' (function: ${FN_ROLE_P1})" >&2
   exit 1
 fi
-# What is attached to the role by name from the outside, which Phase 5's
-# delete-first detaches: the DefaultPolicy (a separate AWS::IAM::Policy) and
-# the customer managed policy whose `Roles` names the role.
+# PathRole's logical id, from the ONE IAM::Role record naming it.
+PATH_ROLE_LID="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg n "${PATH_ROLE_NAME}" \
+  '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role" and .value.physicalId == $n) | .key]
+   | if length == 1 then .[0] else error("expected exactly one AWS::IAM::Role record named \($n), found \(length)") end')" || exit 1
+# The derivation phase 4 predicts the replacement's name with must reproduce
+# the name cdkd minted at generation 0; a mismatch here is the derivation, not
+# the replacement.
+PATH_ROLE_SUFFIX_G0="$(state_name_suffix "${PATH_ROLE_LID}" 0)" || exit 1
+if [ "${PATH_ROLE_NAME##*-}" != "${PATH_ROLE_SUFFIX_G0}" ] || [ "$(path_role_record nameGeneration)" != "none" ]; then
+  echo "FAIL: ${PATH_ROLE_NAME} is not ${PATH_ROLE_LID}'s generation-0 name (suffix derived from state.json's stackInstanceId: ${PATH_ROLE_SUFFIX_G0}; recorded nameGeneration: $(path_role_record nameGeneration))" >&2
+  exit 1
+fi
+# What is attached to the role by name from the outside, which Phase 4's
+# replacement must move onto the new role: the DefaultPolicy (a separate
+# AWS::IAM::Policy) and the customer managed policy whose `Roles` names the role.
 assert_path_role_attachments() { # usage: assert_path_role_attachments <phase>
   local inline managed
   inline="$(aws iam list-role-policies --role-name "${PATH_ROLE_NAME}" \
@@ -277,66 +325,76 @@ if { [ "${DESC_P3}" != "None" ] && [ -n "${DESC_P3}" ]; } || [ "${MAX_P3}" != "7
 fi
 echo "    removal reset reached AWS (description cleared, maxSessionDuration retained at 7200), role identity preserved"
 
-# --- Phase 4: Path change without --replace is refused (issue #4739) -----
-echo "==> Phase 4: re-deploy moving ${PATH_ROLE_NAME} to /cdkd-4739/ — must be REFUSED without --replace"
-PATH_LOG="$(mktemp)"
-set +e
+# --- Phase 4: Path change replaces PathRole create-first, under a new name --
+# Issues #4739 and go-to-k/cdkd#5064 phase 2. The replacement's name is
+# PREDICTED before the deploy: the generation-0 name's base (everything before
+# its 12-hex suffix) plus the generation-1 suffix derived from state.json.
+PATH_ROLE_NAME_G0="${PATH_ROLE_NAME}"
+PATH_ROLE_SUFFIX_G1="$(state_name_suffix "${PATH_ROLE_LID}" 1)" || exit 1
+PATH_ROLE_NAME_G1="${PATH_ROLE_NAME_G0%-*}-${PATH_ROLE_SUFFIX_G1}"
+if [ "${PATH_ROLE_NAME_G1}" = "${PATH_ROLE_NAME_G0}" ]; then
+  echo "FAIL: generation 1's name equals generation 0's (${PATH_ROLE_NAME_G0}) — the derivation is wrong" >&2
+  exit 1
+fi
+if ! gone_probe aws iam get-role --role-name "${PATH_ROLE_NAME_G1}"; then
+  echo "FAIL: ${PATH_ROLE_NAME_G1} exists before the replacement that should create it" >&2
+  exit 1
+fi
+echo "==> Phase 4: re-deploy moving ${PATH_ROLE_NAME_G0} to /cdkd-4739/ (no --replace) — replaced create-first as ${PATH_ROLE_NAME_G1}"
+# Pre-#5064-phase-2 this was REFUSED (the same generated name collided), and
+# before #4739 it failed from the provider's in-place update. A plain deploy
+# must now succeed; no --replace is passed.
 CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes > "${PATH_LOG}" 2>&1
-PATH_RC=$?
-set -e
-if [ "${PATH_RC}" -eq 0 ]; then
-  echo "FAIL: the Path change deployed without --replace, but the role keeps its name and Path is createOnly" >&2
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+if [ "$(path_role_record physicalId)" != "${PATH_ROLE_NAME_G1}" ] || [ "$(path_role_record nameGeneration)" != "1" ]; then
+  echo "FAIL: state records ${PATH_ROLE_LID} as '$(path_role_record physicalId)' at nameGeneration '$(path_role_record nameGeneration)', expected ${PATH_ROLE_NAME_G1} at 1" >&2
   exit 1
 fi
-# Two sentinels: the refusal's name-origin wording, and its --replace advice.
-# Pre-fix the deploy failed from the provider's in-place update instead, with
-# IAM's bare EntityAlreadyExists and neither line.
-if ! grep -q "GENERATED by cdkd" "${PATH_LOG}" || ! grep -q "cdkd deploy --replace" "${PATH_LOG}"; then
-  echo "FAIL: the Path change was not refused through the replacement-collision guidance (issue #4739)" >&2
-  tail -30 "${PATH_LOG}" >&2
-  exit 1
-fi
+assert_gone "the replaced role ${PATH_ROLE_NAME_G0} still exists after the replacement" \
+  aws iam get-role --role-name "${PATH_ROLE_NAME_G0}"
+PATH_ROLE_NAME="${PATH_ROLE_NAME_G1}"
 ROLE_P4="$(aws iam get-role --role-name "${PATH_ROLE_NAME}" \
-  --query '[Role.Path, Role.RoleId]' --output text)" || exit 1
-read -r PATH_P4 PATH_ROLE_ID_P4 <<<"${ROLE_P4}"
+  --query '[Role.Path, Role.Arn, Role.RoleId]' --output text)" || exit 1
+read -r PATH_P4 PATH_ROLE_ARN_P4 PATH_ROLE_ID_P4 <<<"${ROLE_P4}"
+if [ "${PATH_P4}" != "/cdkd-4739/" ]; then
+  echo "FAIL: expected ${PATH_ROLE_NAME} on path /cdkd-4739/ after the replacement, got '${PATH_P4}'" >&2
+  exit 1
+fi
+if [ "${PATH_ROLE_ID_P4}" = "${PATH_ROLE_ID_P1}" ]; then
+  echo "FAIL: ${PATH_ROLE_NAME} carries the old RoleId ${PATH_ROLE_ID_P1}: it was not created anew" >&2
+  exit 1
+fi
+case "${PATH_ROLE_ARN_P4}" in
+  *":role/cdkd-4739/${PATH_ROLE_NAME}") ;;
+  *) echo "FAIL: the new role's ARN '${PATH_ROLE_ARN_P4}' does not carry the new path and name" >&2; exit 1 ;;
+esac
 FN_ROLE_P4="$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
   --query 'Role' --output text)" || exit 1
-if [ "${PATH_P4}" != "/" ] || [ "${PATH_ROLE_ID_P4}" != "${PATH_ROLE_ID_P1}" ] || [ "${FN_ROLE_P4}" != "${FN_ROLE_P1}" ]; then
-  echo "FAIL: the refused deploy changed AWS (path '${PATH_P4}', RoleId ${PATH_ROLE_ID_P1} -> ${PATH_ROLE_ID_P4}, function role '${FN_ROLE_P4}')" >&2
+if [ "${FN_ROLE_P4}" != "${PATH_ROLE_ARN_P4}" ]; then
+  echo "FAIL: ${FN_NAME} runs as '${FN_ROLE_P4}', expected the new role '${PATH_ROLE_ARN_P4}'" >&2
   exit 1
 fi
-rm -f "${PATH_LOG}"
-echo "    refused with the generated-name guidance; the role and the function are unchanged"
+assert_path_role_attachments "Phase 4"
+echo "    ${PATH_ROLE_NAME_G0} replaced by ${PATH_ROLE_NAME} on /cdkd-4739/ (RoleId ${PATH_ROLE_ID_P1} -> ${PATH_ROLE_ID_P4}, nameGeneration 1); ${FN_NAME} runs as the new ARN"
 
-# --- Phase 5: the same deploy with --replace -----------------------------
-echo "==> Phase 5: the same deploy with --replace (delete-first, same name, new path)"
+# --- Phase 5: the same deploy again — the replaced role is stable -----------
+echo "==> Phase 5: the same deploy again, no flags (no --replace needed; nothing replaced twice)"
 CDKD_TEST_ROLE_PATH=true CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --replace
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
-ROLE_P5="$(aws iam get-role --role-name "${PATH_ROLE_NAME}" \
-  --query '[Role.Path, Role.Arn, Role.RoleId]' --output text)" || exit 1
-read -r PATH_P5 PATH_ROLE_ARN_P5 PATH_ROLE_ID_P5 <<<"${ROLE_P5}"
-if [ "${PATH_P5}" != "/cdkd-4739/" ]; then
-  echo "FAIL: expected ${PATH_ROLE_NAME} on path /cdkd-4739/ after --replace, got '${PATH_P5}'" >&2
-  exit 1
-fi
-if [ "${PATH_ROLE_ID_P5}" = "${PATH_ROLE_ID_P1}" ]; then
-  echo "FAIL: ${PATH_ROLE_NAME} kept RoleId ${PATH_ROLE_ID_P1}: it was not re-created" >&2
-  exit 1
-fi
-case "${PATH_ROLE_ARN_P5}" in
-  *":role/cdkd-4739/${PATH_ROLE_NAME}") ;;
-  *) echo "FAIL: the re-created role's ARN '${PATH_ROLE_ARN_P5}' does not carry the new path" >&2; exit 1 ;;
-esac
+PATH_ROLE_ID_P5="$(aws iam get-role --role-name "${PATH_ROLE_NAME}" --query 'Role.RoleId' --output text)" || exit 1
 FN_ROLE_P5="$(aws lambda get-function-configuration --function-name "${FN_NAME}" --region "${REGION}" \
   --query 'Role' --output text)" || exit 1
-if [ "${FN_ROLE_P5}" != "${PATH_ROLE_ARN_P5}" ]; then
-  echo "FAIL: ${FN_NAME} runs as '${FN_ROLE_P5}', expected the re-created role '${PATH_ROLE_ARN_P5}'" >&2
+if [ "${PATH_ROLE_ID_P5}" != "${PATH_ROLE_ID_P4}" ] || [ "${FN_ROLE_P5}" != "${PATH_ROLE_ARN_P4}" ]; then
+  echo "FAIL: the repeat deploy replaced ${PATH_ROLE_NAME} again (RoleId ${PATH_ROLE_ID_P4} -> ${PATH_ROLE_ID_P5}, function role '${FN_ROLE_P5}')" >&2
   exit 1
 fi
-assert_path_role_attachments "Phase 5"
-echo "    ${PATH_ROLE_NAME} re-created on /cdkd-4739/ (RoleId ${PATH_ROLE_ID_P1} -> ${PATH_ROLE_ID_P5}); ${FN_NAME} runs as the new ARN"
+if [ "$(path_role_record physicalId)" != "${PATH_ROLE_NAME}" ] || [ "$(path_role_record nameGeneration)" != "1" ]; then
+  echo "FAIL: the repeat deploy moved ${PATH_ROLE_LID}'s record off ${PATH_ROLE_NAME} at nameGeneration 1" >&2
+  exit 1
+fi
+echo "    ${PATH_ROLE_NAME} unchanged (RoleId ${PATH_ROLE_ID_P5}, nameGeneration 1)"
 
 # --- Phase 6: destroy --------------------------------------------------
 echo "==> Phase 6: destroy"
@@ -355,4 +413,4 @@ echo "    path role + function + ${PATH_MANAGED_NAME} deleted"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — in-place UPDATE of an IAM role whose name starts with the stack name is NOT blocked by a spurious prefix-migration replacement prompt; a Path change on an unnamed role is refused with the collision guidance and replaced under --replace"
+echo "[verify] PASS — in-place UPDATE of an IAM role whose name starts with the stack name is NOT blocked by a spurious prefix-migration replacement prompt; a Path change on an unnamed role replaces it create-first under its generation-1 name with no --replace"

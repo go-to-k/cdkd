@@ -3075,6 +3075,9 @@ const ORPHAN_READER_FILES = [
   // go-to-k/cdkd#4600: the success deploy's foreign-holder scan reads other
   // stacks' rollback-orphan records.
   'src/deployment/rollback-executor/journaled-orphans.ts',
+  // go-to-k/cdkd#5201: `cdkd refactor` reads the records to keep their ids out
+  // of a rename, and rewrites their references.
+  'src/cli/commands/refactor.ts',
 ] as const;
 
 describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)', () => {
@@ -3101,6 +3104,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // orphans its replay minted.
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
     'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
   const SPELLINGS = [
     'refuseMalformedOrphans(',
@@ -3163,6 +3167,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       // flow's single `executeDeployment(` below its guard. Pinned below.
       if (file === 'src/deployment/deploy-engine.ts') return false;
       if (file === 'src/deployment/deploy-engine/execute.ts') return false;
+      // `logical-id-rename.ts` is a pure rewrite whose only caller is
+      // `cdkd refactor`, which guards the container and its rows first.
+      // Pinned below.
+      if (file === 'src/state/logical-id-rename.ts') return false;
       return /[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
     expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
@@ -3172,6 +3180,54 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
   });
 
   it('pins the two exclusions the derivation above makes', () => {
+    // `logical-id-rename.ts` is excluded because `refactor.ts`, its only
+    // caller, guards both the container and its rows above every call.
+    const renameCallers = spawnSync('git', ['grep', '-l', 'applyLogicalIdRenames(', '--', 'src'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    })
+      .stdout.split('\n')
+      .filter(Boolean)
+      .sort();
+    expect(renameCallers).toEqual([
+      'src/cli/commands/refactor-move.ts',
+      'src/cli/commands/refactor.ts',
+      'src/state/logical-id-rename.ts',
+    ]);
+    const refactorSrc = code('src/cli/commands/refactor.ts');
+    expect(refactorSrc.indexOf('refuseMalformedOrphanRecords(')).toBeLessThan(
+      refactorSrc.indexOf('applyLogicalIdRenames(')
+    );
+    // `refactor-move.ts` rewrites only records two places hand it: the plans
+    // `planStackRefactor` built (guarded above), and the records
+    // `applyMoveGroup` re-reads, which it guards before its own rewrite.
+    // Its failure recovery, defined below the apply, re-reads only to learn
+    // whether a save landed, and writes back only the guarded loaded records.
+    const moveSrc = code('src/cli/commands/refactor-move.ts');
+    const applyAt = moveSrc.indexOf('export async function applyMoveGroup(');
+    expect(applyAt).toBeGreaterThan(-1);
+    expect(
+      moveSrc.slice(0, applyAt).split('getState(').length - 1,
+      'refactor-move.ts reads state above applyMoveGroup, outside its guard'
+    ).toBe(0);
+    const applyBody = moveSrc.slice(applyAt);
+    // Both writers there (the apply and the interrupted-move finish) guard
+    // through `refuseReadForWrite`, which runs the row guard.
+    expect(applyBody.indexOf('refuseReadForWrite(')).toBeGreaterThan(-1);
+    expect(applyBody.indexOf('refuseReadForWrite(')).toBeLessThan(
+      applyBody.indexOf('applyLogicalIdRenames(')
+    );
+    const guardAt = moveSrc.indexOf('function refuseReadForWrite(');
+    expect(guardAt).toBeGreaterThan(-1);
+    expect(moveSrc.slice(guardAt, moveSrc.indexOf('\n}\n', guardAt))).toContain(
+      'refuseMalformedOrphanRecords('
+    );
+    const finishAt = moveSrc.indexOf('export async function finishPendingMoves(');
+    expect(finishAt).toBeGreaterThan(-1);
+    const finishBody = moveSrc.slice(finishAt);
+    expect(finishBody.indexOf('refuseReadForWrite(')).toBeLessThan(
+      finishBody.indexOf('insertMovedRecords(')
+    );
     // `diff.ts` is excluded because it RECEIVES the repaired state rather than
     // loading one. The moment it loads state itself the exclusion is wrong, and
     // a comment cannot notice that.
@@ -3334,6 +3390,8 @@ describe('the orphans ROW guard DOMINATES each row walk (go-to-k/cdkd#3500)', ()
     'src/deployment/nested-child-journal.ts': 'orphansAfterRollback(',
     // The success deploy's scan, which dereferences each row's `state`.
     'src/deployment/rollback-executor/journaled-orphans.ts': 'state.orphans ?? []',
+    // The plan's id set, which dereferences each row's `logicalId`.
+    'src/cli/commands/refactor.ts': 'Array.isArray(state.orphans)',
   };
   /**
    * Both dispositions plus the narrow predicate, because the fence must accept
@@ -7714,7 +7772,7 @@ describe('a file hosting BOTH a read-only view and a writer refuses per FLOW', (
     // over malformed records through the real backend — and this fence's job is
     // the complementary one: that the call is here at all, in this function,
     // and is not the import.
-    for (const site of ['async function stateResourcesCommand(', 'function repairRecordForTextRender(']) {
+    for (const site of ['export async function printStackResources(', 'function repairRecordForTextRender(']) {
       expect(
         flow(src, site).match(/repairMalformedResourcesForReadOnly\(/g) ?? [],
         `${site} no longer CALLS the read-only repair; if this view stopped needing it, ` +

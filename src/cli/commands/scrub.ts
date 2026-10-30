@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { isSupersededResourceRecord } from '../../deployment/superseded-resources.js';
 import * as path from 'node:path';
 import { Command, Option } from 'commander';
 import {
@@ -104,6 +105,7 @@ import {
   noEchoAttributeNamesOf,
   noEchoExactEchoLeavesOf,
   noEchoParameterNamesOf,
+  withAttemptedItemsMasked,
 } from '../../deployment/deploy-engine/noecho.js';
 // Issue #2109: the region split is #2057's, imported rather than re-spelled —
 // one answer to "which region must answer for this `{{resolve:...}}`
@@ -131,6 +133,7 @@ import {
   safeMsg,
 } from '../../utils/display-safe.js';
 import type { StackState, StateImportEntry, StateOutputReadEntry } from '../../types/state.js';
+import { stackInstanceIdCarriedFrom } from '../../types/state.js';
 import { escapeRegExp } from '../../utils/regexp.js';
 import type { CloudFormationTemplate } from '../../types/resource.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
@@ -1028,6 +1031,7 @@ async function repairParentOutputAttributes(
         region,
         {
           ...locked.state,
+          ...stackInstanceIdCarriedFrom(locked.state),
           resources: {
             ...locked.state.resources,
             [parentRow.logicalId]: { ...row, attributes: locked.attributes },
@@ -1318,7 +1322,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   if (options.all) {
     targetStacks = allStacks;
   } else if (stackPatterns.length > 0) {
-    targetStacks = matchStacks(allStacks, stackPatterns);
+    // Every selected stack: two sharing a physical name in two regions are two
+    // state records, each scrubbed in its own region (#5176).
+    targetStacks = matchStacks(allStacks, stackPatterns, { dedupe: 'identity' });
   } else if (allStacks.length === 1) {
     targetStacks = allStacks;
   } else {
@@ -1388,9 +1394,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
   const lockManager = new LockManager(stateS3.s3, stateConfig);
 
   let totalStacksScrubbed = 0;
-  // Stack names already counted in `totalStacksScrubbed`: a parent whose row
-  // attributes are repaired after a child's scrub (go-to-k/cdkd#3961) may have
-  // been counted for its own records already.
+  // State records (`producerRecordKey`: name and region) already counted in
+  // `totalStacksScrubbed`: a parent whose row attributes are repaired after a
+  // child's scrub (go-to-k/cdkd#3961) may have been counted for its own
+  // records already, and two Stages sharing a name in two regions are two
+  // records (#5176).
   const rewrittenStacks = new Set<string>();
   // Parent-row `Outputs.<Name>` attributes holding a recorded plaintext no
   // child output accounts for (go-to-k/cdkd#3961): a finding, never clean.
@@ -1547,17 +1555,18 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     logger,
     siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
   });
+  // Keyed by stack OBJECT: two stacks sharing a name in two regions each keep
+  // their own (#5176).
   const stackRegions = new Map(
     await Promise.all(
       targetStacks.map(
-        async (stack) =>
-          [stack.stackName, await regionForStack(stack.stackName, stack.region)] as const
+        async (stack) => [stack, await regionForStack(stack.stackName, stack.region)] as const
       )
     )
   );
   const work: ScrubWorkItem[] = targetStacks.map((stack) => ({
     stackName: stack.stackName,
-    region: stackRegions.get(stack.stackName) ?? region,
+    region: stackRegions.get(stack) ?? region,
     load: () => {
       // The tree is checked BEFORE the parent is scrubbed, as `cdkd deploy`
       // checks it before deploying (issue go-to-k/cdkd#3449): a cyclic or
@@ -1880,8 +1889,9 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
         const parentName = item.parentRow.stackName;
         const row = `${displayStackName(parentName)} (row ${displayIdent(item.parentRow.logicalId)})`;
         if (repaired.changed > 0) {
-          if (!rewrittenStacks.has(parentName)) totalStacksScrubbed++;
-          rewrittenStacks.add(parentName);
+          const parentKey = producerRecordKey(parentName, stackRegion);
+          if (!rewrittenStacks.has(parentKey)) totalStacksScrubbed++;
+          rewrittenStacks.add(parentKey);
           logger.info(
             safeMsg`${options.dryRun ? 'Would scrub' : 'Scrubbed'} ${repaired.changed} nested-stack output attribute(s) in ${row}, from ${shownStack}'s outputs`
           );
@@ -1909,10 +1919,11 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     // NOT on secrets-found: a resource whose reference is already stored as its
     // `{{resolve:...}}` expression resolves the same secret again but needs no
     // rewrite. Only a state record still holding the plaintext counts.
-    if (scrubbed.historyPurged) historyPurgedStacks.add(stackName);
+    const recordKey = producerRecordKey(stackName, stackRegion);
+    if (scrubbed.historyPurged) historyPurgedStacks.add(recordKey);
     if (scrubbed.recordsChanged > 0) {
-      if (!rewrittenStacks.has(stackName)) totalStacksScrubbed++;
-      rewrittenStacks.add(stackName);
+      if (!rewrittenStacks.has(recordKey)) totalStacksScrubbed++;
+      rewrittenStacks.add(recordKey);
       logger.info(
         // `resource record(s)` is LOOSE -- this count has included outputs and
         // orphans for some time and now includes cross-stack read entries too
@@ -8511,6 +8522,27 @@ export async function scrubStack(
       recordsChanged++;
       return { ...record, state: scrubbed };
     });
+    // go-to-k/cdkd#5111: a superseded resource's record moved out of
+    // `resources` verbatim, so it gets the same pass an orphan does, with this
+    // run's needles (it has no logical-id slot of its own to resolve).
+    const newSuperseded = Array.isArray(state.supersededResources)
+      ? state.supersededResources.map((entry) => {
+          if (!isSupersededResourceRecord(entry)) return entry;
+          const needles = new Map(
+            allRecordedSecrets(outputSecrets, perResourceSecrets, orphanSecrets)
+          );
+          if (needles.size === 0) return entry;
+          const scrubbed = keepHeldTokenProvenance(
+            scrubResourceRecord(entry.state, needles, undefined, 'state-cross-generation', {
+              properties: 'unproven',
+              observed: 'unproven',
+            })
+          );
+          if (JSON.stringify(scrubbed) === JSON.stringify(entry.state)) return entry;
+          recordsChanged++;
+          return { ...entry, state: scrubbed };
+        })
+      : undefined;
     // --- CROSS-STACK READ NAMES (go-to-k/cdkd#3337) -------------------------
     //
     // go-to-k/cdkd#3289 closed the WRITE side: `imports[].exportName`,
@@ -8886,6 +8918,7 @@ export async function scrubStack(
       const { skippedOutputs: _droppedByScrub, ...carriedState } = state;
       const nextState: StackState = {
         ...carriedState,
+        ...stackInstanceIdCarriedFrom(state),
         resources: newResources,
         // WRITTEN BACK, not carried. `orphans` rode the `...carriedState`
         // spread untouched before go-to-k/cdkd#2943, which was correct while
@@ -8893,6 +8926,8 @@ export async function scrubStack(
         // Spread conditionally so a state file that never orphaned anything
         // does not GAIN the key by being scrubbed.
         ...(state.orphans !== undefined && { orphans: newOrphans }),
+        // go-to-k/cdkd#5111: written back, as `orphans` is.
+        ...(newSuperseded !== undefined && { supersededResources: newSuperseded }),
         // WRITTEN BACK, not carried — the same shape as `orphans` above and for
         // the same reason (go-to-k/cdkd#3337). Both lists rode `...carriedState`
         // untouched, which was correct while nothing scrubbed them and is a
@@ -9029,7 +9064,7 @@ export function createScrubCommand(): Command {
 }
 
 /** One record's `NoEcho` positions in scrub (go-to-k/cdkd#4043 Phase C). */
-interface ScrubNoEchoPlan {
+export interface ScrubNoEchoPlan {
   /** The coordinates the record is written with. */
   readonly leaves: NoEchoCoordinate[];
   /**
@@ -9278,7 +9313,7 @@ function maskScrubNoEchoOutputs(
  * stored value (an SSM parameter's `Value`) masked and declared, whatever
  * its type or length; one equal to the physical id stays.
  */
-function applyScrubNoEcho(
+export function applyScrubNoEcho(
   scrubbed: StackState['resources'][string],
   record: StackState['resources'][string],
   plan: ScrubNoEchoPlan | undefined
@@ -9319,7 +9354,14 @@ function applyScrubNoEcho(
     next.attributes = masked;
     next.noEchoAttributeNames = [...attributeNames];
   }
-  return next;
+  // go-to-k/cdkd#5498: an attempted item name built from a value at a `NoEcho`
+  // position (read off the record before this pass masked it) is masked too,
+  // by value: the names sit at no template position.
+  const needles = leaves.flatMap((coordinate) => {
+    const value = valueAtCoordinate(record.properties, coordinate);
+    return typeof value === 'string' && value !== '' ? [value] : [];
+  });
+  return withAttemptedItemsMasked(next, needles);
 }
 
 /** `value` with every `Fn::If` node replaced by `null`. */

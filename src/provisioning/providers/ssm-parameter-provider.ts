@@ -27,7 +27,7 @@ import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js'
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   normalizeAwsTagsToCfn,
   remedyLogicalId,
@@ -42,7 +42,12 @@ import {
 } from '../tag-list.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { renderDisableCommand } from '../replacement-protection-advice.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -69,21 +74,70 @@ export class SSMParameterProvider implements ResourceProvider {
   private logger = getLogger().child('SSMParameterProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2176), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN (a `PutParameter` `AllowedPattern` rejection quotes the
+   * offending `Name` / `Value` back, issue #2176). AWS's own text goes to
+   * `debug` through the operation's masker, and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on
+   * the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), so a create-first replacement still
+   * recognises the collision. A cdkd-authored or transport error keeps its
+   * text, masked, stamped only when the mask changed it (`wrapMaskedAwsError`,
+   * issue #4244); a non-`Error` throw is withheld like an AWS one, unstamped
+   * (it has no chain). A delete catch tests not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
-    build: (maskedText: string) => ProvisioningError
+    build: (text: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::SSM::Parameter',
+      new Set([
+        'Name',
+        'Type',
+        'Value',
+        'Description',
+        'Tags',
+        'AllowedPattern',
+        'Tier',
+        'Policies',
+        'DataType',
+      ]),
+    ],
+  ]);
+
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled. `Name` is create-only (a removal replaces the
+   * parameter); `Value` is required (`update()` refuses its absence); `Type`
+   * is required by the schema, so CloudFormation refuses its removal, and the
+   * CDK always emits it (`update()` would default it to `String`); `Tags` are
+   * diffed. A removed `Description` / `AllowedPattern` / `Tier` / `DataType` /
+   * `Policies` is KEPT, as CloudFormation keeps it: `update()` omits it from
+   * the `PutParameter` overwrite, which leaves the stored value in place. A
+   * real CloudFormation A/B (us-east-1) removed each of the five from a
+   * deployed parameter and read every one back unchanged, `Tier: Advanced`,
+   * `DataType: aws:ec2:image` and an `Expiration` policy included. No reset is
+   * declared, since none exists to match.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
     [
       'AWS::SSM::Parameter',
       new Set([
@@ -269,10 +323,15 @@ export class SSMParameterProvider implements ResourceProvider {
     try {
       return await this.buildParameterArnUnguarded(name);
     } catch (error) {
+      // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
+      // `GetCallerIdentity` names the caller's assumed-role ARN.
+      const failure = describeAwsFailure(error);
+      const head = `Could not build the Arn attribute for SSM parameter ${displaySafe(mask(name))}: `;
+      if (failure.redacted) this.logger.debug(mask(`${head}${mask(failure.detail)}`));
       this.logger.warn(
         mask(
-          `Could not build the Arn attribute for SSM parameter ${displaySafe(mask(name))}: ` +
-            `${describeAwsFailure(error).detail}. The parameter itself is ` +
+          `${head}${failure.redacted ? `${failure.summary} ` : `${failure.detail}. `}` +
+            `The parameter itself is ` +
             `unaffected; the Arn is NOT recorded, so an Fn::GetAtt on it will fail until a later ` +
             `deploy records it.`
         )
@@ -367,7 +426,7 @@ export class SSMParameterProvider implements ResourceProvider {
 
     const name =
       (properties['Name'] as string | undefined) ||
-      `/${generateResourceName(logicalId, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
+      generatedNameFor('AWS::SSM::Parameter', logicalId);
     const type = (properties['Type'] as string | undefined) || 'String';
     const value = properties['Value'] as string | undefined;
 
@@ -436,18 +495,16 @@ export class SSMParameterProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      // Issue #2176: the AWS message is masked RAW, before interpolation.
-      // `PutParameter` quotes the offending `Name` / `Value` back on an
-      // `AllowedPattern` rejection, and this text reaches the durable
-      // `deployments/*.jsonl`. Stating precisely what this buys, because the
-      // obvious phrasing over-claims: an AWS SENTENCE never equals the
-      // plaintext, so this reaches `maskSecretsInText`'s SUBSTRING arm and
-      // its `MIN_NEEDLE_LENGTH` (4) floor still applies -- a 1-3 character
-      // secret is NOT covered here. It is masked before interpolation anyway
-      // so the engine is not the only boundary. The `cause` stays unmasked,
-      // and a message the mask changed is stamped so the retry classifiers
-      // read that chain (`wrapMaskedError`, issue #4244).
-      throw this.wrapMaskedError(
+      // Issue #2176: `PutParameter` quotes the offending `Name` / `Value` back
+      // on an `AllowedPattern` rejection, and this message reaches the durable
+      // `deployments/*.jsonl`. An AWS-authored failure is therefore named by
+      // its class only (go-to-k/cdkd#2319); its text reaches only the masked
+      // `debug` line, where `maskSecretsInText`'s SUBSTRING arm and its
+      // `MIN_NEEDLE_LENGTH` (4) floor apply -- a 1-3 character secret is NOT
+      // covered there. A cdkd-authored message is masked RAW, before
+      // interpolation, so the engine is not the only boundary. The `cause`
+      // stays unmasked and the wrap is stamped (`wrapCaughtError`).
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -603,8 +660,8 @@ export class SSMParameterProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      // Issue #2176 -- masked RAW and stamped, as in `create()`.
-      throw this.wrapMaskedError(
+      // Issue #2176 / go-to-k/cdkd#2319 -- class-only or masked, as in `create()`.
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -656,13 +713,24 @@ export class SSMParameterProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete SSM parameter ${displaySafe(logicalId)}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete SSM parameter ${displaySafe(logicalId)}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // `ParameterNotFound` above means this parameter is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

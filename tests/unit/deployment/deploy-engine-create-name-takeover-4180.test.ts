@@ -17,7 +17,11 @@ import { getAccountInfo } from '../../../src/deployment/intrinsic-function-resol
 import { AccountIdUnavailableError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  hasRedactedCause,
+  isMarkedNonRetryable,
+} from '../../../src/deployment/retryable-errors.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
@@ -261,6 +265,79 @@ describe('DeployEngine — a plain CREATE onto a name another resource holds (#4
     expect(isMarkedNonRetryable(err)).toBe(true);
     expect(isRefusedBeforeApplying(err, 'Res')).toBe(true);
     expect(h.callOrder).toEqual(['import']);
+  });
+
+  // go-to-k/cdkd#2319: the refusal is persisted, and AWS words a denial with
+  // the caller's ARN. (Worded without "not authorized to perform", which the
+  // probe's retry would wait out on the IAM-propagation schedule.)
+  it('names an AWS-authored lookup failure by its class, with its text in debug', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debugFn = vi.mocked(getLogger().debug);
+    debugFn.mockClear();
+    const denial = awsSdkError(
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied sqs:GetQueueUrl',
+      'AccessDenied'
+    );
+    h.importResult = denial;
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'their-queue' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain(
+      "already holds it: AccessDenied. Re-run with --verbose for AWS's own message. " +
+        'Nothing was created.'
+    );
+    expect(err!.message).not.toContain('123456789012');
+    expect(err!.message).not.toContain('Deployer');
+    expect(err!.cause).toBe(denial);
+    expect(hasRedactedCause(err)).toBe(true);
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    expect(isRefusedBeforeApplying(err, 'Res')).toBe(true);
+    const debugLine = debugFn.mock.calls.map(([m]) => String(m)).find((m) => m.includes('Deployer'));
+    expect(debugLine).toContain('could not check whether another resource already holds it');
+  });
+
+  it('masks a secret-derived name an AWS-authored lookup failure echoes in debug', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debugFn = vi.mocked(getLogger().debug);
+    debugFn.mockClear();
+    h.importResult = awsSdkError('Queue q-SECRETVALUE is denied', 'AccessDenied');
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'q-SECRETVALUE' });
+
+    expect(err!.message).toContain('AccessDenied. Re-run with --verbose');
+    const lines = debugFn.mock.calls.map(([m]) => String(m));
+    expect(lines.some((m) => m.includes('Queue *** is denied'))).toBe(true);
+    expect(lines.some((m) => m.includes('SECRETVALUE'))).toBe(false);
+  });
+
+  it('withholds a non-Error lookup failure, unstamped, with the value in debug', async () => {
+    const { getLogger } = await import('../../../src/utils/logger.js');
+    const debugFn = vi.mocked(getLogger().debug);
+    debugFn.mockClear();
+    vi.mocked(h.provider.import!).mockImplementation(async () => {
+      throw 'arn:aws:iam::123456789012:role/Deployer';
+    });
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'their-queue' });
+
+    expect(err!.code).toBe('NAMED_CREATE_COLLISION');
+    expect(err!.message).toContain(
+      "already holds it: a non-Error value of type string. Re-run with --verbose for AWS's own message."
+    );
+    expect(err!.message).not.toContain('123456789012');
+    expect(hasRedactedCause(err)).toBe(false);
+    expect(debugFn.mock.calls.some(([m]) => String(m).includes('role/Deployer'))).toBe(true);
+  });
+
+  it('keeps a transport lookup failure text, unstamped', async () => {
+    h.importResult = new Error('connect ECONNREFUSED 127.0.0.1:443');
+
+    const err = await create(makeEngine(h), QUEUE, { QueueName: 'their-queue' });
+
+    expect(err!.message).toContain('already holds it: connect ECONNREFUSED 127.0.0.1:443.');
+    expect(err!.message).not.toContain('--verbose');
+    expect(hasRedactedCause(err)).toBe(false);
   });
 
   it("refuses S3's HeadBucket 403 with its causes named", async () => {

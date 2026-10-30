@@ -19,7 +19,10 @@ import {
   PutLifecycleConfigurationCommand,
   PutBackupPolicyCommand,
   PutFileSystemPolicyCommand,
+  DeleteFileSystemPolicyCommand,
   UpdateFileSystemProtectionCommand,
+  TagResourceCommand,
+  UntagResourceCommand,
   FileSystemNotFound,
   MountTargetNotFound,
   AccessPointNotFound,
@@ -36,13 +39,18 @@ import {
   type CreateAccessPointCommandInput,
   type PosixUser,
   type RootDirectory,
+  type IpAddressType,
 } from '@aws-sdk/client-efs';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { definedAttributes } from '../attribute-map.js';
+import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
+import { planTagDiff, refuseMalformedDesiredTags, tagPlanWarning } from '../tag-list.js';
+import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   earliestDefined,
@@ -77,8 +85,15 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { markNotGone } from '../not-gone.js';
 import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
+import { withRemovalDefaults } from '../update-removal.js';
 
 /**
  * Whether an access point's `PosixUser` is the one a `CreateAccessPoint`
@@ -161,6 +176,23 @@ export class EFSProvider implements ResourceProvider {
    */
   private readonly unconfirmedCreationTokens = new Map<string, number>();
 
+  /**
+   * Issue #1160: what CloudFormation resets a REMOVED `BackupPolicy` /
+   * `FileSystemProtection` to (live CFn A/B: its update sent `PutBackupPolicy
+   * {Status: DISABLED}` and `UpdateFileSystemProtection
+   * {ReplicationOverwriteProtection: ENABLED}`). A removed `FileSystemPolicy`
+   * is a `DeleteFileSystemPolicy`, not a value, so it stays in `updateFileSystem`.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    [
+      'AWS::EFS::FileSystem',
+      new Map<string, unknown>([
+        ['BackupPolicy', { Status: 'DISABLED' }],
+        ['FileSystemProtection', { ReplicationOverwriteProtection: 'ENABLED' }],
+      ]),
+    ],
+  ]);
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::EFS::FileSystem',
@@ -179,7 +211,17 @@ export class EFSProvider implements ResourceProvider {
         'FileSystemProtection',
       ]),
     ],
-    ['AWS::EFS::MountTarget', new Set(['FileSystemId', 'SubnetId', 'SecurityGroups'])],
+    [
+      'AWS::EFS::MountTarget',
+      new Set([
+        'FileSystemId',
+        'SubnetId',
+        'SecurityGroups',
+        'IpAddress',
+        'IpAddressType',
+        'Ipv6Address',
+      ]),
+    ],
     [
       'AWS::EFS::AccessPoint',
       new Set(['FileSystemId', 'PosixUser', 'RootDirectory', 'AccessPointTags']),
@@ -256,10 +298,11 @@ export class EFSProvider implements ResourceProvider {
    * caller's assumed-role ARN. AWS's own text goes to `log.debug` (masked), and
    * the wrap is stamped `markRedactedCause`, so the retry classifiers read the
    * withheld text on the `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}).
+   * ({@link relayedNameCollision}), unless a post-create call raised it
+   * ({@link isAuxiliaryFailure}). A non-`Error` throw is withheld like an AWS
+   * one, unstamped (it has no chain).
    *
-   * A cdkd-authored or transport error, or a non-`Error` throw, keeps its text
-   * masked (issue #2177): AWS quotes a rejected request value back (a subnet,
+   * A cdkd-authored or transport error keeps its text masked (issue #2177): AWS quotes a rejected request value back (a subnet,
    * a KMS key, a policy) off the RESOLVED `properties` bag. The `cause` stays
    * unmasked, and a message the mask CHANGED is stamped too
    * (`wrapMaskedAwsError`, issue #4244). A delete builds its sinks from
@@ -276,12 +319,29 @@ export class EFSProvider implements ResourceProvider {
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error)) return build(log.mask(failure.detail));
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
     log.debug(build(log.mask(failure.detail)).message);
-    return markRedactedCause(
-      build(`${log.mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
-    );
+    // Not restated when a post-create call raised it (#3826): "it" would read
+    // as this resource.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${log.mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapMaskedError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    log: MaskedLogSinks,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapMaskedError(log, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -305,7 +365,7 @@ export class EFSProvider implements ResourceProvider {
       case 'AWS::EFS::FileSystem':
         return this.createFileSystem(logicalId, resourceType, properties, log);
       case 'AWS::EFS::MountTarget':
-        return this.createMountTarget(logicalId, resourceType, properties, log);
+        return this.createMountTarget(logicalId, resourceType, properties, log, context);
       case 'AWS::EFS::AccessPoint':
         return this.createAccessPoint(logicalId, resourceType, properties, log);
       default:
@@ -320,16 +380,18 @@ export class EFSProvider implements ResourceProvider {
   /**
    * Mutable surfaces by resource type:
    *  - `AWS::EFS::FileSystem` → `UpdateFileSystem` (ThroughputMode,
-   *    ProvisionedThroughputInMibps). Other property changes
-   *    (Encrypted / KmsKeyId / PerformanceMode / etc.) are routed
+   *    ProvisionedThroughputInMibps), the post-create Put* / Update* calls,
+   *    and `TagResource` / `UntagResource` (FileSystemTags). Other property
+   *    changes (Encrypted / KmsKeyId / PerformanceMode / etc.) are routed
    *    through DELETE+CREATE by the replacement-detection layer; if a
    *    diff somehow includes them, defensively reject.
    *  - `AWS::EFS::MountTarget` → `ModifyMountTargetSecurityGroups`
-   *    (SecurityGroups only). IpAddress / SubnetId / FileSystemId are
-   *    immutable.
-   *  - `AWS::EFS::AccessPoint` → no mutable surface; AWS recreates on
-   *    every change. Reject so `cdkd drift --revert` surfaces a clear
-   *    "use --replace" hint.
+   *    (SecurityGroups only). IpAddress / IpAddressType / Ipv6Address /
+   *    SubnetId / FileSystemId are immutable.
+   *  - `AWS::EFS::AccessPoint` → `TagResource` / `UntagResource`
+   *    (AccessPointTags, the one property the CFn schema leaves updatable;
+   *    go-to-k/cdkd#5464). Any other change is refused so `cdkd drift
+   *    --revert` surfaces a clear "use --replace" hint.
    */
   update(
     logicalId: string,
@@ -340,6 +402,13 @@ export class EFSProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     switch (resourceType) {
       case 'AWS::EFS::FileSystem':
         return this.updateFileSystem(
@@ -353,12 +422,13 @@ export class EFSProvider implements ResourceProvider {
       case 'AWS::EFS::MountTarget':
         return this.updateMountTarget(logicalId, physicalId, resourceType, properties, log);
       case 'AWS::EFS::AccessPoint':
-        return Promise.reject(
-          new ResourceUpdateNotSupportedError(
-            resourceType,
-            logicalId,
-            'AWS EFS AccessPoint has no in-place update API — there is no UpdateAccessPoint command; every property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
-          )
+        return this.updateAccessPoint(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          log
         );
       default:
         throw new ProvisioningError(
@@ -367,6 +437,138 @@ export class EFSProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
+    }
+  }
+
+  /**
+   * Apply a tag diff to an EFS file system or access point (both are tagged
+   * by id through `TagResource` / `UntagResource`; go-to-k/cdkd#5464).
+   * `TagResource` only adds or overwrites, so a key the template dropped —
+   * or the whole property removed — is untagged explicitly, as CloudFormation
+   * does. Both sides go through `planTagDiff`: an unreadable record untags
+   * nothing. The desired side must already have passed
+   * `refuseMalformedDesiredTags`.
+   */
+  private async applyTagDiff(
+    resourceId: string,
+    resourceType: string,
+    logicalId: string,
+    recorded: unknown,
+    desired: unknown,
+    log: MaskedLogSinks
+  ): Promise<void> {
+    const plan = planTagDiff(recorded, desired);
+    const warning = tagPlanWarning(plan, resourceType, logicalId);
+    if (warning !== undefined) log.warn(warning);
+    if (plan.remove.length > 0) {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.getClient().send(
+            new UntagResourceCommand({ ResourceId: resourceId, TagKeys: plan.remove })
+          ),
+        `UntagResource ${resourceId}`,
+        log
+      );
+    }
+    if (plan.set.size > 0) {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.getClient().send(
+            new TagResourceCommand({
+              ResourceId: resourceId,
+              Tags: [...plan.set].map(([Key, Value]) => ({ Key, Value })),
+            })
+          ),
+        `TagResource ${resourceId}`,
+        log
+      );
+    }
+  }
+
+  private async updateAccessPoint(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks
+  ): Promise<ResourceUpdateResult> {
+    // Every property but AccessPointTags is create-only in the CFn schema, so
+    // the replacement-detection layer routes such a change through
+    // DELETE+CREATE; reaching here with one, refuse rather than apply the
+    // tags alone and report success. Key-order-insensitive, like the engine's
+    // own diff (a synth-fresh object vs a JSON.parse'd record). A recorded
+    // LEAF holding a dynamic reference or cdkd's mask never equals its
+    // resolved desired value, so that leaf alone is left to the diff layer,
+    // which decided; its siblings are still compared.
+    const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null && !Array.isArray(v);
+    const sameExceptSecretLeaves = (desired: unknown, recorded: unknown): boolean => {
+      // A removed secret-derived leaf (desired undefined) is still a change.
+      if (
+        desired !== undefined &&
+        typeof recorded === 'string' &&
+        holdsSecretDerivedEntry(recorded)
+      ) {
+        return true;
+      }
+      if (Array.isArray(desired) && Array.isArray(recorded)) {
+        return (
+          desired.length === recorded.length &&
+          desired.every((d, i) => sameExceptSecretLeaves(d, recorded[i]))
+        );
+      }
+      if (isPlainObject(desired) && isPlainObject(recorded)) {
+        const ks = new Set([...Object.keys(desired), ...Object.keys(recorded)]);
+        return [...ks].every((k) => sameExceptSecretLeaves(desired[k], recorded[k]));
+      }
+      return isDeepStrictEqual(desired, recorded);
+    };
+    const keys = new Set([...Object.keys(properties), ...Object.keys(previousProperties)]);
+    for (const key of keys) {
+      if (key === 'AccessPointTags') continue;
+      if (!sameExceptSecretLeaves(properties[key], previousProperties[key])) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `AWS EFS AccessPoint ${key} changed or was removed, and it is immutable on AWS — there is no UpdateAccessPoint command, and only AccessPointTags can change in place; any other property change requires DeleteAccessPoint + CreateAccessPoint. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.`
+        );
+      }
+    }
+
+    refuseMalformedDesiredTags(
+      properties['AccessPointTags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'AccessPointTags'
+    );
+
+    try {
+      await this.applyTagDiff(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['AccessPointTags'],
+        properties['AccessPointTags'],
+        log
+      );
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapMaskedError(
+        log,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update EFS AccessPoint ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
     }
   }
 
@@ -426,6 +628,11 @@ export class EFSProvider implements ResourceProvider {
     //    ThroughputMode: 'provisioned' is deferred (no wire shape can reset
     //    it — the API requires a value while the mode is provisioned, and
     //    there is no documented default to reset to).
+    //  - Removing ONLY ThroughputMode from a 'provisioned' file system while
+    //    keeping ProvisionedThroughputInMibps is RETAINED by CloudFormation
+    //    (live CFn A/B, go-to-k/cdkd#5464: provisioned@1MiBps stayed so for
+    //    2 min after UPDATE_COMPLETE), so sending nothing is parity — pinned
+    //    by a negative unit test.
     const effectiveThroughputMode =
       newThroughputMode === undefined &&
       newProvisioned === undefined &&
@@ -445,6 +652,18 @@ export class EFSProvider implements ResourceProvider {
     const backupChanged = changed('BackupPolicy');
     const policyChanged = changed('FileSystemPolicy') || changed('BypassPolicyLockoutSafetyCheck');
     const protectionChanged = changed('FileSystemProtection');
+    // FileSystemTags is tag-updatable in the CFn schema (go-to-k/cdkd#5464):
+    // CloudFormation retags in place, and a removed key is untagged.
+    const tagsChanged = changed('FileSystemTags');
+    if (tagsChanged) {
+      refuseMalformedDesiredTags(
+        properties['FileSystemTags'],
+        resourceType,
+        logicalId,
+        physicalId,
+        'FileSystemTags'
+      );
+    }
 
     if (
       !throughputModeChanged &&
@@ -452,7 +671,8 @@ export class EFSProvider implements ResourceProvider {
       !lifecycleChanged &&
       !backupChanged &&
       !policyChanged &&
-      !protectionChanged
+      !protectionChanged &&
+      !tagsChanged
     ) {
       // No mutable diff — nothing to do (silent success, matching the
       // wider provider convention). Drift comparator wouldn't have
@@ -480,9 +700,12 @@ export class EFSProvider implements ResourceProvider {
       }
 
       // Post-create control-plane diffs — separate Put*/Update* APIs. Each is
-      // applied only when its value changed (a removal clears LifecyclePolicies;
-      // BackupPolicy / FileSystemPolicy / FileSystemProtection have no clean
-      // "drop" mapping in CFn, so a pure removal is a deliberate no-op).
+      // applied only when its value changed. A REMOVAL resets each one, as
+      // CloudFormation does (live CFn A/B, go-to-k/cdkd#1160, 2026-10-28):
+      // LifecyclePolicies -> cleared; FileSystemPolicy -> DeleteFileSystemPolicy;
+      // BackupPolicy -> DISABLED and FileSystemProtection -> ENABLED arrive
+      // here already injected (`removalDefaults`). Every reset call is
+      // accepted on a file system already at that default.
       if (lifecycleChanged) {
         await this.applyLifecyclePolicies(
           physicalId,
@@ -495,15 +718,32 @@ export class EFSProvider implements ResourceProvider {
         await this.applyBackupPolicy(physicalId, properties['BackupPolicy'], log);
       }
       if (policyChanged) {
-        await this.applyFileSystemPolicy(
-          physicalId,
-          properties['FileSystemPolicy'],
-          properties['BypassPolicyLockoutSafetyCheck'],
-          log
-        );
+        if (
+          properties['FileSystemPolicy'] === undefined &&
+          previousProperties['FileSystemPolicy'] !== undefined
+        ) {
+          await this.deleteFileSystemPolicy(physicalId, log);
+        } else {
+          await this.applyFileSystemPolicy(
+            physicalId,
+            properties['FileSystemPolicy'],
+            properties['BypassPolicyLockoutSafetyCheck'],
+            log
+          );
+        }
       }
       if (protectionChanged) {
         await this.applyFileSystemProtection(physicalId, properties['FileSystemProtection'], log);
+      }
+      if (tagsChanged) {
+        await this.applyTagDiff(
+          physicalId,
+          resourceType,
+          logicalId,
+          previousProperties['FileSystemTags'],
+          properties['FileSystemTags'],
+          log
+        );
       }
 
       log.debug(`Successfully updated EFS FileSystem ${logicalId}`);
@@ -538,8 +778,8 @@ export class EFSProvider implements ResourceProvider {
 
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
     if (securityGroups === undefined) {
-      // Nothing mutable to apply (IpAddress / SubnetId / FileSystemId are
-      // immutable on MountTarget). Silent success keeps `cdkd drift
+      // Nothing mutable to apply (IpAddress / IpAddressType / Ipv6Address /
+      // SubnetId / FileSystemId are immutable on MountTarget). Silent success keeps `cdkd drift
       // --revert` consistent with the wider provider convention when
       // only immutable fields differ.
       log.debug(`No mutable diff for EFS MountTarget ${logicalId}, skipping update`);
@@ -697,6 +937,8 @@ export class EFSProvider implements ResourceProvider {
       });
 
       fileSystemId = created.fileSystemId;
+      // go-to-k/cdkd#5511: report before the availability wait.
+      reportCreatedResource(logicalId, resourceType, fileSystemId);
 
       // Wait for FileSystem to become available
       const available = await this.waitForFileSystemAvailable(
@@ -748,14 +990,18 @@ export class EFSProvider implements ResourceProvider {
           await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
           // Deleted, so no longer a file system a replay may adopt.
           this.unconfirmedCreationTokens.delete(creationToken);
+          retractCreatedResource(logicalId, resourceType, fileSystemId);
           log.debug(`Rolled back partially-created EFS FileSystem ${fileSystemId}`);
         } catch (cleanupError) {
           fileSystemLeftBehind = true;
-          log.warn(
-            `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: ${
-              describeAwsFailure(cleanupError).detail
-            }`
-          );
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+          // denied DeleteFileSystem names the caller's assumed-role ARN.
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to roll back partially-created EFS FileSystem ${fileSystemId}: `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
+          // `summary` is the class for an AWS failure and the text itself for a
+          // cdkd-authored one.
+          log.warn(`${cleanupHead}${cleanupFailure.summary}`);
         }
       }
       const cause = error instanceof Error ? error : undefined;
@@ -1082,6 +1328,21 @@ export class EFSProvider implements ResourceProvider {
   }
 
   /**
+   * Remove the file system's access policy via `DeleteFileSystemPolicy` — what
+   * CloudFormation sends when `FileSystemPolicy` leaves the template
+   * (go-to-k/cdkd#1160). Succeeds when no policy is attached.
+   */
+  private async deleteFileSystemPolicy(fileSystemId: string, log: MaskedLogSinks): Promise<void> {
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(new DeleteFileSystemPolicyCommand({ FileSystemId: fileSystemId })),
+      `delete FileSystemPolicy on ${fileSystemId}`,
+      log
+    );
+    log.debug(`Deleted FileSystemPolicy on EFS FileSystem ${fileSystemId}`);
+  }
+
+  /**
    * Apply `FileSystemProtection` via `UpdateFileSystemProtection`. CFn shape is
    * `{ ReplicationOverwriteProtection: 'ENABLED' | 'DISABLED' | 'REPLICATING' }`.
    */
@@ -1185,7 +1446,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         log,
         error,
         (text) =>
@@ -1236,7 +1497,8 @@ export class EFSProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     log.debug(`Creating EFS MountTarget ${logicalId}`);
 
@@ -1259,6 +1521,30 @@ export class EFSProvider implements ResourceProvider {
     }
 
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
+    // go-to-k/cdkd#2762: create-only addressing (declaring any of the three
+    // used to route the mount target through Cloud Control). Each is sent
+    // only when declared, so an undeclared one keeps AWS's default (an IPv4
+    // mount target at an address it picks). A non-string is refused, not
+    // dropped: dropping it would create the mount target at an address the
+    // template did not ask for, and none of the three can be changed later.
+    const ipAddress = this.optionalMountTargetString(
+      properties['IpAddress'],
+      'IpAddress',
+      logicalId,
+      context
+    );
+    const ipAddressType = this.optionalMountTargetString(
+      properties['IpAddressType'],
+      'IpAddressType',
+      logicalId,
+      context
+    );
+    const ipv6Address = this.optionalMountTargetString(
+      properties['Ipv6Address'],
+      'Ipv6Address',
+      logicalId,
+      context
+    );
 
     // go-to-k/cdkd#4583: set once CreateMountTarget returned; nothing below
     // deletes it, so a failed wait leaves it with no state record.
@@ -1269,11 +1555,15 @@ export class EFSProvider implements ResourceProvider {
           FileSystemId: fileSystemId,
           SubnetId: subnetId,
           SecurityGroups: securityGroups,
+          ...(ipAddress !== undefined ? { IpAddress: ipAddress } : {}),
+          ...(ipAddressType !== undefined ? { IpAddressType: ipAddressType as IpAddressType } : {}),
+          ...(ipv6Address !== undefined ? { Ipv6Address: ipv6Address } : {}),
         })
       );
 
       const mountTargetId = response.MountTargetId!;
       createdMountTargetId = mountTargetId;
+      reportCreatedResource(logicalId, resourceType, mountTargetId); // go-to-k/cdkd#5511
       log.debug(
         `Created EFS MountTarget ${logicalId}: ${mountTargetId}, waiting for available state`
       );
@@ -1283,9 +1573,14 @@ export class EFSProvider implements ResourceProvider {
 
       log.debug(`Successfully created EFS MountTarget ${logicalId}: ${mountTargetId}`);
 
+      // `Fn::GetAtt [MountTarget, IpAddress]` (go-to-k/cdkd#2762): without it
+      // the resolver fell back to the mount target id. An IPv6-only mount
+      // target has no IPv4 address, so it records none, and its GetAtt still
+      // takes the resolver's unknown-attribute fallback (after one
+      // stale-attribute read through `import()`), as before this change.
       return {
         physicalId: mountTargetId,
-        attributes: {},
+        attributes: definedAttributes({ IpAddress: response.IpAddress }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1309,6 +1604,37 @@ export class EFSProvider implements ResourceProvider {
       }
       throw thrown;
     }
+  }
+
+  /**
+   * A MountTarget string property, or `undefined` when undeclared (or blank).
+   * Anything else (a number, an unresolved intrinsic object) is refused, and
+   * only warned about when `create()` replays a state record.
+   */
+  private optionalMountTargetString(
+    value: unknown,
+    key: 'IpAddress' | 'IpAddressType' | 'Ipv6Address',
+    logicalId: string,
+    context: CreateContext | undefined
+  ): string | undefined {
+    let read: string;
+    try {
+      read = requireConfigString(
+        value,
+        '',
+        `AWS::EFS::MountTarget ${key}`,
+        replayWarn(this.logger, context)
+      );
+    } catch (error) {
+      throw new ProvisioningError(
+        `EFS MountTarget ${logicalId}: ${describeAwsFailure(error).detail}`,
+        'AWS::EFS::MountTarget',
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
+      );
+    }
+    return read === '' ? undefined : read;
   }
 
   private async waitForMountTargetAvailable(
@@ -1382,7 +1708,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         log,
         error,
         (text) =>
@@ -1861,7 +2187,7 @@ export class EFSProvider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapDeleteError(
         log,
         error,
         (text) =>
@@ -2109,6 +2435,26 @@ export class EFSProvider implements ResourceProvider {
     const result: Record<string, unknown> = {};
     if (mt.FileSystemId !== undefined) result['FileSystemId'] = mt.FileSystemId;
     if (mt.SubnetId !== undefined) result['SubnetId'] = mt.SubnetId;
+    // go-to-k/cdkd#2762: the create-only addressing, emitted only when AWS
+    // reports it (immutable on create, so no placeholder). DescribeMountTargets
+    // carries no IpAddressType; it follows from which addresses the mount
+    // target holds (measured us-east-1, 2026-10-27: IPV4_ONLY in a dual-stack
+    // subnet holds only an IPv4 address, IPV6_ONLY only an IPv6 one, and
+    // DUAL_STACK both). The addresses come back as declared, not canonicalised:
+    // `Ipv6Address: 2600:1F18:...:0:0:0:50` reads back in that spelling (the
+    // ENI itself reports `...::50`), and a leading-zero IPv4 is refused at
+    // create (`invalid value for parameter address`), so neither needs a
+    // spelling normaliser (measured us-east-1, 2026-10-27).
+    if (mt.IpAddress !== undefined) result['IpAddress'] = mt.IpAddress;
+    if (mt.Ipv6Address !== undefined) result['Ipv6Address'] = mt.Ipv6Address;
+    if (mt.IpAddress !== undefined || mt.Ipv6Address !== undefined) {
+      result['IpAddressType'] =
+        mt.IpAddress === undefined
+          ? 'IPV6_ONLY'
+          : mt.Ipv6Address === undefined
+            ? 'IPV4_ONLY'
+            : 'DUAL_STACK';
+    }
 
     // SecurityGroups via DescribeMountTargetSecurityGroups. Always-emit
     // `[]` placeholder when AWS reports none so a console-side ADD on a
@@ -2148,10 +2494,7 @@ export class EFSProvider implements ResourceProvider {
       case 'AWS::EFS::AccessPoint':
         return this.importAccessPoint(input);
       case 'AWS::EFS::MountTarget':
-        if (input.knownPhysicalId) {
-          return { physicalId: input.knownPhysicalId, attributes: {} };
-        }
-        return null;
+        return this.importMountTarget(input);
       default:
         return null;
     }
@@ -2177,6 +2520,34 @@ export class EFSProvider implements ResourceProvider {
     // DescribeStackResources; a file system reaching here needs an explicit
     // `--resource` override.
     return null;
+  }
+
+  /**
+   * Override-only. Reads the mount target so `Fn::GetAtt [MountTarget,
+   * IpAddress]` resolves on an imported record and on one `create()` wrote
+   * before it recorded the attribute (the stale-attribute heal reads through
+   * here; go-to-k/cdkd#2762).
+   */
+  private async importMountTarget(
+    input: ResourceImportInput
+  ): Promise<ResourceImportResult | null> {
+    if (!input.knownPhysicalId) return null;
+    let resp;
+    try {
+      resp = await this.getClient().send(
+        new DescribeMountTargetsCommand({ MountTargetId: input.knownPhysicalId })
+      );
+    } catch (err) {
+      if (err instanceof MountTargetNotFound) return null;
+      throw err;
+    }
+    const mt = resp.MountTargets?.[0];
+    return mt?.MountTargetId
+      ? {
+          physicalId: mt.MountTargetId,
+          attributes: definedAttributes({ IpAddress: mt.IpAddress }),
+        }
+      : null;
   }
 
   private async importAccessPoint(

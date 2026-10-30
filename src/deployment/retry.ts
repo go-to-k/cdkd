@@ -8,6 +8,7 @@
  * `./retryable-errors.ts`.
  */
 
+import { phaseTimingsEnabled, recordPhase } from '../utils/phase-timings.js';
 import {
   formatRetryClassificationSignals,
   hasReplayMayCollide,
@@ -670,6 +671,16 @@ export async function withRetry<T>(
       const backoffThroughThisAttemptMs = propagation
         ? propagationSleptMs + delay
         : propagationSleptMs;
+      // go-to-k/cdkd#5242: inert unless CDKD_PHASE_TIMINGS=1. The error's class
+      // only, never its message (it can quote a value).
+      if (phaseTimingsEnabled()) {
+        recordPhase(
+          'retries (every stack)',
+          `retry after ${retryErrorClass(error)}`,
+          delay,
+          shownId
+        );
+      }
       opts.logger?.debug(
         `  ⏳ Retrying ${shownId} in ${delay / 1000}s (attempt ${attempt + 1}/${attemptLimit}${
           propagation
@@ -728,4 +739,30 @@ export async function withRetry<T>(
   }
 
   throw lastError;
+}
+
+/**
+ * The class a retried error is reported under (go-to-k/cdkd#5242): its `name`,
+ * and a Cloud Control handler's error code beside it, each only when it is a
+ * plain identifier.
+ */
+function retryErrorClass(error: unknown): string {
+  const ident = (value: unknown): string | undefined =>
+    typeof value === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(value) ? value : undefined;
+  const name = ident((error as { name?: unknown } | null)?.name) ?? 'Error';
+  const code = ident((error as { ccErrorCode?: unknown } | null)?.ccErrorCode);
+  // A provider wraps the AWS error as `cause`; the innermost named link is
+  // the class that was retried. Bounded, and a cycle stops it.
+  let root: string | undefined;
+  let current: unknown = (error as { cause?: unknown } | null)?.cause;
+  for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth++) {
+    root = ident((current as { name?: unknown }).name) ?? root;
+    const next = (current as { cause?: unknown }).cause;
+    if (next === current) break;
+    current = next;
+  }
+  const parts = [code, root !== undefined && root !== name ? root : undefined].filter(
+    (part): part is string => part !== undefined
+  );
+  return parts.length > 0 ? `${name} (${parts.join(', ')})` : name;
 }

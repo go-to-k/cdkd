@@ -8,6 +8,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * the PROMPT has to present as interactive; the refusal cases set it back.
  */
 import { setStdinIsTty } from '../../stdin-tty.js';
+import {
+  LEAK_BODY,
+  LEAK_BODY_BYTES,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+} from '../_json-parse-leak.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,11 +30,12 @@ import type { CfnStackResourceTree } from '../../../src/cli/commands/retire-cfn-
 const errorSpy = vi.hoisted(() => vi.fn());
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
+const debugSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
@@ -164,6 +171,10 @@ const mockGetState = vi.fn<
   ) => Promise<{ state: unknown; etag: string; migrationPending?: boolean } | null>
 >();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
+// go-to-k/cdkd#5064: the stack-instance id assigned on an import's first write.
+const mockStackInstanceIdForFirstWrite = vi
+  .fn<(...args: unknown[]) => Promise<string>>()
+  .mockResolvedValue('00000000-0000-4000-8000-000000000000');
 // go-to-k/cdkd#4523: the import marks its ids on the rollback journal first.
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
 // go-to-k/cdkd#4705: the stack registry the import claims after writing.
@@ -179,6 +190,7 @@ vi.mock('../../../src/state/s3-state-backend.js', () => ({
     verifyBucketExists: mockVerifyBucketExists,
     getState: mockGetState,
     saveState: mockSaveState,
+    stackInstanceIdForFirstWrite: mockStackInstanceIdForFirstWrite,
     markRollbackJournalImported: mockMarkRollbackJournalImported,
     getRegistryMarker: registry.getRegistryMarker,
     claimRegistryMarker: registry.claimRegistryMarker,
@@ -385,6 +397,7 @@ describe('cdkd import', () => {
     errorSpy.mockReset();
     infoSpy.mockReset();
     warnSpy.mockReset();
+    debugSpy.mockReset();
     stsSend.mockClear();
     // Restored EXPLICITLY rather than left to `mockClear`: the fallback-arm
     // case replaces the implementation with a rejection, and `mockClear` keeps
@@ -809,6 +822,48 @@ describe('cdkd import', () => {
     expect(JSON.stringify(state)).not.toContain(secretPlaintext);
   });
 
+  it('names no byte of an unparseable nested-stack template in the refusal (issue #5254)', async () => {
+    expectV8QuotesLeakToken();
+    const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-5254-'));
+    try {
+      const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+      writeFileSync(childTemplatePath, LEAK_BODY);
+      const tmpl = template({
+        Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+      });
+      mockSynthesize.mockResolvedValue({
+        stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+      });
+      mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'p', attributes: {} })),
+      });
+      const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+      mockGetCfnResourceTree.mockResolvedValue({
+        stackName: 'P',
+        physicalId: 'P',
+        resources: new Map([['Child', childArn]]),
+        nested: new Map([
+          [
+            'Child',
+            { stackName: childArn, physicalId: childArn, resources: new Map(), nested: new Map() },
+          ],
+        ]),
+      });
+
+      await expect(
+        runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+      ).rejects.toThrow();
+      expect(errorSpy.mock.calls.flat().map(String).join('\n')).toContain(
+        `Failed to parse nested-stack template for 'Child' at ${childTemplatePath}: ` +
+          `invalid JSON; ${LEAK_BODY_BYTES} byte(s) read`
+      );
+      expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
+    } finally {
+      rmSync(tmpdirPath, { recursive: true, force: true });
+    }
+  });
+
   it('leaves state untouched by the rewrite for nested-stack children (#1652)', async () => {
     // The recursive `--migrate-from-cloudformation` child walk reads each
     // nested template from its own file and applies the same §7 rewrite, so
@@ -1226,6 +1281,205 @@ describe('cdkd import', () => {
     // Summary line should reflect the 1/1/1 split.
     const summaryCall = infoSpy.mock.calls.find((c) => String(c[0]).startsWith('Summary:'));
     expect(String(summaryCall?.[0])).toMatch(/1 imported, 1 not found, 1 unsupported/);
+  });
+
+  describe('the stack instance id (state schema v13, go-to-k/cdkd#5064)', () => {
+    const ID = '00000000-0000-4000-8000-000000000000';
+    const OTHER_ID = '7c6b5a49-3827-4615-9a0b-1c2d3e4f5a6b';
+    const bucketTemplate = () =>
+      template({
+        MyBucket: { Type: 'AWS::S3::Bucket', Properties: {}, Metadata: { 'aws:cdk:path': 'S/MyBucket' } },
+      });
+    const existing = (stackInstanceId?: string) => ({
+      state: {
+        version: 12,
+        stackName: 'S',
+        region: 'us-east-1',
+        resources: {
+          MyBucket: {
+            physicalId: 'my-bucket-name',
+            resourceType: 'AWS::S3::Bucket',
+            properties: {},
+            attributes: {},
+            dependencies: [],
+          },
+        },
+        outputs: {},
+        ...(stackInstanceId !== undefined && { stackInstanceId }),
+        lastModified: 0,
+      },
+      etag: '"existing-etag"',
+    });
+    const savedRoot = () =>
+      (mockSaveState.mock.calls[0] as unknown as [string, string, { stackInstanceId?: string }])[2];
+
+    beforeEach(() => {
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', bucketTemplate())] });
+      mockHasProvider.mockReturnValue(true);
+      mockGetProvider.mockReturnValue({
+        import: vi.fn(async () => ({ physicalId: 'my-bucket-name', attributes: {} })),
+      });
+    });
+
+    it('an import CREATING the record takes the id for its first write, writing nothing ahead', async () => {
+      await runImport(['import', '--app', 'x', '--yes']);
+      expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledTimes(1);
+      expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledWith('S', 'us-east-1', {
+        writeAhead: false,
+      });
+      expect(savedRoot().stackInstanceId).toBe(ID);
+    });
+
+    it('a re-import over a record with an id keeps it and asks for none', async () => {
+      mockGetState.mockResolvedValueOnce(existing(OTHER_ID));
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=my-bucket-name', '--force', '--yes']);
+      expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+      expect(savedRoot().stackInstanceId).toBe(OTHER_ID);
+    });
+
+    it('a re-import over a LEGACY record keeps it legacy', async () => {
+      mockGetState.mockResolvedValueOnce(existing());
+      await runImport(['import', '--app', 'x', '--resource', 'MyBucket=my-bucket-name', '--force', '--yes']);
+      expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalled();
+      expect(Object.hasOwn(savedRoot(), 'stackInstanceId')).toBe(false);
+    });
+
+    it('a failed id read stops the import before the journal mark and the save', async () => {
+      mockStackInstanceIdForFirstWrite.mockRejectedValueOnce(new Error('sibling read denied'));
+      await expect(runImport(['import', '--app', 'x', '--yes'])).rejects.toThrow();
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/sibling read denied/);
+      expect(mockSaveState).not.toHaveBeenCalled();
+      expect(mockMarkRollbackJournalImported).not.toHaveBeenCalled();
+    });
+
+    it('a nested child takes its own id when it has no record, and keeps the one its record holds', async () => {
+      const tmpdirPath = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-instance-id-'));
+      try {
+        const childTemplatePath = join(tmpdirPath, 'Child.nested.template.json');
+        writeFileSync(
+          childTemplatePath,
+          JSON.stringify({ Resources: { Bucket: { Type: 'AWS::S3::Bucket', Properties: {} } } })
+        );
+        const tmpl = template({
+          Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+        });
+        mockSynthesize.mockResolvedValue({
+          stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+        });
+        mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+        mockGetProvider.mockReturnValue({
+          import: vi.fn(async () => ({ physicalId: 'b', attributes: {} })),
+        });
+        const childArn = 'arn:aws:cloudformation:us-east-1:123:stack/Child/uuid';
+        mockGetCfnResourceTree.mockResolvedValue({
+          stackName: 'P',
+          physicalId: 'P',
+          resources: new Map([['Child', childArn]]),
+          nested: new Map([
+            [
+              'Child',
+              {
+                stackName: childArn,
+                physicalId: childArn,
+                resources: new Map([['Bucket', 'b']]),
+                nested: new Map(),
+              },
+            ],
+          ]),
+        });
+        type Saved = [string, string, { stackInstanceId?: string }];
+        const saved = (name: string) =>
+          (mockSaveState.mock.calls as unknown as Saved[]).find((c) => c[0] === name)?.[2];
+        const CHILD_ID = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
+        // A distinct id per stack: a child that took its parent's would pass
+        // an equality on one shared value.
+        mockStackInstanceIdForFirstWrite.mockImplementation(async (name: unknown) =>
+          name === 'P~Child' ? CHILD_ID : ID
+        );
+
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockStackInstanceIdForFirstWrite).toHaveBeenCalledWith('P~Child', 'us-east-1', {
+          writeAhead: false,
+        });
+        expect(saved('P')?.stackInstanceId).toBe(ID);
+        expect(saved('P~Child')?.stackInstanceId).toBe(CHILD_ID);
+
+        // A child that already has a record keeps its id (a re-import rebuilds
+        // the child from nothing, so only this read can carry it).
+        mockSaveState.mockClear();
+        mockStackInstanceIdForFirstWrite.mockClear();
+        // Its lifetime's retired generations and its superseded resources still
+        // to delete travel with the id (#5064 / #5111).
+        const retiredNameGenerations = { Gone: 3 };
+        const supersededResources = [
+          {
+            logicalId: 'Bucket',
+            supersededAt: 1,
+            state: { physicalId: 'old-b', resourceType: 'AWS::S3::Bucket', properties: {}, attributes: {} },
+          },
+        ];
+        mockGetState.mockImplementation(async (name: string) =>
+          name === 'P~Child'
+            ? {
+                state: {
+                  version: 13,
+                  stackName: 'P~Child',
+                  resources: {},
+                  outputs: {},
+                  stackInstanceId: OTHER_ID,
+                  retiredNameGenerations,
+                  supersededResources,
+                  lastModified: 0,
+                },
+                etag: '"c"',
+              }
+            : null
+        );
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalledWith(
+          'P~Child',
+          expect.anything(),
+          expect.anything()
+        );
+        expect(saved('P~Child')?.stackInstanceId).toBe(OTHER_ID);
+        expect(saved('P~Child')).toMatchObject({ retiredNameGenerations, supersededResources });
+
+        // A child with a LEGACY record stays legacy: no id is minted for it.
+        const childRecord = (extra: Record<string, unknown>) => ({
+          state: { version: 12, stackName: 'P~Child', resources: {}, outputs: {}, lastModified: 0, ...extra },
+          etag: '"c"',
+        });
+        mockSaveState.mockClear();
+        mockStackInstanceIdForFirstWrite.mockClear();
+        mockGetState.mockImplementation(async (name: string) =>
+          name === 'P~Child' ? childRecord({}) : null
+        );
+        await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+        expect(mockStackInstanceIdForFirstWrite).not.toHaveBeenCalledWith(
+          'P~Child',
+          expect.anything(),
+          expect.anything()
+        );
+        expect(Object.hasOwn(saved('P~Child') ?? {}, 'stackInstanceId')).toBe(false);
+        expect(saved('P~Child')).toBeDefined();
+
+        // A child record holding a damaged id is refused, never re-minted or
+        // read as legacy, and the child is not written.
+        mockSaveState.mockClear();
+        mockGetState.mockImplementation(async (name: string) =>
+          name === 'P~Child' ? childRecord({ stackInstanceId: 'damaged' }) : null
+        );
+        errorSpy.mockClear();
+        await expect(
+          runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation'])
+        ).rejects.toThrow();
+        expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/not a well-formed id/);
+        expect(saved('P~Child')).toBeUndefined();
+      } finally {
+        mockStackInstanceIdForFirstWrite.mockReset().mockResolvedValue(ID);
+        rmSync(tmpdirPath, { recursive: true, force: true });
+      }
+    });
   });
 
   it('adopts an ELBv2 load balancer by its UNPREFIXED template Name, and reports a failed lookup as failed (go-to-k/cdkd#3937)', async () => {
@@ -2714,6 +2968,20 @@ describe('cdkd import', () => {
       expect(errorSpy.mock.calls[0]?.[0]).toMatch(
         /Failed to parse --resource-mapping-inline as JSON/
       );
+    });
+
+    it('names no byte of malformed inline JSON in the refusal (issue #5254)', async () => {
+      expectV8QuotesLeakToken();
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource())] });
+      mockHasProvider.mockReturnValue(true);
+
+      await expect(
+        runImport(['import', '--app', 'x', '--resource-mapping-inline', LEAK_BODY, '--yes'])
+      ).rejects.toThrow();
+      expect(String(errorSpy.mock.calls[0]?.[0])).toContain(
+        `Failed to parse --resource-mapping-inline as JSON: invalid JSON; ${LEAK_BODY_BYTES} byte(s) read`
+      );
+      expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
     });
 
     it('rejects inline JSON that is not an object (e.g. an array)', async () => {

@@ -1,8 +1,10 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   EC2Client,
   CreateVpcCommand,
   DeleteVpcCommand,
   ModifyVpcAttributeCommand,
+  ModifyVpcTenancyCommand,
   DescribeVpcAttributeCommand,
   DescribeVpcsCommand,
   DescribeInternetGatewaysCommand,
@@ -13,6 +15,9 @@ import {
   DeleteInternetGatewayCommand,
   AttachInternetGatewayCommand,
   DetachInternetGatewayCommand,
+  AttachVpnGatewayCommand,
+  DetachVpnGatewayCommand,
+  DescribeVpnGatewaysCommand,
   CreateNatGatewayCommand,
   DeleteNatGatewayCommand,
   DescribeNatGatewaysCommand,
@@ -78,6 +83,7 @@ import {
   type _InstanceType,
   type VolumeType,
   type BlockDeviceMapping,
+  type EnaSrdSpecificationRequest,
   type DescribeSecurityGroupRulesResult,
   type IpPermission,
   type SecurityGroupRule,
@@ -92,7 +98,22 @@ import {
   type Instance,
   type ResourceType as Ec2TagResourceType,
   type TagSpecification,
+  type AvailabilityMode,
+  type NatGatewayAddress,
+  type NatGateway,
+  AssociateNatGatewayAddressCommand,
+  DisassociateNatGatewayAddressCommand,
+  StopInstancesCommand,
+  StartInstancesCommand,
+  ReplaceIamInstanceProfileAssociationCommand,
+  DisassociateIamInstanceProfileCommand,
 } from '@aws-sdk/client-ec2';
+import { blockDeviceMappingsDifferOnlyInDeleteOnTermination } from '../../analyzer/replacement-rules.js';
+import {
+  enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
+} from '../../deployment/resource-deadline.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
@@ -155,9 +176,11 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { canonicalizeIpProtocolValue } from '../../utils/ip-protocol.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -179,7 +202,12 @@ import {
   type PasteableAwsCommand,
 } from '../replacement-protection-advice.js';
 import { displayIdent, safeMsg } from '../../utils/display-safe.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   isRedactedRecordedValue,
   REDACTED_DELETE_ADDRESS_SKIP_REASON,
@@ -189,14 +217,15 @@ import {
 import {
   explicitDenyPolicyKind,
   isExplicitDenyError,
-  isNameCollisionError,
   isThrottlingError,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
   THROTTLING_ERROR_NAMES,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { withRetry } from '../../deployment/retry.js';
-import { startInterruptWatch } from '../interrupt-watch.js';
+import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import {
   getPriorAttempts,
   markRefusedBeforeApplying,
@@ -204,19 +233,125 @@ import {
 import { awaitInFlightSibling, getStackRecords } from '../../deployment/stack-records-scope.js';
 import { deleteSkipReason } from '../../deployment/delete-outcome.js';
 import { withRemovalDefaults } from '../update-removal.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /** Shapes of the four `AWS::EC2::*` composite physicalIds (issue #1657). */
 const EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT: CompositeIdFormat = {
   label: 'VPCGatewayAttachment',
-  // Matches `createVpcGatewayAttachment`'s packer, which emits the REAL
-  // `internetGatewayId`. The pre-#1657 text said `IGW|VpcId`; `IGW` is a token
-  // no code path produces, and a user repairing state.json as instructed would
-  // have called `DetachInternetGateway(InternetGatewayId: "IGW")`. A
-  // Cloud-Control-written record can carry an attachment TYPE here instead
-  // (`InternetGateway` / `VPN` — see `export.ts`), which the message does not
-  // try to express: the shape it names is the one cdkd's own packer writes.
-  segments: ['internetGatewayId', 'vpcId'],
+  // Matches `createVpcGatewayAttachment`'s packer, which emits the REAL gateway
+  // id: an internet gateway's `igw-…` or a VPN gateway's `vgw-…` (issue #2762),
+  // the prefix being what `delete` / `readCurrentState` branch on. The
+  // pre-#1657 text said `IGW|VpcId`; `IGW` is a token no code path produces,
+  // and a user repairing state.json as instructed would have called
+  // `DetachInternetGateway(InternetGatewayId: "IGW")`. A Cloud-Control-written
+  // record carries an attachment TYPE here instead (`IGW` / `VGW` — see
+  // `export.ts`), which the message does not try to express: the shape it
+  // names is the one cdkd's own packer writes.
+  segments: ['gatewayId', 'vpcId'],
 };
+
+/**
+ * How long a VPN gateway attachment may take to reach `attached` / `detached`
+ * (issue #2762). Both transitions are asynchronous on AWS's side; the outer
+ * per-resource `--resource-timeout` still bounds the whole call.
+ */
+const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
+
+/**
+ * Issue #5446: the stop / start waits of an in-place InstanceType / UserData
+ * change. The resource deadline bounds them first; this cap applies only
+ * outside one. A t3 stop or start measured about a minute.
+ */
+const INSTANCE_STATE_WAIT_CAP_MS = 15 * 60 * 1000;
+const INSTANCE_STATE_POLL_MS = 5000;
+/**
+ * Consecutive `stopped` reads after a StartInstances that count as AWS undoing
+ * the start (issue #5446): StartInstances answers `pending` at once, so a
+ * `stopped` that outlives three polls is not a lagging read.
+ */
+const STOPPED_AFTER_START_READS = 3;
+/** How long a profile change waits out a `disassociating` association. */
+const PROFILE_DISASSOCIATING_POLLS = 15;
+const PROFILE_DISASSOCIATING_DELAY_MS = 2000;
+
+/**
+ * A refusal raised before any call of an EC2 Instance update (issue #5446):
+ * non-retryable, and marked so the engine journals the failed update without
+ * its attempted properties (a later `rollback --revert-failed` then has
+ * nothing to "undo" on an instance this update never touched).
+ */
+function refusedBeforeApplying<E extends Error>(error: E): E {
+  return markRefusedBeforeApplying(markNonRetryable(error));
+}
+/** The states a stop -> modify -> start can begin from (issue #5446). */
+const STOPPABLE_INSTANCE_STATES = new Set(['pending', 'running', 'stopping', 'stopped']);
+/**
+ * Instances THIS process stopped and could not start again (issue #5446).
+ * The rollback revert that follows the failed update reads them `stopped`;
+ * this tells it the stop was cdkd's, so it starts them again as
+ * CloudFormation's rollback does, instead of leaving a user-stopped one alone.
+ */
+const instancesLeftStoppedByCdkd = new Set<string>();
+/** The wait errors that mean AWS stopped an instance right after cdkd's start. */
+const instanceStoppedAfterStart = new WeakSet<object>();
+
+/** What `EC2Provider.planInstanceMemberUpdates` decided to apply (issue #5446). */
+interface InstanceMemberPlan {
+  instanceType?: string;
+  /** Raw user-data bytes; empty for a removed UserData. */
+  userData?: Uint8Array;
+  profile?: { kind: 'set'; arn?: string; name?: string } | { kind: 'remove' };
+  /** `vpc-default` is resolved to a `set` by `prepareInstanceMemberUpdates`. */
+  securityGroups?: { kind: 'set'; ids: string[] } | { kind: 'vpc-default' };
+  deleteOnTermination?: Array<{ DeviceName: string; DeleteOnTermination: boolean }>;
+}
+
+/**
+ * A recorded stand-in for a value cdkd resolved and sent: a string carrying a
+ * `{{resolve:...}}` token, or the state redaction mask (issue #5446). A state
+ * record (a rollback revert's desired bag) holds these where the template had
+ * a secret; sending one would write the stand-in onto the instance.
+ */
+function isRecordedStandIn(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(isRecordedStandIn);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(isRecordedStandIn);
+  }
+  return (
+    typeof value === 'string' && (value === SECRET_MASK || dynamicReferenceTokens(value).length > 0)
+  );
+}
+
+/**
+ * An instance profile's comparison key: its NAME, from a name, an ARN
+ * (`arn:...:instance-profile[/path]/<name>`) or an `{Arn,Name}` object. State
+ * carries the template's name while a drift readback carries the ARN.
+ */
+function instanceProfileKey(value: unknown): string | undefined {
+  const fromArn = (arn: string): string => arn.slice(arn.lastIndexOf('/') + 1);
+  if (typeof value === 'string') {
+    const v = value.trim();
+    if (v === '') return undefined;
+    return v.startsWith('arn:') ? fromArn(v) : v;
+  }
+  if (value !== null && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj['Name'] === 'string' && obj['Name'] !== '') return obj['Name'];
+    if (typeof obj['Arn'] === 'string' && obj['Arn'] !== '') return fromArn(obj['Arn']);
+  }
+  return undefined;
+}
+
+/** Two lists of strings hold the same members, order and repeats aside. */
+function sameStringSet(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b)) return a === b;
+  const sa = new Set(a.map(String));
+  const sb = new Set(b.map(String));
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
+}
+
+/** `DetachVpnGateway`'s answer for an attachment that is not `attached` right now. */
+const VPN_DETACH_IN_PROGRESS_ERRORS: ReadonlySet<string> = new Set(['IncorrectState']);
 
 const EC2_ROUTE_ID_FORMAT: CompositeIdFormat = {
   label: 'Route',
@@ -601,6 +736,233 @@ function isNamedError(error: unknown, names: ReadonlySet<string>): boolean {
 
 /** `DescribeNatGateways`'s answer for a gateway id EC2 no longer lists. */
 const NAT_GATEWAY_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['NatGatewayNotFound']);
+
+/**
+ * One `AWS::EC2::NatGateway.AvailabilityZoneAddresses` entry (a regional NAT
+ * gateway's per-zone Elastic IPs, go-to-k/cdkd#2762). The zone is named by
+ * `AvailabilityZone`, `AvailabilityZoneId` or both, exactly as declared.
+ */
+export interface NatZoneAddressEntry {
+  availabilityZone?: string;
+  availabilityZoneId?: string;
+  allocationIds: string[];
+}
+
+/** The three answers a guard over `AvailabilityZoneAddresses` gives. */
+export type NatZoneAddressRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; entries: NatZoneAddressEntry[] }
+  | { kind: 'unusable'; reason: string };
+
+/**
+ * Read a CFn `AvailabilityZoneAddresses` value. `null` / `undefined` is
+ * ABSENT; anything else that is not a non-empty list of entries, each naming
+ * a zone and a non-empty `AllocationIds` list of strings, is UNUSABLE — never
+ * read as empty, since an empty desired set would release every address the
+ * gateway holds.
+ */
+export function readNatZoneAddresses(raw: unknown): NatZoneAddressRead {
+  if (raw === undefined || raw === null) return { kind: 'absent' };
+  const unusable = (reason: string): NatZoneAddressRead => ({ kind: 'unusable', reason });
+  if (!Array.isArray(raw)) return unusable('is not a list');
+  if (raw.length === 0) return unusable('is an empty list');
+  const entries: NatZoneAddressEntry[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of raw.entries()) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      return unusable(`entry ${index} is not an object`);
+    }
+    const record = item as Record<string, unknown>;
+    const zone = record['AvailabilityZone'];
+    const zoneId = record['AvailabilityZoneId'];
+    if (zone !== undefined && (typeof zone !== 'string' || zone === '')) {
+      return unusable(`entry ${index}'s AvailabilityZone is not a zone name`);
+    }
+    if (zoneId !== undefined && (typeof zoneId !== 'string' || zoneId === '')) {
+      return unusable(`entry ${index}'s AvailabilityZoneId is not a zone id`);
+    }
+    if (zone === undefined && zoneId === undefined) {
+      return unusable(`entry ${index} names neither AvailabilityZone nor AvailabilityZoneId`);
+    }
+    const ids = record['AllocationIds'];
+    if (
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      ids.some((id) => typeof id !== 'string' || id === '')
+    ) {
+      return unusable(`entry ${index}'s AllocationIds is not a non-empty list of allocation ids`);
+    }
+    for (const id of ids as string[]) {
+      if (seen.has(id)) return unusable(`declares allocation id ${id} more than once`);
+      seen.add(id);
+    }
+    entries.push({
+      ...(zone !== undefined && { availabilityZone: zone }),
+      ...(zoneId !== undefined && { availabilityZoneId: zoneId }),
+      allocationIds: [...(ids as string[])],
+    });
+  }
+  return { kind: 'usable', entries };
+}
+
+/**
+ * The `Fn::GetAtt` attributes of a described NAT gateway (go-to-k/cdkd#2762):
+ * `RouteTableId` (the route table AWS creates for a regional gateway), the two
+ * automatic-mode flags, and — for a zonal gateway, whose one interface it
+ * names — `EniId`. A regional gateway's `EniId` is left unanswered: which of
+ * its per-zone interfaces CloudFormation reports is not documented.
+ */
+export function natGatewayAttributes(gateway: NatGateway): Record<string, unknown> {
+  const addresses = gateway.NatGatewayAddresses ?? [];
+  const primary = addresses.find((a) => a.IsPrimary === true) ?? addresses[0];
+  return definedAttributes({
+    NatGatewayId: gateway.NatGatewayId,
+    EniId: gateway.AvailabilityMode === 'regional' ? undefined : primary?.NetworkInterfaceId,
+    RouteTableId: gateway.RouteTableId,
+    AutoProvisionZones: gateway.AutoProvisionZones,
+    AutoScalingIps: gateway.AutoScalingIps,
+  });
+}
+
+/**
+ * The bound on ALL the waits one regional NAT gateway address update makes
+ * for an association or a release to settle before a call AWS would otherwise
+ * refuse (one took about five minutes when measured on #2762): 15 minutes in
+ * 10 s polls, shared, so the update stays inside the default 30-minute
+ * --resource-timeout.
+ */
+const NAT_ADDRESS_SETTLE_POLLS = 90;
+const NAT_ADDRESS_SETTLE_DELAY_MS = 10_000;
+/** Polls an address just associated may stay unlisted by DescribeNatGateways (1 minute). */
+const NAT_ADDRESS_UNLISTED_POLLS = 6;
+
+/** Whether a live NAT gateway address sits in the zone an entry names. */
+function natAddressInZone(address: NatGatewayAddress, entry: NatZoneAddressEntry): boolean {
+  return (
+    (entry.availabilityZone !== undefined && address.AvailabilityZone === entry.availabilityZone) ||
+    (entry.availabilityZoneId !== undefined &&
+      address.AvailabilityZoneId === entry.availabilityZoneId)
+  );
+}
+
+/**
+ * A live address the gateway still HOLDS: one being released (or whose
+ * association failed) no longer counts.
+ */
+function natAddressHeld(address: NatGatewayAddress): boolean {
+  return (
+    typeof address.AllocationId === 'string' &&
+    address.Status !== 'disassociating' &&
+    address.Status !== 'failed'
+  );
+}
+
+/** The calls that move a regional NAT gateway's live addresses to `desired`. */
+export interface NatZoneAddressPlan {
+  associate: NatZoneAddressEntry[];
+  disassociate: { allocationId: string; associationId: string | undefined }[];
+  /** Allocation ids declared in one zone while the gateway holds them in another. */
+  moved: string[];
+  /**
+   * Declared allocation ids AWS is still RELEASING from this gateway: AWS
+   * refuses to associate one until the release finishes, so the update waits.
+   */
+  awaitingRelease: string[];
+  /**
+   * Whether an address the gateway KEEPS is already associated. AWS refuses a
+   * release leaving the gateway no associated address, and one still being
+   * associated does not count (measured on #2762), so a release swapping out
+   * the last settled address must wait for an added one first.
+   */
+  keptSettled: boolean;
+}
+
+/**
+ * Plan a regional NAT gateway's `AvailabilityZoneAddresses` update against the
+ * LIVE addresses (`DescribeNatGateways`), not the recorded ones: an address
+ * AWS still holds is the one a release must name, by its association id.
+ */
+export function planNatZoneAddressUpdate(
+  desired: NatZoneAddressEntry[],
+  live: NatGatewayAddress[]
+): NatZoneAddressPlan {
+  const held = live.filter(natAddressHeld);
+  const associate: NatZoneAddressEntry[] = [];
+  const moved: string[] = [];
+  const awaitingRelease: string[] = [];
+  const wanted = new Set<string>();
+  for (const entry of desired) {
+    const missing: string[] = [];
+    for (const allocationId of entry.allocationIds) {
+      wanted.add(allocationId);
+      const holder = held.find((a) => a.AllocationId === allocationId);
+      if (holder === undefined) {
+        missing.push(allocationId);
+        if (live.some((a) => a.AllocationId === allocationId && a.Status === 'disassociating')) {
+          awaitingRelease.push(allocationId);
+        }
+      } else if (!natAddressInZone(holder, entry)) moved.push(allocationId);
+    }
+    if (missing.length > 0) associate.push({ ...entry, allocationIds: missing });
+  }
+  const disassociate = held
+    .filter((a) => !wanted.has(a.AllocationId!))
+    .map((a) => ({ allocationId: a.AllocationId!, associationId: a.AssociationId }));
+  const keptSettled = held.some((a) => wanted.has(a.AllocationId!) && a.Status === 'succeeded');
+  return { associate, disassociate, moved, awaitingRelease, keptSettled };
+}
+
+/**
+ * The `AvailabilityZoneAddresses` a regional NAT gateway's live addresses
+ * read back as, in the template's shape: one entry per zone, spelled the way
+ * the RECORDED entry for that zone spells it (`AvailabilityZone` otherwise),
+ * in the recorded order with unrecorded zones and allocation ids appended.
+ */
+export function readbackNatZoneAddresses(
+  live: NatGatewayAddress[],
+  recorded: NatZoneAddressEntry[]
+): Record<string, unknown>[] {
+  // An address naming no zone cannot be placed in any entry.
+  const held = live
+    .filter(natAddressHeld)
+    .filter((a) => a.AvailabilityZone !== undefined || a.AvailabilityZoneId !== undefined);
+  const out: Record<string, unknown>[] = [];
+  const emit = (entry: NatZoneAddressEntry, addresses: NatGatewayAddress[]): void => {
+    if (addresses.length === 0) return;
+    const ids = addresses.map((a) => a.AllocationId!);
+    const ordered = [
+      ...entry.allocationIds.filter((id) => ids.includes(id)),
+      ...ids.filter((id) => !entry.allocationIds.includes(id)),
+    ];
+    out.push({
+      ...(entry.availabilityZone !== undefined && { AvailabilityZone: entry.availabilityZone }),
+      ...(entry.availabilityZoneId !== undefined && {
+        AvailabilityZoneId: entry.availabilityZoneId,
+      }),
+      AllocationIds: ordered,
+    });
+  };
+  let rest = held;
+  for (const entry of recorded) {
+    emit(
+      entry,
+      rest.filter((a) => natAddressInZone(a, entry))
+    );
+    rest = rest.filter((a) => !natAddressInZone(a, entry));
+  }
+  const zones = [...new Set(rest.map((a) => a.AvailabilityZone ?? a.AvailabilityZoneId ?? ''))];
+  for (const zone of zones) {
+    const inZone = rest.filter((a) => (a.AvailabilityZone ?? a.AvailabilityZoneId ?? '') === zone);
+    const first = inZone[0]!;
+    emit(
+      first.AvailabilityZone !== undefined
+        ? { availabilityZone: first.AvailabilityZone, allocationIds: [] }
+        : { availabilityZoneId: first.AvailabilityZoneId!, allocationIds: [] },
+      inZone
+    );
+  }
+  return out;
+}
 /** `DescribeAddresses`'s answer for an allocation id EC2 no longer holds. */
 const EIP_ALLOCATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
   'InvalidAllocationID.NotFound',
@@ -737,21 +1099,23 @@ const CDKD_NOTES = new WeakMap<Error, string>();
 
 /**
  * What a thrown EC2 wrap says in place of an AWS-authored failure's own text
- * (go-to-k/cdkd#2319): its class, plus two cdkd-authored facts that text
- * carried and a reader of the thrown message needs. An "already exists" is
- * restated, because the create-first replacement path reads the TOP-level
- * message to credit a name collision (`isNameCollisionErrorFrom`), and EC2
- * names the security-group one `InvalidGroup.Duplicate`, which no collision
- * pattern matches. A {@link CDKD_NOTES} note is re-appended.
+ * (go-to-k/cdkd#2319): its class, through `mask` (the class is AWS-authored
+ * text too), plus two cdkd-authored facts that text carried and a reader of
+ * the thrown message needs. An "already exists" is restated
+ * ({@link relayedNameCollision}), because the create-first replacement path
+ * reads the TOP-level message to credit a name collision
+ * (`isNameCollisionErrorFrom`), and EC2 names the security-group one
+ * `InvalidGroup.Duplicate`, which no collision pattern matches; not from a
+ * post-create wiring call's failure ({@link markAuxiliaryFailure}), where "it"
+ * would read as this resource (#3826). A {@link CDKD_NOTES} note is
+ * re-appended.
  */
-function redactedEc2FailureText(error: unknown, failure: AwsFailureText): string {
+function redactedEc2FailureText(mask: MaskerFn, error: unknown, failure: AwsFailureText): string {
   // A non-`Error` throw is redacted too, but AWS did not author it, so it
   // reports nothing.
-  if (!(error instanceof Error)) return failure.summary;
-  const collision = isNameCollisionError(failure.detail)
-    ? ' AWS reports that it already exists.'
-    : '';
-  return `${failure.summary}${collision}${CDKD_NOTES.get(error) ?? ''}`;
+  if (!(error instanceof Error)) return mask(failure.summary);
+  const collision = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+  return `${mask(failure.summary)}${collision}${CDKD_NOTES.get(error) ?? ''}`;
 }
 
 /** The error code EC2 answers a denied action with. */
@@ -805,7 +1169,7 @@ export class EC2Provider implements ResourceProvider {
       'AWS::EC2::EIP',
       new Set(['Domain', 'InstanceId', 'NetworkBorderGroup', 'PublicIpv4Pool', 'Tags']),
     ],
-    ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId'])],
+    ['AWS::EC2::VPCGatewayAttachment', new Set(['VpcId', 'InternetGatewayId', 'VpnGatewayId'])],
     [
       'AWS::EC2::NatGateway',
       new Set([
@@ -817,6 +1181,10 @@ export class EC2Provider implements ResourceProvider {
         'SecondaryPrivateIpAddresses',
         'SecondaryPrivateIpAddressCount',
         'Tags',
+        // go-to-k/cdkd#2762: a regional NAT gateway.
+        'AvailabilityMode',
+        'VpcId',
+        'AvailabilityZoneAddresses',
       ]),
     ],
     ['AWS::EC2::RouteTable', new Set(['VpcId', 'Tags'])],
@@ -945,8 +1313,11 @@ export class EC2Provider implements ResourceProvider {
     // detailed monitoring off (real A/B, us-east-1: `Monitoring.State`
     // `enabled` -> `disabled`). `updateInstanceSecurityProps` diffs it against
     // the previous template, so the injected `false` calls UnmonitorInstances
-    // only when monitoring was on. The other Instance properties that
-    // `update()` modifies in place get no reset (see that method).
+    // only when monitoring was on. MetadataOptions / CreditSpecification get
+    // no reset (see that method); a removed UserData / IamInstanceProfile /
+    // SecurityGroupIds is read from `removedProperties` instead, because its
+    // CloudFormation reset is a call (clear, disassociate, the VPC's default
+    // group), not a value (issue #5446, see planInstanceMemberUpdates).
     ['AWS::EC2::Instance', new Map<string, unknown>([['Monitoring', false]])],
   ]);
 
@@ -981,10 +1352,6 @@ export class EC2Provider implements ResourceProvider {
       'AWS::EC2::NatGateway',
       new Map<string, string>([
         [
-          'VpcId',
-          'AWS derives the VPC from SubnetId; the ec2:CreateNatGateway API has no VpcId parameter',
-        ],
-        [
           // Issue #1411. Verified against the installed @aws-sdk/client-ec2:
           // `CreateNatGatewayRequest` (models/models_1.d.ts) has NO
           // `MaxDrainDurationSeconds` member, and EC2 ships no
@@ -994,9 +1361,13 @@ export class EC2Provider implements ResourceProvider {
           // (models/models_7.d.ts) — i.e. it is a per-call drain timeout for
           // RELEASING secondary addresses, which is why the CFn registry schema
           // lists it under `writeOnlyProperties` (no read handler can return
-          // it). cdkd's NatGateway update path rejects every property change
-          // (`ResourceUpdateNotSupportedError`, see `updateNatGateway`), so it
-          // never issues those two calls and has nowhere to deliver the value.
+          // it). cdkd's NatGateway update path releases a regional gateway's
+          // `AvailabilityZoneAddresses` (go-to-k/cdkd#2762) but rejects every
+          // change to a zonal gateway's secondary addresses
+          // (`ResourceUpdateNotSupportedError`, see `updateNatGateway`), so
+          // wiring the value would deliver it on one release path of three
+          // while moving a gateway that declares it off Cloud Control, where
+          // every address update works today.
           // It is NOT modelled as a replacement trigger either: the registry
           // schema does not list it under `createOnlyProperties`, so recreating
           // the gateway on a drain-timeout change would diverge from
@@ -1004,7 +1375,7 @@ export class EC2Provider implements ResourceProvider {
           // silent drop here routes any template that sets it through the #614
           // Cloud Control fallback, where AWS's own resource handler applies it.
           'MaxDrainDurationSeconds',
-          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and cdkd rejects NatGateway updates outright — routed via Cloud Control instead',
+          'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and the cdkd NatGateway update releases only the AvailabilityZoneAddresses of a regional gateway, never the secondary addresses of a zonal one — routed via Cloud Control instead',
         ],
       ]),
     ],
@@ -1303,9 +1674,9 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::VPCGatewayAttachment':
         return this.createVpcGatewayAttachment(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NatGateway':
-        return this.createNatGateway(logicalId, resourceType, properties);
+        return this.createNatGateway(logicalId, resourceType, properties, context);
       case 'AWS::EC2::RouteTable':
-        return this.createRouteTable(logicalId, resourceType, properties);
+        return this.createRouteTable(logicalId, resourceType, properties, context);
       case 'AWS::EC2::Route':
         return this.createRoute(
           logicalId,
@@ -1317,9 +1688,9 @@ export class EC2Provider implements ResourceProvider {
           context?.maskSecrets
         );
       case 'AWS::EC2::SubnetRouteTableAssociation':
-        return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties);
+        return this.createSubnetRouteTableAssociation(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SecurityGroup':
-        return this.createSecurityGroup(logicalId, resourceType, properties);
+        return this.createSecurityGroup(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SecurityGroupIngress':
         return this.createSecurityGroupIngress(
           logicalId,
@@ -1334,11 +1705,11 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::Instance':
         return this.createInstance(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NetworkAcl':
-        return this.createNetworkAcl(logicalId, resourceType, properties);
+        return this.createNetworkAcl(logicalId, resourceType, properties, context);
       case 'AWS::EC2::NetworkAclEntry':
         return this.createNetworkAclEntry(logicalId, resourceType, properties, context);
       case 'AWS::EC2::SubnetNetworkAclAssociation':
-        return this.createSubnetNetworkAclAssociation(logicalId, resourceType, properties);
+        return this.createSubnetNetworkAclAssociation(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1379,6 +1750,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -1402,25 +1774,71 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return this.updateVpc(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateVpc(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::Subnet':
         return this.updateSubnet(
           logicalId,
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::InternetGateway':
-        return this.updateInternetGateway(logicalId, physicalId);
+        return this.updateTagsOnly(
+          logicalId,
+          physicalId,
+          resourceType,
+          false,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::EIP':
-        return this.updateEip(logicalId, physicalId, resourceType, properties, previousProperties);
+        return this.updateEip(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::VPCGatewayAttachment':
-        return this.updateVpcGatewayAttachment(logicalId, physicalId);
+        return this.updateVpcGatewayAttachment(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::NatGateway':
-        return this.updateNatGateway(logicalId, physicalId);
+        return this.updateNatGateway(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::RouteTable':
-        return this.updateRouteTable(logicalId, physicalId);
+      case 'AWS::EC2::NetworkAcl':
+        return this.updateTagsOnly(
+          logicalId,
+          physicalId,
+          resourceType,
+          true,
+          properties,
+          previousProperties,
+          context
+        );
       case 'AWS::EC2::Route':
         return this.updateRoute(
           logicalId,
@@ -1438,7 +1856,8 @@ export class EC2Provider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::EC2::SecurityGroupIngress':
         return this.updateSecurityGroupIngress(
@@ -1469,15 +1888,14 @@ export class EC2Provider implements ResourceProvider {
           previousProperties,
           context
         );
-      case 'AWS::EC2::NetworkAcl':
       case 'AWS::EC2::SubnetNetworkAclAssociation':
         // Reject loudly instead of silently no-op'ing on
-        // `cdkd drift --revert`. Same rationale as Subnet / IGW /
-        // NatGateway / RouteTable above. See PR I.
+        // `cdkd drift --revert`. Same rationale as
+        // SubnetRouteTableAssociation above. See PR I.
         throw new ResourceUpdateNotSupportedError(
           resourceType,
           logicalId,
-          'AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
+          'AWS provides no in-place Update API for this EC2 sub-resource type; every property change requires Delete + Create. Re-deploy with cdkd deploy --replace, or destroy + redeploy'
         );
       default:
         throw new ProvisioningError(
@@ -1506,7 +1924,13 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::EIP':
         return this.deleteEip(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::VPCGatewayAttachment':
-        return this.deleteVpcGatewayAttachment(logicalId, physicalId, resourceType, context);
+        return this.deleteVpcGatewayAttachment(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          context
+        );
       case 'AWS::EC2::NatGateway':
         return this.deleteNatGateway(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::RouteTable':
@@ -1561,9 +1985,24 @@ export class EC2Provider implements ResourceProvider {
         return this.getInstanceAttribute(physicalId, attributeName);
       case 'AWS::EC2::EIP':
         return this.getEipAttribute(physicalId, attributeName);
+      case 'AWS::EC2::NatGateway':
+        return this.getNatGatewayAttribute(physicalId, attributeName);
       default:
         return undefined;
     }
+  }
+
+  /** `AWS::EC2::NatGateway` attributes, read live ({@link natGatewayAttributes}). */
+  private async getNatGatewayAttribute(
+    physicalId: string,
+    attributeName: string
+  ): Promise<unknown> {
+    if (attributeName === 'NatGatewayId') return physicalId;
+    const response = await this.ec2Client.send(
+      new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+    );
+    const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+    return gateway === undefined ? undefined : natGatewayAttributes(gateway)[attributeName];
   }
 
   /**
@@ -1870,6 +2309,8 @@ export class EC2Provider implements ResourceProvider {
 
       const vpcId = response.Vpc!.VpcId!;
       ec2IdsCreatedByThisProcess.add(vpcId);
+      // go-to-k/cdkd#5511: report before the replay lookup and wiring.
+      reportCreatedResource(logicalId, resourceType, vpcId);
       // Issue #4687: the SDK replayed this CreateVpc inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const vpcReplayWindow = replayedSendWindow(response, attemptStartMs);
@@ -1924,7 +2365,13 @@ export class EC2Provider implements ResourceProvider {
         }
 
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(vpcId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            vpcId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Fetch VPC details for attributes
         await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [vpcId] }));
@@ -1946,13 +2393,15 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteVpcCommand({ VpcId: vpcId }));
+          retractCreatedResource(logicalId, resourceType, vpcId);
           this.logger.debug(
             `Cleaned up partially-created VPC ${logicalId} (${vpcId}) after wiring failure`
           );
         } catch (cleanupError) {
           leftBehindId = vpcId;
+          const cleanupHead = `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): `;
           this.logger.warn(
-            `Failed to clean up partially-created VPC ${logicalId} (${vpcId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-vpc --vpc-id ${vpcId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -1981,6 +2430,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2006,13 +2456,33 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating VPC ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
+      // InstanceTenancy (go-to-k/cdkd#5449; CloudFormation measured on a
+      // throwaway stack, us-east-1): `dedicated` -> `default` and a removal
+      // from `dedicated` update the VPC in place (ModifyVpcTenancy, the only
+      // direction AWS offers); `default` -> `dedicated` creates a new VPC,
+      // routed to replacement by `vpcInstanceTenancyChangeReplaces`. Only
+      // `cdkd drift --revert` reaches here with that direction, so it is
+      // refused, before any call, rather than silently left as is. An absent
+      // (or null) value is `default`, as in the replacement predicate; the call itself is sent after the DNS attributes.
+      const tenancyOf = (v: unknown): string => (v == null ? 'default' : String(v));
+      const newTenancy = tenancyOf(properties['InstanceTenancy']);
+      const oldTenancy = tenancyOf(previousProperties['InstanceTenancy']);
+      if (newTenancy !== oldTenancy && newTenancy !== 'default') {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          'destroy + redeploy the VPC (and the resources that depend on it). AWS changes InstanceTenancy in place only to default, and CloudFormation creates a new VPC for this change'
+        );
+      }
+
       // Coerce CFn-string-or-bool ("true" | true) into a real boolean so the
       // diff below treats `"true"` and `true` as the same value.
       const asBool = (v: unknown): boolean | undefined => {
@@ -2051,13 +2521,20 @@ export class EC2Provider implements ResourceProvider {
         );
       }
 
+      if (newTenancy !== oldTenancy) {
+        await this.ec2Client.send(
+          new ModifyVpcTenancyCommand({ VpcId: physicalId, InstanceTenancy: 'default' })
+        );
+      }
+
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
         physicalId,
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
@@ -2071,8 +2548,12 @@ export class EC2Provider implements ResourceProvider {
         },
       };
     } catch (error) {
+      // The InstanceTenancy refusal is control flow the deploy engine matches
+      // BY CLASS; a re-wrap would hide it.
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2145,7 +2626,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -2293,6 +2775,8 @@ export class EC2Provider implements ResourceProvider {
 
       const subnetId = response.Subnet!.SubnetId!;
       ec2IdsCreatedByThisProcess.add(subnetId);
+      // go-to-k/cdkd#5511: report before the replay lookup and wiring.
+      reportCreatedResource(logicalId, resourceType, subnetId);
       // Issue #4687: the SDK replayed this CreateSubnet inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const subnetReplayWindow = replayedSendWindow(response, attemptStartMs);
@@ -2319,7 +2803,13 @@ export class EC2Provider implements ResourceProvider {
       // associations attached, so a single DeleteSubnet suffices.
       try {
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(subnetId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            subnetId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Set MapPublicIpOnLaunch if specified
         const mapPublicIp = properties['MapPublicIpOnLaunch'];
@@ -2339,13 +2829,15 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSubnetCommand({ SubnetId: subnetId }));
+          retractCreatedResource(logicalId, resourceType, subnetId);
           this.logger.debug(
             `Cleaned up partially-created Subnet ${logicalId} (${subnetId}) after wiring failure`
           );
         } catch (cleanupError) {
           leftBehindId = subnetId;
+          const cleanupHead = `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): `;
           this.logger.warn(
-            `Failed to clean up partially-created Subnet ${logicalId} (${subnetId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-subnet --subnet-id ${subnetId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -2365,6 +2857,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2387,7 +2880,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -2435,7 +2929,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       this.logger.debug(`Successfully updated Subnet ${logicalId}`);
@@ -2452,6 +2947,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2567,7 +3063,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -2710,7 +3207,8 @@ export class EC2Provider implements ResourceProvider {
       }
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(igwId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(igwId, desiredTags, logicalId, maskerOrIdentity(context?.maskSecrets));
 
       this.logger.debug(`Successfully created InternetGateway ${logicalId}: ${igwId}`);
 
@@ -2723,6 +3221,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2736,21 +3235,51 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  private updateInternetGateway(
+  /**
+   * In-place update of a type whose only mutable property is `Tags`
+   * (InternetGateway, RouteTable, NetworkAcl; go-to-k/cdkd#5448). CloudFormation
+   * applies a tag change in place through CreateTags / DeleteTags, so cdkd
+   * does too. `vpcIdCreateOnly` says the registry schema marks `VpcId`
+   * create-only (RouteTable, NetworkAcl): the diff layer routes a change on it
+   * to replacement, but `cdkd drift --revert` calls `update()` without that
+   * classification, so a change on it is refused here rather than silently
+   * no-op'd.
+   */
+  private async updateTagsOnly(
     logicalId: string,
-    physicalId: string
+    physicalId: string,
+    resourceType: string,
+    vpcIdCreateOnly: boolean,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // IGW has no mutable properties cdkd surfaces (Tags would be the
-    // only candidate; not in `readCurrentState`). Reject loudly instead
-    // of silently no-op'ing on `cdkd drift --revert`. See PR I.
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::InternetGateway',
-        logicalId,
-        'destroy + redeploy the InternetGateway. IGW properties are immutable in AWS.'
-      )
+    const label = resourceType.slice('AWS::EC2::'.length);
+    this.logger.debug(safeMsg`Updating ${label} ${logicalId}: ${physicalId}`);
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    if (vpcIdCreateOnly) {
+      const next = properties['VpcId'];
+      const prev = previousProperties['VpcId'];
+      if (next !== undefined && prev !== undefined && next !== prev) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `destroy + redeploy the ${label} (and the resources that depend on it). VpcId is immutable in AWS`
+        );
+      }
+    }
+    await this.applyTagDiff(
+      physicalId,
+      resourceType,
+      logicalId,
+      previousProperties['Tags'],
+      properties['Tags'],
+      maskerOrIdentity(context?.maskSecrets)
     );
+    // No `attributes`: an in-place tag change invalidates none of the
+    // create-time ones, and a partial set would REPLACE the stored ones.
+    return { physicalId, wasReplaced: false };
   }
 
   private async deleteInternetGateway(
@@ -2782,7 +3311,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -2920,6 +3450,8 @@ export class EC2Provider implements ResourceProvider {
       } catch {
         createdId = allocationId;
       }
+      // go-to-k/cdkd#5511: report before the replay lookup, tags and association.
+      reportCreatedResource(logicalId, resourceType, createdId);
       ec2IdsCreatedByThisProcess.add(allocationId);
       // Issue #4687: the SDK replayed this AllocateAddress inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
@@ -2935,7 +3467,13 @@ export class EC2Provider implements ResourceProvider {
       }
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(allocationId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          allocationId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       // Associate to an instance on the fast SDK path, keeping EIP+InstanceId
       // off the ~20s Cloud Control async-poll route.
@@ -3000,16 +3538,23 @@ export class EC2Provider implements ResourceProvider {
           } finally {
             watch.dispose();
           }
+          retractCreatedResource(logicalId, resourceType, createdId);
           createdId = undefined;
           this.logger.debug(safeMsg`Released partially-created EIP ${logicalId} (${allocatedId})`);
         } catch (cleanupError) {
+          const cleanupText = this.warnFailureSentence(
+            `Failed to release partially-created EIP ${logicalId} (${allocatedId}): `,
+            cleanupError,
+            maskerOrIdentity(context?.maskSecrets)
+          );
           this.logger.warn(
-            safeMsg`Failed to release partially-created EIP ${logicalId} (${allocatedId}): ${describeAwsFailure(cleanupError).detail}. Manual release may be required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 release-address --allocation-id ${allocatedId}`.render()}`
+            safeMsg`Failed to release partially-created EIP ${logicalId} (${allocatedId}): ${cleanupText} Manual release may be required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 release-address --allocation-id ${allocatedId}`.render()}`
           );
         }
       }
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3066,10 +3611,15 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Tags and InstanceId (association) are mutable in place; Domain / pool /
-    // border group are create-only and handled by the replacement path.
+    // Tags and InstanceId (association) are mutable in place. NetworkBorderGroup
+    // is create-only (the replacement path). A Domain or PublicIpv4Pool change
+    // is deliberately not applied: CloudFormation neither replaces the address
+    // nor changes it (go-to-k/cdkd#5449, measured: change set "Modify,
+    // RequiresRecreation: Never", and the executed update kept the same
+    // allocation, domain and pool), and AWS has no call to move one.
     this.logger.debug(`Updating EIP ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
@@ -3080,7 +3630,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       const oldInstanceId = previousProperties['InstanceId'] as string | undefined;
@@ -3186,7 +3737,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3224,6 +3776,36 @@ export class EC2Provider implements ResourceProvider {
 
   // ─── AWS::EC2::VPCGatewayAttachment ───────────────────────────────
 
+  /**
+   * Which gateway an attachment's template bag names. CloudFormation's
+   * documentation takes exactly one of `InternetGatewayId` / `VpnGatewayId`
+   * ("You must specify either InternetGatewayId or VpnGatewayId, but not
+   * both"), so a bag naming both or neither is refused before any AWS call.
+   */
+  private resolveVpcGatewayAttachmentTarget(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): { vpcId: string; kind: 'igw' | 'vgw'; gatewayId: string } {
+    const vpcId = properties['VpcId'];
+    const igw = properties['InternetGatewayId'];
+    const vgw = properties['VpnGatewayId'];
+    const hasIgw = typeof igw === 'string' && igw !== '';
+    const hasVgw = typeof vgw === 'string' && vgw !== '';
+    if (typeof vpcId !== 'string' || vpcId === '' || hasIgw === hasVgw) {
+      throw new ProvisioningError(
+        hasIgw && hasVgw
+          ? `VPCGatewayAttachment ${logicalId} specifies both InternetGatewayId and VpnGatewayId; CloudFormation accepts exactly one`
+          : `VpcId and exactly one of InternetGatewayId / VpnGatewayId are required for VPCGatewayAttachment ${logicalId}`,
+        resourceType,
+        logicalId
+      );
+    }
+    return hasIgw
+      ? { vpcId, kind: 'igw', gatewayId: igw }
+      : { vpcId, kind: 'vgw', gatewayId: vgw as string };
+  }
+
   private async createVpcGatewayAttachment(
     logicalId: string,
     resourceType: string,
@@ -3232,26 +3814,21 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating VPCGatewayAttachment ${logicalId}`);
 
-    const vpcId = properties['VpcId'] as string;
-    const internetGatewayId = properties['InternetGatewayId'] as string;
+    const { vpcId, kind, gatewayId } = this.resolveVpcGatewayAttachmentTarget(
+      logicalId,
+      resourceType,
+      properties
+    );
 
-    if (!vpcId || !internetGatewayId) {
-      throw new ProvisioningError(
-        `VpcId and InternetGatewayId are required for VPCGatewayAttachment ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // Both segments are AWS-generated (`igw-...` / `vpc-...`), so neither is
-    // pipe-capable and this is uniform defense-in-depth (issue #1672).
-    // Computed before the AWS call so a refusal cannot leave an attachment AWS
-    // has already made without a state record.
+    // Both segments are AWS-generated (`igw-...` / `vgw-...` / `vpc-...`), so
+    // neither is pipe-capable and this is uniform defense-in-depth (issue
+    // #1672). Computed before the AWS call so a refusal cannot leave an
+    // attachment AWS has already made without a state record.
     const physicalId = packCompositeId(
       resourceType,
       logicalId,
       [
-        { name: 'internetGatewayId', value: internetGatewayId },
+        { name: kind === 'igw' ? 'internetGatewayId' : 'vpnGatewayId', value: gatewayId },
         { name: 'vpcId', value: vpcId },
       ],
       {
@@ -3266,13 +3843,24 @@ export class EC2Provider implements ResourceProvider {
       }
     );
 
+    let attachSent = false;
     try {
-      await this.ec2Client.send(
-        new AttachInternetGatewayCommand({
-          VpcId: vpcId,
-          InternetGatewayId: internetGatewayId,
-        })
-      );
+      if (kind === 'igw') {
+        await this.ec2Client.send(
+          new AttachInternetGatewayCommand({ VpcId: vpcId, InternetGatewayId: gatewayId })
+        );
+      } else {
+        // `AttachVpnGateway` answers `attaching`; a `Route` through the
+        // gateway is only accepted once the attachment is `attached`, so the
+        // create waits for that state.
+        await this.ec2Client.send(
+          new AttachVpnGatewayCommand({ VpcId: vpcId, VpnGatewayId: gatewayId })
+        );
+        attachSent = true;
+        // go-to-k/cdkd#5511: report before the attachment wait.
+        reportCreatedResource(logicalId, resourceType, physicalId);
+        await this.waitForVpnGatewayAttachment(gatewayId, vpcId, 'attached', logicalId);
+      }
 
       this.logger.debug(`Successfully created VPCGatewayAttachment ${logicalId}: ${physicalId}`);
 
@@ -3282,7 +3870,8 @@ export class EC2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3293,57 +3882,559 @@ export class EC2Provider implements ResourceProvider {
             cause
           )
       );
+      // The attach call succeeded and only the wait failed: the attachment
+      // exists in AWS, so the record must say so for a later destroy to detach it.
+      if (attachSent) markCreatedBeforeFailure(thrown, logicalId, resourceType, physicalId);
+      throw thrown;
     }
   }
 
-  private updateVpcGatewayAttachment(
+  /**
+   * Poll `DescribeVpnGateways` until the gateway's attachment to `vpcId`
+   * reaches `target`. `detached` also counts an attachment AWS no longer
+   * lists, or a gateway it no longer knows, as reached. Throws when the state
+   * is not reached within {@link VPN_GATEWAY_ATTACHMENT_WAIT_MS}.
+   */
+  private async waitForVpnGatewayAttachment(
+    vpnGatewayId: string,
+    vpcId: string,
+    target: 'attached' | 'detached',
     logicalId: string,
-    physicalId: string
-  ): Promise<ResourceUpdateResult> {
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::VPCGatewayAttachment',
-        logicalId,
-        'destroy + redeploy the VPCGatewayAttachment. The (VpcId, InternetGatewayId) pair is immutable.'
-      )
+    redetach?: () => Promise<unknown>
+  ): Promise<void> {
+    const started = Date.now();
+    let redetachSent = false;
+    let delay = 2000;
+    let last = 'unknown';
+    for (;;) {
+      // Every entry for this VPC, not the first: a `detached` entry left by an
+      // earlier attachment can sit beside the current one.
+      let states: string[];
+      try {
+        const resp = await this.ec2Client.send(
+          new DescribeVpnGatewaysCommand({ VpnGatewayIds: [vpnGatewayId] })
+        );
+        states = (resp.VpnGateways?.[0]?.VpcAttachments ?? [])
+          .filter((a) => a.VpcId === vpcId)
+          .map((a) => String(a.State));
+      } catch (error) {
+        // Only EC2's own `*.NotFound` code proves the gateway is gone (#4283).
+        if (target === 'detached' && isEc2NotFoundCode(error)) return;
+        throw error;
+      }
+      if (target === 'attached' && states.includes('attached')) return;
+      if (target === 'detached' && states.every((st) => st === 'detached')) return;
+      // A detach refused as `IncorrectState` while the attachment was still
+      // `attaching` (an interrupted create) never took: once it reads
+      // `attached`, send the detach again, once.
+      if (target === 'detached' && redetach && !redetachSent && states.includes('attached')) {
+        redetachSent = true;
+        try {
+          await redetach();
+        } catch (error) {
+          // Already `detaching` (a lagging read) or already gone: keep polling.
+          if (!isNamedError(error, VPN_DETACH_IN_PROGRESS_ERRORS) && !isEc2NotFoundCode(error)) {
+            throw error;
+          }
+        }
+      }
+      last = states.length === 0 ? 'absent' : states.join(', ');
+      if (Date.now() - started >= VPN_GATEWAY_ATTACHMENT_WAIT_MS) {
+        throw new Error(
+          `VPN gateway ${vpnGatewayId} attachment to ${vpcId} did not reach '${target}' within ` +
+            `${VPN_GATEWAY_ATTACHMENT_WAIT_MS / 60000} minutes (last state: ${last}) for ${logicalId}`
+        );
+      }
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10000);
+    }
+  }
+
+  /**
+   * Split an attachment physicalId into its gateway kind, gateway, and VPC.
+   *
+   * cdkd's own packer writes `<igw-…|vgw-…>|<vpcId>`. A Cloud-Control-written
+   * record carries the attachment TYPE token instead (`IGW` / `VGW`, or the
+   * never-written `InternetGateway` / `VPN` aliases `export.ts` also accepts);
+   * a pre-v7 record of that shape has no `provisionedBy` and reaches this
+   * provider (go-to-k/cdkd#2762 review). A token is never sent to AWS as a
+   * gateway id: `gatewayId` is `undefined` and the caller resolves it from the
+   * VPC. Anything else is refused with the format message.
+   */
+  private parseVpcGatewayAttachmentId(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string
+  ): { kind: 'igw' | 'vgw'; gatewayId: string | undefined; vpcId: string } {
+    const parts = physicalId.split('|');
+    const [first, vpcId] = parts;
+    if (parts.length === 2 && first && vpcId) {
+      if (first.startsWith('igw-')) return { kind: 'igw', gatewayId: first, vpcId };
+      if (first.startsWith('vgw-')) return { kind: 'vgw', gatewayId: first, vpcId };
+      if (first === 'IGW' || first === 'InternetGateway') {
+        return { kind: 'igw', gatewayId: undefined, vpcId };
+      }
+      if (first === 'VGW' || first === 'VPN') return { kind: 'vgw', gatewayId: undefined, vpcId };
+    }
+    throw new ProvisioningError(
+      compositeIdFormatMessage(EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT, logicalId, physicalId),
+      resourceType,
+      logicalId,
+      physicalId
     );
+  }
+
+  /**
+   * The gateway of `kind` AWS reports attached to `vpcId` (an
+   * `attachment.vpc-id` filter), for a record that names only the attachment
+   * type. `includeDetaching` also counts a VPN attachment still `detaching`,
+   * which a delete must wait out. `undefined` when none is.
+   */
+  private async findAttachedGatewayId(
+    kind: 'igw' | 'vgw',
+    vpcId: string,
+    includeDetaching: boolean
+  ): Promise<string | undefined> {
+    const filter = { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] };
+    if (kind === 'igw') {
+      const resp = await this.ec2Client.send(new DescribeInternetGatewaysCommand(filter));
+      return resp.InternetGateways?.find((g) =>
+        g.Attachments?.some(
+          (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+        )
+      )?.InternetGatewayId;
+    }
+    const live = includeDetaching
+      ? ['attaching', 'attached', 'detaching']
+      : ['attaching', 'attached'];
+    const resp = await this.ec2Client.send(new DescribeVpnGatewaysCommand(filter));
+    return resp.VpnGateways?.find(
+      (g) =>
+        g.State !== 'deleted' &&
+        g.VpcAttachments?.some((a) => a.VpcId === vpcId && live.includes(String(a.State)))
+    )?.VpnGatewayId;
+  }
+
+  /** The gateway id of `kind` a record's own properties name, when well-formed. */
+  private recordedGatewayIdOf(
+    kind: 'igw' | 'vgw',
+    properties: Record<string, unknown> | undefined
+  ): string | undefined {
+    const value = properties?.[kind === 'igw' ? 'InternetGatewayId' : 'VpnGatewayId'];
+    return typeof value === 'string' && value.startsWith(`${kind}-`) ? value : undefined;
+  }
+
+  /**
+   * The gateway a type-token record (`VGW|vpc-…`) denotes, for a detach.
+   *
+   * Pinned to the id the record's own properties name: a shared VPC can hold
+   * another stack's gateway by the time this runs (the record's own detached
+   * out of band), and the `attachment.vpc-id` filter would return THAT one.
+   * The pinned id is detached by id, so an attachment AWS no longer has
+   * answers not-found instead of hitting a foreign gateway. With no recorded
+   * id, an empty filter answer is `undefined` (the caller confirms the region
+   * before reading it as gone), and a gateway the filter does find is
+   * refused: nothing proves it is this stack's.
+   */
+  private async resolveTokenRecordGateway(
+    kind: 'igw' | 'vgw',
+    vpcId: string,
+    recordedProperties: Record<string, unknown> | undefined,
+    logicalId: string,
+    resourceType: string,
+    physicalId: string
+  ): Promise<string | undefined> {
+    const recorded = this.recordedGatewayIdOf(kind, recordedProperties);
+    if (recorded !== undefined) return recorded;
+    const found = await this.findAttachedGatewayId(kind, vpcId, true);
+    if (found === undefined) return undefined;
+    throw new ProvisioningError(
+      `VPCGatewayAttachment ${logicalId}: the record names only the attachment type and no ` +
+        `${kind === 'igw' ? 'InternetGatewayId' : 'VpnGatewayId'}, and ${found} is attached to ` +
+        `${vpcId}. cdkd cannot tell whether it is this stack's gateway, so it does not detach it. ` +
+        `Detach it yourself if it is, or correct the record (cdkd state show).`,
+      resourceType,
+      logicalId,
+      physicalId
+    );
+  }
+
+  /** Whether `gatewayId` is attached (or, for a VPN gateway, attaching) to `vpcId`. */
+  private async isGatewayAttached(
+    kind: 'igw' | 'vgw',
+    gatewayId: string,
+    vpcId: string
+  ): Promise<boolean> {
+    if (kind === 'igw') {
+      const resp = await this.ec2Client.send(
+        new DescribeInternetGatewaysCommand({ InternetGatewayIds: [gatewayId] })
+      );
+      return (
+        resp.InternetGateways?.[0]?.Attachments?.some(
+          (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+        ) ?? false
+      );
+    }
+    const resp = await this.ec2Client.send(
+      new DescribeVpnGatewaysCommand({ VpnGatewayIds: [gatewayId] })
+    );
+    return (
+      resp.VpnGateways?.[0]?.VpcAttachments?.some(
+        (a) => a.VpcId === vpcId && (a.State === 'attached' || a.State === 'attaching')
+      ) ?? false
+    );
+  }
+
+  /**
+   * Attach `gatewayId` to `vpcId` (a VPN gateway also waits for `attached`).
+   * Skips the attach call when AWS already reports it attached, so a deploy
+   * re-running an interrupted swap converges instead of being refused.
+   */
+  private async attachVpcGateway(
+    kind: 'igw' | 'vgw',
+    gatewayId: string,
+    vpcId: string,
+    logicalId: string,
+    onAttachSent?: () => void
+  ): Promise<void> {
+    if (!(await this.isGatewayAttached(kind, gatewayId, vpcId))) {
+      if (kind === 'igw') {
+        await this.ec2Client.send(
+          new AttachInternetGatewayCommand({ VpcId: vpcId, InternetGatewayId: gatewayId })
+        );
+        onAttachSent?.();
+        return;
+      }
+      await this.ec2Client.send(
+        new AttachVpnGatewayCommand({ VpcId: vpcId, VpnGatewayId: gatewayId })
+      );
+      onAttachSent?.();
+    }
+    if (kind === 'vgw') {
+      await this.waitForVpnGatewayAttachment(gatewayId, vpcId, 'attached', logicalId);
+    }
+  }
+
+  /**
+   * Detach `gatewayId` from `vpcId`; a VPN gateway also waits for `detached`.
+   * A not-found answer is confirmed against the recorded region before it is
+   * read as "already detached". Raw AWS errors propagate: the caller wraps.
+   */
+  private async detachVpcGateway(
+    kind: 'igw' | 'vgw',
+    gatewayId: string,
+    vpcId: string,
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    expectedRegion: string | undefined
+  ): Promise<void> {
+    const isVpnGateway = kind === 'vgw';
+    let detachRefusedAsIncorrectState = false;
+    try {
+      await this.withDependencyViolationRetry(
+        () =>
+          isVpnGateway
+            ? this.ec2Client.send(
+                new DetachVpnGatewayCommand({ VpnGatewayId: gatewayId, VpcId: vpcId })
+              )
+            : this.ec2Client.send(
+                new DetachInternetGatewayCommand({ InternetGatewayId: gatewayId, VpcId: vpcId })
+              ),
+        {
+          description: `${isVpnGateway ? 'DetachVpnGateway' : 'DetachInternetGateway'} ${logicalId} (${gatewayId} from ${vpcId})`,
+        }
+      );
+    } catch (error) {
+      // A VPN detach skips to the wait only on EC2's own `*.NotFound` code: a
+      // looser match would wait out the full cap on an attachment AWS still
+      // holds and then hide the real refusal. `IncorrectState` (an attachment
+      // an interrupted earlier destroy left `detaching`) goes to the wait too.
+      if (isVpnGateway && isNamedError(error, VPN_DETACH_IN_PROGRESS_ERRORS)) {
+        detachRefusedAsIncorrectState = true;
+        this.logger.debug(
+          safeMsg`DetachVpnGateway ${logicalId}: attachment not detachable now, waiting`
+        );
+      } else {
+        const notFound = isVpnGateway ? isEc2NotFoundCode(error) : this.isNotFoundError(error);
+        if (!notFound) throw error;
+        const clientRegion = await this.ec2Client.config.region();
+        assertRegionMatch(clientRegion, expectedRegion, resourceType, logicalId, physicalId);
+        this.logger.debug(`VPCGatewayAttachment ${physicalId} does not exist, skipping detach`);
+        // A not-found VPN detach can also be an attachment left `detaching`,
+        // so the wait below still runs for it.
+        if (!isVpnGateway) return;
+      }
+    }
+
+    if (isVpnGateway) {
+      // `DetachVpnGateway` answers `detaching`. Until `detached`, AWS refuses
+      // both `DeleteVpnGateway` and `DeleteVpc`, which run next in reverse
+      // dependency order. The re-sent detach only after a refused first one:
+      // after a detach AWS accepted, a lagging `attached` read would draw
+      // `IncorrectState`.
+      await this.waitForVpnGatewayAttachment(
+        gatewayId,
+        vpcId,
+        'detached',
+        logicalId,
+        detachRefusedAsIncorrectState
+          ? () =>
+              this.ec2Client.send(
+                new DetachVpnGatewayCommand({ VpnGatewayId: gatewayId, VpcId: vpcId })
+              )
+          : undefined
+      );
+    }
+  }
+
+  /**
+   * Best-effort recovery after a failed in-place gateway swap, so AWS matches
+   * the record, which still names the OLD gateway: detach the new gateway if
+   * this swap attached it (its attach can be accepted while the wait fails),
+   * then re-attach the old one (skipped when still attached). The warn names
+   * what a re-read finds attached. Never throws: the swap's own error is the
+   * one the caller reports.
+   *
+   * Worst case, a same-kind VPN swap chains three
+   * {@link VPN_GATEWAY_ATTACHMENT_WAIT_MS} waits (the failed attach, this
+   * detach, this re-attach), so the per-resource `--resource-timeout` can cut
+   * the recovery short. The record still names the old gateway and every step
+   * here is idempotent, so a redeploy converges.
+   */
+  private async recoverFailedGatewaySwap(swap: {
+    logicalId: string;
+    resourceType: string;
+    physicalId: string;
+    vpcId: string;
+    desired: { kind: 'igw' | 'vgw'; gatewayId: string };
+    old: { kind: 'igw' | 'vgw'; id: string } | undefined;
+    newAttachSent: boolean;
+    expectedRegion: string | undefined;
+  }): Promise<void> {
+    const { logicalId, vpcId, desired, old } = swap;
+    const attempt = async (what: string, step: () => Promise<void>): Promise<void> => {
+      try {
+        await step();
+      } catch (error) {
+        this.logger.debug(
+          safeMsg`VPCGatewayAttachment ${logicalId}: ${what} failed: ${describeAwsFailure(error).detail}`
+        );
+      }
+    };
+    if (swap.newAttachSent) {
+      await attempt(`detaching the new gateway ${desired.gatewayId}`, () =>
+        this.detachVpcGateway(
+          desired.kind,
+          desired.gatewayId,
+          vpcId,
+          logicalId,
+          swap.resourceType,
+          swap.physicalId,
+          swap.expectedRegion
+        )
+      );
+    }
+    if (old !== undefined) {
+      await attempt(`re-attaching the previous gateway ${old.id}`, () =>
+        this.attachVpcGateway(old.kind, old.id, vpcId, logicalId)
+      );
+    }
+    const attached: string[] = [];
+    for (const g of [
+      ...(old ? [{ kind: old.kind, id: old.id }] : []),
+      { kind: desired.kind, id: desired.gatewayId },
+    ]) {
+      try {
+        if (await this.isGatewayAttached(g.kind, g.id, vpcId)) attached.push(g.id);
+      } catch {
+        attached.push(`${g.id} (unreadable)`);
+      }
+    }
+    if (old !== undefined && attached.length === 1 && attached[0] === old.id) {
+      this.logger.warn(
+        safeMsg`VPCGatewayAttachment ${logicalId}: the gateway swap failed; the previous gateway ${old.id} is attached again, as the record says`
+      );
+      return;
+    }
+    const list = attached.length === 0 ? 'none' : attached.join(', ');
+    const previous = old?.id ?? 'none';
+    this.logger.warn(
+      safeMsg`VPCGatewayAttachment ${logicalId}: the gateway swap failed and VPC ${vpcId} now has attached: ${list}. The record still names the previous gateway (${previous}), the template the new one (${desired.gatewayId}). Redeploy before any destroy: a destroy detaches only ${previous}, and ${desired.gatewayId} left attached blocks DeleteVpc.`
+    );
+  }
+
+  /**
+   * Swap the attached gateway in place (go-to-k/cdkd#5216). CloudFormation
+   * documents `InternetGatewayId` and `VpnGatewayId` as "Update requires: No
+   * interruption" and only `VpcId` as create-only, and a create-first
+   * replacement cannot work here: AWS allows one internet gateway and one VPN
+   * gateway per VPC, so the new attach would be refused.
+   *
+   * The physicalId names the gateway, so the result carries the NEW
+   * `<gatewayId>|<vpcId>` with `wasReplaced: false`; the engine records it.
+   *
+   * - Same kind (VPN to VPN, IGW to IGW): detach the old gateway first, which
+   *   AWS requires, then attach the new one.
+   * - Different kinds: a VPC holds one of each, so the new gateway is attached
+   *   first and the old one detached after it.
+   *
+   * On a failure the record still names the old gateway, so
+   * {@link recoverFailedGatewaySwap} puts AWS back to match it: the new gateway
+   * is detached again if this swap attached it, and the old one re-attached.
+   *
+   * Every attach skips a gateway AWS already reports attached, so re-running
+   * an interrupted swap converges.
+   */
+  private async updateVpcGatewayAttachment(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    const desired = this.resolveVpcGatewayAttachmentTarget(logicalId, resourceType, properties);
+    const recorded = this.parseVpcGatewayAttachmentId(logicalId, physicalId, resourceType);
+    if (desired.vpcId !== recorded.vpcId) {
+      // `VpcId` is create-only, so the engine replaces before calling here.
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'VpcId is create-only: destroy + redeploy the VPCGatewayAttachment.'
+      );
+    }
+    const newPhysicalId = packCompositeId(
+      resourceType,
+      logicalId,
+      [
+        {
+          name: desired.kind === 'igw' ? 'internetGatewayId' : 'vpnGatewayId',
+          value: desired.gatewayId,
+        },
+        { name: 'vpcId', value: desired.vpcId },
+      ],
+      { maskSecrets: context?.maskSecrets }
+    );
+    const vpcId = desired.vpcId;
+
+    try {
+      const oldGatewayId =
+        recorded.gatewayId ??
+        (await this.resolveTokenRecordGateway(
+          recorded.kind,
+          vpcId,
+          previousProperties,
+          logicalId,
+          resourceType,
+          physicalId
+        ));
+      if (recorded.kind === desired.kind && oldGatewayId === desired.gatewayId) {
+        // Not trusted from the record alone: a rollback reverting a failed
+        // swap lands here, and AWS may hold no gateway. The attach skips one
+        // AWS already reports attached.
+        await this.attachVpcGateway(desired.kind, desired.gatewayId, vpcId, logicalId);
+        return { physicalId: newPhysicalId, wasReplaced: false };
+      }
+      const detachOld = async (): Promise<void> => {
+        if (oldGatewayId === undefined) return;
+        // An old gateway no longer attached (a swap whose restore failed, then
+        // a redeploy) is not detached again: AWS refuses that as not attached.
+        // A VPN gateway still `detaching` is waited out instead.
+        if (!(await this.isGatewayAttached(recorded.kind, oldGatewayId, vpcId))) {
+          if (recorded.kind === 'vgw') {
+            await this.waitForVpnGatewayAttachment(oldGatewayId, vpcId, 'detached', logicalId);
+          }
+          return;
+        }
+        await this.detachVpcGateway(
+          recorded.kind,
+          oldGatewayId,
+          vpcId,
+          logicalId,
+          resourceType,
+          physicalId,
+          context?.expectedRegion
+        );
+      };
+      let newAttachSent = false;
+      const attachNew = (): Promise<void> =>
+        this.attachVpcGateway(desired.kind, desired.gatewayId, vpcId, logicalId, () => {
+          newAttachSent = true;
+        });
+
+      try {
+        if (recorded.kind !== desired.kind) {
+          await attachNew();
+          await detachOld();
+        } else {
+          await detachOld();
+          await attachNew();
+        }
+      } catch (swapError) {
+        await this.recoverFailedGatewaySwap({
+          logicalId,
+          resourceType,
+          physicalId: newPhysicalId,
+          vpcId,
+          desired,
+          old: oldGatewayId === undefined ? undefined : { kind: recorded.kind, id: oldGatewayId },
+          newAttachSent,
+          expectedRegion: context?.expectedRegion,
+        });
+        throw swapError;
+      }
+      this.logger.debug(
+        safeMsg`Swapped VPCGatewayAttachment ${logicalId} in place: ${physicalId} -> ${newPhysicalId}`
+      );
+      return { physicalId: newPhysicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update VPCGatewayAttachment ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
   }
 
   private async deleteVpcGatewayAttachment(
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties: Record<string, unknown> | undefined,
     context?: DeleteContext
   ): Promise<void> {
     this.logger.debug(`Deleting VPCGatewayAttachment ${logicalId}: ${physicalId}`);
 
-    const parts = physicalId.split('|');
-    if (parts.length !== 2) {
-      throw new ProvisioningError(
-        compositeIdFormatMessage(EC2_VPC_GATEWAY_ATTACHMENT_ID_FORMAT, logicalId, physicalId),
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    const [internetGatewayId, vpcId] = parts;
+    const {
+      kind,
+      gatewayId: recordedGatewayId,
+      vpcId,
+    } = this.parseVpcGatewayAttachmentId(logicalId, physicalId, resourceType);
 
     try {
-      await this.withDependencyViolationRetry(
-        () =>
-          this.ec2Client.send(
-            new DetachInternetGatewayCommand({
-              InternetGatewayId: internetGatewayId,
-              VpcId: vpcId,
-            })
-          ),
-        { description: `DetachInternetGateway ${logicalId} (${internetGatewayId} from ${vpcId})` }
-      );
-      this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
-    } catch (error) {
-      if (this.isNotFoundError(error)) {
+      const gatewayId =
+        recordedGatewayId ??
+        (await this.resolveTokenRecordGateway(
+          kind,
+          vpcId,
+          properties,
+          logicalId,
+          resourceType,
+          physicalId
+        ));
+      if (gatewayId === undefined) {
+        // A type-token record (`VGW|vpc-…`) whose VPC has no such gateway: the
+        // empty filter answer is only "gone" in the region the record names.
         const clientRegion = await this.ec2Client.config.region();
         assertRegionMatch(
           clientRegion,
@@ -3352,11 +4443,25 @@ export class EC2Provider implements ResourceProvider {
           logicalId,
           physicalId
         );
-        this.logger.debug(`VPCGatewayAttachment ${physicalId} does not exist, skipping deletion`);
+        this.logger.debug(
+          safeMsg`VPCGatewayAttachment ${physicalId}: no gateway attached, skipping detach`
+        );
         return;
       }
+      await this.detachVpcGateway(
+        kind,
+        gatewayId,
+        vpcId,
+        logicalId,
+        resourceType,
+        physicalId,
+        context?.expectedRegion
+      );
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3368,6 +4473,7 @@ export class EC2Provider implements ResourceProvider {
           )
       );
     }
+    this.logger.debug(`Successfully deleted VPCGatewayAttachment ${logicalId}`);
   }
 
   // ─── AWS::EC2::NatGateway ─────────────────────────────────────────
@@ -3386,16 +4492,28 @@ export class EC2Provider implements ResourceProvider {
   private async createNatGateway(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NatGateway ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    // go-to-k/cdkd#2762: a REGIONAL gateway is created at the VPC level and
+    // takes VpcId, not SubnetId; a zonal one (the default) needs SubnetId.
+    const regional = properties['AvailabilityMode'] === 'regional';
     const subnetId = properties['SubnetId'] as string | undefined;
-    if (!subnetId) {
+    if (!subnetId && !regional) {
       throw new ProvisioningError(
-        `SubnetId is required for NatGateway ${logicalId}`,
+        `SubnetId is required for NatGateway ${logicalId} (a regional NAT gateway, AvailabilityMode: regional, takes VpcId instead)`,
+        resourceType,
+        logicalId
+      );
+    }
+    const zoneAddresses = readNatZoneAddresses(properties['AvailabilityZoneAddresses']);
+    if (zoneAddresses.kind === 'unusable') {
+      throw new ProvisioningError(
+        `AvailabilityZoneAddresses of NatGateway ${logicalId} ${zoneAddresses.reason}; each entry needs AvailabilityZone or AvailabilityZoneId and a non-empty AllocationIds list`,
         resourceType,
         logicalId
       );
@@ -3426,6 +4544,15 @@ export class EC2Provider implements ResourceProvider {
               ...(TagSpecifications && { TagSpecifications }),
               ClientToken: natGatewayToken.value,
               SubnetId: subnetId,
+              AvailabilityMode: properties['AvailabilityMode'] as AvailabilityMode | undefined,
+              VpcId: properties['VpcId'] as string | undefined,
+              ...(zoneAddresses.kind === 'usable' && {
+                AvailabilityZoneAddresses: zoneAddresses.entries.map((entry) => ({
+                  AvailabilityZone: entry.availabilityZone,
+                  AvailabilityZoneId: entry.availabilityZoneId,
+                  AllocationIds: entry.allocationIds,
+                })),
+              }),
               AllocationId: properties['AllocationId'] as string | undefined,
               ConnectivityType:
                 (properties['ConnectivityType'] as 'public' | 'private' | undefined) ?? undefined,
@@ -3442,16 +4569,27 @@ export class EC2Provider implements ResourceProvider {
       );
       const natGatewayId = response.NatGateway!.NatGatewayId!;
       createdId = natGatewayId;
+      // go-to-k/cdkd#5511: report before the tags and the available wait.
+      reportCreatedResource(logicalId, resourceType, natGatewayId);
 
       // Tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(natGatewayId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          natGatewayId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       // Wait for `available` state unless --no-wait is set. Same gating
       // pattern as CloudFront / RDS / ElastiCache providers (env var
       // `CDKD_NO_WAIT=true` is set by the CLI when --no-wait is passed).
+      // The waiter's last DescribeNatGateways answer carries the computed
+      // attributes, so recording them costs no extra call.
+      let described: NatGateway | undefined;
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
         this.logger.debug(`Waiting for NatGateway ${natGatewayId} to reach available state...`);
-        await waitUntilNatGatewayAvailable(
+        const waited = await waitUntilNatGatewayAvailable(
           // 15-min cap matches AWS's documented worst case for NAT
           // provisioning. Per-resource `--resource-timeout` (default
           // 30 min) still bounds the outer call as a backstop.
@@ -3470,6 +4608,9 @@ export class EC2Provider implements ResourceProvider {
           { client: this.ec2Client, maxWaitTime: 15 * 60, minDelay: 5, maxDelay: 10 },
           { NatGatewayIds: [natGatewayId] }
         );
+        described = (
+          waited.reason as { NatGateways?: NatGateway[] } | undefined
+        )?.NatGateways?.find((g) => g.NatGatewayId === natGatewayId);
         this.logger.debug(`NatGateway ${natGatewayId} is available`);
       } else {
         this.logger.debug(
@@ -3483,12 +4624,18 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId: natGatewayId,
         attributes: {
+          // Under --no-wait only the create's own answer is in hand: it carries
+          // the automatic-mode flags, while RouteTableId (and a zonal EniId)
+          // appear once the gateway is available, read by the attribute heal.
+          ...natGatewayAttributes(response.NatGateway ?? {}),
+          ...(described !== undefined && natGatewayAttributes(described)),
           NatGatewayId: natGatewayId,
         },
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3506,21 +4653,419 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
-  private updateNatGateway(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    // NAT Gateway is immutable on every property cdkd's
-    // `readCurrentState` surfaces (SubnetId / ConnectivityType /
-    // AllocationId / PrivateIpAddress are all CREATE-only). The deploy
-    // engine's replacement detection already routes property changes to
-    // DELETE + CREATE upstream of this method — `update()` is reached
-    // only via `cdkd drift --revert`, where silently no-op'ing would
-    // make the user think drift was reverted while AWS keeps the
-    // console-side change. Reject loudly instead. See PR I.
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::NatGateway',
+  /**
+   * `AWS::EC2::NatGateway` in place: `Tags` and a regional gateway's
+   * `AvailabilityZoneAddresses` (go-to-k/cdkd#2762), which the registry schema
+   * leaves mutable and CloudFormation updates without replacing the gateway.
+   *
+   * Every other property is either CREATE-only (the deploy engine's
+   * replacement detection routes it to DELETE + CREATE before this method; a
+   * change reaching here comes from `cdkd drift --revert`, and silently
+   * no-op'ing would read as a reverted drift) or a zonal gateway's secondary
+   * addresses, which this provider does not move: both are refused.
+   */
+  private async updateNatGateway(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
+  ): Promise<ResourceUpdateResult> {
+    this.logger.debug(safeMsg`Updating NatGateway ${logicalId}: ${physicalId}`);
+    const refuse = (property: string): never => {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
         logicalId,
-        'destroy + redeploy the NatGateway (and the dependent Routes). NAT Gateway properties are immutable in AWS.'
+        `destroy + redeploy the NatGateway (and the dependent Routes). cdkd cannot change ${property} of an existing NAT gateway`
+      );
+    };
+    // CREATE-only: a change only when both sides hold a value (a drift
+    // --revert bag carries readback keys the record never declared).
+    for (const key of [
+      'SubnetId',
+      'ConnectivityType',
+      'AllocationId',
+      'PrivateIpAddress',
+      'AvailabilityMode',
+      'VpcId',
+    ]) {
+      const next = properties[key];
+      const prev = previousProperties[key];
+      if (
+        next !== undefined &&
+        prev !== undefined &&
+        JSON.stringify(next) !== JSON.stringify(prev)
+      ) {
+        refuse(key);
+      }
+    }
+    // An automatic-mode gateway gaining zone addresses is a REPLACEMENT in
+    // CloudFormation (`natZoneAddressesAddedToAutomaticGateway` routes the
+    // deploy there); only `cdkd drift --revert` reaches this arm with it.
+    if (
+      previousProperties['AvailabilityZoneAddresses'] == null &&
+      properties['AvailabilityZoneAddresses'] != null
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'destroy + redeploy the NatGateway (and the dependent Routes). Adding AvailabilityZoneAddresses to a gateway created without it replaces the gateway'
+      );
+    }
+    // Mutable in CloudFormation, not moved here: any difference, an addition
+    // or a removal included.
+    for (const key of [
+      'SecondaryAllocationIds',
+      'SecondaryPrivateIpAddresses',
+      'SecondaryPrivateIpAddressCount',
+    ]) {
+      if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+        refuse(key);
+      }
+    }
+
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const mask = maskerOrIdentity(context?.maskSecrets);
+
+    try {
+      // The address plan is decided before the first mutating call, so a
+      // refusal leaves the gateway untouched.
+      let zonePlan: NatZoneAddressPlan | undefined;
+      if (
+        JSON.stringify(properties['AvailabilityZoneAddresses']) !==
+        JSON.stringify(previousProperties['AvailabilityZoneAddresses'])
+      ) {
+        zonePlan = await this.planNatGatewayZoneAddresses(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties['AvailabilityZoneAddresses']
+        );
+      }
+
+      // Addresses first: a refused address call leaves the tags unchanged too.
+      if (zonePlan !== undefined) {
+        await this.applyNatGatewayZoneAddresses(logicalId, physicalId, resourceType, zonePlan);
+      }
+
+      await this.applyTagDiff(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags'],
+        mask
+      );
+      this.logger.debug(safeMsg`Successfully updated NatGateway ${logicalId}`);
+      return { physicalId, wasReplaced: false };
+    } catch (error) {
+      if (error instanceof CdkdError) throw error;
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update NatGateway ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+  }
+
+  /**
+   * Plan a regional NAT gateway's `AvailabilityZoneAddresses` change against
+   * its live addresses, refusing — before any mutating call — a desired value
+   * that cannot be read (read as empty it would release every address) and an
+   * allocation id declared in a zone other than the one holding it.
+   */
+  private async planNatGatewayZoneAddresses(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    rawDesired: unknown
+  ): Promise<NatZoneAddressPlan | undefined> {
+    const desired = readNatZoneAddresses(rawDesired);
+    if (desired.kind === 'unusable') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `AvailabilityZoneAddresses of NatGateway ${logicalId} ${desired.reason}; each entry needs AvailabilityZone or AvailabilityZoneId and a non-empty AllocationIds list`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    if (desired.kind === 'absent') {
+      // CloudFormation fails this update too ("AvailabilityZoneAddress cannot
+      // be empty when AutoScalingIpsEnabled set to false"; A/B on #2762): a
+      // gateway created with explicit zones never returns to automatic mode,
+      // and AWS refuses to release its last address.
+      throw markNonRetryable(
+        new ProvisioningError(
+          `NatGateway ${logicalId} cannot drop AvailabilityZoneAddresses: a regional NAT gateway created with explicit zones does not return to automatic zone expansion, and CloudFormation refuses the same update. Keep at least one zone declared, or rename the logical id or change a create-only property to replace the gateway`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const response = await this.ec2Client.send(
+      new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+    );
+    const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+    if (gateway === undefined) {
+      throw new ProvisioningError(
+        `NatGateway ${logicalId} (${physicalId}) was not returned by DescribeNatGateways, so its addresses cannot be updated`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const plan = planNatZoneAddressUpdate(desired.entries, gateway.NatGatewayAddresses ?? []);
+    // What the plan saw, at --verbose: the vpc-nat-gateway fixture reads these
+    // lines to tell a wait that was needed and skipped from one AWS made moot.
+    for (const d of plan.disassociate) {
+      const status =
+        gateway.NatGatewayAddresses?.find((x) => x.AllocationId === d.allocationId)?.Status ??
+        'unknown';
+      this.logger.debug(
+        safeMsg`NatGateway ${physicalId} plans to release ${d.allocationId} (live status ${status})`
+      );
+    }
+    for (const id of plan.awaitingRelease) {
+      this.logger.debug(
+        safeMsg`NatGateway ${physicalId} plans to associate ${id}, which AWS is still releasing`
+      );
+    }
+    if (plan.moved.length > 0) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `NatGateway ${logicalId} declares ${plan.moved.join(', ')} in a different zone from the one that holds it; cdkd does not move an Elastic IP between zones in one update. Remove it from AvailabilityZoneAddresses in one deploy and add it to the new zone in the next`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    return plan;
+  }
+
+  /**
+   * Run a planned address change: associate first, release second — AWS
+   * refuses a release that would leave the gateway without an address.
+   *
+   * Returns once AWS accepts the calls, without waiting the minutes an
+   * association or release takes to settle (CloudFormation waits): the
+   * gateway keeps serving its other zones meanwhile. It waits only where AWS
+   * would otherwise REFUSE the call (each measured on #2762):
+   * - re-associating an address AWS is still releasing waits for the release;
+   * - releasing an address still being associated (no association id yet;
+   *   e.g. a rollback right after the deploy that added it) waits for the
+   *   association;
+   * - a release leaving the gateway no associated address
+   *   (`NatZoneAddressPlan.keptSettled`) waits until an address the template
+   *   keeps has associated.
+   */
+  private async applyNatGatewayZoneAddresses(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    plan: NatZoneAddressPlan
+  ): Promise<void> {
+    // ONE budget for every wait of this update, so their sum stays inside the
+    // default 30-minute --resource-timeout and a timeout names the wait.
+    const budget = { polls: NAT_ADDRESS_SETTLE_POLLS };
+    if (plan.awaitingRelease.length > 0) {
+      const ids = new Set(plan.awaitingRelease);
+      await this.pollNatGateway(
+        logicalId,
+        physicalId,
+        resourceType,
+        budget,
+        `the release of ${plan.awaitingRelease.join(', ')}`,
+        'nothing was associated or released',
+        (gateway) =>
+          (gateway.NatGatewayAddresses ?? []).some(
+            (a) =>
+              typeof a.AllocationId === 'string' &&
+              ids.has(a.AllocationId) &&
+              a.Status === 'disassociating'
+          )
+            ? 'wait'
+            : 'done'
+      );
+    }
+    for (const entry of plan.associate) {
+      await this.ec2Client.send(
+        new AssociateNatGatewayAddressCommand({
+          NatGatewayId: physicalId,
+          AllocationIds: entry.allocationIds,
+          AvailabilityZone: entry.availabilityZone,
+          AvailabilityZoneId: entry.availabilityZoneId,
+        })
+      );
+    }
+    if (plan.disassociate.length === 0) return;
+
+    let associationIds = plan.disassociate
+      .map((d) => d.associationId)
+      .filter((id): id is string => id !== undefined);
+    const unassociated = plan.disassociate.filter((d) => d.associationId === undefined);
+    if (unassociated.length > 0) {
+      const targets = new Set(unassociated.map((d) => d.allocationId));
+      const gateway = await this.pollNatGateway(
+        logicalId,
+        physicalId,
+        resourceType,
+        budget,
+        `the association of ${unassociated.map((d) => d.allocationId).join(', ')} before releasing it`,
+        'the release was not sent',
+        (gw) =>
+          (gw.NatGatewayAddresses ?? []).some(
+            (a) =>
+              typeof a.AllocationId === 'string' &&
+              targets.has(a.AllocationId) &&
+              natAddressHeld(a) &&
+              !(a.Status === 'succeeded' && typeof a.AssociationId === 'string')
+          )
+            ? 'wait'
+            : 'done'
+      );
+      // A target whose association failed (or that AWS already dropped) is no
+      // longer held: there is nothing to release for it.
+      for (const a of gateway.NatGatewayAddresses ?? []) {
+        if (
+          typeof a.AllocationId === 'string' &&
+          targets.has(a.AllocationId) &&
+          natAddressHeld(a) &&
+          typeof a.AssociationId === 'string'
+        ) {
+          associationIds.push(a.AssociationId);
+        }
+      }
+      associationIds = [...new Set(associationIds)];
+    }
+    if (associationIds.length === 0) return;
+
+    if (!plan.keptSettled) {
+      const releasing = new Set(plan.disassociate.map((d) => d.allocationId));
+      const added = plan.associate.flatMap((e) => e.allocationIds);
+      let unlisted = 0;
+      await this.pollNatGateway(
+        logicalId,
+        physicalId,
+        resourceType,
+        budget,
+        'an address the template keeps to associate before releasing the last associated one',
+        'the release was not sent',
+        (gw) => {
+          const kept = (gw.NatGatewayAddresses ?? []).filter(
+            (a) => typeof a.AllocationId === 'string' && !releasing.has(a.AllocationId)
+          );
+          if (kept.some((a) => a.Status === 'succeeded')) return 'done';
+          if (kept.some((a) => a.Status === 'associating')) return 'wait';
+          // DescribeNatGateways may not list a just-associated address yet,
+          // but only briefly: one it never lists will never settle.
+          const missing = added.filter((id) => !kept.some((a) => a.AllocationId === id));
+          if (missing.length > 0) {
+            unlisted++;
+            if (unlisted <= NAT_ADDRESS_UNLISTED_POLLS) return 'wait';
+            return markNonRetryable(
+              new ProvisioningError(
+                `NatGateway ${logicalId} does not list ${missing.join(', ')} after associating it, so its last associated address was not released. Check \`aws ec2 describe-nat-gateways --nat-gateway-ids ${physicalId}\` and re-run the deploy`,
+                resourceType,
+                logicalId,
+                physicalId
+              )
+            );
+          }
+          // Only this update's own associations are named: an older failed
+          // address is not what kept the release from going ahead.
+          const failed = added.filter(
+            (id) => kept.find((a) => a.AllocationId === id)?.Status === 'failed'
+          );
+          return markNonRetryable(
+            new ProvisioningError(
+              failed.length > 0
+                ? `NatGateway ${logicalId} could not associate ${failed.join(', ')}, so its last associated address was not released. Read the failure with \`aws ec2 describe-nat-gateways --nat-gateway-ids ${physicalId}\` and fix the declared Elastic IP`
+                : `NatGateway ${logicalId} has no other associated or associating address, so its last associated address was not released. Declare an Elastic IP the gateway can associate`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+      );
+    }
+    await this.ec2Client.send(
+      new DisassociateNatGatewayAddressCommand({
+        NatGatewayId: physicalId,
+        AssociationIds: associationIds,
+      })
+    );
+  }
+
+  /**
+   * Poll `DescribeNatGateways` until `decide` answers `'done'` (returning that
+   * read), throwing the error it returns instead. Every wait of one update
+   * draws on the same `budget` ({@link NAT_ADDRESS_SETTLE_POLLS} in all), and
+   * is Ctrl-C aware; `unsent` says what the timeout leaves undone. A gateway that is gone,
+   * deleting or failed ends the wait at once: no address of it will settle.
+   */
+  private async pollNatGateway(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    budget: { polls: number },
+    what: string,
+    unsent: string,
+    decide: (gateway: NatGateway) => 'done' | 'wait' | ProvisioningError
+  ): Promise<NatGateway> {
+    this.logger.debug(safeMsg`Waiting for NatGateway ${physicalId}: ${what}...`);
+    const watch = startInterruptWatch(`NatGateway ${logicalId} address wait`);
+    try {
+      while (budget.polls > 0) {
+        budget.polls--;
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const response = await this.ec2Client.send(
+          new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
+        );
+        const gateway = response.NatGateways?.find((g) => g.NatGatewayId === physicalId);
+        if (
+          gateway === undefined ||
+          gateway.State === 'deleting' ||
+          gateway.State === 'deleted' ||
+          gateway.State === 'failed'
+        ) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `NatGateway ${logicalId} (${physicalId}) is ${gateway?.State ?? 'no longer returned by DescribeNatGateways'}, so cdkd stopped waiting for ${what}`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        const verdict = decide(gateway);
+        if (verdict === 'done') return gateway;
+        if (verdict !== 'wait') throw verdict;
+        await this.sleep(NAT_ADDRESS_SETTLE_DELAY_MS);
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        `NatGateway ${logicalId} ran out of its ${(NAT_ADDRESS_SETTLE_POLLS * NAT_ADDRESS_SETTLE_DELAY_MS) / 60000}-minute address wait while waiting for ${what}; ${unsent}. Re-run the deploy once \`aws ec2 describe-nat-gateways --nat-gateway-ids ${physicalId}\` shows its addresses settled`,
+        resourceType,
+        logicalId,
+        physicalId
       )
     );
   }
@@ -3557,7 +5102,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3612,10 +5158,9 @@ export class EC2Provider implements ResourceProvider {
       // can clean it up manually. We do NOT re-throw because doing
       // so would block downstream Subnet / VPC delete from running,
       // which is worse.
+      const waitHead = `Wait for NatGateway ${physicalId} deletion did not complete cleanly: `;
       this.logger.warn(
-        `Wait for NatGateway ${physicalId} deletion did not complete cleanly: ${
-          describeAwsFailure(error).detail
-        } — proceeding with downstream delete steps`
+        `${waitHead}${this.warnFailureSentence(waitHead, error, maskerOrIdentity(context?.maskSecrets))} Proceeding with downstream delete steps.`
       );
     }
 
@@ -3627,7 +5172,8 @@ export class EC2Provider implements ResourceProvider {
   private async createRouteTable(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating RouteTable ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -3667,7 +5213,13 @@ export class EC2Provider implements ResourceProvider {
       const routeTableId = response.RouteTable!.RouteTableId!;
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(routeTableId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          routeTableId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       this.logger.debug(`Successfully created RouteTable ${logicalId}: ${routeTableId}`);
 
@@ -3681,6 +5233,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3692,17 +5245,6 @@ export class EC2Provider implements ResourceProvider {
           )
       );
     }
-  }
-
-  private updateRouteTable(logicalId: string, physicalId: string): Promise<ResourceUpdateResult> {
-    void physicalId;
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
-        'AWS::EC2::RouteTable',
-        logicalId,
-        'destroy + redeploy the RouteTable (and its associated Routes / SubnetRouteTableAssociations). VpcId is immutable.'
-      )
-    );
   }
 
   private async deleteRouteTable(
@@ -3730,7 +5272,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3879,6 +5422,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -3996,6 +5540,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (error) {
         const cause = error instanceof Error ? error : undefined;
         throw this.wrapCaughtError(
+          maskerOrIdentity(maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -4013,7 +5558,12 @@ export class EC2Provider implements ResourceProvider {
     // route table change that did not take the replacement path): delete the
     // recorded route and create the desired one.
     try {
-      await this.deleteRoute(logicalId, physicalId, resourceType);
+      await this.deleteRoute(
+        logicalId,
+        physicalId,
+        resourceType,
+        maskSecrets ? { maskSecrets } : undefined
+      );
       const createResult = await this.createRoute(
         logicalId,
         resourceType,
@@ -4065,6 +5615,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4127,7 +5678,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4146,7 +5698,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSubnetRouteTableAssociation(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SubnetRouteTableAssociation ${logicalId}`);
 
@@ -4181,6 +5734,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4203,7 +5757,7 @@ export class EC2Provider implements ResourceProvider {
       new ResourceUpdateNotSupportedError(
         'AWS::EC2::SubnetRouteTableAssociation',
         logicalId,
-        'destroy + redeploy the association. (SubnetId, RouteTableId) is immutable.'
+        'destroy + redeploy the association. (SubnetId, RouteTableId) is immutable'
       )
     );
   }
@@ -4235,7 +5789,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4254,7 +5809,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSecurityGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SecurityGroup ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -4284,7 +5840,11 @@ export class EC2Provider implements ResourceProvider {
         (TagSpecifications) =>
           createClient.send(
             new CreateSecurityGroupCommand({
-              GroupName: (properties['GroupName'] as string) ?? logicalId,
+              // go-to-k/cdkd#5095: unique per VPC, so a stack with an
+              // instance id generates it; a legacy stack keeps the logical id.
+              GroupName:
+                (properties['GroupName'] as string) ??
+                generatedNameFor('AWS::EC2::SecurityGroup', logicalId),
               Description: groupDescription,
               VpcId: (properties['VpcId'] as string) ?? undefined,
               ...(TagSpecifications && { TagSpecifications }),
@@ -4293,6 +5853,8 @@ export class EC2Provider implements ResourceProvider {
       );
 
       const groupId = response.GroupId!;
+      // go-to-k/cdkd#5511: report before the wiring calls.
+      reportCreatedResource(logicalId, resourceType, groupId);
 
       // CreateSecurityGroupCommand has succeeded — AWS has now committed
       // the SG. If applyTags / Authorize* / Revoke* throws, the SG exists
@@ -4356,7 +5918,14 @@ export class EC2Provider implements ResourceProvider {
           });
         await Promise.all([
           // Only tags the create did not carry (go-to-k/cdkd#4971).
-          recordRejection(this.applyTags(groupId, tagsApplied ? [] : desiredTags, logicalId)),
+          recordRejection(
+            this.applyTags(
+              groupId,
+              tagsApplied ? [] : desiredTags,
+              logicalId,
+              maskerOrIdentity(context?.maskSecrets)
+            )
+          ),
           recordRejection(this.authorizeInlineIngress(groupId, ingressRules)),
           recordRejection(this.applyInlineEgress(groupId, egressRules)),
         ]);
@@ -4366,13 +5935,15 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new DeleteSecurityGroupCommand({ GroupId: groupId }));
+          retractCreatedResource(logicalId, resourceType, groupId);
           this.logger.debug(
             `Cleaned up partially-created SecurityGroup ${logicalId} (${groupId}) after wiring failure`
           );
         } catch (cleanupError) {
           leftBehindId = groupId;
+          const cleanupHead = `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): `;
           this.logger.warn(
-            `Failed to clean up partially-created SecurityGroup ${logicalId} (${groupId}): ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} Manual deletion may be required before the next deploy: ${pasteableAwsCommand()`aws ec2 delete-security-group --group-id ${groupId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -4392,6 +5963,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4429,7 +6001,7 @@ export class EC2Provider implements ResourceProvider {
     await this.ec2Client.send(
       new AuthorizeSecurityGroupIngressCommand({
         GroupId: groupId,
-        IpPermissions: ingressRules.map((rule) => this.buildIpPermission(rule)),
+        IpPermissions: ingressRules.map((rule) => this.buildIpPermission(rule, 'ingress', true)),
       })
     );
   }
@@ -4513,7 +6085,8 @@ export class EC2Provider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating SecurityGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -4526,7 +6099,8 @@ export class EC2Provider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       // Diff and apply ingress rule changes (symmetric with egress below).
@@ -4560,6 +6134,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -4633,7 +6208,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -4969,6 +6545,7 @@ export class EC2Provider implements ResourceProvider {
       }
       const cause = error instanceof Error ? error : undefined;
       const failure = this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -5561,7 +7138,12 @@ export class EC2Provider implements ResourceProvider {
               previousProperties,
               // The old rule's recorded `sgr-` id, when there is one, revokes
               // exactly it (go-to-k/cdkd#4355).
-              recordedAttributes ? { recordedAttributes } : undefined
+              recordedAttributes || maskSecrets
+                ? {
+                    ...(recordedAttributes && { recordedAttributes }),
+                    ...(maskSecrets && { maskSecrets }),
+                  }
+                : undefined
             );
       // go-to-k/cdkd#3952: delete-then-create must ABORT when the revoke was
       // skipped (provider-delete-path.md): authorizing the new rule would leave
@@ -5632,6 +7214,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -5832,7 +7415,8 @@ export class EC2Provider implements ResourceProvider {
         return notMatched();
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -5875,6 +7459,11 @@ export class EC2Provider implements ResourceProvider {
       'AWS::EC2::Instance InstanceType',
       replayWarn(this.logger, context)
     );
+
+    // Built before any AWS call: it refuses an `Ebs.Encrypted` it cannot read
+    // as a boolean (issue #5445), which must stop the create, not launch an
+    // instance whose volume silently drops the declared encryption.
+    const blockDeviceMappings = this.buildBlockDeviceMappings(properties, logicalId);
 
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // terminate the instance this call launched.
@@ -5943,7 +7532,7 @@ export class EC2Provider implements ResourceProvider {
               IamInstanceProfile: iamInstanceProfile
                 ? { Arn: iamInstanceProfile.arn, Name: iamInstanceProfile.name }
                 : undefined,
-              BlockDeviceMappings: this.buildBlockDeviceMappings(properties),
+              BlockDeviceMappings: blockDeviceMappings,
               // Security-focused backfill (#609). These all ride on RunInstances
               // input so they take effect at launch (no post-create modify needed):
               //  - DisableApiTermination: termination protection (security: a
@@ -5981,6 +7570,8 @@ export class EC2Provider implements ResourceProvider {
       }
 
       const instanceId = instance.InstanceId;
+      // go-to-k/cdkd#5511: report before the tags and the running wait.
+      reportCreatedResource(logicalId, resourceType, instanceId);
 
       // RunInstancesCommand has succeeded — AWS has now launched the
       // instance and BILLING HAS STARTED. This is the **cost-leak class**
@@ -6001,7 +7592,13 @@ export class EC2Provider implements ResourceProvider {
       // failed.
       try {
         // Apply tags the create did not carry (go-to-k/cdkd#4971)
-        if (!tagsApplied) await this.applyTags(instanceId, desiredTags, logicalId);
+        if (!tagsApplied)
+          await this.applyTags(
+            instanceId,
+            desiredTags,
+            logicalId,
+            maskerOrIdentity(context?.maskSecrets)
+          );
 
         // Wait for instance to reach running state unless --no-wait is set.
         // Same gating pattern as the NAT Gateway wait above. Before issue
@@ -6121,6 +7718,7 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+          retractCreatedResource(logicalId, resourceType, instanceId);
           // Released only now, because only now is the instance this token
           // names actually going away: a retry reusing it would be handed back
           // a terminated instance. The ordering is load-bearing in the other
@@ -6134,8 +7732,9 @@ export class EC2Provider implements ResourceProvider {
           );
         } catch (cleanupError) {
           leftBehindId = instanceId;
+          const cleanupHead = `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): `;
           this.logger.warn(
-            `Failed to terminate partially-created EC2 Instance ${logicalId} (${instanceId}): ${describeAwsFailure(cleanupError).detail}. THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
+            `${cleanupHead}${this.warnFailureSentence(cleanupHead, cleanupError, maskerOrIdentity(context?.maskSecrets))} THE INSTANCE IS STILL RUNNING AND BILLING. Manual termination required: ${pasteableAwsCommand(context?.maskSecrets)`aws ec2 terminate-instances --instance-ids ${instanceId}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -6147,6 +7746,7 @@ export class EC2Provider implements ResourceProvider {
         error instanceof ProvisioningError
           ? error
           : this.wrapCaughtError(
+              maskerOrIdentity(context?.maskSecrets),
               error,
               (text) =>
                 new ProvisioningError(
@@ -6367,9 +7967,12 @@ export class EC2Provider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // Most EC2 Instance property changes require replacement.
-    // Immutable properties (ImageId, SubnetId, KeyName) are handled by
-    // the deployment engine's replacement detection.
+    // Immutable properties (ImageId, SubnetId, KeyName, ...) and the
+    // replacing shapes of SecurityGroupIds / BlockDeviceMappings are handled
+    // by the deployment engine's replacement detection. InstanceType,
+    // UserData, IamInstanceProfile, SecurityGroupIds and a
+    // DeleteOnTermination-only BlockDeviceMappings change are applied here
+    // (issue #5446; see planInstanceMemberUpdates).
     // Tags plus four of the five security-focused backfill props (#609) —
     // DisableApiTermination / Monitoring / MetadataOptions /
     // CreditSpecification — are mutable in-place, so they are diffed
@@ -6390,17 +7993,33 @@ export class EC2Provider implements ResourceProvider {
       previousProperties,
       context
     );
+    // Issue #5446: decided (and every refusal raised) before any mutating
+    // call, so a refused update applies nothing.
+    const memberPlan = this.planInstanceMemberUpdates(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
 
     try {
+      // Reads and refusals, before the first mutating call below.
+      await this.prepareInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
+
       await this.applyTagDiff(
         physicalId,
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        maskerOrIdentity(context?.maskSecrets)
       );
 
       await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
+
+      await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
 
       // Refresh attributes. The map REPLACES the record's (the engine does
       // not merge it with the previous one), and that is the right answer
@@ -6421,8 +8040,17 @@ export class EC2Provider implements ResourceProvider {
         attributes: describedInstanceAttributes(physicalId, instance),
       };
     } catch (error) {
+      // Issue #5446: the stop/start waits throw their own non-retryable
+      // ProvisioningError, and Ctrl-C an InterruptedWaitError; both pass
+      // through unwrapped so the engine sees what they are.
+      // A CdkdError here is cdkd-authored (a refusal, a wait's own error) and
+      // carries no AWS text, so skipping wrapCaughtError's masking is safe for
+      // every helper this try calls today; a helper that rethrows a CdkdError
+      // built from AWS text must mask it itself.
+      if (error instanceof CdkdError || isInterruptedWaitError(error)) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -6573,6 +8201,666 @@ export class EC2Provider implements ResourceProvider {
   }
 
   /**
+   * Issue #5446: decide which of `InstanceType`, `UserData`,
+   * `IamInstanceProfile`, `SecurityGroupIds` and a
+   * `BlockDeviceMappings[].Ebs.DeleteOnTermination`-only change this update
+   * applies, and raise every refusal, before any mutating call.
+   *
+   * What CloudFormation does, MEASURED (us-east-1, 2026-10-28, a t3.nano):
+   *  - `InstanceType`, `UserData`: in place with a stop and a start (same
+   *    instance, new launch time). A removed `UserData` clears it, also with
+   *    a stop and start. A removed `InstanceType` FAILS the update ("No
+   *    attributes specified"), so it is refused here, as
+   *    `guardTerminationProtectionRemoval` refuses its sibling.
+   *  - `IamInstanceProfile`: in place, no interruption; removed, the profile
+   *    is disassociated.
+   *  - `SecurityGroupIds` with a `SubnetId`: in place, no interruption; removed,
+   *    the instance gets its VPC's `default` group. (Without a `SubnetId`
+   *    CloudFormation replaces; the replacement rule routes that.)
+   *  - `BlockDeviceMappings`: only a `DeleteOnTermination` change is in place;
+   *    everything else is routed to replacement.
+   *
+   * A member is CHANGED per the engine's `changedProperties` when it is set
+   * (a redacted state value cannot be compared to a resolved one), else per
+   * the two bags. A member is REMOVED per `removedProperties`, else per the
+   * two bags; `drift --revert` names none, and a key its readback lacks
+   * (`UserData`) is therefore never cleared there.
+   *
+   * Refused before any call: a value the deploy cannot send (a
+   * `{{resolve:...}}` token or the redaction mask, which a state record holds
+   * in place of a secret) and a removed `InstanceType`. A stop on an
+   * instance-store-backed instance is refused by
+   * `prepareInstanceMemberUpdates`, also before any mutating call.
+   */
+  private planInstanceMemberUpdates(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): InstanceMemberPlan {
+    const plan: InstanceMemberPlan = {};
+    const removed = (key: string): boolean =>
+      context?.removedProperties !== undefined
+        ? context.removedProperties.has(key)
+        : previousProperties[key] !== undefined && properties[key] === undefined;
+    const changed = (key: string, same: (a: unknown, b: unknown) => boolean): boolean => {
+      const before = previousProperties[key];
+      const after = properties[key];
+      if (after === undefined && !removed(key)) return false;
+      if (context?.changedProperties !== undefined && !context.changedProperties.has(key)) {
+        return false;
+      }
+      // Byte-equal sides are no change, stand-ins included (a rollback revert
+      // compares two state records redacted alike). Otherwise two equivalent
+      // values are no change unless one is a stand-in: a redacted record
+      // cannot say whether the value behind it moved.
+      if (isDeepStrictEqual(before, after)) {
+        // Two stand-ins alike on a rollback revert: whether the value behind
+        // them moved is unknowable, so the member keeps its live value; say so.
+        if (context?.replayingState === true && isRecordedStandIn(after)) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): both sides of the rollback record ${key} as a stand-in (an unresolved {{resolve:...}} reference or the redaction mask), so cdkd cannot tell whether it changed; the rollback leaves ${key} at its current AWS value.`
+          );
+        }
+        return false;
+      }
+      const comparable = !isRecordedStandIn(before) && !isRecordedStandIn(after);
+      return !(comparable && same(before, after));
+    };
+    // A stand-in cannot be sent. A forward update refuses it; a rollback
+    // revert (a state record on one side) keeps that member's live value
+    // and warns, so the revert of the other members still runs.
+    const standInSkips = (key: string): boolean => {
+      if (!isRecordedStandIn(properties[key])) return false;
+      if (context?.replayingState === true) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the state being restored records ${key} as a stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send; the rollback leaves ${key} at its current AWS value.`
+        );
+        return true;
+      }
+      throw refusedBeforeApplying(
+        new ProvisioningError(
+          `${logicalId} (${resourceType}): ${key} holds a recorded stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send. The instance was not updated; deploy from the template so the value resolves.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    };
+
+    // InstanceType: a removal fails in CloudFormation.
+    if (changed('InstanceType', (a, b) => a === b)) {
+      if (properties['InstanceType'] === undefined) {
+        if (context?.replayingState === true) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): the state being restored does not declare InstanceType; the rollback leaves the instance type at its current AWS value.`
+          );
+        } else {
+          throw refusedBeforeApplying(
+            new ProvisioningError(
+              safeMsg`${logicalId} (${resourceType}): InstanceType was removed from the template, and CloudFormation fails that update for an existing instance. Keep it declared (set it to the instance's current type to leave it unchanged). The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+      } else if (!standInSkips('InstanceType')) {
+        plan.instanceType = requireConfigString(
+          properties['InstanceType'],
+          '',
+          'AWS::EC2::Instance InstanceType'
+        );
+      }
+    }
+
+    // UserData: a removal clears it.
+    if (changed('UserData', (a, b) => a === b)) {
+      const userData = properties['UserData'];
+      if (userData === undefined) {
+        plan.userData = new Uint8Array(0);
+      } else if (!standInSkips('UserData')) {
+        if (typeof userData !== 'string') {
+          throw refusedBeforeApplying(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): UserData must be a base64 string (Fn::Base64), got a ${Array.isArray(userData) ? 'list' : typeof userData}. The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        // CloudFormation's UserData is base64 text. ModifyInstanceAttribute's
+        // blob is the RAW bytes (the SDK base64-encodes it on the wire), so the
+        // template value is decoded once here; sending its text would store
+        // base64 as the user data.
+        plan.userData = new Uint8Array(Buffer.from(userData, 'base64'));
+      }
+    }
+
+    // IamInstanceProfile: compared by profile name (state carries the
+    // template's name, a drift readback the ARN).
+    if (changed('IamInstanceProfile', (a, b) => instanceProfileKey(a) === instanceProfileKey(b))) {
+      if (properties['IamInstanceProfile'] === undefined) {
+        plan.profile = { kind: 'remove' };
+      } else if (!standInSkips('IamInstanceProfile')) {
+        const desired = this.normalizeIamInstanceProfile(properties['IamInstanceProfile']);
+        if (desired === undefined) {
+          throw refusedBeforeApplying(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): IamInstanceProfile is neither a profile name, an ARN, nor an {Arn,Name} object. The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        plan.profile = { kind: 'set', ...desired };
+      }
+    }
+
+    // SecurityGroupIds: compared as sets (the readback's order is AWS's).
+    if (changed('SecurityGroupIds', (a, b) => sameStringSet(a, b))) {
+      const groups = properties['SecurityGroupIds'];
+      if (groups === undefined) {
+        plan.securityGroups = { kind: 'vpc-default' };
+      } else {
+        const ids = Array.isArray(groups) ? groups : undefined;
+        if (
+          ids === undefined ||
+          ids.length === 0 ||
+          !ids.every((g) => typeof g === 'string' && g !== '')
+        ) {
+          throw refusedBeforeApplying(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): SecurityGroupIds must be a non-empty list of security group ids. The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        if (!standInSkips('SecurityGroupIds')) {
+          plan.securityGroups = { kind: 'set', ids: ids as string[] };
+        }
+      }
+    }
+
+    // BlockDeviceMappings: only a DeleteOnTermination-only change reaches an
+    // in-place update; anything else the replacement rule routes away, and
+    // what is left here (a readback bag, a direct call) has no API.
+    const beforeBdm = previousProperties['BlockDeviceMappings'];
+    const afterBdm = properties['BlockDeviceMappings'];
+    if (
+      afterBdm !== undefined &&
+      (context?.changedProperties === undefined ||
+        context.changedProperties.has('BlockDeviceMappings')) &&
+      blockDeviceMappingsDifferOnlyInDeleteOnTermination(beforeBdm, afterBdm)
+    ) {
+      const flips: Array<{ DeviceName: string; DeleteOnTermination: boolean }> = [];
+      (afterBdm as Array<Record<string, unknown>>).forEach((m, i) => {
+        const before = (beforeBdm as Array<Record<string, unknown>>)[i];
+        const read = (x: Record<string, unknown> | undefined): boolean | undefined => {
+          const ebs = x?.['Ebs'] as Record<string, unknown> | undefined;
+          if (ebs === undefined || ebs === null) return undefined;
+          return this.coerceBool(ebs['DeleteOnTermination']) ?? true;
+        };
+        const want = read(m);
+        if (want !== undefined && want !== read(before) && typeof m['DeviceName'] === 'string') {
+          flips.push({ DeviceName: m['DeviceName'], DeleteOnTermination: want });
+        }
+      });
+      if (flips.length > 0) plan.deleteOnTermination = flips;
+    }
+
+    return plan;
+  }
+
+  /**
+   * Issue #5446: the reads and refusals that need AWS, before any mutating
+   * call of the update. An InstanceType / UserData change needs a stop: an
+   * instance-store-backed instance cannot be stopped (CloudFormation replaces
+   * it; refused with ResourceUpdateNotSupportedError, so
+   * `cdkd deploy --replace` takes it), and an instance in any state but
+   * pending / running / stopping / stopped cannot be stopped and started. A
+   * removed `SecurityGroupIds` resolves the VPC's `default` group here, so a
+   * missing one refuses the update before anything is sent.
+   */
+  private async prepareInstanceMemberUpdates(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    plan: InstanceMemberPlan
+  ): Promise<void> {
+    const needsStop = plan.instanceType !== undefined || plan.userData !== undefined;
+    const needsDefaultGroup = plan.securityGroups?.kind === 'vpc-default';
+    if (!needsStop && !needsDefaultGroup) return;
+    const resp = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    const instance = resp.Reservations?.[0]?.Instances?.[0];
+    if (needsStop) {
+      const members = [
+        plan.instanceType !== undefined ? 'InstanceType' : '',
+        plan.userData !== undefined ? 'UserData' : '',
+      ]
+        .filter(Boolean)
+        .join(' and ');
+      if (instance?.RootDeviceType === 'instance-store') {
+        throw markRefusedBeforeApplying(
+          new ResourceUpdateNotSupportedError(
+            resourceType,
+            logicalId,
+            `${members} can change only on a stopped instance, and an instance-store-backed instance cannot be stopped; CloudFormation replaces it. Re-deploy with cdkd deploy --replace.`
+          )
+        );
+      }
+      const state = instance?.State?.Name;
+      if (!STOPPABLE_INSTANCE_STATES.has(state ?? '')) {
+        throw refusedBeforeApplying(
+          new ProvisioningError(
+            `${logicalId} (${resourceType}): instance ${physicalId} is ${state ?? 'not returned by DescribeInstances'}, so its ${members} cannot be changed. The instance was not updated.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+    }
+    if (needsDefaultGroup) {
+      plan.securityGroups = {
+        kind: 'set',
+        ids: [
+          await this.vpcDefaultSecurityGroupId(
+            logicalId,
+            physicalId,
+            resourceType,
+            instance?.VpcId
+          ),
+        ],
+      };
+    }
+  }
+
+  /**
+   * Issue #5446: apply a {@link planInstanceMemberUpdates} plan, after
+   * {@link prepareInstanceMemberUpdates}. The calls that need no interruption
+   * go first (groups, profile, DeleteOnTermination), then one stop -> modify
+   * -> start covers InstanceType and UserData together, as CloudFormation's
+   * single launch-time move shows.
+   *
+   * An instance the user had already stopped is modified and left stopped,
+   * unless cdkd itself left it stopped earlier in this process (a failed
+   * start, which the rollback then reverts): CloudFormation's rollback starts
+   * it again, and so does this. Any failure after cdkd's stop starts the
+   * instance again (best effort) and says which changes it already carries;
+   * when that is not possible (an interrupt, an expired deadline, a start
+   * that itself failed) the warning names the `aws ec2 start-instances`
+   * command. `--no-wait` skips only the final wait for `running`: the modify
+   * needs `stopped`.
+   */
+  private async applyInstanceMemberUpdates(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    plan: InstanceMemberPlan
+  ): Promise<void> {
+    // What this update has already changed on the instance, for a warning
+    // after a failure to name (never more than was sent).
+    const applied: string[] = [];
+    if (plan.securityGroups?.kind === 'set') {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          Groups: plan.securityGroups.ids,
+        })
+      );
+      applied.push('the new SecurityGroupIds');
+    }
+
+    if (plan.profile !== undefined) {
+      await this.applyInstanceProfileChange(logicalId, physicalId, plan.profile);
+      applied.push(
+        plan.profile.kind === 'remove'
+          ? 'the IamInstanceProfile removed'
+          : 'the new IamInstanceProfile'
+      );
+    }
+
+    if (plan.deleteOnTermination !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          BlockDeviceMappings: plan.deleteOnTermination.map((f) => ({
+            DeviceName: f.DeviceName,
+            Ebs: { DeleteOnTermination: f.DeleteOnTermination },
+          })),
+        })
+      );
+      applied.push('the new DeleteOnTermination');
+    }
+
+    if (plan.instanceType === undefined && plan.userData === undefined) {
+      // An instance cdkd stopped and could not start again earlier in this
+      // process (a rollback whose only stop member was skipped) is started,
+      // once it has finished stopping; one already running is left alone.
+      if (instancesLeftStoppedByCdkd.has(physicalId)) {
+        let state = await this.readInstanceState(physicalId);
+        if (state === 'stopping') {
+          state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
+        }
+        if (state === 'stopped') {
+          await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+        }
+        instancesLeftStoppedByCdkd.delete(physicalId);
+      }
+      return;
+    }
+
+    let state = await this.readInstanceState(physicalId);
+    if (state === 'pending') {
+      state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'running');
+    } else if (state === 'stopping') {
+      state = await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
+    }
+    if (state !== 'stopped' && state !== 'running') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${logicalId} (${resourceType}): instance ${physicalId} became ${state ?? 'not returned by DescribeInstances'} during the update, so its InstanceType / UserData were not changed`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const startAfter = state === 'running' || instancesLeftStoppedByCdkd.has(physicalId);
+
+    let phase: 'stop' | 'modify' | 'start' | 'wait' = 'stop';
+    let stopIssued = false;
+    try {
+      if (state === 'running') {
+        this.logger.info(
+          safeMsg`Stopping EC2 Instance ${logicalId} (${physicalId}) to change its ${plan.instanceType !== undefined ? 'InstanceType' : ''}${plan.instanceType !== undefined && plan.userData !== undefined ? ' and ' : ''}${plan.userData !== undefined ? 'UserData' : ''}; it is started again afterwards`
+        );
+        await this.ec2Client.send(new StopInstancesCommand({ InstanceIds: [physicalId] }));
+        stopIssued = true;
+        await this.waitForInstanceState(logicalId, physicalId, resourceType, 'stopped');
+      }
+      phase = 'modify';
+      if (plan.instanceType !== undefined) {
+        await this.ec2Client.send(
+          new ModifyInstanceAttributeCommand({
+            InstanceId: physicalId,
+            InstanceType: { Value: plan.instanceType },
+          })
+        );
+        applied.push('the new InstanceType');
+      }
+      if (plan.userData !== undefined) {
+        await this.ec2Client.send(
+          new ModifyInstanceAttributeCommand({
+            InstanceId: physicalId,
+            UserData: { Value: plan.userData },
+          })
+        );
+        applied.push('the new UserData');
+      }
+      if (!startAfter) return;
+      phase = 'start';
+      await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+      instancesLeftStoppedByCdkd.delete(physicalId);
+      if (process.env['CDKD_NO_WAIT'] === 'true') {
+        this.logger.debug(
+          safeMsg`Instance ${physicalId} started (skipping running-state wait per --no-wait)`
+        );
+        return;
+      }
+      phase = 'wait';
+      await this.waitForInstanceState(logicalId, physicalId, resourceType, 'running', {
+        stoppedIsTerminal: true,
+      });
+    } catch (error) {
+      const carries =
+        applied.length === 0 ? 'its previous settings' : `${applied.join(' and ')} already applied`;
+      const startCommand = `aws ec2 start-instances --instance-ids ${physicalId}`;
+      // The stop itself failed (stop protection, a one-time Spot request):
+      // nothing was stopped, so there is nothing to start or warn about.
+      if (phase === 'stop' && !stopIssued) throw error;
+      if (phase === 'wait') {
+        // Started; only a start AWS undid leaves it down.
+        if (instanceStoppedAfterStart.has(error as object)) {
+          instancesLeftStoppedByCdkd.add(physicalId);
+          this.logger.warn(
+            safeMsg`${logicalId}: instance ${physicalId} stopped again right after cdkd started it, with ${carries}. Start it with: ${startCommand}`
+          );
+        }
+        throw error;
+      }
+      if (!stopIssued && !startAfter) throw error;
+      const retryStart =
+        phase !== 'start' && !isInterruptedWaitError(error) && !enclosingDeadlineExpired();
+      if (retryStart) {
+        let startFailure: unknown;
+        try {
+          await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [physicalId] }));
+        } catch (e) {
+          startFailure = e ?? new Error('StartInstances failed');
+        }
+        if (startFailure === undefined) {
+          instancesLeftStoppedByCdkd.delete(physicalId);
+          this.logger.warn(
+            safeMsg`${logicalId}: the InstanceType / UserData change failed after instance ${physicalId} was stopped; cdkd started it again, with ${carries}.`
+          );
+        } else {
+          instancesLeftStoppedByCdkd.add(physicalId);
+          this.logger.warn(
+            safeMsg`${logicalId}: instance ${physicalId} was stopped for an InstanceType / UserData change that failed, and starting it again failed too (${describeAwsFailure(startFailure).summary}); it is stopped, with ${carries}. Start it with: ${startCommand}`
+          );
+        }
+        throw error;
+      }
+      instancesLeftStoppedByCdkd.add(physicalId);
+      this.logger.warn(
+        phase === 'stop'
+          ? safeMsg`${logicalId}: instance ${physicalId} was being stopped for an InstanceType / UserData change that did not finish. Once it is stopped, start it with: ${startCommand}`
+          : safeMsg`${logicalId}: instance ${physicalId} is stopped, with ${carries}; cdkd did not start it again. Start it with: ${startCommand}`
+      );
+      throw error;
+    }
+  }
+
+  /** The instance's `State.Name`, or undefined when DescribeInstances omits it. */
+  private async readInstanceState(physicalId: string): Promise<string | undefined> {
+    const resp = await this.ec2Client.send(
+      new DescribeInstancesCommand({ InstanceIds: [physicalId] })
+    );
+    return resp.Reservations?.[0]?.Instances?.[0]?.State?.Name;
+  }
+
+  /**
+   * Poll DescribeInstances until the instance reaches `target` (issue #5446).
+   * Ctrl-C ends the wait with an `InterruptedWaitError`; the resource
+   * deadline ends it non-retryably, and so does a terminal state. Outside a
+   * deadline the wait is capped at {@link INSTANCE_STATE_WAIT_CAP_MS}.
+   */
+  private async waitForInstanceState(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    target: 'running' | 'stopped',
+    opts: { stoppedIsTerminal?: boolean } = {}
+  ): Promise<string> {
+    const watch = startInterruptWatch(`EC2 Instance ${logicalId} ${target} wait`);
+    const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
+    let last: string | undefined;
+    let stoppedReads = 0;
+    try {
+      for (;;) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const remaining = Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now());
+        if (remaining <= 0) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): timed out waiting for instance ${physicalId} to be ${target} (last state: ${last ?? 'none reported'})`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        const previous = last;
+        last = await this.readInstanceState(physicalId);
+        if (last === target) return last;
+        stoppedReads = last === 'stopped' ? stoppedReads + 1 : 0;
+        // After a start: `pending` back to `stopped` is AWS undoing the start
+        // (capacity, a type the AMI cannot run), not progress; so is a
+        // `stopped` that persists, for an undo that fell between two polls.
+        if (
+          opts.stoppedIsTerminal === true &&
+          last === 'stopped' &&
+          (previous === 'pending' || stoppedReads >= STOPPED_AFTER_START_READS)
+        ) {
+          const stopped = markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): instance ${physicalId} stopped again right after it was started; run \`aws ec2 describe-instances --instance-ids ${physicalId}\` and read StateReason for AWS's cause`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+          instanceStoppedAfterStart.add(stopped);
+          throw stopped;
+        }
+        if (last === 'terminated' || last === 'shutting-down' || last === undefined) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): instance ${physicalId} is ${last ?? 'no longer returned by DescribeInstances'} while cdkd waited for it to be ${target}`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await this.sleep(
+          Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /** The `default` security group of the instance's VPC (a removed `SecurityGroupIds`). */
+  private async vpcDefaultSecurityGroupId(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    vpcId: string | undefined
+  ): Promise<string> {
+    const groups =
+      vpcId === undefined
+        ? undefined
+        : await this.ec2Client.send(
+            new DescribeSecurityGroupsCommand({
+              Filters: [
+                { Name: 'vpc-id', Values: [vpcId] },
+                { Name: 'group-name', Values: ['default'] },
+              ],
+            })
+          );
+    const id = groups?.SecurityGroups?.[0]?.GroupId;
+    if (id === undefined) {
+      throw refusedBeforeApplying(
+        new ProvisioningError(
+          `${logicalId} (${resourceType}): SecurityGroupIds was removed, and the default security group of instance ${physicalId}'s VPC (${vpcId ?? 'unknown'}) could not be found to put in its place. The instance was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    return id;
+  }
+
+  /**
+   * Associate, replace or disassociate the instance's IAM instance profile
+   * (issue #5446). A profile created in the same deploy can still be
+   * propagating, so the associate / replace call retries through the same
+   * signals {@link ensureIamInstanceProfileAssociated} does.
+   */
+  private async applyInstanceProfileChange(
+    logicalId: string,
+    physicalId: string,
+    change: NonNullable<InstanceMemberPlan['profile']>
+  ): Promise<void> {
+    // An association still `disassociating` (a removal moments ago) makes a
+    // new associate fail with IncorrectState; let it finish first.
+    let assoc = await this.ec2Client.send(
+      new DescribeIamInstanceProfileAssociationsCommand({
+        Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+      })
+    );
+    for (
+      let poll = 1;
+      poll <= PROFILE_DISASSOCIATING_POLLS &&
+      (assoc.IamInstanceProfileAssociations ?? []).some((a) => a.State === 'disassociating');
+      poll++
+    ) {
+      await this.sleep(PROFILE_DISASSOCIATING_DELAY_MS);
+      assoc = await this.ec2Client.send(
+        new DescribeIamInstanceProfileAssociationsCommand({
+          Filters: [{ Name: 'instance-id', Values: [physicalId] }],
+        })
+      );
+    }
+    const current = assoc.IamInstanceProfileAssociations?.find(
+      (a) => a.State === 'associated' || a.State === 'associating'
+    );
+    if (change.kind === 'remove') {
+      if (current?.AssociationId === undefined) return;
+      await this.ec2Client.send(
+        new DisassociateIamInstanceProfileCommand({ AssociationId: current.AssociationId })
+      );
+      return;
+    }
+    const spec = change.arn !== undefined ? { Arn: change.arn } : { Name: change.name };
+    const maxAttempts = 10;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        if (current?.AssociationId !== undefined) {
+          await this.ec2Client.send(
+            new ReplaceIamInstanceProfileAssociationCommand({
+              AssociationId: current.AssociationId,
+              IamInstanceProfile: spec,
+            })
+          );
+        } else {
+          await this.ec2Client.send(
+            new AssociateIamInstanceProfileCommand({
+              InstanceId: physicalId,
+              IamInstanceProfile: spec,
+            })
+          );
+        }
+        return;
+      } catch (error) {
+        const msg = describeAwsFailure(error).detail;
+        if (this.isInstanceProfilePropagationError(msg) && attempt < maxAttempts) {
+          this.logger.debug(
+            safeMsg`IAM instance profile not yet propagated for ${logicalId} (${physicalId}) (attempt ${attempt}/${maxAttempts}: ${msg}), retrying in ${attempt}s...`
+          );
+          await this.sleep(attempt * 1000);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
    * Shallow value-equality for the small flat MetadataOptions request shape.
    * Treats `undefined` and an absent object as equal so the no-drift
    * round-trip produces zero modify calls.
@@ -6623,6 +8911,7 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: ec2InstanceProtectionSite(physicalId, commandRegion),
         reEnable: () => reEnableInstanceApiTermination(this.ec2Client, physicalId),
       },
@@ -6732,7 +9021,8 @@ export class EC2Provider implements ResourceProvider {
           continue;
         }
         const cause = error instanceof Error ? error : undefined;
-        throw this.wrapCaughtError(
+        throw this.wrapDeleteError(
+          maskerOrIdentity(context?.maskSecrets),
           error,
           (text) =>
             new ProvisioningError(
@@ -6772,25 +9062,79 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * Map the CFn `AWS::EC2::Instance.BlockDeviceMappings` list onto
+   * RunInstances' `BlockDeviceMappings` input. Every member CFn's schema
+   * declares is mapped (issue #5445: only DeviceName and
+   * Ebs.{VolumeSize,VolumeType,DeleteOnTermination} used to reach AWS, so a
+   * volume declared `Encrypted` / with a `KmsKeyId` was created unencrypted
+   * unless the account default said otherwise):
+   *
+   * - `Ebs.{DeleteOnTermination,Encrypted,Iops,KmsKeyId,SnapshotId,
+   *   VolumeSize,VolumeType}` -- CFn's `Ebs` definition is closed
+   *   (`additionalProperties: false`) and has no `Throughput`; CDK's L2
+   *   warns `throughputNotSupported` and `CfnInstance` never emits it.
+   * - `VirtualName` -- instance-store mappings (`ephemeralN`).
+   * - `NoDevice` -- an empty object `{}` in CFn; the SDK member is a string
+   *   whose presence suppresses the AMI's mapping, so any present value maps
+   *   to `""`.
+   *
+   * Booleans and integers may arrive stringly typed from an
+   * intrinsic-resolved value, so they are coerced at the wire boundary.
+   * `DeleteOnTermination` keeps its pre-#5445 default of `true` when absent.
+   * An `Encrypted` that is present but reads as neither boolean (`"True"`,
+   * `"1"`, a masked value) is refused rather than omitted: omitting it would
+   * launch the volume under the account default, the very drop #5445 fixed.
+   *
+   * `Iops` is sent whatever the `VolumeType`, as CloudFormation does: a
+   * CloudFormation create with `gp2` + `Iops` fails with EC2's "The parameter
+   * iops is not supported for gp2 volumes" (measured for #5445), so cdkd
+   * surfaces the same rejection rather than dropping the value.
+   */
   private buildBlockDeviceMappings(
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    logicalId: string
   ): BlockDeviceMapping[] | undefined {
     const mappings = properties['BlockDeviceMappings'] as
       | Array<Record<string, unknown>>
       | undefined;
     if (!mappings || !Array.isArray(mappings)) return undefined;
 
-    return mappings.map((m) => {
+    return mappings.map((entry, index) => {
+      const m = (entry ?? {}) as Record<string, unknown>;
       const ebs = m['Ebs'] as Record<string, unknown> | undefined;
       const result: BlockDeviceMapping = {
         DeviceName: m['DeviceName'] as string,
       };
+      if (typeof m['VirtualName'] === 'string') {
+        result.VirtualName = m['VirtualName'];
+      }
+      if (m['NoDevice'] !== undefined && m['NoDevice'] !== null) {
+        result.NoDevice = '';
+      }
       if (ebs) {
         result.Ebs = {
-          VolumeSize: ebs['VolumeSize'] as number | undefined,
+          VolumeSize: this.coerceNumber(ebs['VolumeSize']),
           VolumeType: ebs['VolumeType'] as VolumeType | undefined,
-          DeleteOnTermination: (ebs['DeleteOnTermination'] as boolean) ?? true,
+          DeleteOnTermination: this.coerceBool(ebs['DeleteOnTermination']) ?? true,
         };
+        const rawEncrypted = ebs['Encrypted'];
+        const encrypted = this.coerceBool(rawEncrypted);
+        if (encrypted === undefined && rawEncrypted !== undefined && rawEncrypted !== null) {
+          // The value is not echoed: it is unreadable by construction and may
+          // be a masked or resolved value the user did not mean to print.
+          throw new ProvisioningError(
+            `EC2 Instance ${logicalId}: BlockDeviceMappings[${index}].Ebs.Encrypted is a ${typeof rawEncrypted} that is neither true nor false. ` +
+              `Set it to true or false (or the strings "true" / "false"); cdkd refuses to create the volume without the declared encryption setting.`,
+            'AWS::EC2::Instance',
+            logicalId
+          );
+        }
+        if (encrypted !== undefined) result.Ebs.Encrypted = encrypted;
+        const iops = this.coerceNumber(ebs['Iops']);
+        if (iops !== undefined) result.Ebs.Iops = iops;
+        if (typeof ebs['KmsKeyId'] === 'string') result.Ebs.KmsKeyId = ebs['KmsKeyId'];
+        if (typeof ebs['SnapshotId'] === 'string') result.Ebs.SnapshotId = ebs['SnapshotId'];
       }
       return result;
     });
@@ -6924,8 +9268,31 @@ export class EC2Provider implements ResourceProvider {
           : undefined,
         SecondaryPrivateIpAddressCount: this.coerceNumber(ni['SecondaryPrivateIpAddressCount']),
       };
+      const enaSrd = this.buildEnaSrdSpecification(ni['EnaSrdSpecification']);
+      if (enaSrd !== undefined) spec.EnaSrdSpecification = enaSrd;
       return spec;
     });
+  }
+
+  /**
+   * Map a CFn `NetworkInterfaces[].EnaSrdSpecification` (ENA Express) onto
+   * the RunInstances `EnaSrdSpecificationRequest` (issue #5445: it used to be
+   * dropped on create). Field names match; the booleans are coerced. Returns
+   * undefined when the block is absent or sets nothing.
+   */
+  private buildEnaSrdSpecification(raw: unknown): EnaSrdSpecificationRequest | undefined {
+    if (raw === null || typeof raw !== 'object') return undefined;
+    const spec = raw as Record<string, unknown>;
+    const result: EnaSrdSpecificationRequest = {};
+    const enabled = this.coerceBool(spec['EnaSrdEnabled']);
+    if (enabled !== undefined) result.EnaSrdEnabled = enabled;
+    const udp = spec['EnaSrdUdpSpecification'];
+    if (udp !== null && typeof udp === 'object') {
+      const udpEnabled = this.coerceBool((udp as Record<string, unknown>)['EnaSrdUdpEnabled']);
+      if (udpEnabled !== undefined)
+        result.EnaSrdUdpSpecification = { EnaSrdUdpEnabled: udpEnabled };
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
   }
 
   /**
@@ -6977,14 +9344,27 @@ export class EC2Provider implements ResourceProvider {
    */
   private buildIpPermission(
     properties: Record<string, unknown>,
-    direction: 'ingress' | 'egress' = 'ingress'
+    direction: 'ingress' | 'egress' = 'ingress',
+    /**
+     * An inline `AWS::EC2::SecurityGroup` rule. Only it sends
+     * `SourceSecurityGroupName` (go-to-k/cdkd#5478): CloudFormation refuses the
+     * member on a standalone `AWS::EC2::SecurityGroupIngress` ("Exactly one of
+     * CidrIp, CidrIpv6, SourceSecurityGroupId, and SourcePrefixListId must be
+     * specified"), which `unhandledByDesign` declares.
+     */
+    inline = false
   ): {
     IpProtocol: string;
     FromPort?: number;
     ToPort?: number;
     IpRanges?: Array<{ CidrIp: string; Description?: string }>;
     Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
-    UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
+    UserIdGroupPairs?: Array<{
+      GroupId?: string;
+      GroupName?: string;
+      UserId?: string;
+      Description?: string;
+    }>;
     PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
   } {
     const ipProtocol = (properties['IpProtocol'] as string) ?? '-1';
@@ -6997,7 +9377,12 @@ export class EC2Provider implements ResourceProvider {
       ToPort?: number;
       IpRanges?: Array<{ CidrIp: string; Description?: string }>;
       Ipv6Ranges?: Array<{ CidrIpv6: string; Description?: string }>;
-      UserIdGroupPairs?: Array<{ GroupId: string; UserId?: string; Description?: string }>;
+      UserIdGroupPairs?: Array<{
+        GroupId?: string;
+        GroupName?: string;
+        UserId?: string;
+        Description?: string;
+      }>;
       PrefixListIds?: Array<{ PrefixListId: string; Description?: string }>;
     } = { IpProtocol: ipProtocol };
 
@@ -7024,10 +9409,21 @@ export class EC2Provider implements ResourceProvider {
       direction === 'egress'
         ? (properties['DestinationSecurityGroupId'] as string | undefined)
         : (properties['SourceSecurityGroupId'] as string | undefined);
-    if (peerGroupId) {
-      const groupPair: { GroupId: string; UserId?: string; Description?: string } = {
-        GroupId: peerGroupId,
-      };
+    // go-to-k/cdkd#5478: an ingress peer named by `SourceSecurityGroupName` (a
+    // default-VPC group) goes out as `UserIdGroupPairs[].GroupName`, as
+    // CloudFormation sends it (measured in a default VPC: the rule was created
+    // with the named group as its peer). An id, when both are given, wins.
+    const peerGroupName =
+      inline && direction === 'ingress'
+        ? (properties['SourceSecurityGroupName'] as string | undefined)
+        : undefined;
+    if (peerGroupId || peerGroupName) {
+      const groupPair: {
+        GroupId?: string;
+        GroupName?: string;
+        UserId?: string;
+        Description?: string;
+      } = peerGroupId ? { GroupId: peerGroupId } : { GroupName: peerGroupName as string };
       // Cross-account peer reference: CFn supports SourceSecurityGroupOwnerId on
       // ingress rules to point at a security group in another AWS account. Map
       // it to the UserIdGroupPairs[].UserId field on the EC2 API. CFn does not
@@ -7088,6 +9484,16 @@ export class EC2Provider implements ResourceProvider {
         direction === 'ingress'
           ? (rule['SourceSecurityGroupOwnerId'] as string | undefined)
           : undefined;
+      // go-to-k/cdkd#5478: a peer named by group name is a rule of its own.
+      // Keyed only when no id is given, since the wire then sends the id
+      // alone: a redundant name must not churn revoke / authorize. `sgRuleKey`
+      // (the drift read side) does not key the name, because AWS reports the
+      // peer by id, so a `cdkd drift --revert` of a name-only rule re-attaches
+      // it (revoke + authorize of the same peer).
+      const peerName =
+        direction === 'ingress'
+          ? (rule['SourceSecurityGroupName'] as string | undefined)
+          : undefined;
       return JSON.stringify({
         // Same canonicalization as `sgRuleKey` (issue #1643) — the two keys
         // MUST agree, which is what this function's sibling JSDoc promises.
@@ -7101,6 +9507,7 @@ export class EC2Provider implements ResourceProvider {
         c4: rule['CidrIp'] ?? null,
         c6: rule['CidrIpv6'] ?? null,
         peer: peerKey ?? null,
+        peerName: peerKey ? null : (peerName ?? null),
         peerOwner: peerOwner ?? null,
         pl: prefixKey ?? null,
         d: rule['Description'] ?? null,
@@ -7151,7 +9558,7 @@ export class EC2Provider implements ResourceProvider {
           await this.ec2Client.send(
             new RevokeSecurityGroupIngressCommand({
               GroupId: groupId,
-              IpPermissions: [this.buildIpPermission(rule, 'ingress')],
+              IpPermissions: [this.buildIpPermission(rule, 'ingress', true)],
             })
           );
         }
@@ -7173,7 +9580,7 @@ export class EC2Provider implements ResourceProvider {
           await this.ec2Client.send(
             new AuthorizeSecurityGroupIngressCommand({
               GroupId: groupId,
-              IpPermissions: [this.buildIpPermission(rule, 'ingress')],
+              IpPermissions: [this.buildIpPermission(rule, 'ingress', true)],
             })
           );
         }
@@ -7191,7 +9598,8 @@ export class EC2Provider implements ResourceProvider {
   private async createNetworkAcl(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating NetworkAcl ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -7231,7 +9639,13 @@ export class EC2Provider implements ResourceProvider {
       const networkAclId = response.NetworkAcl!.NetworkAclId!;
 
       // Apply tags the create did not carry (go-to-k/cdkd#4971)
-      if (!tagsApplied) await this.applyTags(networkAclId, desiredTags, logicalId);
+      if (!tagsApplied)
+        await this.applyTags(
+          networkAclId,
+          desiredTags,
+          logicalId,
+          maskerOrIdentity(context?.maskSecrets)
+        );
 
       this.logger.debug(`Successfully created NetworkAcl ${logicalId}: ${networkAclId}`);
 
@@ -7245,6 +9659,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7283,7 +9698,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7364,6 +9780,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7424,7 +9841,8 @@ export class EC2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7487,7 +9905,7 @@ export class EC2Provider implements ResourceProvider {
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
-        'NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with cdkd deploy --replace, or destroy + redeploy.'
+        'NetworkAclId, RuleNumber and Egress identify the entry and are createOnly; a change to any of them requires a new entry. Re-deploy with cdkd deploy --replace, or destroy + redeploy'
       );
     }
 
@@ -7543,6 +9961,7 @@ export class EC2Provider implements ResourceProvider {
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7561,7 +9980,8 @@ export class EC2Provider implements ResourceProvider {
   private async createSubnetNetworkAclAssociation(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating SubnetNetworkAclAssociation ${logicalId}`);
 
@@ -7626,6 +10046,7 @@ export class EC2Provider implements ResourceProvider {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
@@ -7731,7 +10152,8 @@ export class EC2Provider implements ResourceProvider {
   private async applyTags(
     resourceId: string,
     tags: CfnTagEntry[],
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn
   ): Promise<void> {
     if (tags.length > 0) {
       try {
@@ -7743,9 +10165,8 @@ export class EC2Provider implements ResourceProvider {
         );
         this.logger.debug(`Applied ${tags.length} tag(s) to ${logicalId}`);
       } catch (error) {
-        this.logger.warn(
-          `Failed to apply tags to ${logicalId}: ${describeAwsFailure(error).detail}`
-        );
+        const tagHead = `Failed to apply tags to ${logicalId}: `;
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
   }
@@ -7762,7 +10183,8 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    mask: MaskerFn
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
@@ -7782,9 +10204,8 @@ export class EC2Provider implements ResourceProvider {
         );
         this.logger.debug(`Removed ${tagsToRemove.length} tag(s) from ${resourceId}`);
       } catch (error) {
-        this.logger.warn(
-          `Failed to remove tags from ${resourceId}: ${describeAwsFailure(error).detail}`
-        );
+        const tagHead = `Failed to remove tags from ${resourceId}: `;
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
     if (tagsToAdd.length > 0) {
@@ -7797,9 +10218,8 @@ export class EC2Provider implements ResourceProvider {
         );
         this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on ${resourceId}`);
       } catch (error) {
-        this.logger.warn(
-          `Failed to add tags on ${resourceId}: ${describeAwsFailure(error).detail}`
-        );
+        const tagHead = `Failed to add tags on ${resourceId}: `;
+        this.logger.warn(`${tagHead}${this.warnFailureText(tagHead, error, mask)}`);
       }
     }
   }
@@ -7902,18 +10322,68 @@ export class EC2Provider implements ResourceProvider {
    * throw has no chain, so it is not stamped. Every caller tests its own
    * not-found and `DependencyViolation` wording on the CAUGHT error before
    * wrapping, so no decision here reads the shortened message.
+   *
+   * `mask` is the operation's secret masker: AWS can echo a resolved value
+   * back, so the debug line is masked raw and as the finished line, and the
+   * class itself goes through it. A cdkd-authored or transport error keeps
+   * its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244).
    */
   private wrapCaughtError(
+    mask: MaskerFn,
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!failure.redacted) return build(failure.detail);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     // `build` runs twice here (debug text, then the throw), so it must stay a
     // side-effect-free constructor call.
-    this.logger.debug(build(failure.detail).message);
-    const wrapped = build(redactedEc2FailureText(error, failure));
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(redactedEc2FailureText(mask, error, failure));
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * The failure text a default-level `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS, since
+   * a denied `Delete*` or `CreateTags` names the caller's assumed-role ARN;
+   * AWS's own text goes to `debug` under the same `head`, through `mask`. A
+   * cdkd-authored or transport error keeps its text, masked and otherwise
+   * unchanged, as `wrapMaskedAwsError` relays it into a thrown wrap.
+   */
+  private warnFailureText(head: string, error: unknown, mask: MaskerFn): string {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return mask(failure.detail);
+    this.logger.debug(mask(`${head}${mask(failure.detail)}`));
+    return mask(failure.summary);
+  }
+
+  /**
+   * {@link warnFailureText} for a `warn` that goes on with another sentence:
+   * the text, closed with a period unless it already ends one.
+   */
+  private warnFailureSentence(head: string, error: unknown, mask: MaskerFn): string {
+    const text = this.warnFailureText(head, error, mask);
+    return /[.!?]$/.test(text) ? text : `${text}.`;
+  }
+
+  /**
+   * The delete catches' {@link wrapCaughtError}. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming another object's not-found (a
+   * `KMSNotFoundException`) would drop the state record of a live resource.
+   * Each caller tests its own not-found on the CAUGHT error first
+   * (`isNotFoundError`), so a `NotFound` class reaching here is not this
+   * resource's, and the wrap is marked {@link markNotGone}
+   * (go-to-k/cdkd#2319, #5228).
+   */
+  private wrapDeleteError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
   /**
@@ -7975,6 +10445,8 @@ export class EC2Provider implements ResourceProvider {
       name === 'InvalidVpcID.NotFound' ||
       name === 'InvalidSubnetID.NotFound' ||
       name === 'InvalidInternetGatewayID.NotFound' ||
+      name === 'InvalidVpnGatewayID.NotFound' ||
+      name === 'InvalidVpnGatewayAttachment.NotFound' ||
       name === 'InvalidRouteTableID.NotFound' ||
       name === 'InvalidGroup.NotFound' ||
       name === 'InvalidAssociationID.NotFound' ||
@@ -8103,9 +10575,9 @@ export class EC2Provider implements ResourceProvider {
    *
    * Read through the parent's `Describe*` response:
    *  - **AWS::EC2::VPCGatewayAttachment**: physical id is
-   *    `<internetGatewayId>|<vpcId>`; `DescribeInternetGateways` proves the
-   *    attachment still exists, and the two ids it returns are the only
-   *    properties.
+   *    `<gatewayId>|<vpcId>`; `DescribeInternetGateways` (an `igw-…` gateway)
+   *    or `DescribeVpnGateways` (a `vgw-…` one) proves the attachment still
+   *    exists, and the two ids it returns are the only properties.
    *  - **AWS::EC2::Route**, **AWS::EC2::SubnetRouteTableAssociation**,
    *    **AWS::EC2::SecurityGroupIngress**, **AWS::EC2::NetworkAclEntry**,
    *    **AWS::EC2::SubnetNetworkAclAssociation**: rule / association
@@ -8162,7 +10634,7 @@ export class EC2Provider implements ResourceProvider {
         case 'AWS::EC2::InternetGateway':
           return await this.readInternetGatewayCurrentState(physicalId);
         case 'AWS::EC2::NatGateway':
-          return await this.readNatGatewayCurrentState(physicalId);
+          return await this.readNatGatewayCurrentState(physicalId, properties);
         case 'AWS::EC2::RouteTable':
           return await this.readRouteTableCurrentState(physicalId);
         case 'AWS::EC2::SecurityGroup':
@@ -8178,7 +10650,7 @@ export class EC2Provider implements ResourceProvider {
             context?.afterOwnWrite === true
           );
         case 'AWS::EC2::VPCGatewayAttachment':
-          return await this.readVpcGatewayAttachmentCurrentState(physicalId);
+          return await this.readVpcGatewayAttachmentCurrentState(physicalId, properties);
         case 'AWS::EC2::Route':
           return await this.readRouteCurrentState(physicalId);
         case 'AWS::EC2::SubnetRouteTableAssociation':
@@ -8403,7 +10875,8 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async readNatGatewayCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
@@ -8417,9 +10890,41 @@ export class EC2Provider implements ResourceProvider {
 
     // AllocationId / PrivateIpAddress live inside NatGatewayAddresses[0]
     // for single-AZ public NATs.
-    const primary = gw.NatGatewayAddresses?.[0];
-    if (primary?.AllocationId !== undefined) result['AllocationId'] = primary.AllocationId;
-    if (primary?.PrivateIp !== undefined) result['PrivateIpAddress'] = primary.PrivateIp;
+    // A regional gateway's addresses move between zones (see
+    // AvailabilityZoneAddresses below): reading an UNDECLARED one as
+    // AllocationId / PrivateIpAddress would record a drift baseline that flips
+    // after a swap, which `drift --revert` then sends to an update refusing
+    // both create-only keys. So a regional gateway reports each only when the
+    // record declares it (CDK's automatic mode with a given Elastic IP).
+    const regional = gw.AvailabilityMode === 'regional';
+    const primary =
+      gw.NatGatewayAddresses?.find((a) => a.IsPrimary === true) ?? gw.NatGatewayAddresses?.[0];
+    if (
+      primary?.AllocationId !== undefined &&
+      (!regional || properties?.['AllocationId'] != null)
+    ) {
+      result['AllocationId'] = primary.AllocationId;
+    }
+    if (
+      primary?.PrivateIp !== undefined &&
+      (!regional || properties?.['PrivateIpAddress'] != null)
+    ) {
+      result['PrivateIpAddress'] = primary.PrivateIp;
+    }
+
+    // go-to-k/cdkd#2762: a regional gateway's mode and VPC, and — once it no
+    // longer expands to new zones on its own (`AutoProvisionZones: disabled`,
+    // what a declared AvailabilityZoneAddresses selects) — its per-zone
+    // addresses, spelled the way the recorded entries spell each zone.
+    if (gw.AvailabilityMode !== undefined) result['AvailabilityMode'] = gw.AvailabilityMode;
+    if (gw.VpcId !== undefined) result['VpcId'] = gw.VpcId;
+    if (gw.AvailabilityMode === 'regional' && gw.AutoProvisionZones === 'disabled') {
+      const recorded = readNatZoneAddresses(properties?.['AvailabilityZoneAddresses']);
+      result['AvailabilityZoneAddresses'] = readbackNatZoneAddresses(
+        gw.NatGatewayAddresses ?? [],
+        recorded.kind === 'usable' ? recorded.entries : []
+      );
+    }
 
     return result;
   }
@@ -8690,8 +11195,9 @@ export class EC2Provider implements ResourceProvider {
           result['IamInstanceProfile'] = live.IamInstanceProfile.Arn;
         }
       } catch (error) {
+        const backfillHead = `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture: `;
         this.logger.warn(
-          `Could not backfill IamInstanceProfile for ${physicalId} during the --no-wait capture (${describeAwsFailure(error).detail}); the field is omitted from the observed snapshot`
+          `${backfillHead}${this.warnFailureSentence(backfillHead, error, (t) => t)} The field is omitted from the observed snapshot.`
         );
       }
     }
@@ -8826,27 +11332,59 @@ export class EC2Provider implements ResourceProvider {
   /**
    * AWS::EC2::VPCGatewayAttachment readCurrentState.
    *
-   * physicalId format: `<igwId>|<vpcId>` (cdkd `createVpcGatewayAttachment`).
-   * AWS API: `DescribeInternetGateways(igwId)` → walk `Attachments[]` for
-   * the matching `VpcId`. Returns `RESOURCE_NOT_FOUND` when the IGW is gone OR is no
-   * longer attached to the recorded VPC. Both fields are immutable on this
+   * physicalId format: `<gatewayId>|<vpcId>` (cdkd `createVpcGatewayAttachment`).
+   * An `igw-…` gateway reads `DescribeInternetGateways(igwId)`, a `vgw-…` one
+   * `DescribeVpnGateways(vgwId)` (issue #2762); either walks the attachments
+   * for the matching `VpcId`. Returns `RESOURCE_NOT_FOUND` when the gateway is
+   * gone OR is no longer attached to the recorded VPC (a VPN attachment
+   * `detaching` / `detached` counts as gone). Both fields are immutable on this
    * resource — drift signal is binary (exists / gone) plus VpcId mismatch.
    */
   private async readVpcGatewayAttachmentCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties: Record<string, unknown> | undefined
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    const [igwId, vpcId] = physicalId.split('|');
-    if (!igwId || !vpcId) return undefined;
+    const parts = physicalId.split('|');
+    const [first, vpcId] = parts;
+    if (parts.length !== 2 || !first || !vpcId) return undefined;
+    // A Cloud-Control type token (`IGW` / `VGW`, go-to-k/cdkd#2762 review) is
+    // never sent as a gateway id: the gateway is the one attached to the VPC.
+    const token = { IGW: 'igw', InternetGateway: 'igw', VGW: 'vgw', VPN: 'vgw' } as const;
+    let gatewayId = first;
+    if (Object.hasOwn(token, first)) {
+      // Pinned to the id the record's properties name, as delete is: the VPC
+      // filter could answer with another stack's gateway, and an empty filter
+      // answer cannot be confirmed against the recorded region here, so a
+      // record naming no gateway reads as "cannot tell".
+      const recorded = this.recordedGatewayIdOf(token[first as keyof typeof token], properties);
+      if (recorded === undefined) return undefined;
+      gatewayId = recorded;
+    } else if (!first.startsWith('igw-') && !first.startsWith('vgw-')) {
+      return undefined;
+    }
+
+    if (gatewayId.startsWith('vgw-')) {
+      const resp = await this.ec2Client.send(
+        new DescribeVpnGatewaysCommand({ VpnGatewayIds: [gatewayId] })
+      );
+      const vgw = resp.VpnGateways?.[0];
+      if (!vgw || vgw.State === 'deleted') return RESOURCE_NOT_FOUND;
+      const attached = vgw.VpcAttachments?.some(
+        (a) => a.VpcId === vpcId && (a.State === 'attached' || a.State === 'attaching')
+      );
+      if (!attached) return RESOURCE_NOT_FOUND;
+      return { VpnGatewayId: gatewayId, VpcId: vpcId };
+    }
 
     const resp = await this.ec2Client.send(
-      new DescribeInternetGatewaysCommand({ InternetGatewayIds: [igwId] })
+      new DescribeInternetGatewaysCommand({ InternetGatewayIds: [gatewayId] })
     );
     const igw = resp.InternetGateways?.[0];
     if (!igw) return RESOURCE_NOT_FOUND;
     const attached = igw.Attachments?.some((a) => a.VpcId === vpcId);
     if (!attached) return RESOURCE_NOT_FOUND;
 
-    return { InternetGatewayId: igwId, VpcId: vpcId };
+    return { InternetGatewayId: gatewayId, VpcId: vpcId };
   }
 
   /**
@@ -9352,7 +11890,7 @@ export class EC2Provider implements ResourceProvider {
             new DescribeNatGatewaysCommand({ NatGatewayIds: [physicalId] })
           );
           const gw = resp.NatGateways?.find((g) => g.State !== 'deleted' && g.State !== 'deleting');
-          return gw ? { physicalId, attributes: {} } : null;
+          return gw ? { physicalId, attributes: natGatewayAttributes(gw) } : null;
         }
         case 'AWS::EC2::EIP': {
           // Accept an allocation id, a public IP, or the composite `IP|alloc`.
@@ -9442,47 +11980,76 @@ export class EC2Provider implements ResourceProvider {
           return found ? { physicalId, attributes: {} } : null;
         }
         case 'AWS::EC2::VPCGatewayAttachment': {
-          // CloudFormation records `IGW|<vpcId>` (a CloudFormation IMPORT
-          // `<vpcId>|IGW`); cdkd records `<igwId>|<vpcId>`. Only the VPC is in
-          // CloudFormation's id, so the gateway comes from the template
-          // (`InternetGatewayId`, Ref-substituted to the gateway's id) or, failing
-          // that, from the one gateway AWS allows attached to the VPC.
+          // CloudFormation records `IGW|<vpcId>` / `VGW|<vpcId>` (a CloudFormation
+          // IMPORT `<vpcId>|IGW`); cdkd records `<gatewayId>|<vpcId>`. Only the
+          // VPC is in CloudFormation's id, so the gateway comes from the template
+          // (`InternetGatewayId` / `VpnGatewayId`, Ref-substituted to the
+          // gateway's id) or, failing that, from the one gateway of that kind AWS
+          // allows attached to the VPC.
           const segments = physicalId.split('|');
           if (segments.length !== 2) return null;
-          // A VPN gateway attachment is not this provider's to delete
-          // (`delete` only calls `DetachInternetGateway`).
-          if (segments.includes('VGW') || properties['VpnGatewayId'] !== undefined) return null;
           const vpcId =
             segments.find((seg) => /^vpc-[0-9a-f]+$/.test(seg)) ??
             (typeof properties['VpcId'] === 'string' ? properties['VpcId'] : undefined);
           if (!vpcId || !/^vpc-[0-9a-f]+$/.test(vpcId)) return null;
-          const declared =
-            segments.find((seg) => /^igw-[0-9a-f]+$/.test(seg)) ??
-            (typeof properties['InternetGatewayId'] === 'string'
-              ? properties['InternetGatewayId']
-              : undefined);
-          if (declared !== undefined && !/^igw-[0-9a-f]+$/.test(declared)) return null;
-          const resp = await this.ec2Client.send(
-            new DescribeInternetGatewaysCommand(
-              declared
-                ? { InternetGatewayIds: [declared] }
-                : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
-            )
-          );
-          const gateway = resp.InternetGateways?.find((g) =>
-            g.Attachments?.some(
-              // IGW attachments report `available` although the SDK types the
-              // field as `AttachmentStatus`, so compare it as a string.
-              (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
-            )
-          );
-          if (!gateway?.InternetGatewayId) return null;
+          const isVpn =
+            segments.includes('VGW') ||
+            segments.some((seg) => seg.startsWith('vgw-')) ||
+            properties['VpnGatewayId'] !== undefined;
+          // An `IGW` id beside a VPN signal is contradictory: adopt neither.
+          if (isVpn && segments.some((seg) => seg === 'IGW' || seg.startsWith('igw-'))) {
+            return null;
+          }
+          let gatewayId: string | undefined;
+          if (isVpn) {
+            // Issue #2762: a VPN gateway attachment is this provider's too.
+            const declared =
+              segments.find((seg) => /^vgw-[0-9a-f]+$/.test(seg)) ??
+              (typeof properties['VpnGatewayId'] === 'string'
+                ? properties['VpnGatewayId']
+                : undefined);
+            if (declared !== undefined && !/^vgw-[0-9a-f]+$/.test(declared)) return null;
+            const resp = await this.ec2Client.send(
+              new DescribeVpnGatewaysCommand(
+                declared
+                  ? { VpnGatewayIds: [declared] }
+                  : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
+              )
+            );
+            gatewayId = resp.VpnGateways?.find(
+              (g) =>
+                g.State !== 'deleted' &&
+                g.VpcAttachments?.some((a) => a.VpcId === vpcId && a.State === 'attached')
+            )?.VpnGatewayId;
+          } else {
+            const declared =
+              segments.find((seg) => /^igw-[0-9a-f]+$/.test(seg)) ??
+              (typeof properties['InternetGatewayId'] === 'string'
+                ? properties['InternetGatewayId']
+                : undefined);
+            if (declared !== undefined && !/^igw-[0-9a-f]+$/.test(declared)) return null;
+            const resp = await this.ec2Client.send(
+              new DescribeInternetGatewaysCommand(
+                declared
+                  ? { InternetGatewayIds: [declared] }
+                  : { Filters: [{ Name: 'attachment.vpc-id', Values: [vpcId] }] }
+              )
+            );
+            gatewayId = resp.InternetGateways?.find((g) =>
+              g.Attachments?.some(
+                // IGW attachments report `available` although the SDK types the
+                // field as `AttachmentStatus`, so compare it as a string.
+                (a) => a.VpcId === vpcId && ['available', 'attached'].includes(String(a.State))
+              )
+            )?.InternetGatewayId;
+          }
+          if (!gatewayId) return null;
           const attachmentSegments = [
-            { name: 'internetGatewayId', value: gateway.InternetGatewayId },
+            { name: isVpn ? 'vpnGatewayId' : 'internetGatewayId', value: gatewayId },
             { name: 'vpcId', value: vpcId },
           ];
-          // Defense-in-depth, unreachable in practice: both segments passed an
-          // anchored id pattern above, so neither can hold the separator.
+          // Defense-in-depth, unreachable in practice: the VPC segment passed an
+          // anchored id pattern above and the gateway id is AWS's own answer.
           const refusal = compositeIdSeparatorRefusal(resourceType, logicalId, attachmentSegments);
           if (refusal !== undefined) {
             this.logger.warn(`${refusal} Skipping import.`);

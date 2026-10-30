@@ -11,17 +11,43 @@
 # until the stream is gone before delete() returns.
 #
 # Phases:
-#   1. Deploy a named Kinesis stream + a named Firehose delivery stream (S3
-#      destination). Assert both are ACTIVE on AWS.
+#   1. Deploy a named Kinesis stream + a named Firehose delivery stream
+#      (ExtendedS3 destination). Assert both are ACTIVE on AWS, and that the
+#      create applied FileExtension and CustomTimeZone (issue #1160). The
+#      legacy-S3 stream must read ACTIVE too: deploy waits for it (issue #5509).
 #   2. Destroy. Record whether each stream is ALREADY gone the moment destroy
 #      returns (the fix's contract), then IMMEDIATELY redeploy the same stack
 #      -- the arm that failed before the fix. Fail if the redeploy failed or if
 #      either stream was still present after destroy.
-#   3. Assert both streams are ACTIVE again (the redeploy really re-created
-#      them under the same names).
+#   3. Assert both streams (and the legacy-S3 stream) are ACTIVE again (the
+#      redeploy really re-created them under the same names).
 #   3b. Redeploy with a changed delivery stream tag: an in-place update, the
 #      stream's CreateTimestamp unchanged (issue #2613).
-#   4. Destroy, assert both streams, both buckets, the role and the cdkd state
+#   3c. Redeploy with FileExtension changed and Prefix / ErrorOutputPrefix /
+#      CustomTimeZone removed from the template (issue #1160): the change
+#      applies in place, and the removed sub-fields stay live, as a measured
+#      CloudFormation update leaves them.
+#   3d. Redeploy adding DeliveryStreamEncryptionConfigurationInput (AWS-owned
+#      key): encryption must read ENABLED the moment deploy returns (issue
+#      #5357: update() never applied it, and the transition is asynchronous).
+#   3e. Redeploy with the block removed: encryption must read DISABLED, as a
+#      measured CloudFormation update leaves it.
+#   3f. Redeploy changing BufferingHints, Prefix and CompressionFormat of the
+#      second delivery stream, whose destination is the legacy
+#      S3DestinationConfiguration (issue #5439: cdkd refused the update, while
+#      a measured CloudFormation change set updates it in place). The change
+#      must apply with the stream's CreateTimestamp unchanged.
+#   3g. Redeploy adding the encryption block under a 30s Firehose deadline,
+#      with --no-rollback: the Start is sent and the deploy fails mid-transition. The record must
+#      name the key unsettled (and `cdkd drift --json` list it); once the
+#      stream reads ENABLED, a redeploy of the unencrypted template must
+#      converge it to DISABLED and clear the name (issue #5380: the record
+#      kept the old block, so that redeploy diffed empty and sent nothing).
+#   3h. The same cut-short add WITHOUT --no-rollback (go-to-k/cdkd#5505): the
+#      automatic rollback waits for the transition and reverts it, so right
+#      after the failed deploy returns encryption reads DISABLED and the record
+#      names nothing unsettled, with no further deploy.
+#   4. Destroy, assert the streams, both buckets, the role and the cdkd state
 #      file are gone -- immediately, with no polling.
 #
 # Required env vars:
@@ -75,18 +101,25 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 RUN_ID="$(date +%s)"
 export CDKD_SRD_RUN_ID="${RUN_ID}"
 NAME="cdkd-stream-redeploy-${RUN_ID}"
+LEGACY_NAME="cdkd-stream-redeploy-legacy-${RUN_ID}"
 ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET_A="cdkd-stream-redeploy-${ACCOUNT}-${RUN_ID}-a"
 BUCKET_B="cdkd-stream-redeploy-${ACCOUNT}-${RUN_ID}-b"
 
+# Phase 3h's auto-rolled-back deploy (go-to-k/cdkd#5505); removed by cleanup().
+P3H_LOG="${TMPDIR:-/tmp}/cdkd-5505-firehose-rollback.$$.log"
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  rm -f "${P3H_LOG}"
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  aws firehose delete-delivery-stream --delivery-stream-name "${NAME}" \
-    --region "${REGION}" >/dev/null 2>&1 || true
+  for s in "${NAME}" "${LEGACY_NAME}"; do
+    aws firehose delete-delivery-stream --delivery-stream-name "${s}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  done
   aws kinesis delete-stream --stream-name "${NAME}" --enforce-consumer-deletion \
     --region "${REGION}" >/dev/null 2>&1 || true
   for b in "${BUCKET_A}" "${BUCKET_B}"; do
@@ -129,6 +162,12 @@ firehose_status() {
   aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
     --query 'DeliveryStreamDescription.DeliveryStreamStatus' --output text
 }
+# The legacy-S3 stream is the one seen still CREATING when an earlier create
+# returned (issue #5509): its status is read the moment deploy returns.
+legacy_status() {
+  aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}" \
+    --query 'DeliveryStreamDescription.DeliveryStreamStatus' --output text
+}
 kinesis_status() {
   aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}" \
     --query 'StreamDescriptionSummary.StreamStatus' --output text
@@ -157,9 +196,22 @@ CDKD_SRD_PHASE=a node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 assert_eq "Firehose status after Phase 1" "ACTIVE" "$(firehose_status)"
+assert_eq "legacy-S3 Firehose status after Phase 1 (issue #5509: create returned while CREATING)" "ACTIVE" "$(legacy_status)"
 assert_eq "Kinesis status after Phase 1" "ACTIVE" "$(kinesis_status)"
 assert_eq "Kinesis consumer status after Phase 1" "ACTIVE" "$(consumer_status)"
 echo "    both streams and the stream consumer ACTIVE"
+
+# The ExtendedS3 sub-fields the create used to drop (issue #1160). One read,
+# then one field per assertion, so a failed `aws` call trips `set -e`.
+firehose_dest() { # usage: firehose_dest <ExtendedS3DestinationDescription field>
+  aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+    --query "DeliveryStreamDescription.Destinations[0].ExtendedS3DestinationDescription.$1" --output text
+}
+P1_EXT="$(firehose_dest FileExtension)"
+assert_eq "Firehose FileExtension after Phase 1 (issue #1160: the create dropped it)" ".json" "${P1_EXT}"
+P1_TZ="$(firehose_dest CustomTimeZone)"
+assert_eq "Firehose CustomTimeZone after Phase 1 (issue #1160: the create dropped it)" "Asia/Tokyo" "${P1_TZ}"
+echo "    FileExtension and CustomTimeZone applied at create"
 
 # --- Phase 2: destroy, then IMMEDIATELY redeploy -------------------------
 echo "==> Phase 2: destroy"
@@ -172,6 +224,9 @@ echo "    destroy took $(( $(date +%s) - T0 ))s"
 STILL_PRESENT=""
 if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"; then
   STILL_PRESENT="${STILL_PRESENT} firehose($(firehose_status || echo gone-now))"
+fi
+if ! gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}"; then
+  STILL_PRESENT="${STILL_PRESENT} legacy-firehose"
 fi
 if ! gone_probe aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"; then
   STILL_PRESENT="${STILL_PRESENT} kinesis($(kinesis_status || echo gone-now))"
@@ -192,6 +247,7 @@ echo "    streams were gone when destroy returned, and the redeploy succeeded"
 
 # --- Phase 3: the redeploy really re-created both ------------------------
 assert_eq "Firehose status after the redeploy" "ACTIVE" "$(firehose_status)"
+assert_eq "legacy-S3 Firehose status after the redeploy (issue #5509)" "ACTIVE" "$(legacy_status)"
 assert_eq "Kinesis status after the redeploy" "ACTIVE" "$(kinesis_status)"
 assert_eq "Kinesis consumer status after the redeploy" "ACTIVE" "$(consumer_status)"
 echo "    both streams and the stream consumer ACTIVE again under the same names"
@@ -230,6 +286,211 @@ fi
 assert_eq "Firehose CreateTimestamp after Phase 3b (issue #2613: the tag change must update the stream in place, not replace it)" "${PRE_CREATED}" "${POST_CREATED}"
 echo "    delivery stream tag updated in place, CreateTimestamp unchanged (issue #2613)"
 
+# --- Phase 3c: a destination update with removed sub-fields (issue #1160) --
+# FileExtension changes, so the redeploy reaches UpdateDestination; Prefix,
+# ErrorOutputPrefix and CustomTimeZone leave the template. A live CloudFormation
+# A/B kept every removed destination sub-field, so cdkd must too.
+P3C_PRE_EXT="$(firehose_dest FileExtension)"
+assert_eq "Firehose FileExtension before Phase 3c" ".json" "${P3C_PRE_EXT}"
+echo "==> Phase 3c: redeploy with FileExtension changed and Prefix / ErrorOutputPrefix / CustomTimeZone removed"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3C_EXT="$(firehose_dest FileExtension)"
+assert_eq "Firehose FileExtension after Phase 3c (issue #1160: the update dropped it)" ".ndjson" "${P3C_EXT}"
+P3C_PREFIX="$(firehose_dest Prefix)"
+assert_eq "Firehose Prefix after Phase 3c (removed from the template; CloudFormation keeps it)" "data/" "${P3C_PREFIX}"
+P3C_ERR="$(firehose_dest ErrorOutputPrefix)"
+assert_eq "Firehose ErrorOutputPrefix after Phase 3c (removed from the template; CloudFormation keeps it)" "errors/" "${P3C_ERR}"
+P3C_TZ="$(firehose_dest CustomTimeZone)"
+assert_eq "Firehose CustomTimeZone after Phase 3c (removed from the template; CloudFormation keeps it)" "Asia/Tokyo" "${P3C_TZ}"
+P3C_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3c (the destination change must update the stream in place)" "${PRE_CREATED}" "${P3C_CREATED}"
+echo "    FileExtension updated in place; the removed sub-fields stayed live (issue #1160)"
+
+# --- Phase 3d / 3e: server-side encryption on, then off (issue #5357) -----
+# Read once per phase, right after deploy returns and with no polling: update()
+# waits for the asynchronous ENABLING / DISABLING transition to end.
+firehose_enc() { # usage: firehose_enc <DeliveryStreamEncryptionConfiguration field>
+  aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+    --query "DeliveryStreamDescription.DeliveryStreamEncryptionConfiguration.$1" --output text
+}
+P3D_PRE="$(firehose_enc Status)"
+assert_eq "Firehose encryption before Phase 3d" "DISABLED" "${P3D_PRE}"
+echo "==> Phase 3d: redeploy adding DeliveryStreamEncryptionConfigurationInput (AWS_OWNED_CMK)"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_ENC=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3D_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption status after Phase 3d (issue #5357: update() never applied DeliveryStreamEncryptionConfigurationInput, or returned before ENABLED)" "ENABLED" "${P3D_STATUS}"
+P3D_TYPE="$(firehose_enc KeyType)"
+assert_eq "Firehose encryption KeyType after Phase 3d" "AWS_OWNED_CMK" "${P3D_TYPE}"
+P3D_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3d (encryption must be applied in place)" "${PRE_CREATED}" "${P3D_CREATED}"
+echo "    encryption enabled in place (issue #5357)"
+
+echo "==> Phase 3e: redeploy with DeliveryStreamEncryptionConfigurationInput removed"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3E_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption status after Phase 3e (issue #5357: removing the block must stop encryption, as CloudFormation does)" "DISABLED" "${P3E_STATUS}"
+P3E_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3e (encryption must be removed in place)" "${PRE_CREATED}" "${P3E_CREATED}"
+echo "    encryption disabled in place (issue #5357)"
+
+# --- Phase 3f: an in-place legacy S3 destination update (issue #5439) ------
+# Every earlier phase's env is carried, so only the legacy stream differs.
+legacy_desc() { # usage: legacy_desc <DeliveryStreamDescription JMESPath>
+  aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}" \
+    --query "DeliveryStreamDescription.$1" --output text
+}
+legacy_s3() { # usage: legacy_s3 <S3DestinationDescription field path>
+  legacy_desc "Destinations[0].S3DestinationDescription.$1"
+}
+# The ARN derives from the fixed name, so a delete + re-create keeps it;
+# CreateTimestamp is what tells an in-place update from a replacement.
+P3F_PRE_CREATED="$(legacy_desc CreateTimestamp)"
+if [ -z "${P3F_PRE_CREATED}" ] || [ "${P3F_PRE_CREATED}" = None ]; then
+  echo "FAIL: no CreateTimestamp for ${LEGACY_NAME} before Phase 3f (got '${P3F_PRE_CREATED}')" >&2
+  exit 1
+fi
+P3F_PRE_PREFIX="$(legacy_s3 Prefix)"
+assert_eq "legacy-S3 stream Prefix before Phase 3f" "legacy-a/" "${P3F_PRE_PREFIX}"
+P3F_PRE_COMP="$(legacy_s3 CompressionFormat)"
+assert_eq "legacy-S3 stream CompressionFormat before Phase 3f" "UNCOMPRESSED" "${P3F_PRE_COMP}"
+P3F_PRE_INTERVAL="$(legacy_s3 BufferingHints.IntervalInSeconds)"
+assert_eq "legacy-S3 stream BufferingHints.IntervalInSeconds before Phase 3f" "60" "${P3F_PRE_INTERVAL}"
+echo "==> Phase 3f: redeploy changing the legacy S3DestinationConfiguration (${LEGACY_NAME})"
+if ! CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes; then
+  echo "FAIL: the legacy S3DestinationConfiguration update failed to deploy (issue #5439: cdkd refused an update CloudFormation applies in place)" >&2
+  exit 1
+fi
+P3F_PREFIX="$(legacy_s3 Prefix)"
+assert_eq "legacy-S3 stream Prefix after Phase 3f (issue #5439)" "legacy-b/" "${P3F_PREFIX}"
+P3F_COMP="$(legacy_s3 CompressionFormat)"
+assert_eq "legacy-S3 stream CompressionFormat after Phase 3f (issue #5439)" "GZIP" "${P3F_COMP}"
+P3F_INTERVAL="$(legacy_s3 BufferingHints.IntervalInSeconds)"
+assert_eq "legacy-S3 stream BufferingHints.IntervalInSeconds after Phase 3f (issue #5439)" "120" "${P3F_INTERVAL}"
+P3F_SIZE="$(legacy_s3 BufferingHints.SizeInMBs)"
+assert_eq "legacy-S3 stream BufferingHints.SizeInMBs after Phase 3f (issue #5439)" "10" "${P3F_SIZE}"
+P3F_CREATED="$(legacy_desc CreateTimestamp)"
+assert_eq "legacy-S3 stream CreateTimestamp after Phase 3f (the update must apply in place, not replace the stream)" "${P3F_PRE_CREATED}" "${P3F_CREATED}"
+echo "    legacy S3 destination updated in place, CreateTimestamp unchanged (issue #5439)"
+
+# --- Phase 3g: an encryption change the deadline cut short (issue #5380) ---
+# The Start is sent within seconds and the ENABLING transition takes 80-95 s,
+# so a 30 s per-type deadline fails the update AFTER the irreversible call.
+# Before the fix the record kept the previous (unencrypted) block and nothing
+# else, so the redeploy of that same template below diffed empty and sent
+# nothing: the stream stayed ENABLED. Now the record names the key unsettled
+# and the redeploy reads the stream and stops encryption.
+unsettled_of_stream() { # the stream record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${NAME}" '[.resources[]
+        | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+P3G_PRE="$(firehose_enc Status)"
+assert_eq "Firehose encryption before Phase 3g" "DISABLED" "${P3G_PRE}"
+echo "==> Phase 3g: redeploy adding encryption under a 30s Firehose deadline (must fail mid-transition)"
+set +e
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 CDKD_SRD_ENC=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
+  --resource-warn-after AWS::KinesisFirehose::DeliveryStream=10s \
+  --resource-timeout AWS::KinesisFirehose::DeliveryStream=30s
+P3G_EXIT=$?
+set -e
+if [ "${P3G_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 3g's deploy succeeded; the 30s deadline must cut the ENABLING transition short (premise of the arm)" >&2
+  exit 1
+fi
+P3G_UNSETTLED="$(unsettled_of_stream)"
+assert_eq "stream record's unsettledProperties after the cut-short deploy (issue #5380: a failed update recorded nothing it had applied)" \
+  "DeliveryStreamEncryptionConfigurationInput" "${P3G_UNSETTLED}"
+# `cdkd drift` names it too; its exit code reports the drift itself.
+P3G_DRIFT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)"
+P3G_DRIFT_UNSETTLED="$(printf '%s' "${P3G_DRIFT}" \
+  | jq -r '[.[].unsettled // [] | .[] | .properties[]] | join(",")')"
+assert_eq "cdkd drift --json unsettled properties after Phase 3g (issue #5380)" \
+  "DeliveryStreamEncryptionConfigurationInput" "${P3G_DRIFT_UNSETTLED}"
+# Let the transition AWS accepted finish, so the next phase starts from a
+# stream that holds the attempted block while the record holds none.
+P3G_SETTLED=""
+for _ in $(seq 1 40); do
+  P3G_SETTLED="$(firehose_enc Status)"
+  [ "${P3G_SETTLED}" != "ENABLING" ] && break
+  sleep 5
+done
+assert_eq "Firehose encryption once the cut-short Start finished" "ENABLED" "${P3G_SETTLED}"
+
+echo "==> Phase 3g: redeploy the template without encryption (the record's own block)"
+CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+P3G_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption after redeploying the recorded template (issue #5380: the redeploy diffed empty and left the stream encrypted)" \
+  "DISABLED" "${P3G_STATUS}"
+P3G_AFTER="$(unsettled_of_stream)"
+assert_eq "stream record's unsettledProperties after the converging deploy" "" "${P3G_AFTER}"
+P3G_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3g (encryption must converge in place)" "${PRE_CREATED}" "${P3G_CREATED}"
+echo "    the unsettled encryption converged on redeploy (issue #5380)"
+
+# --- Phase 3h: the automatic rollback reverts the cut-short add (go-to-k/cdkd#5505)
+# Phase 3g's add again, WITHOUT --no-rollback. The rollback waits for the
+# deadline-abandoned call and for the ENABLING transition to end, then stops
+# encryption, as CloudFormation rolls a failed update back. Before the fix
+# the stream stayed ENABLING/ENABLED and the record kept the name (Phase 3g's
+# --no-rollback run still asserts that path). CDKD_NO_WAIT / CDKD_FULL_WAIT
+# are dropped: a no-wait revert would return mid-DISABLING.
+echo "==> Phase 3h: redeploy adding encryption under a 30s Firehose deadline, with the automatic rollback"
+P3H_PRE="$(firehose_enc Status)"
+assert_eq "Firehose encryption before Phase 3h" "DISABLED" "${P3H_PRE}"
+set +e
+env -u CDKD_NO_WAIT -u CDKD_FULL_WAIT \
+  CDKD_SRD_PHASE=b CDKD_SRD_TAG=updated CDKD_SRD_FILE_EXT=.ndjson CDKD_SRD_TRIM=1 CDKD_SRD_LEGACY_V2=1 CDKD_SRD_ENC=1 \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::KinesisFirehose::DeliveryStream=10s \
+  --resource-timeout AWS::KinesisFirehose::DeliveryStream=30s >"${P3H_LOG}" 2>&1
+P3H_EXIT=$?
+set -e
+cat "${P3H_LOG}"
+if [ "${P3H_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 3h's deploy succeeded; the 30s deadline must cut the ENABLING transition short (premise of the arm)" >&2
+  exit 1
+fi
+# AWS first, the moment the deploy returned: the subject of the arm.
+P3H_STATUS="$(firehose_enc Status)"
+assert_eq "Firehose encryption right after the auto-rolled-back deploy (go-to-k/cdkd#5505: the rollback must revert the cut-short encryption)" \
+  "DISABLED" "${P3H_STATUS}"
+# The record checks read "nothing unsettled" off an empty result, so first
+# prove the state file was read and holds exactly one record for the stream.
+P3H_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+P3H_RECORDS="$(jq -r --arg name "${NAME}" '[.resources[]
+    | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)] | length' <<<"${P3H_STATE}")"
+assert_eq "delivery stream records in the state after the automatic rollback" "1" "${P3H_RECORDS}"
+P3H_UNSETTLED="$(jq -r --arg name "${NAME}" '[.resources[]
+    | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)
+    | (.unsettledProperties // [])[]] | join(",")' <<<"${P3H_STATE}")"
+assert_eq "stream record's unsettledProperties after the automatic rollback reverted them (go-to-k/cdkd#5505)" "" "${P3H_UNSETTLED}"
+P3H_ITEMS="$(jq -r --arg name "${NAME}" '[.resources[]
+    | select(.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .physicalId == $name)
+    | has("unsettledItems")] | any' <<<"${P3H_STATE}")"
+assert_eq "stream record carries unsettledItems after the automatic rollback" "false" "${P3H_ITEMS}"
+# Premise: the revert is cdkd's. Either line of the arm: the call the
+# deadline abandoned usually completes once ENABLED ("... whose call completed
+# after the deploy gave up on it, to its pre-deploy properties"), else the
+# line names what it left unsettled. The shared tail is the sentinel.
+if ! grep -qE 'Rollback: reverting (what )?the failed UPDATE of .*to its pre-deploy properties' "${P3H_LOG}"; then
+  if grep -q 'to its pre-deploy properties' "${P3H_LOG}"; then
+    echo "FAIL: the rollback's revert line changed wording; update this arm's needle (go-to-k/cdkd#5505)" >&2
+  else
+    echo "FAIL: the automatic rollback logged no revert of the cut-short encryption (go-to-k/cdkd#5505)" >&2
+  fi
+  exit 1
+fi
+P3H_CREATED="$(firehose_created)"
+assert_eq "Firehose CreateTimestamp after Phase 3h (the revert must apply in place)" "${PRE_CREATED}" "${P3H_CREATED}"
+echo "    the automatic rollback reverted the cut-short encryption: DISABLED and the name cleared right after the failed deploy (go-to-k/cdkd#5505)"
+
 # --- Phase 4: destroy, everything gone at once ---------------------------
 STREAM_ARN="$(stream_arn)"
 echo "==> Phase 4: destroy"
@@ -238,6 +499,8 @@ node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --regio
 # No polling: delete() now returns only once each stream is gone.
 assert_gone "Firehose delivery stream ${NAME} still exists after destroy" \
   aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}"
+assert_gone "Firehose delivery stream ${LEGACY_NAME} still exists after destroy" \
+  aws firehose describe-delivery-stream --delivery-stream-name "${LEGACY_NAME}" --region "${REGION}"
 assert_gone "Kinesis stream ${NAME} still exists after destroy" \
   aws kinesis describe-stream-summary --stream-name "${NAME}" --region "${REGION}"
 assert_gone "Kinesis stream consumer ${NAME} still exists after destroy" \

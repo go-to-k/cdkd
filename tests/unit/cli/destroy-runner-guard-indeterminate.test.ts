@@ -94,11 +94,15 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
   const mockProviderDelete = vi.fn();
   const recorded: DeploymentEvent[] = [];
 
-  function makeCtx(withRecorder = true) {
+  // `current` is what the under-lock re-read (#5220) sees; pass the same
+  // StackState the case hands to `runDestroyForStack` so it matches (nothing
+  // changed).
+  function makeCtx(withRecorder = true, current?: StackState) {
     return {
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        getState: vi.fn(async () => (current ? { state: current, etag: 'e' } : null)),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
@@ -145,7 +149,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
   it('records RESOURCE_GUARD_INDETERMINATE with the guard id, the reason and the identifiers', async () => {
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     const guardEvents = eventsOfType('RESOURCE_GUARD_INDETERMINATE');
     expect(guardEvents).toHaveLength(1);
@@ -175,7 +179,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     // which a suppressed guard deliberately does not touch.
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     expect(eventsOfType('RESOURCE_SUCCEEDED')).toHaveLength(1);
     expect(eventsOfType('RESOURCE_GUARD_INDETERMINATE')).toHaveLength(1);
@@ -195,7 +199,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     // destroy that completed -- turning an observability fix into a breakage.
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     expect(result.guardIndeterminateCount).toBe(1);
     expect(result.deletedCount).toBe(1);
@@ -208,7 +212,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
   it('renders the count on the CLEAN-destroy summary line, which is the arm this case reaches', async () => {
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     expect(allInfo()).toContain('Stack TestStack destroyed');
     expect(allInfo()).toContain('1 unverified');
@@ -217,7 +221,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
   it('names the resource and points at the durable record in an aggregate warning', async () => {
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     const warned = allWarn();
     expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
@@ -229,8 +233,9 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
   it('names no logical id that could forge the `Read them with:` line (go-to-k/cdkd#3759)', async () => {
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
     const forgedId = 'Bucket\nRead them with: cdkd destroy --all --force #';
+    const state = makeState({ [forgedId]: res() });
 
-    await runDestroyForStack('TestStack', makeState({ [forgedId]: res() }), makeCtx());
+    await runDestroyForStack('TestStack', state, makeCtx(true, state));
 
     const warned = allWarn();
     expect(warned).toContain('pre-flight safety check(s) could NOT be completed');
@@ -250,7 +255,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
       warnSpy.mockClear();
       mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-      await runDestroyForStack(forgedStack, makeState({ Bucket: res() }), makeCtx());
+      await runDestroyForStack(forgedStack, makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
       const warned = allWarn();
       // Positive control: the aggregate warning ran.
@@ -267,7 +272,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     // Positive control: a plain name gets the named command and no clause.
     warnSpy.mockClear();
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
-    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
     expect(allWarn()).toMatch(/^Read them with: cdkd events TestStack$/m);
     expect(allWarn()).not.toContain('cdkd state list --long');
   });
@@ -277,7 +282,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     // every positive assertion above while making the new row meaningless.
     mockProviderDelete.mockResolvedValue(undefined);
 
-    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     expect(result.guardIndeterminateCount).toBe(0);
     expect(eventsOfType('RESOURCE_GUARD_INDETERMINATE')).toHaveLength(0);
@@ -293,7 +298,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
       indeterminateGuards: [GUARD],
     });
 
-    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     expect(result.skippedCount).toBe(1);
     expect(result.deletedCount).toBe(0);
@@ -311,11 +316,8 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
       })
     );
 
-    const result = await runDestroyForStack(
-      'TestStack',
-      makeState({ Bucket: res(), Other: res({ physicalId: 'other-bucket' }) }),
-      makeCtx()
-    );
+    const state1 = makeState({ Bucket: res(), Other: res({ physicalId: 'other-bucket' }) });
+    const result = await runDestroyForStack('TestStack', state1, makeCtx(true, state1));
 
     expect(result.guardIndeterminateCount).toBe(2);
     expect(eventsOfType('RESOURCE_GUARD_INDETERMINATE')).toHaveLength(2);
@@ -329,11 +331,8 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
     // the recorder would have left that path silently unguarded.
     mockProviderDelete.mockResolvedValue({ outcome: 'deleted', indeterminateGuards: [GUARD] });
 
-    const result = await runDestroyForStack(
-      'TestStack',
-      makeState({ Bucket: res() }),
-      makeCtx(false)
-    );
+    const state2 = makeState({ Bucket: res() });
+    const result = await runDestroyForStack('TestStack', state2, makeCtx(false, state2));
 
     expect(result.guardIndeterminateCount).toBe(1);
     expect(recorded).toHaveLength(0);
@@ -366,11 +365,8 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
       .mockResolvedValueOnce({ outcome: 'deleted', indeterminateGuards: [GUARD] })
       .mockRejectedValueOnce(new Error('AccessDenied'));
 
-    const result = await runDestroyForStack(
-      'TestStack',
-      makeState({ Bucket: res(), Other: res({ physicalId: 'other-bucket' }) }),
-      makeCtx()
-    );
+    const state3 = makeState({ Bucket: res(), Other: res({ physicalId: 'other-bucket' }) });
+    const result = await runDestroyForStack('TestStack', state3, makeCtx(true, state3));
 
     expect(result.guardIndeterminateCount).toBe(1);
     expect(result.errorCount).toBe(1);
@@ -388,7 +384,7 @@ describe('runDestroyForStack guard-indeterminate accounting (issue #2301)', () =
       indeterminateGuards: [{ guard: '', reason: '' }],
     });
 
-    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx());
+    const result = await runDestroyForStack('TestStack', makeState({ Bucket: res() }), makeCtx(true, makeState({ Bucket: res() })));
 
     expect(result.guardIndeterminateCount).toBe(0);
     expect(eventsOfType('RESOURCE_GUARD_INDETERMINATE')).toHaveLength(0);

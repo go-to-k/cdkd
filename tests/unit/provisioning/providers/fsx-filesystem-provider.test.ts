@@ -52,13 +52,14 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { getLogger } from '../../../../src/utils/logger.js';
+import { calculateResourceDrift } from '../../../../src/analyzer/drift-calculator.js';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../../src/types/resource.js';
 import { prepareRemovalForUpdate } from '../../../../src/provisioning/update-removal.js';
 import {
   isMarkedNonRetryable,
   isNameCollisionErrorFrom,
 } from '../../../../src/deployment/retryable-errors.js';
-import { withStackName } from '../../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../../src/provisioning/resource-name.js';
 import { recordServerClockForTests } from '../../../../src/provisioning/providers/server-clock.js';
 import {
   CreateTokenLedger,
@@ -67,7 +68,7 @@ import {
 import type { CreateTokenLedgerDoc } from '../../../../src/state/create-token-ledger.js';
 import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);
@@ -309,11 +310,11 @@ describe('FSxFileSystemProvider create', () => {
     });
 
     const provider = newProvider();
-    await withStackName('DevStack', () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
-    await withStackName('StagingStack', () =>
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackScope({ stackName: 'StagingStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS })
     );
-    await withStackName('DevStack', () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => provider.create('MyFs', RESOURCE_TYPE, { ...LUSTRE_PROPS }));
 
     const tokens = callsOf(CreateFileSystemCommand).map((c) => c.input['ClientRequestToken']);
     expect(tokens[0]).not.toBe(tokens[1]);
@@ -507,7 +508,7 @@ describe('FSxFileSystemProvider create', () => {
       };
     };
     const deploy = <T,>(ledger: CreateTokenLedger, fn: () => Promise<T>) =>
-      withStackName('DevStack', () => withCreateTokenLedger(ledger, fn));
+      withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(ledger, fn));
 
     /** Run 1 sends the create an hour ago and dies before recording it. */
     const interruptedRunOne = async () => {
@@ -942,7 +943,7 @@ describe('FSxFileSystemProvider update', () => {
         ...LUSTRE_PROPS,
         StorageType: 'INTELLIGENT_TIERING',
         FileSystemTypeVersion: '2.15',
-        NetworkType: 'DUAL_STACK',
+        NetworkType: 'DUAL',
         LustreConfiguration: {
           DeploymentType: 'SCRATCH_2',
           MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: '6000' },
@@ -956,7 +957,7 @@ describe('FSxFileSystemProvider update', () => {
       FileSystemId: FS_ID,
       StorageType: 'INTELLIGENT_TIERING',
       FileSystemTypeVersion: '2.15',
-      NetworkType: 'DUAL_STACK',
+      NetworkType: 'DUAL',
       LustreConfiguration: {
         MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
       },
@@ -1486,6 +1487,7 @@ describe('FSxFileSystemProvider readCurrentState', () => {
       'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
       'OntapConfiguration.FsxAdminPassword',
       'OpenZFSConfiguration.RootVolumeConfiguration',
+      'OpenZFSConfiguration.Options',
     ]);
     expect(newProvider().getDriftUnknownPaths('AWS::S3::Bucket')).toEqual([]);
   });
@@ -1996,6 +1998,7 @@ const SUBPROP_SAMPLE_VALUE: Record<string, unknown> = {
   PerUnitStorageThroughput: 125,
   MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
   DataReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 },
+  LogConfiguration: { Level: 'WARN_ERROR' },
   ThroughputCapacity: 256,
   ThroughputCapacityPerHAPair: 256,
   HAPairs: 2,
@@ -2192,7 +2195,8 @@ describe('FSxFileSystemProvider nested sub-block update arms', () => {
 // Issue #1160: UpdateFileSystem keeps a field it is not sent, and cdkd sends
 // no reset for any of these removals, so each one must WARN rather than be
 // silently dropped — and must never issue an UpdateFileSystem carrying no
-// update field.
+// update field. The warning says CloudFormation keeps the value too only when
+// every named property is one the CFn A/B measured (CFN_KEEPS_ON_REMOVAL).
 describe('FSxFileSystemProvider update removal (#1160)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2316,7 +2320,7 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     });
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'properties LustreConfiguration.DataCompressionType, LustreConfiguration.AutoImportPolicy are no longer declared'
+      'properties LustreConfiguration.DataCompressionType, LustreConfiguration.AutoImportPolicy are no longer declared and keep their current AWS value, as CloudFormation leaves them;'
     );
   });
 
@@ -2357,8 +2361,396 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'LustreConfiguration.DataCompressionType, LustreConfiguration.WeeklyMaintenanceStartTime are no longer declared'
+      'LustreConfiguration.DataCompressionType, LustreConfiguration.WeeklyMaintenanceStartTime are no longer declared and keep their current AWS value, as CloudFormation leaves them;'
     );
+  });
+
+  it('says CloudFormation keeps every measured OpenZFS sub-property removal', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const prev = {
+      ...OPENZFS_PROPS,
+      OpenZFSConfiguration: {
+        ...OPENZFS_PROPS.OpenZFSConfiguration,
+        AutomaticBackupRetentionDays: 3,
+        CopyTagsToBackups: true,
+        CopyTagsToVolumes: true,
+        DailyAutomaticBackupStartTime: '05:00',
+        WeeklyMaintenanceStartTime: '1:06:00',
+        DiskIopsConfiguration: { Mode: 'USER_PROVISIONED', Iops: 500 },
+      },
+    };
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, { ...OPENZFS_PROPS }, prev);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): properties OpenZFSConfiguration.AutomaticBackupRetentionDays, OpenZFSConfiguration.CopyTagsToBackups, OpenZFSConfiguration.CopyTagsToVolumes, OpenZFSConfiguration.DailyAutomaticBackupStartTime, OpenZFSConfiguration.WeeklyMaintenanceStartTime, OpenZFSConfiguration.DiskIopsConfiguration are no longer declared and keep their current AWS value, as CloudFormation leaves them; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('claims nothing about CloudFormation for a measured Lustre sub-property on an unmeasured storage class', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    // AutomaticBackupRetentionDays was measured on PERSISTENT_2 SSD only.
+    const prev = {
+      ...LUSTRE_PROPS,
+      StorageType: 'INTELLIGENT_TIERING',
+      LustreConfiguration: {
+        DeploymentType: 'PERSISTENT_2',
+        AutomaticBackupRetentionDays: 7,
+      },
+    };
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...prev, LustreConfiguration: { DeploymentType: 'PERSISTENT_2' } },
+      prev
+    );
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property LustreConfiguration.AutomaticBackupRetentionDays is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  // The OpenZFS removals the CFn A/B on issue #1160 (2026-10-24) measured on
+  // ONE shape each: ThroughputCapacity on MULTI_AZ_1 SSD and INTELLIGENT_TIERING,
+  // ReadCacheConfiguration on MULTI_AZ_1 INTELLIGENT_TIERING, and
+  // EndpointIpv6AddressRange on MULTI_AZ_1 SSD in the same update as a
+  // NetworkType removal. Every other shape keeps the line claiming nothing.
+  const keepsLine = (names: string): string =>
+    names.includes(', ')
+      ? `MyFs (AWS::FSx::FileSystem): properties ${names} are no longer declared and keep their current AWS value, as CloudFormation leaves them; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
+      : `MyFs (AWS::FSx::FileSystem): property ${names} is no longer declared and keeps its current AWS value, as CloudFormation leaves it; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
+  const neutralLine = (names: string): string =>
+    names.includes(', ')
+      ? `MyFs (AWS::FSx::FileSystem): properties ${names} are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`
+      : `MyFs (AWS::FSx::FileSystem): property ${names} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+  const openZfs = (
+    deploymentType: string,
+    top: Record<string, unknown>,
+    sub: Record<string, unknown>
+  ): Record<string, unknown> => ({
+    ...OPENZFS_PROPS,
+    ...top,
+    OpenZFSConfiguration: { DeploymentType: deploymentType, ThroughputCapacity: 160, ...sub },
+  });
+  const IPV6_RANGE = 'fd00:ec2::/118';
+  const READ_CACHE = { SizingMode: 'USER_PROVISIONED', SizeGiB: 128 };
+
+  for (const [title, prev, desired, expected] of [
+    [
+      'ThroughputCapacity on MULTI_AZ_1 SSD',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { ThroughputCapacity: undefined }),
+      keepsLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 INTELLIGENT_TIERING',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      keepsLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 with StorageType undeclared',
+      openZfs('MULTI_AZ_1', {}, {}),
+      openZfs('MULTI_AZ_1', {}, { ThroughputCapacity: undefined }),
+      keepsLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on SINGLE_AZ_1 (unmeasured)',
+      openZfs('SINGLE_AZ_1', { StorageType: 'SSD' }, {}),
+      openZfs('SINGLE_AZ_1', { StorageType: 'SSD' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on SINGLE_AZ_HA_2 (unmeasured)',
+      openZfs('SINGLE_AZ_HA_2', {}, {}),
+      openZfs('SINGLE_AZ_HA_2', {}, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 while StorageType changes in the same deploy (unmeasured)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 INTELLIGENT_TIERING',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      keepsLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ReadCacheConfiguration on SINGLE_AZ_2 INTELLIGENT_TIERING (unmeasured)',
+      openZfs('SINGLE_AZ_2', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('SINGLE_AZ_2', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 with StorageType undeclared (unmeasured)',
+      openZfs('MULTI_AZ_1', {}, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', {}, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 while StorageType leaves INTELLIGENT_TIERING (unmeasured)',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity and ReadCacheConfiguration together on MULTI_AZ_1 INTELLIGENT_TIERING (unmeasured: each was removed alone)',
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ReadCacheConfiguration: READ_CACHE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity, OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity beside a measured WeeklyMaintenanceStartTime removal on MULTI_AZ_1 SSD (unmeasured: removed alone)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { WeeklyMaintenanceStartTime: '1:05:00' }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { ThroughputCapacity: undefined }),
+      neutralLine(
+        'OpenZFSConfiguration.ThroughputCapacity, OpenZFSConfiguration.WeeklyMaintenanceStartTime'
+      ),
+    ],
+    [
+      'ThroughputCapacity on MULTI_AZ_1 SSD while NetworkType stays DUAL (unmeasured: CloudFormation refused every such update)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { ThroughputCapacity: undefined }),
+      neutralLine('OpenZFSConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'ReadCacheConfiguration on MULTI_AZ_1 INTELLIGENT_TIERING while NetworkType stays DUAL (unmeasured)',
+      openZfs(
+        'MULTI_AZ_1',
+        { StorageType: 'INTELLIGENT_TIERING', NetworkType: 'DUAL' },
+        { ReadCacheConfiguration: READ_CACHE }
+      ),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING', NetworkType: 'DUAL' }, {}),
+      neutralLine('OpenZFSConfiguration.ReadCacheConfiguration'),
+    ],
+    [
+      'NetworkType alone on MULTI_AZ_1 SSD with EndpointIpv6AddressRange kept (CloudFormation refused it)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      neutralLine('NetworkType'),
+    ],
+    [
+      'NetworkType alone on MULTI_AZ_1 SSD with no EndpointIpv6AddressRange',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, {}),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      keepsLine('NetworkType'),
+    ],
+    [
+      'EndpointIpv6AddressRange with NetworkType on MULTI_AZ_1 SSD',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {}),
+      keepsLine('NetworkType, OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'EndpointIpv6AddressRange with NetworkType and StorageType on MULTI_AZ_1 SSD (unmeasured)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', {}, {}),
+      neutralLine('StorageType, NetworkType, OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'EndpointIpv6AddressRange alone, NetworkType still declared (unmeasured: CloudFormation refused that update)',
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, { EndpointIpv6AddressRange: IPV6_RANGE }),
+      openZfs('MULTI_AZ_1', { StorageType: 'SSD', NetworkType: 'DUAL' }, {}),
+      neutralLine('OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'EndpointIpv6AddressRange with NetworkType on MULTI_AZ_1 INTELLIGENT_TIERING (unmeasured)',
+      openZfs(
+        'MULTI_AZ_1',
+        { StorageType: 'INTELLIGENT_TIERING', NetworkType: 'DUAL' },
+        { EndpointIpv6AddressRange: IPV6_RANGE }
+      ),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, {}),
+      neutralLine('NetworkType, OpenZFSConfiguration.EndpointIpv6AddressRange'),
+    ],
+    [
+      'a shape-measured removal beside one unmeasured on INTELLIGENT_TIERING',
+      openZfs(
+        'MULTI_AZ_1',
+        { StorageType: 'INTELLIGENT_TIERING' },
+        { WeeklyMaintenanceStartTime: '1:05:00' }
+      ),
+      openZfs('MULTI_AZ_1', { StorageType: 'INTELLIGENT_TIERING' }, { ThroughputCapacity: undefined }),
+      neutralLine(
+        'OpenZFSConfiguration.ThroughputCapacity, OpenZFSConfiguration.WeeklyMaintenanceStartTime'
+      ),
+    ],
+  ] as const) {
+    it(`sends nothing for the removal and words it by its measured shape: ${title}`, async () => {
+      routeSend({
+        UpdateFileSystemCommand: {},
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+      // A key spelled `undefined` in a fixture is a removal: drop it.
+      const desiredClean = JSON.parse(JSON.stringify(desired)) as Record<string, unknown>;
+      // A removed StorageType is left in place, so only a declared new value is sent.
+      const migratesStorageType =
+        desiredClean['StorageType'] !== undefined &&
+        prev['StorageType'] !== desiredClean['StorageType'];
+
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desiredClean, prev);
+
+      expect(result.wasReplaced).toBe(false);
+      // Only a StorageType migration has anything to send, and never a
+      // variant block: the removed sub-property is not sent.
+      expect(callsOf(UpdateFileSystemCommand).map((call) => call.input)).toEqual(
+        migratesStorageType
+          ? [{ FileSystemId: FS_ID, StorageType: desiredClean['StorageType'] }]
+          : []
+      );
+      expect(warnings()).toEqual([expected]);
+    });
+  }
+
+  // The Lustre removals the CFn A/B on issue #1160 (2026-10-25) measured:
+  // DailyAutomaticBackupStartTime, AutomaticBackupRetentionDays,
+  // PerUnitStorageThroughput and MetadataConfiguration on PERSISTENT_2 SSD,
+  // each alone and all four together, and the first three on PERSISTENT_1 HDD
+  // (the claim covers SSD / HDD, never INTELLIGENT_TIERING);
+  // DataReadCacheConfiguration and ThroughputCapacity on PERSISTENT_2
+  // INTELLIGENT_TIERING, each the update's only removal, that shape only.
+  const lustre = (
+    deploymentType: string | undefined,
+    top: Record<string, unknown>,
+    sub: Record<string, unknown>
+  ): Record<string, unknown> => ({
+    ...LUSTRE_PROPS,
+    ...top,
+    LustreConfiguration: {
+      ...(deploymentType !== undefined && { DeploymentType: deploymentType }),
+      ...sub,
+    },
+  });
+  const LUSTRE_SSD_SET = {
+    DailyAutomaticBackupStartTime: '05:00',
+    AutomaticBackupRetentionDays: 3,
+    PerUnitStorageThroughput: 125,
+    MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 3000 },
+  };
+  const LUSTRE_IT_SET = {
+    ThroughputCapacity: 4000,
+    DataReadCacheConfiguration: { SizingMode: 'USER_PROVISIONED', SizeGiB: 32 },
+    MetadataConfiguration: { Mode: 'USER_PROVISIONED', Iops: 6000 },
+  };
+  const SSD = { StorageType: 'SSD' };
+  const IT = { StorageType: 'INTELLIGENT_TIERING' };
+
+  for (const [title, prev, desired, expected] of [
+    ...(Object.keys(LUSTRE_SSD_SET) as (keyof typeof LUSTRE_SSD_SET)[]).map(
+      (key) =>
+        [
+          `${key} on PERSISTENT_2 SSD`,
+          lustre('PERSISTENT_2', SSD, LUSTRE_SSD_SET),
+          lustre('PERSISTENT_2', SSD, { ...LUSTRE_SSD_SET, [key]: undefined }),
+          keepsLine(`LustreConfiguration.${key}`),
+        ] as const
+    ),
+    [
+      'all four PERSISTENT_2 SSD removals in one deploy',
+      lustre('PERSISTENT_2', SSD, LUSTRE_SSD_SET),
+      lustre('PERSISTENT_2', SSD, {}),
+      keepsLine(
+        'LustreConfiguration.DailyAutomaticBackupStartTime, LustreConfiguration.AutomaticBackupRetentionDays, LustreConfiguration.PerUnitStorageThroughput, LustreConfiguration.MetadataConfiguration'
+      ),
+    ],
+    [
+      'PerUnitStorageThroughput on PERSISTENT_1 HDD',
+      lustre('PERSISTENT_1', { StorageType: 'HDD' }, { PerUnitStorageThroughput: 12 }),
+      lustre('PERSISTENT_1', { StorageType: 'HDD' }, {}),
+      keepsLine('LustreConfiguration.PerUnitStorageThroughput'),
+    ],
+    [
+      'DataReadCacheConfiguration on PERSISTENT_2 INTELLIGENT_TIERING',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { ...LUSTRE_IT_SET, DataReadCacheConfiguration: undefined }),
+      keepsLine('LustreConfiguration.DataReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity on PERSISTENT_2 INTELLIGENT_TIERING',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { ...LUSTRE_IT_SET, ThroughputCapacity: undefined }),
+      keepsLine('LustreConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'DataReadCacheConfiguration and ThroughputCapacity together (unmeasured: each was removed alone)',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { MetadataConfiguration: LUSTRE_IT_SET.MetadataConfiguration }),
+      neutralLine(
+        'LustreConfiguration.ThroughputCapacity, LustreConfiguration.DataReadCacheConfiguration'
+      ),
+    ],
+    [
+      'ThroughputCapacity on PERSISTENT_2 SSD (unmeasured)',
+      lustre('PERSISTENT_2', SSD, { ThroughputCapacity: 4000 }),
+      lustre('PERSISTENT_2', SSD, {}),
+      neutralLine('LustreConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'DataReadCacheConfiguration while StorageType leaves INTELLIGENT_TIERING (unmeasured)',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', SSD, { ...LUSTRE_IT_SET, DataReadCacheConfiguration: undefined }),
+      neutralLine('LustreConfiguration.DataReadCacheConfiguration'),
+    ],
+    [
+      'ThroughputCapacity on INTELLIGENT_TIERING with no PERSISTENT_2 declared (unmeasured)',
+      lustre(undefined, IT, { ThroughputCapacity: 4000 }),
+      lustre(undefined, IT, {}),
+      neutralLine('LustreConfiguration.ThroughputCapacity'),
+    ],
+    [
+      'MetadataConfiguration on PERSISTENT_2 INTELLIGENT_TIERING (unmeasured)',
+      lustre('PERSISTENT_2', IT, LUSTRE_IT_SET),
+      lustre('PERSISTENT_2', IT, { ...LUSTRE_IT_SET, MetadataConfiguration: undefined }),
+      neutralLine('LustreConfiguration.MetadataConfiguration'),
+    ],
+  ] as const) {
+    it(`sends nothing for the Lustre removal and words it by its measured shape: ${title}`, async () => {
+      routeSend({
+        UpdateFileSystemCommand: {},
+        DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+      });
+      // A key spelled `undefined` in a fixture is a removal: drop it.
+      const desiredClean = JSON.parse(JSON.stringify(desired)) as Record<string, unknown>;
+      const migratesStorageType = prev['StorageType'] !== desiredClean['StorageType'];
+
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desiredClean, prev);
+
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(UpdateFileSystemCommand).map((call) => call.input)).toEqual(
+        migratesStorageType
+          ? [{ FileSystemId: FS_ID, StorageType: desiredClean['StorageType'] }]
+          : []
+      );
+      expect(warnings()).toEqual([expected]);
+    });
+  }
+
+  it('still claims nothing about CloudFormation for a rollback revert of a shape-measured removal', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+    const prev = openZfs('MULTI_AZ_1', { StorageType: 'SSD' }, {});
+    const { ThroughputCapacity: _tc, ...rest } = prev['OpenZFSConfiguration'] as Record<
+      string,
+      unknown
+    >;
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      { ...prev, OpenZFSConfiguration: rest },
+      prev,
+      { replayingState: true }
+    );
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property OpenZFSConfiguration.ThroughputCapacity is absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.',
+    ]);
   });
 
   it('still expresses a removed RouteTableIds as a RemoveRouteTableIds delta (no warning)', async () => {
@@ -2384,45 +2776,105 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(childLogger.warn).not.toHaveBeenCalled();
   });
 
-  for (const [key, value] of [
-    ['StorageCapacity', 2400],
-    ['StorageType', 'HDD'],
-    ['FileSystemTypeVersion', '2.15'],
-    ['NetworkType', 'DUAL'],
+  // [base, key, value, CloudFormation measured to keep it for this
+  // FileSystemType] — the CFn A/B on issue #1160 measured Lustre and OpenZFS
+  // only, and NetworkType on OpenZFS only.
+  for (const [base, key, value, measured] of [
+    [LUSTRE_PROPS, 'StorageCapacity', 2400, true],
+    [LUSTRE_PROPS, 'StorageType', 'HDD', true],
+    [LUSTRE_PROPS, 'FileSystemTypeVersion', '2.15', true],
+    [LUSTRE_PROPS, 'NetworkType', 'DUAL', false],
+    [OPENZFS_PROPS, 'StorageCapacity', 128, true],
+    [OPENZFS_PROPS, 'StorageType', 'SSD', true],
+    [OPENZFS_PROPS, 'NetworkType', 'DUAL', true],
+    [WINDOWS_PROPS, 'StorageCapacity', 64, false],
+    [WINDOWS_PROPS, 'StorageType', 'HDD', false],
+    [ONTAP_PROPS, 'NetworkType', 'DUAL', false],
   ] as const) {
-    it(`issues no UpdateFileSystem when top-level ${key} is the only removal`, async () => {
+    it(`issues no UpdateFileSystem when top-level ${key} is the only removal (${base.FileSystemType})`, async () => {
       routeSend({
         UpdateFileSystemCommand: {},
         DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
       });
 
-      const { [key]: _removed, ...desired } = { ...LUSTRE_PROPS, [key]: value } as Record<
-        string,
-        unknown
-      >;
-      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, {
-        ...LUSTRE_PROPS,
-        [key]: value,
-      });
+      const prev = { ...base, [key]: value } as Record<string, unknown>;
+      const { [key]: _removed, ...desired } = prev;
+      const result = await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
 
       expect(result).toEqual({ physicalId: FS_ID, wasReplaced: false });
       expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
-      // Named by the provider's own line, which claims no CloudFormation reset.
+      // Named by the provider's own line, which claims no CloudFormation reset;
+      // it says CloudFormation keeps the value only where that is measured.
       expect(warnings()).toEqual([
-        `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
+        measured
+          ? `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared and keeps its current AWS value, as CloudFormation leaves it; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
+          : `MyFs (AWS::FSx::FileSystem): property ${key} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
       ]);
     });
   }
+
+  // INTELLIGENT_TIERING is a storage class no CFn A/B measured, so neither a
+  // removed StorageType of that value nor a removal on such a file system gets
+  // the "as CloudFormation leaves it" claim.
+  for (const [base, removedKey, extra] of [
+    [OPENZFS_PROPS, 'StorageType', {}],
+    [LUSTRE_PROPS, 'StorageCapacity', { StorageType: 'INTELLIGENT_TIERING' }],
+  ] as const) {
+    it(`claims nothing about CloudFormation for an INTELLIGENT_TIERING ${base.FileSystemType} file system (${removedKey} removed)`, async () => {
+      routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+      const prev = {
+        ...base,
+        ...extra,
+        ...(removedKey === 'StorageType' && { StorageType: 'INTELLIGENT_TIERING' }),
+      } as Record<string, unknown>;
+      const { [removedKey]: _removed, ...desired } = prev;
+
+      await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+      expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+      expect(warnings()).toEqual([
+        `MyFs (AWS::FSx::FileSystem): property ${removedKey} is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`,
+      ]);
+    });
+  }
+
+  it('claims nothing about CloudFormation when the same deploy migrates StorageType to INTELLIGENT_TIERING', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+    const prev = { ...OPENZFS_PROPS, StorageType: 'SSD', NetworkType: 'DUAL' };
+    const { NetworkType: _nt, ...rest } = prev;
+    const desired = { ...rest, StorageType: 'INTELLIGENT_TIERING' };
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property NetworkType is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('claims nothing about CloudFormation for a FileSystemType naming an Object prototype key', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+    const prev = { ...LUSTRE_PROPS, FileSystemType: 'constructor', StorageType: 'HDD' };
+    const { StorageType: _st, ...desired } = prev;
+
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property StorageType is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
 
   it('names top-level and sub-property removals in ONE warning', async () => {
     routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
 
     const prev = {
       ...LUSTRE_PROPS,
-      NetworkType: 'DUAL',
+      StorageType: 'HDD',
       LustreConfiguration: { DeploymentType: 'SCRATCH_2', DataCompressionType: 'LZ4' },
     };
-    const { NetworkType: _nt, ...desired } = {
+    const { StorageType: _st, ...desired } = {
       ...prev,
       LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
     };
@@ -2431,8 +2883,26 @@ describe('FSxFileSystemProvider update removal (#1160)', () => {
     expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain(
-      'properties NetworkType, LustreConfiguration.DataCompressionType are no longer declared'
+      'properties StorageType, LustreConfiguration.DataCompressionType are no longer declared and keep their current AWS value, as CloudFormation leaves them; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.'
     );
+  });
+
+  it('claims nothing about CloudFormation when a measured top-level removal shares the line with an unmeasured one', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    // OpenZFS ThroughputCapacity is unmeasured on SINGLE_AZ_1.
+    const { ThroughputCapacity: _tc, ...zfsWithoutThroughput } = OPENZFS_PROPS.OpenZFSConfiguration;
+    const prev = { ...OPENZFS_PROPS, StorageType: 'SSD' };
+    const { StorageType: _st, ...desired } = {
+      ...prev,
+      OpenZFSConfiguration: zfsWithoutThroughput,
+    };
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, desired, prev);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): properties StorageType, OpenZFSConfiguration.ThroughputCapacity are no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
   });
 
   it('words a top-level removal for a rollback revert, and is silent on drift --revert', async () => {
@@ -3022,5 +3492,432 @@ describe('FSxFileSystemProvider OPENZFS variant', () => {
 
     const value = await newProvider().getAttribute(FS_ID, RESOURCE_TYPE, 'RootVolumeId');
     expect(value).toBe('fsvol-xyz');
+  });
+});
+
+// go-to-k/cdkd#5430: LustreConfiguration.LogConfiguration (Level, Destination)
+// is sent on create, updated in place (CFn "Update requires: No interruption"),
+// and read back for drift.
+describe('FSxFileSystemProvider Lustre LogConfiguration (#5430)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const LOG_GROUP_ARN = 'arn:aws:logs:us-east-1:123456789012:log-group:/aws/fsx/cdkd-5430';
+  const withLog = (log: Record<string, unknown> | undefined): Record<string, unknown> => ({
+    ...LUSTRE_PROPS,
+    LustreConfiguration: {
+      ...LUSTRE_PROPS.LustreConfiguration,
+      ...(log !== undefined && { LogConfiguration: log }),
+    },
+  });
+  const warnings = (): string[] => childLogger.warn.mock.calls.map((c) => String(c[0]));
+
+  it('sends Level and Destination on CreateFileSystem', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create(
+      'MyFs',
+      RESOURCE_TYPE,
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect((create.input['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual(
+      { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }
+    );
+  });
+
+  it('sends no LogConfiguration on CreateFileSystem when none is declared', async () => {
+    routeSend({
+      CreateFileSystemCommand: { FileSystem: { FileSystemId: FS_ID, CreationTime: new Date() } },
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().create('MyFs', RESOURCE_TYPE, withLog(undefined));
+
+    const [create] = callsOf(CreateFileSystemCommand);
+    expect(
+      (create.input['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']
+    ).toBeUndefined();
+  });
+
+  it('sends a changed LogConfiguration on UpdateFileSystem, in place', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog({ Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN }),
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: {
+        LogConfiguration: { Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN },
+      },
+    });
+  });
+
+  it('sends a newly added LogConfiguration on UpdateFileSystem', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog({ Level: 'WARN_ONLY' }),
+      withLog(undefined)
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      LustreConfiguration: { LogConfiguration: { Level: 'WARN_ONLY' } },
+    });
+  });
+
+  it('sends no UpdateFileSystem when LogConfiguration is unchanged', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const props = withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN });
+    await newProvider().update('MyFs', FS_ID, RESOURCE_TYPE, props, props);
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+  });
+
+  it('leaves a removed LogConfiguration in place with the line that claims nothing about CloudFormation', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withLog(undefined),
+      withLog({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN })
+    );
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(warnings()).toEqual([
+      'MyFs (AWS::FSx::FileSystem): property LustreConfiguration.LogConfiguration is no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.',
+    ]);
+  });
+
+  it('reads LogConfiguration back for drift', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN },
+            },
+          }),
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'WARN_ERROR',
+      Destination: LOG_GROUP_ARN,
+    });
+  });
+
+  it('reads back a DISABLED LogConfiguration without inventing a Destination', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'DISABLED' },
+            },
+          }),
+        ],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'DISABLED',
+    });
+  });
+
+  // A baseline captured before #5430 lacks LogConfiguration while the readback
+  // of a never-logging file system carries { Level: 'DISABLED' }.
+  it('drops a logging-off LogConfiguration from a drift comparison side', () => {
+    const bag = {
+      FileSystemType: 'LUSTRE',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2', LogConfiguration: { Level: 'DISABLED' } },
+    };
+    expect(newProvider().canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toEqual({
+      FileSystemType: 'LUSTRE',
+      LustreConfiguration: { DeploymentType: 'SCRATCH_2' },
+    });
+    // The input is not mutated (the raw bag still feeds drift --revert).
+    expect(bag.LustreConfiguration).toHaveProperty('LogConfiguration');
+  });
+
+  it('keeps an enabled LogConfiguration, or one with a Destination, on a drift comparison side', () => {
+    const provider = newProvider();
+    for (const log of [
+      { Level: 'WARN_ERROR' },
+      { Level: 'DISABLED', Destination: LOG_GROUP_ARN },
+      { Level: 'ERROR_ONLY', Destination: LOG_GROUP_ARN },
+    ]) {
+      const bag = { LustreConfiguration: { LogConfiguration: log } };
+      expect(provider.canonicalizeDriftProperties(RESOURCE_TYPE, bag)).toBe(bag);
+    }
+    const other = { LustreConfiguration: { LogConfiguration: { Level: 'DISABLED' } } };
+    expect(provider.canonicalizeDriftProperties('AWS::EFS::FileSystem', other)).toBe(other);
+  });
+
+  // End to end through the comparison `cdkd drift` runs: each side through
+  // the provider's canonicalizer, then the calculator on an observed baseline.
+  const driftPaths = (
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): string[] => {
+    const provider = newProvider();
+    return calculateResourceDrift(
+      provider.canonicalizeDriftProperties(RESOURCE_TYPE, baseline),
+      provider.canonicalizeDriftProperties(RESOURCE_TYPE, aws),
+      { unionWalkObjects: true, ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE) }
+    ).map((d) => d.path);
+  };
+  const lustreBag = (log: Record<string, unknown> | undefined): Record<string, unknown> => ({
+    FileSystemType: 'LUSTRE',
+    LustreConfiguration: {
+      DeploymentType: 'SCRATCH_2',
+      ...(log !== undefined && { LogConfiguration: log }),
+    },
+  });
+
+  it('reports logging turned OFF on AWS as drift (baseline WARN_ERROR, AWS DISABLED)', () => {
+    expect(
+      driftPaths(
+        lustreBag({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }),
+        lustreBag({ Level: 'DISABLED' })
+      )
+    ).toEqual(['LustreConfiguration.LogConfiguration']);
+  });
+
+  it('reports logging turned ON on AWS as drift (pre-#5430 baseline without the key)', () => {
+    expect(
+      driftPaths(lustreBag(undefined), lustreBag({ Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN }))
+    ).toEqual(['LustreConfiguration.LogConfiguration']);
+  });
+
+  it('reports no drift for a never-logging file system against a pre-#5430 baseline', () => {
+    expect(driftPaths(lustreBag(undefined), lustreBag({ Level: 'DISABLED' }))).toEqual([]);
+  });
+
+  // Measured on go-to-k/cdkd#5430's integ: FSx reads the destination back as
+  // the LOG-STREAM ARN it writes to, not the declared log-group ARN.
+  const readLogBack = async (destination: string): Promise<Record<string, unknown>> => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [
+          availableFs({
+            FileSystemType: 'LUSTRE',
+            LustreConfiguration: {
+              MountName: MOUNT_NAME,
+              DeploymentType: 'SCRATCH_2',
+              LogConfiguration: { Level: 'WARN_ERROR', Destination: destination },
+            },
+          }),
+        ],
+      },
+    });
+    return bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+  };
+
+  it('reads a log-stream Destination back as its log-group ARN', async () => {
+    const state = await readLogBack(`${LOG_GROUP_ARN}:log-stream:datarepo_${FS_ID}`);
+    expect((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration']).toEqual({
+      Level: 'WARN_ERROR',
+      Destination: LOG_GROUP_ARN,
+    });
+  });
+
+  it('reads a Destination with the log group Arn suffix back without it', async () => {
+    const state = await readLogBack(`${LOG_GROUP_ARN}:*`);
+    expect(
+      ((state['LustreConfiguration'] as Record<string, unknown>)['LogConfiguration'] as Record<
+        string,
+        unknown
+      >)['Destination']
+    ).toBe(LOG_GROUP_ARN);
+  });
+
+  it('reports no drift between a declared log-group ARN and the log-stream ARN AWS reads back', async () => {
+    const aws = await readLogBack(`${LOG_GROUP_ARN}:log-stream:datarepo_${FS_ID}`);
+    const declared = {
+      LustreConfiguration: {
+        DeploymentType: 'SCRATCH_2',
+        LogConfiguration: { Level: 'WARN_ERROR', Destination: LOG_GROUP_ARN },
+      },
+    };
+    const provider = newProvider();
+    expect(
+      calculateResourceDrift(
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, declared),
+        provider.canonicalizeDriftProperties(RESOURCE_TYPE, aws),
+        { ignorePaths: provider.getDriftUnknownPaths(RESOURCE_TYPE) }
+      )
+    ).toEqual([]);
+  });
+
+  it('emits no LogConfiguration when AWS returns none', async () => {
+    routeSend({
+      DescribeFileSystemsCommand: {
+        FileSystems: [availableFs({ FileSystemType: 'LUSTRE' })],
+      },
+    });
+
+    const state = bagOf(await newProvider().readCurrentState(FS_ID, 'MyFs', RESOURCE_TYPE));
+
+    expect(state['LustreConfiguration']).not.toHaveProperty('LogConfiguration');
+  });
+});
+
+// go-to-k/cdkd#5431: OpenZFSConfiguration.Options is the one delete-time
+// property in the CFn schema (DELETE_CHILD_VOLUMES_AND_SNAPSHOTS lets
+// DeleteFileSystem remove a file system with child volumes). It is sent on
+// DeleteFileSystem from the recorded properties, and a change to it on update
+// has nothing to send to AWS.
+describe('FSxFileSystemProvider OpenZFS delete Options (#5431)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const DELETE_CHILDREN = 'DELETE_CHILD_VOLUMES_AND_SNAPSHOTS';
+  const withOptions = (options: unknown): Record<string, unknown> => ({
+    ...OPENZFS_PROPS,
+    OpenZFSConfiguration: {
+      ...OPENZFS_PROPS.OpenZFSConfiguration,
+      ...(options !== undefined && { Options: options }),
+    },
+  });
+  const deleteWith = async (properties: Record<string, unknown> | undefined) => {
+    routeSend({
+      DeleteFileSystemCommand: { FileSystemId: FS_ID, Lifecycle: 'DELETING' },
+      DescribeFileSystemsCommand: notFound(),
+    });
+    await newProvider().delete('MyFs', FS_ID, RESOURCE_TYPE, properties);
+    const [del] = callsOf(DeleteFileSystemCommand);
+    return del.input;
+  };
+
+  it('sends the recorded Options on DeleteFileSystem', async () => {
+    expect(await deleteWith(withOptions([DELETE_CHILDREN]))).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: { Options: [DELETE_CHILDREN] },
+    });
+  });
+
+  it('sends no OpenZFSConfiguration when no Options is recorded', async () => {
+    expect(await deleteWith(withOptions(undefined))).toEqual({ FileSystemId: FS_ID });
+    vi.clearAllMocks();
+    expect(await deleteWith(withOptions([]))).toEqual({ FileSystemId: FS_ID });
+    vi.clearAllMocks();
+    expect(await deleteWith(undefined)).toEqual({ FileSystemId: FS_ID });
+  });
+
+  it('sends no OpenZFSConfiguration for a file system that is not OpenZFS', async () => {
+    expect(
+      await deleteWith({
+        ...LUSTRE_PROPS,
+        OpenZFSConfiguration: { Options: [DELETE_CHILDREN] },
+      })
+    ).toEqual({ FileSystemId: FS_ID });
+  });
+
+  it('accepts an added Options on update without calling UpdateFileSystem or warning', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    const result = await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withOptions([DELETE_CHILDREN]),
+      withOptions(undefined)
+    );
+
+    expect(result).toMatchObject({ physicalId: FS_ID, wasReplaced: false });
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('accepts a removed Options on update without calling UpdateFileSystem or warning', async () => {
+    routeSend({ DescribeFileSystemsCommand: { FileSystems: [availableFs()] } });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      withOptions(undefined),
+      withOptions([DELETE_CHILDREN])
+    );
+
+    expect(callsOf(UpdateFileSystemCommand)).toHaveLength(0);
+    expect(childLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('still sends the other changes of an update that also changes Options', async () => {
+    routeSend({
+      UpdateFileSystemCommand: {},
+      DescribeFileSystemsCommand: { FileSystems: [availableFs()] },
+    });
+
+    await newProvider().update(
+      'MyFs',
+      FS_ID,
+      RESOURCE_TYPE,
+      {
+        ...withOptions([DELETE_CHILDREN]),
+        OpenZFSConfiguration: {
+          ...OPENZFS_PROPS.OpenZFSConfiguration,
+          Options: [DELETE_CHILDREN],
+          ThroughputCapacity: 128,
+        },
+      },
+      withOptions(undefined)
+    );
+
+    const [update] = callsOf(UpdateFileSystemCommand);
+    expect(update.input).toEqual({
+      FileSystemId: FS_ID,
+      OpenZFSConfiguration: { ThroughputCapacity: 128 },
+    });
+  });
+
+  it('declares Options drift-unknown: AWS never stores it on the file system', () => {
+    expect(newProvider().getDriftUnknownPaths(RESOURCE_TYPE)).toContain(
+      'OpenZFSConfiguration.Options'
+    );
   });
 });

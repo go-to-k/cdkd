@@ -41,7 +41,13 @@ fields. Without the flag the provider rejects the update with
 `ResourceUpdateNotSupportedError` and the deploy fails.
 
 `--replace` turns that failure into a delete and a create, which is what
-CloudFormation does for the same change.
+CloudFormation does for the same change. One exception: a change to an
+`AWS::KMS::Key`'s `KeySpec`, `KeyUsage`, `MultiRegion` or `Origin` fails in
+CloudFormation too, which never replaces a key. cdkd refuses it the same way,
+and there `--replace` (with `--force-stateful-recreation` unless the key's
+`UpdateReplacePolicy` is `Retain`) is a choice CloudFormation does not offer:
+the old key is scheduled for deletion, and data encrypted under it cannot be
+decrypted once the deletion completes.
 
 ```bash
 # A Glue SecurityConfiguration's EncryptionConfiguration changed
@@ -86,8 +92,17 @@ type is refused with `STATEFUL_REPLACE_BLOCKED`. See
 ## Same-name replacement: delete-first ordering
 
 Creating the new resource first cannot work when it needs a physical name the
-old resource still holds. The deploy then fails with one of two codes, and
-both messages name `--replace`:
+old resource still holds. That happens for a name your template declares, and
+for a name cdkd generates on a stack first deployed before generated names
+carried a suffix. On any other stack, a resource your template does not name
+gets the next generated name when it is replaced, so it never needs the old
+one's name: cdkd creates first with no flag, and `--recreate-via-*` and the
+fallback after a rejected update create first too. A collision on that new
+name is covered in
+[A replacement refused on its new name](import.md#a-replacement-refused-on-its-new-name).
+
+When the name is shared, the deploy fails with one of two codes, and both
+messages name `--replace`:
 
 | Code | What happened |
 | --- | --- |
@@ -192,8 +207,10 @@ A replacement that moves an EventBridge rule to another bus, or changes
   or kept under `DeletionPolicy: Retain`. The deploy still refuses, because
   nothing in AWS tells the two situations apart.
 - **The holder is this stack's own resource under another logical ID**, as
-  after a construct was moved or renamed. The error names that ID. Give the
-  new resource another name, or deploy that ID's removal first.
+  after a construct was moved or renamed. The error names that ID. To keep
+  the resource, run [`cdkd refactor`](cli-refactor.md) before deploying.
+  Otherwise give the new resource another name, or deploy that ID's removal
+  first.
 - **An S3 bucket** gets no import command, because the lookup also finds
   buckets that other accounts own.
 - **A log group that something else already created**, such as a Lambda

@@ -1,5 +1,9 @@
 import * as zlib from 'node:zlib';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  safeStringify,
+  type AwsFailureText,
+} from '../../utils/aws-failure-text.js';
 import {
   LambdaClient,
   CreateFunctionCommand,
@@ -28,6 +32,7 @@ import {
   type UpdateFunctionCodeCommandInput,
   type Runtime,
   type Architecture,
+  type S3ObjectStorageMode,
   type TracingConfig,
   type EphemeralStorage,
   type VpcConfig,
@@ -57,9 +62,17 @@ import {
   isRetryableTransientError,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
-import { generateResourceName } from '../resource-name.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markNotGone } from '../not-gone.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
+import { generatedNameFor } from '../resource-name.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -399,7 +412,10 @@ function withholdWaiterPayload(
   if (described === undefined || !(error instanceof Error)) return undefined;
   const text = mask(described);
   const original = error.message;
-  const header = `${error.name}: ${original}`;
+  // `safeStringify`: a failure's `name` is as arbitrary as the failure, and
+  // this runs inside the create / update catch (go-to-k/cdkd#3361).
+  const name = safeStringify(error.name);
+  const header = `${name}: ${original}`;
   const stack = typeof error.stack === 'string' ? error.stack : '';
   try {
     Object.defineProperty(error, 'message', {
@@ -410,8 +426,8 @@ function withholdWaiterPayload(
     });
     Object.defineProperty(error, 'stack', {
       value: stack.startsWith(header)
-        ? `${error.name}: ${text}${stack.slice(header.length)}`
-        : `${error.name}: ${text}`,
+        ? `${name}: ${text}${stack.slice(header.length)}`
+        : `${name}: ${text}`,
       writable: true,
       configurable: true,
       enumerable: false,
@@ -466,8 +482,8 @@ function refuseImageFunctionUnsupported(
   physicalId?: string
 ): void {
   if (properties['PackageType'] !== 'Image') return;
-  // Literal reads, not a loop over a name table: the handled-property wiring
-  // walk records a computed key as a whole-bag blind spot.
+  // Literal reads, not a loop over a name table: each consumed property stays
+  // visible (and greppable) as its own `properties['X']` read.
   const declared = [
     properties['CodeSigningConfigArn'] !== undefined ? 'CodeSigningConfigArn' : undefined,
     properties['RuntimeManagementConfig'] !== undefined ? 'RuntimeManagementConfig' : undefined,
@@ -512,6 +528,18 @@ export function inlineCodeFileNameForRuntime(runtime: string | undefined): strin
  * overhead (1s->2s->4s->8s) for an operation that completes immediately.
  * This SDK provider eliminates that polling and returns instantly.
  */
+
+/**
+ * go-to-k/cdkd#5487: the keys `update()` applies with their own calls, which no
+ * `State` / `LastUpdateStatus` transition covers.
+ */
+const SEPARATELY_APPLIED_KEYS: ReadonlySet<string> = new Set([
+  'Tags',
+  'ReservedConcurrentExecutions',
+  'RecursiveLoop',
+  'CodeSigningConfigArn',
+  'RuntimeManagementConfig',
+]);
 export class LambdaFunctionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
   /** `CreateFunction` goes through this client, which refuses the SDK retry of a 5xx (issue #4639). */
@@ -699,6 +727,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
   private readonly eniInitialSleepMs: number = 10_000;
   private readonly eniDeleteRetryBudgetMs: number = 30 * 60 * 1000;
   private readonly eniDeleteRetryIntervalMs: number = 15_000;
+  // - deadline margin: the per-ENI budget also ends this long before the
+  //   per-resource deadline (#5276). The budget alone equals the default
+  //   deadline, which also covers the detach and the delete, so without it a
+  //   slow release failed the delete instead of reaching the give-up.
+  private readonly eniDeadlineMarginMs: number = 2 * 60 * 1000;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -717,7 +750,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     const functionName =
       (properties['FunctionName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::Lambda::Function', logicalId);
     // Issue #2177: every create() line and refusal goes through this one sink
     // set. A provider's own logger reaches no engine mask.
     const log = lambdaOperationSinks(
@@ -821,6 +854,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       functionCreated = true;
       createdFunctionName = response.FunctionName || functionName;
       createdFunctionIdentity = functionIdentityToken(response.FunctionArn, response.LastModified);
+      // go-to-k/cdkd#5511: reported before any post-create wait.
+      reportCreatedResource(logicalId, resourceType, createdFunctionName, createdFunctionIdentity);
 
       // RecursiveLoop is a post-create control-plane prop: AWS sets it via
       // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
@@ -928,6 +963,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
               },
               { FunctionName: functionName }
             );
+            // go-to-k/cdkd#5511: re-reported by name alone BEFORE the call,
+            // since a deadline can drop its outcome after it has moved the
+            // token (below).
+            reportCreatedResource(logicalId, resourceType, createdFunctionName!);
             await this.putRuntimeManagementConfig(functionName, runtimeManagementConfig);
             // go-to-k/cdkd#4606: a successful PutRuntimeManagementConfig
             // moves `LastModified` (measured by the lambda-fix-forward-orphan
@@ -977,8 +1016,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       };
     } catch (error) {
       if (functionCreated) markAuxiliaryFailure(error, logicalId);
-      // The cause stays unmasked: a masked message is stamped so the retry
-      // classifiers read the chain (`wrapMaskedError`).
+      // The cause stays unmasked: a withheld or masked message is stamped so
+      // the retry classifiers read the chain (`wrapMaskedError`).
       // A non-Error throw still gets a cause, so a stamp has a chain to read.
       const cause = error instanceof Error ? error : undefined;
       const thrown = this.wrapMaskedError(
@@ -1005,28 +1044,60 @@ export class LambdaFunctionProvider implements ResourceProvider {
           createdFunctionName,
           createdFunctionIdentity
         );
+      } else if (createdFunctionName !== undefined) {
+        // The atomicity cleanup deleted the function: nothing is left to journal.
+        retractCreatedResource(logicalId, resourceType, createdFunctionName);
       }
       throw thrown;
     }
   }
 
   /**
-   * A failure wrap whose message quotes `error`'s text MASKED: AWS quotes request
-   * values (a role, a layer, a subnet) back in its own words.
+   * The failure wrap this provider's create / update catches throw.
    *
-   * When the mask changed that text, the wrap is stamped `markRedactedCause`, so
-   * `withRetry`'s substring classifiers read the unmasked cause chain rather than
-   * the masked message (the `concurrent update operation` / `currently in the
-   * following state` wording a secret needle could otherwise cut). A method,
-   * not a module function, so `gen-update-wrap-coverage` sees the catch that
-   * throws it as a `ProvisioningError` wrap factory.
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's masker, and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text (`concurrent update operation`,
+   * `currently in the following state`) on the `cause` chain. An "already
+   * exist(s)" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision (issue #1625), except from a
+   * post-create call's failure ({@link markAuxiliaryFailure}), where "it" would
+   * read as this function. Every post-create call today reaches this wrap as
+   * {@link applyPostCreateConfig}'s cdkd-authored refusal, which keeps its
+   * text, so the gate guards a post-create call made outside it. A non-`Error` throw is withheld the same way, and
+   * stamped only when `build` threads a cause for it (create / update do: a
+   * thrown string keeps its retry classification on that chain).
+   *
+   * A cdkd-authored or transport error keeps its text, MASKED: AWS quotes
+   * request values (a role, a layer, a subnet) back in its own words. When the
+   * mask changed that text, the wrap is stamped `markRedactedCause` too. A
+   * failed waiter's payload is withheld in the caught error itself
+   * ({@link withholdWaiterPayload}). A method, not a module function, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a
+   * `ProvisioningError` wrap factory.
+   *
+   * `build` must thread `error` as `cause`, and runs twice on an AWS-authored
+   * failure, so it must stay a side-effect-free constructor call.
    */
   private wrapMaskedError(
     log: MaskedLogSinks,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const raw = error instanceof Error ? error.message : String(error);
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) {
+      this.logger.debug(log.mask(build(log.mask(failure.detail)).message));
+      const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+      const wrapped = build(`${log.mask(failure.summary)}${relay}`);
+      // A non-Error throw is stamped too when `build` gave it a cause to read.
+      return wrapped.cause !== undefined ? markRedactedCause(wrapped) : wrapped;
+    }
+    // `.detail` is byte-identical to the `.message` / `String()` ternary and
+    // cannot throw on an unconvertible value (go-to-k/cdkd#3361).
+    const raw = failure.detail;
     // A failed waiter's payload is withheld in the caught error itself.
     const text = withholdWaiterPayload(error, log.mask)?.masked ?? log.mask(raw);
     const wrapped = build(text);
@@ -1070,30 +1141,36 @@ export class LambdaFunctionProvider implements ResourceProvider {
     try {
       await send();
     } catch (error) {
-      // `message` is NOT warn-only: the `throw new ProvisioningError(...)` at
-      // the end of this handler interpolates it too, and
-      // `extractDeploymentEventError` persists that into
-      // `deployments/{runId}.jsonl`. So this is one of TEN thrown-and-persisted
-      // sites in this sweep, not the warn-only site it reads as; an audit
-      // reading only the warn above misses it, and review missed seven of the
-      // ten for exactly that reason before counting them from the throws.
-      // `.detail` keeps AWS's own sentence, and the disclosure question for
-      // every site of that shape is issue go-to-k/cdkd#2319's.
+      // The refusal thrown at the end of this handler is persisted to
+      // `deployments/{runId}.jsonl` (`extractDeploymentEventError`), and so is
+      // not the warn-only site it reads as. An AWS-authored failure is named
+      // there, and in the warn, by its CLASS plus the `--verbose` pointer
+      // (go-to-k/cdkd#2319): an `AccessDeniedException` names the caller's
+      // assumed-role ARN. AWS's own text goes to `debug` under the same head.
+      // The refusal is stamped `markRedactedCause`, so the retry classifiers
+      // read the withheld `concurrent update operation` wording on the `cause`
+      // chain. No "already exists" is restated: the function is in hand, so it
+      // would be an auxiliary object's, not this function's (#3826).
       //
-      // Masked before it joins either line (issue #2177): AWS quotes request
+      // Masked before it joins any line (issue #2177): AWS quotes request
       // values back, and the warn below reaches no engine sink at all.
       //
       // The Active wait below can fail with the waiter's whole GetFunction
       // payload as its message: that is withheld, not relayed
       // (`describeLambdaWaiterFailure`).
-      const rawMessage = describeAwsFailure(error).detail;
-      const withheld = withholdWaiterPayload(error, log.mask);
-      const message = withheld?.masked ?? log.mask(rawMessage);
+      const failure = describeAwsFailure(error);
+      const rawMessage = failure.detail;
+      const withheld = failure.redacted ? undefined : withholdWaiterPayload(error, log.mask);
+      const message = failure.redacted
+        ? log.mask(failure.summary)
+        : (withheld?.masked ?? log.mask(rawMessage));
+      const warnHead = `${ctx.apiName} failed for ${ctx.logicalId}: `;
+      if (failure.redacted) this.logger.debug(log.mask(`${warnHead}${rawMessage}`));
       // Masked once, over the finished line, like the cleanup line below: it
       // is built from the UNMASKED described text.
       this.logger.warn(
         log.mask(
-          `${ctx.apiName} failed for ${ctx.logicalId}: ${withheld?.described ?? rawMessage} — deleting partially-created function to maintain atomicity`
+          `${warnHead}${failure.redacted ? failure.summary : (withheld?.described ?? rawMessage)} — deleting partially-created function to maintain atomicity`
         )
       );
       // The cleanup delete is RETRIED on a still-settling function. When the
@@ -1105,7 +1182,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // `retryable-errors.ts`, so the deploy engine's outer `withRetry`
       // re-creates. A waiter-timeout message is NOT in that table, which is
       // exactly the case that reaches here and must clean up after itself.)
-      let cleanupFailure: string | undefined;
+      let cleanupFailure: AwsFailureText | undefined;
       for (let attempt = 0; attempt < LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS; attempt++) {
         try {
           await this.lambdaClient.send(
@@ -1121,8 +1198,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // state` alternative would be blinded, and AWS sends that wording for
           // a function still updating. Losing it breaks on the first attempt
           // and leaves an ORPHANED function, not merely a worse message.
-          const deleteMessage = describeAwsFailure(deleteError).detail;
-          cleanupFailure = deleteMessage;
+          cleanupFailure = describeAwsFailure(deleteError);
+          const deleteMessage = cleanupFailure.detail;
           // Only a state conflict is worth waiting out; anything else
           // (auth, already-deleted) will not change on a retry.
           if (!/currently in the following state|ResourceConflict/i.test(deleteMessage)) break;
@@ -1136,10 +1213,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
       if (cleanupFailure === undefined) ctx.cleanup.deleted = true;
       if (cleanupFailure !== undefined) {
         // `error` has no sink of its own: the finished line goes through the
-        // same masker. The classifier above read the RAW text.
+        // same masker. The classifier above read the RAW text. An AWS-authored
+        // failure is named by its class here (a denied `DeleteFunction` names
+        // the caller), and AWS's text goes to `debug` under the same head.
+        const cleanupHead = `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: `;
+        if (cleanupFailure.redacted) {
+          this.logger.debug(log.mask(`${cleanupHead}${cleanupFailure.detail}`));
+        }
         this.logger.error(
           log.mask(
-            `Cleanup DeleteFunction failed for ${ctx.logicalId} after ${ctx.apiName} failure — function may be orphaned: ${cleanupFailure}`
+            `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
           )
         );
       }
@@ -1152,8 +1235,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         cause ?? new Error(rawMessage)
       );
       // The retry wording this message keeps on purpose (see create()) must
-      // still classify when the mask cut it: read the cause chain instead.
-      throw message === rawMessage ? refusal : markRedactedCause(refusal);
+      // still classify when the mask cut it, or when it was withheld: read the
+      // cause chain instead.
+      throw failure.redacted || message !== rawMessage ? markRedactedCause(refusal) : refusal;
     }
   }
 
@@ -1191,6 +1275,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // Before each call that changes the function: a failure from there on
+    // (the update waiter, a later call) leaves the key unsettled.
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     properties = withRemovalDefaults(
       this.removalDefaults,
       resourceType,
@@ -1251,13 +1338,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'DurableConfig',
       ];
 
-      let hasConfigChanges = false;
+      const changedConfigFields: string[] = [];
       for (const field of configFields) {
         if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
-          hasConfigChanges = true;
-          break;
+          changedConfigFields.push(field);
         }
       }
+      const hasConfigChanges = changedConfigFields.length > 0;
 
       if (hasConfigChanges) {
         const configParams: UpdateFunctionConfigurationCommandInput = {
@@ -1331,6 +1418,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           DurableConfig: properties['DurableConfig'] as DurableConfig | undefined,
         };
 
+        for (const field of changedConfigFields) markUnsettled(field);
         await this.lambdaClient.send(new UpdateFunctionConfigurationCommand(configParams));
         log.debug(`Updated configuration for Lambda function ${log.value(physicalId)}`);
         // Wait for the configuration update to fully apply before any
@@ -1356,6 +1444,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         | undefined;
       const codeSigningChanged = newCodeSigningConfigArn !== prevCodeSigningConfigArn;
       if (codeSigningChanged && newCodeSigningConfigArn === undefined) {
+        markUnsettled('CodeSigningConfigArn');
         await this.lambdaClient.send(
           new DeleteFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
         );
@@ -1394,6 +1483,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
           S3Bucket: builtCode.S3Bucket,
           S3Key: builtCode.S3Key,
           S3ObjectVersion: builtCode.S3ObjectVersion,
+          S3ObjectStorageMode: builtCode.S3ObjectStorageMode,
+          SourceKMSKeyArn: builtCode.SourceKMSKeyArn,
           ZipFile: builtCode.ZipFile,
           ImageUri: builtCode.ImageUri,
           // A removed Architectures property reverts to the Lambda default
@@ -1403,6 +1494,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
             : undefined,
         };
 
+        markUnsettled('Code');
+        if (architecturesChanged) markUnsettled('Architectures');
         await this.lambdaClient.send(new UpdateFunctionCodeCommand(codeParams));
         log.debug(`Updated code for Lambda function ${log.value(physicalId)}`);
         // Same reason as above: UpdateFunctionCode is async too, and
@@ -1419,6 +1512,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       const newRecursiveLoop = properties['RecursiveLoop'] as RecursiveLoop | undefined;
       const prevRecursiveLoop = previousProperties['RecursiveLoop'] as RecursiveLoop | undefined;
       if (newRecursiveLoop !== undefined && newRecursiveLoop !== prevRecursiveLoop) {
+        markUnsettled('RecursiveLoop');
         await this.lambdaClient.send(
           new PutFunctionRecursionConfigCommand({
             FunctionName: physicalId,
@@ -1447,6 +1541,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'ReservedConcurrentExecutions'
       ] as number | undefined;
       if (newReservedConcurrentExecutions !== prevReservedConcurrentExecutions) {
+        markUnsettled('ReservedConcurrentExecutions');
         if (newReservedConcurrentExecutions === undefined) {
           await this.lambdaClient.send(
             new DeleteFunctionConcurrencyCommand({ FunctionName: physicalId })
@@ -1474,6 +1569,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // mapping to a real Delete call is the #1160 absent-field-removal class,
       // which for a SECURITY control is the direction that matters.
       if (codeSigningChanged && newCodeSigningConfigArn !== undefined) {
+        markUnsettled('CodeSigningConfigArn');
         await this.lambdaClient.send(
           new PutFunctionCodeSigningConfigCommand({
             FunctionName: physicalId,
@@ -1507,6 +1603,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         newRuntimeManagementConfig?.['RuntimeVersionArn'] !==
           prevRuntimeManagementConfig?.['RuntimeVersionArn'];
       if (runtimeManagementChanged) {
+        markUnsettled('RuntimeManagementConfig');
         await this.putRuntimeManagementConfig(
           physicalId,
           newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }
@@ -1535,7 +1632,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         logicalId,
         previousProperties['Tags'],
         properties['Tags'],
-        log
+        log,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       return {
@@ -1662,18 +1763,35 @@ export class LambdaFunctionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete Lambda function ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const wrapped = this.wrapMaskedError(
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Lambda function ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this function is gone (go-to-k/cdkd#2319).
+      const failure =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
       throw stripped ? markDeleteStarted(failure) : failure;
     }
 
     if (hasVpcConfig) {
-      await this.cleanupLambdaEnis(physicalId);
+      // The engine's own clock, read here rather than recomputed: it started
+      // before this delete (a create-first replacement's create, an earlier
+      // retry of this delete) and pauses for prompts. Infinity outside any
+      // deadline (a rollback replay), leaving the per-ENI budget alone.
+      await this.cleanupLambdaEnis(
+        physicalId,
+        Date.now() + enclosingDeadlineRemainingMs() - this.eniDeadlineMarginMs
+      );
     }
   }
 
@@ -1821,7 +1939,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
     logicalId: string,
     oldTagsRaw: unknown,
     newTagsRaw: unknown,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     if (!functionArn) return;
 
@@ -1830,8 +1952,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
     if (tagWarning !== undefined) {
       log.warn(tagWarning);
     }
-    const tagsToAdd = Object.fromEntries(plan.set);
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+    // lack the ones the failed update did not reach) and remove only the
+    // recorded ones the template dropped.
+    const tagsToAdd = Object.fromEntries(
+      unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set
+    );
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || Object.keys(tagsToAdd).length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.lambdaClient.send(
@@ -1958,7 +2086,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
   }
 
-  private async cleanupLambdaEnis(functionName: string): Promise<void> {
+  /**
+   * `deadline` is where the ENI phase must END (go-to-k/cdkd#5276): the engine
+   * fails the whole delete at the per-resource deadline, so a give-up after it
+   * never runs and a slow hyperplane ENI release fails the function's delete
+   * instead of handing the ENI to the Subnet / SecurityGroup deletes.
+   */
+  private async cleanupLambdaEnis(functionName: string, deadline: number): Promise<void> {
     this.logger.debug(`Cleaning up Lambda VPC ENIs for function ${functionName}`);
 
     // Mirror delstack's ENI cleanup pattern: an unconditional initial sleep
@@ -1988,11 +2122,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // Per-ENI parallel delete with retry. An in-use ENI cannot be deleted
     // until AWS finishes the asynchronous detach triggered by the prior
     // UpdateFunctionConfiguration; budget gives that detach time to land.
-    await Promise.all(enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName)));
+    await Promise.all(enis.map((eni) => this.deleteEniWithRetry(eni.id, functionName, deadline)));
   }
 
-  private async deleteEniWithRetry(eniId: string, functionName: string): Promise<void> {
+  private async deleteEniWithRetry(
+    eniId: string,
+    functionName: string,
+    deadline: number
+  ): Promise<void> {
     const start = Date.now();
+    const giveUpAt = Math.min(start + this.eniDeleteRetryBudgetMs, deadline);
     for (;;) {
       try {
         await this.ec2Client.send(new DeleteNetworkInterfaceCommand({ NetworkInterfaceId: eniId }));
@@ -2004,15 +2143,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // Already gone — treat as success.
           return;
         }
-        const elapsed = Date.now() - start;
-        if (elapsed >= this.eniDeleteRetryBudgetMs) {
+        const now = Date.now();
+        if (now >= giveUpAt) {
           this.logger.warn(
-            `Gave up deleting ENI ${eniId} for ${functionName} after ${elapsed}ms: ${msg} — ` +
+            `Gave up deleting ENI ${eniId} for ${functionName} after ${now - start}ms: ${msg} — ` +
               `downstream Subnet/SG deletion will retry`
           );
           return;
         }
-        await this.sleep(this.eniDeleteRetryIntervalMs);
+        await this.sleep(Math.min(this.eniDeleteRetryIntervalMs, giveUpAt - now));
       }
     }
   }
@@ -2079,6 +2218,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
     if (code['S3ObjectVersion']) {
       result.S3ObjectVersion = code['S3ObjectVersion'] as string;
+    }
+    // Both were never forwarded (issue #5300): a template's `REFERENCE`
+    // deployed as the Lambda default `COPY`, and a customer managed key for
+    // the deployment package fell back to the AWS owned key.
+    if (code['S3ObjectStorageMode']) {
+      result.S3ObjectStorageMode = code['S3ObjectStorageMode'] as S3ObjectStorageMode;
+    }
+    if (code['SourceKMSKeyArn']) {
+      result.SourceKMSKeyArn = code['SourceKMSKeyArn'] as string;
     }
     if (code['ZipFile']) {
       // Lambda SDK expects a zip binary, not raw text.
@@ -2331,6 +2479,96 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5487: `readCurrentState`, except that a setting read by its
+   * own call (concurrency, recursion, runtime management, code signing) is
+   * read STRICTLY when it is unsettled: `readCurrentState` omits it on a failed
+   * read, which the engine would take as "not set" and converge to the wrong
+   * side. A `ResourceNotFoundException` on such a call means "not set".
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    const strict = async <T>(read: () => Promise<T>): Promise<T | undefined> => {
+      try {
+        return await read();
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return undefined;
+        throw error;
+      }
+    };
+    const set = (key: string, value: unknown): void => {
+      if (value === undefined) delete out[key];
+      else out[key] = value;
+    };
+    if (names.has('ReservedConcurrentExecutions')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetFunctionConcurrencyCommand({ FunctionName: physicalId }))
+      );
+      set('ReservedConcurrentExecutions', r?.ReservedConcurrentExecutions);
+    }
+    if (names.has('RecursiveLoop')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetFunctionRecursionConfigCommand({ FunctionName: physicalId }))
+      );
+      set('RecursiveLoop', r?.RecursiveLoop);
+    }
+    if (names.has('RuntimeManagementConfig')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(new GetRuntimeManagementConfigCommand({ FunctionName: physicalId }))
+      );
+      set(
+        'RuntimeManagementConfig',
+        r?.UpdateRuntimeOn === undefined
+          ? undefined
+          : {
+              UpdateRuntimeOn: r.UpdateRuntimeOn,
+              ...(r.RuntimeVersionArn !== undefined && { RuntimeVersionArn: r.RuntimeVersionArn }),
+            }
+      );
+    }
+    if (names.has('CodeSigningConfigArn')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(
+          new GetFunctionCodeSigningConfigCommand({ FunctionName: physicalId })
+        )
+      );
+      set('CodeSigningConfigArn', r?.CodeSigningConfigArn);
+    }
+    return out;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the function reads `State: Pending` or
+   * `LastUpdateStatus: InProgress`, an unsettled configuration or code key is
+   * still changing; the separately-applied ones (`Tags`, concurrency,
+   * recursion, code signing, runtime management) are not. A failed read keeps
+   * every name, which only costs the next deploy a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const resp = await this.lambdaClient.send(
+        new GetFunctionCommand({ FunctionName: physicalId })
+      );
+      const cfg = resp.Configuration;
+      if (cfg?.State !== 'Pending' && cfg?.LastUpdateStatus !== 'InProgress') return new Set();
+      return new Set([...names].filter((name) => !SEPARATELY_APPLIED_KEYS.has(name)));
+    } catch {
+      return names;
+    }
+  }
+
+  /**
    * Read the AWS-current Lambda function configuration in CFn-property shape.
    *
    * Issues a single `GetFunction` and surfaces the same property keys
@@ -2349,7 +2587,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * are not surfaced: `GetFunction` returns a pre-signed S3 URL for the
    * deployed code, not the asset hash cdkd state holds, so they could
    * never match. Those keys are declared via `getDriftUnknownPaths` so
-   * the drift comparator skips them. `Code.ImageUri` IS surfaced for
+   * the drift comparator skips them, along with `Code.S3ObjectStorageMode`
+   * (no read-back member) and `Code.SourceKMSKeyArn` (see
+   * `getDriftUnknownPaths`). `Code.ImageUri` IS surfaced for
    * container Lambdas (`PackageType: 'Image'`) — AWS returns it on the
    * `GetFunction.Code.ImageUri` field, so a console-side image swap is
    * detectable as drift.
@@ -2629,7 +2869,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * `Code.ImageUri` IS recoverable — `GetFunction.Code.ImageUri` returns
    * the templated image URI for container Lambdas — so it is surfaced by
    * `readCurrentState` and NOT declared drift-unknown. `Code.SourceKMSKeyArn`
-   * is also write-only on the FunctionCodeLocation read shape.
+   * does come back (`FunctionCodeLocation.SourceKMSKeyArn`) but
+   * `readCurrentState` does not surface it yet, so it stays skipped here.
+   * `Code.S3ObjectStorageMode` has no member on that read shape at all.
    *
    * Pre-PR this method returned the whole `['Code']` subtree as
    * drift-unknown, which also hid `Code.ImageUri` drift on container
@@ -2640,6 +2882,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       'Code.S3Bucket',
       'Code.S3Key',
       'Code.S3ObjectVersion',
+      'Code.S3ObjectStorageMode',
       'Code.ZipFile',
       'Code.SourceKMSKeyArn',
     ];

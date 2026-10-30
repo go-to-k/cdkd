@@ -59,6 +59,7 @@ assert_gone() { # usage: assert_gone "<leak description>" aws <service> <read-ve
 # ---------------------------------------------------------------------------
 
 cd "$(dirname "$0")"
+. ../state-physical-id.sh
 
 STACK="CdkdSecretsRotationScheduleExample"
 REGION="${AWS_REGION:-us-east-1}"
@@ -128,11 +129,14 @@ if [ "${ROTATION_ENABLED}" != "True" ]; then
   exit 1
 fi
 
+ROTATION_FN_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda::Function" "RotationFn")" \
+  || { echo "FAIL: could not read RotationFn physical id from state" >&2; exit 1; }
+
 LAMBDA_ARN="$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
   --query 'RotationLambdaARN' --output text)"
 case "${LAMBDA_ARN}" in
-  *":function:${STACK}-RotationFn"*) ;;
-  *) echo "FAIL: RotationLambdaARN does not point at the stack rotation fn: '${LAMBDA_ARN}'" >&2; exit 1 ;;
+  *":function:${ROTATION_FN_NAME}") ;;
+  *) echo "FAIL: RotationLambdaARN does not point at the stack rotation fn ${ROTATION_FN_NAME}: '${LAMBDA_ARN}'" >&2; exit 1 ;;
 esac
 
 ROTATION_DAYS="$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \

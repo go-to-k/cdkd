@@ -63,8 +63,8 @@ const status = readConfigString(
   'AWS::S3::Bucket VersioningConfiguration'
 );
 
-// top-level field — keep the `properties['X']` read at the call site so the
-// handled-property-wiring critic can still see the property is consumed
+// top-level field — keep the `properties['X']` read at the call site so it is
+// visible which property is consumed
 const scope = requireConfigString(properties['Scope'], 'REGIONAL', 'AWS::WAFv2::WebACL Scope');
 ```
 
@@ -289,7 +289,7 @@ implementation. Three details are worth copying:
     `--recreate-via-*` destroy-then-create, the `--replace` delete-first
     fallback, the update-failure replacement, and `createFirstThenDeleteOld`,
     which `--recreate-via-*` and the update-failure replacement take for a
-    renamed resource) are driven by freshly resolved
+    renamed resource, or a generated name moving to its next generation) are driven by freshly resolved
     TEMPLATE properties and never set `replayingState`, so the refusal stands
     where the user can actually act on it. (They DO pass a context — every
     provider call now carries `maskSecrets`, see the `maskSecrets` bullet below — so the test
@@ -382,6 +382,19 @@ implementation. Three details are worth copying:
     a provider whose delete would reach beyond what the create wrote (`AWS::IAM::Policy`
     walks every listed principal) removes its own writes in the catch instead
     (issue [#4583](https://github.com/go-to-k/cdkd/issues/4583)).
+    The mark rides on the error, which the per-resource deadline drops when the
+    provider throws after the deadline fired, so the same `create()` also calls
+    `reportCreatedResource(logicalId, resourceType, physicalId, identity?)`
+    (`src/provisioning/created-resource-sink.ts`, issue
+    [#5511](https://github.com/go-to-k/cdkd/issues/5511)) the moment the create
+    call returns, before any wait, under the same gates as the mark; a catch
+    whose cleanup deleted the resource calls `retractCreatedResource` (the
+    report before it, if any, then stands again). The deploy engine journals
+    the reported id only when the operation's deadline fired and the error it
+    sees carries no mark, and reads it when the failure is saved, so a create
+    that returns, or a cleanup that retracts, after the deadline is reflected;
+    one that does so after that save is not. A report is cleared once the
+    engine writes the resource to state.
     A create that sends no name and no idempotency token, and does not resume
     its leftover on the next attempt, also marks that error `markNonRetryable`
     (`AWS::IAM::AccessKey`): the engine's retry would make another resource,
@@ -1220,8 +1233,7 @@ deliberately do NOT use `acquireIdempotencyToken`: those APIs bind the token to
 the resource for its LIFETIME, so a deterministic hash of the immutable create
 inputs is right there (it also lets the new file system coexist with the old one
 during a replacement). Derive it with `stackScopedCreateToken`, which also
-hashes the stack name and region, and refuses to run outside a `withStackName`
-scope: without them, two copies of one stack in an account sent the same token,
+hashes the stack name and region, and refuses to run outside a `withStackScope`: without them, two copies of one stack in an account sent the same token,
 and FSx and CloudFront handed the second stack the first one's resource (#4428).
 Take it through `reserveStackCreateToken`
 (`src/provisioning/providers/create-token-ledger.ts`), which folds in the
@@ -1270,7 +1282,7 @@ Say in-code which you chose and what it costs.
 so the wrong answer LEAVES an orphan rather than destroying a live resource.**
 "Newer than my snapshot" is equally true of the orphan your own attempt minted
 and of a resource something else created in the same window: a sibling resource
-in the same stack (the deploy engine dispatches at `--concurrency 10` by
+in the same stack (the deploy engine dispatches at `--concurrency 20` by
 default), a second `cdkd` process, or a human. Deleting the second kind is
 strictly worse than the bug being fixed — it destroys something cdkd state still
 advertises, and for a type whose `readCurrentState` cannot tell that the
@@ -1455,6 +1467,50 @@ template, so `UpdateContext.removedProperties` is empty there. A local
 `clearOnUpdateRemoval` still reads that readback, which is what reverts a
 console change the baseline records as unset (a placeholder).
 
+An `update()` deciding WHETHER to send a field (Cloud Map's `UpdateService`,
+whose body replaces; the DocDB / RDS `MasterUserPassword`, which AWS treats as
+a credential reset whenever it is sent, #5153) reads
+`UpdateContext.changedProperties` when it is set: the top-level keys that
+changed template to template, as CloudFormation compares. Its
+`previousProperties` is a redacted state record (a secret reference stays its
+`{{resolve:...}}` token, a `NoEcho` value is `***`), so comparing it with the
+resolved desired value cannot tell an unchanged secret from a changed one.
+Only a deploy's in-place update sets it; without it (a rollback revert,
+`drift --revert`), compare the two bags, counting a recorded stand-in as
+changed. A provider that reads the set adds its type to
+`CHANGED_PROPERTIES_CONSUMER_TYPES` (`src/provisioning/changed-properties-consumers.ts`)
+when its readback returns the keys it reads: only those types have a `NoEcho`
+parameter value confirmed by reading the resource back, so an unchanged one is
+left out; on any other type it stays in the set. The DocDB / RDS DB types stay
+out, since no Describe returns the password.
+
+An `update()` that makes an irreversible call AWS finishes on its own time
+(Firehose's `StartDeliveryStreamEncryption` / `StopDeliveryStreamEncryption`),
+or a second write after a first one landed, calls
+`context?.markUnsettled?.(key)` immediately before that call, never before a
+refusal or a read (#5380). If the update then fails, the record names the key
+unsettled, and the next deploy hands it back in
+`UpdateContext.unsettledProperties` even when the template and the record
+agree. Before the removal step the engine replaces each such key's previous
+value with what AWS holds now (`src/deployment/unsettled-convergence.ts`), so
+the provider's own comparison of the two bags sends only what differs; `Tags`
+keeps the record's side, because CloudFormation leaves tags it did not record.
+A provider whose `readCurrentState` reports another value than the one its
+update compares, or swallows a failed read, implements `readUnsettled`. One
+whose resource has in-progress states implements `unsettledInTransition`: the
+engine then refuses to diff a moving key, keeps it unsettled after an update
+until AWS shows the template's value, and `cdkd drift --accept` / `--revert`
+keep it too (#5487).
+
+An update that ADDS a named item to such a key (a DynamoDB index, a tag key, a
+Kinesis metric) calls `context?.markAttempted?.(path, [names])` right AFTER the
+call that added it resolves, never before it or for a call that throws, naming
+only what the call added (#5498). The next convergence hands them back in
+`UpdateContext.unsettledItems` and to `readUnsettled`'s `attemptedItems`; the
+provider's projection adds a live item only when its name equals an attempted
+one exactly and `isUsableAttemptedName` accepts it, so the template's omission
+removes that item and no other.
+
 Checklist when writing or reviewing an `update()`:
 
 - Classify the API: **merge** (absent = unchanged — most `Update*` /
@@ -1467,11 +1523,13 @@ Checklist when writing or reviewing an `update()`:
   (`3`, `128`), an empty container (`{ Variables: {} }`, `[]`), an empty
   string (`''` for description/KMS-key fields), or a sentinel
   (`{ ApplyOn: 'None' }`, `{ Mode: 'PassThrough' }`).
-- Reset only what CloudFormation resets. RDS (#5004): DBCluster
-  `BackupRetentionPeriod` resets to 1; DBCluster and DBInstance
-  `DeletionProtection` / `EnableIAMDatabaseAuthentication` and DBInstance
-  `MonitoringInterval` are KEPT, so `update()` forwards them only when present
-  (DBCluster `MonitoringInterval` is unmeasured and still resets to 0).
+- Reset only what CloudFormation resets. RDS (#5004, #1160): DBCluster
+  `BackupRetentionPeriod` resets to 1 and an Aurora DBCluster `Port` to the
+  engine default; a removed `ManageMasterUserPassword: true` is sent as
+  `false` on both types. Every other measured removal (`DeletionProtection`,
+  `EnableIAMDatabaseAuthentication`, `MonitoringInterval`, `EngineVersion`,
+  `MonitoringRoleArn`, and more) is KEPT, so `update()` forwards it only when
+  present.
 - A real CloudFormation A/B can show it KEEPS the live value: for
   `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
   `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset
@@ -1539,7 +1597,12 @@ Checklist when writing or reviewing an `update()`:
   and the explicit-declaration remedy (`warnOnUnremovablePoliciesSubKeys` in
   `cognito-provider.ts`): under both A/B answers the only wrong option is
   silence, because the user who deleted the sub-key believes a change (often
-  a TIGHTENING) landed.
+  a TIGHTENING) landed. The same UserPool A/B for its other members (issue
+  #1160): removal KEEPS `AccountRecoverySetting`, `SmsConfiguration`,
+  `UserPoolTier` and `DeletionProtection`, so `update()` sends nothing for
+  them and warns. When `MfaConfiguration` and every MFA factor property are
+  removed while MFA was on, MFA is set to `OFF`, with software-token MFA
+  disabled.
   `AWS::AutoScaling::AutoScalingGroup` is the per-type split (real
   CloudFormation A/B, issue #5004): removal RESETS `InstanceMaintenancePolicy`,
   `MaxInstanceLifetime`, `CapacityReservationSpecification` and
@@ -1559,7 +1622,11 @@ Checklist when writing or reviewing an `update()`:
   `AuthorizerId` / `OperationName` / `RequestModels` / `RequestParameters` (per
   key); Authorizer `AuthorizerCredentialsArn` / `AuthorizerPayloadFormatVersion` /
   `AuthorizerResultTtlInSeconds` / `IdentityValidationExpression`. Route
-  `ApiKeyRequired` was not measured and is still reset (#1160). The map keys
+  `ApiKeyRequired` was not measured and is still reset (#1160). A second A/B
+  (#1160) measured the rest: Authorizer `IdentitySource` is CLEARED (declared
+  in `removalDefaults` as `[]`), Integration `IntegrationSubtype` removal FAILS
+  unless the update also declares an `IntegrationUri` (so cdkd refuses it), and
+  every other property that re-audit listed is KEPT. The map keys
   above are still cleared by `cdkd drift --revert` (`desiredFromAwsReadback`),
   which must remove a console-added key.
   Also real CloudFormation A/B, go-to-k/cdkd#5004: SQS `SqsManagedSseEnabled` /
@@ -1573,6 +1640,30 @@ Checklist when writing or reviewing an `update()`:
   measured KEEP for `DeletionProtection`, `BackupRetentionPeriod`,
   `IamAuthEnabled` and `AutoMinorVersionUpgrade`, so they declare no
   `removalDefaults`.
+  Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
+  `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
+  stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and
+  `ResourceAccessRole` (or the role alone at `PRIVATE`) resets to `PRIVATE` /
+  no role, so both providers send the reset. Removing the role while
+  `PUBLIC_READ` stays clears the role and keeps the public alias, and cdkd
+  sends `PUBLIC_READ` with no role. ON_DEMAND + `AUTO` -> PROVISIONED fails
+  under CloudFormation (with or without an explicit `USER_PARTITION_KEY` in
+  the same update) and under cdkd alike.
+  Real CloudFormation A/B, go-to-k/cdkd#1160: a removed `AWS::Kinesis::Stream`
+  `MaxRecordSizeInKiB` RESETS to 1024, and on an `AWS::CodeBuild::Project` a
+  removed `EncryptionKey` RESETS to the AWS managed S3 key (cdkd sends
+  `alias/aws/s3`), a removed `Tags` removes every tag (cdkd sends `[]`), and a
+  removed `SourceVersion` is KEPT.
+  Real CloudFormation A/B, go-to-k/cdkd#5492: on an `AWS::CodeBuild::Project`
+  a removed `VpcConfig`, `FileSystemLocations`, `SecondarySources`,
+  `SecondaryArtifacts`, `SecondarySourceVersions` or `BadgeEnabled` is KEPT
+  (CloudFormation's `UpdateProject` omits it, alone or beside another change),
+  so cdkd sends nothing for it either.
+  `AWS::EC2::NatGateway` `AvailabilityZoneAddresses` (real CloudFormation A/B,
+  go-to-k/cdkd#2762): on a gateway created with it, a change updates in place
+  and REMOVING it FAILS, so `EC2Provider` refuses the removal; ADDING it to an
+  automatic-mode regional gateway REPLACES the gateway, a conditional rule in
+  `replacement-rules.ts`.
 - Sub-structures can carry the same hazard one level down: an object that is
   present but missing its inner key (e.g. `Environment: {}` without
   `Variables`) may also read as "no change" — normalize it to the explicit
@@ -2041,7 +2132,12 @@ Two placement rules go with it:
   row. `destroy-runner.ts` and the deploy engine's delete arms (`deploy-engine/update-in-place.ts`,
   `deploy-engine/delete.ts`) all check
   `isInterruptedWaitError` ahead of that match; any new message-based classifier
-  on a delete path needs the same guard.
+  on a delete path needs the same guard. They check `isMarkedNotGone` there too
+  ([#5228](https://github.com/go-to-k/cdkd/issues/5228)): a provider whose
+  delete failure is not its resource's own not-found but may still carry a
+  needle (another object's `*NotFound` class, a logical id) wraps it in
+  `markNotGone` (`src/provisioning/not-gone.ts`). That mark leaves retrying to
+  the retry classifiers, so never use `markNonRetryable` only to block the read.
 
   **A hand-rolled poll on the same path owes the same treatment**, and issue
   [#1952](https://github.com/go-to-k/cdkd/issues/1952) is why the rule is stated
@@ -2155,6 +2251,7 @@ Use these placeholders consistently:
 | Optional string | `?? ''` | `result['Description'] = resp.Description ?? '';` |
 | Boolean / numeric scalar | `?? <semantic-default>` | `Status: resp.Status ?? 'Suspended'`, `BlockPublicAcls: cfg?.BlockPublicAcls ?? false` |
 | Tags map | `?? []` (already covered for Tags by PR #145) | `result['Tags'] = normalizeAwsTagsToCfn(...);` |
+| Tags a type declares as a key -> value MAP (`AWS::SSM::Parameter`, `AWS::ApiGatewayV2::Api` / `::Stage`) | `{}` | `result['Tags'] = Object.fromEntries(normalizeAwsTagsToCfn(...).map((t) => [t.Key, t.Value]));` — the template's shape, so drift never compares a list against a map (issue [#5390](https://github.com/go-to-k/cdkd/issues/5390)) |
 
 **When the guard is justified — keep it**:
 
@@ -2317,7 +2414,7 @@ Four rules, each load-bearing:
 
 When `readCurrentState` starts emitting something it used to omit, every `observedProperties` record captured before the change lacks it, so the first `cdkd drift` after upgrading reports it on every untouched resource. `canonicalizeDriftProperties()` cannot absorb that: it sees one bag, so it cannot tell a legacy baseline from a current one, and stripping the new member from both sides would hide its drift forever.
 
-`canonicalizeDriftPair(resourceType, baseline, aws)` (issue [#3573](https://github.com/go-to-k/cdkd/issues/3573)) gets both bags, after the per-side hook. Key the rule on the BASELINE's shape: a legacy baseline selects the absorption, and a current-shape one is compared in full. State is not rewritten; the next deploy's capture moves the record to the current shape. The GlobalTable provider is the example: its readback gained the local (deploy-region) replica entry, and a baseline with no local entry is completed with the readback's.
+`canonicalizeDriftPair(resourceType, baseline, aws)` (issue [#3573](https://github.com/go-to-k/cdkd/issues/3573)) gets both bags, after the per-side hook. Key the rule on the BASELINE's shape: a legacy baseline selects the absorption, and a current-shape one is compared in full. State is not rewritten; the next deploy's capture moves the record to the current shape. The GlobalTable provider is the example: its readback gained the local (deploy-region) replica entry, and a baseline with no local entry is completed with the readback's. Its second rule (issue [#5381](https://github.com/go-to-k/cdkd/issues/5381)) MOVES members: the readback put the local table's class and protection at the top level and a replica's key in a flat `KMSMasterKeyId`, and now writes each per replica under its CFn spelling. A baseline carrying any of those three old spellings, which the current readback never writes, is the legacy one: the recorded values are moved to their new places, so a change since is still drift, and only the members the old readback never read are completed from the readback.
 
 **Complete the baseline from the readback; do not drop from the readback.** Two write paths consume these bags:
 
@@ -2329,6 +2426,14 @@ The reverse change, a readback that STOPS emitting something, is the one case wh
 The ELBv2 attribute bags (`LoadBalancerAttributes`, `TargetGroupAttributes`, `ListenerAttributes`) are the one trim that reads the readback too (issue [#4144](https://github.com/go-to-k/cdkd/issues/4144)). A baseline entry is dropped only when its key is undeclared AND missing from the readback. That is safe because no Modify*Attributes call removes a key, and the key set otherwise moves only with configuration that is compared on its own (a listener's protocol), so a key AWS stopped reporting is the service's own change, never drift. An empty readback bag is treated as a failed read and trims nothing. A declared key stays reported, as does a value change on a key both sides hold and a key only the readback holds. The last one cannot be told apart from an operator's value in one read, so it stays reported, but `update()` on `desiredFromAwsReadback` never sends it as a removal (issue [#4147](https://github.com/go-to-k/cdkd/issues/4147)): the removal value would be a guess, and a rejected one fails the whole Modify*Attributes call.
 
 It is non-mutating and returns both inputs by identity when nothing applies. It is async only so a provider can resolve the same client region its readback used; it issues no AWS call.
+
+### `getDriftAbsentMeansDefaultKeys()` when the readback omits a property at its default
+
+The comparator walks only the baseline's top-level keys. When `readCurrentState` omits a top-level property while it is at its default, a baseline captured at the default has no such key, so a later move away from it is compared nowhere, and `--revert` keeps the AWS value for a key the baseline lacks. `getDriftAbsentMeansDefaultKeys(resourceType, properties)` (issue [#5399](https://github.com/go-to-k/cdkd/issues/5399)) names those keys: drift compares each one even when an observed baseline lacks it, and `--revert` sends it absent, so `update()` takes its removal path. The GlobalTable provider names `SSESpecification` (read back only while encryption is ENABLED), whose removal path sends `Enabled: false` and returns every region to the AWS owned key.
+
+- **Name a key only if `update()` resets it on removal.** Sent absent to an `update()` that treats removal as a no-op, the revert does nothing, and the key reports drift forever.
+- **Key it on the template intent.** Return the key only when `properties` also leaves the property at its default. A baseline that disagrees with its template must not clear what the template declares; the GlobalTable names nothing when the template turns encryption on.
+- It is pure and synchronous, and it is not consulted for a record without `observedProperties`.
 
 ### When there is NO observed baseline at all
 
@@ -2564,7 +2669,7 @@ still works when there is no pull request to read.
 That PR is **allowed to land red**, and the red is the hand-off rather than a bug. The job runs only the mechanical chain and hand-classifies nothing, so two classes still need you:
 
 1. A **removed or renamed** property turns a matching `handledProperties` / `unhandledByDesign` declaration into a bogus entry — retire the declaration or add a `bogusTolerated` rationale (see below).
-2. `audit:nested-key-coverage:check` reports **divergences, not staleness** — a new nested key on a `NESTED_KEY_TARGETS` type needs a provider fix or a `NESTED_KEY_ALLOW_LIST` entry with a rationale.
+2. `audit:nested-key-coverage:check` reports **shape divergences, not staleness** — a new array member the SDK wraps, or a member missing from its SDK interface, on a `NESTED_KEY_TARGETS` type needs a provider fix or a `NESTED_KEY_ALLOW_LIST` entry with a rationale. A new nested member the provider never forwards shows up in the sdk-wire suites (`vp test run sdk-wire-coverage`) instead.
 
 Newly unaccounted writable properties land in `_todo-backfill.json`; do not file an issue for any of them. `.github/workflows/backfill-umbrella-sync.yml` rewrites the standing backfill campaign's checklist from `main`'s coverage map once the refresh merges — ONE umbrella issue whose body carries a generated block between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`, one row per resource type, which gains, loses and regains rows as the map moves. The audit provenance lives outside those markers and is never rewritten. (The campaign is the open issue carrying the `backfill-umbrella` label — [#2762](https://github.com/go-to-k/cdkd/issues/2762) today — which superseded the closed [#609](https://github.com/go-to-k/cdkd/issues/609); [#2949](https://github.com/go-to-k/cdkd/issues/2949) briefly fanned it into ~44 generated per-type sub-issues, since folded back into the block because a bot-filed slice is indistinguishable from an unfixed defect in a public open-issue count.) A pull request wiring a type writes `Refs`, and the type's row disappears once the coverage map says it is done. Types the public bundle does not carry are skipped with their fixtures left untouched and still need the authenticated path below.
 

@@ -5,6 +5,7 @@ import type { FileAsset } from '../types/assets.js';
 import { resolveFileAssetSourcePath } from './asset-manifest-loader.js';
 import { displaySafe } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
+import { safeStringify } from '../utils/aws-failure-text.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 
 /**
@@ -126,7 +127,9 @@ export class FileAssetPublisher {
       await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
       return true;
     } catch (error) {
-      const err = error as {
+      // `?? {}`: a `null` / `undefined` rejection would otherwise throw a
+      // TypeError on the property reads below, before the message is built.
+      const err = (error ?? {}) as {
         name?: string;
         message?: string;
         $metadata?: { httpStatusCode?: number };
@@ -143,7 +146,7 @@ export class FileAssetPublisher {
         );
       }
       throw new Error(
-        `Failed to check S3 object s3://${bucket}/${key}: ${err.name || 'UnknownError'}: ${err.message || String(error)}`
+        `Failed to check S3 object s3://${bucket}/${key}: ${safeStringify(err.name || 'UnknownError')}: ${safeStringify(err.message || error)}`
       );
     }
   }

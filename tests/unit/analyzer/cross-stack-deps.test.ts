@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
+  inferCrossStackDepsByStack,
   inferCrossStackStackDeps,
   type CrossStackScanStack,
 } from '../../../src/analyzer/cross-stack-deps.js';
@@ -252,3 +253,100 @@ describe('inferCrossStackStackDeps', () => {
     expect([...(deps.get('B') ?? [])]).toEqual(['A']);
   });
 });
+
+// go-to-k/cdkd#5176: two CDK Stages (one per region) share physical stack
+// names, so a consumer name maps to several stacks and a producer is found by
+// what it EXPORTS, not by its name.
+describe('cross-stack inference over stacks sharing a name (#5176)', () => {
+  const at = (
+    stage: string,
+    stackName: string,
+    region: string,
+    template: Partial<CloudFormationTemplate>
+  ) => ({ ...stack(stackName, template), region, stagePath: stage });
+  const exporting = (name: string) => ({
+    Outputs: { O: { Value: 'v', Export: { Name: name } } },
+  });
+  const importing = (name: string) => ({
+    Resources: { P: { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::ImportValue': name } } } },
+  });
+
+  it('keeps every same-named consumer\'s producers (by name: their union)', () => {
+    // Only UsEast's consumer imports raw; UsWest's has no reference.
+    const eastProducer = at('UsEast', 'Producer', 'us-east-1', exporting('East:X'));
+    const eastConsumer = at('UsEast', 'Consumer', 'us-east-1', importing('East:X'));
+    const westConsumer = at('UsWest', 'Consumer', 'us-west-2', {});
+    const stacks = [eastProducer, eastConsumer, westConsumer];
+
+    const byStack = inferCrossStackDepsByStack(stacks);
+    expect([...byStack.get(eastConsumer)!]).toEqual([eastProducer]);
+    expect([...byStack.get(westConsumer)!]).toEqual([]);
+    // Declared last, UsWest's empty set used to overwrite UsEast's.
+    expect([...inferCrossStackStackDeps(stacks).get('Consumer')!]).toEqual(['Producer']);
+  });
+
+  it('binds an import to the stack that EXPORTS it, not a same-named stack in the Stage', () => {
+    const eastProducer = at('UsEast', 'Producer', 'us-east-1', exporting('X'));
+    const westProducer = at('UsWest', 'Producer', 'us-west-2', {});
+    const westConsumer = at('UsWest', 'Consumer', 'us-west-2', importing('X'));
+    const byStack = inferCrossStackDepsByStack([eastProducer, westProducer, westConsumer]);
+    expect([...byStack.get(westConsumer)!]).toEqual([eastProducer]);
+  });
+
+  it("prefers the consumer's region among several exporters of one name", () => {
+    const eastProducer = at('UsEast', 'Producer', 'us-east-1', exporting('X'));
+    const westProducer = at('UsWest', 'Producer', 'us-west-2', exporting('X'));
+    const westConsumer = at('UsWest', 'Consumer', 'us-west-2', importing('X'));
+    const byStack = inferCrossStackDepsByStack([eastProducer, westProducer, westConsumer]);
+    expect([...byStack.get(westConsumer)!]).toEqual([westProducer]);
+  });
+
+  it("honours Fn::GetStackOutput's Region, else the consumer's region", () => {
+    const eastProducer = at('UsEast', 'Producer', 'us-east-1', {});
+    const westProducer = at('UsWest', 'Producer', 'us-west-2', {});
+    const read = (args: Record<string, string>) => ({
+      Resources: {
+        P: { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::GetStackOutput': args } } },
+      },
+    });
+    const crossRegion = at('UsWest', 'Consumer', 'us-west-2', read({ StackName: 'Producer', OutputName: 'O', Region: 'us-east-1' }));
+    const local = at('UsWest', 'Reader', 'us-west-2', read({ StackName: 'Producer', OutputName: 'O' }));
+    const byStack = inferCrossStackDepsByStack([eastProducer, westProducer, crossRegion, local]);
+    expect([...byStack.get(crossRegion)!]).toEqual([eastProducer]);
+    expect([...byStack.get(local)!]).toEqual([westProducer]);
+  });
+
+  const reading = (args: Record<string, string>) => ({
+    Resources: {
+      P: { Type: 'AWS::SSM::Parameter', Properties: { Value: { 'Fn::GetStackOutput': args } } },
+    },
+  });
+
+  it('a literal Region also matches an env-agnostic producer of the name', () => {
+    const agnostic = { ...stack('Producer', {}), stagePath: 'Any' };
+    const consumer = at('UsWest', 'Consumer', 'us-west-2', reading({ StackName: 'Producer', OutputName: 'O', Region: 'us-east-1' }));
+    expect([...inferCrossStackDepsByStack([agnostic, consumer]).get(consumer)!]).toEqual([agnostic]);
+  });
+
+  it("without a Region, prefers the consumer's region even outside its Stage", () => {
+    const eastProducer = at('UsEast', 'Producer', 'us-east-1', {});
+    const westProducer = at('UsWest', 'Producer', 'us-west-2', {});
+    const consumer = at('Other', 'Consumer', 'us-west-2', reading({ StackName: 'Producer', OutputName: 'O' }));
+    const byStack = inferCrossStackDepsByStack([eastProducer, westProducer, consumer]);
+    expect([...byStack.get(consumer)!]).toEqual([westProducer]);
+  });
+
+  it("among same-region producers of the name, takes the consumer's own Stage", () => {
+    const a = at('A', 'Producer', 'us-east-1', {});
+    const b = at('B', 'Producer', 'us-east-1', {});
+    const consumer = at('B', 'Consumer', 'us-east-1', reading({ StackName: 'Producer', OutputName: 'O' }));
+    expect([...inferCrossStackDepsByStack([a, b, consumer]).get(consumer)!]).toEqual([b]);
+  });
+
+  it('never makes a name its own producer when same-named stacks import from each other', () => {
+    const east = at('UsEast', 'Api', 'us-east-1', exporting('X'));
+    const west = at('UsWest', 'Api', 'us-west-2', importing('X'));
+    expect([...inferCrossStackStackDeps([east, west]).get('Api')!]).toEqual([]);
+  });
+});
+

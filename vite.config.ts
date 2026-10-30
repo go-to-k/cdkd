@@ -562,14 +562,6 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/gen-nested-key-coverage.ts --check',
         cache: false,
       },
-      'gen:handled-property-wiring': {
-        command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts',
-        cache: false,
-      },
-      'audit:handled-property-wiring:check': {
-        command: 'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --check',
-        cache: false,
-      },
       // Issues #2040 / #2075 — every `catch` site under src/ that wraps an AWS error must
       // thread it as `cause`, or `isTransientServerError` / `isThrottlingError`
       // / `isMarkedNonRetryable` (all of which walk `.cause`) are INERT for that
@@ -640,25 +632,13 @@ export default defineConfig({
         command: 'node --experimental-strip-types scripts/check-local-reachability.ts',
         cache: false,
       },
-      // Escape hatch for issue #1842's evidence-loss verdict: the plain writer
-      // above REFUSES to overwrite the matrix with weaker per-property evidence
-      // than the committed one records. Use this only when the reduction is
-      // intended (the property genuinely lost that seam) and say why in the PR
-      // body — it prints every lost evidence shape and seeding member before
-      // writing. Deliberately NOT part of `gen:all-matrices`: the aggregate must
-      // stay the command that FAILS on an accidental degradation.
-      'gen:handled-property-wiring:accept-loss': {
-        command:
-          'node --experimental-strip-types scripts/gen-handled-property-wiring.ts --accept-evidence-loss',
-        cache: false,
-      },
       // Regenerates EVERY CI-enforced matrix in one shot, so `/verify-pr` (and
       // anyone about to push) can check freshness without knowing the list.
       //
       // The list used to live only in `.claude/skills/verify-pr/SKILL.md`, and
       // it drifted: CI grew to NINE staleness guards while the skill still
       // named four. Issue #1417 — a private method rename staled
-      // `handled-property-wiring`, `/verify-pr` reported clean, and CI failed.
+      // a generated matrix, `/verify-pr` reported clean, and CI failed.
       // `tests/unit/scripts/matrix-regen-coverage.test.ts` pins this task
       // against the guards actually present in `.github/workflows/ci.yml`, so a
       // NEW matrix cannot be added to CI without also landing here.
@@ -685,7 +665,6 @@ export default defineConfig({
           'vp run gen:sdk-attr-coverage',
           'vp run gen:update-wrap-coverage',
           'vp run gen:nested-key-coverage',
-          'vp run gen:handled-property-wiring',
           'vp run gen:getatt-attributes',
           // Not a matrix, but the same class of CI guard: a rebase can
           // denormalize the committed integ ledger, and the failure looks

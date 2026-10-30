@@ -41,7 +41,7 @@ import {
   DEFAULT_STATE_PREFIX,
   CUSTOM_RESOURCE_RESPONSE_PREFIX,
 } from './state-file-keys.js';
-import { displayIdent } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe, safeMsg, UNRENDERABLE } from '../../utils/display-safe.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { accountArgs, withheldAccountClause } from '../../state/malformed-resources-bag.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
@@ -756,6 +756,9 @@ async function scanReferencedAssets(
           ? `its stack name is not safe to paste into a command, so inspect the ` +
             `object at that key directly`
           : `see the command below`;
+      logger.debug(
+        safeMsg`State file ${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} failed to parse: ${displaySafe(describeAwsFailure(error).detail, { asciiOnly: true }) || UNRENDERABLE}`
+      );
       throw new CdkdError(
         `State file ${displayIdent(key, { maxCodePoints: STATE_KEY_MAX_CODE_POINTS })} is not valid JSON — aborting: gc must know every ` +
           `referenced asset before deleting anything, and this file's references ` +
@@ -763,8 +766,11 @@ async function scanReferencedAssets(
           `(${inspect}), then re-run.` +
           (accountClause === '' ? '' : ` ${accountClause}`) +
           (inspectHint === undefined ? '' : `\nInspect it with: ${inspectHint}`),
-        'GC_STATE_UNREADABLE',
-        error as Error
+        'GC_STATE_UNREADABLE'
+        // NO `cause`, deliberately (issue #5247): V8's `SyntaxError` quotes a
+        // window of this state body, which before `cdkd scrub` holds plaintext
+        // values, and `formatError` prints a cause on its `Caused by:` line.
+        // V8's text goes to `debug` only, below.
       );
     }
     collectAssetReferences(parsed, marker, refs);

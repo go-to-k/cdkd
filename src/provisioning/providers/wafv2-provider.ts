@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   WAFV2Client,
   CreateWebACLCommand,
@@ -17,14 +18,25 @@ import {
   type ChallengeConfig,
   type CustomResponseBody,
   type AssociationConfig,
+  type DataProtectionConfig,
+  type OnSourceDDoSProtectionConfig,
+  type ApplicationConfig,
+  type MonetizationConfig,
 } from '@aws-sdk/client-wafv2';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -69,27 +81,72 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * CFn `Rules` members that have NO counterpart in the installed
- * `@aws-sdk/client-wafv2` model (verified: zero hits in
- * `dist-types/models/models_0.d.ts`).
- *
- * The AWS SDK v3 serializer drops unknown members, so these silently do
- * not reach AWS no matter what cdkd forwards. There is no mapping cdkd
- * can invent — the fix is an SDK bump, after which the spellings already
- * match and no code here has to change. Until then the drop is made LOUD
- * (`warnOnSdkUnsupportedRuleKeys`) instead of silent.
- *
- * They cannot be declared in `unhandledByDesign` either: that map is
- * TOP-LEVEL CFn property granularity, and all three are nested inside
- * `Rules`, which the provider genuinely handles.
+ * The two `DataProtection` booleans AWS documents as `Default: FALSE`.
  */
-const SDK_UNSUPPORTED_RULE_KEYS: readonly string[] = [
-  // TextTransformation.PreParseTextTransformations
-  'PreParseTextTransformations',
-  // Rule action Monetize / its PriceMultiplier
-  'Monetize',
-  'PriceMultiplier',
+const DATA_PROTECTION_FALSE_DEFAULTS: readonly string[] = [
+  'ExcludeRuleMatchDetails',
+  'ExcludeRateBasedDetails',
 ];
+
+/**
+ * Re-shape an AWS `DataProtectionConfig` against the state baseline (issue
+ * #2762): a `false` for one of {@link DATA_PROTECTION_FALSE_DEFAULTS} is
+ * dropped when the baseline entry at the same position does not declare that
+ * key, because `false` is the documented default and so equals what the
+ * template left out. `DataProtections` is compared as a whole array, so
+ * without this an echoed default would read as drift against a baseline that
+ * holds only the template's `properties`. A `true`, or a key the baseline
+ * declares, is kept, so a real change still shows. Entries are matched by
+ * position, as the comparator matches them.
+ */
+function toCfnDataProtectionConfig(
+  config: Record<string, unknown>,
+  baseline: unknown
+): Record<string, unknown> {
+  const entries = config['DataProtections'];
+  if (!Array.isArray(entries)) return config;
+  const baseEntries =
+    isPlainObject(baseline) && Array.isArray(baseline['DataProtections'])
+      ? (baseline['DataProtections'] as unknown[])
+      : [];
+  return {
+    ...config,
+    DataProtections: entries.map((entry, i) => {
+      if (!isPlainObject(entry)) return entry;
+      const base = baseEntries[i];
+      const converted: Record<string, unknown> = { ...entry };
+      for (const key of DATA_PROTECTION_FALSE_DEFAULTS) {
+        if (converted[key] === false && !(isPlainObject(base) && key in base)) {
+          delete converted[key];
+        }
+      }
+      return converted;
+    }),
+  };
+}
+
+/**
+ * The `ApplicationConfig` an `UpdateWebACL` carries (issue #2762).
+ *
+ * `UpdateWebACL` treats this one member unlike the rest of the request, which
+ * replaces the web ACL whole: an OMITTED `ApplicationConfig` keeps every stored
+ * entry, and an INCLUDED one must match the stored entries exactly, any change
+ * being refused (`@aws-sdk/client-wafv2` `UpdateWebACLRequest.ApplicationConfig`).
+ * So it is sent only when the template changed it, and then AWS's refusal of a
+ * modification is the outcome, as for any update CloudFormation would send.
+ * Unchanged, it is left out: AWS keeps the same value, and the update never
+ * depends on the stored entries comparing equal to the template's spelling.
+ * Removed from the template, it is left out too, which keeps the stored value
+ * exactly as AWS documents for an omission.
+ */
+function applicationConfigForUpdate(
+  next: unknown,
+  previous: unknown
+): ApplicationConfig | undefined {
+  if (next === undefined || next === null) return undefined;
+  if (isDeepStrictEqual(next, previous)) return undefined;
+  return next as ApplicationConfig;
+}
 
 /**
  * Convert a CFn `ByteMatchStatement` into the SDK shape.
@@ -433,22 +490,6 @@ function toCfnRules(rules: unknown, baselineRules: unknown): unknown[] {
 }
 
 /**
- * Collect every {@link SDK_UNSUPPORTED_RULE_KEYS} member present anywhere
- * in the CFn `Rules` blob, so the caller can report the silent drop.
- */
-function collectSdkUnsupportedRuleKeys(value: unknown, found: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectSdkUnsupportedRuleKeys(item, found);
-    return;
-  }
-  if (!isPlainObject(value)) return;
-  for (const [key, nested] of Object.entries(value)) {
-    if (SDK_UNSUPPORTED_RULE_KEYS.includes(key)) found.add(key);
-    collectSdkUnsupportedRuleKeys(nested, found);
-  }
-}
-
-/**
  * AWS WAFv2 WebACL Provider
  *
  * Implements resource provisioning for AWS::WAFv2::WebACL using the WAFv2 SDK.
@@ -478,6 +519,10 @@ export class WAFv2WebACLProvider implements ResourceProvider {
         'ChallengeConfig',
         'TokenDomains',
         'AssociationConfig',
+        'DataProtectionConfig',
+        'OnSourceDDoSProtectionConfig',
+        'ApplicationConfig',
+        'MonetizationConfig',
       ]),
     ],
   ]);
@@ -534,7 +579,7 @@ export class WAFv2WebACLProvider implements ResourceProvider {
 
     const name =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 128 });
+      generatedNameFor('AWS::WAFv2::WebACL', logicalId);
     // `replayWarn`: the rollback executor's reverse-replacement arm revives
     // the OLD resource from `previousState.properties`, which the user cannot
     // edit from the template — a hard refusal there would leave the resource
@@ -545,8 +590,6 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       'AWS::WAFv2::WebACL Scope',
       replayWarn(this.logger, context)
     ) as Scope;
-
-    this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
 
     try {
       // Build tags
@@ -568,6 +611,14 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
           TokenDomains: properties['TokenDomains'] as string[] | undefined,
           AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
+          DataProtectionConfig: properties['DataProtectionConfig'] as
+            | DataProtectionConfig
+            | undefined,
+          OnSourceDDoSProtectionConfig: properties['OnSourceDDoSProtectionConfig'] as
+            | OnSourceDDoSProtectionConfig
+            | undefined,
+          ApplicationConfig: properties['ApplicationConfig'] as ApplicationConfig | undefined,
+          MonetizationConfig: properties['MonetizationConfig'] as MonetizationConfig | undefined,
         })
       );
 
@@ -606,12 +657,17 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create WAFv2 WebACL ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create WAFv2 WebACL ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -650,8 +706,6 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
-    this.warnOnSdkUnsupportedRuleKeys(logicalId, properties['Rules']);
-
     try {
       const { id, name, scope } = parseWebACLArn(physicalId);
 
@@ -686,6 +740,17 @@ export class WAFv2WebACLProvider implements ResourceProvider {
           ChallengeConfig: properties['ChallengeConfig'] as ChallengeConfig | undefined,
           TokenDomains: properties['TokenDomains'] as string[] | undefined,
           AssociationConfig: properties['AssociationConfig'] as AssociationConfig | undefined,
+          DataProtectionConfig: properties['DataProtectionConfig'] as
+            | DataProtectionConfig
+            | undefined,
+          OnSourceDDoSProtectionConfig: properties['OnSourceDDoSProtectionConfig'] as
+            | OnSourceDDoSProtectionConfig
+            | undefined,
+          ApplicationConfig: applicationConfigForUpdate(
+            properties['ApplicationConfig'],
+            previousProperties['ApplicationConfig']
+          ),
+          MonetizationConfig: properties['MonetizationConfig'] as MonetizationConfig | undefined,
         })
       );
 
@@ -713,14 +778,51 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update WAFv2 WebACL ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update WAFv2 WebACL ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}) so a create-first replacement still
+   * recognises the collision. A non-`Error` throw is withheld the same way,
+   * unstamped: it has no chain.
+   *
+   * A cdkd-authored or transport error keeps its text, masked, stamped exactly
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244). The delete
+   * tests its typed not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
@@ -793,34 +895,25 @@ export class WAFv2WebACLProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete WAFv2 WebACL ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete WAFv2 WebACL ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
-  }
-
-  /**
-   * Report every CFn `Rules` member the installed `@aws-sdk/client-wafv2`
-   * model has no counterpart for, so the drop is visible instead of
-   * silent. See {@link SDK_UNSUPPORTED_RULE_KEYS} for why cdkd cannot map
-   * them and what makes them work (an SDK bump).
-   */
-  private warnOnSdkUnsupportedRuleKeys(logicalId: string, rules: unknown): void {
-    const found = new Set<string>();
-    collectSdkUnsupportedRuleKeys(rules, found);
-    if (found.size === 0) return;
-
-    const sorted = [...found].sort();
-    const names = sorted.join(', ');
-    const subject = sorted.length === 1 ? 'property' : 'properties';
-    const verb = sorted.length === 1 ? 'has' : 'have';
-    this.logger.warn(
-      `WAFv2 WebACL ${logicalId}: rule ${subject} ${names} ${verb} no member in the installed AWS SDK WAFv2 model and will NOT be sent to AWS. Upgrade cdkd once its @aws-sdk/client-wafv2 dependency carries the ${subject}.`
-    );
   }
 
   /**
@@ -918,6 +1011,29 @@ export class WAFv2WebACLProvider implements ResourceProvider {
     result['TokenDomains'] = webACL.TokenDomains ? [...webACL.TokenDomains] : [];
     if (webACL.AssociationConfig) {
       result['AssociationConfig'] = webACL.AssociationConfig as unknown as Record<string, unknown>;
+    }
+    // Issue #2762: the four members below share their CFn and SDK spelling at
+    // every depth, so each reads back verbatim. Emitted only when AWS reports
+    // one, as CaptchaConfig is: an empty placeholder would be no valid value to
+    // send back on `drift --revert` (`DataProtections` takes at least one entry).
+    if (webACL.DataProtectionConfig) {
+      result['DataProtectionConfig'] = toCfnDataProtectionConfig(
+        webACL.DataProtectionConfig as unknown as Record<string, unknown>,
+        properties?.['DataProtectionConfig']
+      );
+    }
+    if (webACL.OnSourceDDoSProtectionConfig) {
+      result['OnSourceDDoSProtectionConfig'] =
+        webACL.OnSourceDDoSProtectionConfig as unknown as Record<string, unknown>;
+    }
+    if (webACL.ApplicationConfig) {
+      result['ApplicationConfig'] = webACL.ApplicationConfig as unknown as Record<string, unknown>;
+    }
+    if (webACL.MonetizationConfig) {
+      result['MonetizationConfig'] = webACL.MonetizationConfig as unknown as Record<
+        string,
+        unknown
+      >;
     }
 
     // Tags via ListTagsForResource (the WebACL ARN is the physicalId).

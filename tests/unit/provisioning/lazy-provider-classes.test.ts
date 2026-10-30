@@ -24,7 +24,7 @@ const PROVIDER_CLASSES = '../../../src/provisioning/provider-classes.js';
 
 /**
  * Reached statically on purpose. `protection-flags.ts` imports
- * `extractLocalDeletionProtection` from this provider; moving that helper out
+ * `extractAnyDeletionProtection` from this provider; moving that helper out
  * costs the provider file its `handledProperties` wiring evidence, and the
  * provider's SDK client (`@aws-sdk/client-dynamodb`) is on the startup path
  * anyway, through `src/utils/aws-clients.ts`.

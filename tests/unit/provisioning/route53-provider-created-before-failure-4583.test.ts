@@ -37,6 +37,10 @@ import { HostedZoneAlreadyExists } from '@aws-sdk/client-route-53';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 // go-to-k/cdkd#4583: a failure after CreateHostedZone returned names the zone
 // id for the failed-CREATE journal, unless the Accelerated Recovery arm's
@@ -131,7 +135,7 @@ describe('Route53Provider HostedZone created-before-failure mark (#4583)', () =>
     const err = await caught(
       provider.create('Zone', TYPE, {
         Name: 'example.com',
-        HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+        HostedZoneFeatures: { EnableAcceleratedRecovery: true },
       })
     );
     expect(
@@ -152,7 +156,7 @@ describe('Route53Provider HostedZone created-before-failure mark (#4583)', () =>
     const err = await caught(
       provider.create('Zone', TYPE, {
         Name: 'example.com',
-        HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+        HostedZoneFeatures: { EnableAcceleratedRecovery: true },
       })
     );
     expect(createdBeforeFailure(err, 'Zone', TYPE)).toBe(ZONE_ID);
@@ -172,5 +176,75 @@ describe('Route53Provider HostedZone created-before-failure mark (#4583)', () =>
     const err = await caught(provider.create('Zone', TYPE, {}));
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(err, 'Zone', TYPE)).toBeUndefined();
+  });
+
+  it('reports the zone id to the sink before the VPC associations (#5511)', async () => {
+    const sink = new CreatedResourceSink('Zone', TYPE);
+    let reportAtAssociate: unknown = 'not-called';
+    fakeAws({
+      AssociateVPCWithHostedZoneCommand: () => {
+        reportAtAssociate = sink.report;
+        throw new Error('AccessDenied');
+      },
+    });
+    await caught(
+      collectCreatedResources(sink, () =>
+        provider.create('Zone', TYPE, { Name: 'example.com', VPCs: VPCS })
+      )
+    );
+    expect(reportAtAssociate).toEqual({ physicalId: ZONE_ID });
+    expect(sink.report).toEqual({ physicalId: ZONE_ID });
+  });
+
+  it('retracts the report when the Accelerated Recovery rollback deleted the zone (#5511)', async () => {
+    const sink = new CreatedResourceSink('Zone', TYPE);
+    fakeAws({
+      UpdateHostedZoneFeaturesCommand: () => {
+        throw new Error('InvalidInput');
+      },
+    });
+    await caught(
+      collectCreatedResources(sink, () =>
+        provider.create('Zone', TYPE, {
+          Name: 'example.com',
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
+        })
+      )
+    );
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('keeps the report when the Accelerated Recovery rollback delete also failed (#5511)', async () => {
+    const sink = new CreatedResourceSink('Zone', TYPE);
+    fakeAws({
+      UpdateHostedZoneFeaturesCommand: () => {
+        throw new Error('InvalidInput');
+      },
+      DeleteHostedZoneCommand: () => {
+        throw new Error('Throttling');
+      },
+    });
+    await caught(
+      collectCreatedResources(sink, () =>
+        provider.create('Zone', TYPE, {
+          Name: 'example.com',
+          HostedZoneFeatures: { EnableAcceleratedRecovery: true },
+        })
+      )
+    );
+    expect(sink.report).toEqual({ physicalId: ZONE_ID });
+  });
+
+  it('reports nothing when CreateHostedZone itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Zone', TYPE);
+    fakeAws({
+      CreateHostedZoneCommand: () => {
+        throw new Error('InvalidDomainName');
+      },
+    });
+    await caught(
+      collectCreatedResources(sink, () => provider.create('Zone', TYPE, { Name: 'example.com' }))
+    );
+    expect(sink.report).toBeUndefined();
   });
 });

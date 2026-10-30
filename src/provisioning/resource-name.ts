@@ -2,58 +2,173 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
 /**
- * Per-async-context stack name. Resource-name generation reads this so that
- * concurrent deploys (`cdkd deploy --all` runs stacks in parallel up to
- * `--stack-concurrency`) don't fight over a single shared variable.
+ * The stack a resource name is generated for: its name, and the id of its
+ * current lifetime (state schema v13, go-to-k/cdkd#5064).
  *
- * History: this was `let currentStackName: string | undefined` until
- * 2026-05-01. Two parallel `deploy()` calls would each call
- * `setCurrentStackName(...)` and the second would overwrite the first;
- * any IAM Role / SQS Queue / etc. created by the first stack while the
- * second was active would get the second stack's prefix in its physical
- * name, then the second stack's own create attempt for the same logical
- * id would collide ("Role with name X already exists"). Switching to
- * `AsyncLocalStorage` scopes the value to each deploy's async chain.
+ * `stackInstanceId` is `undefined` for a LEGACY stack (a record written before
+ * v13, which keeps the deterministic `{stackName}-{logicalId}` names for all
+ * its resources) and, by an explicit decision at the call site, where only
+ * declared names are derived. A stack WITH an id gets CloudFormation-style
+ * `{stackName}-{logicalId}-{suffix}` names for what it does not name itself
+ * ({@link generateResourceName}), so a recreated stack never asks for the
+ * names its predecessor left behind.
  */
-const stackNameStore = new AsyncLocalStorage<string>();
+export interface StackScope {
+  stackName: string;
+  stackInstanceId: string | undefined;
+  /**
+   * go-to-k/cdkd#5064 phase 2: the GENERATION each logical id's generated name
+   * is derived at, from the state record the scope's names belong to
+   * (`nameGenerationsOf`, `src/state/name-generation.ts`): a record's own
+   * generation, a re-added id's retired generation + 1, and 0 for an id the
+   * map does not hold (a first create). Required beside a `stackInstanceId`:
+   * a generated name derived in a scope with an id and no map THROWS rather
+   * than silently taking generation 0, which would name a replaced resource
+   * after its predecessor. `undefined` with no id (legacy, declared names).
+   */
+  nameGenerations: ReadonlyMap<string, number> | undefined;
+}
 
 /**
- * Run `fn` with `stackName` set as the stack name visible to
- * `generateResourceName` for the duration of the callback (and any
- * `await`s inside). Concurrent invocations each get an independent scope
- * — this is the safe API for parallel deploys.
+ * Per-async-context stack scope. Resource-name generation reads this so that
+ * concurrent deploys (`cdkd deploy --all` runs stacks in parallel up to
+ * `--stack-concurrency`) don't fight over a single shared variable: each
+ * deploy's async chain carries its own scope.
  */
-export function withStackName<T>(stackName: string, fn: () => Promise<T>): Promise<T>;
-export function withStackName<T>(stackName: string, fn: () => T): T;
-export function withStackName<T>(stackName: string, fn: () => T | Promise<T>): T | Promise<T> {
-  return stackNameStore.run(stackName, fn);
+const stackScopeStore = new AsyncLocalStorage<StackScope & { beforeStateRead?: true }>();
+
+/**
+ * Run `fn` in a scope that knows the stack's NAME but not yet its instance
+ * id, because the state record carrying it has not been read: the deploy
+ * engine's outer scope, around a deploy that opens the id-bearing
+ * {@link withStackScope} right after its state read. A generated name derived
+ * in it THROWS instead of falling back to the legacy scheme, which on a v13
+ * stack would name (or, in an IAM `update()`, replace) a resource under the
+ * wrong lifetime; declared names, the stack name and the prefix flag work.
+ */
+export function withStackScopeBeforeStateRead<T>(
+  stackName: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  return stackScopeStore.run(
+    { stackName, stackInstanceId: undefined, nameGenerations: undefined, beforeStateRead: true },
+    fn
+  );
+}
+
+/**
+ * Run `fn` with `scope` visible to {@link generateResourceName} for the
+ * duration of the callback (and any `await`s inside). Concurrent invocations
+ * each get an independent scope. Both fields are required, so every call site
+ * states which lifetime's names it derives; an inner scope replaces an outer
+ * one for its callback.
+ */
+export function withStackScope<T>(scope: StackScope, fn: () => Promise<T>): Promise<T>;
+export function withStackScope<T>(scope: StackScope, fn: () => T): T;
+export function withStackScope<T>(scope: StackScope, fn: () => T | Promise<T>): T | Promise<T> {
+  // Copied: a caller mutating its object afterwards must not rename anything.
+  // The generations map is taken as given (read-only, built per state read):
+  // a per-resource scope must not pay a copy of it. An outer
+  // `withNameGeneration` binding belongs to the outer stack (a parent's
+  // replacement around a nested child's deploy): it does not reach in.
+  return nameGenerationStore.exit(() =>
+    stackScopeStore.run(
+      {
+        stackName: scope.stackName,
+        stackInstanceId: scope.stackInstanceId,
+        nameGenerations: scope.nameGenerations,
+      },
+      fn
+    )
+  );
+}
+
+/** A generation {@link withNameGeneration} binds for ONE logical id. */
+interface NameGenerationOverride {
+  logicalId: string;
+  generation: number;
+}
+
+const nameGenerationStore = new AsyncLocalStorage<NameGenerationOverride>();
+
+/** Is `value` a usable name generation (a non-negative safe integer)? */
+export function isNameGeneration(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/**
+ * Run `fn` with `logicalId`'s generated name derived at `generation` instead
+ * of the scope's (go-to-k/cdkd#5064 phase 2): the next generation around a
+ * replacement's create, its name check and its holder proof, and the old
+ * record's generation around a rollback's re-create of it. Every other
+ * logical id keeps the scope's generation; an inner binding replaces an outer
+ * one.
+ */
+export function withNameGeneration<T>(
+  binding: { logicalId: string; generation: number },
+  fn: () => Promise<T>
+): Promise<T>;
+export function withNameGeneration<T>(
+  binding: { logicalId: string; generation: number },
+  fn: () => T
+): T;
+export function withNameGeneration<T>(
+  binding: { logicalId: string; generation: number },
+  fn: () => T | Promise<T>
+): T | Promise<T> {
+  if (!isNameGeneration(binding.generation)) {
+    throw new Error(
+      `cdkd internal error: name generation ${String(binding.generation)} for ${binding.logicalId} is not a non-negative integer`
+    );
+  }
+  return nameGenerationStore.run(
+    { logicalId: binding.logicalId, generation: binding.generation },
+    fn
+  );
+}
+
+/**
+ * The generation `logicalId`'s generated name is derived at in the current
+ * async context: a {@link withNameGeneration} binding for it, else the scope's
+ * map, else 0. `undefined` when the scope carries a stack instance id but no
+ * map -- a derivation there would guess.
+ */
+export function currentNameGeneration(logicalId: string): number | undefined {
+  const bound = nameGenerationStore.getStore();
+  if (bound !== undefined && bound.logicalId === logicalId) return bound.generation;
+  const scope = stackScopeStore.getStore();
+  if (scope?.nameGenerations === undefined) {
+    return scope?.stackInstanceId === undefined ? 0 : undefined;
+  }
+  return scope.nameGenerations.get(logicalId) ?? 0;
 }
 
 /**
  * Read the current async context's stack name, if any.
  *
- * Returns `undefined` outside any `withStackName` / `setCurrentStackName`
- * scope. Used by the live renderer to scope per-stack in-flight task
- * entries so concurrent deploys don't clobber each other's tasks (same
- * `logicalId` in two stacks would collide on the singleton renderer's
- * task Map without this).
+ * Returns `undefined` outside any {@link withStackScope}. Also used by the
+ * live renderer to scope per-stack in-flight task entries so concurrent
+ * deploys don't clobber each other's tasks.
  */
 export function getCurrentStackName(): string | undefined {
-  return stackNameStore.getStore();
+  return stackScopeStore.getStore()?.stackName;
 }
 
 /**
- * Set the current async context's stack name.
- *
- * @deprecated Use {@link withStackName} for new code — it makes the scope
- *   obvious at the call site. This setter now uses
- *   `AsyncLocalStorage.enterWith` so it remains safe under
- *   `--stack-concurrency > 1` (each `deploy()` call has its own async
- *   resource, so the value does NOT leak across siblings), but
- *   `withStackName` is structurally clearer.
+ * The current scope's stack instance id: `undefined` outside a scope, for a
+ * legacy stack, and where the call site opened a declared-names-only scope.
+ * Never log it: the names derived from it must not be predictable from a log.
  */
-export function setCurrentStackName(stackName: string): void {
-  stackNameStore.enterWith(stackName);
+/**
+ * Whether the current scope derives names before the stack's state record was
+ * read ({@link withStackScopeBeforeStateRead}), where a generated name throws.
+ */
+export function isBeforeStateRead(): boolean {
+  return stackScopeStore.getStore()?.beforeStateRead === true;
+}
+
+export function getCurrentStackInstanceId(): string | undefined {
+  return stackScopeStore.getStore()?.stackInstanceId;
 }
 
 /**
@@ -74,12 +189,12 @@ const skipPrefixStore = new AsyncLocalStorage<boolean>();
 
 /**
  * Run `fn` with the "skip prefix on user-supplied names" flag set to
- * `skip`. Mirrors {@link withStackName} — concurrent invocations each
+ * `skip`. Mirrors {@link withStackScope} — concurrent invocations each
  * get an independent scope so parallel deploys do not fight over a
  * single shared variable.
  *
- * Wrap this around `withStackName(...)` (innermost is `fn`) in the
- * deploy CLI: `withSkipPrefix(flag, () => withStackName(name, body))`.
+ * Wrap this around `withStackScope(...)` (innermost is `fn`) in the
+ * deploy CLI: `withSkipPrefix(flag, () => withStackScope(scope, body))`.
  * Order does not matter — the two stores are independent — but
  * consistent ordering keeps the call sites readable.
  */
@@ -190,7 +305,7 @@ export const PATTERN_B_NAME_OPTIONS: Readonly<Record<string, ResourceNameOptions
  * with nothing drifted. Neither the prefix flag nor the stack a deploy ran
  * under is recorded, so both settings are tried, through the same
  * sanitize / truncate pipeline the provider ran. Call it inside the stack's
- * {@link withStackName} scope: with no stack name in scope the prefixed arm
+ * {@link withStackScope}: with no stack name in scope the prefixed arm
  * derives the bare name, and only a sanitize rewrite (`my_role` -> `my-role`)
  * is recognized.
  *
@@ -247,17 +362,84 @@ export interface ResourceNameOptions {
   userSupplied?: boolean;
 }
 
+/** Hex characters of a stack-instance name suffix. */
+export const STACK_INSTANCE_SUFFIX_LENGTH = 12;
+
+/**
+ * The most generations {@link looksLikeCdkdGeneratedName} hashes through: a
+ * bound on a state-chosen number, far past any replacement count a stack sees.
+ */
+const MAX_RECOGNIZED_GENERATION = 1024;
+
+/**
+ * The per-stack-instance suffix of the generated name for `name` (go-to-k/cdkd#5064):
+ * the first 12 hex of sha256 over the id and the name, NUL-separated (a v4
+ * UUID holds no NUL, so no two inputs share a digest input). A pure function,
+ * so every re-derivation within one stack lifetime reproduces it, and one-way,
+ * so a name does not disclose the id.
+ *
+ * `generation` (phase 2): 0 hashes exactly the phase-1 input; a later one
+ * appends a NUL and its decimal digits, so each replacement of a resource asks
+ * for a name no earlier generation held. A logical id holds no NUL, so no
+ * (name, generation) pair shares a digest input with another.
+ */
+export function stackInstanceNameSuffix(
+  stackInstanceId: string,
+  name: string,
+  generation = 0
+): string {
+  const hash = createHash('sha256').update(stackInstanceId).update('\u0000').update(name);
+  if (generation !== 0) hash.update('\u0000').update(String(generation));
+  return hash.digest('hex').substring(0, STACK_INSTANCE_SUFFIX_LENGTH);
+}
+
 /**
  * Generate a unique resource name from the logical ID.
  *
- * Generates names in CloudFormation-compatible format:
- * `{StackName}-{LogicalId}-{Hash}` (truncated to maxLength).
+ * - Auto-generated (`userSupplied: false`) in a scope carrying a stack
+ *   instance id: `{StackName}-{LogicalId}-{suffix}`, CloudFormation-style, the
+ *   `{StackName}-{LogicalId}` part cut to `maxLength - 13` (go-to-k/cdkd#5064).
+ * - Otherwise (a legacy stack, no scope, or a declared name) exactly the
+ *   pre-v13 output: `{StackName}-{name}` (or the bare name), cut with an
+ *   8-hex hash only when it is longer than `maxLength`.
  *
  * @param name The raw name (from properties or logicalId fallback)
  * @param options Length and character constraints
  * @returns A sanitized, truncated name that fits the constraints
  */
 export function generateResourceName(name: string, options: ResourceNameOptions): string {
+  const scope = stackScopeStore.getStore();
+  if (scope?.beforeStateRead === true && options.userSupplied !== true) {
+    throw new Error(
+      `cdkd internal error: a generated name for ${name} was derived before the state record ` +
+        `of ${scope.stackName} was read, so it cannot carry the stack's instance id`
+    );
+  }
+  // go-to-k/cdkd#5064 phase 2: only a GENERATED name on a stack with an id
+  // reads the generation, so a declared name or a legacy stack never asks.
+  let generation = 0;
+  if (scope?.stackInstanceId !== undefined && options.userSupplied !== true) {
+    const known = currentNameGeneration(name);
+    if (known === undefined) {
+      throw new Error(
+        `cdkd internal error: a generated name for ${name} was derived in a scope of ` +
+          `${scope.stackName} that carries no name generations, so it could name the resource ` +
+          `after an earlier generation`
+      );
+    }
+    generation = known;
+  }
+  return deriveResourceName(name, options, scope?.stackName, scope?.stackInstanceId, generation);
+}
+
+/** {@link generateResourceName} for an explicit scope. */
+function deriveResourceName(
+  name: string,
+  options: ResourceNameOptions,
+  currentStackName: string | undefined,
+  stackInstanceId: string | undefined,
+  generation = 0
+): string {
   const {
     maxLength,
     lowercase = false,
@@ -272,7 +454,6 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
   // active — the user owns that name and cdkd should not rewrite it.
   // Every other path (logical-id fallback, no withSkipPrefix scope,
   // flag set to false) keeps the prefix for cross-stack uniqueness.
-  const currentStackName = stackNameStore.getStore();
   const shouldPrefix = currentStackName && !(userSupplied && getCurrentSkipPrefix());
   const fullName = shouldPrefix ? `${currentStackName}-${name}` : name;
 
@@ -282,6 +463,15 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
 
   // Collapse consecutive hyphens and remove leading/trailing
   sanitized = sanitized.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, '');
+
+  // go-to-k/cdkd#5064: only a name cdkd generates for a stack with an id gets
+  // the suffix. A declared name (prefixed or not) is the user's, and a legacy
+  // stack keeps its names byte for byte.
+  if (shouldPrefix && !userSupplied && stackInstanceId !== undefined) {
+    const suffix = stackInstanceNameSuffix(stackInstanceId, name, generation);
+    const base = sanitized.substring(0, maxLength - suffix.length - 1).replace(/-+$/, '');
+    return base === '' ? suffix : `${base}-${suffix}`;
+  }
 
   if (sanitized.length <= maxLength) {
     return sanitized;
@@ -328,12 +518,25 @@ export function generateResourceName(name: string, options: ResourceNameOptions)
  *
  * @param physicalId the name AWS currently holds for the existing resource
  * @param logicalId the template logical id of the resource being replaced
+ * A stack with an instance id (go-to-k/cdkd#5064) also generates
+ * `{prefix}-{suffix}`, and that form is accepted only with the EXACT suffix
+ * `stackInstanceId` derives for `logicalId` — never a bare `-<12 hex>` shape,
+ * which a user's own name can end with.
+ *
  * @param stackName the deploying stack's name (absent = unresolvable, `false`)
+ * @param stackInstanceId the stack's instance id (absent: a legacy stack, or
+ *   unknown, so only the pre-v13 forms are recognized)
+ * @param generations the name generations the suffix may carry
+ *   (go-to-k/cdkd#5064 phase 2): every one from 0 through `through`. Absent:
+ *   0 through one past the generation the current scope derives for
+ *   `logicalId` -- a replaced resource's old and new names both count.
  */
 export function looksLikeCdkdGeneratedName(
   physicalId: string,
   logicalId: string,
-  stackName: string | undefined
+  stackName: string | undefined,
+  stackInstanceId: string | undefined,
+  generations?: { through: number }
 ): boolean {
   if (!physicalId || !logicalId || !stackName) return false;
   // The skeleton drops every separator the per-type `allowedPattern` could
@@ -343,6 +546,20 @@ export function looksLikeCdkdGeneratedName(
   const derived = skeleton(`${stackName}-${logicalId}`);
   const actual = skeleton(physicalId);
   if (actual === derived) return true;
+  if (stackInstanceId !== undefined) {
+    const suffixed = /^(.*)-([0-9a-f]{12})$/.exec(physicalId.toLowerCase());
+    if (suffixed !== null) {
+      const base = skeleton(suffixed[1]!);
+      const through = Math.min(
+        generations?.through ?? (currentNameGeneration(logicalId) ?? 0) + 1,
+        MAX_RECOGNIZED_GENERATION
+      );
+      for (let g = 0; g <= through; g++) {
+        if (suffixed[2] !== stackInstanceNameSuffix(stackInstanceId, logicalId, g)) continue;
+        if (base.length > 0 && derived.startsWith(base)) return true;
+      }
+    }
+  }
   // Truncated form: `{prefix}-{8 hex}` where prefix is a cut of the same
   // derivation. Require BOTH halves — a bare prefix match would accept a
   // template-supplied name that merely starts the same way.
@@ -385,39 +602,163 @@ export function generateResourceNameWithFallback(
   return generateResourceName(logicalId, { ...options, userSupplied: false });
 }
 
+/** A name {@link generateResourceNameWithFallback} treats as declared. */
+function isDeclaredName(value: unknown): boolean {
+  return value !== undefined && value !== '';
+}
+
 /**
- * Default name generation rules for a Cloud Control CREATE.
+ * Is `recorded` a name cdkd generates for `logicalId` in the current scope's
+ * stack under EITHER naming scheme (go-to-k/cdkd#5064): the legacy
+ * `{stackName}-{logicalId}`, or the suffixed one under ANY stack instance id
+ * -- this lifetime's, or an earlier lifetime's that `cdkd import` brought in
+ * (the suffix's exact base, then 12 hex)?
  *
- * When an SDK provider falls back to CC API, the resource may need a
- * default name that the SDK provider would have generated. A type with NO
- * SDK provider can need one too, when its Cloud Control create handler fails
- * without a name its schema leaves optional (`AWS::Lambda::CapacityProvider`,
- * issue #3174). This map defines the name property and generation options for
- * each resource type. The name is filled on a create only; the update path
- * takes it back out (`withoutGeneratedFallbackName`).
- *
- * Format: resourceType → { nameProperty, options, postProcess? }
+ * Only for {@link recordedGeneratedNameKept}, whose answer KEEPS a name: the
+ * shape arm is acceptable there, and nowhere a `true` would claim a name.
  */
-const FALLBACK_NAME_RULES: Record<
-  string,
-  {
-    nameProperty: string;
-    options: ResourceNameOptions;
+function isGeneratedNameOfEitherScheme(
+  recorded: string,
+  logicalId: string,
+  options: Omit<ResourceNameOptions, 'userSupplied'>
+): boolean {
+  const scope = stackScopeStore.getStore();
+  if (!scope?.stackName || recorded === '') return false;
+  const opts: ResourceNameOptions = { ...options, userSupplied: false };
+  if (recorded === deriveResourceName(logicalId, opts, scope.stackName, undefined)) return true;
+  // Any well-formed id yields the same base: only the suffix differs.
+  const probe = deriveResourceName(
+    logicalId,
+    opts,
+    scope.stackName,
+    '00000000-0000-4000-8000-000000000000'
+  );
+  const base = probe.slice(0, probe.length - STACK_INSTANCE_SUFFIX_LENGTH);
+  return recorded.startsWith(base) && /^[0-9a-f]{12}$/.test(recorded.slice(base.length));
+}
+
+/**
+ * Should an `update()` that re-derives a resource's name KEEP the recorded
+ * one rather than replace the resource (go-to-k/cdkd#5064)?
+ *
+ * The IAM providers derive the name inside `update()` and replace the
+ * resource when it differs from the recorded physical id. For a resource no
+ * template ever named (neither the desired nor the previous bag declares a
+ * name), that difference can only come from the naming SCHEME: a v13 stack
+ * holding a resource named under another scheme or lifetime (`cdkd import` of
+ * a legacy name, or of what an earlier lifetime kept), or a scope that lacks
+ * the stack's id. Neither is a rename anyone
+ * asked for -- CloudFormation never renames an un-named resource -- and
+ * replacing would create a new resource and delete the live one. So the
+ * recorded name is kept whenever it is this logical id's generated name under
+ * either scheme. A name that was declared (now or before) is never kept here:
+ * a declared rename still replaces.
+ */
+export function recordedGeneratedNameKept(input: {
+  recorded: string;
+  derived: string;
+  declaredName: unknown;
+  previousDeclaredName: unknown;
+  logicalId: string;
+  options: Omit<ResourceNameOptions, 'userSupplied'>;
+}): boolean {
+  if (input.derived === input.recorded) return false;
+  if (isDeclaredName(input.declaredName) || isDeclaredName(input.previousDeclaredName)) {
+    return false;
   }
-> = {
-  'AWS::S3::Bucket': { nameProperty: 'BucketName', options: { maxLength: 63, lowercase: true } },
+  return isGeneratedNameOfEitherScheme(input.recorded, input.logicalId, input.options);
+}
+
+/**
+ * How cdkd names one type's resource when the template does not.
+ *
+ * The ONE generator per type (go-to-k/cdkd#5095): the SDK provider calls
+ * {@link generatedNameFor} and a Cloud Control create fills the same name
+ * through {@link applyDefaultNameForFallback}, so a resource gets the same
+ * name on either route. The only differences are `legacy`'s, each kept so
+ * that no stack without an instance id changes a name it already generates.
+ */
+interface GeneratedNameRule {
+  nameProperty: string;
+  options: ResourceNameOptions;
+  /** Put before the generated name: a log group's `/cdkd/`, an SSM parameter's `/`. */
+  prefix?: string;
+  /**
+   * A directory bucket: the name ends with the required `--<zone id>--x-s3`,
+   * and `options.maxLength` bounds the whole name.
+   */
+  zoneSuffix?: true;
+  /**
+   * A prefix the service refuses a name to start with (a security group's
+   * `sg-`): a generated name starting with it, case-insensitively, drops the
+   * prefix's last character (`sg-app-...` becomes `sgapp-...`).
+   */
+  refusedPrefix?: string;
+  /**
+   * `nameProperty` is a key of this object property, not of the resource's
+   * top level (a Glue connection's `ConnectionInput.Name`).
+   */
+  nestedIn?: string;
+  /**
+   * A stack WITHOUT an instance id (a legacy stack) keeps what each route
+   * generated before go-to-k/cdkd#5095. A stack with one always uses the rule.
+   */
+  legacy?: {
+    /**
+     * The SDK provider sent the bare logical id (`AWS::CodeBuild::Project`,
+     * the security group, trail, Glue and Firehose types).
+     */
+    sdk?: 'logicalId';
+    /**
+     * The Cloud Control create filled nothing (`'none'`: the handler named the
+     * resource), or a name under these options.
+     */
+    cloudControl?: 'none' | ResourceNameOptions;
+  };
+  /**
+   * The entry does not admit its type to orphan adoption
+   * ({@link explicitNamePropertyFor}): a type added for its generated name
+   * alone, never checked against `ADOPTION_REFUSED_TYPES`' three tests.
+   */
+  notAdopted?: true;
+}
+
+/**
+ * The generated-name rule of every type cdkd names (see
+ * {@link GeneratedNameRule}).
+ *
+ * A Cloud Control create fills the name from here, for a type with an SDK
+ * provider (its provider names the resource with the same rule) and for one
+ * without: `AWS::Lambda::CapacityProvider`'s Cloud Control create handler fails
+ * without a name its schema leaves optional (issue #3174). The name is filled
+ * on a create only; the update path takes it back out
+ * (`withoutGeneratedFallbackName`).
+ *
+ * `AWS::Events::EventBus` has no entry: its CloudFormation schema requires
+ * `Name`, so neither route generates one (the SDK provider refuses a missing
+ * name, and Cloud Control refuses it as CloudFormation does).
+ */
+const FALLBACK_NAME_RULES: Record<string, GeneratedNameRule> = {
+  // The SDK provider's pattern keeps `.`. A logical id or stack name never
+  // holds one, so the Cloud Control fill names nothing differently.
+  'AWS::S3::Bucket': {
+    nameProperty: 'BucketName',
+    options: { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g },
+  },
   'AWS::SQS::Queue': { nameProperty: 'QueueName', options: { maxLength: 80 } },
   'AWS::SNS::Topic': { nameProperty: 'TopicName', options: { maxLength: 256 } },
   'AWS::Lambda::Function': { nameProperty: 'FunctionName', options: { maxLength: 64 } },
   'AWS::Lambda::LayerVersion': { nameProperty: 'LayerName', options: { maxLength: 64 } },
   // No SDK provider — Cloud Control only. The schema does not require the
   // name, yet a create without one fails with `Resource Handler Internal
-  // Failure` (issue #3174). Schema: maxLength 140, `[a-zA-Z0-9-_]+`; the
-  // default `allowedPattern` emits a subset of that.
+  // Failure` (issue #3174). The schema's maxLength 140 is the ARN form's; the
+  // service refuses a NAME over 64 (measured, go-to-k/cdkd#5064). The default
+  // `allowedPattern` emits a subset of `[a-zA-Z0-9-_]+`.
   'AWS::Lambda::CapacityProvider': {
     nameProperty: 'CapacityProviderName',
-    options: { maxLength: 140 },
+    options: { maxLength: 64 },
   },
+
   'AWS::IAM::Role': { nameProperty: 'RoleName', options: { maxLength: 64 } },
   'AWS::IAM::Policy': { nameProperty: 'PolicyName', options: { maxLength: 64 } },
   'AWS::IAM::ManagedPolicy': {
@@ -437,10 +778,16 @@ const FALLBACK_NAME_RULES: Record<
   },
   'AWS::ECS::Cluster': { nameProperty: 'ClusterName', options: { maxLength: 255 } },
   'AWS::ECS::Service': { nameProperty: 'ServiceName', options: { maxLength: 255 } },
-  'AWS::Logs::LogGroup': { nameProperty: 'LogGroupName', options: { maxLength: 512 } },
-  'AWS::CloudWatch::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 256 } },
+  // `/cdkd/` + 506 = 512. A legacy stack's Cloud Control fill had no prefix.
+  'AWS::Logs::LogGroup': {
+    nameProperty: 'LogGroupName',
+    options: { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g },
+    prefix: '/cdkd/',
+    legacy: { cloudControl: { maxLength: 512 } },
+  },
+  // PutMetricAlarm: 1-255 characters.
+  'AWS::CloudWatch::Alarm': { nameProperty: 'AlarmName', options: { maxLength: 255 } },
   'AWS::Events::Rule': { nameProperty: 'Name', options: { maxLength: 64 } },
-  'AWS::Events::EventBus': { nameProperty: 'Name', options: { maxLength: 256 } },
   'AWS::Kinesis::Stream': { nameProperty: 'Name', options: { maxLength: 128 } },
   'AWS::StepFunctions::StateMachine': {
     nameProperty: 'StateMachineName',
@@ -450,7 +797,13 @@ const FALLBACK_NAME_RULES: Record<
     nameProperty: 'Name',
     options: { maxLength: 512, allowedPattern: /[^a-zA-Z0-9-/_]/g },
   },
-  'AWS::SSM::Parameter': { nameProperty: 'Name', options: { maxLength: 2048 } },
+  // A legacy stack's Cloud Control fill had no leading `/` (a valid name too).
+  'AWS::SSM::Parameter': {
+    nameProperty: 'Name',
+    options: { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g },
+    prefix: '/',
+    legacy: { cloudControl: { maxLength: 2048 } },
+  },
   'AWS::Cognito::UserPool': { nameProperty: 'UserPoolName', options: { maxLength: 128 } },
   'AWS::ElastiCache::SubnetGroup': {
     nameProperty: 'CacheSubnetGroupName',
@@ -507,19 +860,249 @@ const FALLBACK_NAME_RULES: Record<
     options: { maxLength: 32 },
   },
   'AWS::WAFv2::WebACL': { nameProperty: 'Name', options: { maxLength: 128 } },
-  'AWS::CodeBuild::Project': { nameProperty: 'Name', options: { maxLength: 255 } },
+  // CreateProject: 2-150 characters. A legacy stack's SDK provider named the
+  // project after the bare logical id; Cloud Control has no handlers for it.
+  'AWS::CodeBuild::Project': {
+    nameProperty: 'Name',
+    options: { maxLength: 150 },
+    legacy: { sdk: 'logicalId' },
+  },
+  // The whole name, zone suffix included, is at most 63 characters. The Cloud
+  // Control create reads the zone id from `LocationName`; without one it is
+  // refused rather than sent a name AWS rejects.
   'AWS::S3Express::DirectoryBucket': {
     nameProperty: 'BucketName',
     options: { maxLength: 63, lowercase: true },
+    zoneSuffix: true,
+  },
+  // go-to-k/cdkd#5095: the SDK provider generated these names and Cloud
+  // Control had no rule. The schema REQUIRES the name of these three, so their
+  // Cloud Control create failed on every stack.
+  'AWS::CodeCommit::Repository': { nameProperty: 'RepositoryName', options: { maxLength: 100 } },
+  'AWS::RDS::DBProxy': { nameProperty: 'DBProxyName', options: { maxLength: 64 } },
+  'AWS::RDS::DBProxyEndpoint': {
+    nameProperty: 'DBProxyEndpointName',
+    options: { maxLength: 64 },
+  },
+  // go-to-k/cdkd#5309: the SDK provider refused a missing name, which the
+  // schema leaves optional (CloudFormation generates one). 3-63 characters of
+  // lowercase letters, digits and `-`: the generator emits that, a stack name
+  // starts with a letter, and the suffix is hex. A legacy stack's Cloud
+  // Control create still leaves the name to the handler.
+  'AWS::S3Vectors::VectorBucket': {
+    nameProperty: 'VectorBucketName',
+    options: { maxLength: 63, lowercase: true },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // go-to-k/cdkd#5348: the same, for a Cloud Map service. CreateService takes
+  // DNS labels of `[a-zA-Z0-9_-]`, each at most 63 characters, starting and
+  // ending with a letter, digit or `_`: the generator emits one label of
+  // letters, digits and `-` that starts with a stack name and ends with the
+  // hex suffix or the logical id. The schema sets no limit.
+  'AWS::ServiceDiscovery::Service': {
+    nameProperty: 'Name',
+    options: { maxLength: 63 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // ...and the handler named these, which a legacy stack keeps.
+  'AWS::Scheduler::Schedule': {
+    nameProperty: 'Name',
+    options: { maxLength: 64 },
+    legacy: { cloudControl: 'none' },
+  },
+  'AWS::AutoScaling::AutoScalingGroup': {
+    nameProperty: 'AutoScalingGroupName',
+    options: { maxLength: 255 },
+    legacy: { cloudControl: 'none' },
+  },
+  'AWS::DynamoDB::GlobalTable': {
+    nameProperty: 'TableName',
+    options: { maxLength: 255 },
+    legacy: { cloudControl: 'none' },
+  },
+  'AWS::ECS::TaskDefinition': {
+    nameProperty: 'Family',
+    options: { maxLength: 255 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Lambda::NetworkConnector': {
+    nameProperty: 'Name',
+    options: { maxLength: 64 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Pipes::Pipe': {
+    nameProperty: 'Name',
+    options: { maxLength: 64 },
+    legacy: { cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // go-to-k/cdkd#5095: the SDK provider sent the bare logical id, unique per
+  // VPC / account and region only, so two stacks with one logical id, or a
+  // replacement, collided. A legacy stack keeps it; its Cloud Control create
+  // still leaves the name to the handler. None was ever admitted to adoption.
+  // CreateSecurityGroup: up to 255 characters, not starting with `sg-`.
+  'AWS::EC2::SecurityGroup': {
+    nameProperty: 'GroupName',
+    options: { maxLength: 255 },
+    refusedPrefix: 'sg-',
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // 3-128 characters, letters, digits, `.`, `_`, `-`, starting and ending with
+  // a letter or digit: the generator emits `[a-zA-Z0-9-]`, a stack name starts
+  // with a letter, and the suffix is hex.
+  'AWS::CloudTrail::Trail': {
+    nameProperty: 'TrailName',
+    options: { maxLength: 128 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // Glue names: 1-255 characters (CreateJob / CreateCrawler / CreateTrigger /
+  // CreateConnection `Name`).
+  'AWS::Glue::Job': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Glue::Crawler': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Glue::Connection': {
+    nameProperty: 'Name',
+    nestedIn: 'ConnectionInput',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  'AWS::Glue::Trigger': {
+    nameProperty: 'Name',
+    options: { maxLength: 255 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
+  },
+  // 1-64 characters of `[a-zA-Z0-9._-]`.
+  'AWS::KinesisFirehose::DeliveryStream': {
+    nameProperty: 'DeliveryStreamName',
+    options: { maxLength: 64 },
+    legacy: { sdk: 'logicalId', cloudControl: 'none' },
+    notAdopted: true,
   },
 };
+
+/** Input a generated name needs beyond the logical id. */
+export interface GeneratedNameInput {
+  /** A directory bucket's zone id (`use1-az5`), which its name ends with. */
+  zoneId?: string;
+}
+
+/** The current scope is a stack with an instance id (not a legacy stack). */
+function scopeHasStackInstanceId(): boolean {
+  return stackScopeStore.getStore()?.stackInstanceId !== undefined;
+}
+
+/** `rule`'s name for `logicalId`, or `undefined` when a zone suffix has no zone id. */
+function deriveRuleName(
+  rule: GeneratedNameRule,
+  logicalId: string,
+  input: GeneratedNameInput
+): string | undefined {
+  if (rule.zoneSuffix === true) {
+    if (input.zoneId === undefined || input.zoneId === '') return undefined;
+    const suffix = `--${input.zoneId}--x-s3`;
+    const base = generateResourceName(logicalId, {
+      ...rule.options,
+      maxLength: rule.options.maxLength - suffix.length,
+    });
+    return `${base}${suffix}`;
+  }
+  const name = `${rule.prefix ?? ''}${generateResourceName(logicalId, rule.options)}`;
+  const refused = rule.refusedPrefix;
+  if (refused !== undefined && name.toLowerCase().startsWith(refused.toLowerCase())) {
+    return `${name.slice(0, refused.length - 1)}${name.slice(refused.length)}`;
+  }
+  return name;
+}
+
+/**
+ * The name an SDK provider generates for an un-named `resourceType` resource
+ * (go-to-k/cdkd#5095): the same name {@link applyDefaultNameForFallback} fills
+ * for a Cloud Control create, except where `legacy` keeps a legacy stack's
+ * SDK name. Throws for a type with no rule, or a directory bucket without
+ * `input.zoneId`: both are cdkd bugs.
+ */
+export function generatedNameFor(
+  resourceType: string,
+  logicalId: string,
+  input: GeneratedNameInput = {}
+): string {
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule === undefined) {
+    throw new Error(`cdkd internal error: ${resourceType} has no generated-name rule`);
+  }
+  // Not before the state read: `generateResourceName` refuses that scope.
+  if (
+    rule.legacy?.sdk === 'logicalId' &&
+    !scopeHasStackInstanceId() &&
+    stackScopeStore.getStore()?.beforeStateRead !== true
+  ) {
+    return logicalId;
+  }
+  const name = deriveRuleName(rule, logicalId, input);
+  if (name === undefined) {
+    throw new Error(`cdkd internal error: the generated ${resourceType} name needs a zone id`);
+  }
+  return name;
+}
+
+/**
+ * The object holding `rule`'s name property in `properties`: `properties`
+ * itself, or for a `nestedIn` rule that property's object, `undefined` when it
+ * is not one.
+ */
+function nameContainer(
+  rule: GeneratedNameRule,
+  properties: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (rule.nestedIn === undefined) return properties;
+  const nested = properties[rule.nestedIn];
+  return typeof nested === 'object' && nested !== null && !Array.isArray(nested)
+    ? (nested as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * The zone id a directory bucket's `LocationName` names (`use1-az5`, or a
+ * Local Zone's `usw2-lax1-az1`; a trailing `--x-s3` is accepted, as the SDK
+ * provider accepts it), or `undefined` for anything else, such as an
+ * Availability Zone NAME, which only an EC2 call could turn into an id.
+ */
+function directoryBucketZoneId(properties: Record<string, unknown>): string | undefined {
+  const location = properties['LocationName'];
+  if (typeof location !== 'string') return undefined;
+  const zone = location.replace(/--x-s3$/, '');
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*-az[0-9]+$/.test(zone) ? zone : undefined;
+}
 
 /**
  * Apply default name generation for CC API fallback.
  *
- * When a resource doesn't have an explicit name property set,
- * generates the same default name that the SDK provider would have created.
- * This ensures consistent naming regardless of whether SDK or CC API handles the resource.
+ * When a resource doesn't have an explicit name property set, fills the name
+ * its SDK provider generates ({@link generatedNameFor}, go-to-k/cdkd#5095),
+ * so the resource is named the same on either route. A legacy stack keeps
+ * the Cloud Control name `legacy.cloudControl` records, which may be none.
+ *
+ * A directory bucket whose `LocationName` is not a zone id has no name to
+ * fill: `underivable: 'refuse'` (a create) throws, naming the fix, rather than
+ * send a name AWS rejects; `'omit'` (a caller that only reads the name, or an
+ * update, which takes it back out) returns `properties` unchanged.
  *
  * @param logicalId Logical ID from the template
  * @param resourceType CloudFormation resource type
@@ -529,16 +1112,49 @@ const FALLBACK_NAME_RULES: Record<
 export function applyDefaultNameForFallback(
   logicalId: string,
   resourceType: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  underivable: 'refuse' | 'omit' = 'refuse'
 ): Record<string, unknown> {
   const rule = FALLBACK_NAME_RULES[resourceType];
   if (!rule) return properties;
 
+  // A nested name needs its container: without one (a Glue connection's
+  // required `ConnectionInput`) there is nothing to fill, and Cloud Control
+  // reports the missing property.
+  const container = nameContainer(rule, properties);
+  if (container === undefined) return properties;
+
   // If the name property is already set, no need to generate
-  if (properties[rule.nameProperty]) return properties;
+  if (container[rule.nameProperty]) return properties;
 
-  const generatedName = generateResourceName(logicalId, rule.options);
+  let generatedName: string | undefined;
+  const legacy = scopeHasStackInstanceId() ? undefined : rule.legacy?.cloudControl;
+  if (legacy === 'none') return properties;
+  if (legacy !== undefined) {
+    generatedName = generateResourceName(logicalId, legacy);
+  } else {
+    const zoneId = rule.zoneSuffix === true ? directoryBucketZoneId(properties) : undefined;
+    generatedName = deriveRuleName(rule, logicalId, zoneId === undefined ? {} : { zoneId });
+  }
+  if (generatedName === undefined) {
+    if (underivable === 'omit') return properties;
+    const location =
+      properties['LocationName'] === undefined
+        ? 'the resource declares no LocationName'
+        : 'its LocationName is not a zone id such as use1-az5';
+    throw new Error(
+      `${logicalId} (${resourceType}): cdkd cannot generate a ${rule.nameProperty} for the ` +
+        `Cloud Control create. A directory bucket's name must end with --<zone id>--x-s3, and ` +
+        `${location}. Set LocationName to the zone id, or declare ${rule.nameProperty}.`
+    );
+  }
 
+  if (rule.nestedIn !== undefined) {
+    return {
+      ...properties,
+      [rule.nestedIn]: { ...container, [rule.nameProperty]: generatedName },
+    };
+  }
   return {
     ...properties,
     [rule.nameProperty]: generatedName,
@@ -562,8 +1178,26 @@ export function applyDefaultNameForFallback(
  * `AWS::Lambda::CapacityProvider`), and a RENAME where the type accepts the
  * update (`AWS::Cognito::UserPool`'s `UserPoolName`, for one).
  */
+/** Every type {@link applyDefaultNameForFallback} names (for the test that holds each to its limit). */
+export function fallbackNameRuleTypes(): string[] {
+  return Object.keys(FALLBACK_NAME_RULES);
+}
+
 export function fallbackNamePropertyFor(resourceType: string): string | undefined {
-  return FALLBACK_NAME_RULES[resourceType]?.nameProperty;
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  // A nested name is no top-level property: a caller reading one finds none.
+  return rule?.nestedIn === undefined ? rule?.nameProperty : undefined;
+}
+
+/**
+ * Where {@link applyDefaultNameForFallback} puts `resourceType`'s name: the
+ * top-level property, or `[container, property]` for a nested one
+ * (`['ConnectionInput', 'Name']`), or `undefined` when it fills none.
+ */
+export function fallbackNamePathFor(resourceType: string): readonly string[] | undefined {
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule === undefined) return undefined;
+  return rule.nestedIn === undefined ? [rule.nameProperty] : [rule.nestedIn, rule.nameProperty];
 }
 
 /**
@@ -585,8 +1219,28 @@ export function withoutGeneratedFallbackName(
   resolvedProps: Record<string, unknown>,
   prepared: Record<string, unknown>
 ): Record<string, unknown> {
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule?.nestedIn !== undefined) {
+    // The same test one level down, restoring the container's own key.
+    const outer = rule.nestedIn;
+    const resolvedInner = nameContainer(rule, resolvedProps);
+    const preparedInner = nameContainer(rule, prepared);
+    if (resolvedInner === undefined || preparedInner === undefined) return prepared;
+    const inner = withoutGeneratedFallbackNameAt(rule.nameProperty, resolvedInner, preparedInner);
+    return inner === preparedInner ? prepared : { ...prepared, [outer]: inner };
+  }
   const nameProperty = fallbackNamePropertyFor(resourceType);
-  if (nameProperty === undefined || resolvedProps[nameProperty] || !(nameProperty in prepared)) {
+  if (nameProperty === undefined) return prepared;
+  return withoutGeneratedFallbackNameAt(nameProperty, resolvedProps, prepared);
+}
+
+/** {@link withoutGeneratedFallbackName} for one object and its name key. */
+function withoutGeneratedFallbackNameAt(
+  nameProperty: string,
+  resolvedProps: Record<string, unknown>,
+  prepared: Record<string, unknown>
+): Record<string, unknown> {
+  if (resolvedProps[nameProperty] || !(nameProperty in prepared)) {
     return prepared;
   }
   const restored = { ...prepared };
@@ -615,7 +1269,8 @@ export function withoutGeneratedFallbackName(
  * still prints) rather than a deletion, so the tables may be incomplete in the
  * safe direction only.
  *
- * **An entry here ADMITS a type to adoption.** Before adding one, check the
+ * **An entry here ADMITS a type to adoption**, as does a generated-name rule
+ * not marked `notAdopted`. Before adding one, check the
  * three tests in `ADOPTION_REFUSED_TYPES` (`src/deployment/orphan-adoption.ts`)
  * — create mints a new resource instead of colliding, `update()` refuses, the
  * resulting replacement destroys the retained copy. A type meeting all three
@@ -624,12 +1279,14 @@ export function withoutGeneratedFallbackName(
  * against a future `Family` entry.
  */
 export function explicitNamePropertyFor(resourceType: string): string | undefined {
-  return fallbackNamePropertyFor(resourceType) ?? ADOPTION_ONLY_NAME_PROPERTIES[resourceType];
+  const rule = FALLBACK_NAME_RULES[resourceType];
+  if (rule !== undefined && rule.notAdopted !== true) return rule.nameProperty;
+  return ADOPTION_ONLY_NAME_PROPERTIES[resourceType];
 }
 
 /**
  * Name properties known to the ADOPTION guard but not to
- * {@link FALLBACK_NAME_RULES} (issue #2934).
+ * {@link FALLBACK_NAME_RULES} (issue #2934): a name cdkd never generates.
  *
  * A separate table on purpose: `FALLBACK_NAME_RULES` decides what cdkd GENERATES
  * for a Cloud Control create, so adding an entry there changes the name every
@@ -640,9 +1297,7 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
  * a name", and generates nothing. An entry here still ADMITS its type to
  * adoption exactly as one there does, so it needs the same three-test check.
  *
- * Found by review: the SDK providers for the entries below generate a name
- * themselves. What that costs changed with the inversion described above, so
- * both halves are worth stating. An ABSENT type is refused outright — the
+ * What a missing or wrong entry costs, in either table. An ABSENT type is refused outright — the
  * empty-`nameProperties` arm in `orphan-adoption.ts` runs BEFORE
  * `templateStillDeclares` — costing a missed adoption, with
  * go-to-k/cdkd#2916's diagnosis still printing. A WRONG entry is the live
@@ -663,16 +1318,16 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
  * `generateResourceName` output, so the by-construction premise this whole
  * guard rests on is false for it and an entry here could never match. It is
  * refused by the adoption pre-pass instead — and the ALLOW-LIST gate is what
- * refuses it: absent from both tables here, it never reaches adoption at all.
+ * refuses it: its generated-name rule is `notAdopted`, so it never reaches
+ * adoption at all.
  * `ADOPTION_REFUSED_TYPES` in `src/deployment/orphan-adoption.ts` carries it as
  * a BELT against a future entry here (named rather than `{@link}`-ed: this
  * module does not import it, so the link would render as dead text).
+ *
+ * `AWS::Events::EventBus` lives here since it lost its generated-name rule
+ * (go-to-k/cdkd#5095: its `Name` is required, so nothing generates it); its
+ * admission to adoption is unchanged.
  */
 const ADOPTION_ONLY_NAME_PROPERTIES: Record<string, string> = {
-  'AWS::AutoScaling::AutoScalingGroup': 'AutoScalingGroupName',
-  'AWS::CodeCommit::Repository': 'RepositoryName',
-  'AWS::DynamoDB::GlobalTable': 'TableName',
-  'AWS::RDS::DBProxy': 'DBProxyName',
-  'AWS::RDS::DBProxyEndpoint': 'DBProxyEndpointName',
-  'AWS::Scheduler::Schedule': 'Name',
+  'AWS::Events::EventBus': 'Name',
 };

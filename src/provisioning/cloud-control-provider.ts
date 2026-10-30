@@ -9,6 +9,7 @@ import {
   type ProgressEvent,
 } from '@aws-sdk/client-cloudcontrol';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { recordPhase } from '../utils/phase-timings.js';
 import { isDeepStrictEqual } from 'node:util';
 import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
 import {
@@ -26,7 +27,7 @@ import {
 import { DescribeReplicationGroupsCommand, ElastiCacheClient } from '@aws-sdk/client-elasticache';
 import { DescribeClustersCommand, RedshiftClient } from '@aws-sdk/client-redshift';
 import { DescribeDomainCommand, OpenSearchClient } from '@aws-sdk/client-opensearch';
-import { GetBucketLocationCommand } from '@aws-sdk/client-s3';
+import { GetBucketLocationCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getAccountInfo, type AwsAccountInfo } from '../deployment/intrinsic-function-resolver.js';
 import { canonicalizeRegion, derivePartitionAndUrlSuffix } from '../utils/aws-partition.js';
 import { getAwsClients } from '../utils/aws-clients.js';
@@ -69,11 +70,25 @@ import { shellQuote } from '../state/lock-contention-message.js';
 // imports are types, so a new edge INTO it cannot close a cycle.
 import { withIndeterminateGuard } from '../deployment/delete-outcome.js';
 import { standaloneInlinePolicyHandedOff } from '../deployment/inline-policy-claims.js';
-import { describeAwsFailure } from '../utils/aws-failure-text.js';
-import { displaySafe, safeMsg } from '../utils/display-safe.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../utils/aws-failure-text.js';
+import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
+import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { quietS3Logger } from '../utils/sdk-call-log.js';
+import { displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { JsonPatchGenerator } from './json-patch-generator.js';
 import { withGuardDutyDetectorReadBackOps } from './guardduty-detector-patch.js';
+import {
+  apiGatewayV2DefinitionObject,
+  isApiGatewayV2Import,
+  splitApiGatewayV2ImportPatch,
+  type ApiGatewayV2Reimport,
+} from './apigwv2-body-import-patch.js';
 import { unchangedBehindSecretReference } from './secret-reference-immutable.js';
 import { isSecretDerivedValue, maskerOrIdentity, type MaskerFn } from './masked-retry-logger.js';
 import {
@@ -101,6 +116,7 @@ import {
 import { isNonProvisionable } from './unsupported-types.js';
 import { slowCcOperationTimeoutMs } from './slow-cc-operation-timeouts.js';
 import { isWaitAbandonedError, markWaitAbandoned } from './wait-abandoned.js';
+import { markNotGone } from './not-gone.js';
 import type { Logger } from '../types/config.js';
 import type {
   CreateContext,
@@ -178,6 +194,36 @@ function stripNullValues(obj: unknown): unknown {
     return result;
   }
   return obj;
+}
+
+/**
+ * The region an S3 `301 PermanentRedirect` names for a bucket
+ * (go-to-k/cdkd#5264): the `x-amz-bucket-region` response header, or the
+ * error's `Region` / `BucketRegion` field. `undefined` for any other error,
+ * or a value that is not a region.
+ */
+export function s3RedirectRegion(error: unknown): string | undefined {
+  const e = error as
+    | {
+        name?: unknown;
+        Region?: unknown;
+        BucketRegion?: unknown;
+        $metadata?: { httpStatusCode?: unknown };
+        $response?: { headers?: Record<string, unknown> };
+      }
+    | null
+    | undefined;
+  if (e?.name !== 'PermanentRedirect' && e?.$metadata?.httpStatusCode !== 301) return undefined;
+  for (const candidate of [
+    e?.$response?.headers?.['x-amz-bucket-region'],
+    e?.Region,
+    e?.BucketRegion,
+  ]) {
+    if (typeof candidate !== 'string') continue;
+    const region = canonicalizeRegion(candidate.trim());
+    if (region !== undefined && /^[a-z]{2}(-[a-z]+)+-\d+$/.test(region)) return region;
+  }
+  return undefined;
 }
 
 /**
@@ -541,14 +587,185 @@ export function isTransientPollFailure(error: unknown): boolean {
  * "No Deployment Group found for name: ..."). Deliberately scoped to the
  * failed-CREATE remnant-cleanup path, where a false positive only downgrades
  * a warning to an info — it is NOT used for the main DELETE idempotency
- * decision, which relies on the structured `ErrorCode: NotFound` /
- * `ResourceNotFoundException` signals plus the long-standing narrow
- * substrings (issue #1252).
+ * decision, which reads only the structured `ErrorCode: NotFound` /
+ * `ResourceNotFoundException` signals (issues #1252, #5225; see
+ * {@link isCcDeleteGoneError}).
  */
 export function isNotFoundMessage(message: string): boolean {
   return /not\s*found|does\s*not\s*exist|no\s*such|non\s*existent|\bno\b[^.;:]{0,80}\bfound\b/i.test(
     message
   );
+}
+
+/**
+ * Whether a failure of `deleteThroughCloudControl`'s delete says THIS
+ * resource is gone (issue #5225). Returning true drops the state record.
+ *
+ * Only typed signals count: the handler's `ErrorCode: NotFound` on a FAILED
+ * DELETE event, `DeleteResource`'s own `ResourceNotFoundException`, and, on
+ * the EC2 volume path (`volumePath`), `DeleteVolume`'s
+ * `InvalidVolume.NotFound`. Message prose never counts. The message holds the
+ * handler's `StatusMessage`, which can name a missing DEPENDENCY ("subnet ...
+ * not found") under a non-`NotFound` code, and it holds the logical id.
+ * `TypeNotFoundException` names the registry TYPE, never the resource.
+ *
+ * Before #5225 the arm also matched `does not exist` / `not found` /
+ * `NotFound` in the message. Those needles date from the first commit, and no
+ * handler was ever recorded as needing them. #1252 went the other way: the
+ * needles MISSED a gone resource, so it added the typed `NotFound` code.
+ * An abandoned wait is never gone (issue #3236), whatever its class.
+ */
+function isCcDeleteGoneError(error: unknown, volumePath: boolean): boolean {
+  if (isWaitAbandonedError(error)) return false;
+  if (error instanceof CloudControlOperationFailedError) {
+    return error.ccOperation === 'DELETE' && error.ccErrorCode === 'NotFound';
+  }
+  const name = (error as { name?: unknown } | null | undefined)?.name;
+  if (volumePath) return name === 'InvalidVolume.NotFound';
+  return name === 'ResourceNotFoundException';
+}
+
+/**
+ * Mark a delete failure NOT GONE when its message holds a phrase the
+ * downstream already-deleted classifiers match (issues #5225, #5228):
+ * `deploy-engine/delete.ts`, `deploy-engine/update-in-place.ts` and
+ * `destroy-runner.ts`. `NotFound` covers `NotFoundException` and
+ * `ResourceNotFoundException`; `not found` covers `was not found`. Those
+ * classifiers check `isMarkedNotGone` before their substring test. Without
+ * the mark, a failure that {@link isCcDeleteGoneError} kept would be read as
+ * "already deleted" one level up, and the record dropped there.
+ *
+ * Retryability is untouched: a throttle on a resource whose logical id
+ * spells `NotFound`, or a `Policy Error: PrincipalNotFound` propagation race,
+ * keeps its retries and, once they run out, is still not read as gone. An
+ * abandoned wait carries its own marker, which every downstream classifier
+ * refuses, so it needs no second one.
+ */
+function markNotGoneOnNeedle(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const message = error.message;
+  if (
+    !isWaitAbandonedError(error) &&
+    (message.includes('does not exist') ||
+      message.includes('not found') ||
+      message.includes('NotFound') ||
+      message.includes('No policy found') ||
+      message.includes('NoSuchEntity'))
+  ) {
+    return markNotGone(error);
+  }
+  return error;
+}
+
+/**
+ * Mask the CALLER's identity out of an AWS-authored failure message, keeping
+ * every other word (go-to-k/cdkd#2319).
+ *
+ * A Cloud Control handler's `StatusMessage` is the text a user needs to fix
+ * a template (`Property validation failure: ...`), so cdkd keeps it in the
+ * thrown error and therefore in the persisted `RESOURCE_FAILED` event. But an
+ * authorization denial in that text quotes who was denied:
+ * `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is not
+ * authorized to perform: ...`. That record outlives the run, so the
+ * principal and the account id are masked here and nothing else is.
+ *
+ * What is masked:
+ * - every STS session principal (`assumed-role/...`, `federated-user/...`):
+ *   a session is never a resource, so it is the caller wherever it appears;
+ * - an IAM `user/...`, `role/...` or `root` principal in the DENIED-PRINCIPAL
+ *   position only (`User: <arn>`, `Not authorized: <arn>`, `Access denied:
+ *   <arn>`, `AccessDenied: <arn>` or `<arn> is not authorized`), since a role
+ *   ARN elsewhere is a resource the template names;
+ * - a principal's unique id or access key id (`AROA...:<session>`,
+ *   `AIDA...`, `ASIA...`, `AKIA...`), which AWS prints for a deleted principal;
+ * - the account id where it is one by POSITION: the account segment of any
+ *   ARN (whose service, region and name are kept), a 12-digit run after the
+ *   word `account`, `principal` or `owner` or a policy's `"AWS":`, and one embedded in a name, path or host
+ *   (`cdk-hnb659fds-assets-<account>-us-east-1`, `AWSLogs/<account>/`,
+ *   `<account>.dkr.ecr...`, Lambda's partial `<account>:function:...`).
+ *   A free-standing 12-digit number is NOT masked: a validation message
+ *   quotes sizes and template values of that length (`maximum: 107374182400`).
+ *
+ * No classifier reads an ARN or a digit out of this text: the collision,
+ * retry and already-deleted needles are ARN-free prose ("already exists",
+ * "Rate exceeded", "does not exist", ...), and the masks below never span a
+ * space, so they cannot cut one. The raw text is for `--verbose` only.
+ */
+
+/** Replaces a masked caller principal ARN. */
+export const CALLER_PRINCIPAL_MASK = '<caller-principal>';
+/** Replaces a masked 12-digit account id. */
+export const ACCOUNT_ID_MASK = '<account-id>';
+
+// IAM / STS name characters (`[\w+=,.@-]`); a path adds `/`. None is a space,
+// so a mask ends at the next word, and the last character is never `.` or
+// `,`, so the sentence's own punctuation after the ARN survives.
+const NAME = String.raw`[\w+=,.@-]*[\w+=@-]`;
+const PARTITION = String.raw`aws[a-z-]*`;
+
+const STS_SESSION_PRINCIPAL = new RegExp(
+  String.raw`\barn:${PARTITION}:sts::\d{12}:(?:assumed-role/${NAME}/${NAME}|federated-user/${NAME})`,
+  'g'
+);
+
+const IAM_PRINCIPAL = String.raw`arn:${PARTITION}:iam::\d{12}:(?:(?:user|role)/(?:[!-.0-~]+/)*${NAME}|root)`;
+const IAM_DENIED_AFTER_USER = new RegExp(String.raw`(\bUser:\s*)${IAM_PRINCIPAL}`, 'g');
+// Other authorization lead-ins naming the denied principal
+// (`Not authorized: arn:aws:iam::<account>:user/alice`). Only these lead-ins:
+// an IAM ARN in a resource position keeps its name.
+const IAM_DENIED_AFTER_LEAD_IN = new RegExp(
+  String.raw`(\b(?:Not authorized|Access denied|AccessDenied):\s*)${IAM_PRINCIPAL}`,
+  'gi'
+);
+const IAM_DENIED_BEFORE_VERB = new RegExp(
+  String.raw`\b${IAM_PRINCIPAL}(?=\s+is not authorized)`,
+  'g'
+);
+const PRINCIPAL_UNIQUE_ID = new RegExp(
+  String.raw`\b(?:AROA|AIDA|ASIA|AKIA)[A-Z0-9]{16,17}\b(?::${NAME})?`,
+  'g'
+);
+
+const ACCOUNT_IN_ARN = new RegExp(
+  String.raw`(\barn:${PARTITION}:[^:\s]*:[^:\s]*:)\d{12}(?=:)`,
+  'g'
+);
+const ACCOUNT_AFTER_WORD =
+  /((?:\b(?:account(?:[ _-]?(?:id|number))?s?|principal(?:[ _-]?id)?|owner(?:[ _-]?id)?)\b|"AWS")[\s:='"#([]*)\d{12}(?![0-9A-Za-z])/gi;
+// The next QUOTED id in a list that one of the arms above began
+// (`"AWS": ["<a>", "<b>"]`); an unquoted number after a mask is not a list item.
+const ACCOUNT_LIST_NEXT = new RegExp(
+  String.raw`(${ACCOUNT_ID_MASK}['"]\s*,\s*['"])\d{12}(?![0-9A-Za-z])`,
+  'g'
+);
+// Inside a name, path or host: after `<letter>-` / `<letter>_` or `/`, or
+// before `-<letter>`, `_<letter>`, `.<letter>`, `:<letter>` or `/`. A sign or
+// a numeric range (`-107374182400`, `0-549755813888`) is not a name, and the
+// 12-hex-digit tail of a request-id UUID (8-4-4-4-12) that is all digits is
+// exempt.
+const ACCOUNT_IN_NAME =
+  /(?<![0-9A-Za-z])(?<![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-)(?:(?<=[A-Za-z][-_]|\/)\d{12}(?![0-9A-Za-z])|\d{12}(?=[-_.:][A-Za-z]|\/))/g;
+
+/**
+ * `text` with the caller's principal and its account id masked. Apply
+ * it to the RAW AWS text, before `displaySafe` or any flattening.
+ */
+export function maskCallerIdentity(text: string): string {
+  let masked = text
+    .replace(STS_SESSION_PRINCIPAL, CALLER_PRINCIPAL_MASK)
+    .replace(IAM_DENIED_AFTER_USER, `$1${CALLER_PRINCIPAL_MASK}`)
+    .replace(IAM_DENIED_AFTER_LEAD_IN, `$1${CALLER_PRINCIPAL_MASK}`)
+    .replace(IAM_DENIED_BEFORE_VERB, CALLER_PRINCIPAL_MASK)
+    .replace(PRINCIPAL_UNIQUE_ID, CALLER_PRINCIPAL_MASK)
+    .replace(ACCOUNT_IN_ARN, `$1${ACCOUNT_ID_MASK}`)
+    .replace(ACCOUNT_AFTER_WORD, `$1${ACCOUNT_ID_MASK}`)
+    .replace(ACCOUNT_IN_NAME, ACCOUNT_ID_MASK);
+  let previous: string;
+  do {
+    previous = masked;
+    masked = masked.replace(ACCOUNT_LIST_NEXT, `$1${ACCOUNT_ID_MASK}`);
+  } while (masked !== previous);
+  return masked;
 }
 
 /**
@@ -1182,27 +1399,23 @@ export class CloudControlProvider implements ResourceProvider {
     } catch (cleanupError) {
       // Deliberately the RAW message, and deliberately NOT the guarded
       // `describePollFailure(...).display` that `disableCcProtection`'s twin
-      // catch takes. Two reasons, both measured after a round-10 review
+      // catch takes. Two points, both measured after a round-10 review
       // proposed converting this site as well:
       //
-      //  - the bare `String()` arm is UNREACHABLE here, and the proof has TWO
-      //    parts rather than the one an earlier revision of this comment gave.
-      //    (a) Everything inside `delete()`'s own `handleError` try is wrapped
-      //    into a `ProvisioningError` — always an `Error`. (b) `delete()` also
-      //    has four awaits OUTSIDE that try. Three — `asgProvider.delete`,
-      //    `disableInstanceApiTermination` and `disableCcProtection` — CAN let
-      //    a non-`Error` escape; what makes them unreachable from HERE is that
-      //    all three are gated on `context?.removeProtection === true`, and
-      //    this site's call passes NO `removeProtection` (its context carries
-      //    only the create's masker, go-to-k/cdkd#2007). The fourth,
-      //    `ec2ClientInCcRegion` (an `AWS::EC2::Volume` only, issue #3455), is
-      //    NOT gated and IS reachable from here, but it catches its own region
-      //    reads and throws only a cdkd-authored `ProvisioningError`. So the gate is
-      //    load-bearing: give this call a context with `removeProtection` and
-      //    the arm becomes live. The flip's own catch differs for the mirror
-      //    reason — its `UpdateResource` SEND is inside it, so a non-`Error`
-      //    rejection reaches that one raw. A case written against this site
-      //    stayed green under the bare form; that is why.
+      //  - `describeAwsFailure(...).detail` is NOT that reduction: it is the
+      //    `Error`'s message verbatim, and `String(value)` without the throw
+      //    for anything else (go-to-k/cdkd#3361). Its non-`Error` arm is
+      //    UNREACHABLE here today: `delete()` wraps everything inside its
+      //    `handleError` try into a `ProvisioningError`, and of its four
+      //    awaits outside that try, three (`asgProvider.delete`,
+      //    `disableInstanceApiTermination`, `disableCcProtection`) are gated on
+      //    `context?.removeProtection === true`, which this call never passes
+      //    (its context carries only the create's masker, go-to-k/cdkd#2007),
+      //    while the fourth, `ec2ClientInCcRegion` (issue #3455), throws only
+      //    a cdkd-authored `ProvisioningError`. It is still the guarded form,
+      //    as defence in depth: give this call a `removeProtection` context
+      //    and a null-prototype rejection would otherwise make a bare
+      //    `String()` throw out of this catch and replace the create failure.
       //  - reducing the text here would be a NO-OP today and a decision-changer
       //    the moment the wrapper stops being cdkd-authored. Measured: applying
       //    the conversion leaves the whole provisioning suite green, because
@@ -1216,7 +1429,7 @@ export class CloudControlProvider implements ResourceProvider {
       //    silently stop that classifier recognising the shapes it exists for.
       //    An earlier revision of this comment stated that as a live risk,
       //    which review measured false.
-      const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      const message = describeAwsFailure(cleanupError).detail;
       // Ahead of `isNotFoundMessage`, and NOT a duplicate of the four
       // already-deleted guards elsewhere — this one matches with a
       // case-INSENSITIVE regex, so it has a failure mode they do not. Since
@@ -1461,6 +1674,23 @@ export class CloudControlProvider implements ResourceProvider {
         context?.desiredFromAwsReadback === true ? { previous: cleanPreviousProperties } : undefined
       );
 
+      // go-to-k/cdkd#5260: no Cloud Control patch can change an imported
+      // HTTP API's definition; it goes through `ReimportApi`, and Cloud
+      // Control gets the rest. See the helper.
+      let reimported = false;
+      if (isApiGatewayV2Import(resourceType, cleanProperties)) {
+        const split = splitApiGatewayV2ImportPatch(patch, cleanPreviousProperties, cleanProperties);
+        patch = split.rest;
+        if (split.reimport !== undefined) {
+          await this.reimportApiGatewayV2(logicalId, physicalId, resourceType, split.reimport);
+          reimported = true;
+        } else if (patch.length === 0) {
+          // Only the write-only re-add touched the import keys: nothing changed.
+          this.logger.debug(`No property changes detected for ${logicalId}, skipping update`);
+          return { physicalId, wasReplaced: false, sentNothing: true };
+        }
+      }
+
       // Log the patch OPERATIONS + PATHS only, never the values (GHSA fix): a
       // patch value can be a resolved secret (a Cloud-Control-routed
       // `{{resolve:secretsmanager:...}}` property, e.g. Cognito
@@ -1476,35 +1706,40 @@ export class CloudControlProvider implements ResourceProvider {
         )}`
       );
 
-      // Start resource update
-      const updateResponse = await this.cloudControlClient.send(
-        new UpdateResourceCommand({
-          TypeName: resourceType,
-          Identifier: physicalId,
-          PatchDocument: JSON.stringify(patch),
-        })
-      );
+      // A reimport that left Cloud Control nothing to apply skips it; the
+      // attribute read-back below still runs.
+      let progressEvent: ProgressEvent | undefined;
+      if (!(reimported && patch.length === 0)) {
+        // Start resource update
+        const updateResponse = await this.cloudControlClient.send(
+          new UpdateResourceCommand({
+            TypeName: resourceType,
+            Identifier: physicalId,
+            PatchDocument: JSON.stringify(patch),
+          })
+        );
 
-      if (!updateResponse.ProgressEvent?.RequestToken) {
-        throw new ProvisioningError(
-          `Failed to update resource ${logicalId}: No request token received`,
-          resourceType,
+        if (!updateResponse.ProgressEvent?.RequestToken) {
+          throw new ProvisioningError(
+            `Failed to update resource ${logicalId}: No request token received`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+
+        this.logger.debug(
+          `Update request submitted for ${logicalId}, token: ${updateResponse.ProgressEvent.RequestToken}`
+        );
+
+        // Wait for update to complete
+        progressEvent = await this.waitForOperation(
+          updateResponse.ProgressEvent.RequestToken,
           logicalId,
-          physicalId
+          'UPDATE',
+          resourceType
         );
       }
-
-      this.logger.debug(
-        `Update request submitted for ${logicalId}, token: ${updateResponse.ProgressEvent.RequestToken}`
-      );
-
-      // Wait for update to complete
-      const progressEvent = await this.waitForOperation(
-        updateResponse.ProgressEvent.RequestToken,
-        logicalId,
-        'UPDATE',
-        resourceType
-      );
 
       this.logger.debug(`Updated resource ${logicalId}`);
 
@@ -1517,7 +1752,7 @@ export class CloudControlProvider implements ResourceProvider {
         wasReplaced: false,
       };
 
-      if (progressEvent.ResourceModel) {
+      if (progressEvent?.ResourceModel) {
         result.attributes = this.parseResourceModel(progressEvent.ResourceModel, idLog);
       }
 
@@ -1557,6 +1792,226 @@ export class CloudControlProvider implements ResourceProvider {
       return result;
     } catch (error) {
       this.handleError(error, 'UPDATE', resourceType, logicalId, physicalId);
+    }
+  }
+
+  /**
+   * Send an imported `AWS::ApiGatewayV2::Api`'s definition change through
+   * `ReimportApi` (go-to-k/cdkd#5260; see `splitApiGatewayV2ImportPatch` for
+   * why Cloud Control cannot). The client targets the Cloud Control client's
+   * region, refused when that region cannot be resolved, as the SDK delete
+   * delegates are.
+   *
+   * A `BodyS3Location` definition is read from S3 first, since `ReimportApi`
+   * takes the definition's text only (go-to-k/cdkd#5264; see
+   * {@link readApiGatewayV2DefinitionObject}).
+   */
+  private async reimportApiGatewayV2(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    reimport: ApiGatewayV2Reimport
+  ): Promise<void> {
+    // Which definition API Gateway would take is not established, so a
+    // template naming both is refused rather than one silently ignored.
+    if (reimport.fromS3 && reimport.body !== undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Cannot update ${logicalId} (${resourceType}): it declares both Body and ` +
+            `BodyS3Location. Declare the OpenAPI definition in one of them.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    let region: string | undefined;
+    try {
+      region = canonicalizeRegion((await this.cloudControlClient.config.region())?.trim());
+    } catch {
+      region = undefined;
+    }
+    if (region === undefined || region === '') {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Refusing to update ${logicalId} (${resourceType}, ${physicalId}): cdkd could not ` +
+            `resolve the Cloud Control client's region, so it cannot show ReimportApi would ` +
+            `reach this API. Re-run with --region set to the stack's region.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    // After the region refusal, so an unresolvable region never costs an S3 read.
+    const body = reimport.fromS3
+      ? await this.readApiGatewayV2DefinitionObject(
+          logicalId,
+          physicalId,
+          resourceType,
+          reimport.bodyS3Location
+        )
+      : reimport.body;
+    const { ApiGatewayV2Client, ReimportApiCommand } = await import('@aws-sdk/client-apigatewayv2');
+    const client = new ApiGatewayV2Client({ ...ambientClientDefaults(), region });
+    try {
+      await client.send(
+        new ReimportApiCommand({
+          ApiId: physicalId,
+          Body: body,
+          ...(reimport.basePath !== undefined ? { Basepath: reimport.basePath } : {}),
+          ...(reimport.failOnWarnings !== undefined
+            ? { FailOnWarnings: reimport.failOnWarnings }
+            : {}),
+        })
+      );
+    } finally {
+      client.destroy();
+    }
+    this.logger.debug(`Reimported the OpenAPI definition of ${logicalId}`);
+  }
+
+  /**
+   * The text of the OpenAPI definition a `BodyS3Location` names
+   * (go-to-k/cdkd#5264), read with the deploy identity (the one that drives
+   * the Cloud Control operations of this update). The read targets the
+   * bucket's own region (`rebuildClientForBucketRegion`). That probe can
+   * miss (a bucket in another account, or no `s3:GetBucketLocation`) and
+   * fall back to the client's region, so a 301 `PermanentRedirect` is
+   * followed ONCE to the region S3 names; a second failure is refused. A
+   * pinned `Version` is read as that version. `Etag` is only recorded: the
+   * CloudFormation reference calls it "the Etag of the S3 object" and states
+   * no check, so cdkd sends no `IfMatch`; a changed `Etag` still triggers the
+   * reimport, as any changed property does.
+   *
+   * No `ExpectedBucketOwner`, deliberately: a template-named definition
+   * bucket may be another account's, as CloudFormation allows (cdkd-assets
+   * mode, which writes, refuses a foreign owner).
+   *
+   * A refused read names the AWS failure by its class, never AWS's text,
+   * which on an `AccessDenied` quotes the caller (go-to-k/cdkd#2319); the
+   * SDK error stays as the `cause`. An `AccessDenied` names the grant the
+   * deploy identity needs.
+   */
+  private async readApiGatewayV2DefinitionObject(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    location: unknown
+  ): Promise<string> {
+    const object = apiGatewayV2DefinitionObject(location);
+    if (object === undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Cannot update ${logicalId} (${resourceType}): its BodyS3Location is not an object ` +
+            `with string Bucket and Key (and optional string Version / Etag), so cdkd cannot ` +
+            `read the OpenAPI definition to reimport.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const shown = `s3://${displaySafe(object.bucket)}/${displaySafe(object.key)}`;
+    const shared = getAwsClients().s3;
+    const owned: S3Client[] = [];
+    const read = async (s3: S3Client): Promise<string> => {
+      const response = await s3.send(
+        new GetObjectCommand({
+          Bucket: object.bucket,
+          Key: object.key,
+          ...(object.version !== undefined ? { VersionId: object.version } : {}),
+        })
+      );
+      const text = await response.Body?.transformToString();
+      if (text === undefined) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Cannot update ${logicalId} (${resourceType}): S3 returned no body for its ` +
+              `OpenAPI definition ${shown}.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      return text;
+    };
+    let redirected = false;
+    try {
+      // Inside the `try`, so a rejection of the client's own region lookup
+      // is wrapped and labelled like any other failed read.
+      const rebuilt = await rebuildClientForBucketRegion(shared, object.bucket, {
+        reuseClientCredentials: true,
+        tolerateNonStandardClient: true,
+      });
+      if (rebuilt) owned.push(rebuilt);
+      const first = rebuilt ?? shared;
+      try {
+        return await read(first);
+      } catch (error) {
+        const redirectRegion = s3RedirectRegion(error);
+        if (redirectRegion === undefined) throw error;
+        redirected = true;
+        const regional = new S3Client({
+          ...awsClientDefaults(),
+          region: redirectRegion,
+          // The same credential provider as the client that was redirected.
+          credentials: first.config?.credentials,
+          logger: quietS3Logger(),
+        });
+        owned.push(regional);
+        return await read(regional);
+      }
+    } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
+      // AWS's own text, for `--verbose` only: it can quote the caller.
+      this.logger.debug(
+        `Reading the OpenAPI definition ${shown} of ${logicalId} failed: ` +
+          displaySafe(describeAwsFailure(error).detail)
+      );
+      const name = (error as { name?: unknown } | null | undefined)?.name;
+      const errorClass = typeof name === 'string' && name !== '' ? displaySafe(name) : 'Error';
+      const status = (error as { $metadata?: { httpStatusCode?: unknown } } | null | undefined)
+        ?.$metadata?.httpStatusCode;
+      // Settled answers (the grant, the object, the region) are not retried;
+      // a throttle, 5xx or dropped connection is, as any other update failure
+      // is. The message withholds AWS's text, so the retry classifiers read
+      // the cause chain (`markRedactedCause`).
+      let next: string | undefined;
+      if (errorClass === 'AccessDenied' || status === 403) {
+        next =
+          ` The deploy identity needs s3:GetObject on it` +
+          (object.version !== undefined
+            ? ' (and s3:GetObjectVersion for the pinned Version)'
+            : '') +
+          ', and kms:Decrypt on its key if the object is SSE-KMS encrypted.';
+      } else if (
+        errorClass === 'NoSuchKey' ||
+        errorClass === 'NoSuchBucket' ||
+        errorClass === 'NoSuchVersion'
+      ) {
+        next = ' Upload the definition there, or point BodyS3Location at the right object.';
+      } else if (errorClass === 'PermanentRedirect' || status === 301) {
+        // A 301 that named no region, or a second one after the redirect was
+        // followed. Any other failure of the followed read (a throttle, a 5xx)
+        // takes the ordinary retry below.
+        next =
+          (redirected ? ` S3 redirected the read twice.` : ` S3 named no region to redirect to.`) +
+          ` cdkd could not reach the bucket's region: grant the deploy identity ` +
+          `s3:GetBucketLocation on the bucket, or keep the definition in a bucket of this region.`;
+      }
+      const wrapped = new ProvisioningError(
+        `Cannot update ${logicalId} (${resourceType}): reading its OpenAPI definition ` +
+          `${shown} failed with ${errorClass}.${next ?? ''} ${VERBOSE_POINTER}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        error instanceof Error ? error : undefined
+      );
+      throw next !== undefined ? markNonRetryable(wrapped) : markRedactedCause(wrapped);
+    } finally {
+      for (const client of owned) client.destroy();
     }
   }
 
@@ -1897,7 +2352,8 @@ export class CloudControlProvider implements ResourceProvider {
             physicalId,
             resourceType,
             protectionEntry!,
-            flip
+            flip,
+            context?.maskSecrets
           );
         }
         try {
@@ -2051,48 +2507,21 @@ export class CloudControlProvider implements ResourceProvider {
         ) {
           flip.deleteAccepted = true;
         }
-        // Treat "not found" / "does not exist" as idempotent success for DELETE,
-        // but only when the AWS client is operating against the same region the
+        // Treat a typed not-found as idempotent success for DELETE, but only
+        // when the AWS client is operating against the same region the
         // resource was deployed to. A region mismatch must surface — otherwise a
         // destroy run with the wrong region would silently strip every resource
         // from state while leaving the actual AWS resources orphaned.
         //
-        // The handler-reported `ErrorCode: NotFound` on an async FAILED DELETE
-        // is the STRUCTURED form of the same signal — some service handlers
-        // word their StatusMessage without any of the canonical substrings
-        // (CodeDeploy: "No Deployment Group found for name: ..."), so the
-        // message match alone misses them (issue #1252).
+        // TYPED signals only (issue #5225, `isCcDeleteGoneError`): the
+        // handler's `ErrorCode: NotFound` (issue #1252), `DeleteResource`'s
+        // `ResourceNotFoundException`, and the volume path's
+        // `InvalidVolume.NotFound`. Message needles read a missing DEPENDENCY,
+        // a `TypeNotFoundException` or a logical id such as `PageNotFound` as
+        // gone. An ABANDONED wait (issue #3236) is refused through the SHARED
+        // predicate, one of FOUR classifiers that must refuse it.
         const err = error as { name?: string; message?: string };
-        const notFoundErrorCode =
-          error instanceof CloudControlOperationFailedError &&
-          error.ccOperation === 'DELETE' &&
-          error.ccErrorCode === 'NotFound';
-        // An ABANDONED wait is the one shape here that says the OPPOSITE of
-        // already-gone: cdkd stopped watching a delete that may still be
-        // running (issue #3236). The heuristics below are message SUBSTRING
-        // tests over a message that interpolates the LOGICAL ID, so a resource
-        // named `PageNotFound` — or any name containing `not found` /
-        // `does not exist` — would satisfy them and this arm would drop the
-        // state row over a live resource. Measured: it did.
-        //
-        // Structural, not a wording rule, because the wording cannot be made
-        // safe: the interpolated inputs are the user's. This is also the one
-        // consumer of those phrases with no `isMarkedNonRetryable` guard in
-        // front of it, and a DELETE abandonment is deliberately unmarked so
-        // the destroy runner can re-issue the delete.
-        // Through the SHARED predicate, not a local `instanceof`: this is one
-        // of FOUR classifiers that must refuse an abandoned wait, and the
-        // other three (`deploy-engine.ts` x2, `destroy-runner.ts`) cannot see
-        // the class. One spelling means they cannot disagree about what an
-        // abandoned wait is — the divergence this area keeps collapsing.
-        if (
-          !isWaitAbandonedError(error) &&
-          (notFoundErrorCode ||
-            err.name === 'ResourceNotFoundException' ||
-            err.message?.includes('does not exist') ||
-            err.message?.includes('not found') ||
-            err.message?.includes('NotFound'))
-        ) {
+        if (isCcDeleteGoneError(error, volumeEc2Client !== undefined)) {
           // Through the SAME helper as the pre-flight above (issue #2301
           // review), not a second hand-rolled comparison. Two comparisons of
           // the same two values in one method, normalised differently, is a
@@ -2139,7 +2568,13 @@ export class CloudControlProvider implements ResourceProvider {
           await this.sleep(3000 * attempt);
           continue;
         }
-        this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
+        // Issue #5225: what this arm kept must not be dropped one level up by
+        // the engine's or the destroy runner's substring classifiers.
+        try {
+          this.handleError(error, 'DELETE', resourceType, logicalId, physicalId);
+        } catch (wrapped) {
+          throw markNotGoneOnNeedle(wrapped);
+        }
       }
     }
   }
@@ -2735,13 +3170,15 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     entry: CcProtectionEntry,
-    flip: ProtectionFlipRecord
+    flip: ProtectionFlipRecord,
+    mask: MaskerFn | undefined
   ): Promise<void> {
     try {
       await observeThenDisableProtection({
         flip,
         logger: this.logger,
         physicalId,
+        mask,
         guardName: entry.property,
         observe: async () => {
           const model = await this.getResourceState(resourceType, physicalId);
@@ -2914,6 +3351,7 @@ export class CloudControlProvider implements ResourceProvider {
     const startTime = Date.now();
     let attempts = 0;
     let pollInterval = this.INITIAL_POLL_INTERVAL_MS;
+    let lastSleepMs = 0;
     // Hoisted out of the loop body deliberately: the identifier is re-bound per
     // pass, so without this the one fact worth reporting about an abandoned
     // wait — what the operation had already named — would be discarded with
@@ -3066,10 +3504,31 @@ export class CloudControlProvider implements ResourceProvider {
 
       switch (progressEvent.OperationStatus) {
         case 'SUCCESS':
+          // go-to-k/cdkd#5200: the sleep before this poll bounds how late the
+          // completion was seen. Inert unless CDKD_PHASE_TIMINGS=1.
+          recordPhase(
+            'cloud control polls',
+            `${operation.toLowerCase()}: last poll gap`,
+            attempts > 1 ? lastSleepMs : 0,
+            `${logicalId} after ${attempts} poll(s)`
+          );
           return progressEvent;
 
         case 'FAILED': {
-          const failureMessage = progressEvent.StatusMessage || 'Unknown error';
+          const rawFailureMessage = progressEvent.StatusMessage || 'Unknown error';
+          // The handler's text stays in the message, since it is what a user
+          // fixes the template from (`Property validation failure: ...`), but
+          // with the caller's principal ARN and account id masked: this
+          // message is persisted in the `RESOURCE_FAILED` event, and a denial
+          // quotes `User: arn:aws:sts::<account>:assumed-role/...`
+          // (go-to-k/cdkd#2319). The unmasked text goes to `--verbose`.
+          const failureMessage = maskCallerIdentity(rawFailureMessage);
+          if (failureMessage !== rawFailureMessage) {
+            this.logger.debug(
+              `${operation} ${logicalId}: handler StatusMessage before caller-identity masking: ` +
+                displaySafe(rawFailureMessage)
+            );
+          }
           throw new CloudControlOperationFailedError(
             `${operation} failed for ${logicalId}: ${failureMessage}${handlerAuthFailureHint(failureMessage)}`,
             progressEvent.TypeName || 'Unknown',
@@ -3107,6 +3566,15 @@ export class CloudControlProvider implements ResourceProvider {
           // 1s → 1.5s → 2.25s → 3.4s → 5s → 7.5s → 10s (capped)
           // Most CC API operations complete in 1-5s, so slower ramp-up
           // polls more frequently during the common case.
+          if (progressEvent.RetryAfter instanceof Date) {
+            recordPhase(
+              'cloud control polls',
+              'RetryAfter hint, ahead of now',
+              Math.max(0, progressEvent.RetryAfter.getTime() - Date.now()),
+              `next sleep ${pollInterval}ms`
+            );
+          }
+          lastSleepMs = pollInterval;
           await this.sleep(pollInterval);
           pollInterval = Math.min(Math.ceil(pollInterval * 1.5), this.MAX_POLL_INTERVAL_MS);
           break;
@@ -4491,7 +4959,22 @@ export class CloudControlProvider implements ResourceProvider {
       if (typeof raw !== 'string' || raw.length === 0) {
         return undefined;
       }
-      const parsed = JSON.parse(raw) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (parseError) {
+        // V8 TRUNCATES its echo of the model, so while the call withholds its
+        // id (go-to-k/cdkd#3869) the first characters of a longer
+        // secret-derived name can print and no needle matches a prefix: the
+        // gate `parseResourceModel` applies. The snippet-free rendering keeps
+        // the line diagnosable then.
+        const detail =
+          log.withheld === true
+            ? describeJsonParseFailure(parseError, utf8ByteLength(raw))
+            : displaySafe(describeAwsFailure(parseError).detail);
+        log.debug(`Failed to read CC model for ${resourceType} ${physicalId}: ${detail}`);
+        return undefined;
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return undefined;
       }
@@ -4515,13 +4998,24 @@ export class CloudControlProvider implements ResourceProvider {
     physicalId?: string
   ): never {
     const err = error as { name?: string; message?: string };
+    // AWS's text is kept, with the caller's principal ARN and account id
+    // masked: a `CreateResource` / `UpdateResource` / `DeleteResource`
+    // denial quotes `User: arn:aws:sts::<account>:assumed-role/...`, and this
+    // message is persisted (go-to-k/cdkd#2319). `cause` keeps the raw error.
+    const rawMessage = err.message || 'Unknown error';
+    const awsMessage = maskCallerIdentity(rawMessage);
+    if (!(error instanceof ProvisioningError) && awsMessage !== rawMessage) {
+      this.logger.debug(
+        `${operation} ${logicalId}: AWS error before caller-identity masking: ${displaySafe(rawMessage)}`
+      );
+    }
 
     // Check if resource type is not supported
     if (err.name === 'UnsupportedActionException' || err.name === 'TypeNotFoundException') {
       throw new ProvisioningError(
         `Resource type ${resourceType} is not supported by Cloud Control API and no SDK provider is registered.\n` +
           `Please report this issue at https://github.com/go-to-k/cdkd/issues so we can add SDK provider support.\n` +
-          `Error: ${err.message || 'Unknown error'}`,
+          `Error: ${awsMessage}`,
         resourceType,
         logicalId,
         physicalId,
@@ -4536,7 +5030,7 @@ export class CloudControlProvider implements ResourceProvider {
 
     // Wrap other errors
     throw new ProvisioningError(
-      `${operation} failed for ${logicalId}: ${err.message || 'Unknown error'}`,
+      `${operation} failed for ${logicalId}: ${awsMessage}`,
       resourceType,
       logicalId,
       physicalId,
@@ -4654,7 +5148,26 @@ export class CloudControlProvider implements ResourceProvider {
         return undefined;
       }
 
-      const parsed = JSON.parse(raw) as unknown;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch (parseError) {
+        // V8's `SyntaxError` quotes a window of the model, which can hold a
+        // plaintext property value, and the raw error reached `cdkd drift`'s
+        // and `cdkd state refresh-observed`'s warn lines (issue #5254). So
+        // V8's text goes to `debug` only, and what is thrown names the type,
+        // the failure's offset when V8 reports one, and the model's size, with
+        // no cause. It stays
+        // a `SyntaxError`: `refresh-observed` routes that class to a
+        // class-only line.
+        this.logger.debug(
+          safeMsg`Cloud Control resource model for ${displayIdent(resourceType)} failed to parse: ${parseFailureDebugDetail(parseError)}`
+        );
+        throw new SyntaxError(
+          `Cloud Control returned a resource model for ${displayIdent(resourceType)} that is not ` +
+            `valid JSON: ${describeJsonParseFailure(parseError, utf8ByteLength(raw))}`
+        );
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return undefined;
       }

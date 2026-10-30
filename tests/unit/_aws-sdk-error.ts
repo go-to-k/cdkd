@@ -18,6 +18,17 @@ export function awsSdkError(message: string, name = 'ResourceConflictException')
 }
 
 /**
+ * A provider wrap that RELAYED AWS's text: a cdkd-authored `Error` whose
+ * message quotes {@link awsSdkError}'s and whose `cause` is that error. Since
+ * go-to-k/cdkd#2319 a site quoting a failure keeps cdkd-authored text but names
+ * an escaped SDK error by its class only, so a case about how the quoted text
+ * is RENDERED (masked, capped, kept off a command line) throws this shape.
+ */
+export function relayedAwsSdkError(message: string, name = 'ResourceConflictException'): Error {
+  return new Error(message, { cause: awsSdkError(message, name) });
+}
+
+/**
  * The async Cloud Control collision: what `waitForOperation` throws when the
  * CREATE handler reports `AlreadyExists`. Its message is
  * `CREATE failed for <logicalId>: <StatusMessage>`, and the classifier reads

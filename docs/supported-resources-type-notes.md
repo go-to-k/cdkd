@@ -53,10 +53,11 @@ aws backup delete-recovery-point --region <region> \
 ## FSx final backup on destroy
 
 Destroying an `AWS::FSx::FileSystem` can leave a backup behind, and AWS
-charges for it. cdkd calls `DeleteFileSystem` with the API's defaults, as
-CloudFormation does, and for Windows and ONTAP file systems the default is to
-take a final backup. The same was observed on OpenZFS. A SCRATCH Lustre
-deployment takes none.
+charges for it. cdkd calls `DeleteFileSystem` with the API's final-backup
+defaults, as CloudFormation does (the only delete-time property it sends is a
+declared OpenZFS `OpenZFSConfiguration.Options`), and for Windows and ONTAP
+file systems the default is to take a final backup. The same was observed on
+OpenZFS. A SCRATCH Lustre deployment takes none.
 
 Two things make the backup easy to miss:
 
@@ -88,9 +89,15 @@ storage capacity.
 OpenZFS. AWS marks the type `NON_PROVISIONABLE`, which means Cloud Control
 cannot manage it, so cdkd's SDK provider is the only path for it.
 
-- **Update.** A property that `UpdateFileSystem` accepts changes in place. A
-  change to a property that cannot change is rejected, and the error points
-  to `--replace`.
+- **Update.** A property that `UpdateFileSystem` accepts changes in place.
+  So does a Windows `Aliases` list, through `AssociateFileSystemAliases` and
+  `DisassociateFileSystemAliases`. cdkd first waits until no other
+  administrative action runs on the file system (a storage or IOPS
+  optimization is not waited for; it can take hours), re-sends a call FSx
+  refuses while an administrative action is in progress, and waits until the
+  aliases read back as declared. A change to a property that cannot change is rejected, and the
+  error points to `--replace`. That includes Windows `ActiveDirectoryId` and
+  `PreferredSubnetId`, which no FSx API can change.
 - **Create and delete.** cdkd waits until the file system is `AVAILABLE`, and
   on delete until it is gone. The timeout for one resource of this type is
   one hour.
@@ -103,18 +110,35 @@ cannot manage it, so cdkd's SDK provider is the only path for it.
 ## EMR on EC2
 
 cdkd deploys EMR clusters, instance groups and instance fleets with SDK
-providers. AWS marks the three types `NON_PROVISIONABLE`, which means Cloud
-Control cannot manage them, so there is no other path. Each has a one-hour
-timeout per resource.
+providers. AWS marks `AWS::EMR::Cluster` `NON_PROVISIONABLE`, which means Cloud
+Control cannot manage it, so there is no other path. `AWS::EMR::InstanceGroupConfig`
+and `AWS::EMR::InstanceFleetConfig` have been `FULLY_MUTABLE`, with Cloud
+Control handlers, since registry versions created on 2025-10-23 (`aws
+cloudformation describe-type --type RESOURCE --type-name <type>`); cdkd still
+deploys them with its SDK providers. Each has a one-hour timeout per resource.
 
 | Type | Updates in place | Delete |
 | --- | --- | --- |
-| `AWS::EMR::Cluster` | Termination protection, visibility, step concurrency, managed scaling, auto-termination, tags | Terminates the cluster and waits for `TERMINATED` |
+| `AWS::EMR::Cluster` | Termination protection, visibility, step concurrency, managed scaling, auto-termination, tags; in `Instances`: a core or task group's `InstanceCount` and `AutoScalingPolicy`, a core or task fleet's target capacities, `UnhealthyNodeReplacement` | Terminates the cluster and waits for `TERMINATED` |
 | `AWS::EMR::InstanceGroupConfig` | `InstanceCount`, `AutoScalingPolicy` | Removes the cdkd state record only |
 | `AWS::EMR::InstanceFleetConfig` | `TargetOnDemandCapacity`, `TargetSpotCapacity`, `ResizeSpecifications`, `InstanceTypeConfigs` | Removes the cdkd state record only |
 
-Any other property change replaces the resource. A create waits until a
-cluster is `WAITING` or `RUNNING`, and until a group or fleet is `RUNNING`.
+Any other property change replaces the resource, as CloudFormation does,
+including most changes inside a cluster's `Instances` (measured: a security
+group added, a task group added, `KeepJobFlowAliveWhenNoSteps` turned off).
+CloudFormation applies the `Instances` changes in the table in place, and so
+does cdkd: a resize waits until the group or fleet reaches its new size. A
+task group or fleet is found by its `Name`, or a task group without one by its
+instance type; cdkd refuses the update when that matches more or fewer than
+one, or when the `Name` (or that instance type) is a `{{resolve:...}}`
+reference. A fleet capacity the
+template never declared is sent as 0, since `ModifyInstanceFleet` needs both.
+Removing a fleet capacity, or `UnhealthyNodeReplacement`, is refused, because
+CloudFormation fails that update too, and so is removing a group's
+`InstanceCount`, which CloudFormation requires; so is a count or capacity that is not a
+number. A create
+waits until a cluster is `WAITING` or `RUNNING`, and until a group or fleet is
+`RUNNING`.
 
 Deleting an instance group or fleet does not remove it from AWS, because EMR
 releases a group or fleet only when its cluster terminates. cdkd removes the

@@ -236,8 +236,11 @@ export function extractPrimaryIdentifier(schemaJson) {
  * v3 serializer silently drops unknown keys, so an SDK provider forwarding a
  * nested CFn config blob must convert every key whose spelling diverges from
  * the SDK model — and the pre-flight `property-coverage` check compares
- * TOP-LEVEL names only. This capture gives the critic the CFn-side nested key
- * names to diff against the SDK client's model.
+ * TOP-LEVEL names only. This capture first gave the critic the CFn-side nested
+ * key names to diff against the SDK client's model; the critic and the sdk-wire
+ * suites (`tests/unit/provisioning/sdk-wire-harness.ts`) now read the per-path
+ * sibling capture below, {@link extractNestedPropertyPaths}, and this flattened
+ * one is still emitted alongside it.
  *
  * Only top-level properties with at least one nested name get an entry, so
  * scalar-heavy fixtures stay small.
@@ -327,10 +330,11 @@ export function extractNestedPropertyNames(schemaJson) {
  * `envs.map((e) => ({ name: … }))` puts `name` exactly one level beneath
  * `environmentVariables`.
  *
- * Emitted ALONGSIDE `nestedProperties`, not instead of it: the shape pass and
- * the per-target `minNestedKeys` floors of
- * `scripts/gen-nested-key-coverage.ts` are calibrated against the flattened
- * capture, and the two must be able to coexist while targets migrate.
+ * Emitted ALONGSIDE `nestedProperties`, not instead of it. These paths are
+ * what `scripts/gen-nested-key-coverage.ts`'s shape pass and per-target
+ * `minNestedKeys` floors read, and the sdk-wire suites
+ * (`tests/unit/provisioning/sdk-wire-harness.ts`) require every listed path to
+ * be carried by a wire bag.
  *
  * BOUNDED, because per-branch ancestry trades the flattened walk's linear cost
  * for a combinatorial one: a DIAMOND-shaped definition graph (a definition

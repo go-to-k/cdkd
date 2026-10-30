@@ -821,6 +821,7 @@ describe.each(KINDS)('the success settle with the real provider, $type (go-to-k/
       dropRollbackJournalFailedOperations: vi.fn().mockResolvedValue(1),
     };
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: backend as never,
       stackName: 'S',
       region: 'us-east-1',

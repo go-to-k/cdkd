@@ -18,7 +18,7 @@ Region check: [layout-provisioning.md](layout-provisioning.md). Masking: [provid
 - `stackDestroy` — set only by `cdkd destroy` / `cdkd state destroy` and their nested children. `delete()` also runs for a deploy's removal, replacement and rollback, so behavior right only on a destroy (skip instead of drop, a whole-stack `state orphan` remedy) is gated on it (#4596).
 - `resolveSecretDerivedPrincipals` — a DESTROY's vouch (a lone nested child's: evidence incomplete, #4887) that nothing else in the run attached the same inline policy / membership, so a secret-reference principal list may be resolved against its producer regions; a RESOLVED principal without the grant is a skip, never success (the value may rotate; `RemoveUserFromGroup` SUCCEEDS for a non-member, so membership is read first), unless this delete's own earlier attempt detached it (`retryMemo`, one per resource) (#4150). A deploy (its nested-stack removal included) or rollback never sets it.
 
-A delete bag CAN carry plaintext: use `maskSecrets` on any line naming a bag value or the physical id (#2007).
+A delete bag CAN carry plaintext: `maskSecrets` any line naming a bag value or the physical id (#2007).
 
 ## Outcomes
 
@@ -28,13 +28,15 @@ Returning normally means THE RESOURCE IS GONE. An arm that issued no AWS call, o
 - `{ outcome: 'partial', reason }` on `ResourceUpdateResult` — a create-then-delete replacement whose delete did not land; the engine records the survivor.
 - `withIndeterminateGuard(result, guard)` (`src/deployment/delete-outcome.ts`) — a pre-flight guard that could not answer while the delete went ahead. Proceed rather than refuse (such probes need permissions a least-privilege caller may lack), and name the GUARD, not the API or type: it is persisted to `deployments/*.jsonl` as a user contract.
 
-Keep `reason` a FIXED constant with the AWS message in the warning: a reason is rendered into an `Error` whose catch classifies "already deleted" by SUBSTRING.
+Keep `reason` a FIXED constant, the AWS message in the warning: a reason is rendered into an `Error` whose catch classifies "already deleted" by SUBSTRING.
+
+A thrown failure that is not the resource's own not-found but may spell a needle (another object's `*NotFound`) takes `markNotGone` (#5228), which that catch refuses; never `markNonRetryable` only to block that read.
 
 ## Recursion and delegation
 
-`NestedStackProvider.delete` returns `skipped` on `interrupted` or a child skip a record holds, and THROWS on `errorCount > 0` (an attempted-and-failed child fails the parent's row). On a `stackDestroy`, journaled-orphan-only skips: `deleted` + `leftInPlace`, count via `childUnaddressed` (#4738). Both callers read an UNMARKED message holding an already-deleted needle (`deleteSkippedMessage` in `delete-outcome.ts` lists them) as success and DROP the state row, and the child name is template-controlled, so the throw avoids the needles in its wording AND is `markNonRetryable` (#1889). Its remedy must name the CHILD's state file.
+`NestedStackProvider.delete` returns `skipped` on `interrupted` or a child skip a record holds, and THROWS on `errorCount > 0` (an attempted-and-failed child fails the parent's row). On a `stackDestroy`, journaled-orphan-only skips: `deleted` + `leftInPlace`, count via `childUnaddressed` (#4738). The child name is template-controlled, so the throw avoids the already-deleted needles (`deleteSkippedMessage` lists them) AND is `markNonRetryable` (#1889). Its remedy must name the CHILD's state file.
 
-A DELEGATING delete must `return await`. A REPLACE inside `update()` splits on ORDERING: create-then-delete cannot abort, so it warns in orphan wording and reports `partial`; delete-then-create must ABORT before creating the replacement, on BOTH the skip and the throw arm, since cdkd must not issue a CREATE whose precondition it failed to establish.
+A DELEGATING delete must `return await`. A REPLACE inside `update()` splits on ORDERING: create-then-delete cannot abort, so it warns in orphan wording and reports `partial`; delete-then-create must ABORT before creating the replacement, on BOTH the skip and the throw arm.
 
 Never interpolate a provider-supplied `reason` into a thrown message: `retryable-errors.ts` classifies by SUBSTRING, so `does not exist` or `Rate exceeded` inside it burns the backoff schedule. Interpolate the TEMPLATE logical id only, and `markNonRetryable` it.
 

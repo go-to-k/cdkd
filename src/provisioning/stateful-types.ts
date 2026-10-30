@@ -216,12 +216,12 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // ElastiCache entries above are on — an EMR cluster is often treated as
   // ephemeral compute over S3, but the local filesystem is real storage and
   // the replacement comes back empty either way. It is reachable on a PLAIN
-  // deploy with no flag: the type has no `ReplacementRulesRegistry` entry, so
-  // `create-only-properties.ts` resolves the registry schema at diff time and
-  // its createOnly set (`Name`, `ReleaseLabel`, `Applications`,
-  // `Configurations`, ... — checked in at
+  // deploy with no flag: `create-only-properties.ts` resolves the registry
+  // schema at diff time and its createOnly set (`Name`, `ReleaseLabel`,
+  // `Applications`, `Configurations`, ... — checked in at
   // `tests/fixtures/cfn-schemas/AWS-EMR-Cluster.json`) classifies a change to
-  // any of them as a replacement.
+  // any of them as a replacement, and the `ReplacementRulesRegistry` entry
+  // does the same for most `Instances` changes (issue #5418).
   'AWS::EMR::Cluster',
   // Streaming.
   'AWS::Kinesis::Stream',
@@ -345,6 +345,48 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   'AWS::RDS::DBSnapshot',
   'AWS::RDS::ClusterSnapshot',
   'AWS::DynamoDB::Backup',
+  // Same argument, from the next coverage refresh (go-to-k/cdkd#5214): each is
+  // a snapshot or backup, so the resource IS the copy.
+  'AWS::DocDBElastic::ClusterSnapshot',
+  'AWS::ElastiCache::Snapshot',
+  'AWS::FSx::Backup',
+  'AWS::FSx::Snapshot',
+  'AWS::MemoryDB::Snapshot',
+  'AWS::Redshift::Snapshot',
+  'AWS::Timestream::InfluxDBBackup',
+  // The EBS snapshot (2026-10-29 coverage refresh) is a copy of an
+  // `AWS::EC2::Volume`, guarded above: a `VolumeId` or `Description` change
+  // replaces it, deleting the old snapshot and taking a new one from the
+  // (possibly different) volume as it is NOW, so the point in time the old
+  // one held is gone.
+  'AWS::EC2::Snapshot',
+  // Storage that holds the user's blocks or files: a Storage Gateway volume is
+  // the volume's data; an FSx file cache holds writes not yet exported to its
+  // data repository.
+  'AWS::StorageGateway::Volume',
+  'AWS::FSx::FileCache',
+  // Types AWS made provisionable since the previous refresh, so cdkd no longer
+  // refuses them at pre-flight and a replace now reaches them. The scan does
+  // not propose them (no signal in their schemas), but each holds the user's
+  // data: a Managed Microsoft AD its users and groups, a notebook instance
+  // and a Cloud9 EC2 environment their storage volume.
+  'AWS::DirectoryService::MicrosoftAD',
+  'AWS::SageMaker::NotebookInstance',
+  'AWS::Cloud9::EnvironmentEC2',
+  // Proposed by the same refresh, and guarded on the fail-safe the script's
+  // NOT_GUARDED states: none of (a) declared content, (b) pointer or (c) no
+  // content is provable from the schema. A registry's entries, a stream
+  // channel's buffered records, a host key AWS generated (the server's
+  // identity to every client that pinned it), a bus's stored events, a
+  // domain's, notify configuration's and agent profile's
+  // server-side state are each lost on a recreate, or may be.
+  'AWS::AgentRegistry::Registry',
+  'AWS::Kinesis::Channel',
+  'AWS::Transfer::HostKey',
+  'AWS::EventsV2::EventBus',
+  'AWS::HealthAgent::Domain',
+  'AWS::SMSVOICE::NotifyConfiguration',
+  'AWS::WellArchitected::AgentProfile',
 
   // In-memory / streaming stores that persist their dataset.
   'AWS::MemoryDB::Cluster',
@@ -493,6 +535,13 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // `AWS::IoTSiteWise::Dataset` resources inside it is UNMEASURED. An
   // unprovable emptiness must not read as empty.
   'AWS::IoTSiteWise::Workspace',
+  // Guarded on the same FAIL-SAFE side as the workspace above. The registry
+  // schema says nothing about what a CloudWatch space holds, but it declares
+  // an `EncryptionConfiguration` (AWS-owned or customer-managed key), which
+  // is a statement that the space stores something at rest, and none of the
+  // write-off rule's (a) declared content, (b) pointer or (c) no content is
+  // provable from it. An unprovable emptiness must not read as empty.
+  'AWS::CloudWatch::Space',
   // A Recycle Bin retention rule is guarded on the FAIL-SAFE side of an open
   // question rather than on a proof, and the distinction is the whole reason
   // it is here: the rule's own content (`ResourceTags`, `RetentionPeriod`,

@@ -145,6 +145,43 @@ describe('ServiceDiscoveryProvider — ServiceAttributes backfill (#609)', () =>
       expect(del).toBeDefined();
       expect((del!.input as unknown as Record<string, unknown>)['Id']).toBe('srv-1');
     });
+
+    // go-to-k/cdkd#3361: the cleanup warn renders the DeleteService rejection
+    // through `maskErrorMessage`. A rejection `String()` cannot convert (a
+    // null-prototype object) used to throw a TypeError out of that catch, so the
+    // caller saw it in place of the attributes failure.
+    it('still rethrows the attributes failure when the cleanup rejects with an unconvertible value', async () => {
+      const attributesFailure = new Error('attributes boom');
+      mockSend
+        .mockResolvedValueOnce({ Service: { Id: 'srv-1', Arn: 'arn:srv-1', Name: 'mysvc' } })
+        .mockRejectedValueOnce(attributesFailure)
+        .mockRejectedValueOnce(Object.create(null)); // DeleteService cleanup
+
+      const failure = await provider
+        .create('Svc', TYPE, {
+          Name: 'mysvc',
+          NamespaceId: 'ns-1',
+          ServiceAttributes: { team: 'cdkd' },
+        })
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+
+      expect((failure as Error).cause).toBe(attributesFailure);
+      const warn = (getLogger().child('x') as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((m) => m.includes('Failed to clean up partially-created ServiceDiscovery'));
+      // go-to-k/cdkd#2319: a non-Error is withheld at warn, like an AWS failure;
+      // its (unconvertible) text goes to debug.
+      expect(line).toContain('a non-Error value of type object.');
+      const debug = (getLogger().child('x') as unknown as { debug: ReturnType<typeof vi.fn> })
+        .debug;
+      expect(
+        debug.mock.calls.some((c) => String(c[0]).includes('a value that could not be converted to text'))
+      ).toBe(true);
+    });
   });
 
   describe('update', () => {

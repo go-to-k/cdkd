@@ -15,9 +15,13 @@ import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor, recordedGeneratedNameKept } from '../resource-name.js';
 import {
   createMaskedLogSinks,
   withDerivedNameMasks,
@@ -31,7 +35,7 @@ import {
   resolveSecretDerivedPrincipals,
 } from '../secret-principal-resolution.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import type {
@@ -276,18 +280,33 @@ export class IAMPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('IAMPolicyProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * unmasked `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text masked (issue #2177,
+   * `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
+    );
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -318,7 +337,7 @@ export class IAMPolicyProvider implements ResourceProvider {
 
     const policyName =
       (properties['PolicyName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::IAM::Policy', logicalId);
     const policyDocument = properties['PolicyDocument'];
     const targets = readPolicyTargetLists(properties);
     if ('malformed' in targets) {
@@ -500,6 +519,7 @@ export class IAMPolicyProvider implements ResourceProvider {
       })),
     ];
     const failed: string[] = [];
+    let withheld = false;
     for (const step of steps) {
       try {
         await step.send();
@@ -508,16 +528,33 @@ export class IAMPolicyProvider implements ResourceProvider {
         );
       } catch (error) {
         if (error instanceof NoSuchEntityException) continue;
-        failed.push(
-          `${step.what} (${log.mask(describeAwsFailure(error).detail)}): ${step.command}`
-        );
+        // An AWS-authored failure is named by its class at warn, and AWS's
+        // text (a denied detach names the caller) goes to `debug`
+        // (go-to-k/cdkd#2319).
+        const failure = describeAwsFailure(error);
+        if (failure.redacted) {
+          log.debug(
+            `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) from ${step.what}: ${failure.detail}`
+          );
+        }
+        // The class alone per step; the --verbose pointer once, after the list.
+        withheld ||= failure.redacted;
+        const tail = ` ${VERBOSE_POINTER}`;
+        const reason = !failure.redacted
+          ? failure.detail
+          : failure.summary.endsWith(tail)
+            ? failure.summary.slice(0, -tail.length).replace(/\.$/, '')
+            : failure.summary;
+        failed.push(`${step.what} (${log.mask(reason)}): ${step.command}`);
       }
     }
     if (failed.length > 0) {
       log.warn(
         `Failed to detach the partially-created IAM policy ${logicalId} (${v(policyName)}) after ` +
           `its create failed; cdkd has no record of it, so it stays attached and granting until ` +
-          `it is removed by hand: ${failed.join('; ')}`
+          // The pointer comes before the list: after it, a period would join
+          // the last pasteable command.
+          `it is removed by hand${withheld ? ` (${VERBOSE_POINTER.replace(/\.$/, '')})` : ''}: ${failed.join('; ')}`
       );
     }
   }
@@ -547,9 +584,23 @@ export class IAMPolicyProvider implements ResourceProvider {
     const { value: v } = log;
     log.debug(`Updating IAM policy ${logicalId}: ${v(physicalId)}`);
 
-    const newPolicyName =
+    const derivedPolicyName =
       (properties['PolicyName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::IAM::Policy', logicalId);
+    // go-to-k/cdkd#5064: an un-named policy whose recorded name differs from
+    // the derivation only by the naming scheme keeps it, never a rename.
+    const newPolicyName =
+      oldPolicyName !== undefined &&
+      recordedGeneratedNameKept({
+        recorded: oldPolicyName,
+        derived: derivedPolicyName,
+        declaredName: properties['PolicyName'],
+        previousDeclaredName: previousProperties['PolicyName'],
+        logicalId,
+        options: { maxLength: 64 },
+      })
+        ? oldPolicyName
+        : derivedPolicyName;
     // Every name the recorded principals may hold the policy under
     // (go-to-k/cdkd#4152): the physical id's, and the recorded PolicyName when
     // it is a usable name that differs. They differ on a rollback revert, which
@@ -1191,13 +1242,21 @@ export class IAMPolicyProvider implements ResourceProvider {
       // clone keeps each link's prototype, `$metadata` and markers, so the
       // retry classifiers read it as before.
       const cause = error instanceof Error ? error : undefined;
-      // The mark survives `maskError`'s clone of the chain.
-      const failure = new ProvisioningError(
-        `Failed to delete IAM policy ${logicalId}: ${mask(describeAwsFailure(error).detail)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // The marks survive `maskError`'s clone of the chain. An AWS-authored
+      // failure is named by its class (`wrapMaskedError`, issue #2319), its text
+      // logged at debug through the operation's masker as well as `mask`.
+      const opMask = createMaskedLogSinks(this.logger, context?.maskSecrets).mask;
+      const failure = this.wrapMaskedError(
+        (text) => mask(opMask(text)),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete IAM policy ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw maskError(removedAny ? markDeleteStarted(failure) : failure);
     }

@@ -21,7 +21,7 @@ import {
 } from '../../../src/provisioning/providers/idempotency-token.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../../src/state/record-keys.js';
 import { extractLambdaVpcDeleteDeps } from '../../../src/analyzer/lambda-vpc-deps.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import { deleteBudgetKey } from '../../../src/provisioning/providers/dynamodb-delete-budget.js';
 import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbproxy-provider.js';
 
@@ -153,10 +153,10 @@ describe('the idempotency-token memo keys on the whole tuple', () => {
     ).toBe(keyOf(b.stack, b.logicalId));
 
     resetIdempotencyTokensForTests();
-    const first = withStackName(a.stack, () =>
+    const first = withStackScope({ stackName: a.stack, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 's', logicalId: a.logicalId })
     );
-    const second = withStackName(b.stack, () =>
+    const second = withStackScope({ stackName: b.stack, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       acquireIdempotencyToken({ scope: 's', logicalId: b.logicalId })
     );
     // Under the separator these shared a memo entry, so the second create was
@@ -170,7 +170,7 @@ describe('the idempotency-token memo keys on the whole tuple', () => {
     // above while defeating the idempotency this module exists to provide.
     resetIdempotencyTokensForTests();
     const once = (): string =>
-      withStackName('Stack', () =>
+      withStackScope({ stackName: 'Stack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         acquireIdempotencyToken({ scope: 'RunInstances', logicalId: 'Instance' })
       ).value;
     expect(once()).toBe(once());

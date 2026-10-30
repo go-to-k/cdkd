@@ -88,6 +88,22 @@ function sendAnsweringNoBucket(cmd: unknown): Promise<unknown> {
   return Promise.resolve({});
 }
 
+/**
+ * A bucket that really holds Object Lock: `GetObjectLockConfiguration` answers
+ * `Enabled`. The top-level `ObjectLockEnabled` alone no longer proves a lock to
+ * the versioning-suspend guard (go-to-k/cdkd#5395: a flag added to an existing
+ * bucket is never applied), so it reads the bucket back.
+ */
+function sendAnsweringLocked(cmd: unknown): Promise<unknown> {
+  if (
+    (cmd as { constructor: { name: string } }).constructor.name ===
+    'GetObjectLockConfigurationCommand'
+  ) {
+    return Promise.resolve({ ObjectLockConfiguration: { ObjectLockEnabled: 'Enabled' } });
+  }
+  return sendAnsweringNoBucket(cmd);
+}
+
 /** The single mocked child logger every provider instance resolves to. */
 const childLogger = (getLogger() as unknown as { child: () => { warn: ReturnType<typeof vi.fn> } }).child();
 
@@ -2437,6 +2453,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
   });
 
   it('versioning SUSPEND is skipped WITH A WARNING on an Object-Lock bucket', async () => {
+    mockSend.mockImplementation(sendAnsweringLocked);
     // S3 refuses to suspend versioning on an Object-Lock bucket
     // (InvalidBucketState). Before the deferral this would have newly FAILED a
     // deploy that used to be a silent no-op.
@@ -2523,6 +2540,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
   });
 
   it('Object-Lock guard consults the PREVIOUS side too', async () => {
+    mockSend.mockImplementation(sendAnsweringLocked);
     // ObjectLockEnabled is not replacement-forcing for AWS::S3::Bucket, so
     // dropping it together with VersioningConfiguration takes the in-place
     // UPDATE path. Reading only the desired side would issue a suspend the
@@ -2536,6 +2554,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
   });
 
   it("Object-Lock guard accepts the 'true' STRING form of ObjectLockEnabled", async () => {
+    mockSend.mockImplementation(sendAnsweringLocked);
     // The configuration-block form is covered by 'a REAL ObjectLockConfiguration
     // (Enabled) still suppresses the suspend'; only the string form is new here.
     await update(
@@ -2666,6 +2685,7 @@ describe('S3BucketProvider removal semantics (issue #1466)', () => {
   });
 
   it('Object-Lock guard: previous-side string and configuration-block forms', async () => {
+    mockSend.mockImplementation(sendAnsweringLocked);
     // The previous-side coverage that matters -- these are the shapes reachable
     // when the template DROPS object lock and versioning in the same update.
     await update(base, {

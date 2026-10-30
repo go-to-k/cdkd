@@ -8,6 +8,7 @@ This example deploys an S3 bucket with a CloudFront distribution using Origin Ac
 - **CloudFront Origin Access Identity** - OAI for secure S3 access
 - **CloudFront Distribution** - CDN with S3 origin, HTTPS redirect
 - **S3 Bucket Policy** - Grants OAI read access to bucket objects
+- **CloudFront Public Key + Key Group** - A `/private/*` behavior restricted to signed URLs (`trustedKeyGroups`, issue #5393)
 
 ## What it demonstrates
 

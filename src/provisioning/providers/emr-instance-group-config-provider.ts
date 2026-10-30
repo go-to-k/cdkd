@@ -45,6 +45,7 @@ import { isRedactedRecordedValue } from '../redacted-delete-address.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -106,6 +107,14 @@ export function resetEMRInstanceGroupCreateRetryStateForTests(): void {
   addInstanceGroupsLatch.resetForTests();
   groupsCreatedByThisProcess.resetForTests();
 }
+
+/** go-to-k/cdkd#5487: the instance group states EMR is still moving a group through. */
+const MOVING_GROUP_STATES: ReadonlySet<string> = new Set([
+  'PROVISIONING',
+  'BOOTSTRAPPING',
+  'RESIZING',
+  'RECONFIGURING',
+]);
 
 /**
  * SDK Provider for `AWS::EMR::InstanceGroupConfig` (issue #1070).
@@ -226,6 +235,21 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
     const m = maskerOrIdentity(mask);
     this.logger.debug(m(build(m(failure.detail)).message));
     return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+  }
+
+  /**
+   * The cleanup-failure text a best-effort `warn` quotes after `head`
+   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS at
+   * warn, since a denied call names the caller's assumed-role ARN; AWS's own
+   * text goes to `debug` under the same `head`, masked. A cdkd-authored or
+   * transport error keeps its text, masked.
+   */
+  private cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return m(failure.detail);
+    this.logger.debug(m(`${head}${m(failure.detail)}`));
+    return m(failure.summary);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -376,6 +400,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
       if (groupId) groupsCreatedByThisProcess.add(groupId);
       // Before the lookup below, so a throw in it still marks the group created.
       createdGroupId = groupId;
+      reportCreatedResource(logicalId, resourceType, groupId ?? ''); // go-to-k/cdkd#5511
       // Issue #4687: the SDK replayed this AddInstanceGroups inside its `send`, so
       // an earlier attempt may have made one too. Detection only.
       const replayWindow = replayedSendWindow(response, attemptStartMs);
@@ -437,10 +462,12 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
           log.warn(
             safeMsg`Scaled partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0; EMR has no delete API, so the empty group stays on cluster ${log.value(jobFlowId)} until it terminates`
           );
+          retractCreatedResource(logicalId, resourceType, leftBehindGroupId);
           leftBehindGroupId = undefined;
         } catch (cleanupError) {
+          const cleanupHead = safeMsg`Failed to scale partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0: `;
           log.warn(
-            safeMsg`Failed to scale partially-created EMR TASK instance group ${logicalId} (${leftBehindGroupId}) to 0: ${describeAwsFailure(cleanupError).detail} — its instances are released when the parent cluster terminates`
+            safeMsg`${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log.mask)} — its instances are released when the parent cluster terminates`
           );
         }
       }
@@ -536,6 +563,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
 
     try {
       if (instanceCountChanged) {
+        context?.markUnsettled?.('InstanceCount');
         await this.getClient().send(
           new ModifyInstanceGroupsCommand({
             ...(jobFlowId && { ClusterId: jobFlowId }),
@@ -591,6 +619,7 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
         const policy = properties['AutoScalingPolicy'] as
           | import('@aws-sdk/client-emr').AutoScalingPolicy
           | undefined;
+        context?.markUnsettled?.('AutoScalingPolicy');
         if (policy) {
           await this.getClient().send(
             new PutAutoScalingPolicyCommand({
@@ -693,10 +722,11 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
             `EMR instance group ${physicalId} scale-to-0 skipped (cluster/group gone): ${error.message}`
           );
         } else {
+          const head = `Best-effort scale-to-0 of EMR instance group ${physicalId} failed: `;
           this.logger.warn(
-            `Best-effort scale-to-0 of EMR instance group ${physicalId} failed: ${
-              describeAwsFailure(error).detail
-            } — its instances are released when the parent cluster terminates`
+            maskerOrIdentity(context?.maskSecrets)(
+              `${head}${this.cleanupFailureText(head, error, context?.maskSecrets)} — its instances are released when the parent cluster terminates`
+            )
           );
         }
       }
@@ -829,6 +859,70 @@ export class EMRInstanceGroupConfigProvider implements ResourceProvider {
    * consecutive transient errors (throttle / 5xx / reset) so a single blip
    * during a 10-minute poll does not spuriously fail the create.
    */
+  /**
+   * go-to-k/cdkd#5487: the group's mutable properties as AWS holds them, for
+   * the engine's convergence step. `InstanceCount` is the RUNNING count — what
+   * the group effectively has, whether it settled, is moving (which
+   * `unsettledInTransition` refuses first) or is stuck in a failed state. `AutoScalingPolicy` is the attached policy's
+   * description: its presence is what a comparison with the template needs,
+   * and a re-sent Put is idempotent. A failed read throws.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    _names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const jobFlowId = recordedProperties?.['JobFlowId'];
+    if (typeof jobFlowId !== 'string' || jobFlowId === '') {
+      throw new ProvisioningError(
+        `EMR InstanceGroupConfig ${logicalId} has no JobFlowId (the cluster id) recorded, so cdkd cannot read the group to converge what an earlier failed update left unsettled`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const group = await this.findGroupForPoll(jobFlowId, physicalId, { count: 0 }, 0);
+    if (group === undefined) return undefined;
+    return {
+      ...(group.RunningInstanceCount !== undefined && {
+        InstanceCount: group.RunningInstanceCount,
+      }),
+      ...(group.AutoScalingPolicy !== undefined && { AutoScalingPolicy: group.AutoScalingPolicy }),
+    };
+  }
+
+  /**
+   * go-to-k/cdkd#5487: an unsettled `InstanceCount` is in transition while the
+   * group is PROVISIONING, BOOTSTRAPPING, RESIZING or RECONFIGURING. A group at
+   * rest in a failed or stuck state (SUSPENDED, ARRESTED) is not: the update
+   * runs, compares the RUNNING count with the template and re-sends the resize
+   * (the path that recovers such a group). The autoscaling policy is applied at
+   * once. No cluster id: nothing to read here, and `readUnsettled` refuses with
+   * the cause. A failed read keeps the name in transition.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<ReadonlySet<string>> {
+    if (!names.has('InstanceCount')) return new Set();
+    const jobFlowId = recordedProperties?.['JobFlowId'];
+    if (typeof jobFlowId !== 'string' || jobFlowId === '') return new Set();
+    try {
+      const group = await this.findGroupForPoll(jobFlowId, physicalId, { count: 0 }, 0);
+      const state = group?.Status?.State;
+      return state !== undefined && MOVING_GROUP_STATES.has(state)
+        ? new Set(['InstanceCount'])
+        : new Set();
+    } catch {
+      return new Set(['InstanceCount']);
+    }
+  }
+
   private async findGroupForPoll(
     clusterId: string,
     groupId: string,

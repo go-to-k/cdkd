@@ -3,7 +3,7 @@ import type { CloudFormationTemplate, TemplateResource } from '../types/resource
 import { TemplateParser } from './template-parser.js';
 import { extractLambdaVpcDeleteDeps } from './lambda-vpc-deps.js';
 import { defensiveDependsOnToSkip } from './cdk-defensive-deps.js';
-import { displayIdent } from '../utils/display-safe.js';
+import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { DependencyError } from '../utils/error-handler.js';
 import { splitGetAttStringForm } from '../deployment/secret-redaction.js';
@@ -357,6 +357,13 @@ export class DagBuilder {
    * Add implicit edges from IAM::Policy resources to Custom Resources whose
    * ServiceToken Lambda's execution role those policies attach to.
    *
+   * An edge is skipped when the custom resource already reaches the policy in the
+   * graph: the policy then runs after the resource by the template's own edges
+   * (typically a `DependsOn` chain between several `AwsCustomResource`s that share
+   * one handler and role, each with its own policy), and adding it would close a
+   * cycle CloudFormation never sees. The resource still waits for every policy
+   * that is not downstream of it, including its own.
+   *
    * Returns the number of edges added.
    */
   private addCustomResourcePolicyEdges(graph: GraphType, template: CloudFormationTemplate): number {
@@ -387,10 +394,20 @@ export class DagBuilder {
       const policies = rolePolicies.get(roleId);
       if (!policies) continue;
 
+      // Computed once per resource: an edge INTO the resource adds ancestors, never
+      // changes what the resource reaches, so the set stays valid for the loop.
+      const downstream = this.getAllDependents(graph, logicalId);
+
       for (const policyId of policies) {
         if (policyId === logicalId) continue;
         if (!graph.hasNode(policyId)) continue;
         if (graph.hasEdge(policyId, logicalId)) continue;
+        if (downstream.has(policyId)) {
+          this.logger.debug(
+            safeMsg`Skipped implicit edge (custom resource policy) from ${displayIdent(policyId)} to ${displayIdent(logicalId)}: it would close a cycle, the policy already runs after the resource`
+          );
+          continue;
+        }
         graph.setEdge(policyId, logicalId);
         added++;
         this.logger.debug(

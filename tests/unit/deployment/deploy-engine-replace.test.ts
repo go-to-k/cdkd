@@ -29,12 +29,13 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource as provisionResourceFn } from '../../../src/deployment/deploy-engine/provision.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../src/utils/error-handler.js';
 import {
+  hasRedactedCause,
   isMarkedNonRetryable,
   isUpdateUnsupportedError,
   markNonRetryable,
@@ -205,7 +206,7 @@ describe('DeployEngine — --replace wire-through', () => {
     // classifies it against `${stackName}-${logicalId}` — the default is a
     // name no derivation produces, so it takes the user-supplied branch, and a
     // test wanting the GENERATED branch passes the derived form inside a
-    // `withStackName` scope.
+    // `withStackScope` scope.
     physicalId = 'old-pid'
     // Returns the state record map the engine wrote into, so a test can assert
     // what the deploy PERSISTED (which physical id survived, which template
@@ -750,14 +751,75 @@ describe('DeployEngine — --replace wire-through', () => {
         (e) => e as Error & { cause?: Error & { code?: string } }
       );
       expect(err).not.toBeNull();
-      // The raw AWS text survives, untranslated and unmarked.
+      // The raw AWS text survives, untranslated and unmarked: on the chain,
+      // since the persisted wrap names it by its class (go-to-k/cdkd#2319).
       expect(err!.cause?.code).not.toBe('NAMED_REPLACEMENT_COLLISION');
-      expect(err!.cause?.message).toContain('Table already exists: my-table');
+      expect(err!.cause?.message).toContain(
+        "Cause: ResourceConflictException. Re-run with --verbose for AWS's own message."
+      );
+      expect((err!.cause?.cause as Error | undefined)?.message).toBe(
+        'Table already exists: my-table'
+      );
       expect(err!.cause?.message).not.toMatch(/UpdateReplacePolicy: Retain/);
       expect(isMarkedNonRetryable(err!.cause!)).toBe(false);
       // And the delete DID run first, which is what makes this the cooldown
       // shape rather than the collision one.
       expect(callOrder).toEqual(['update', 'delete', 'create']);
+    });
+
+    // go-to-k/cdkd#2319: the "old resource is now gone" wrap is persisted,
+    // and AWS words a denial with the caller's account, role and session.
+    it('names an AWS-authored create failure after the fallback by its class, with its text in debug', async () => {
+      const debugFn = vi.mocked(getLogger().debug);
+      debugFn.mockClear();
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      const denial = awsSdkError(
+        'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied dynamodb:CreateTable',
+        'AccessDeniedException'
+      );
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw denial;
+      });
+
+      const err = await invokeProvision(
+        makeEngine({ forceStatefulRecreation: true }),
+        'AWS::DynamoDB::Table'
+      ).then(
+        () => null,
+        (e) => e as Error & { cause?: Error }
+      );
+
+      const wrap = err!.cause!;
+      expect(wrap.message).toContain(
+        "is now gone. Re-run the deploy to create it fresh. Cause: AccessDeniedException. Re-run with --verbose for AWS's own message."
+      );
+      expect(wrap.message).not.toContain('123456789012');
+      expect(wrap.message).not.toContain('Deployer');
+      expect((wrap.cause as Error | undefined)?.message).toBe(denial.message);
+      expect(hasRedactedCause(wrap)).toBe(true);
+      const debugLine = debugFn.mock.calls.map(([m]) => String(m)).find((m) => m.includes('Deployer'));
+      expect(debugLine).toContain('after the UPDATE-not-supported replacement');
+    });
+
+    it('keeps a transport create failure text after the fallback, unstamped', async () => {
+      rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
+      vi.mocked(provider.create).mockImplementation(async () => {
+        callOrder.push('create');
+        throw markNonRetryable(new Error('connect ECONNREFUSED 127.0.0.1:443'));
+      });
+
+      const err = await invokeProvision(
+        makeEngine({ forceStatefulRecreation: true }),
+        'AWS::DynamoDB::Table'
+      ).then(
+        () => null,
+        (e) => e as Error & { cause?: Error }
+      );
+
+      expect(err!.cause!.message).toContain('Cause: connect ECONNREFUSED 127.0.0.1:443');
+      expect(err!.cause!.message).not.toContain('--verbose');
+      expect(hasRedactedCause(err!.cause!)).toBe(false);
     });
 
     it('WARNS that the retained resource is untracked and still costing money', async () => {
@@ -899,12 +961,12 @@ describe('DeployEngine — --replace wire-through', () => {
       });
 
       it('the COLLISION refusal says GENERATED for a name cdkd derived, and never claims the user supplied it', async () => {
-        // Inside a `withStackName` scope, which is what the classifier reads —
+        // Inside a `withStackScope` scope, which is what the classifier reads —
         // without it every case takes the unresolvable branch and this one
         // would pass for the wrong reason.
         rejectWith('Resource type AWS::DynamoDB::Table does not support UPDATE action');
         collideOnCreate();
-        const err = await withStackName(STACK, () =>
+        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           invokeProvision(
             makeEngine({}),
             'AWS::DynamoDB::Table',
@@ -950,7 +1012,7 @@ describe('DeployEngine — --replace wire-through', () => {
           // here is the derived one.
           return { physicalId: GENERATED_PID, attributes: {} };
         });
-        const err = await withStackName(STACK, () =>
+        const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           invokeProvision(
             makeEngine({}),
             'AWS::DynamoDB::Table',

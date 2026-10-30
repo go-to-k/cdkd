@@ -95,7 +95,8 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
           DBClusterParameterGroupName: 'my-cluster-params',
           PreferredBackupWindow: '03:00-04:00',
           PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
-          VpcSecurityGroupIds: ['sg-1'],
+          // A removed VpcSecurityGroupIds IS reset (to the VPC's default
+          // security group): db-cluster-sg-removal-1160.test.ts.
           DBPort: 8182,
         }
       );
@@ -112,9 +113,28 @@ describe('NeptuneProvider removal semantics (issues #1160 / #5004)', () => {
       expect(modifyCall.input.DBClusterParameterGroupName).toBeUndefined();
       expect(modifyCall.input.PreferredBackupWindow).toBeUndefined();
       expect(modifyCall.input.PreferredMaintenanceWindow).toBeUndefined();
-      expect(modifyCall.input.VpcSecurityGroupIds).toBeUndefined();
       expect(modifyCall.input.Port).toBeUndefined();
     });
+
+    it.each([
+      ['DBPort', { DBPort: 8183 }],
+      ['the legacy Port', { Port: 8183 }],
+      ['both spellings (as a string)', { DBPort: '8183', Port: '8183' }],
+    ])(
+      'sends NO reset for a removed non-default %s: CloudFormation keeps the live port (#1160)',
+      async (_label, previous) => {
+        mockClusterUpdate();
+
+        await provider.update('MyCluster', 'my-cluster', 'AWS::Neptune::DBCluster', {}, previous);
+
+        // A Port reset would be the documented 8182 default; CloudFormation
+        // keeps 8183, so the field must stay absent (no change).
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.constructor.name).toBe('ModifyDBClusterCommand');
+        expect(modifyCall.input.Port).toBeUndefined();
+        expect(mockSend).toHaveBeenCalledTimes(2);
+      }
+    );
 
     it('leaves a never-present field absent (no spurious reset value)', async () => {
       mockClusterUpdate();

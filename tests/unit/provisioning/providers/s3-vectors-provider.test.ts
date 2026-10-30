@@ -43,6 +43,7 @@ import {
 } from '@aws-sdk/client-s3vectors';
 import { S3VectorsProvider } from '../../../../src/provisioning/providers/s3-vectors-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
+import { generatedNameFor, withStackScope } from '../../../../src/provisioning/resource-name.js';
 
 describe('S3VectorsProvider', () => {
   let provider: S3VectorsProvider;
@@ -79,6 +80,60 @@ describe('S3VectorsProvider', () => {
       expect(createCall![0].input).toEqual({
         vectorBucketName: 'my-vector-bucket',
         encryptionConfiguration: undefined,
+      });
+    });
+
+    // go-to-k/cdkd#5309: CloudFormation generates a name the template omits;
+    // the provider used to refuse the create before any call.
+    describe('without a VectorBucketName (#5309)', () => {
+      const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const createdName = (): unknown =>
+        mockSend.mock.calls.find((call: unknown[]) => call[0] instanceof CreateVectorBucketCommand)?.[0]
+          .input.vectorBucketName;
+      beforeEach(() => {
+        mockSend.mockResolvedValue({ vectorBucketArn: 'arn:aws:s3vectors:us-east-1:0:vector-bucket/x' });
+      });
+
+      it.each([
+        ['no VectorBucketName', {}],
+        ['an empty VectorBucketName', { VectorBucketName: '' }],
+      ])('%s: sends the generated lowercase name and records it', async (_label, properties) => {
+        const result = await withStackScope(
+          { stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() },
+          () => provider.create('MyVectorBucket', 'AWS::S3Vectors::VectorBucket', properties)
+        );
+
+        const sent = createdName();
+        expect(sent).toMatch(/^mystack-myvectorbucket-[0-9a-f]{12}$/);
+        expect(sent).toBe(
+          withStackScope(
+            { stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() },
+            () => generatedNameFor('AWS::S3Vectors::VectorBucket', 'MyVectorBucket')
+          )
+        );
+        expect(result.physicalId).toBe(sent);
+      });
+
+      it('on a legacy stack (no instance id): the stack-prefixed lowercase name', async () => {
+        const result = await withStackScope(
+          { stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: undefined },
+          () => provider.create('MyVectorBucket', 'AWS::S3Vectors::VectorBucket', {})
+        );
+
+        expect(createdName()).toBe('mystack-myvectorbucket');
+        expect(result.physicalId).toBe('mystack-myvectorbucket');
+      });
+
+      it('a declared name is sent as is', async () => {
+        await withStackScope(
+          { stackName: 'MyStack', stackInstanceId: ID, nameGenerations: new Map() },
+          () =>
+            provider.create('MyVectorBucket', 'AWS::S3Vectors::VectorBucket', {
+              VectorBucketName: 'declared-name',
+            })
+        );
+
+        expect(createdName()).toBe('declared-name');
       });
     });
 

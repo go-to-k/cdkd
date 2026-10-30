@@ -16,7 +16,7 @@ lane:
 git worktree add .claude/worktrees/<branch> -b <branch> origin/main
 cd .claude/worktrees/<branch>
 mise trust && mise install   # untrusted .mise.toml: vp will not resolve
-pnpm install                 # worktrees have no node_modules
+vp install                   # worktrees have no node_modules
 vp run build                 # ...and no dist/ for CLI-spawning tests
 ```
 
@@ -73,6 +73,10 @@ done                                                               # RIGHT
   fixture impact": fixtures deploy malformed values ON PURPOSE (go-to-k/cdkd#3780).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
+  A masking fix's population is every SINK the value reaches, each `warn` that
+  names the error CLASS included (a test puts the secret IN the class), and the
+  lane prompt NAMES each one: "warn cases" alone missed it 4x (#5248, #5267,
+  #5268, #5270).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
 
 ### 5-c. The fix itself
@@ -131,9 +135,10 @@ parser and fails CLOSED on anything unmodelled.
 
 You may fan out **one subagent per lane** (disjoint files): give each its
 tree, allowed files, "do NOT touch other lanes' files; STOP and report
-if the fix needs a forbidden one", and **the REPORT SHAPE — the FINAL report IS
-the deliverable**, since a lane's tool output never reaches you. **Name the
-parent's `SendMessage` address, `main`** (a guessed one fails), and say a
+if the fix needs a forbidden one or meets a design branch (options plus what
+CFn does, never a lenient pick of its own; #5107, #5109)", and **the REPORT
+SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
+never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on to its next step unless the
 parent SAYS stop.
 Never wait on a quiet lane: list the agents and resume any already `completed`
@@ -150,7 +155,9 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`).
-  A turn ended with nothing in the background is final.
+  A turn ended with nothing in the background is final; a MERGE-READY one
+  leaves nothing there, CI watchers included: the parent's integ takes that
+  tree next (#5109, #5114).
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.
 - **Reviewers probe by edit-and-restore-from-`HEAD`, and collide with each
@@ -159,5 +166,6 @@ with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
   worktree, so `git status --porcelain` must be EMPTY before a probe and
   otherwise they WAIT; and leave those files alone until the round ends
   (`.claude/agents/pr-code-reviewer.md` holds the rest).
-- Give each agent a unique scratch dir IN ITS PROMPT, one per LANE
-  (`$SCRATCHPAD/lane<issue><slice>-private/`): same-named files overwrite.
+- Give each agent a unique scratch dir IN ITS PROMPT, one per AGENT, the
+  parent's reviewers too (`$SCRATCHPAD/lane<issue><slice>-<role>/`): same-named
+  files overwrite (a reviewer's `git archive` clobbered a peer's probe tree, #5268).

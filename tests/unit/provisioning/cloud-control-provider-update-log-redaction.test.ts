@@ -514,6 +514,66 @@ describe('CloudControlProvider update() read-back and enrichment lines (go-to-k/
     expect(warned).not.toContain(rotatedName.slice(0, 10));
   });
 
+  /** Wire an UPDATE whose GetResource read-back model is the unparseable `model`. */
+  function wireUnparseableReadBack(id: string, model: string): void {
+    mockCcSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+      const name = cmd.constructor.name;
+      if (name === 'UpdateResourceCommand') {
+        return Promise.resolve({ ProgressEvent: { RequestToken: 'tok-update' } });
+      }
+      if (name === 'GetResourceRequestStatusCommand') {
+        return Promise.resolve({
+          ProgressEvent: { OperationStatus: 'SUCCESS', Identifier: id, ResourceModel: '{}' },
+        });
+      }
+      if (name === 'GetResourceCommand') {
+        return Promise.resolve({ ResourceDescription: { Identifier: id, Properties: model } });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  const readBackLine = (): string | undefined =>
+    mockDebug.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.startsWith('Failed to read CC model'));
+
+  // `readCcResourceModel`'s twin of the gate above: the same truncated V8 echo,
+  // from the GetResource read-back rather than the ProgressEvent model.
+  it("renders the read-back model's parse failure without V8's echo while the id is withheld", async () => {
+    const id = `my-log-group|${rotatedName}`;
+    wireUnparseableReadBack(id, rotatedName);
+    await new CloudControlProvider().update(
+      'MyFilter',
+      id,
+      TYPE,
+      { LogGroupName: 'my-log-group', FilterName: 'new-name', FilterPattern: 'ERROR' },
+      { LogGroupName: 'my-log-group', FilterName: REFERENCE, FilterPattern: 'WARN' },
+      {}
+    );
+
+    expect(readBackLine()).toBe(
+      `Failed to read CC model for ${TYPE} ${SECRET_MASK}: ` +
+        `invalid JSON; ${Buffer.byteLength(rotatedName, 'utf8')} byte(s) read`
+    );
+    expect(allDebug()).not.toContain(rotatedName.slice(0, 10));
+  });
+
+  it("keeps V8's text on the read-back model's parse-failure line for an ordinary update", async () => {
+    const id = 'my-log-group|plain-filter';
+    wireUnparseableReadBack(id, 'not-json-model');
+    await new CloudControlProvider().update(
+      'MyFilter',
+      id,
+      TYPE,
+      { LogGroupName: 'my-log-group', FilterName: 'plain-filter', FilterPattern: 'ERROR' },
+      { LogGroupName: 'my-log-group', FilterName: 'plain-filter', FilterPattern: 'WARN' },
+      {}
+    );
+
+    expect(readBackLine()).toContain('not-json');
+  });
+
   it('keeps the model-parse detail for an ordinary update', async () => {
     const id = 'my-log-group|plain-filter';
     wireUnparseableModel(id, 'not-json-model');

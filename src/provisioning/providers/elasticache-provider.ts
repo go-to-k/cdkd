@@ -16,13 +16,22 @@ import {
   type NetworkType,
   type IpDiscovery,
 } from '@aws-sdk/client-elasticache';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
+import { markNotGone } from '../not-gone.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
@@ -37,6 +46,7 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
@@ -58,6 +68,89 @@ const CACHE_DELETE_WAIT_MS = Math.max(
 );
 
 /**
+ * How long an update waits for the cluster to report its template
+ * `CacheNodeType` (issue #5438): a cache.t4g scale took about ten minutes on
+ * both engines, past the 10-minute cap other modifies use. It matches the
+ * type's UPDATE floor in `slow-cc-operation-timeouts.ts` (60 minutes), which
+ * also lifts the engine's update deadline for the type, so the engine does
+ * not give up on a scale this wait is still following.
+ */
+const NODE_TYPE_MODIFY_WAIT_MS = Math.max(
+  60 * 60_000,
+  slowCcOperationTimeoutMs('AWS::ElastiCache::CacheCluster', 'UPDATE')
+);
+
+/**
+ * How long after the Modify an `available` cluster still showing the old
+ * state, with nothing of the change pending -- the old node type (#5438), or
+ * a node it was told to remove (#5441) -- counts as a change AWS dropped
+ * rather than one not yet started (AWS logged "Applying modification" about
+ * 20 seconds after the Modify in the #5438 measurements).
+ */
+const MODIFY_DROPPED_AFTER_MS = 2 * 60_000;
+
+/**
+ * The members of `a` left after taking out one occurrence per member of `b`
+ * (a multiset difference): the Availability Zones a desired
+ * `PreferredAvailabilityZones` list asks for that no live node occupies.
+ */
+function availabilityZonesNotCovered(a: readonly string[], b: readonly string[]): string[] {
+  const remaining = [...b];
+  const out: string[] = [];
+  for (const az of a) {
+    const i = remaining.indexOf(az);
+    if (i >= 0) remaining.splice(i, 1);
+    else out.push(az);
+  }
+  return out;
+}
+
+/**
+ * The cache node ids a `NumCacheNodes` decrease removes, matching what
+ * CloudFormation sent (issue #5441, CloudTrail on real change-set runs,
+ * memcached, us-east-1): it keeps the nodes with the HIGHEST ids --
+ * 3 nodes to 1 removed `0001, 0002`; two nodes in us-east-1a and one in
+ * us-east-1c, to `[us-east-1c, us-east-1a]`, removed the lower us-east-1a
+ * node -- and, with a desired `PreferredAvailabilityZones`, keeps only nodes
+ * whose zone the list still names (`[1a, 1b, 1c]` to `[1a, 1c]` removed the
+ * us-east-1b node). Returned lowest id first, as CloudFormation sent them.
+ *
+ * `undefined` when the kept nodes cannot reach the desired count without
+ * adding a node in a new zone: a removal and an addition in one update.
+ */
+export function nodesToRemove(
+  nodes: readonly { id: string | undefined; zone: string | undefined }[],
+  desiredCount: number,
+  desiredZones: readonly string[] | undefined
+): string[] | undefined {
+  const remainingZones = desiredZones === undefined ? undefined : [...desiredZones];
+  // A node the describe gives no id cannot be named for removal: keep it.
+  const named = nodes.filter(
+    (n): n is { id: string; zone: string | undefined } => n.id !== undefined
+  );
+  const keep = new Set<string>();
+  const unnamed = nodes.length - named.length;
+  const byIdDesc = [...named].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  for (const node of byIdDesc) {
+    if (keep.size + unnamed >= desiredCount) break;
+    if (remainingZones === undefined) {
+      keep.add(node.id);
+      continue;
+    }
+    const i = node.zone === undefined ? -1 : remainingZones.indexOf(node.zone);
+    if (i >= 0) {
+      remainingZones.splice(i, 1);
+      keep.add(node.id);
+    }
+  }
+  if (keep.size + unnamed < desiredCount) return undefined;
+  return named
+    .map((n) => n.id)
+    .filter((id) => !keep.has(id))
+    .sort();
+}
+
+/**
  * AWS ElastiCache Provider
  *
  * Implements resource provisioning for ElastiCache resources:
@@ -72,6 +165,54 @@ export class ElastiCacheProvider implements ResourceProvider {
   private createClient?: ElastiCacheClient;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ElastiCacheProvider');
+
+  /**
+   * The failure wrap every SubnetGroup / CacheCluster create, update and
+   * delete catch builds.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * `maskSecrets` (`mask`), and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}). A cdkd-authored or
+   * transport error keeps its text, masked, stamped only when the mask changed
+   * it (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The deletes check `*NotFoundFault` by name before
+   * they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -168,13 +309,15 @@ export class ElastiCacheProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
-        return this.createSubnetGroup(logicalId, resourceType, properties);
+        return this.createSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::ElastiCache::CacheCluster':
-        return this.createCacheCluster(logicalId, resourceType, properties);
+        return this.createCacheCluster(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -190,8 +333,9 @@ export class ElastiCacheProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::ElastiCache::SubnetGroup':
         return this.updateSubnetGroup(
@@ -199,7 +343,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          mask
         );
       case 'AWS::ElastiCache::CacheCluster':
         return this.updateCacheCluster(
@@ -207,7 +352,8 @@ export class ElastiCacheProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          mask
         );
       default:
         throw new ProvisioningError(
@@ -246,7 +392,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async createSubnetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CacheSubnetGroup ${logicalId}`);
     // go-to-k/cdkd#3994: `Tags` was declared handled and never sent; a
@@ -255,7 +402,7 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     const cacheSubnetGroupName =
       (properties['CacheSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::ElastiCache::SubnetGroup', logicalId);
 
     try {
       await this.getCreateClient().send(
@@ -285,12 +432,17 @@ export class ElastiCacheProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        cacheSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CacheSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            cacheSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -300,7 +452,8 @@ export class ElastiCacheProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheSubnetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -371,12 +524,17 @@ export class ElastiCacheProvider implements ResourceProvider {
       // cdkd's own refusal (the missing-ARN one above) passes through as it is.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CacheSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -410,12 +568,17 @@ export class ElastiCacheProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CacheSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CacheSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -425,7 +588,8 @@ export class ElastiCacheProvider implements ResourceProvider {
   private async createCacheCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CacheCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -433,7 +597,7 @@ export class ElastiCacheProvider implements ResourceProvider {
 
     const cacheClusterId =
       (properties['ClusterName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 40, lowercase: true });
+      generatedNameFor('AWS::ElastiCache::CacheCluster', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateCacheCluster returned (no self-cleanup).
     let clusterCreated = false;
@@ -476,6 +640,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         })
       );
       clusterCreated = true;
+      reportCreatedResource(logicalId, resourceType, cacheClusterId); // go-to-k/cdkd#5511
 
       this.logger.debug(`Successfully created CacheCluster ${logicalId}: ${cacheClusterId}`);
 
@@ -515,12 +680,17 @@ export class ElastiCacheProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              cacheClusterId,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create CacheCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  cacheClusterId,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateCacheCluster returned (another owner's name).
@@ -536,19 +706,23 @@ export class ElastiCacheProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask?: MaskerFn
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CacheCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
-      // Class 2 sanitization: `readCurrentState` always-emits
-      // `VpcSecurityGroupIds: []` for clusters without VPC SGs (legacy
-      // EC2-Classic, or transient state). Round-tripping an empty array
-      // through `ModifyCacheClusterCommand.SecurityGroupIds` makes AWS
-      // reject with "must specify at least one security group" — pass
-      // `undefined` instead so AWS treats the field as "no change".
+      // An absent or empty desired `VpcSecurityGroupIds` sends no
+      // `SecurityGroupIds` (an absent Modify member = unchanged), so the
+      // cluster keeps its live groups. That is what CloudFormation does
+      // (#5491, real CloudFormation A/B, us-east-1, a redis cluster in a VPC
+      // with one template security group): removing the property sent a
+      // ModifyCacheCluster with no `securityGroupIds`, `[]` sent
+      // `securityGroupIds: []`, and in both the cluster kept the group.
+      // `undefined` for `[]` also covers `readCurrentState`, which always
+      // emits `VpcSecurityGroupIds: []` for a cluster without VPC groups.
       // Drift detection is unaffected: state `[]` vs AWS `[sg-1]` still
       // surfaces as drift on the read side.
       const rawSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
@@ -573,9 +747,8 @@ export class ElastiCacheProvider implements ResourceProvider {
       //     clusters (ipv4 / ipv6 NetworkType forces the matching value),
       //     and AWS does not document the dual-stack default; a wrong reset
       //     flips client DNS resolution, so leave unchanged.
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
+      //   * VpcSecurityGroupIds — CloudFormation keeps the live groups on
+      //     removal (#5491 A/B; see the empty-guard above).
 
       // #5004 (real CloudFormation A/B, us-east-1): CloudFormation KEEPS the
       // live value when SnapshotRetentionLimit, AutoMinorVersionUpgrade or
@@ -585,11 +758,36 @@ export class ElastiCacheProvider implements ResourceProvider {
       // LogDeliveryConfigurations (CloudFormation disables delivery), below.
       const notificationTopicArn = properties['NotificationTopicArn'] as string | undefined;
 
+      // go-to-k/cdkd#5438 (real CloudFormation runs, us-east-1, redis and
+      // memcached): a CacheNodeType change is an in-place ModifyCacheCluster
+      // with ApplyImmediately for both engines, same cluster id. CloudFormation
+      // sends it on every update, so a cluster whose live type drifted from
+      // the template is scaled back by the next update; an unchanged live type
+      // is a no-op for AWS.
+      const desiredNodeType = properties['CacheNodeType'] as string | undefined;
+      const nodeChanges = await this.planNodeChanges(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties
+      );
+      const placement = nodeChanges.placement;
+      this.warnNotAppliedInPlace(logicalId, properties, previousProperties, placement);
+
       await this.getClient().send(
         new ModifyCacheClusterCommand({
           CacheClusterId: physicalId,
           NumCacheNodes:
             properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined,
+          ...(desiredNodeType !== undefined && { CacheNodeType: desiredNodeType }),
+          ...(placement && {
+            NewAvailabilityZones: placement.newAvailabilityZones,
+            ...(placement.azMode !== undefined && { AZMode: placement.azMode }),
+          }),
+          ...(nodeChanges.removeIds.length > 0 && {
+            CacheNodeIdsToRemove: nodeChanges.removeIds,
+          }),
           SecurityGroupIds: sgIds,
           CacheParameterGroupName: properties['CacheParameterGroupName'] as string | undefined,
           EngineVersion: properties['EngineVersion'] as string | undefined,
@@ -626,11 +824,29 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated CacheCluster ${logicalId}`);
 
-      // Wait for cluster to become available after modification
-      await this.waitForClusterAvailable(physicalId);
+      // Wait for cluster to become available after modification, and until
+      // it REPORTS the template node type: the status can still read
+      // `available` right after the Modify returns, and a scale measured about
+      // ten minutes on cache.t4g, so this wait's cap is longer.
+      if (desiredNodeType !== undefined || nodeChanges.removeIds.length > 0) {
+        await this.waitForClusterAvailable(
+          physicalId,
+          NODE_TYPE_MODIFY_WAIT_MS,
+          desiredNodeType,
+          nodeChanges.removeIds
+        );
+      } else {
+        await this.waitForClusterAvailable(physicalId);
+      }
 
       // Describe to get updated attributes
       const described = await this.describeCacheCluster(physicalId);
+      this.warnTransitEncryptionNotApplied(
+        logicalId,
+        properties,
+        previousProperties,
+        described?.TransitEncryptionEnabled
+      );
 
       // Apply tag diff. ElastiCache uses ARN-keyed AddTagsToResource /
       // RemoveTagsFromResource.
@@ -670,12 +886,17 @@ export class ElastiCacheProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CacheCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -746,17 +967,211 @@ export class ElastiCacheProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CacheCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CacheCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Warn when the template's `TransitEncryptionEnabled` changed and the
+   * cluster does not have it (issue #5438): ModifyCacheCluster has no such
+   * member, and a real CloudFormation update completed with encryption in
+   * transit still off. An absent previous value is the create default
+   * (`false`), so adding `false` is no change. `live` is the value the
+   * post-update describe reports; when it reports none, the previous
+   * template value stands in for it.
+   */
+  private warnTransitEncryptionNotApplied(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    live: boolean | undefined
+  ): void {
+    const next = properties['TransitEncryptionEnabled'];
+    if (next === undefined) return;
+    const prev = previousProperties['TransitEncryptionEnabled'] ?? false;
+    if (isDeepStrictEqual(next, prev)) return;
+    const current = live ?? prev;
+    if (isDeepStrictEqual(next, current)) return;
+    const state = current === true ? 'ENABLED' : 'DISABLED';
+    this.logger.warn(
+      safeMsg`CacheCluster ${logicalId}: the cluster still has encryption in transit ${state} ` +
+        safeMsg`(the template now says TransitEncryptionEnabled: ${String(next)}). ` +
+        `ModifyCacheCluster cannot change it, and CloudFormation leaves it unchanged too; ` +
+        `to change it, replace the cluster, for example by changing its logical ID.`
+    );
+  }
+
+  /**
+   * The node additions and removals an update sends, from one describe of
+   * the live nodes (issues #5438, #5441). Real CloudFormation runs on
+   * memcached, us-east-1:
+   *
+   * - Added nodes: CloudFormation sends `NewAvailabilityZones` -- the desired
+   *   `PreferredAvailabilityZones` minus the zones the live nodes occupy --
+   *   with the desired `AZMode`, and nothing when that difference is empty
+   *   (1 node in us-east-1c to `[us-east-1c, us-east-1b]` sent
+   *   `NewAvailabilityZones: [us-east-1b]`). A difference with no node added
+   *   is sent as well, and AWS refuses it, as it refused CloudFormation's.
+   * - Removed nodes: AWS refuses a lower `NumCacheNodes` without
+   *   `CacheNodeIdsToRemove`. CloudFormation keeps the nodes with the HIGHEST
+   *   ids and removes the rest, first any node in a zone the desired
+   *   `PreferredAvailabilityZones` no longer lists (`nodesToRemove`).
+   *
+   * The describe is made only when the desired zone list or `NumCacheNodes`
+   * changed from the previous template.
+   */
+  private async planNodeChanges(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): Promise<{
+    placement: { newAvailabilityZones: string[]; azMode: AZMode | undefined } | undefined;
+    removeIds: string[];
+  }> {
+    const none = { placement: undefined, removeIds: [] };
+    const desiredZones = properties['PreferredAvailabilityZones'];
+    const zones =
+      Array.isArray(desiredZones) && desiredZones.length > 0
+        ? (desiredZones as string[])
+        : undefined;
+    const countChanged =
+      String(properties['NumCacheNodes']) !== String(previousProperties['NumCacheNodes']);
+    if (
+      !countChanged &&
+      (zones === undefined ||
+        isDeepStrictEqual(zones, previousProperties['PreferredAvailabilityZones']))
+    ) {
+      return none;
+    }
+    // Without a zone list, only a decrease needs the live nodes (their ids).
+    if (
+      zones === undefined &&
+      !(Number(properties['NumCacheNodes']) < Number(previousProperties['NumCacheNodes']))
+    ) {
+      return none;
+    }
+    const live = await this.describeCacheCluster(physicalId);
+    const liveNodes = (live?.CacheNodes ?? []).map((n) => ({
+      id: n.CacheNodeId,
+      zone: n.CustomerAvailabilityZone,
+    }));
+    const desiredCount =
+      properties['NumCacheNodes'] != null ? Number(properties['NumCacheNodes']) : undefined;
+
+    // Nodes are removed only when the TEMPLATE lowered the count (every
+    // measured CloudFormation removal was one), and only from a cluster whose
+    // live node count is the previous template count: a cluster scaled
+    // outside the template would lose more nodes than the template change
+    // asks for, so it is refused, never trimmed.
+    const previousCount = Number(previousProperties['NumCacheNodes']);
+    const templateLowered = Number(properties['NumCacheNodes']) < previousCount;
+    let removeIds: string[] = [];
+    if (templateLowered && desiredCount !== undefined && desiredCount < liveNodes.length) {
+      if (liveNodes.length !== previousCount) {
+        throw new ProvisioningError(
+          safeMsg`Cannot update CacheCluster ${logicalId}: the template lowers NumCacheNodes from ${String(previousCount)} ` +
+            safeMsg`to ${String(desiredCount)}, but the cluster has ${String(liveNodes.length)} nodes, so ` +
+            `the removal would delete nodes the template change does not account for. Deploy ` +
+            `NumCacheNodes set to the live count first, then lower it.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const plan = nodesToRemove(liveNodes, desiredCount, zones);
+      if (plan === undefined) {
+        // A list sharing no zone with the PREVIOUS template list never gets
+        // here: the deploy replaces the cluster for it, as CloudFormation
+        // does (issue #5458, `replacement-rules.ts`).
+        throw new ProvisioningError(
+          safeMsg`Cannot update CacheCluster ${logicalId}: lowering NumCacheNodes to ${String(desiredCount)} ` +
+            `with this PreferredAvailabilityZones list needs a node removed and a node added in a ` +
+            `zone no live node occupies, in one update, which ModifyCacheCluster cannot do. ` +
+            `Replace the cluster (for example by changing its logical ID), or list only zones the kept nodes occupy.`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      removeIds = plan;
+      this.logger.info(
+        safeMsg`CacheCluster ${logicalId}: NumCacheNodes ${String(previousProperties['NumCacheNodes'])} -> ${String(desiredCount)}, removing cache nodes ${removeIds.join(', ')}`
+      );
+    }
+
+    // A removal and an addition cannot share one Modify (AWS refuses it), so
+    // a decrease sends no new zones.
+    const newAvailabilityZones =
+      zones === undefined || removeIds.length > 0
+        ? []
+        : availabilityZonesNotCovered(
+            zones,
+            liveNodes
+              .filter((n) => n.id === undefined || !removeIds.includes(n.id))
+              .map((n) => n.zone)
+              .filter((z): z is string => typeof z === 'string')
+          );
+    const placement =
+      newAvailabilityZones.length > 0
+        ? { newAvailabilityZones, azMode: properties['AZMode'] as AZMode | undefined }
+        : undefined;
+    return { placement, removeIds };
+  }
+
+  /**
+   * Warn about template changes ModifyCacheCluster cannot carry (issue
+   * #5438). `PreferredAvailabilityZone` has no ModifyCacheCluster member, and
+   * `AZMode` reaches AWS only beside zones for nodes to add
+   * (`TransitEncryptionEnabled` is reported after the Modify, against the
+   * live value: `warnTransitEncryptionNotApplied`). Real CloudFormation runs completed each such update with
+   * the cluster unchanged, so cdkd completes it too, but says so: the
+   * template and the cluster now disagree until the cluster is replaced.
+   */
+  private warnNotAppliedInPlace(
+    logicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    placement: { azMode: AZMode | undefined } | undefined
+  ): void {
+    const changed = (next: unknown, prev: unknown): boolean =>
+      next !== undefined && !isDeepStrictEqual(next, prev);
+    const notApplied: string[] = [];
+    if (
+      changed(
+        properties['PreferredAvailabilityZone'],
+        previousProperties['PreferredAvailabilityZone']
+      )
+    ) {
+      notApplied.push('PreferredAvailabilityZone');
+    }
+    if (
+      placement?.azMode === undefined &&
+      changed(properties['AZMode'], previousProperties['AZMode'])
+    ) {
+      notApplied.push('AZMode');
+    }
+    if (notApplied.length === 0) return;
+    this.logger.warn(
+      safeMsg`CacheCluster ${logicalId}: the ${notApplied.join(', ')} change is not applied to the ` +
+        `existing cluster (ModifyCacheCluster cannot change it, and CloudFormation leaves it ` +
+        `unchanged too). To apply it, replace the cluster, for example by changing its logical ID.`
+    );
+  }
 
   /**
    * Build the `LogDeliveryConfigurations` input for ModifyCacheCluster so a
@@ -885,7 +1300,9 @@ export class ElastiCacheProvider implements ResourceProvider {
    */
   private async waitForClusterAvailable(
     cacheClusterId: string,
-    maxWaitMs = 600_000
+    maxWaitMs = 600_000,
+    expectedNodeType?: string,
+    removedNodeIds: readonly string[] = []
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
@@ -896,13 +1313,62 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
 
-      if (status === 'available') return;
+      const liveNodeType = cluster?.CacheNodeType;
+      // A removal is done when the describe lists none of the removed nodes
+      // (issue #5441): right after the Modify the cluster can still read
+      // `available` with every node present.
+      const removalDone =
+        removedNodeIds.length === 0 ||
+        (cluster?.CacheNodes !== undefined &&
+          !cluster.CacheNodes.some(
+            (n) => n.CacheNodeId !== undefined && removedNodeIds.includes(n.CacheNodeId)
+          ));
+      if (
+        status === 'available' &&
+        removalDone &&
+        (expectedNodeType === undefined || liveNodeType === expectedNodeType)
+      ) {
+        return;
+      }
+      // A removal AWS accepted and then dropped leaves the nodes listed on an
+      // `available` cluster with no removal pending: fail now, not at the cap.
+      if (
+        !removalDone &&
+        status === 'available' &&
+        (cluster?.PendingModifiedValues?.CacheNodeIdsToRemove ?? []).length === 0 &&
+        Date.now() - startTime > MODIFY_DROPPED_AFTER_MS
+      ) {
+        throw new Error(
+          safeMsg`CacheCluster ${cacheClusterId} is available and still lists cache nodes ${removedNodeIds.join(', ')} with no removal pending; the removal was not applied. Check the cluster's events (aws elasticache describe-events) for the reason, then deploy again.`
+        );
+      }
+      // A scale AWS accepted and then dropped leaves the cluster `available`
+      // on its old type with nothing pending: fail now, not at the cap.
+      if (
+        expectedNodeType !== undefined &&
+        liveNodeType !== expectedNodeType &&
+        status === 'available' &&
+        cluster?.PendingModifiedValues?.CacheNodeType === undefined &&
+        Date.now() - startTime > MODIFY_DROPPED_AFTER_MS
+      ) {
+        throw new Error(
+          safeMsg`CacheCluster ${cacheClusterId} is available with node type ${liveNodeType} and no node-type change pending; the change to ${expectedNodeType} was not applied. Check the cluster's events (aws elasticache describe-events) for the reason, then deploy again.`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
 
-    throw new Error(`Timed out waiting for CacheCluster ${cacheClusterId} to become available`);
+    throw new Error(
+      expectedNodeType === undefined && removedNodeIds.length === 0
+        ? `Timed out waiting for CacheCluster ${cacheClusterId} to become available`
+        : safeMsg`Timed out waiting for CacheCluster ${cacheClusterId} to become available` +
+            (expectedNodeType === undefined ? '' : safeMsg` with node type ${expectedNodeType}`) +
+            (removedNodeIds.length === 0
+              ? ''
+              : safeMsg` without cache nodes ${removedNodeIds.join(', ')}`)
+    );
   }
 
   /**

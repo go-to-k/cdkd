@@ -33,6 +33,49 @@ There are four usual causes:
 | Cloud Control throttling | `Rate exceeded` under `--verbose`; see [Cloud Control API Rate Limit](#cloud-control-api-rate-limit) |
 | Asset publishing | Slow asset steps before provisioning starts; see the asset flags under [Cloud Control API Rate Limit](#cloud-control-api-rate-limit) |
 
+To see which step takes the time, [measure where the time goes](#measure-where-the-time-goes).
+
+### Measure where the time goes
+
+`CDKD_PHASE_TIMINGS=1` makes a deploy end with a report of where its time
+went. It makes no AWS call of its own.
+
+```bash
+CDKD_PHASE_TIMINGS=1 cdkd deploy MyStack
+```
+
+Trimmed to its main lines:
+
+```text
+Phase timings (CDKD_PHASE_TIMINGS=1):
+  run (16.10s wall)
+    node startup + module load         328ms   2%
+    synth + state bucket prep          1.70s  11%
+    assets + stacks, summary          13.43s  83%
+  stack MyStack (us-east-1) (12.61s wall)
+    lock acquire                       592ms   5%
+    state load                         389ms   3%
+    diff                                 1ms   0%
+    resource create                   13.40s  x5, max 8.21s (Table AWS::DynamoDB::Table)
+    resource DAG                       8.22s  65%
+    final state save                   1.25s  10%
+```
+
+| Line | What it means |
+| --- | --- |
+| A line with `%` | One step of the run, one after another; the steps add up to the scope's wall time |
+| A line with `x<n>` | A repeated operation: its count, the total, and its slowest occurrence |
+| `resource DAG` | All resource operations, run in parallel |
+| `resource create` / `update` / `delete` | The provider calls, added up; they overlap, so the total can exceed the wall time |
+| `state saves`, `cloud control polls`, `provider waits` | Steps inside the state saves, the Cloud Control waits and a provider's own waits, added up across the run |
+
+When most of the time is in `resource DAG`, the slowest resource decides the
+deploy, unless the stack has more independent resources than `--concurrency`
+(default 20). The `ready, waiting for a --concurrency slot` line shows how long
+resources waited for a free slot, creates, updates and deletes added up; when
+it is large, raise `--concurrency`. Time in the other steps is cdkd's own work, mostly round trips to the
+state bucket.
+
 ### Inspect the dependency graph
 
 A dry-run deploy with `--verbose` builds the graph and stops before touching
@@ -55,7 +98,7 @@ A level is a group of resources that do not depend on each other. Resources
 in a chain cannot run at the same time, so a graph with many levels and few
 resources per level is what slows a deploy down. A real deploy prints the same
 figure in one line:
-`Deploying 4 resource(s) (DAG: 3 levels, max parallel: 10)`.
+`Deploying 4 resource(s) (DAG: 3 levels, max parallel: 20)`.
 
 During a deploy each resource starts as soon as its own dependencies
 complete, so cdkd does not wait for a whole level to finish. A destroy
@@ -128,7 +171,7 @@ only under `--verbose` or after the retries are used up. If throttling fails
 the deploy, lower the concurrency:
 
 ```bash
-# default 10, concurrent resource operations
+# default 20, concurrent resource operations
 cdkd deploy MyStack --concurrency 4
 
 # default 4, concurrent stacks

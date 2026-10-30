@@ -14,8 +14,11 @@ import * as ecr from 'aws-cdk-lib/aws-ecr';
  * ONE app:
  *
  *   - `REPO_NAME` set: an explicit `repositoryName`; unset: none, so cdkd
- *     generates `<stack>-<logicalId>` (lower-cased). Dropping or adding the
- *     name changes the create-only `RepositoryName`: a REPLACEMENT.
+ *     generates `<stack>-<logicalId>-<12 hex>` (lower-cased; the suffix hashes
+ *     the stack instance id, the logical id and the record's name generation,
+ *     go-to-k/cdkd#5064). Dropping or adding the name changes the create-only
+ *     `RepositoryName`: a REPLACEMENT, whose create runs at the NEXT name
+ *     generation — which is the name verify.sh's squatter takes.
  *   - `REPO_KMS=true`: `EncryptionConfiguration` KMS (the AWS-managed key, no
  *     charge), create-only, so a REPLACEMENT that KEEPS the name — the
  *     genuine delete-first case (negative control).

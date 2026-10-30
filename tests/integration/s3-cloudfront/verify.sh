@@ -97,6 +97,28 @@ cleanup() {
         --if-match "${oac_etag}" >/dev/null 2>&1 || true
     fi
   fi
+  # Same sweep for the #5393 signer key group and public key (fixed names
+  # `${STACK}-signer-kg` / `${STACK}-signer-key`): key group first, since a
+  # public key cannot be deleted while a key group lists it. Exact names only.
+  local kg_id kg_etag pk_id pk_etag
+  kg_id=$(aws cloudfront list-key-groups \
+    --query "KeyGroupList.Items[?KeyGroup.KeyGroupConfig.Name=='${STACK}-signer-kg'].KeyGroup.Id | [0]" \
+    --output text 2>/dev/null)
+  if [ -n "${kg_id}" ] && [ "${kg_id}" != "None" ]; then
+    kg_etag=$(aws cloudfront get-key-group --id "${kg_id}" --query ETag --output text 2>/dev/null)
+    if [ -n "${kg_etag}" ] && [ "${kg_etag}" != "None" ]; then
+      aws cloudfront delete-key-group --id "${kg_id}" --if-match "${kg_etag}" >/dev/null 2>&1 || true
+    fi
+  fi
+  pk_id=$(aws cloudfront list-public-keys \
+    --query "PublicKeyList.Items[?Name=='${STACK}-signer-key'].Id | [0]" \
+    --output text 2>/dev/null)
+  if [ -n "${pk_id}" ] && [ "${pk_id}" != "None" ]; then
+    pk_etag=$(aws cloudfront get-public-key --id "${pk_id}" --query ETag --output text 2>/dev/null)
+    if [ -n "${pk_etag}" ] && [ "${pk_etag}" != "None" ]; then
+      aws cloudfront delete-public-key --id "${pk_id}" --if-match "${pk_etag}" >/dev/null 2>&1 || true
+    fi
+  fi
   set -eu
 }
 
@@ -224,6 +246,34 @@ if [ "${OCH_COUNT}" != "1" ]; then
   exit 1
 fi
 echo "    OK: OriginCustomHeaders reached AWS as CustomHeaders (#1373 rename)"
+
+# --- Assertion: TrustedKeyGroups carries Enabled (#5393) ----------------
+# The `/private/*` behavior's bare CFn `TrustedKeyGroups` list must reach AWS
+# as { Enabled: true, Quantity: 1, Items: [<the stack's key group>] }. Before
+# #5393 the wrapper had no `Enabled` and CloudFront refused the whole
+# distribution with MalformedXML, so Phase 1's deploy itself failed.
+KG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::CloudFront::KeyGroup") | .value.physicalId] | if length == 1 then .[0] else empty end')
+PK_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::CloudFront::PublicKey") | .value.physicalId] | if length == 1 then .[0] else empty end')
+if [ -z "${KG_ID}" ] || [ -z "${PK_ID}" ]; then
+  echo "FAIL: cdkd state does not hold exactly one AWS::CloudFront::KeyGroup ('${KG_ID}') and one AWS::CloudFront::PublicKey ('${PK_ID}') record" >&2
+  exit 1
+fi
+# usage: tkg_of '<DistributionConfig json>' -> the /private/* TrustedKeyGroups
+# as compact JSON ("null" when the behavior or the member is missing).
+tkg_of() {
+  echo "$1" | jq -c '[.CacheBehaviors.Items[]? | select(.PathPattern == "/private/*") | .TrustedKeyGroups] | if length == 1 then .[0] else null end'
+}
+TKG_EXPECTED=$(jq -cn --arg id "${KG_ID}" '{Enabled: true, Quantity: 1, Items: [$id]}')
+# Read into a variable first: inside the function's argument a failed read
+# would surface as an empty TrustedKeyGroups instead of its AWS error.
+TKG_CONF=$(aws cloudfront get-distribution-config --id "${DIST_ID}" --region "${REGION}" \
+  --query 'DistributionConfig' --output json)
+TKG_JSON=$(tkg_of "${TKG_CONF}")
+if [ "$(echo "${TKG_JSON}" | jq -c '{Enabled, Quantity, Items}')" != "${TKG_EXPECTED}" ]; then
+  echo "FAIL: /private/* TrustedKeyGroups is ${TKG_JSON}, expected ${TKG_EXPECTED} (issue #5393)" >&2
+  exit 1
+fi
+echo "    OK: /private/* TrustedKeyGroups reached AWS with Enabled: true (#5393)"
 
 # --- Assertion: AWS reflects the two CDK Tags -------------------------
 TAGS_JSON=$(aws cloudfront list-tags-for-resource --resource "${DIST_ARN}" --region "${REGION}" \
@@ -419,6 +469,15 @@ if [ "${POST_OCH_COUNT}" != "1" ]; then
 fi
 echo "    OK: OriginCustomHeaders survived the merge update (#1373 update-wipe closed)"
 
+# The update re-sends the template's CacheBehaviors, so the #5393 Enabled
+# derivation runs on the UpdateDistribution path too.
+POST_TKG_JSON=$(tkg_of "${POST_CONF}")
+if [ "$(echo "${POST_TKG_JSON}" | jq -c '{Enabled, Quantity, Items}')" != "${TKG_EXPECTED}" ]; then
+  echo "FAIL: /private/* TrustedKeyGroups after Phase 1.5 is ${POST_TKG_JSON}, expected ${TKG_EXPECTED} (issue #5393 on the update path)" >&2
+  exit 1
+fi
+echo "    OK: /private/* TrustedKeyGroups kept Enabled: true across the update (#5393)"
+
 # Issue #2613: the same update adds a bucket policy statement, an in-place
 # PutBucketPolicy through the provider's update() and its recorded-region guard.
 POST_SIDS=$(update_sid_count "${POLICY_BUCKET}")
@@ -480,6 +539,12 @@ if [ -z "${DIST_GONE}" ]; then
   exit 1
 fi
 echo "    OK: CloudFront distribution is gone"
+
+# The key group can only go once the distribution no longer references it,
+# and the public key only once the key group is gone (#5393 arm).
+assert_gone "CloudFront key group ${KG_ID} still exists after destroy" aws cloudfront get-key-group --id "${KG_ID}"
+assert_gone "CloudFront public key ${PK_ID} still exists after destroy" aws cloudfront get-public-key --id "${PK_ID}"
+echo "    OK: CloudFront key group and public key are gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

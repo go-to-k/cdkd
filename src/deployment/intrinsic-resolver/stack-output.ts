@@ -10,6 +10,7 @@ import { canonicalizeRegion, sameRegion } from '../../utils/aws-partition.js';
 import {
   ROLE_ARN_MAX_CODE_POINTS,
   STACK_REF_MAX_CODE_POINTS,
+  asIsMessage,
   displayIdent,
   displaySafe,
   displayStackName,
@@ -27,11 +28,13 @@ import {
   quotedRender,
 } from './support.js';
 import { markNonRetryable } from '../retryable-errors.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   type CdkCrossAccountRefVerdict,
   cdkCrossAccountRefRefusal,
   classifyCdkCrossAccountRef,
   describeInnermostAwsError,
+  innermostCause,
   isLookupRoleDenial,
   noLookupRoleReason,
   producerAbsentReason,
@@ -406,12 +409,25 @@ export async function resolveGetStackOutput(
     // never a fallback to other credentials. It quotes the INNERMOST AWS error
     // (the wrappers' advice is about a user-chosen role), sanitized, and the
     // error itself rides along as `cause`.
-    refuseCdkRead = (error: unknown): Error =>
-      refuseCdkRef(
+    //
+    // go-to-k/cdkd#2319: the refusal reaches the persisted deploy events, and
+    // AWS words an AssumeRole or S3 denial with the CALLER's assumed-role ARN.
+    // An AWS-authored innermost error is quoted by its class plus the
+    // `--verbose` pointer, its text going to `debug`; the lookup role named
+    // above is the producer's own (its CDK bootstrap), so it stays.
+    refuseCdkRead = (error: unknown): Error => {
+      const denialText = (text: string): string =>
         `assuming the lookup role ${shownLookupRoleArn} or reading cdkd-state-${producerAccount} ` +
-          `with it was denied: ${describeInnermostAwsError(error)}`,
-        error
+        `with it was denied: ${text}`;
+      const awsText = describeInnermostAwsError(error);
+      const innermost = innermostCause(error);
+      const failure = innermost instanceof Error ? describeAwsFailure(innermost) : undefined;
+      if (failure?.redacted !== true) return refuseCdkRef(denialText(awsText), error);
+      resolver.logger.debug(
+        safeMsg`Fn::GetStackOutput: ${asIsMessage(displayMasked(resolver, denialText(awsText), context))}`
       );
+      return refuseCdkRef(denialText(displaySafe(failure.summary)), error);
+    };
     resolver.logger.debug(
       safeMsg`Fn::GetStackOutput: ${shownRoleArn} is the AWS CDK-generated cross-account reader role; reading through the producer account's lookup role ${shownLookupRoleArn}`
     );

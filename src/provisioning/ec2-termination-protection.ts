@@ -98,6 +98,9 @@ export async function observeThenDisableInstanceApiTermination(
 ): Promise<boolean> {
   let observedOn = false;
   try {
+    // No `mask` (#5180): an instance id is EC2-assigned (`i-...`), never a
+    // template value, so neither it nor AWS's text about it can carry a
+    // dynamic-reference plaintext.
     await observeThenDisableProtection({
       flip,
       logger,

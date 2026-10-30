@@ -8,11 +8,12 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { clearOnUpdateRemoval } from '../update-removal.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
@@ -25,9 +26,13 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
-import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
+import {
+  applyDocDBTagDiff,
+  attachDocDBTags,
+  isDocDBNotFoundError,
+  wrapDocDBFailure,
+} from './docdb-shared.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
  * AWS DocumentDB DB subnet group provider (`AWS::DocDB::DBSubnetGroup`).
@@ -100,10 +105,24 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * The failure wrap the create, update and delete catches throw
+   * ({@link wrapDocDBFailure}, go-to-k/cdkd#2319). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapDocDBFailure(this.logger, mask, error, build);
+  }
+
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.assertType(resourceType, logicalId);
     this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
@@ -112,7 +131,7 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::DocDB::DBSubnetGroup', logicalId);
 
     try {
       await this.getCreateClient().send(
@@ -137,12 +156,17 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DocDB DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        dbSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DocDB DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            dbSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -224,12 +248,17 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DocDB DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DocDB DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -267,12 +296,17 @@ export class DocDBSubnetGroupProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DocDB DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DocDB DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

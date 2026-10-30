@@ -45,6 +45,10 @@ import {
   resetKmsCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/kms-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const KEY_TYPE = 'AWS::KMS::Key';
 const KEY_ID = '1234abcd-12ab-34cd-56ef-1234567890ab';
@@ -125,5 +129,34 @@ describe('KMSProvider created-before-failure mark (go-to-k/cdkd#4583)', () => {
     });
     expect(error).toBeInstanceOf(Error);
     expect(createdBeforeFailure(error, 'MyKey', 'AWS::KMS::Alias')).toBeUndefined();
+  });
+
+  it('reports the key id to the sink before the first follow-up call (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyKey', KEY_TYPE);
+    let reportAtFollowUp: unknown = 'not-called';
+    script({ EnableKeyRotationCommand: new Error('EnableKeyRotation boom') });
+    const scripted = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'EnableKeyRotationCommand') reportAtFollowUp = sink.report;
+      return scripted(command);
+    });
+
+    await expect(
+      collectCreatedResources(sink, () =>
+        provider.create('MyKey', KEY_TYPE, { EnableKeyRotation: true })
+      )
+    ).rejects.toThrow();
+    expect(reportAtFollowUp).toEqual({ physicalId: KEY_ID });
+    expect(sink.report).toEqual({ physicalId: KEY_ID });
+  });
+
+  it('reports nothing when CreateKey itself failed (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyKey', KEY_TYPE);
+    script({ CreateKeyCommand: new Error('LimitExceededException') });
+
+    await expect(
+      collectCreatedResources(sink, () => provider.create('MyKey', KEY_TYPE, {}))
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
   });
 });

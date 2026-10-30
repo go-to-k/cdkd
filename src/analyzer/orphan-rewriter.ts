@@ -2,6 +2,7 @@ import {
   carriesDynamicReference,
   cfnRefValueFromPhysicalId,
   isImpossibleEmptyStoredAttribute,
+  lacksRecordedTableArn,
   isStalePlaceholderArnAttribute,
   refStateLookupFromResource,
 } from '../deployment/intrinsic-function-resolver.js';
@@ -14,7 +15,8 @@ import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { isSensitiveAttributeName } from '../utils/stringify.js';
 import { isCustomResourceType } from '../provisioning/custom-resource-secure-references.js';
 import { injectiveKey } from '../state/record-keys.js';
-import { isReadableBag } from '../types/state.js';
+import { isReadableBag, stackInstanceIdCarriedFrom } from '../types/state.js';
+import { retiredNameGenerationsAfter } from '../state/name-generation.js';
 import { isReadableResourceEntry } from '../state/malformed-resources-bag.js';
 
 /**
@@ -372,6 +374,18 @@ class AttributeFetcher {
     // Before any read of it, and whatever `--force` says: see the constant.
     if (!isResolvableOrphanRecord(o)) {
       return { ok: false, reason: UNREADABLE_ORPHAN_RECORD_REASON };
+    }
+    // go-to-k/cdkd#5316: a table created before cdkd recorded its `TableARN`
+    // (go-to-k/cdkd#739) has no value CloudFormation's `Ref` returns in state,
+    // and the composite id is not one. Refused rather than spliced; the deploy
+    // re-reads such a record from AWS, this command does not.
+    if (lacksRecordedTableArn(o)) {
+      return {
+        ok: false,
+        reason:
+          "state records no usable 'TableARN' for this S3 Tables table, the value CloudFormation's Ref " +
+          'returns, and the physical id is NOT that value',
+      };
     }
     let maskedKey: string | undefined;
     const value = cfnRefValueFromPhysicalId(
@@ -740,6 +754,18 @@ export async function rewriteResourceReferences(
   return {
     state: {
       ...carriedState,
+      ...stackInstanceIdCarriedFrom(state),
+      // go-to-k/cdkd#5064 phase 2: an orphaned record left the stack, so a
+      // later create of its logical id asks for a name it never held.
+      ...retiredNameGenerationsAfter(
+        state,
+        orphanLogicalIds
+          .map((logicalId) => ({ logicalId, record: orphans[logicalId] }))
+          .filter(
+            (entry): entry is { logicalId: string; record: ResourceState } =>
+              entry.record !== null && typeof entry.record === 'object'
+          )
+      ),
       resources: newResources,
       outputs: newOutputs,
       lastModified: Date.now(),

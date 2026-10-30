@@ -121,7 +121,10 @@ verify, clean up.
    **Never run it unwatched, and do not reach for `timeout`** — it is not in
    stock macOS (its absence is exit 127 in 0s, which reads as instant
    completion). Shell watchdog, firing made visible. A SET runs this whole block
-   per fixture, in a background subshell `cd`'d into it with its own `T`, stdout
+   per fixture, with the `AWS_REGION` / `STATE_BUCKET` above (go-to-k/cdkd#5265),
+   the driver inside `bash -c` (zsh does not word-split an unquoted `$row`, so a
+   `"<name> 1500"` row runs a fixture named `<name> 1500`: #5268, #5271),
+   in a background subshell `cd`'d into it with its own `T`, stdout
    to a per-fixture file that gets `echo "$T $VPID $LOG"` right after the spawn;
    stop one with `kill -TERM -- -<its VPID>` so its trap cleans up, `-9` only
    once it ignores TERM (the gate refuses `pkill -f`); a set halting on a FAIL
@@ -141,6 +144,8 @@ verify, clean up.
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
    # FIRE also reaches verify's `node` child. `>>`: cleanup output after a FIRE
    # must not overwrite WATCHDOG_FIRED. Before a re-run, `ps -g <old VPID>` is rc=1.
+   # The env: a profile's `cli_auto_prompt`/pager otherwise hangs a bad `aws` call.
+   AWS_PAGER= AWS_CLI_AUTO_PROMPT=off \
    perl -e 'setpgrp(0,0); exec @ARGV or die' bash verify.sh >> "$LOG" 2>&1 &
    VPID=$!
    # 5s polls that end on their own: NEVER kill the watchdog (orphaned `sleep`,
@@ -206,6 +211,8 @@ verify, clean up.
    - S3 state orphans: `cls3 -b <bucket> -r <region> -k cdkd/<StackName>/`,
      which also purges the versions `aws s3 rm` would leave readable
      (or `cdkd state orphan '<StackName>'`, which also handles the lock key).
+     A record this binary cannot read (a newer schema) is a PEER's, never an
+     orphan: STOP and report, delete nothing (#5116 purged one, every version).
    - Other types: infer delete order from CFn dependency rules (children before
      parents). Always pass `--region`. Re-run step 6 after cleanup.
 

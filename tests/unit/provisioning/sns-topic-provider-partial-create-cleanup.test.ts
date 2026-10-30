@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
-const { mockSend, ownershipSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, ownershipSend, warnSpy, debugSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   // The lookup before the create (go-to-k/cdkd#4403): STS for the account,
   // then GetTopicAttributes on the ARN the name maps to. Its own spy, so each
@@ -8,6 +8,7 @@ const { mockSend, ownershipSend, warnSpy } = vi.hoisted(() => ({
   // name is free by default.
   ownershipSend: vi.fn(),
   warnSpy: vi.fn(),
+  debugSpy: vi.fn(),
 }));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -25,7 +26,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
-    debug: vi.fn(),
+    debug: debugSpy,
     info: vi.fn(),
     warn: warnSpy,
     error: vi.fn(),
@@ -44,6 +45,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { SNSTopicProvider } from '../../../src/provisioning/providers/sns-topic-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 import {
   FORGED_CTRL,
@@ -60,6 +67,7 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
+    debugSpy.mockReset();
     ownershipSend.mockReset();
     ownershipSend.mockImplementation(async (command: { constructor: { name: string } }) => {
       if (command.constructor.name === 'GetCallerIdentityCommand') {
@@ -366,6 +374,51 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
     expect(warnMsg).toContain(TOPIC_ARN);
   });
 
+  it('names an AWS-authored cleanup failure by its class at warn, its masked text at debug (#2319)', async () => {
+    const denied =
+      'User: arn:aws:sts::111122223333:assumed-role/deployer/s3cr3t is not authorized to perform: sns:DeleteTopic';
+    mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN }); // CreateTopicCommand
+    mockSend.mockRejectedValueOnce(new Error('SetTopicAttributes boom (original)'));
+    mockSend.mockRejectedValueOnce(awsSdkError(denied, 'AuthorizationErrorException'));
+
+    await expect(
+      provider.create(
+        'MyTopic',
+        RESOURCE_TYPE,
+        { TopicName: 'MyTopic', DataProtectionPolicy: { Name: 'test', Statement: [] } },
+        { maskSecrets: (t: string) => t.replaceAll('s3cr3t', '***') }
+      )
+    ).rejects.toThrow('SetTopicAttributes boom (original)');
+
+    const warnMsg = String(warnSpy.mock.calls[0]?.[0]);
+    expect(warnMsg).toContain(
+      `Failed to clean up partially-created SNS topic MyTopic (${TOPIC_ARN}): AuthorizationErrorException. ${VERBOSE_POINTER} Outside`
+    );
+    expect(warnMsg).not.toContain('111122223333');
+    const debugged = debugSpy.mock.calls.map((c) => String(c[0]));
+    expect(debugged).toContain(
+      `Failed to clean up partially-created SNS topic MyTopic (${TOPIC_ARN}): ${denied.replace('s3cr3t', '***')}`
+    );
+    expect(debugged.join('\n')).not.toContain('s3cr3t');
+  });
+
+  it('keeps a cdkd-authored cleanup failure\'s text at warn', async () => {
+    mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN }); // CreateTopicCommand
+    mockSend.mockRejectedValueOnce(new Error('SetTopicAttributes boom (original)'));
+    mockSend.mockRejectedValueOnce(new Error('socket hang up'));
+
+    await expect(
+      provider.create('MyTopic', RESOURCE_TYPE, {
+        TopicName: 'MyTopic',
+        DataProtectionPolicy: { Name: 'test', Statement: [] },
+      })
+    ).rejects.toThrow('SetTopicAttributes boom (original)');
+
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain(
+      `Failed to clean up partially-created SNS topic MyTopic (${TOPIC_ARN}): socket hang up. Outside`
+    );
+  });
+
   describe('the recovery command names the topic ARN through pasteableAwsCommand (issue #3136)', () => {
     async function warnFor(topicArn: string): Promise<string> {
       mockSend.mockResolvedValueOnce({ TopicArn: topicArn }); // CreateTopicCommand
@@ -471,6 +524,61 @@ describe('SNSTopicProvider partial-create cleanup (Issue #376)', () => {
       });
       expect(names).not.toContain('DeleteTopicCommand');
       expect(createdBeforeFailure(error, 'MyTopic', RESOURCE_TYPE)).toBeUndefined();
+    });
+
+    it('reports the topic ARN to the sink before the wiring calls (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyTopic', RESOURCE_TYPE);
+      let reportAtWiring: unknown = 'not-called';
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockImplementationOnce(async () => {
+        reportAtWiring = sink.report;
+        throw new Error('wiring boom');
+      });
+      mockSend.mockRejectedValueOnce(new Error('DeleteTopic boom'));
+      await collectCreatedResources(sink, () => provider.create('MyTopic', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(reportAtWiring).toEqual({ physicalId: TOPIC_ARN });
+      expect(sink.report).toEqual({ physicalId: TOPIC_ARN });
+    });
+
+    it('retracts the report when the cleanup delete succeeded (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyTopic', RESOURCE_TYPE);
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      mockSend.mockResolvedValueOnce({});
+      await collectCreatedResources(sink, () => provider.create('MyTopic', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain('DeleteTopicCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing for a topic that held the name before (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyTopic', RESOURCE_TYPE);
+      ownershipSend.mockImplementation(async (command: { constructor: { name: string } }) =>
+        command.constructor.name === 'GetCallerIdentityCommand'
+          ? { Account: '123456789012', Arn: 'arn:aws:iam::123456789012:user/u' }
+          : { Attributes: { TopicArn: TOPIC_ARN } }
+      );
+      mockSend.mockResolvedValueOnce({ TopicArn: TOPIC_ARN });
+      mockSend.mockRejectedValueOnce(new Error('wiring boom'));
+      await collectCreatedResources(sink, () => provider.create('MyTopic', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(mockSend.mock.calls.map((c) => c[0].constructor.name)).toContain(
+        'SetTopicAttributesCommand'
+      );
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when CreateTopic itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('MyTopic', RESOURCE_TYPE);
+      mockSend.mockRejectedValueOnce(new Error('CreateTopic boom'));
+      await collectCreatedResources(sink, () => provider.create('MyTopic', RESOURCE_TYPE, props)).catch(
+        () => undefined
+      );
+      expect(sink.report).toBeUndefined();
     });
 
     it('does not mark when CreateTopic itself fails', async () => {

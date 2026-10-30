@@ -7,6 +7,7 @@ import {
   UpdateStreamModeCommand,
   UpdateShardCountCommand,
   UpdateMaxRecordSizeCommand,
+  UpdateStreamRecordDistributionStrategyCommand,
   EnableEnhancedMonitoringCommand,
   DisableEnhancedMonitoringCommand,
   AddTagsToStreamCommand,
@@ -19,15 +20,28 @@ import {
   ResourceNotFoundException,
   type EncryptionType,
   type MetricsName,
+  type RecordDistributionStrategy,
 } from '@aws-sdk/client-kinesis';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { readConfigString } from '../config-shape.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
@@ -197,6 +211,12 @@ function previousMetricNames(value: unknown): MetricsName[] {
 }
 
 /**
+ * AWS's `MaxRecordSizeInKiB` for a stream that declares none, and what
+ * CloudFormation resets a removed one to (go-to-k/cdkd#1160, CFn A/B).
+ */
+const DEFAULT_MAX_RECORD_SIZE_KIB = 1024;
+
+/**
  * The `MaxRecordSizeInKiB` twin of {@link readShardLevelMetrics}, with the same
  * three answers and for the same reason.
  *
@@ -303,6 +323,39 @@ function comparableRecordSize(value: unknown, mask: MaskerFn): number | undefine
 }
 
 /**
+ * `RecordDistributionStrategy`'s documented default (CreateStream: "If you do
+ * not specify this parameter, the stream uses `USER_PARTITION_KEY`"). A CFn
+ * A/B (us-east-1, go-to-k/cdkd#2762) showed CloudFormation RESETS a removed
+ * `AUTO` to it, so a template removal sends it.
+ */
+const DEFAULT_RECORD_DISTRIBUTION_STRATEGY = 'USER_PARTITION_KEY';
+
+/**
+ * The `RecordDistributionStrategy` read (go-to-k/cdkd#2762), with the same
+ * three answers as {@link readShardLevelMetrics}. The value set is AWS's to
+ * judge (`AUTO` / `USER_PARTITION_KEY` today), so only the SHAPE is checked: a
+ * non-empty string is `usable`, anything else present `unusable` — an
+ * unresolved intrinsic must not reach the wire as `[object Object]`.
+ */
+type DistributionStrategyRead =
+  | { kind: 'absent' }
+  | { kind: 'usable'; strategy: RecordDistributionStrategy }
+  | { kind: 'unusable'; reason: string };
+
+function readDistributionStrategy(value: unknown, mask: MaskerFn): DistributionStrategyRead {
+  if (value == null) return { kind: 'absent' };
+  if (typeof value === 'string' && value.trim() !== '') {
+    return { kind: 'usable', strategy: value as RecordDistributionStrategy };
+  }
+  return {
+    kind: 'unusable',
+    reason:
+      `AWS::Kinesis::Stream RecordDistributionStrategy must be a non-empty string, got ` +
+      `${JSON.stringify(maskDeep(value, mask))}`,
+  };
+}
+
+/**
  * Poll cadence and cap for the post-delete gone-wait (issue #3872). The
  * DELETING window measured 4-7s (us-east-1), so the cap is generous headroom,
  * not an estimate, and sits well under the 30-min per-resource deadline.
@@ -341,6 +394,27 @@ export class KinesisStreamProvider implements ResourceProvider {
         'StreamEncryption',
         'DesiredShardLevelMetrics',
         'MaxRecordSizeInKiB',
+        // go-to-k/cdkd#2762: on `CreateStream`, and on update through
+        // `reconcileDistributionStrategy`.
+        'RecordDistributionStrategy',
+      ]),
+    ],
+  ]);
+
+  /**
+   * `WarmThroughputMiBps` stays on the Cloud Control route by maintainer
+   * decision (go-to-k/cdkd#1695, closed as not planned): AWS refuses it on an
+   * account without the minimum throughput billing commitment, so no integ can
+   * prove an SDK wiring delivers it.
+   */
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::Kinesis::Stream',
+      new Map([
+        [
+          'WarmThroughputMiBps',
+          'AWS accepts it only on an account enrolled in the Kinesis minimum throughput billing commitment, so the SDK path is not wired (go-to-k/cdkd#1695); Cloud Control forwards it.',
+        ],
       ]),
     ],
   ]);
@@ -406,7 +480,7 @@ export class KinesisStreamProvider implements ResourceProvider {
 
     const streamName =
       (properties['Name'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 128 });
+      generatedNameFor('AWS::Kinesis::Stream', logicalId);
 
     // PRE-FLIGHT, deliberately ABOVE the try (docs/provider-rules.md#pre-flight-refusal-when-a-provider-may-reject-what-cloudformation-forwards).
     // Refusing from inside it would throw AFTER `CreateStream` already ran,
@@ -466,6 +540,19 @@ export class KinesisStreamProvider implements ResourceProvider {
     if (encryptionRead.kind === 'unusable') {
       throw new ProvisioningError(encryptionRead.reason, resourceType, logicalId, streamName);
     }
+    // go-to-k/cdkd#2762: it rides on `CreateStream` itself, so an unusable
+    // value is refused here rather than sent; a state replay omits it (AWS's
+    // default applies) with a warning instead of refusing the restore.
+    const strategyRead = readDistributionStrategy(properties['RecordDistributionStrategy'], mask);
+    if (strategyRead.kind === 'unusable') {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(strategyRead.reason, resourceType, logicalId, streamName);
+      }
+      warn(
+        `${strategyRead.reason}. Replaying a state record, so ${streamName} is created with ` +
+          `AWS's default record distribution strategy rather than refusing the restore`
+      );
+    }
 
     // Set once CreateStream returns. No failure after it is this stream's name
     // collision: it is an auxiliary call's (the retention change,
@@ -512,10 +599,18 @@ export class KinesisStreamProvider implements ResourceProvider {
             StreamMode: streamMode as 'PROVISIONED' | 'ON_DEMAND',
           },
           ...(maxRecordSizeInKiB !== undefined && { MaxRecordSizeInKiB: maxRecordSizeInKiB }),
+          // go-to-k/cdkd#2762: a `CreateStreamInput` member, as CloudFormation
+          // sends it; AWS accepts it only on an ON_DEMAND stream and judges
+          // that itself.
+          ...(strategyRead.kind === 'usable' && {
+            RecordDistributionStrategy: strategyRead.strategy,
+          }),
           ...(Object.keys(tags).length > 0 && { Tags: tags }),
         })
       );
       streamCreated = true;
+      // go-to-k/cdkd#5511: reported before the ACTIVE wait.
+      reportCreatedResource(logicalId, resourceType, streamName);
 
       this.logger.debug(`CreateStream initiated for ${streamName}, waiting for ACTIVE status`);
 
@@ -613,12 +708,17 @@ export class KinesisStreamProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create Kinesis stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              streamName,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create Kinesis stream ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  streamName,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#1710: the stream exists and no state record will hold it,
       // so name it for the failed-CREATE journal. Only once CreateStream has
@@ -669,6 +769,9 @@ export class KinesisStreamProvider implements ResourceProvider {
           `${physicalId} is left as it is rather than refusing the restore`
       );
     }
+    // Before each call that changes the stream: a failure from there on leaves
+    // the key unsettled for the next deploy to converge.
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     const previousRetention = readRetentionHours(previousProperties['RetentionPeriodHours'], mask);
 
     try {
@@ -707,6 +810,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         this.logger.debug(
           `Switching stream mode for ${physicalId}: from ${oldStreamMode} to ${streamMode}`
         );
+        markUnsettled('StreamModeDetails');
         await this.getClient().send(
           new UpdateStreamModeCommand({
             StreamARN: streamArn,
@@ -725,15 +829,19 @@ export class KinesisStreamProvider implements ResourceProvider {
         // assigns a shard count based on the prior on-demand throughput and
         // previousProperties carries no ShardCount, so read the live count to
         // know the real base to reconcile against.
-        const oldShardCount = modeChanged
-          ? await this.getOpenShardCount(physicalId)
-          : Number(previousProperties['ShardCount'] ?? 1);
+        // go-to-k/cdkd#5487: an unsettled mode switch may have moved the shards
+        // whatever the two modes now say, so the live count is compared.
+        const oldShardCount =
+          modeChanged || context?.unsettledProperties?.has('StreamModeDetails') === true
+            ? await this.getOpenShardCount(physicalId)
+            : Number(previousProperties['ShardCount'] ?? 1);
 
         if (newShardCount !== oldShardCount) {
           this.logger.debug(
             `Updating shard count for ${physicalId}: from ${oldShardCount} to ${newShardCount}`
           );
 
+          markUnsettled('ShardCount');
           await this.getClient().send(
             new UpdateShardCountCommand({
               StreamName: physicalId,
@@ -756,6 +864,7 @@ export class KinesisStreamProvider implements ResourceProvider {
         this.logger.debug(
           `Updating retention period for ${physicalId}: from ${effectiveOldRetention} to ${effectiveNewRetention}`
         );
+        markUnsettled('RetentionPeriodHours');
         if (effectiveNewRetention > effectiveOldRetention) {
           await this.getClient().send(
             new IncreaseStreamRetentionPeriodCommand({
@@ -781,7 +890,14 @@ export class KinesisStreamProvider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+          afterAdded: (keys) => {
+            if (keys.length > 0) context?.markAttempted?.('Tags', keys);
+          },
+        }
       );
 
       // Update StreamEncryption if changed.
@@ -807,6 +923,7 @@ export class KinesisStreamProvider implements ResourceProvider {
       const oldKeyId = oldIsKms ? (oldEncryption!['KeyId'] as string | undefined) : undefined;
       const newKeyId = newIsKms ? (newEncryption!['KeyId'] as string | undefined) : undefined;
       if (oldIsKms !== newIsKms || (oldIsKms && newIsKms && oldKeyId !== newKeyId)) {
+        markUnsettled('StreamEncryption');
         // Remove old encryption only when it WAS KMS-encrypted.
         if (oldIsKms) {
           await this.getClient().send(
@@ -852,12 +969,26 @@ export class KinesisStreamProvider implements ResourceProvider {
             `unchanged; the same value is REFUSED on a template-path create`
         );
       }
-      const newMaxRecordSize = comparableRecordSize(properties['MaxRecordSizeInKiB'], mask);
-      const oldMaxRecordSize = comparableRecordSize(previousProperties['MaxRecordSizeInKiB'], mask);
+      // A REMOVAL resets the size to AWS's default, as CloudFormation does
+      // (go-to-k/cdkd#1160; CFn A/B, us-east-1: 2048 -> removed -> 1024, both
+      // alone and beside a RetentionPeriodHours change). Only an ABSENT
+      // desired side is a removal; an unusable one warned above and keeps the
+      // live size. An unusable PREVIOUS side reads as the default, as the
+      // retention sibling reads its own, so it triggers no reset call.
+      const newMaxRecordSize =
+        desiredSizeRead.kind === 'absent'
+          ? DEFAULT_MAX_RECORD_SIZE_KIB
+          : comparableRecordSize(properties['MaxRecordSizeInKiB'], mask);
+      const recordedMaxRecordSize = comparableRecordSize(
+        previousProperties['MaxRecordSizeInKiB'],
+        mask
+      );
+      const oldMaxRecordSize = recordedMaxRecordSize ?? DEFAULT_MAX_RECORD_SIZE_KIB;
       if (newMaxRecordSize !== undefined && newMaxRecordSize !== oldMaxRecordSize) {
         this.logger.debug(
-          `Updating max record size for ${physicalId}: from ${oldMaxRecordSize ?? 'no value'} to ${newMaxRecordSize}`
+          `Updating max record size for ${physicalId}: from ${recordedMaxRecordSize ?? 'no value'} to ${newMaxRecordSize}`
         );
+        markUnsettled('MaxRecordSizeInKiB');
         await this.getClient().send(
           new UpdateMaxRecordSizeCommand({
             StreamARN: await this.resolveStreamArn(physicalId),
@@ -866,6 +997,16 @@ export class KinesisStreamProvider implements ResourceProvider {
         );
         await this.waitForStreamActive(physicalId);
       }
+
+      await this.reconcileDistributionStrategy(
+        physicalId,
+        streamMode,
+        properties,
+        previousProperties,
+        mask,
+        warn,
+        markUnsettled
+      );
 
       // Reconcile DesiredShardLevelMetrics. There is no "set" API — enhanced
       // monitoring is a set mutated by Enable / Disable — so the diff is
@@ -894,7 +1035,21 @@ export class KinesisStreamProvider implements ResourceProvider {
         // read leniently and never refused (the #1471 desired-side-only rule).
         const previousSet = previousMetricNames(previousProperties['DesiredShardLevelMetrics']);
         const toDisable = previousSet.filter((m) => !desiredSet.includes(m));
+        // go-to-k/cdkd#5503: converging an unsettled DesiredShardLevelMetrics
+        // leaves every live metric that neither the record nor the template
+        // names (`readUnsettled` keeps them off the previous side), as
+        // CloudFormation does. Say so: one may be a metric the failed update
+        // itself enabled.
+        if (context?.unsettledProperties?.has('DesiredShardLevelMetrics') === true) {
+          await this.warnUndeclaredLiveMetrics(
+            physicalId,
+            [...previousSet, ...desiredSet],
+            warn,
+            mask
+          );
+        }
         const toEnable = desiredSet.filter((m) => !previousSet.includes(m));
+        if (toDisable.length > 0 || toEnable.length > 0) markUnsettled('DesiredShardLevelMetrics');
         if (toDisable.length > 0) {
           this.logger.debug(`Disabling ${toDisable.length} shard-level metric(s) on ${physicalId}`);
           await this.getClient().send(
@@ -907,12 +1062,19 @@ export class KinesisStreamProvider implements ResourceProvider {
         }
         if (toEnable.length > 0) {
           this.logger.debug(`Enabling ${toEnable.length} shard-level metric(s) on ${physicalId}`);
-          await this.getClient().send(
+          const enabled = await this.getClient().send(
             new EnableEnhancedMonitoringCommand({
               StreamName: physicalId,
               ShardLevelMetrics: toEnable,
             })
           );
+          // go-to-k/cdkd#5498: AFTER the call resolved, the metrics it turned on
+          // — the ones the response did not already report as current.
+          // A live literal `ALL` names every metric, so it is expanded first.
+          const current = expandShardLevelMetrics(enabled?.CurrentShardLevelMetrics ?? []);
+          const before = new Set(Array.isArray(current) ? (current as unknown[]) : []);
+          const added = toEnable.filter((metric) => !before.has(metric));
+          if (added.length > 0) context?.markAttempted?.('DesiredShardLevelMetrics', added);
           await this.waitForStreamActive(physicalId);
         }
       }
@@ -932,12 +1094,17 @@ export class KinesisStreamProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Kinesis stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Kinesis stream ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -983,13 +1150,24 @@ export class KinesisStreamProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Kinesis stream ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Kinesis stream ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this stream is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
 
     // Issue #3872: the stream keeps its NAME while it is DELETING, and a
@@ -1074,6 +1252,40 @@ export class KinesisStreamProvider implements ResourceProvider {
   }
 
   /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" (`ResourceInUseException` on `CreateStream`) is restated
+   * ({@link relayedNameCollision}), so a create-first replacement still
+   * recognises the collision, except from a post-create wiring step's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as this stream
+   * (#3826). A cdkd-authored or transport error keeps its
+   * text, masked, stamped only when the mask changed it (`wrapMaskedAwsError`,
+   * issue #4244); a non-`Error` throw is withheld like an AWS one, unstamped
+   * (it has no chain). The delete catch tests not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
    * The stream's ARN, or `undefined` when `DescribeStreamSummary` reports it
    * gone. Any other failure (and a response naming no ARN) throws: "could
    * not read" never reads as "gone".
@@ -1106,6 +1318,76 @@ export class KinesisStreamProvider implements ResourceProvider {
       if (error instanceof ResourceNotFoundException) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * Reconcile `RecordDistributionStrategy` on update (go-to-k/cdkd#2762) via
+   * `UpdateStreamRecordDistributionStrategy`, which takes the stream ARN.
+   *
+   * - usable and different from the record: sent.
+   * - ABSENT while the record held one: a template REMOVAL. CloudFormation
+   *   resets it to `USER_PARTITION_KEY` (CFn A/B), so that is sent — unless the
+   *   stream is now PROVISIONED, where the strategy does not apply and AWS
+   *   accepts it only on ON_DEMAND.
+   * - unusable: warned and left alone (the update path is state-replay
+   *   reachable, so it cannot refuse; the same value is refused on create).
+   *
+   * The previous side is a state record, read leniently: an unusable one
+   * counts as "not recorded".
+   *
+   * ON_DEMAND + `AUTO` -> PROVISIONED is refused by AWS whatever the template
+   * says about the strategy: `UpdateStreamMode` refuses while `AUTO` is set,
+   * and the strategy can only be set on ON_DEMAND. The mode switch runs before
+   * this reconcile, so that update fails, as it does under CloudFormation,
+   * which needs `USER_PARTITION_KEY` deployed first (CFn A/B on
+   * go-to-k/cdkd#2762).
+   */
+  private async reconcileDistributionStrategy(
+    physicalId: string,
+    streamMode: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    mask: MaskerFn,
+    warn: (message: string) => void,
+    markUnsettled: (key: string) => void
+  ): Promise<void> {
+    const desired = readDistributionStrategy(properties['RecordDistributionStrategy'], mask);
+    if (desired.kind === 'unusable') {
+      warn(
+        `${desired.reason}. Leaving the record distribution strategy on ${physicalId} ` +
+          `unchanged; the same value is REFUSED on a template-path create`
+      );
+      return;
+    }
+    const previous = readDistributionStrategy(
+      previousProperties['RecordDistributionStrategy'],
+      mask
+    );
+    const recorded = previous.kind === 'usable' ? previous.strategy : undefined;
+    let target: RecordDistributionStrategy | undefined;
+    if (desired.kind === 'usable') {
+      if (desired.strategy === recorded) return;
+      target = desired.strategy;
+    } else {
+      if (recorded === undefined || recorded === DEFAULT_RECORD_DISTRIBUTION_STRATEGY) return;
+      // A PROVISIONED stream has no distribution strategy to reset: the
+      // property applies to ON_DEMAND streams only (#2762), so nothing is sent.
+      if (streamMode !== 'ON_DEMAND') return;
+      target = DEFAULT_RECORD_DISTRIBUTION_STRATEGY;
+    }
+    this.logger.debug(
+      mask(
+        safeMsg`Updating record distribution strategy for ${physicalId}: from ${recorded ?? 'no value'} to ${target}`
+      )
+    );
+    markUnsettled('RecordDistributionStrategy');
+    await this.getClient().send(
+      new UpdateStreamRecordDistributionStrategyCommand({
+        StreamARN: await this.resolveStreamArn(physicalId),
+        RecordDistributionStrategy: target,
+      })
+    );
+    await this.waitForStreamActive(physicalId);
   }
 
   /**
@@ -1172,15 +1454,31 @@ export class KinesisStreamProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    unsettled: {
+      forceUpsert: boolean;
+      beforeWrite: () => void;
+      // go-to-k/cdkd#5498: the tag keys an accepted AddTagsToStream added that
+      // the record lacked.
+      afterAdded?: (keys: string[]) => void;
+    } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
       this.logger.warn(tagWarning);
     }
-    const tagsToAdd = Object.fromEntries(plan.set);
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+    // lack the ones the failed update did not reach) and remove only the
+    // recorded ones the template dropped.
+    const tagsToAdd = Object.fromEntries(
+      unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set
+    );
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || Object.keys(tagsToAdd).length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.getClient().send(
@@ -1191,6 +1489,17 @@ export class KinesisStreamProvider implements ResourceProvider {
     if (Object.keys(tagsToAdd).length > 0) {
       await this.getClient().send(
         new AddTagsToStreamCommand({ StreamName: streamName, Tags: tagsToAdd })
+      );
+      // A malformed recorded tag list cannot say which keys are new: record none
+      // (a missing name only keeps a tag, never removes one).
+      let recordedKeys: Set<string> | undefined;
+      try {
+        recordedKeys = new Set([...planTagDiff(undefined, oldTagsRaw).set.keys()]);
+      } catch {
+        recordedKeys = undefined;
+      }
+      unsettled.afterAdded?.(
+        Object.keys(tagsToAdd).filter((key) => recordedKeys !== undefined && !recordedKeys.has(key))
       );
       this.logger.debug(
         `Added/updated ${Object.keys(tagsToAdd).length} tag(s) on Kinesis stream ${streamName}`
@@ -1205,6 +1514,123 @@ export class KinesisStreamProvider implements ResourceProvider {
    *  1. `--resource <id>=<name>` override or `Properties.Name` → verify
    *     with `DescribeStream`.
    */
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState`, with `ShardCount` the OPEN shard
+   * count the update compares (`readCurrentState` counts closed shards too).
+   */
+  /**
+   * go-to-k/cdkd#5503: warn about each live shard-level metric outside
+   * `named`. It is left enabled, and the warning says how to disable it.
+   * Best-effort: a failed read only loses the warning.
+   */
+  private async warnUndeclaredLiveMetrics(
+    physicalId: string,
+    named: readonly string[],
+    warn: (message: string) => void,
+    mask: MaskerFn
+  ): Promise<void> {
+    let live: string[];
+    try {
+      const resp = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: physicalId })
+      );
+      live = (resp.StreamDescriptionSummary?.EnhancedMonitoring ?? []).flatMap(
+        (entry) => entry.ShardLevelMetrics ?? []
+      );
+    } catch {
+      return;
+    }
+    const expandedLive = expandShardLevelMetrics(live);
+    const undeclared = (Array.isArray(expandedLive) ? (expandedLive as string[]) : live).filter(
+      (metric) => metric !== 'ALL' && !named.includes(metric)
+    );
+    if (undeclared.length === 0) return;
+    // A secret-derived stream name is masked in the message, so a command
+    // carrying it would not run: it is withheld, as the DynamoDB warning does.
+    const secretDerived = mask(physicalId) !== physicalId;
+    warn(
+      `Kinesis stream ${physicalId} has shard-level metrics enabled that neither cdkd's record ` +
+        `nor the template declares (${undeclared.join(', ')}), so cdkd left them enabled while ` +
+        `converging the unsettled DesiredShardLevelMetrics (CloudFormation never disables a ` +
+        `metric it did not record). Another tool may have enabled them, or an earlier failed ` +
+        `cdkd update may have; cdkd cannot tell which. If they should be off, disable them ` +
+        (secretDerived
+          ? `with DisableEnhancedMonitoring for those metrics.`
+          : `with: aws kinesis disable-enhanced-monitoring --stream-name ${physicalId} ` +
+            `--shard-level-metrics ${undeclared.join(' ')} (in the stream's region)`)
+    );
+  }
+
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    // go-to-k/cdkd#5503: the live metrics, projected onto the ones the record
+    // or the template names. This value becomes the previous side, and
+    // `update()` disables every previous metric the template lacks, so one
+    // enabled out of band would be DISABLED. CloudFormation leaves it enabled
+    // (CFn A/B, us-east-1, 2026-10-29: OutgoingBytes enabled out of band,
+    // then an update from [IncomingBytes] to [IncomingBytes, IncomingRecords]
+    // left all three enabled).
+    if (names.has('DesiredShardLevelMetrics') && Array.isArray(out['DesiredShardLevelMetrics'])) {
+      const named = new Set(
+        [recordedProperties, desiredProperties].flatMap((bag) => {
+          const expanded = expandShardLevelMetrics(bag?.['DesiredShardLevelMetrics']);
+          return isUsableMetricsList(expanded) ? expanded : [];
+        })
+      );
+      // go-to-k/cdkd#5498: a metric an earlier failed update's accepted call
+      // enabled (exact name) is on the previous side too, so the template's
+      // omission disables it; one enabled out of band still is not. The
+      // writer records expanded names only, so an attempted `ALL` is not one
+      // cdkd wrote and names nothing.
+      for (const metric of attemptedItems?.get('DesiredShardLevelMetrics') ?? []) {
+        if (metric !== 'ALL' && isUsableAttemptedName(metric)) named.add(metric);
+      }
+      // The live list is expanded too: a stream enabled with `ALL` can report
+      // the literal, which would otherwise be projected away and read as
+      // "nothing enabled".
+      const liveMetrics = expandShardLevelMetrics(out['DesiredShardLevelMetrics']);
+      out['DesiredShardLevelMetrics'] = (
+        Array.isArray(liveMetrics) ? (liveMetrics as unknown[]) : []
+      ).filter((metric) => typeof metric === 'string' && named.has(metric));
+    }
+    if (!names.has('ShardCount')) return out;
+    return { ...out, ShardCount: await this.getOpenShardCount(physicalId) };
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the stream reads UPDATING (a shard-count, mode,
+   * retention, encryption, record-size, distribution or metrics change still
+   * running), every unsettled key but `Tags` is still changing. A failed read
+   * keeps every name, which only costs the next deploy a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const resp = await this.getClient().send(
+        new DescribeStreamSummaryCommand({ StreamName: physicalId })
+      );
+      const status = resp.StreamDescriptionSummary?.StreamStatus;
+      if (status !== 'UPDATING' && status !== 'CREATING') return new Set();
+      return new Set([...names].filter((name) => name !== 'Tags'));
+    } catch {
+      return names;
+    }
+  }
+
   /**
    * Read the AWS-current Kinesis stream configuration in CFn-property shape.
    *
@@ -1301,6 +1727,10 @@ export class KinesisStreamProvider implements ResourceProvider {
       );
       const maxRecordSize = summaryResp.StreamDescriptionSummary?.MaxRecordSizeInKiB;
       if (maxRecordSize !== undefined) result['MaxRecordSizeInKiB'] = maxRecordSize;
+      // go-to-k/cdkd#2762: present for ON_DEMAND streams only, so
+      // emit-when-present.
+      const strategy = summaryResp.StreamDescriptionSummary?.RecordDistributionStrategy;
+      if (strategy !== undefined) result['RecordDistributionStrategy'] = strategy;
     } catch (err) {
       if (err instanceof ResourceNotFoundException) return RESOURCE_NOT_FOUND;
       throw err;

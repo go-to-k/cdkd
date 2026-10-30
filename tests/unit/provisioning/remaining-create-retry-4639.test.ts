@@ -162,6 +162,7 @@ import { AgentCoreEvaluatorProvider } from '../../../src/provisioning/providers/
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
 import { LambdaMicrovmImageProvider } from '../../../src/provisioning/providers/lambda-microvm-image-provider.js';
 import { SecretsManagerSecretProvider } from '../../../src/provisioning/providers/secretsmanager-secret-provider.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 const { sentVia, baseStrategy } = h;
 
@@ -796,7 +797,11 @@ describe('create failure text goes through the masker (issue #4639)', () => {
       .catch((e: unknown) => e);
 
     expect(sentVia.some(([n]) => n === command)).toBe(true);
-    expect((error as Error).message).toContain('***');
+    // Both withhold AWS's text from the thrown message altogether, naming the
+    // error class (go-to-k/cdkd#2319); the masked text goes to debug
+    // (`cognito-asg-redacted-cause-2319.test.ts`,
+    // `replacement-orphan-reason-thrown-errors-2319.test.ts`).
+    expect((error as Error).message).toContain(`ValidationError. ${VERBOSE_POINTER}`);
     expect((error as Error).message).not.toContain(SECRET);
   });
 
@@ -815,7 +820,7 @@ describe('create failure text goes through the masker (issue #4639)', () => {
       .catch((e: unknown) => e);
 
     expect(sentVia.some(([n]) => n === 'UpdateBudgetCommand')).toBe(true);
-    expect((error as Error).message).toContain('***');
+    expect((error as Error).message).toContain(`ValidationError. ${VERBOSE_POINTER}`);
     expect((error as Error).message).not.toContain(SECRET);
   });
 });

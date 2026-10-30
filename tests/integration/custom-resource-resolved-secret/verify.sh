@@ -92,6 +92,7 @@ VERSIONS_FILE=""
 
 . ../s3-versions.sh
 . ../cr-log-groups.sh
+. ../state-physical-id.sh
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 CHILD_PREFIX="$(s3_stack_prefix "${CHILD_STACK}" "${REGION}")"
 
@@ -180,8 +181,15 @@ if [ "${seeded}" -ne 1 ]; then
   exit 1
 fi
 
-# The handler's physical name: `<stack>-<logicalId>` (untruncated here).
-HANDLER_NAME="${STACK}-EventLogger455115CB"
+# The handler's physical name (go-to-k/cdkd#5064: a fresh stack's
+# cdkd-generated name is no longer predictable ahead of time). Phases A and B
+# roll the WHOLE deploy back on refusal, so by the time their assertions run
+# cdkd's own state has no EventLogger record to read a name FROM any more —
+# `assert_handler_lambda_prefix_gone` below checks those arms by PREFIX
+# instead. Only phases U (after its clean deploy) and C (its own fresh,
+# successful deploy) set this, each reading its own state right after its own
+# deploy rather than reusing an earlier phase's guessed or captured value.
+HANDLER_NAME=""
 
 epoch_ms() { printf '%s000' "$(date +%s)"; }
 
@@ -290,8 +298,34 @@ assert_refused() {
   teardown_stack
   assert_gone "state file ${STATE_KEY} still exists after the ${arm} teardown" \
     aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-  assert_gone "handler Lambda ${HANDLER_NAME} still exists after the ${arm} teardown" \
-    aws lambda get-function --region "${REGION}" --function-name "${HANDLER_NAME}"
+  assert_handler_lambda_prefix_gone "${arm}"
+}
+
+# assert_handler_lambda_prefix_gone <arm> — a PREFIX check, not an exact-name
+# one (go-to-k/cdkd#5064's own concern explains why): the refused arms (A, B)
+# roll the WHOLE deploy back, including the EventLogger Lambda's completed
+# CREATE, so by the time this runs cdkd's state no longer has a record to read
+# a physical id from at all — `state_physical_id` would fail here, not because
+# of a bug but because rollback genuinely removed it from both AWS and state.
+# The logical id is the fixed literal `EventLogger<CDK-hash>` (lib/*.ts never
+# names this Lambda), so cdkd's generated name is always `${STACK}-EventLogger`
+# plus whatever suffix today's or a post-#5064 scheme appends — a prefix match
+# catches a leak either way without needing to know that suffix.
+assert_handler_lambda_prefix_gone() {
+  local arm="$1" prefix="${STACK}-EventLogger" names
+  if ! names="$(aws lambda list-functions --region "${REGION}" \
+      --query "Functions[?starts_with(FunctionName, '${prefix}')].FunctionName" \
+      --output text 2>&1)"; then
+    echo "FAIL: could not list Lambda functions to check '${prefix}*' is gone after the ${arm} teardown: ${names}" >&2
+    exit 1
+  fi
+  case "${names}" in
+    '' | None) ;;
+    *)
+      echo "FAIL: handler Lambda(s) matching '${prefix}*' still exist after the ${arm} teardown: ${names}" >&2
+      exit 1
+      ;;
+  esac
 }
 
 VERSIONS_FILE=$(mktemp)
@@ -322,6 +356,8 @@ env CDKD_TEST_UPDATE=update-clean node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+HANDLER_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda::Function" "EventLogger")" \
+  || { echo "FAIL: could not read EventLogger's physical id from state after phase U's clean deploy" >&2; exit 1; }
 echo "==> Phase U: update SsmUpdater to the SecureString reference — must be refused"
 U_SINCE=$(epoch_ms)
 cdkd_run env CDKD_TEST_UPDATE=update-secret node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -366,14 +402,11 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-STATE_C=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
-HANDLER_C=$(printf '%s' "${STATE_C}" \
-  | jq -r '[.resources[] | select(.resourceType == "AWS::Lambda::Function") | .physicalId] | first // ""')
-if [ "${HANDLER_C}" != "${HANDLER_NAME}" ]; then
-  echo "FAIL: the handler's physical name is '${HANDLER_C}', expected '${HANDLER_NAME}'" >&2
-  echo "    => the gone-probes between arms checked the wrong name" >&2
-  exit 1
-fi
+# Phase C is its own fresh stack (go-to-k/cdkd#5064: no longer guaranteed to
+# share a name with an earlier phase's stack), so its own state read is what
+# the gone-probes below must use, not an earlier phase's captured name.
+HANDLER_NAME="$(state_physical_id "${STACK}" "${STATE_BUCKET}" "AWS::Lambda::Function" "EventLogger")" \
+  || { echo "FAIL: could not read EventLogger's physical id from state after phase C" >&2; exit 1; }
 set +e
 DESTROY_OUT=$(node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \

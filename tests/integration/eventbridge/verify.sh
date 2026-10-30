@@ -51,6 +51,7 @@ REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 BUS_NAME="cdkd-test-bus-${ACCOUNT_ID}"
+SOURCE_KEY_FN="cdkd-test-source-key-fn-${ACCOUNT_ID}"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -66,6 +67,8 @@ cleanup() {
       --region "${REGION}" --yes >/dev/null 2>&1
     destroy_rc=$?
   fi
+  # Fixed name: a leftover would collide with the next run's CreateFunction.
+  aws lambda delete-function --function-name "${SOURCE_KEY_FN}" --region "${REGION}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${destroy_rc}" -eq 0 ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -137,6 +140,25 @@ if [ -z "${BUS_KEY_ARN}" ] || [ -z "${BUS_DLQ_ARN}" ]; then
 fi
 echo "    OK: EventBus KmsKeyIdentifier + DeadLetterConfig set on AWS"
 
+# --- Assertion: Code.SourceKMSKeyArn reached AWS (issue #5300) --------
+# usage: assert_source_key <phase label>
+assert_source_key() {
+  local got
+  got=$(aws lambda get-function --function-name "${SOURCE_KEY_FN}" --region "${REGION}" \
+    --query 'Code.SourceKMSKeyArn' --output text) || return 1
+  if [ "${got}" != "${BUS_KEY_ARN}" ]; then
+    echo "FAIL: $1: ${SOURCE_KEY_FN} Code.SourceKMSKeyArn is '${got}', expected the fixture key ${BUS_KEY_ARN} (issue #5300: the key was not sent)" >&2
+    exit 1
+  fi
+  echo "    OK: $1: ${SOURCE_KEY_FN} package encrypted with the fixture key (issue #5300)"
+}
+source_key_sha() {
+  aws lambda get-function-configuration --function-name "${SOURCE_KEY_FN}" --region "${REGION}" \
+    --query 'CodeSha256' --output text
+}
+assert_source_key "create"
+SOURCE_KEY_SHA_P1=$(source_key_sha)
+
 # --- Assertion: Ref on AWS::Events::Rule resolves to the rule name ----
 # (bug found by /hunt-bugs 2026-07-02: cdkd returned the rule ARN; CFn's Ref
 # returns the rule name — `<busName>|<ruleName>` for a custom-bus rule.)
@@ -190,6 +212,15 @@ if [ -z "${PRE_CREATED}" ] || [ "${POST_CREATED}" != "${PRE_CREATED}" ]; then
 fi
 echo "    OK: EventBus Description updated in place, CreationTime unchanged (issue #2613)"
 
+# Issue #5300: the same update changes the function's inline code, so the key
+# must ride UpdateFunctionCode as well.
+if [ "$(source_key_sha)" = "${SOURCE_KEY_SHA_P1}" ]; then
+  echo "FAIL: ${SOURCE_KEY_FN} CodeSha256 unchanged after the code change -- UpdateFunctionCode never ran" >&2
+  exit 1
+fi
+assert_source_key "update"
+SOURCE_KEY_SHA_UPD=$(source_key_sha)
+
 # --- Phase 1.75: REMOVAL drops the bus's optional properties (issue #1160) ---
 # The template no longer declares Description, KmsKeyIdentifier, LogConfig or
 # DeadLetterConfig. CloudFormation clears each one (measured A/B: no
@@ -222,6 +253,23 @@ if [ "${RM_CREATED}" != "${PRE_CREATED}" ]; then
 fi
 echo "    OK: removed Description / KmsKeyIdentifier / DeadLetterConfig cleared, LogConfig OFF/NONE, in place (issue #1160)"
 
+# Issue #5300: the removal also drops Code.SourceKMSKeyArn alongside a code
+# change. CloudFormation KEEPS the key then (measured A/B, 2026-10-26: a
+# stack update dropping SourceKMSKeyArn with a ZipFile change left
+# GetFunction's Code.SourceKMSKeyArn on the old key). cdkd's UpdateFunctionCode
+# names no key either, so the key must still be there: parity, not a reset.
+if [ "$(source_key_sha)" = "${SOURCE_KEY_SHA_UPD}" ]; then
+  echo "FAIL: ${SOURCE_KEY_FN} CodeSha256 unchanged by the removal phase's code change -- UpdateFunctionCode never ran" >&2
+  exit 1
+fi
+RM_SOURCE_KEY=$(aws lambda get-function --function-name "${SOURCE_KEY_FN}" --region "${REGION}" \
+  --query 'Code.SourceKMSKeyArn' --output text)
+if [ "${RM_SOURCE_KEY}" != "${BUS_KEY_ARN}" ]; then
+  echo "FAIL: removal: ${SOURCE_KEY_FN} Code.SourceKMSKeyArn is '${RM_SOURCE_KEY}' after the template dropped it with a code change, expected the key kept (${BUS_KEY_ARN}), as CloudFormation leaves it (issue #5300)" >&2
+  exit 1
+fi
+echo "    OK: removal: ${SOURCE_KEY_FN} keeps the fixture key after UpdateFunctionCode without SourceKMSKeyArn, as CloudFormation does (issue #5300)"
+
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -231,6 +279,7 @@ env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" destroy "${STA
 
 assert_gone "EventBus '${BUS_NAME}' still exists after destroy" aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}"
 echo "    OK: EventBus is gone"
+assert_gone "function ${SOURCE_KEY_FN} still exists after destroy" aws lambda get-function-configuration --function-name "${SOURCE_KEY_FN}" --region "${REGION}"
 
 assert_gone "DLQ '${BUS_DLQ_ARN##*:}' still exists after destroy" aws sqs get-queue-url --queue-name "${BUS_DLQ_ARN##*:}" --region "${REGION}"
 echo "    OK: bus DLQ is gone"

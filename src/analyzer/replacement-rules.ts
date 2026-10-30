@@ -13,6 +13,24 @@ import { getLogger } from '../utils/logger.js';
 import { sameLambdaFunctionAddress } from '../utils/lambda-function-name.js';
 
 /**
+ * The whole property bags of the resource whose property a conditional
+ * predicate judges, for a rule whose answer depends on a SIBLING property
+ * (issue #5446: an `AWS::EC2::Instance` `SecurityGroupIds` change replaces the
+ * instance only when it has no `SubnetId`). Absent where the caller judges a
+ * value outside a diff; a predicate then answers for the common case.
+ */
+export interface ReplacementSiblings {
+  readonly oldProperties: Readonly<Record<string, unknown>>;
+  readonly newProperties: Readonly<Record<string, unknown>>;
+}
+
+type ConditionalReplacement = (
+  oldValue: unknown,
+  newValue: unknown,
+  siblings?: ReplacementSiblings
+) => boolean;
+
+/**
  * Resource replacement rule
  */
 interface ReplacementRule {
@@ -21,7 +39,104 @@ interface ReplacementRule {
   /** Properties that never require replacement */
   updateableProperties?: Set<string>;
   /** Custom logic for conditional replacement */
-  conditionalReplacements?: Map<string, (oldValue: unknown, newValue: unknown) => boolean>;
+  conditionalReplacements?: Map<string, ConditionalReplacement>;
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::EC2::VPC.InstanceTenancy`
+ * (issue [#5449](https://github.com/go-to-k/cdkd/issues/5449)). MEASURED
+ * against CloudFormation (us-east-1, 2026-10-28; change sets say
+ * `Replacement: Conditional`): `default` -> `dedicated` creates a new VPC,
+ * while `dedicated` -> `default` and a removal from `dedicated` keep the VPC
+ * and change it in place (ModifyVpcTenancy). An absent value is `default`.
+ */
+export function vpcInstanceTenancyChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  const tenancyOf = (v: unknown): string => (v == null ? 'default' : String(v));
+  return tenancyOf(newValue) !== 'default' && tenancyOf(newValue) !== tenancyOf(oldValue);
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::EC2::Instance.SecurityGroupIds`
+ * (issue [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED
+ * against CloudFormation (us-east-1, 2026-10-28, change sets say
+ * `Replacement: Conditional`): with a `SubnetId` the groups change in place
+ * with no interruption (vary, add, and a removal, which leaves the VPC's
+ * `default` group); with NO `SubnetId` (an instance launched into the default
+ * VPC) the same vary and the removal create a new instance. Without the
+ * sibling bags the common case (a `SubnetId`, which CDK's L2 always emits)
+ * answers in place.
+ */
+export function instanceSecurityGroupIdsChangeReplaces(
+  oldValue: unknown,
+  newValue: unknown,
+  siblings?: ReplacementSiblings
+): boolean {
+  if (siblings === undefined) return false;
+  // A reorder of the same groups is no change, as `EC2Provider` compares
+  // them (not measured against CloudFormation; replacing over it would
+  // destroy an instance for nothing).
+  if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+    const before = new Set(oldValue.map(String));
+    const after = new Set(newValue.map(String));
+    if (before.size === after.size && [...before].every((g) => after.has(g))) return false;
+  }
+  return siblings.newProperties['SubnetId'] == null;
+}
+
+/**
+ * Conditional-replacement predicate for
+ * `AWS::EC2::Instance.BlockDeviceMappings` (issue
+ * [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED against
+ * CloudFormation (us-east-1, 2026-10-28): a change to `Ebs.DeleteOnTermination`
+ * alone updates in place with no interruption; a `VolumeSize` change, adding a
+ * device, and removing the property create a new instance. So anything but a
+ * `DeleteOnTermination`-only change replaces; `EC2Provider` applies that one
+ * with `ModifyInstanceAttribute`.
+ */
+export function instanceBlockDeviceMappingsChangeReplaces(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  return !blockDeviceMappingsDifferOnlyInDeleteOnTermination(oldValue, newValue);
+}
+
+/**
+ * True when both are lists of the same devices, in the same order, equal in
+ * everything but `Ebs.DeleteOnTermination`. Scalars compare as strings, so
+ * CloudFormation's stringly-typed `"8"` equals `8`.
+ */
+export function blockDeviceMappingsDifferOnlyInDeleteOnTermination(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  if (!Array.isArray(oldValue) || !Array.isArray(newValue)) return false;
+  if (oldValue.length !== newValue.length) return false;
+  const strip = (m: unknown): unknown => {
+    if (m === null || typeof m !== 'object' || Array.isArray(m)) return m;
+    const out: Record<string, unknown> = { ...(m as Record<string, unknown>) };
+    const ebs = out['Ebs'];
+    if (ebs !== null && typeof ebs === 'object' && !Array.isArray(ebs)) {
+      const rest: Record<string, unknown> = { ...(ebs as Record<string, unknown>) };
+      delete rest['DeleteOnTermination'];
+      out['Ebs'] = rest;
+    }
+    return out;
+  };
+  return oldValue.every((m, i) =>
+    isDeepStrictEqual(scalarsAsStrings(strip(m)), scalarsAsStrings(strip(newValue[i])))
+  );
+}
+
+function scalarsAsStrings(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(scalarsAsStrings);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, scalarsAsStrings(v)])
+    );
+  }
+  return typeof value === 'number' || typeof value === 'boolean' ? String(value) : value;
 }
 
 /**
@@ -127,6 +242,31 @@ export function attributeTypeChangedForSharedAttribute(
 }
 
 /**
+ * Conditional-replacement predicate for
+ * `AWS::DynamoDB::GlobalTable.LocalSecondaryIndexes` (go-to-k/cdkd#5489).
+ *
+ * The CFn schema lists the property as `conditionalCreateOnlyProperties`, and
+ * a CloudFormation A/B (us-east-1 + us-west-2, 2026-10-28) measured both
+ * directions: REMOVING a declared list replaced the table, while ADDING one
+ * failed the update in place ("LocalSecondaryIndex template can be updated
+ * only to values matching existing resource"). So only a non-empty list going
+ * to absent / `[]` replaces; an added or changed list stays an update, which
+ * the provider refuses before any call.
+ */
+export function globalTableLocalSecondaryIndexesRemoved(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  const declares = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
+  return (
+    declares(oldValue) &&
+    (newValue === undefined ||
+      newValue === null ||
+      (Array.isArray(newValue) && newValue.length === 0))
+  );
+}
+
+/**
  * Conditional-replacement predicate for `AWS::Budgets::Budget.Budget`.
  *
  * The budget name (`Budget.BudgetName`, nested) is the physical id and is
@@ -203,6 +343,236 @@ export function glueTableNameChanged(oldValue: unknown, newValue: unknown): bool
 }
 
 /**
+ * Whether an `AWS::EC2::NatGateway` change ADDS `AvailabilityZoneAddresses` to
+ * a gateway recorded without it — a regional gateway in automatic mode, which
+ * CloudFormation replaces for that change (go-to-k/cdkd#2762). The predicate
+ * sees one property, not the mode, so it also answers `true` for a ZONAL
+ * gateway gaining the property; that case is unmeasured, and the replacement's
+ * create is left for AWS to refuse.
+ */
+export function natZoneAddressesAddedToAutomaticGateway(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  return oldValue == null && newValue != null;
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::ECS::Service.LaunchType` (issue
+ * [#5392](https://github.com/go-to-k/cdkd/issues/5392)).
+ *
+ * `UpdateService` has no `launchType` member, and the registry schema does not
+ * mark the property createOnly, so without this rule a change diffs as an
+ * in-place update that AWS never sees. MEASURED against CloudFormation
+ * (us-east-1, 2026-10-27; every change set said `Replacement: Conditional`):
+ *
+ *  - VARY (`EC2` -> `EXTERNAL`) and ADD (absent -> `EC2`) REPLACE the service,
+ *    the add even when the live launch type already was `EC2`.
+ *  - REMOVE (`EXTERNAL` -> absent) updates in place and the service KEEPS
+ *    `EXTERNAL`, so an in-place update sending nothing is parity (the provider
+ *    has no removal default for it).
+ *
+ * So a replacement is planned exactly when the new value is present and
+ * differs. The deploy diff resolves intrinsics before asking; only a value
+ * still unresolved there (an intrinsic object on one side) compares unequal
+ * and replaces, the conservative direction for a value AWS cannot update.
+ */
+export function ecsServiceLaunchTypeSetOrChanged(oldValue: unknown, newValue: unknown): boolean {
+  return newValue != null && !isDeepStrictEqual(oldValue, newValue);
+}
+
+/**
+ * `Instances` members CloudFormation updates in place (go-to-k/cdkd#5418; the
+ * measurement is on {@link emrClusterInstancesReplaced}).
+ */
+const EMR_INSTANCES_IN_PLACE_MEMBERS = [
+  'TerminationProtected',
+  'UnhealthyNodeReplacement',
+] as const;
+/** Members of a CORE or TASK instance group CloudFormation updates in place. */
+const EMR_GROUP_IN_PLACE_MEMBERS = ['InstanceCount', 'AutoScalingPolicy'] as const;
+/** Members of a CORE or TASK instance fleet CloudFormation updates in place. */
+const EMR_FLEET_IN_PLACE_MEMBERS = ['TargetOnDemandCapacity', 'TargetSpotCapacity'] as const;
+
+/** A copy of a plain object without `keys`; anything else is returned as is. */
+function withoutKeys(value: unknown, keys: readonly string[]): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const key of keys) delete copy[key];
+  return copy;
+}
+
+/**
+ * `Instances` with every member CloudFormation updates in place removed.
+ * `TaskInstanceGroups` / `TaskInstanceFleets` are compared in list order, so a
+ * reorder of the same entries classifies as a replacement (unmeasured; a plain
+ * deploy then stops at the stateful-recreate guard's `STATEFUL_REPLACE_BLOCKED`).
+ */
+function emrInstancesReplacingPart(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const instances = withoutKeys(value, EMR_INSTANCES_IN_PLACE_MEMBERS) as Record<string, unknown>;
+  const strip = (key: string, keys: readonly string[]): void => {
+    if (!(key in instances)) return;
+    const member = instances[key];
+    instances[key] = Array.isArray(member)
+      ? member.map((entry) => withoutKeys(entry, keys))
+      : withoutKeys(member, keys);
+  };
+  strip('CoreInstanceGroup', EMR_GROUP_IN_PLACE_MEMBERS);
+  strip('TaskInstanceGroups', EMR_GROUP_IN_PLACE_MEMBERS);
+  strip('CoreInstanceFleet', EMR_FLEET_IN_PLACE_MEMBERS);
+  strip('TaskInstanceFleets', EMR_FLEET_IN_PLACE_MEMBERS);
+  return instances;
+}
+
+/**
+ * Conditional-replacement predicate for
+ * `AWS::ElastiCache::CacheCluster.PreferredAvailabilityZones` (issue #5458).
+ *
+ * True when the list moves to zones that share NONE with the previous list.
+ * Real CloudFormation change-set executions (memcached, us-east-1), each a
+ * `Replacement: Conditional` change set:
+ *
+ *  - REPLACED: `[1c, 1a]` -> `[1b]` (2 -> 1 nodes); `[1b]` -> `[1c]`
+ *    (1 -> 1); `[1a]` -> `[1b]` with the cluster's only live node ALREADY in
+ *    1b (moved there outside the template), so the comparison is with the
+ *    previous TEMPLATE list, not the live nodes.
+ *  - IN PLACE: `[1c, 1b]` -> `[1b, 1b]`; `[1a, 1b, 1c]` -> `[1a, 1c]`;
+ *    absent -> `[1b]` and absent -> `[1c, 1b]`; `[1c, 1b]` -> absent.
+ *
+ * So an absent or empty list on either side never replaces, nor does any
+ * list sharing a zone with the previous one (order and repeats are
+ * irrelevant). A side that is not a list of strings (a value still
+ * unresolved at diff time, an intrinsic object) answers `false`, as the
+ * Glue table-name predicate does: a wrong `true` plans the delete of a
+ * stateful cluster that is not moving, while a wrong `false` sends the move
+ * to the in-place update, which AWS refuses loudly.
+ */
+export function elastiCachePreferredAvailabilityZonesMovedToDisjoint(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  if (!Array.isArray(oldValue) || !Array.isArray(newValue)) return false;
+  if (oldValue.length === 0 || newValue.length === 0) return false;
+  if (![...oldValue, ...newValue].every((z) => typeof z === 'string')) return false;
+  return !newValue.some((z) => oldValue.includes(z));
+}
+
+/**
+ * Conditional-replacement predicate for `AWS::EMR::Cluster.Instances` (issue
+ * [#5418](https://github.com/go-to-k/cdkd/issues/5418)).
+ *
+ * The registry schema marks no `Instances` path createOnly and the
+ * CloudFormation reference says "No interruption" for every member, yet
+ * CloudFormation REPLACES the cluster for most of them. MEASURED (raw
+ * CloudFormation change-set executions, us-east-1, 2026-10-27; every change set
+ * said `Replacement: Conditional` on `Instances`, so only the execution tells):
+ *
+ *  - REPLACED: `AdditionalMasterSecurityGroups` added, a task instance group
+ *    added, `KeepJobFlowAliveWhenNoSteps` true -> false.
+ *  - IN PLACE: `InstanceCount` of the core group and of a task group,
+ *    `AutoScalingPolicy` added to the core group, `TargetOnDemandCapacity` of
+ *    the core fleet and of a task fleet, `UnhealthyNodeReplacement` added.
+ *  - `TerminationProtected` is in place (`SetTerminationProtection`).
+ *
+ * The reference's notes on `TaskInstanceGroups` / `TaskInstanceFleets` agree:
+ * only `InstanceCount` and `AutoScalingPolicy` (groups) and the two target
+ * capacities (fleets) are mutable, anything else replaces. Neither covers the
+ * master group or fleet (unmeasured), whose every change is left to replace.
+ *
+ * So the members CloudFormation updates in place are removed from both sides
+ * and any remaining difference replaces. Compared strictly, as the diff
+ * compares the whole property: a value still unresolved there (an intrinsic
+ * object) differs from a concrete one and replaces, the conservative direction
+ * for a member AWS cannot update.
+ *
+ * A call with NO value on either side (`undefined`, `undefined`) is the
+ * diff's promoted-dependent probe: a resource the block references (a subnet,
+ * a security group) is being replaced, so its id WILL move, and CloudFormation
+ * replaces the cluster for that. It answers `true`; the engine lowers the
+ * ceiling, through this same predicate, when the resolved move is in place.
+ */
+export function emrClusterInstancesReplaced(oldValue: unknown, newValue: unknown): boolean {
+  if (oldValue === undefined && newValue === undefined) return true;
+  return !isDeepStrictEqual(
+    emrInstancesReplacingPart(oldValue),
+    emrInstancesReplacingPart(newValue)
+  );
+}
+
+/*
+ * RDS `Engine` mutability (issue #5467), transcribed from CloudFormation's own
+ * RDS handlers, aws-cloudformation/aws-cloudformation-resource-providers-rds
+ * at commit 5a410e843efb90076c1c4d322707bc989e5a058b:
+ * `aws-rds-dbcluster/.../dbcluster/util/ImmutabilityHelper.java`
+ * `isEngineMutable` and `aws-rds-dbinstance/.../dbinstance/util/ImmutabilityHelper.java`
+ * `isEngineMutable`. An immutable change fails the update `NotUpdatable`,
+ * which CloudFormation turns into a replacement (the change set's
+ * `Replacement: Conditional`). MEASURED (us-east-1, 2026-10-28): DBCluster
+ * aurora-mysql to aurora-postgresql and DBInstance mysql to mariadb both
+ * created a new physical resource. Comparisons keep the handlers' letter-case
+ * rules (`Objects.equal` is exact, `equalsIgnoreCase` is not).
+ *
+ * One deliberate difference: an `Engine` absent on either side never replaces
+ * here. The DBInstance handler then compares against the LIVE engine, which a
+ * template diff cannot see, and a replacement destroys the database.
+ */
+const AURORA = 'aurora';
+const AURORA_MYSQL = 'aurora-mysql';
+const DEPRECATED_ORACLE_SE_ENGINES: ReadonlySet<string> = new Set(['oracle-se', 'oracle-se1']);
+const ORACLE_SE2 = 'oracle-se2';
+const ORACLE_CDB_CONVERSIONS: ReadonlyMap<string, string> = new Map([
+  ['oracle-ee', 'oracle-ee-cdb'],
+  ['oracle-se2', 'oracle-se2-cdb'],
+]);
+const ORACLE_CDB_ENGINES: ReadonlySet<string> = new Set(ORACLE_CDB_CONVERSIONS.values());
+
+/** Both `Engine` values as strings, or `undefined` when either is absent. */
+function enginePair(oldValue: unknown, newValue: unknown): [string, string] | undefined {
+  return typeof oldValue === 'string' && typeof newValue === 'string'
+    ? [oldValue, newValue]
+    : undefined;
+}
+
+/** The DBCluster handler's `isEngineMutable`: unchanged, or `aurora` to `aurora-mysql`. */
+export function dbClusterEngineChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  const pair = enginePair(oldValue, newValue);
+  if (pair === undefined) return false;
+  const [before, after] = pair;
+  return !(before === after || (before === AURORA && after === AURORA_MYSQL));
+}
+
+/**
+ * Whether a DBInstance `Engine` change is one the handler applies in place
+ * while the engine string changes, so `ModifyDBInstance` carries the new one
+ * (the handler sends `engine(diff(previous, desired))`).
+ */
+export function dbInstanceEngineChangeIsInPlace(oldValue: unknown, newValue: unknown): boolean {
+  const pair = enginePair(oldValue, newValue);
+  if (pair === undefined) return false;
+  const [before, after] = pair;
+  const from = before.toLowerCase();
+  const to = after.toLowerCase();
+  return (
+    before === after ||
+    // isUpgradeToAuroraMySQL (exact case)
+    (before === AURORA && after === AURORA_MYSQL) ||
+    // isUpgradeToOracleSE2
+    (DEPRECATED_ORACLE_SE_ENGINES.has(from) && to === ORACLE_SE2) ||
+    // isOracleConvertToCDB
+    ORACLE_CDB_CONVERSIONS.get(from) === to ||
+    // isOracleCDBMutable: a CDB engine re-spelled in another case
+    (from === to && ORACLE_CDB_ENGINES.has(to))
+  );
+}
+
+/** The DBInstance handler's `isEngineMutable`, negated. */
+export function dbInstanceEngineChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  if (enginePair(oldValue, newValue) === undefined) return false;
+  return !dbInstanceEngineChangeIsInPlace(oldValue, newValue);
+}
+
+/**
  * Replacement rules registry
  *
  * Maps resource types to their replacement rules
@@ -222,7 +592,8 @@ export class ReplacementRulesRegistry {
     resourceType: string,
     propertyPath: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings?: ReplacementSiblings
   ): boolean {
     const rule = this.rules.get(resourceType);
 
@@ -250,7 +621,7 @@ export class ReplacementRulesRegistry {
     if (rule.conditionalReplacements?.has(propertyPath)) {
       const condition = rule.conditionalReplacements.get(propertyPath);
       if (condition) {
-        const requires = condition(oldValue, newValue);
+        const requires = condition(oldValue, newValue, siblings);
         this.logger.debug(
           `Conditional replacement for ${propertyPath} of ${resourceType}: ${requires}`
         );
@@ -273,10 +644,11 @@ export class ReplacementRulesRegistry {
     resourceType: string,
     propertyPath: string,
     oldValue: unknown,
-    newValue: unknown
+    newValue: unknown,
+    siblings?: ReplacementSiblings
   ): boolean | undefined {
     const condition = this.rules.get(resourceType)?.conditionalReplacements?.get(propertyPath);
-    return condition === undefined ? undefined : condition(oldValue, newValue);
+    return condition === undefined ? undefined : condition(oldValue, newValue, siblings);
   }
 
   /**
@@ -433,6 +805,18 @@ export class ReplacementRulesRegistry {
       ]),
     });
 
+    // DynamoDB GlobalTable (go-to-k/cdkd#5489). No property is listed outright:
+    // the schema's `createOnlyProperties` fallback still covers `TableName`,
+    // since it applies to every property this rule leaves unclassified. The
+    // type is stateful, so the replacement still needs
+    // `--force-stateful-recreation`.
+    this.rules.set('AWS::DynamoDB::GlobalTable', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([
+        ['LocalSecondaryIndexes', globalTableLocalSecondaryIndexesRemoved],
+      ]),
+    });
+
     // DynamoDB Table
     this.rules.set('AWS::DynamoDB::Table', {
       replacementProperties: new Set([
@@ -446,6 +830,10 @@ export class ReplacementRulesRegistry {
         // (one GSI per call, async) — NOT a replacement. The provider's update()
         // applies these via GlobalSecondaryIndexUpdates.
         'GlobalSecondaryIndexes',
+        // NOT a replacement, matching CloudFormation (go-to-k/cdkd#5354): its
+        // change set reports `RequiresRecreation: Never` for an LSI change and
+        // the update then FAILS. So the diff routes it to the provider's
+        // update(), which refuses it the same way, before any call.
         'LocalSecondaryIndexes',
         'StreamSpecification',
         'SSESpecification',
@@ -736,9 +1124,9 @@ export class ReplacementRulesRegistry {
     // create-only FALLBACK in `create-only-properties.ts` cannot cover this:
     // the registry schema for this type ships an EMPTY `createOnlyProperties`
     // list, so an unclassified change would be routed to an in-place UPDATE
-    // that silently drops the new value. `Name` keeps the provider's own
-    // `ResourceUpdateNotSupportedError` and is deliberately NOT listed —
-    // classifying it here would change existing behavior beyond this fix.
+    // that silently drops the new value. `Name` is deliberately left
+    // unclassified: it renames the API in place via `UpdateGraphqlApi`,
+    // keeping the API id, as CloudFormation does (go-to-k/cdkd#5359).
     this.rules.set('AWS::AppSync::GraphQLApi', {
       replacementProperties: new Set(['ApiType', 'Visibility']),
       updateableProperties: new Set([
@@ -787,6 +1175,39 @@ export class ReplacementRulesRegistry {
       replacementProperties: new Set(['DBProxyName', 'TargetGroupName']),
     });
 
+    // EC2 VPC (issue #5449) — InstanceTenancy is not createOnly in the registry
+    // schema, but only a change TO `default` is in place; see the predicate.
+    // The registry schema's createOnly list is named here too, so the
+    // classification survives a DescribeType failure (as for the Subnet).
+    this.rules.set('AWS::EC2::VPC', {
+      replacementProperties: new Set([
+        'CidrBlock',
+        'Ipv4IpamPoolId',
+        'Ipv4NetmaskLength',
+        'VpcEncryptionControl',
+      ]),
+      conditionalReplacements: new Map([['InstanceTenancy', vpcInstanceTenancyChangeReplaces]]),
+    });
+
+    // RDS DBCluster / DBInstance `Engine` (issue #5467): not createOnly in the
+    // CFn schema, but CloudFormation replaces a change its handlers call
+    // immutable (measured, and transcribed from the handlers; see the
+    // predicates). Every other property keeps the schema createOnly fallback,
+    // since these rules name only `Engine`. Both types are stateful, so the
+    // replacement still needs `--force-stateful-recreation`.
+    this.rules.set('AWS::RDS::DBCluster', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map<string, ConditionalReplacement>([
+        ['Engine', dbClusterEngineChangeReplaces],
+      ]),
+    });
+    this.rules.set('AWS::RDS::DBInstance', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map<string, ConditionalReplacement>([
+        ['Engine', dbInstanceEngineChangeReplaces],
+      ]),
+    });
+
     // EC2 Subnet — VpcId / CidrBlock / AvailabilityZone are createOnly per
     // the CFn registry schema (the DescribeType fallback already classifies
     // them); named here so the classification survives a DescribeType
@@ -800,8 +1221,10 @@ export class ReplacementRulesRegistry {
     });
 
     // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
-    // (a running instance returns IncorrectInstanceState), and cdkd does not
-    // stop/start instances, so an EbsOptimized change is routed to replacement
+    // (a running instance returns IncorrectInstanceState). `updateInstance`
+    // stops an instance only for an InstanceType / UserData change (issue
+    // #5446, measured), and an EbsOptimized change was not measured against
+    // CloudFormation, so it stays routed to replacement
     // (the create path sets it on the new instance). The other four #609
     // security-backfill props (DisableApiTermination / Monitoring /
     // MetadataOptions / CreditSpecification) ARE mutable in-place on a running
@@ -827,6 +1250,28 @@ export class ReplacementRulesRegistry {
         // no ENI-modification path -- an in-place classification would leave
         // state recording the new value while AWS keeps the old one.
         'NetworkInterfaces',
+      ]),
+      // Issue #5446: InstanceType / UserData (a stop-modify-start),
+      // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in
+      // place in `updateInstance`; see the two predicates for what replaces.
+      conditionalReplacements: new Map<string, ConditionalReplacement>([
+        ['SecurityGroupIds', instanceSecurityGroupIdsChangeReplaces],
+        ['BlockDeviceMappings', instanceBlockDeviceMappingsChangeReplaces],
+      ]),
+    });
+
+    // EC2 NatGateway (go-to-k/cdkd#2762) — the registry schema leaves
+    // `AvailabilityZoneAddresses` mutable, and on a gateway created with it
+    // CloudFormation associates / releases zone addresses in place. ADDING it
+    // to a regional gateway created without it (automatic zone expansion)
+    // makes CloudFormation create a new gateway instead (real CloudFormation
+    // A/B on #2762): no API switches a gateway out of automatic mode.
+    // Removing it is left in place, where `EC2Provider` refuses it as
+    // CloudFormation fails it.
+    this.rules.set('AWS::EC2::NatGateway', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([
+        ['AvailabilityZoneAddresses', natZoneAddressesAddedToAutomaticGateway],
       ]),
     });
 
@@ -893,6 +1338,32 @@ export class ReplacementRulesRegistry {
         'TaskRoleArn',
         'Volumes',
       ]),
+    });
+
+    // ECS Service — `LaunchType` replaces when set or changed, and stays in
+    // place when removed (issue #5392; see the predicate). Every other
+    // property stays with the schema fallback.
+    this.rules.set('AWS::ECS::Service', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([['LaunchType', ecsServiceLaunchTypeSetOrChanged]]),
+    });
+
+    // ElastiCache CacheCluster — a `PreferredAvailabilityZones` move to zones
+    // the previous list does not name replaces the cluster (issue #5458; see
+    // the predicate). Every other property stays with the schema fallback.
+    this.rules.set('AWS::ElastiCache::CacheCluster', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([
+        ['PreferredAvailabilityZones', elastiCachePreferredAvailabilityZonesMovedToDisjoint],
+      ]),
+    });
+
+    // EMR Cluster — an `Instances` change replaces unless only members
+    // CloudFormation updates in place moved (issue #5418; see the predicate).
+    // Every other property stays with the schema fallback.
+    this.rules.set('AWS::EMR::Cluster', {
+      replacementProperties: new Set(),
+      conditionalReplacements: new Map([['Instances', emrClusterInstancesReplaced]]),
     });
 
     // ELBv2 ListenerRule — `ListenerArn` is create-only (and write-only). The

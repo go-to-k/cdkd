@@ -8,17 +8,22 @@ import {
   DeleteDBInstanceCommand,
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
+  type DBCluster,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
+import { markNotGone } from '../not-gone.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
@@ -33,7 +38,13 @@ import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { refuseMalformedDesiredTags } from '../tag-list.js';
-import { applyDocDBTagDiff, attachDocDBTags, isDocDBNotFoundError } from './docdb-shared.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
+import {
+  applyDocDBTagDiff,
+  attachDocDBTags,
+  isDocDBNotFoundError,
+  wrapDocDBFailure,
+} from './docdb-shared.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -41,7 +52,83 @@ import {
   protectionFlipKey,
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
+  deleteAfterProtectionFlipWithFinalSnapshot,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
+import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
+
+/**
+ * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` carries, or
+ * `undefined` to leave the live password alone. DocumentDB treats ANY supplied
+ * password as a master-credential reset (the cluster enters
+ * `resetting-master-credentials`), so it is sent only when the template
+ * changed it, as CloudFormation does. A removed password sends nothing.
+ *
+ * The deploy's in-place update decides from `changedProperties`, which
+ * compares the templates as written: the record holds a secret as its
+ * `{{resolve:...}}` token or `***`, never the plaintext the desired bag holds.
+ * A changed reference and a `NoEcho` value count as changed there; a secret
+ * rotated under a reference the template spells literally does not, as in
+ * CloudFormation (one built by `Fn::Join` counts a newer read version). This
+ * type is deliberately NOT in
+ * `CHANGED_PROPERTIES_CONSUMER_TYPES`: DescribeDBClusters never returns the
+ * password, so the readback that opt-in buys could not confirm it.
+ *
+ * Without that set the two bags are compared. A rollback revert hands both
+ * re-resolved, so an equal password is left out. Under `drift --revert` both
+ * sides are AWS readbacks (the desired one with the drifted keys overlaid),
+ * which never hold the password, so nothing is sent. A
+ * recorded `{{resolve:` token or whole `***` mask is never read as equal.
+ * Compared in memory only; the value is never logged.
+ */
+function masterUserPasswordToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string | undefined {
+  const desired = properties['MasterUserPassword'];
+  if (desired === undefined || desired === null) return undefined;
+  const changedProperties = context?.changedProperties;
+  if (changedProperties !== undefined) {
+    return changedProperties.has('MasterUserPassword') ? (desired as string) : undefined;
+  }
+  const recorded = previousProperties['MasterUserPassword'];
+  const unchanged =
+    typeof desired === 'string' &&
+    typeof recorded === 'string' &&
+    recorded === desired &&
+    dynamicReferenceTokens(recorded).length === 0 &&
+    recorded !== SECRET_MASK;
+  return unchanged ? undefined : (desired as string);
+}
+
+/**
+ * Issue #1160: the port CloudFormation resets a removed DBCluster `Port` to.
+ * A real CloudFormation A/B (#1160) measured a removed `Port: 27018` reading
+ * back 27017 once the update completed.
+ */
+const DOCDB_DEFAULT_PORT = 27017;
+
+/** Issue #1160: the member statuses a cluster change moves an instance through. */
+const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
+const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
+
+/** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
+function numberOrUndefined(value: unknown): number | undefined {
+  return value == null ? undefined : Number(value);
+}
+
+/** The ModifyDBCluster `Port`: the declared one, or the default on removal. */
+function clusterPortToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): number | undefined {
+  if (properties['Port'] != null) return Number(properties['Port']);
+  if (previousProperties['Port'] == null) return undefined;
+  // The removed value already was the default: nothing to change.
+  return Number(previousProperties['Port']) === DOCDB_DEFAULT_PORT ? undefined : DOCDB_DEFAULT_PORT;
+}
 
 /**
  * The attribute map a DocumentDB DB cluster records (issue #3650), under
@@ -245,13 +332,15 @@ export class DocDBProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties);
+        return this.createDBCluster(logicalId, resourceType, properties, mask);
       case 'AWS::DocDB::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties);
+        return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -267,7 +356,7 @@ export class DocDBProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    _context?: UpdateContext
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
@@ -276,7 +365,8 @@ export class DocDBProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::DocDB::DBInstance':
         return this.updateDBInstance(
@@ -284,7 +374,8 @@ export class DocDBProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       default:
         throw new ProvisioningError(
@@ -318,12 +409,44 @@ export class DocDBProvider implements ResourceProvider {
     }
   }
 
+  // ─── Failure wrap ─────────────────────────────────────────────────
+
+  /**
+   * The failure wrap the create, update and delete catches throw
+   * ({@link wrapDocDBFailure}, go-to-k/cdkd#2319). A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    return wrapDocDBFailure(this.logger, mask, error, build);
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
+
   // ─── DBCluster ────────────────────────────────────────────────────
 
   private async createDBCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -331,7 +454,7 @@ export class DocDBProvider implements ResourceProvider {
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::DocDB::DBCluster', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
@@ -369,6 +492,8 @@ export class DocDBProvider implements ResourceProvider {
       );
       clusterCreated = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
+      // go-to-k/cdkd#5511: report before the availability wait.
+      reportCreatedResource(logicalId, resourceType, dbClusterIdentifier, createdResourceId);
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -381,7 +506,7 @@ export class DocDBProvider implements ResourceProvider {
 
       // Wait for cluster to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(dbClusterIdentifier);
+        await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
       }
 
       // Describe to get final attributes
@@ -395,12 +520,17 @@ export class DocDBProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbClusterIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DocDB DBCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbClusterIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the cluster exists and no state record will hold
       // it; never before CreateDBCluster returned (another owner's name).
@@ -422,7 +552,8 @@ export class DocDBProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -453,11 +584,14 @@ export class DocDBProvider implements ResourceProvider {
       //     random" sentinel.
       //   * MasterUserPassword — a secret; removal cannot synthesize a
       //     reset value.
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
-      //   * Port — DocDB documents a fixed default (27017), but resetting
-      //     the port is connection-breaking for every client; leave unchanged.
+      //   * VpcSecurityGroupIds — a real CloudFormation A/B (issue #1160)
+      //     showed CloudFormation KEEPS a DocDB cluster's groups when the
+      //     property is removed, so a removal sends nothing. RDS and Neptune
+      //     differ: there CloudFormation moves the cluster to the VPC's
+      //     default security group.
+      // A removed Port IS reset, to 27017 (`clusterPortToSend`): a real
+      // CloudFormation A/B (#1160) read a removed `Port: 27018` back as 27017.
+      const portToSend = clusterPortToSend(properties, previousProperties);
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -478,15 +612,74 @@ export class DocDBProvider implements ResourceProvider {
             | string
             | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
-          MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          // #5153: only a changed password; any supplied one resets credentials.
+          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
+          Port: portToSend,
           ApplyImmediately: true,
         })
       );
 
       this.logger.debug(`Successfully updated DocDB DBCluster ${logicalId}`);
 
+      // A changed Port (declared, or the default on removal) applies
+      // asynchronously: the describe below could still read the old one, and a
+      // same-deploy `Fn::GetAtt <cluster>.Port` would get it. CloudFormation
+      // reports the update once it has settled, so wait for the new port first,
+      // then for the member instances it moved to `modifying` / `rebooting`, whose
+      // own Modify* in the same deploy would otherwise be refused. An unchanged
+      // port adds no call; `--no-wait` skips both.
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      const portChanged =
+        portToSend !== undefined && portToSend !== numberOrUndefined(previousProperties['Port']);
+      if (!noWait && portChanged) {
+        await this.waitForClusterPortApplied(physicalId, logicalId, portToSend);
+      }
+
       const described = await this.describeDBCluster(physicalId);
+
+      if (!noWait && portChanged) {
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              logicalId,
+              PORT_CHANGE_MEMBER_STATUSES,
+              'port'
+            );
+          }
+        }
+      }
+
+      // A changed VpcSecurityGroupIds also moves every member instance to
+      // `modifying` within about a second, and a member's own Modify* in the
+      // same deploy is then refused ("Database instance is not in available
+      // state"). CloudFormation reports the update only once it has settled, so
+      // wait here, but ONLY when the sent list differs from the previous one:
+      // an unchanged list (re-sent on every update) adds no time. `--no-wait`
+      // skips it, exactly as create() skips waitForClusterAvailable.
+      if (
+        process.env['CDKD_NO_WAIT'] !== 'true' &&
+        securityGroupListChanged(
+          sendVpcSgIds ? vpcSgIds : undefined,
+          previousProperties['VpcSecurityGroupIds']
+        )
+      ) {
+        await this.waitForSecurityGroupsApplied(
+          physicalId,
+          logicalId,
+          (sendVpcSgIds ? vpcSgIds : undefined) ?? []
+        );
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              logicalId,
+              SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
+              'VPC security groups'
+            );
+          }
+        }
+      }
 
       if (described?.DBClusterArn) {
         await applyDocDBTagDiff(
@@ -503,16 +696,27 @@ export class DocDBProvider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
-        attributes: clusterAttributes(described),
+        // Under `--no-wait` the describe can still read the OLD port; record the
+        // one sent, or a `Fn::GetAtt <cluster>.Port` consumer stays stale.
+        attributes: clusterAttributes(
+          noWait && portChanged && described !== undefined
+            ? { ...described, Port: portToSend }
+            : described
+        ),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DocDB DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -581,6 +785,7 @@ export class DocDBProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
@@ -600,7 +805,9 @@ export class DocDBProvider implements ResourceProvider {
         } catch (disableError) {
           if (!isDocDBNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for DocDB DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for DocDB DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -609,14 +816,24 @@ export class DocDBProvider implements ResourceProvider {
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
-      await this.getClient().send(
-        new DeleteDBClusterCommand({
-          DBClusterIdentifier: physicalId,
-          ...(finalSnapshotId
-            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
-            : { SkipFinalSnapshot: true }),
-        })
-      );
+      // Issue #5155: a final snapshot needs `available`, which the flip above
+      // briefly takes away. Only a flip of this run AND a snapshot wait, and
+      // never once AWS accepted the delete (a re-entry after a failed wait).
+      const sendDelete = () =>
+        this.getClient().send(
+          new DeleteDBClusterCommand({
+            DBClusterIdentifier: physicalId,
+            ...(finalSnapshotId
+              ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+              : { SkipFinalSnapshot: true }),
+          })
+        );
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        // Issue #5184: waits, then retries a delete AWS refuses as not `available`.
+        await this.deleteAfterProtectionFlip(logicalId, physicalId, sendDelete);
+      } else {
+        await sendDelete();
+      }
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
@@ -654,12 +871,17 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DocDB DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DocDB DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -669,7 +891,8 @@ export class DocDBProvider implements ResourceProvider {
   private async createDBInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -677,7 +900,7 @@ export class DocDBProvider implements ResourceProvider {
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::DocDB::DBInstance', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
@@ -702,6 +925,8 @@ export class DocDBProvider implements ResourceProvider {
       );
       instanceCreated = true;
       createdResourceId = response.DBInstance?.DbiResourceId;
+      // go-to-k/cdkd#5511: report before the availability wait.
+      reportCreatedResource(logicalId, resourceType, dbInstanceIdentifier, createdResourceId);
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -714,7 +939,7 @@ export class DocDBProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       const described = await this.describeDBInstance(dbInstanceIdentifier);
@@ -727,12 +952,17 @@ export class DocDBProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbInstanceIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DocDB DBInstance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbInstanceIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
@@ -754,7 +984,8 @@ export class DocDBProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DocDB DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -770,17 +1001,28 @@ export class DocDBProvider implements ResourceProvider {
       //     no behavioral divergence.
       //   * PreferredMaintenanceWindow — AWS assigns a RANDOM window at
       //     create; no documented "reset to random" sentinel.
-      await this.getClient().send(
-        new ModifyDBInstanceCommand({
-          DBInstanceIdentifier: physicalId,
-          DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
-          PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
-            | string
-            | undefined,
-          AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
-          ApplyImmediately: true,
-        })
-      );
+      // #5194: a cluster change in the same deploy can leave this member not
+      // `available` for a moment; only that refusal is waited out and resent.
+      await modifyDbInstanceWhenAvailable({
+        send: () =>
+          this.getClient().send(
+            new ModifyDBInstanceCommand({
+              DBInstanceIdentifier: physicalId,
+              DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
+              PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
+                | string
+                | undefined,
+              AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+              ApplyImmediately: true,
+            })
+          ),
+        readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label: 'DocDB DBInstance',
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
 
       this.logger.debug(`Successfully updated DocDB DBInstance ${logicalId}`);
 
@@ -805,12 +1047,17 @@ export class DocDBProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DocDB DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -862,12 +1109,17 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DocDB DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DocDB DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1023,11 +1275,176 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available. DocDB's SDK does not ship a
-   * `waitUntilDBClusterAvailable` waiter (only DBInstance has waiters),
-   * so we poll Status manually with exponential backoff.
+   * Issue #1160: wait out a member instance's transition (`transitional`) after
+   * its cluster's security groups or port changed. Only that transition is
+   * waited out: a member in a lasting state (maintenance, upgrading,
+   * storage-optimization, ...) or deleted out of band does not hold the update,
+   * as CloudFormation reports the cluster updated in those cases too.
+   */
+  private async waitForMemberAfterClusterChange(
+    dbInstanceIdentifier: string,
+    clusterLogicalId: string,
+    transitional: ReadonlySet<string>,
+    change: string,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      let status: string | undefined;
+      try {
+        status = (await this.describeDBInstance(dbInstanceIdentifier))?.DBInstanceStatus;
+      } catch (error) {
+        if (isDocDBNotFoundError(error, 'DBInstanceNotFoundFault')) return;
+        throw error;
+      }
+      if (status === undefined || !transitional.has(status)) return;
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    // The member's identifier is the physical id of ANOTHER resource, which
+    // this cluster's masking bag does not cover (it can be secret-derived), so
+    // only the cluster's logical id is named.
+    throw new Error(
+      safeMsg`Timed out waiting for a member instance of DocDB DBCluster ${clusterLogicalId} to finish applying its new ${change}`
+    );
+  }
+
+  /**
+   * A cluster read inside an update wait (issues #5411, #5419). A vanished
+   * cluster or a terminal status (`isTerminalDbWaitStatus`) never reaches the
+   * awaited state, so fail now rather than after the 30-minute budget.
+   */
+  private requireClusterWhileWaiting(
+    cluster: DBCluster | undefined,
+    logicalId: string,
+    change: string
+  ): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
+    if (cluster === undefined) {
+      throw new Error(
+        safeMsg`DescribeDBClusters returned no cluster for DocDB DBCluster ${logicalId} while waiting for its new ${change}`
+      );
+    }
+    if (isTerminalDbWaitStatus(cluster.Status)) {
+      throw new Error(
+        safeMsg`DocDB DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
+      );
+    }
+    return cluster;
+  }
+
+  /**
+   * Wait until the cluster is out of `modifying` and reports `port` (issue
+   * #1160). `available` alone can still read before the port change starts;
+   * the port cannot.
+   */
+  private async waitForClusterPortApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    port: number,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'port'
+      );
+      if (cluster.Status !== 'modifying' && cluster.Port === port) return;
+      this.logger.debug(
+        safeMsg`DocDB DBCluster ${logicalId} port not applied yet (status ${cluster.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(`Timed out waiting for DocDB DBCluster ${logicalId} to apply its new port`);
+  }
+
+  /**
+   * Wait until the cluster is out of `modifying` AND reports exactly `expected` as
+   * its VPC security groups, all `active` (issue #1160). Being out of
+   * `modifying` alone can still read before the group swap has started; the
+   * group statuses cannot.
+   */
+  private async waitForSecurityGroupsApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    expected: readonly string[],
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const want = [...new Set(expected)].sort().join(' ');
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'VPC security groups'
+      );
+      const groups = cluster.VpcSecurityGroups ?? [];
+      const ids = groups
+        .map((group) => group.VpcSecurityGroupId ?? '')
+        .sort()
+        .join(' ');
+      // `modifying` is the swap's own transition; any lasting state (backing-up,
+      // maintenance, ...) is not this change's to wait out.
+      const settled =
+        cluster.Status !== 'modifying' &&
+        groups.every((group) => group.Status === 'active') &&
+        ids === want;
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`DocDB DBCluster ${logicalId} security groups not settled yet (status ${cluster.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for DocDB DBCluster ${logicalId} to apply its new VPC security groups`
+    );
+  }
+
+  /**
+   * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
+   * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
+   * and their bounds).
+   */
+  private async deleteAfterProtectionFlip(
+    logicalId: string,
+    physicalId: string,
+    send: () => Promise<unknown>
+  ): Promise<void> {
+    await deleteAfterProtectionFlipWithFinalSnapshot({
+      stateFault: 'InvalidDBClusterStateFault',
+      send,
+      noun: 'cluster',
+      label: 'DocDB DBCluster',
+      logicalId,
+      read: async () => {
+        const current = await this.describeDBCluster(physicalId);
+        return current === undefined
+          ? undefined
+          : { deletionProtection: current.DeletionProtection, status: current.Status };
+      },
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
+  }
+
+  /**
+   * Wait for a DocDB DBCluster to become available. DocDB's SDK does not ship
+   * a `waitUntilDBClusterAvailable` waiter (only DBInstance has waiters), so
+   * Status is polled with exponential backoff. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1041,6 +1458,12 @@ export class DocDBProvider implements ResourceProvider {
       this.logger.debug(`DocDB DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DocDB DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1085,9 +1508,12 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available (manual poll — matches RDS).
+   * Wait for a DocDB DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1101,6 +1527,12 @@ export class DocDBProvider implements ResourceProvider {
       this.logger.debug(`DocDB DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DocDB DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1327,4 +1759,17 @@ export class DocDBProvider implements ResourceProvider {
     // override or a `DBClusterIdentifier` in the template.
     return null;
   }
+}
+
+/**
+ * Whether the VpcSecurityGroupIds a cluster update SENDS differs from the
+ * previous template's list (order-insensitive). `sent === undefined` sends
+ * nothing, so nothing changes.
+ */
+function securityGroupListChanged(sent: readonly string[] | undefined, previous: unknown): boolean {
+  if (sent === undefined) return false;
+  const before = Array.isArray(previous)
+    ? previous.filter((id): id is string => typeof id === 'string')
+    : [];
+  return [...sent].sort().join(' ') !== [...before].sort().join(' ');
 }

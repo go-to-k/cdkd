@@ -34,6 +34,11 @@ already exists. Additions and in-place updates are not.
 | `will be destroyed` | The resource leaves the template. |
 | `will be orphaned` | The resource leaves the template with `DeletionPolicy: Retain` or `RetainExceptOnCreate`. |
 
+A construct renamed, or moved within its stack or to another stack, shows up as a `will be destroyed`
+row for the old logical ID beside an addition of the new one. Run
+[`cdkd refactor`](cli-refactor.md) before deploying to keep that resource
+instead of replacing it.
+
 Both commands list each destructive change by stack, resource type, construct
 path and logical ID:
 

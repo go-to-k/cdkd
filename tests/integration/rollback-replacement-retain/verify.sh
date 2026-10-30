@@ -144,6 +144,9 @@ CONTROL_V1="${PARAM_BASE}/control-v1"
 CONTROL_V2="${PARAM_BASE}/control-v2"
 DP_V1="${PARAM_BASE}/deletion-policy-v1"
 DP_V2="${PARAM_BASE}/deletion-policy-v2"
+# go-to-k/cdkd#5143: the log group subject, under the same fixture-owned path.
+LG_V1="${PARAM_BASE}/lg-v1"
+LG_V2="${PARAM_BASE}/lg-v2"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/rollback-replacement-retain"
@@ -185,6 +188,15 @@ sweep_params() { (
     echo "[verify] sweep: deleting parameter ${n}"
     aws ssm delete-parameter --name "${n}" >/dev/null 2>&1
   done
+  # go-to-k/cdkd#5143: the log group subject's survivors, same path.
+  groups="$(aws logs describe-log-groups --log-group-name-prefix "${PARAM_BASE}/" \
+    --query 'logGroups[].logGroupName' --output text 2>/dev/null)"
+  for g in ${groups}; do
+    [ -n "${g}" ] || continue
+    [ "${g}" = "None" ] && continue
+    echo "[verify] sweep: deleting log group ${g}"
+    aws logs delete-log-group --log-group-name "${g}" >/dev/null 2>&1
+  done
   # Load-bearing: a subshell exits with its LAST command's status, and the
   # last one here is a best-effort delete. Without this the pre-run call --
   # which runs under `set -e` -- aborts the whole run whenever the final
@@ -206,7 +218,7 @@ cleanup() {
   # work; the path sweep below then catches everything state cannot reach (the
   # Retain survivors, and anything a failed phase orphaned).
   RETAIN_PARAM_NAME="${RETAIN_V1}" CONTROL_PARAM_NAME="${CONTROL_V1}" \
-    DELETION_POLICY_PARAM_NAME="${DP_V1}" \
+    DELETION_POLICY_PARAM_NAME="${DP_V1}" RETAIN_LOG_GROUP_NAME="${LG_V1}" \
     ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --force >/dev/null 2>&1
 
   sweep_params
@@ -245,7 +257,7 @@ sweep_params
 echo ""
 echo "[verify] phase 1: deploy v1"
 RETAIN_PARAM_NAME="${RETAIN_V1}" CONTROL_PARAM_NAME="${CONTROL_V1}" \
-  DELETION_POLICY_PARAM_NAME="${DP_V1}" \
+  DELETION_POLICY_PARAM_NAME="${DP_V1}" RETAIN_LOG_GROUP_NAME="${LG_V1}" \
   ${CDKD} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --yes
 
 for p in "${RETAIN_V1}" "${CONTROL_V1}" "${DP_V1}"; do
@@ -314,7 +326,7 @@ echo ""
 echo "[verify] phase 2: deploy v2 (all three renamed, failure injected) -- expected to FAIL"
 set +e
 RETAIN_PARAM_NAME="${RETAIN_V2}" CONTROL_PARAM_NAME="${CONTROL_V2}" \
-  DELETION_POLICY_PARAM_NAME="${DP_V2}" ROLLBACK_RETAIN_INTEG_FAIL=true \
+  DELETION_POLICY_PARAM_NAME="${DP_V2}" RETAIN_LOG_GROUP_NAME="${LG_V2}" ROLLBACK_RETAIN_INTEG_FAIL=true \
   ${CDKD} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --force-stateful-recreation --yes > "${WORK_DIR}/deploy-v2.log" 2>&1
 DEPLOY_RC=$?
@@ -464,7 +476,13 @@ for p in "${RETAIN_V1}" "${CONTROL_V1}" "${DP_V1}"; do
     exit 1
   fi
 done
-echo "[verify] phase 4: OK (retain-v2 ALIVE; control-v2 + deletion-policy-v2 gone; all three v1 copies restored)"
+LG_V2_ALIVE="$(aws logs describe-log-groups --log-group-name-prefix "${LG_V2}" \
+  --query "logGroups[?logGroupName=='${LG_V2}'].logGroupName" --output text)"
+if [ "${LG_V2_ALIVE}" != "${LG_V2}" ]; then
+  echo "FAIL: phase 4: the log group's retained new copy ${LG_V2} is gone (got '${LG_V2_ALIVE}')" >&2
+  exit 1
+fi
+echo "[verify] phase 4: OK (retain-v2 + lg-v2 ALIVE; control-v2 + deletion-policy-v2 gone; all three v1 copies restored)"
 
 # --------------------------------------------------------------------------
 # Phase 5 — what cdkd's STATE says. The survivor is orphaned out of the stack,
@@ -621,12 +639,45 @@ done
 echo "[verify] phase 6: OK (survivor id + reason + layer recorded for RetainParam; both controls carry neither field)"
 
 # --------------------------------------------------------------------------
+# Phase 6b (go-to-k/cdkd#5143) — ask for the retained copy's name again.
+# Only the log group is renamed; the refusal must say the holder is this
+# stack's own rollback-retained copy, and nothing may be created or deleted.
+# --------------------------------------------------------------------------
+echo ""
+echo "[verify] phase 6b: re-deploy the log group rename onto its retained copy"
+set +e
+RETAIN_PARAM_NAME="${RETAIN_V1}" CONTROL_PARAM_NAME="${CONTROL_V1}" \
+  DELETION_POLICY_PARAM_NAME="${DP_V1}" RETAIN_LOG_GROUP_NAME="${LG_V2}" \
+  ${CDKD} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --yes > "${WORK_DIR}/phase6b.log" 2>&1
+P6B_RC=$?
+set -e
+# Sentinel first: the refusal itself, so a missing hint cannot pass as "the
+# deploy failed for another reason".
+if [ "${P6B_RC}" -eq 0 ] || ! grep -q "already holds the name it asks for" "${WORK_DIR}/phase6b.log"; then
+  echo "FAIL: phase 6b: expected the name-collision refusal (rc=${P6B_RC}):" >&2
+  tail -20 "${WORK_DIR}/phase6b.log" >&2
+  exit 1
+fi
+if ! grep -q "a rolled-back deploy kept RetainLogGroup's replacement under this name" "${WORK_DIR}/phase6b.log"; then
+  echo "FAIL: phase 6b: the refusal does not name the holder as this stack's rollback-retained copy:" >&2
+  grep -n "already holds" "${WORK_DIR}/phase6b.log" >&2
+  exit 1
+fi
+LG_STILL="$(aws logs describe-log-groups --log-group-name-prefix "${PARAM_BASE}/lg-" \
+  --query 'logGroups[].logGroupName' --output text | tr '\t' '\n' | sort | tr '\n' ' ')"
+if [ "${LG_STILL}" != "${LG_V1} ${LG_V2} " ]; then
+  echo "FAIL: phase 6b: the refusal changed the log groups: '${LG_STILL}'" >&2
+  exit 1
+fi
+echo "[verify] phase 6b: OK (refused, naming RetainLogGroup's rollback-retained copy; nothing changed)"
+
+# --------------------------------------------------------------------------
 # Phase 7 — destroy, then account for every parameter this run created.
 # --------------------------------------------------------------------------
 echo ""
 echo "[verify] phase 7: destroy + orphan accounting"
 RETAIN_PARAM_NAME="${RETAIN_V1}" CONTROL_PARAM_NAME="${CONTROL_V1}" \
-  DELETION_POLICY_PARAM_NAME="${DP_V1}" \
+  DELETION_POLICY_PARAM_NAME="${DP_V1}" RETAIN_LOG_GROUP_NAME="${LG_V1}" \
   ${CDKD} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force
 
 # Tracked, no retention policy -> destroyed.
@@ -661,9 +712,16 @@ assert_gone "phase 7: state.json survived destroy" \
 
 # Test artifacts. Both are resources cdkd was CORRECT to leave behind, so the
 # fixture -- not cdkd -- owns their deletion. A real user keeps them.
-echo "[verify] phase 7: deleting the two deliberate survivors (test artifacts)"
+echo "[verify] phase 7: deleting the three deliberate survivors (test artifacts)"
 aws ssm delete-parameter --name "${RETAIN_V2}"
 aws ssm delete-parameter --name "${DP_V1}"
+aws logs delete-log-group --log-group-name "${LG_V2}"
+LG_LEFT="$(aws logs describe-log-groups --log-group-name-prefix "${PARAM_BASE}/" \
+  --query 'logGroups[].logGroupName' --output text)"
+if [ -n "${LG_LEFT}" ] && [ "${LG_LEFT}" != "None" ]; then
+  echo "FAIL: phase 7: log groups survive under ${PARAM_BASE}: ${LG_LEFT}" >&2
+  exit 1
+fi
 assert_gone "phase 7: ${RETAIN_V2} still present after artifact cleanup" \
   aws ssm get-parameter --name "${RETAIN_V2}"
 assert_gone "phase 7: ${DP_V1} still present after artifact cleanup" \

@@ -9,8 +9,10 @@
 #   Phase 1 (create): deploy an SQS queue + an anomaly detection model on its
 #     NumberOfMessagesSent metric; assert DescribeAnomalyDetectors returns it.
 #   Phase 2 (update, CDKD_TEST_UPDATE=true): re-deploy with a Configuration
-#     (MetricTimeZone) — the only in-place-mutable property per the registry
-#     schema; assert the configuration landed.
+#     (MetricTimeZone + ExcludedTimeRanges) — the only in-place-mutable
+#     property per the registry schema; assert the configuration landed, and
+#     (deployed under TZ=Asia/Tokyo) that the offset-less range landed as UTC
+#     (go-to-k/cdkd#5311).
 #   Phase 3 (destroy): tear down; assert the detector, queue, and state file
 #     are gone.
 #
@@ -171,7 +173,9 @@ echo "    OK: GetAtt AnomalyDetectorId output resolves to the physical id (${PHY
 # provider re-keys it on write; asserting the readback here is what catches
 # a client-side silent drop of the miscased key (found live 2026-07-31).
 echo "==> Phase 2: update (add Configuration: MetricTimeZone + ExcludedTimeRanges)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+# TZ=Asia/Tokyo: the template's offset-less ExcludedTimeRanges must reach AWS
+# as UTC, not shifted by the deployer's offset (go-to-k/cdkd#5311).
+TZ=Asia/Tokyo CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --strict-getatt \
@@ -186,6 +190,31 @@ if [ "${CONFIG_SET}" -lt 1 ]; then
   exit 1
 fi
 echo "    OK: Configuration update landed in-place (MetricTimezone + ExcludedTimeRanges read back)"
+
+# go-to-k/cdkd#5311: the EXACT instants, normalized to UTC (the CLI renders
+# timestamps in its own zone, so compare instants, not strings). Pre-fix, the
+# JST deploy above sent 2025-12-31T15:00:00Z for `2026-01-01T00:00:00`.
+RANGES_JSON=$(aws cloudwatch describe-anomaly-detectors \
+  --namespace "${NAMESPACE}" --metric-name "${METRIC}" --region "${REGION}" \
+  --query "AnomalyDetectors[?SingleMetricAnomalyDetector.Dimensions[?Name=='QueueName' && Value=='${QUEUE_NAME}']] | [0].Configuration.ExcludedTimeRanges" \
+  --output json)
+RANGES_UTC=$(printf '%s' "${RANGES_JSON}" | python3 -c "
+import json, sys
+from datetime import datetime, timezone
+def utc(s):
+    d = datetime.fromisoformat(s.replace('Z', '+00:00'))
+    if d.tzinfo is None:
+        sys.exit('naive timestamp from the CLI: ' + s)
+    return d.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+rs = json.load(sys.stdin) or []
+print(','.join(sorted(utc(r['StartTime']) + '/' + utc(r['EndTime']) for r in rs)))
+")
+EXPECTED_RANGES='2026-01-01T00:00:00Z/2026-01-02T00:00:00Z,2026-03-01T00:00:00Z/2026-03-02T00:00:00Z'
+if [ "${RANGES_UTC}" != "${EXPECTED_RANGES}" ]; then
+  echo "FAIL: ExcludedTimeRanges read back as '${RANGES_UTC}', expected '${EXPECTED_RANGES}' -- an offset-less template time was not read as UTC (go-to-k/cdkd#5311)" >&2
+  exit 1
+fi
+echo "    OK: ExcludedTimeRanges landed as UTC instants under a TZ=Asia/Tokyo deploy (${RANGES_UTC})"
 
 # In-place means IN PLACE: the descriptor-derived physical id must survive
 # the Configuration update unchanged (a replacement would mint a new record).
@@ -206,7 +235,8 @@ echo "    OK: physical id stable across the in-place update"
 # 2026-10-07). Beside it sits an SQS queue drift CAN compare.
 #
 # The go-to-k/cdkd#2151 arm this phase used to carry (a fallback that THROWS for
-# a type with no READ handler) now lives in the `budgets` fixture.
+# a type with no READ handler) is unit-tested only: no deployable type reaches
+# that throw any more (go-to-k/cdkd#5179).
 echo "==> Phase 2b: drift reports the deny-listed detector as drift unknown"
 # NOT given its own `trap ... EXIT`: bash REPLACES a signal's handler rather
 # than chaining, so a second one would disarm the AWS teardown. The file is

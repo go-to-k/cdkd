@@ -4,7 +4,8 @@
 # Exercises the three AgentCore tool-side SDK Providers:
 #   - AWS::BedrockAgentCore::Browser (adopt-only default singleton)
 #   - AWS::BedrockAgentCore::CodeInterpreter (adopt-only default singleton)
-#   - AWS::BedrockAgentCore::Evaluator (custom code-based evaluator)
+#   - AWS::BedrockAgentCore::Evaluator (custom code-based evaluator, and an
+#     LLM-as-a-judge one with a multi-dimensional rating scale, #5432)
 #
 # Phases:
 #   1. Deploy; assert the default browser / code interpreter were adopted
@@ -15,6 +16,9 @@
 #      back to TRACE (#1160). A CloudFormation A/B kept a removed Evaluator
 #      Description, so assert the live one survives, in place; the Level
 #      change proves the redeploy reached UpdateEvaluator.
+#   The judge evaluator's RatingScale.MultiDimensional (#5432) must read back
+#   with its 2 dimensions after Phase 1 and 3 after Phase 2 (in place). Before
+#   the SDK bump cdkd's client dropped the member: the read was empty.
 #   4. Destroy; assert the evaluator is gone, the AWS-managed defaults are
 #      STILL there (no-op delete must not touch them), and state is removed.
 #
@@ -62,12 +66,14 @@ STACK="CdkdAgentcoreToolsExample"
 REGION="${AWS_REGION:-us-east-1}"
 STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 EVALUATOR_NAME="cdkd_integ_agentcore_evaluator"
+JUDGE_NAME="cdkd_integ_agentcore_judge"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Resolve the fixture evaluator's id by its fixed name prefix (the service
 # appends a random 10-char suffix to EvaluatorName).
 find_evaluator_id() {
+  local name="${1:-${EVALUATOR_NAME}}"
   # Strict: errexit is CLEARED inside $( ) command substitutions (bash without
   # inherit_errexit), so an intermediate capture failure would NOT abort this
   # body on its own -- the explicit `|| return 1` propagates the probe error
@@ -75,7 +81,7 @@ find_evaluator_id() {
   # silently reading as "no evaluator".
   local out
   out="$(aws bedrock-agentcore-control list-evaluators --region "${REGION}" \
-    --query "evaluators[?starts_with(evaluatorId, '${EVALUATOR_NAME}-')].evaluatorId | [0]" \
+    --query "evaluators[?starts_with(evaluatorId, '${name}-')].evaluatorId | [0]" \
     --output text)" || return 1
   printf '%s\n' "${out}" | grep -v '^None$' || true
 }
@@ -86,11 +92,13 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
-  LEFTOVER_ID="$(find_evaluator_id)"
-  if [ -n "${LEFTOVER_ID}" ]; then
-    aws bedrock-agentcore-control delete-evaluator --evaluator-id "${LEFTOVER_ID}" \
-      --region "${REGION}" >/dev/null 2>&1 || true
-  fi
+  for name in "${EVALUATOR_NAME}" "${JUDGE_NAME}"; do
+    LEFTOVER_ID="$(find_evaluator_id "${name}")"
+    if [ -n "${LEFTOVER_ID}" ]; then
+      aws bedrock-agentcore-control delete-evaluator --evaluator-id "${LEFTOVER_ID}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+  done
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -112,6 +120,16 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+# Pre-flight: the judge evaluator names a `us.` cross-region inference
+# profile (lib/agentcore-tools-stack.ts), which only US regions serve.
+case "${REGION}" in
+  us-*) ;;
+  *)
+    echo "FAIL: this integ runs in a us-* region only (the judge evaluator's ModelId is a US inference profile); got AWS_REGION=${REGION}" >&2
+    exit 1
+    ;;
+esac
+
 # Pre-flight: AgentCore must be available in this region (the adopt-only
 # providers resolve the AWS-managed defaults live).
 if ! aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
@@ -119,6 +137,41 @@ if ! aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
   echo "FAIL: Bedrock AgentCore control plane not reachable in ${REGION} (get-browser aws.browser.v1 failed)" >&2
   exit 1
 fi
+
+# The judge evaluator's dimension names, in order, one line (#5432).
+#
+# Read through the repo's own @aws-sdk/client-bedrock-agentcore-control (the
+# version cdkd ships), NOT the AWS CLI: a CLI whose model predates
+# RatingScale.multiDimensional drops the member from its output, which would
+# read as an empty scale and demand a CLI upgrade of every contributor. With
+# the SDK pinned back to 3.1152.0 this read would drop the member too, but
+# Phase 1 fails before it: the create itself is refused ("RatingScale must
+# contain at least one non-empty scale definition", classified above).
+REPO_ROOT="$(cd "${PWD}/../../.." && pwd)"
+judge_dimensions() {
+  local id out
+  id="$(find_evaluator_id "${JUDGE_NAME}")" || return 1
+  if [ -z "${id}" ]; then
+    echo "FAIL: evaluator ${JUDGE_NAME}-* not found" >&2
+    return 1
+  fi
+  out="$(EVALUATOR_ID="${id}" REGION="${REGION}" REPO_ROOT="${REPO_ROOT}" node -e '
+    const sdk = require(require.resolve("@aws-sdk/client-bedrock-agentcore-control", {
+      paths: [process.env.REPO_ROOT],
+    }));
+    new sdk.BedrockAgentCoreControlClient({ region: process.env.REGION })
+      .send(new sdk.GetEvaluatorCommand({ evaluatorId: process.env.EVALUATOR_ID }))
+      .then((r) => {
+        const dims = r.evaluatorConfig?.llmAsAJudge?.ratingScale?.multiDimensional ?? [];
+        console.log(dims.map((d) => d.dimensionName).join(" "));
+      })
+      .catch((e) => {
+        console.error(`FAIL: GetEvaluator ${process.env.EVALUATOR_ID}: ${e.name}: ${e.message}`);
+        process.exit(1);
+      });
+  ')" || return 1
+  printf '%s %s\n' "${id}" "${out}"
+}
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
@@ -130,8 +183,26 @@ cleanup
 
 # --- Phase 1: deploy baseline (evaluator at TRACE) ---------------------
 echo "==> Phase 1: deploy AgentCore tools stack"
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# A failed judge-evaluator create is classified. "RatingScale must contain"
+# IS the #5432 symptom: an SDK without the multiDimensional member sends an
+# empty RatingScale, which AWS refuses (measured on 3.1152.0). An
+# access refusal is the account's Bedrock model access, not #5432.
+P1_LOG="$(mktemp)"
+if ! env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P1_LOG}"; then
+  if grep -q "Failed to create BedrockAgentCore Evaluator JudgeEvaluator" "${P1_LOG}"; then
+    if grep -q "RatingScale must contain" "${P1_LOG}"; then
+      echo "FAIL: the judge evaluator's MultiDimensional rating scale was dropped by the SDK before CreateEvaluator (#5432): AWS received an empty RatingScale" >&2
+    elif grep -qE "AccessDenied|[Mm]odel access|access to the model" "${P1_LOG}"; then
+      echo "FAIL: the judge evaluator's CreateEvaluator was refused -- model access, not #5432 (check Bedrock model access for the ModelId in ${REGION}; re-run with --verbose for AWS's text)" >&2
+    else
+      echo "FAIL: the judge evaluator's CreateEvaluator failed; see the error above" >&2
+    fi
+  fi
+  rm -f "${P1_LOG}"
+  exit 1
+fi
+rm -f "${P1_LOG}"
 
 EVALUATOR_ID_P1="$(find_evaluator_id)"
 if [ -z "${EVALUATOR_ID_P1}" ]; then
@@ -145,6 +216,14 @@ if [ "${LEVEL_P1}" != "TRACE" ]; then
   exit 1
 fi
 echo "    evaluator ${EVALUATOR_ID_P1} created at level ${LEVEL_P1}"
+
+JUDGE_P1="$(judge_dimensions)"
+JUDGE_ID_P1="${JUDGE_P1%% *}"
+if [ "${JUDGE_P1#* }" != "accuracy tone" ]; then
+  echo "FAIL: judge evaluator's multi-dimensional rating scale did not reach AWS on create (#5432): dimensions '${JUDGE_P1#* }', want 'accuracy tone'" >&2
+  exit 1
+fi
+echo "    judge evaluator ${JUDGE_ID_P1} created with dimensions: ${JUDGE_P1#* }"
 
 # The adopted defaults must be surfaced through the stack outputs.
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)"
@@ -181,6 +260,17 @@ if [ "${EVALUATOR_ID_P1}" != "${EVALUATOR_ID_P2}" ]; then
 fi
 echo "    evaluator updated in-place (id unchanged, level ${LEVEL_P2})"
 
+JUDGE_P2="$(judge_dimensions)"
+if [ "${JUDGE_P2%% *}" != "${JUDGE_ID_P1}" ]; then
+  echo "FAIL: judge evaluator was REPLACED (${JUDGE_ID_P1} -> ${JUDGE_P2%% *})" >&2
+  exit 1
+fi
+if [ "${JUDGE_P2#* }" != "accuracy tone brevity" ]; then
+  echo "FAIL: judge evaluator's added dimension did not reach AWS on update (#5432): dimensions '${JUDGE_P2#* }', want 'accuracy tone brevity'" >&2
+  exit 1
+fi
+echo "    judge evaluator updated in-place with dimensions: ${JUDGE_P2#* }"
+
 # --- Phase 3: REMOVAL drops Description (issue #1160) ------------------
 echo "==> Phase 3: re-deploy with CDKD_TEST_REMOVAL=true (Description removed, SESSION -> TRACE)"
 env -u CDKD_TEST_UPDATE CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -216,7 +306,12 @@ if [ -n "${LEFTOVER_EVALUATOR}" ]; then
   echo "FAIL: evaluator ${EVALUATOR_NAME}-* still exists after destroy" >&2
   exit 1
 fi
-echo "    evaluator deleted"
+LEFTOVER_JUDGE="$(find_evaluator_id "${JUDGE_NAME}")"
+if [ -n "${LEFTOVER_JUDGE}" ]; then
+  echo "FAIL: evaluator ${JUDGE_NAME}-* still exists after destroy" >&2
+  exit 1
+fi
+echo "    evaluators deleted"
 
 # The AWS-managed defaults must be untouched by the no-op deletes.
 BROWSER_STATUS="$(aws bedrock-agentcore-control get-browser --browser-id aws.browser.v1 \
@@ -233,4 +328,4 @@ echo "    AWS-managed defaults untouched (READY)"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — AgentCore Browser/CodeInterpreter adopt + Evaluator CREATE/UPDATE/destroy, all 4 phases passed"
+echo "[verify] PASS — AgentCore Browser/CodeInterpreter adopt + Evaluator CREATE/UPDATE/destroy (incl. a multi-dimensional judge), all 4 phases passed"

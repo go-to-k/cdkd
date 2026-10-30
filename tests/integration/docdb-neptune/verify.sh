@@ -28,7 +28,14 @@
 #   3d. wait for both clusters to be available, then assert the baseline
 #       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
 #       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
-#       AutoMinorVersionUpgrade=false)
+#       AutoMinorVersionUpgrade=false). Step 3c also drops both clusters'
+#       VpcSecurityGroupIds (#1160): Neptune must move to the VPC's default
+#       security group and DocDB must keep `Sg`, as CloudFormation does.
+#       It drops both clusters' non-default ports too (#1160): DocDB must
+#       reset to 27017 and Neptune keep 8183, as CloudFormation does.
+#       Step 3c leaves the DocDB MasterUserPassword unchanged, so the DocDB
+#       cluster must never read `resetting-master-credentials` from the
+#       deploy's return until it is stable (#5153).
 #   3g. --remove-protection compensation (issue #2204): re-enable
 #       DeletionProtection on both clusters out of band, add one
 #       out-of-band instance to each (DeleteDBCluster then refuses: the
@@ -41,8 +48,12 @@
 #      per-type timeouts (DocDB / Neptune deletes can also take 5-10 min).
 #      The #5004 retention is proven by step 3d's readback; the guard is
 #      ON (kept through the removal), so this is also the flip's live
-#      SUCCESS path.
+#      SUCCESS path. Both clusters are DeletionPolicy Snapshot, so each
+#      delete takes a final snapshot right after the flip, which needs the
+#      cluster `available` again (issue #5184).
 #   5. cdkd state list — must report empty for the stack
+#   5b. exactly one cdkd final snapshot of each cluster since the run began
+#       (issue #5184); deleted right after, and by cleanup on any exit
 #
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 #
@@ -110,6 +121,94 @@ OOB_NEPTUNE_INSTANCE_ID=""
 # Step 3g's captured destroy output; removed by cleanup too, since a signal
 # landing mid-destroy never reaches the step's own `rm`.
 DESTROY_3G_LOG=""
+# Step 3g's go-to-k/cdkd#2319 check: the deployments/*.jsonl keys before the
+# destroy, and the RESOURCE_FAILED events read after it (AWS text: removed by
+# cleanup on every exit).
+EVENT_KEYS_3G=""
+EVENTS_3G=""
+# Issue #5184: when this run began (UTC, second precision, the prefix AWS's
+# ClusterCreateTime is compared on). Set before anything is created, so
+# cleanup can delete every final snapshot of the clusters this run created.
+RUN_START="$(date -u +%Y-%m-%dT%H:%M:%S)"
+
+# Print the manual snapshots of cluster $2 taken from a cluster CREATED at or
+# after RUN_START, one id per line. Keyed on the source cluster's
+# ClusterCreateTime, which a snapshot carries from its first listing, rather
+# than SnapshotCreateTime, which a `creating` one may lack: an older snapshot
+# of an earlier run's same-named cluster is never this run's. Fails (rc 1)
+# when the listing or a timestamp is unreadable, so a caller cannot read an
+# error as "none".
+this_run_cluster_snapshots() { # usage: this_run_cluster_snapshots <docdb|neptune> <cluster id>
+  local out
+  out=$(aws "$1" describe-db-cluster-snapshots --db-cluster-identifier "$2" \
+    --snapshot-type manual --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r --arg start "${RUN_START}" '
+    .DBClusterSnapshots
+    | if all(.[]; (.ClusterCreateTime // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(\\+00:00|Z)$"))
+      then .[] | select(.ClusterCreateTime[0:19] >= $start) | .DBClusterSnapshotIdentifier
+      else error("unreadable ClusterCreateTime") end'
+}
+
+# Delete one cluster snapshot once it is `available` (one still `creating`
+# refuses the delete; DocDB and Neptune have no snapshot waiter). Bounded. A
+# snapshot already `deleting`, or gone, needs nothing more; a `failed` one is
+# deleted at once.
+delete_cluster_snapshot() { # usage: delete_cluster_snapshot <docdb|neptune> <snapshot id>
+  local status err i
+  # stderr apart from the status: a CLI warning line on a successful read
+  # would otherwise match no arm below.
+  err="$(mktemp)" || return 1
+  for i in $(seq 1 60); do
+    if ! status=$(aws "$1" describe-db-cluster-snapshots --db-cluster-snapshot-identifier "$2" \
+      --region "${REGION}" --query 'DBClusterSnapshots[0].Status' --output text 2>"${err}"); then
+      if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' "${err}"; then
+        rm -f "${err}"
+        return 0
+      fi
+      echo "[verify] WARN: could not read snapshot ${2}: $(cat "${err}")" >&2
+      rm -f "${err}"
+      return 1
+    fi
+    case "${status}" in
+      deleting)
+        rm -f "${err}"
+        return 0
+        ;;
+      available | failed) break ;;
+    esac
+    if [ "${i}" -lt 60 ]; then
+      sleep 10
+    fi
+  done
+  rm -f "${err}"
+  aws "$1" delete-db-cluster-snapshot --db-cluster-snapshot-identifier "$2" \
+    --region "${REGION}" >/dev/null
+}
+
+# Delete every snapshot this run took of both clusters. Best-effort per
+# snapshot; returns 1 when any listing or delete failed.
+delete_this_run_snapshots() {
+  local pair svc id snaps snap failed=0
+  for pair in "docdb ${DOCDB_CLUSTER_ID}" "neptune ${NEPTUNE_CLUSTER_ID}"; do
+    svc=${pair%% *}
+    id=${pair#* }
+    [ -n "${id}" ] || continue
+    if ! snaps=$(this_run_cluster_snapshots "${svc}" "${id}"); then
+      echo "[verify] WARN: could not list the manual snapshots of ${id}; check for a leftover by hand" >&2
+      failed=1
+      continue
+    fi
+    for snap in ${snaps}; do
+      if delete_cluster_snapshot "${svc}" "${snap}"; then
+        echo "[verify] deleted this run's snapshot ${snap}"
+      else
+        echo "[verify] WARN: could not delete snapshot ${snap}; delete it by hand" >&2
+        failed=1
+      fi
+    done
+  done
+  return "${failed}"
+}
 
 # Delete one out-of-band instance and wait for it to be gone. A member still
 # `creating` refuses the delete, so wait for `available` first. Best-effort:
@@ -129,6 +228,16 @@ if [ ! -d node_modules ]; then
   vp install
 fi
 
+# This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
+# A failed listing returns non-zero, so a caller never reads an empty list as
+# "no new events".
+deployment_event_keys() {
+  local listed
+  listed="$(aws s3api list-objects-v2 --bucket "${STATE_BUCKET}" \
+    --prefix "${STATE_PREFIX}deployments/" --output json)" || return 1
+  printf '%s' "${listed}" | jq -r '.Contents // [] | .[].Key | select(endswith(".jsonl"))' | LC_ALL=C sort
+}
+
 # On any failure exit, re-attempt destroy so we never leak DocDB /
 # Neptune clusters. Best-effort DeletionProtection flip-offs first: an
 # aborted run can die with the baseline (step-2) protection still live,
@@ -136,6 +245,8 @@ fi
 cleanup() {
   rc=$?
   [ -n "${DESTROY_3G_LOG}" ] && rm -f "${DESTROY_3G_LOG}"
+  [ -n "${EVENT_KEYS_3G}" ] && rm -f "${EVENT_KEYS_3G}"
+  [ -n "${EVENTS_3G}" ] && rm -f "${EVENTS_3G}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup destroy"
     # Step 3g's out-of-band members first: while one stands, its cluster's
@@ -160,12 +271,18 @@ cleanup() {
         --no-deletion-protection \
         --apply-immediately >/dev/null 2>&1 || true
     fi
+    # --skip-final-snapshot: both clusters are DeletionPolicy Snapshot, and a
+    # cleanup snapshot is not this run's evidence (issue #5184).
     ${CLI} destroy "${STACK}" \
       --state-bucket "${STATE_BUCKET}" \
       --force \
       --remove-protection \
+      --skip-final-snapshot \
       "${TIMEOUT_OVERRIDES[@]}" || true
   fi
+  # Issue #5184: any final snapshot this run took, on every exit -- step 4's
+  # destroy may have taken one before a later step failed.
+  delete_this_run_snapshots || true
   # Purge the versions any `s3 rm` / `state destroy` left behind as delete
   # markers. NONCURRENT-only, per the contract in ../s3-versions.sh: this runs
   # from the failure and signal traps, where a live state.json may be the only
@@ -251,6 +368,16 @@ if [ -z "${DOCDB_CLUSTER_ID}" ] || [ -z "${NEPTUNE_CLUSTER_ID}" ]; then
   exit 1
 fi
 echo "[verify] resolved clusters: docdb=${DOCDB_CLUSTER_ID} neptune=${NEPTUNE_CLUSTER_ID}"
+# Issue #5184 premise: both clusters record DeletionPolicy Snapshot, so step 4's
+# destroy takes a final snapshot after the flip. Without it the wait under test
+# never runs and step 5b would fail for the wrong reason.
+for type in AWS::DocDB::DBCluster AWS::Neptune::DBCluster; do
+  policy=$(echo "${STATE}" | jq -r --arg t "${type}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.deletionPolicy // "absent"] | first // ""')
+  if [ "${policy}" != "Snapshot" ]; then
+    echo "[verify] FAIL: issue #5184 premise: ${type} records DeletionPolicy '${policy}', expected Snapshot" >&2
+    exit 1
+  fi
+done
 
 echo "[verify] step 3b: baseline #1160 / #5004 fields reached AWS"
 # jq false-vs-null trap: `//` treats false as missing — use explicit
@@ -288,7 +415,49 @@ if [ "${NEPTUNE_BASE_AMVU}" != "false" ]; then
   echo "[verify] FAIL: Neptune instance baseline AutoMinorVersionUpgrade='${NEPTUNE_BASE_AMVU}', expected false" >&2
   exit 1
 fi
+# Issue #1160 Port removal arm: both clusters start on a non-default port.
+DOCDB_BASE_PORT=$(echo "${DOCDB_BASE}" | jq -r '.Port // "null"')
+NEPTUNE_BASE_PORT=$(echo "${NEPTUNE_BASE}" | jq -r '.Port // "null"')
+if [ "${DOCDB_BASE_PORT}" != "27018" ] || [ "${NEPTUNE_BASE_PORT}" != "8183" ]; then
+  echo "[verify] FAIL: #1160 premise: baseline cluster ports are docdb='${DOCDB_BASE_PORT}' (expected 27018), neptune='${NEPTUNE_BASE_PORT}' (expected 8183)" >&2
+  exit 1
+fi
 echo "[verify] step 3b ok: baseline non-default fields live on both clusters and the Neptune instance"
+
+# Issue #1160 VpcSecurityGroupIds removal arm. The baseline puts both clusters
+# on the stack's `Sg`; step 3c drops VpcSecurityGroupIds from both. A real
+# CloudFormation A/B showed CloudFormation moves a Neptune cluster to the VPC's
+# `default` group and KEEPS a DocDB cluster's groups, so step 3d asserts
+# Neptune -> default and DocDB -> Sg.
+# cluster_sgs <docdb|neptune> <cluster id>: "<sg id>:<status>" pairs, sorted.
+cluster_sgs() {
+  local out
+  out=$(aws "$1" describe-db-clusters --db-cluster-identifier "$2" --region "${REGION}" \
+    --query 'DBClusters[0].VpcSecurityGroups' --output json) || return 1
+  echo "${out}" | jq -r '[(. // [])[] | "\(.VpcSecurityGroupId):\(.Status)"] | sort | join(" ")'
+}
+CUSTOM_SG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and (.key | test("^Sg"))) | .value.physicalId] | first // ""')
+VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // ""')
+DEFAULT_SG_ID=""
+if [ -n "${VPC_ID}" ]; then
+  DEFAULT_SG_ID=$(aws ec2 describe-security-groups --region "${REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" "Name=group-name,Values=default" \
+    --query 'SecurityGroups[0].GroupId' --output text)
+fi
+case "${CUSTOM_SG_ID}" in sg-?*) ;; *) echo "[verify] FAIL: could not resolve the stack's Sg id from state (got '${CUSTOM_SG_ID}')" >&2; exit 1 ;; esac
+# --output text prints `None` for an empty match, so match the id shape.
+case "${DEFAULT_SG_ID}" in sg-?*) ;; *) echo "[verify] FAIL: could not resolve the default security group of VPC '${VPC_ID}' (got '${DEFAULT_SG_ID}')" >&2; exit 1 ;; esac
+if [ "${CUSTOM_SG_ID}" = "${DEFAULT_SG_ID}" ]; then
+  echo "[verify] FAIL: #1160 premise: the stack's Sg is the VPC default group, so the removal arm could not tell the two apart" >&2
+  exit 1
+fi
+DOCDB_BASE_SGS=$(cluster_sgs docdb "${DOCDB_CLUSTER_ID}")
+NEPTUNE_BASE_SGS=$(cluster_sgs neptune "${NEPTUNE_CLUSTER_ID}")
+if [ "${DOCDB_BASE_SGS}" != "${CUSTOM_SG_ID}:active" ] || [ "${NEPTUNE_BASE_SGS}" != "${CUSTOM_SG_ID}:active" ]; then
+  echo "[verify] FAIL: #1160 premise: both clusters must start on Sg only (want '${CUSTOM_SG_ID}:active'; docdb='${DOCDB_BASE_SGS}', neptune='${NEPTUNE_BASE_SGS}')" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: both clusters on Sg ${CUSTOM_SG_ID}, not the VPC default ${DEFAULT_SG_ID} (#1160 premise)"
 
 # Issue #3650: each SSM parameter carries one DocDB / Neptune endpoint
 # `Fn::GetAtt`. Before the fix every one held the cluster / instance
@@ -378,6 +547,9 @@ read_state() {
     --region "${REGION}" \
     --query 'DBClusters[0]' --output json) || return 1
   DOCDB_STATUS=$(echo "${DOCDB_AFTER}" | jq -r '.Status // "null"') || return 1
+  if [ "${DOCDB_STATUS}" = "resetting-master-credentials" ]; then
+    DOCDB_RESET_SEEN="yes"
+  fi
   DOCDB_PROT=$(echo "${DOCDB_AFTER}" | jq -r 'if has("DeletionProtection") then .DeletionProtection | tostring else "null" end') || return 1
   DOCDB_RETENTION=$(echo "${DOCDB_AFTER}" | jq -r '.BackupRetentionPeriod // "null"') || return 1
   DOCDB_MW=$(echo "${DOCDB_AFTER}" | jq -r '.PreferredMaintenanceWindow // "null"') || return 1
@@ -398,6 +570,19 @@ read_state() {
 }
 DOCDB_STATUS="" DOCDB_PROT="" DOCDB_RETENTION="" DOCDB_MW=""
 NEPTUNE_STATUS="" NEPTUNE_PROT="" NEPTUNE_RETENTION="" NEPTUNE_IAM="" NEPTUNE_AMVU="" NEPTUNE_MW="" NEPTUNE_INST_MW=""
+# Issue #5153: step 3c leaves the DocDB cluster's templated MasterUserPassword
+# unchanged, so cdkd must not send it. A sent password resets the master
+# credentials, and the cluster shows `resetting-master-credentials` for a while
+# after the deploy returns. Every read_state below records that status, starting
+# with this short window right after the deploy; the check follows step 3d's
+# stability loop.
+DOCDB_RESET_SEEN=""
+for i in $(seq 1 12); do
+  read_state || exit 1
+  if [ "${i}" -lt 12 ]; then
+    sleep 5
+  fi
+done
 SETTLED=""
 for i in $(seq 1 60); do
   read_state || exit 1
@@ -414,7 +599,36 @@ if [ -z "${SETTLED}" ]; then
   exit 1
 fi
 sleep 30
-read_state || exit 1
+# A cluster can leave `available` again right after the first read (an update
+# that sent a password, which the #5153 check below refuses, is one cause).
+# So the reads below are taken only once BOTH clusters read `available` on two
+# consecutive polls; the last poll's values are the ones asserted.
+STABLE=""
+PREV_AVAILABLE=""
+for i in $(seq 1 60); do
+  read_state || exit 1
+  if [ "${DOCDB_STATUS}" = "available" ] && [ "${NEPTUNE_STATUS}" = "available" ]; then
+    if [ -n "${PREV_AVAILABLE}" ]; then
+      STABLE="yes"
+      break
+    fi
+    PREV_AVAILABLE="yes"
+  else
+    PREV_AVAILABLE=""
+  fi
+  if [ "${i}" -lt 60 ]; then
+    sleep 10
+  fi
+done
+if [ -z "${STABLE}" ]; then
+  echo "[verify] FAIL: clusters did not stay available across two consecutive reads after the removal redeploy (docdb='${DOCDB_STATUS}', neptune='${NEPTUNE_STATUS}')" >&2
+  exit 1
+fi
+if [ -n "${DOCDB_RESET_SEEN}" ]; then
+  echo "[verify] FAIL: #5153: the DocDB cluster entered 'resetting-master-credentials' after the step-3c redeploy, which did not change MasterUserPassword: cdkd re-sent the unchanged password (CloudFormation sends only a changed one)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: the DocDB cluster never read 'resetting-master-credentials' after the step-3c redeploy — unchanged MasterUserPassword not re-sent (#5153)"
 # Companion-change guard (#5004): the maintenance window moved tue -> wed in
 # the SAME removal deploy, so these must already read the new value. If a
 # Modify* call was never sent, they still read tue and this fails BEFORE the
@@ -435,6 +649,48 @@ if [ "${DOCDB_STATUS}" != "available" ] || [ "${DOCDB_PROT}" != "true" ] || [ "$
   exit 1
 fi
 echo "[verify] step 3d ok: DeletionProtection=true + BackupRetentionPeriod=7 (+ Neptune IAMDatabaseAuthenticationEnabled=true, instance AutoMinorVersionUpgrade=false) retained after removal — #5004"
+
+# Issue #1160: Port was removed from both clusters. A real CloudFormation A/B
+# resets a DocDB cluster to 27017 and keeps a Neptune cluster's port; a pre-fix
+# cdkd sends nothing and DocDB stays on 27018, which fails HERE. Read from the
+# step-3d stable poll above, taken after the deploy returned: cdkd waits for a
+# changed port before it finishes the cluster update.
+DOCDB_PORT=$(echo "${DOCDB_AFTER}" | jq -r '.Port // "null"')
+NEPTUNE_PORT=$(echo "${NEPTUNE_AFTER}" | jq -r '.Port // "null"')
+if [ "${DOCDB_PORT}" != "27017" ]; then
+  echo "[verify] FAIL: #1160: after Port was removed, the DocDB cluster's port is '${DOCDB_PORT}', want '27017' (CloudFormation resets it to the default; still 27018 means the removal sent nothing)" >&2
+  exit 1
+fi
+if [ "${NEPTUNE_PORT}" != "8183" ]; then
+  echo "[verify] FAIL: #1160: after DBPort was removed, the Neptune cluster's port is '${NEPTUNE_PORT}', want '8183' (CloudFormation keeps the live port)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: Port removal: DocDB reset to 27017, Neptune kept 8183 (#1160, matches CloudFormation)"
+
+# Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must
+# move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends
+# nothing and the cluster stays on Sg, which fails HERE. Polled, because the
+# group swap can sit in `adding` / `removing` for a while after `available`.
+NEPTUNE_SGS=""
+for i in $(seq 1 30); do
+  NEPTUNE_SGS=$(cluster_sgs neptune "${NEPTUNE_CLUSTER_ID}")
+  [ "${NEPTUNE_SGS}" = "${DEFAULT_SG_ID}:active" ] && break
+  if [ "${i}" -lt 30 ]; then
+    sleep 10
+  fi
+done
+if [ "${NEPTUNE_SGS}" != "${DEFAULT_SG_ID}:active" ]; then
+  echo "[verify] FAIL: #1160: after VpcSecurityGroupIds was removed, the Neptune cluster's groups are '${NEPTUNE_SGS}', want '${DEFAULT_SG_ID}:active' (the VPC default group, as CloudFormation does; still '${CUSTOM_SG_ID}' means the removal sent nothing)" >&2
+  exit 1
+fi
+# DocDB: CloudFormation KEEPS the groups. Read after the Neptune poll, so a
+# reset sent through the same deploy has had the same time to land.
+DOCDB_SGS=$(cluster_sgs docdb "${DOCDB_CLUSTER_ID}")
+if [ "${DOCDB_SGS}" != "${CUSTOM_SG_ID}:active" ]; then
+  echo "[verify] FAIL: #1160: after VpcSecurityGroupIds was removed, the DocDB cluster's groups are '${DOCDB_SGS}', want '${CUSTOM_SG_ID}:active' (CloudFormation keeps a DocDB cluster's groups)" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: VpcSecurityGroupIds removal: Neptune moved to the VPC default ${DEFAULT_SG_ID}, DocDB kept Sg ${CUSTOM_SG_ID} (#1160, matches CloudFormation)"
 
 # Issue #2613: the description must have changed on the recorded group.
 if ! DOCDB_SG_DESC=$(aws docdb describe-db-subnet-groups --db-subnet-group-name "${DOCDB_SG_NAME}" \
@@ -512,6 +768,11 @@ aws neptune create-db-instance --db-instance-identifier "${OOB_NEPTUNE_INSTANCE_
 aws docdb wait db-instance-available --db-instance-identifier "${OOB_DOCDB_INSTANCE_ID}" --region "${REGION}"
 aws neptune wait db-instance-available --db-instance-identifier "${OOB_NEPTUNE_INSTANCE_ID}" --region "${REGION}"
 
+EVENT_KEYS_3G="$(mktemp)"
+if ! deployment_event_keys > "${EVENT_KEYS_3G}"; then
+  echo "[verify] FAIL: step 3g: could not list the deployments/ prefix before the destroy" >&2
+  exit 1
+fi
 DESTROY_3G_LOG="$(mktemp)"
 if ${CLI} destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -528,11 +789,17 @@ DESTROY_3G_LOG=""
 printf '%s\n' "${DESTROY_3G_PLAIN}" >&2
 # PREMISE: the failure is the engineered one. A destroy that died earlier (a
 # credential error, a region refusal) never reached the flip, so a guard still
-# ON afterwards would pass the readback below while testing nothing.
-if ! grep -qE 'still contains DB instances|non-deleting state' <<<"${DESTROY_3G_PLAIN}"; then
-  echo "[verify] FAIL: step 3g destroy failed, but not with DeleteDBCluster's member refusal -- the arm did not reach the compensation" >&2
-  exit 1
-fi
+# ON afterwards would pass the readback below while testing nothing. The
+# thrown wrap names AWS's error by its class only (go-to-k/cdkd#2319), and this
+# destroy runs without --verbose, so the member refusal is read as each
+# provider's DeleteDBCluster catch-wrap with the class DeleteDBCluster answers
+# it with. The failure-set check below rules out an earlier death.
+for premise in "Failed to delete DocDB DBCluster DocdbCluster" "Failed to delete Neptune DBCluster NeptuneCluster"; do
+  if ! grep -qF "${premise}: InvalidDBClusterStateFault. Re-run with --verbose" <<<"${DESTROY_3G_PLAIN}"; then
+    echo "[verify] FAIL: step 3g destroy failed, but not with '${premise}: InvalidDBClusterStateFault' (DeleteDBCluster's member refusal) -- the arm did not reach the compensation" >&2
+    exit 1
+  fi
+done
 # The FAILURE SET: both clusters, and nothing but them and what the
 # out-of-band members' ENIs hold (subnet groups, the shared SG, the VPC and its
 # subnets). Anything else failing here would otherwise be absorbed silently by
@@ -549,6 +816,52 @@ if [ -n "${UNEXPECTED_3G}" ]; then
   echo "[verify] FAIL: step 3g: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_3G})" >&2
   exit 1
 fi
+# go-to-k/cdkd#2319: the failed deletes' persisted RESOURCE_FAILED events name
+# AWS's refusal by its class, and deployments/*.jsonl outlives the run. The
+# engineered member refusal may quote no account id, so the account-id check
+# guards a regression rather than proving this change. Only this destroy's
+# new event files are read, so an earlier run's events cannot answer.
+EVENTS_3G="$(mktemp)"
+if ! NEW_EVENT_KEYS_3G="$(deployment_event_keys | LC_ALL=C comm -13 "${EVENT_KEYS_3G}" -)"; then
+  echo "[verify] FAIL: step 3g: could not list the deployments/ prefix after the destroy" >&2
+  exit 1
+fi
+while IFS= read -r event_key || [ -n "${event_key}" ]; do
+  [ -n "${event_key}" ] || continue
+  aws s3 cp "s3://${STATE_BUCKET}/${event_key}" - --quiet \
+    | jq -c 'select(.eventType == "RESOURCE_FAILED")' >> "${EVENTS_3G}"
+done <<< "${NEW_EVENT_KEYS_3G}"
+EVENT_ACCOUNT_3G="${ACCOUNT_ID}"
+# A FAIL prints only the cdkd-authored prefix and the length: the rest may be
+# AWS's text, naming accounts, roles or sessions.
+# The cdkd-authored prefix of a persisted message, never AWS's text: a message
+# with no colon has no prefix of cdkd's (go-to-k/cdkd#2319).
+msg_prefix() { case "$1" in *:*) printf '%s' "${1%%:*}" ;; *) printf '<none>' ;; esac; }
+assert_failed_event_class_only_3G() { # usage: <logicalId> <wrap prefix>
+  local msg
+  # One value, not a line: a message can span lines.
+  msg="$(jq -rs --arg l "$1" '[.[] | select(.logicalId == $l) | .error.message // empty] | last // empty' "${EVENTS_3G}")"
+  if [ -z "${msg}" ]; then
+    echo "[verify] FAIL: step 3g: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+    exit 1
+  fi
+  # Every FAILED event this destroy wrote for it, not only the last.
+  if jq -r --arg l "$1" 'select(.logicalId == $l) | .error.message // empty' "${EVENTS_3G}" \
+    | grep -F "${EVENT_ACCOUNT_3G}" >/dev/null; then
+    echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message quotes AWS's text, with this account's id (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
+    exit 1
+  fi
+}
+assert_failed_event_class_only_3G DocdbCluster "Failed to delete DocDB DBCluster DocdbCluster"
+assert_failed_event_class_only_3G NeptuneCluster "Failed to delete Neptune DBCluster NeptuneCluster"
+rm -f "${EVENTS_3G}" "${EVENT_KEYS_3G}"
+EVENTS_3G=""
+EVENT_KEYS_3G=""
+echo "[verify] step 3g ok: the DocdbCluster and NeptuneCluster RESOURCE_FAILED events name the AWS failure by its class, with no account id"
 
 # The assertion under test. ModifyDBCluster(DeletionProtection) applies
 # immediately, but read it back under a short bounded poll rather than once.
@@ -602,6 +915,32 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
   exit 1
 fi
 echo "[verify] step 5 ok: state cleared"
+
+# Issue #5184: step 4 turned each guard off and then deleted the cluster with a
+# final snapshot. The snapshot needs the cluster `available`, and right after
+# the flip AWS can read protection OFF and `available` before the change shows
+# as `modifying`; a delete sent then is refused and step 4 fails. This step
+# proves the real-AWS path end to end. It cannot discriminate the fix, since a
+# pre-fix run passes whenever the first read lands after `modifying` shows; the
+# unit suites' mutation probes are the discrimination.
+echo "[verify] step 5b: one cdkd final snapshot of each cluster (issue #5184)"
+for pair in "docdb ${DOCDB_CLUSTER_ID}" "neptune ${NEPTUNE_CLUSTER_ID}"; do
+  svc=${pair%% *}
+  id=${pair#* }
+  if ! snaps=$(this_run_cluster_snapshots "${svc}" "${id}"); then
+    echo "[verify] FAIL: step 5b: could not list the manual snapshots of ${id}" >&2
+    exit 1
+  fi
+  final_count=$(printf '%s\n' "${snaps}" | grep -cE -- '-final-[0-9]{8}-[0-9]{6}$' || true)
+  other=$(printf '%s\n' "${snaps}" | grep -vE -- '-final-[0-9]{8}-[0-9]{6}$' | grep -v '^$' || true)
+  if [ "${final_count}" != "1" ] || [ -n "${other}" ]; then
+    echo "[verify] FAIL: step 5b: destroying ${svc} cluster ${id} (DeletionPolicy Snapshot) took ${final_count} cdkd final snapshot(s), expected 1; this run's snapshots: $(printf '%s ' ${snaps})" >&2
+    exit 1
+  fi
+  echo "[verify] step 5b ok: ${svc} cluster destroy took the final snapshot ${snaps}"
+done
+delete_this_run_snapshots
+echo "[verify] step 5b cleanup ok: final snapshots deleted"
 
 # AWS-side orphan auditing is delegated to /run-integ's /cleanup pass.
 

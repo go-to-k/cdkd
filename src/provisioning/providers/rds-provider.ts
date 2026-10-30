@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   RDSClient,
   CreateDBClusterCommand,
@@ -17,20 +18,32 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  type DBCluster,
 } from '@aws-sdk/client-rds';
+import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
+import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
   ResourceProvider,
+  CreateContext,
   ResourceCreateResult,
   ResourceUpdateResult,
   ResourceImportInput,
@@ -53,8 +66,204 @@ import {
   protectionFlipKey,
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
+  deleteAfterProtectionFlipWithFinalSnapshot,
+  isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
+import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import { dbInstanceEngineChangeIsInPlace } from '../../analyzer/replacement-rules.js';
+import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
+
+/**
+ * go-to-k/cdkd#5153: whether an update changes top-level `key`, as
+ * CloudFormation decides it. The deploy's in-place update answers from
+ * `changedProperties`, which compares the templates as written: the record
+ * holds a secret as its `{{resolve:...}}` token or `***`, never the plaintext
+ * the desired bag holds. A changed reference and a `NoEcho` value count as
+ * changed there; a secret rotated under a reference the template spells
+ * literally does not, as in CloudFormation (one built by `Fn::Join` counts a
+ * newer read version). These types are deliberately NOT in
+ * `CHANGED_PROPERTIES_CONSUMER_TYPES`: RDS never returns the password on a
+ * Describe, so the readback that opt-in buys could not confirm it.
+ *
+ * Without that set the two bags are compared. A rollback revert hands both
+ * re-resolved, so an equal value is unchanged. Under `drift --revert` both
+ * sides are AWS readbacks (the desired one with the drifted keys overlaid),
+ * which never hold the password, so it is not sent. A recorded
+ * `{{resolve:` token or whole `***` mask is never read as equal. Compared in
+ * memory only; no value is logged.
+ */
+function propertyChangedForUpdate(
+  key: string,
+  desired: unknown,
+  recorded: unknown,
+  context: UpdateContext | undefined
+): boolean {
+  const changedProperties = context?.changedProperties;
+  if (changedProperties !== undefined) return changedProperties.has(key);
+  return holdsRecordedStandIn(recorded) || !isDeepStrictEqual(desired, recorded);
+}
+
+/** A recorded leaf standing in for a secret: a dynamic reference, or the whole mask. */
+function holdsRecordedStandIn(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value === SECRET_MASK || dynamicReferenceTokens(value).length > 0;
+  }
+  if (Array.isArray(value)) return value.some(holdsRecordedStandIn);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).some(holdsRecordedStandIn);
+  }
+  return false;
+}
+
+/**
+ * go-to-k/cdkd#5153: the `MasterUserPassword` a `ModifyDBCluster` /
+ * `ModifyDBInstance` carries, or `undefined` to leave the live password alone.
+ * RDS treats ANY supplied password as a master-credential reset, so it is sent
+ * only when the template changed it, as CloudFormation does. A removed
+ * password sends nothing.
+ */
+function masterUserPasswordToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string | undefined {
+  const desired = properties['MasterUserPassword'];
+  if (desired === undefined || desired === null) return undefined;
+  return propertyChangedForUpdate(
+    'MasterUserPassword',
+    desired,
+    previousProperties['MasterUserPassword'],
+    context
+  )
+    ? (desired as string)
+    : undefined;
+}
+
+/**
+ * go-to-k/cdkd#5153: whether `ManageMasterUserPassword` / `MasterUserSecret`
+ * ride the Modify* call. They are sent, as before, when any of the three
+ * master-credential properties changed: turning the managed password off
+ * needs the (newly declared) `MasterUserPassword` beside it, and a KMS key is
+ * accepted only while turning management on. Nothing changed sends neither,
+ * as CloudFormation sends nothing for unchanged properties; otherwise a
+ * declared `ManageMasterUserPassword: false` would travel alone once the
+ * unchanged password is left out.
+ */
+function masterCredentialSettingsChanged(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): boolean {
+  return (
+    propertyChangedForUpdate(
+      'MasterUserPassword',
+      properties['MasterUserPassword'],
+      previousProperties['MasterUserPassword'],
+      context
+    ) ||
+    propertyChangedForUpdate(
+      'ManageMasterUserPassword',
+      properties['ManageMasterUserPassword'],
+      previousProperties['ManageMasterUserPassword'],
+      context
+    ) ||
+    propertyChangedForUpdate(
+      'MasterUserSecret',
+      properties['MasterUserSecret'],
+      previousProperties['MasterUserSecret'],
+      context
+    )
+  );
+}
+
+/**
+ * Issue #1160: whether a removed `ManageMasterUserPassword` goes out as
+ * `false`. The previous template declared `true` and the desired one declares
+ * nothing. A real CloudFormation A/B (#1160 comment 6401151077) showed
+ * CloudFormation sends `false` there on both DBCluster and DBInstance: with a
+ * `MasterUserPassword` added in the same update the managed password is turned
+ * off, and without one RDS refuses the update. Leaving it unsent instead kept
+ * the managed password on without a word.
+ */
+function managedPasswordOnRemoval(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): boolean {
+  const previous = previousProperties['ManageMasterUserPassword'];
+  return (
+    properties['ManageMasterUserPassword'] === undefined &&
+    (previous === true || previous === 'true')
+  );
+}
+
+/**
+ * Issue #1160: the port CloudFormation sends for a removed DBCluster `Port`,
+ * per engine. Aurora was measured to reset (#1160 comment 6401151077). On a
+ * Multi-AZ DB cluster (`mysql` / `postgres`) CloudFormation sends 3306 for
+ * either engine, its handler's fallback default, and RDS refuses the update
+ * ("You can't modify the port for a Multi-AZ DB cluster"), so the stack update
+ * fails (measured on `postgres`, #1160 comment 6484915102). cdkd
+ * sends the same port, so the removal fails the same way instead of keeping
+ * the old port without a word.
+ */
+const CLUSTER_REMOVED_PORT: ReadonlyMap<string, number> = new Map([
+  ['aurora-postgresql', 5432],
+  ['aurora-mysql', 3306],
+  ['mysql', 3306],
+  ['postgres', 3306],
+]);
+
+/** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
+function numberOrUndefined(value: unknown): number | undefined {
+  return value == null ? undefined : Number(value);
+}
+
+/** The template's `AWS::RDS::DBCluster` `ServerlessV2ScalingConfiguration`. */
+interface ServerlessV2ScalingProps {
+  MinCapacity?: number;
+  MaxCapacity?: number;
+  SecondsUntilAutoPause?: number;
+}
+
+/**
+ * The `ServerlessV2ScalingConfiguration` CreateDBCluster / ModifyDBCluster
+ * input: every declared member, `SecondsUntilAutoPause` included, as
+ * CloudFormation's handler translates the block (issue #5466). A removed
+ * `SecondsUntilAutoPause` is simply absent: measured against CloudFormation
+ * (us-east-1, 2026-10-28), the block without it resets the live delay to
+ * AWS's 300-second default, and this block yields the same.
+ */
+function serverlessV2ScalingToSend(config: ServerlessV2ScalingProps): {
+  MinCapacity?: number | undefined;
+  MaxCapacity?: number | undefined;
+  SecondsUntilAutoPause?: number | undefined;
+} {
+  const seconds = numberOrUndefined(config.SecondsUntilAutoPause);
+  return {
+    MinCapacity: config.MinCapacity,
+    MaxCapacity: config.MaxCapacity,
+    ...(seconds !== undefined && { SecondsUntilAutoPause: seconds }),
+  };
+}
+
+/** Issue #1160: the member statuses a cluster change moves an instance through. */
+const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
+const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
+
+/** The ModifyDBCluster `Port`: the declared one, or the engine default on removal. */
+function clusterPortToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): number | undefined {
+  if (properties['Port'] != null) return Number(properties['Port']);
+  if (previousProperties['Port'] == null) return undefined;
+  const engine = properties['Engine'] ?? previousProperties['Engine'];
+  const reset =
+    typeof engine === 'string' ? CLUSTER_REMOVED_PORT.get(engine.toLowerCase()) : undefined;
+  // Already the reset value: send nothing (an equal Multi-AZ port is unmeasured).
+  return reset === Number(previousProperties['Port']) ? undefined : reset;
+}
 
 /**
  * How long a cluster or instance delete waits for the resource to be gone:
@@ -150,6 +359,7 @@ class GlobalClusterDetachError extends Error {
 export class RDSProvider implements ResourceProvider {
   private rdsClient?: RDSClient;
   private createClient?: RDSClient;
+  private ec2Client?: EC2Client;
   private readonly providerRegion: string | undefined;
   private logger = getLogger().child('RDSProvider');
   /**
@@ -163,11 +373,12 @@ export class RDSProvider implements ResourceProvider {
    * Issue #1160: the CFn default a property REMOVED from the template is
    * reset to — the Modify/Update API keeps an absent field's live value.
    *
-   * Empty for RDS: a real CloudFormation A/B (issue #5004) showed CFn KEEPS
-   * the live value of DBCluster DeletionProtection / EnableIAMDatabaseAuthentication
-   * and DBInstance DeletionProtection / EnableIAMDatabaseAuthentication /
-   * MonitoringInterval when they are removed, so cdkd sends no reset for them
-   * (omission is "unchanged" on ModifyDBCluster / ModifyDBInstance).
+   * Empty for RDS: real CloudFormation A/Bs (issue #5004, #1160 comment
+   * 6401151077) showed CFn KEEPS most removed DBCluster / DBInstance values,
+   * so cdkd sends nothing for them (omission is "unchanged" on
+   * ModifyDBCluster / ModifyDBInstance). The resets it does make are coerced,
+   * engine-dependent or conditional, so they stay in `updateDBCluster` /
+   * `updateDBInstance`.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
 
@@ -319,6 +530,17 @@ export class RDSProvider implements ResourceProvider {
     return this.rdsClient;
   }
 
+  /** Only a removed DBCluster `VpcSecurityGroupIds` reaches EC2 (issue #1160). */
+  private getEc2Client(): EC2Client {
+    if (!this.ec2Client) {
+      this.ec2Client = new EC2Client({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.ec2Client;
+  }
+
   /**
    * The client `CreateDBSubnetGroup` / `CreateDBCluster` / `CreateDBInstance`
    * go through: SDK retries on, except a 5xx (`withoutServerErrorRetries`,
@@ -343,15 +565,17 @@ export class RDSProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::RDS::DBSubnetGroup':
-        return this.createDBSubnetGroup(logicalId, resourceType, properties);
+        return this.createDBSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::RDS::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties);
+        return this.createDBCluster(logicalId, resourceType, properties, mask);
       case 'AWS::RDS::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties);
+        return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -383,7 +607,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context?.maskSecrets
         );
       case 'AWS::RDS::DBCluster':
         return this.updateDBCluster(
@@ -391,7 +616,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       case 'AWS::RDS::DBInstance':
         return this.updateDBInstance(
@@ -399,7 +625,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           resourceType,
           properties,
-          previousProperties
+          previousProperties,
+          context
         );
       default:
         throw new ProvisioningError(
@@ -440,7 +667,8 @@ export class RDSProvider implements ResourceProvider {
   private async createDBSubnetGroup(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBSubnetGroup ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -448,7 +676,7 @@ export class RDSProvider implements ResourceProvider {
 
     const dbSubnetGroupName =
       (properties['DBSubnetGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+      generatedNameFor('AWS::RDS::DBSubnetGroup', logicalId);
 
     try {
       const created = await this.getCreateClient().send(
@@ -486,12 +714,17 @@ export class RDSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        dbSubnetGroupName,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            dbSubnetGroupName,
+            cause
+          )
       );
     }
   }
@@ -501,7 +734,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBSubnetGroup ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -587,12 +821,17 @@ export class RDSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -626,12 +865,17 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DBSubnetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DBSubnetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -641,7 +885,8 @@ export class RDSProvider implements ResourceProvider {
   private async createDBCluster(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -649,7 +894,7 @@ export class RDSProvider implements ResourceProvider {
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::RDS::DBCluster', logicalId);
 
     // go-to-k/cdkd#4583: true while a cluster THIS create made is left in AWS
     // (CreateDBCluster returned and the self-cleanup below did not delete it).
@@ -659,7 +904,7 @@ export class RDSProvider implements ResourceProvider {
     let createdResourceId: string | undefined;
     try {
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
-        | { MinCapacity?: number; MaxCapacity?: number }
+        | ServerlessV2ScalingProps
         | undefined;
 
       // #609 — CFn `MasterUserSecret` is `{ KmsKeyId }`; only the key id is a
@@ -709,16 +954,15 @@ export class RDSProvider implements ResourceProvider {
             PubliclyAccessible: properties['PubliclyAccessible'] as boolean,
           }),
           ...(serverlessV2Config && {
-            ServerlessV2ScalingConfiguration: {
-              MinCapacity: serverlessV2Config.MinCapacity,
-              MaxCapacity: serverlessV2Config.MaxCapacity,
-            },
+            ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
           }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
       clusterLeftBehind = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
+      // go-to-k/cdkd#5511: reported before the post-create wiring and waits.
+      reportCreatedResource(logicalId, resourceType, dbClusterIdentifier, createdResourceId);
 
       const cluster = response.DBCluster;
       if (!cluster) {
@@ -749,7 +993,7 @@ export class RDSProvider implements ResourceProvider {
       try {
         // Wait for cluster to become available (skip with --no-wait)
         if (process.env['CDKD_NO_WAIT'] !== 'true') {
-          await this.waitForClusterAvailable(dbClusterIdentifier);
+          await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
         }
 
         // Describe to get final attributes
@@ -781,7 +1025,9 @@ export class RDSProvider implements ResourceProvider {
               );
             } catch (disableError) {
               this.logger.debug(
-                `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${describeAwsFailure(disableError).detail} (proceeding with DeleteDBCluster anyway)`
+                maskerOrIdentity(mask)(
+                  `Could not disable DeletionProtection on partially-created DBCluster ${dbClusterIdentifier}: ${describeAwsFailure(disableError).detail} (proceeding with DeleteDBCluster anyway)`
+                )
               );
             }
           }
@@ -792,10 +1038,33 @@ export class RDSProvider implements ResourceProvider {
             })
           );
           clusterLeftBehind = false;
+          retractCreatedResource(logicalId, resourceType, dbClusterIdentifier);
           this.logger.debug(
             `Delete requested for partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) after wiring failure (not waiting for deleted state)`
           );
         } catch (cleanupError) {
+          // Issue #5426: a cluster deleted from outside cdkd (the create wait
+          // read `deleting`) refuses this delete yet is not left running: say
+          // so instead of the billing warning. Only AWS's own not-found class
+          // counts as gone; any other read keeps the warning. Either way the
+          // created-before-failure mark stays (fail closed): a not-found read
+          // can be read-after-create lag, and a later delete of a gone
+          // cluster is a no-op success.
+          const retiring = await this.partialClusterRetiring(dbClusterIdentifier);
+          if (retiring !== undefined) {
+            // AWS's refusal text at debug only, masked (go-to-k/cdkd#2319).
+            this.logger.debug(
+              maskerOrIdentity(mask)(
+                `Cleanup delete of partially-created DBCluster ${logicalId} refused: ${maskerOrIdentity(mask)(describeAwsFailure(cleanupError).detail)}`
+              )
+            );
+            this.logger.warn(
+              maskerOrIdentity(mask)(
+                `Partially-created DBCluster ${logicalId} (${dbClusterIdentifier}) is ${retiring === 'gone' ? 'read as already deleted' : "already in status 'deleting'"}; cdkd did not delete it again. Outside a rollback's re-create, the failed deploy's rollback journal still records it, so \`cdkd rollback --revert-failed\` confirms it is gone`
+              )
+            );
+            throw innerError;
+          }
           // The identifier is TEMPLATE-chosen (or generated), so the recovery
           // commands render through `pasteableAwsCommand` (issue #3136): one
           // that cannot be printed exactly withholds them rather than naming
@@ -804,8 +1073,17 @@ export class RDSProvider implements ResourceProvider {
           const unprotect = wantsDeletionProtection
             ? aws`aws rds modify-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --no-deletion-protection --apply-immediately; `
             : aws``;
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
+          // DeleteDBCluster names the caller's assumed-role ARN. Masked: AWS's
+          // text can echo the create's resolved inputs.
+          const m = maskerOrIdentity(mask);
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): `;
+          if (cleanupFailure.redacted) {
+            this.logger.debug(m(`${cleanupHead}${m(cleanupFailure.detail)}`));
+          }
           this.logger.warn(
-            `Failed to delete partially-created DBCluster ${logicalId} (${dbClusterIdentifier}): ${describeAwsFailure(cleanupError).detail}. THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${m(cleanupFailure.summary)} ` : `${m(cleanupFailure.detail)}. `}THE CLUSTER IS STILL RUNNING AND BILLING. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`${wantsDeletionProtection ? ', which cannot delete it while its DeletionProtection is on' : ''}; otherwise delete it yourself: ${aws`${unprotect}aws rds delete-db-cluster --db-cluster-identifier ${dbClusterIdentifier} --skip-final-snapshot`.render()}`
           );
         }
         throw innerError;
@@ -814,12 +1092,17 @@ export class RDSProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbClusterIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DBCluster ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbClusterIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: name the cluster still in AWS for the failed-CREATE
       // journal; never before CreateDBCluster returned (another owner's name).
@@ -841,59 +1124,71 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     try {
+      // Its own ProvisioningError names the cause; the catch passes it through.
+      const vpcSgIds = await this.dbClusterSecurityGroupsToSend(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        previousProperties,
+        context
+      );
       const serverlessV2Config = properties['ServerlessV2ScalingConfiguration'] as
-        | { MinCapacity?: number; MaxCapacity?: number }
+        | ServerlessV2ScalingProps
         | undefined;
       // Class 2 — defence-in-depth on top of the readCurrentState gate.
       // `{}` (or `{ MinCapacity: undefined, MaxCapacity: undefined }`)
       // is structurally invalid as ModifyDBCluster input on
       // non-serverless-v2 clusters; only ship the field when at least
-      // one capacity value is present.
+      // one member is present.
       const hasServerlessV2 =
         serverlessV2Config !== undefined &&
         (serverlessV2Config.MinCapacity !== undefined ||
-          serverlessV2Config.MaxCapacity !== undefined);
-
-      // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
-      // cluster. readCurrentState always-emits `[]` for clusters that
-      // legitimately have no VPC SGs (Aurora-on-default-VPC etc.); the
-      // round-trip must NOT translate that placeholder into a destructive
-      // SDK call. Skip the field when the resolved value is empty.
-      const vpcSgIds = properties['VpcSecurityGroupIds'] as string[] | undefined;
-      const sendVpcSgIds = vpcSgIds !== undefined && vpcSgIds.length > 0;
+          serverlessV2Config.MaxCapacity !== undefined ||
+          serverlessV2Config.SecondsUntilAutoPause !== undefined);
 
       // #609 — `MasterUserSecret` `{ KmsKeyId }` maps to the scalar modify
       // field `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
+      // #5153: the managed-password settings ride only a credential change.
+      const sendCredentialSettings = masterCredentialSettingsChanged(
+        properties,
+        previousProperties,
+        context
+      );
 
-      // #1160 reset-on-removal — ModifyDBCluster has merge semantics (an
-      // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via a local `clearOnUpdateRemoval`. Per the #5004 CloudFormation A/B,
-      // CFn KEEPS the live value on removal for DeletionProtection and
-      // EnableIAMDatabaseAuthentication (and, on DBInstance, MonitoringInterval),
-      // so those are NOT reset (omitted = unchanged). Deliberately NOT reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky (possibly major) version change cdkd
-      //     must not synthesize; leave unchanged.
-      //   * ManageMasterUserPassword + MasterUserSecret — flipping
-      //     ManageMasterUserPassword off requires supplying a
-      //     MasterUserPassword, which cannot be synthesized from a removal.
-      //   * MonitoringRoleArn — no documented clear value.
-      //   * ServerlessV2ScalingConfiguration — cannot be removed via Modify
-      //     without engine-mode implications (the Class-2 guard above also
-      //     skips empty shapes).
-      //   * VpcSecurityGroupIds — deliberate empty-guard above
-      //     (readCurrentState placeholder defense); classified UNCERTAIN in
-      //     the #1160 audit, out of this batch's scope.
-      //   * Port — default is engine-dependent; no single safe reset value.
+      // #1160 removal — ModifyDBCluster has merge semantics (an absent input
+      // field means "no change"), so a property REMOVED from the template is
+      // sent as its CFn reset value only where CloudFormation resets it, per
+      // real A/Bs (#5004, #1160 comment 6401151077):
+      //   * RESET: BackupRetentionPeriod (to 1), Port (to the engine default
+      //     on Aurora; on a Multi-AZ DB cluster CloudFormation sends 3306,
+      //     which RDS refuses: `CLUSTER_REMOVED_PORT`), ManageMasterUserPassword
+      //     (to false, `managedPasswordOnRemoval`), VpcSecurityGroupIds (to the
+      //     VPC's default security group, `dbClusterSecurityGroupsToSend`).
+      //   * KEPT (omitted = unchanged): DeletionProtection,
+      //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
+      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration.
+      // MasterUserSecret removed while the managed password stays on: the
+      // credential gate re-sends ManageMasterUserPassword=true with no key, as
+      // CloudFormation does, and the secret stays on its customer key
+      // (#1160 comment 6484915102). Unmeasured: ManageMasterUserPassword
+      // removed while MasterUserSecret { KmsKeyId } stays declared, which sends
+      // `false` plus MasterUserSecretKmsKeyId (RDS accepts a key only when
+      // enabling).
+      // A changed MasterUsername sends nothing, and ModifyDBCluster has no such
+      // member. Measured against CloudFormation (us-east-1, 2026-10-28, #5467):
+      // the stack update completes in place and the live user stays the old one.
+      const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
+      const portToSend = clusterPortToSend(properties, previousProperties);
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -910,44 +1205,34 @@ export class RDSProvider implements ResourceProvider {
               : undefined,
             1
           ),
-          ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
-          MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
+          ...(vpcSgIds !== undefined && { VpcSecurityGroupIds: vpcSgIds }),
+          // #5153: only a changed password; any supplied one resets credentials.
+          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
+          Port: portToSend,
           // #609 security-cluster backfill — all mutable via ModifyDBCluster.
-          ...(properties['ManageMasterUserPassword'] !== undefined && {
-            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-          }),
-          ...(masterUserSecret?.KmsKeyId !== undefined && {
-            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-          }),
+          ...(sendCredentialSettings &&
+            properties['ManageMasterUserPassword'] !== undefined && {
+              ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+            }),
+          ...(manageMasterUserPasswordOff && { ManageMasterUserPassword: false }),
+          ...(sendCredentialSettings &&
+            masterUserSecret?.KmsKeyId !== undefined && {
+              MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+            }),
           ...(properties['MonitoringRoleArn'] !== undefined && {
             MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
           }),
-          // Removal resets to 0 (Enhanced Monitoring off). UNMEASURED against
-          // CloudFormation (#5004: Multi-AZ DB cluster classes only). NOTE: the AWS API docs
-          // require a non-zero MonitoringInterval whenever MonitoringRoleArn
-          // is present in the request, so a template that KEEPS the role but
-          // DROPS the interval gets a loud InvalidParameterCombination — the
-          // same request CloudFormation would submit for that template
-          // (CFn-parity failure, never a silent keep of the old interval).
-          MonitoringInterval: clearOnUpdateRemoval(
-            properties['MonitoringInterval'] != null
-              ? Number(properties['MonitoringInterval'])
-              : undefined,
-            previousProperties['MonitoringInterval'] != null
-              ? Number(previousProperties['MonitoringInterval'])
-              : undefined,
-            0
-          ),
+          // Removal keeps the live interval, as CFn does, with or without the
+          // role removed alongside (#1160 comment 6401151077).
+          ...(properties['MonitoringInterval'] != null && {
+            MonitoringInterval: Number(properties['MonitoringInterval']),
+          }),
           // Removal keeps the live value, as CFn does (#5004 A/B).
           EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
             | boolean
             | undefined,
           ...(hasServerlessV2 && {
-            ServerlessV2ScalingConfiguration: {
-              MinCapacity: serverlessV2Config.MinCapacity,
-              MaxCapacity: serverlessV2Config.MaxCapacity,
-            },
+            ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
           }),
           ApplyImmediately: true,
         })
@@ -955,8 +1240,59 @@ export class RDSProvider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated DBCluster ${logicalId}`);
 
+      // A changed Port (declared, or the engine default on removal) applies
+      // asynchronously: the describe below could still read the old one, and a
+      // same-deploy `Fn::GetAtt <cluster>.Endpoint.Port` would get it.
+      // CloudFormation reports the update once it has settled, so wait for the
+      // new port first, then for the member instances it moved to `modifying` /
+      // `rebooting`, whose own Modify* in the same deploy would otherwise be
+      // refused. An unchanged port adds no call; `--no-wait` skips both.
+      const noWait = process.env['CDKD_NO_WAIT'] === 'true';
+      const portChanged =
+        portToSend !== undefined && portToSend !== numberOrUndefined(previousProperties['Port']);
+      if (!noWait && portChanged) {
+        await this.waitForClusterPortApplied(physicalId, logicalId, portToSend);
+      }
+
       // Describe to get updated attributes
       const described = await this.describeDBCluster(physicalId);
+
+      if (!noWait && portChanged) {
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              logicalId,
+              PORT_CHANGE_MEMBER_STATUSES,
+              'port'
+            );
+          }
+        }
+      }
+
+      // A changed VpcSecurityGroupIds also moves every member instance to
+      // `modifying` within about a second, and a member's own Modify* in the
+      // same deploy is then refused ("Database instance is not in available
+      // state"). CloudFormation reports the update only once it has settled, so
+      // wait here, but ONLY when the sent list differs from the previous one:
+      // an unchanged list (re-sent on every update) adds no time. `--no-wait`
+      // skips it, exactly as create() skips waitForClusterAvailable.
+      if (
+        !noWait &&
+        securityGroupListChanged(vpcSgIds, previousProperties['VpcSecurityGroupIds'])
+      ) {
+        await this.waitForSecurityGroupsApplied(physicalId, logicalId, vpcSgIds ?? []);
+        for (const member of described?.DBClusterMembers ?? []) {
+          if (member.DBInstanceIdentifier) {
+            await this.waitForMemberAfterClusterChange(
+              member.DBInstanceIdentifier,
+              logicalId,
+              SECURITY_GROUP_CHANGE_MEMBER_STATUSES,
+              'VPC security groups'
+            );
+          }
+        }
+      }
 
       // Apply tag diff using the cluster ARN.
       if (described?.DBClusterArn) {
@@ -974,20 +1310,31 @@ export class RDSProvider implements ResourceProvider {
         wasReplaced: false,
         attributes: definedAttributes({
           'Endpoint.Address': described?.Endpoint,
-          'Endpoint.Port': stringifyIfAssigned(described?.Port),
+          // Under `--no-wait` the describe can still read the OLD port; record
+          // the one sent, or a `Fn::GetAtt <cluster>.Endpoint.Port` consumer
+          // stays stale.
+          'Endpoint.Port': stringifyIfAssigned(
+            noWait && portChanged && described !== undefined ? portToSend : described?.Port
+          ),
           'ReadEndpoint.Address': described?.ReaderEndpoint,
           Arn: described?.DBClusterArn,
           DBClusterResourceId: described?.DbClusterResourceId,
         }),
       };
     } catch (error) {
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DBCluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DBCluster ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1065,6 +1412,7 @@ export class RDSProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBCluster(physicalId))?.DeletionProtection === true,
@@ -1082,7 +1430,9 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBClusterNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for DBCluster ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -1098,7 +1448,8 @@ export class RDSProvider implements ResourceProvider {
           physicalId,
           globalClusterId,
           context?.removeProtection === true,
-          progress
+          progress,
+          maskerOrIdentity(context?.maskSecrets)
         ))
           ? globalClusterId
           : undefined;
@@ -1107,15 +1458,25 @@ export class RDSProvider implements ResourceProvider {
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
-      await this.getClient().send(
-        new DeleteDBClusterCommand({
-          DBClusterIdentifier: physicalId,
-          ...(finalSnapshotId
-            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
-            : { SkipFinalSnapshot: true }),
-          ...deleteAutomatedBackupsInput(properties),
-        })
-      );
+      // Issue #5155: a final snapshot needs `available`, which the flip above
+      // briefly takes away. Only a flip of this run AND a snapshot wait, and
+      // never once AWS accepted the delete (a re-entry after a failed wait).
+      const sendDelete = () =>
+        this.getClient().send(
+          new DeleteDBClusterCommand({
+            DBClusterIdentifier: physicalId,
+            ...(finalSnapshotId
+              ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+              : { SkipFinalSnapshot: true }),
+            ...deleteAutomatedBackupsInput(properties),
+          })
+        );
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        // Issue #5184: waits, then retries a delete AWS refuses as not `available`.
+        await this.deleteAfterProtectionFlip(logicalId, physicalId, sendDelete);
+      } else {
+        await sendDelete();
+      }
       // AWS took the delete: a later throw is the WAIT failing, and the guard
       // must not be put back on a cluster that is being deleted.
       flip.deleteAccepted = true;
@@ -1133,16 +1494,20 @@ export class RDSProvider implements ResourceProvider {
       await this.waitForClusterDeleted(logicalId, physicalId, RDS_DELETE_WAIT_MS);
     } catch (error) {
       if (error instanceof GlobalClusterDetachError) {
-        // Non-retryable so the destroy / deploy classifiers never read an AWS
-        // "not found" in the detail as the cluster being gone; a re-run of the
-        // destroy repeats the detach.
-        const detachFailure = markNonRetryable(
-          new ProvisioningError(
-            `Failed to delete DBCluster ${logicalId}: ${error.message}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            error
+        // Not gone, so the destroy / deploy classifiers never read an AWS
+        // "not found" in the detail as the cluster being gone (#5228). Also
+        // non-retryable: the detach already waited out busy states and
+        // throttles within the delete budget, so a retry would only spend it
+        // again; a re-run of the destroy repeats the detach.
+        const detachFailure = markNotGone(
+          markNonRetryable(
+            new ProvisioningError(
+              `Failed to delete DBCluster ${logicalId}: ${error.message}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              error
+            )
           )
         );
         throw progress.stripped ? markDeleteStarted(detachFailure) : detachFailure;
@@ -1168,15 +1533,21 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete DBCluster ${logicalId}: ${describeAwsFailure(error).detail}` +
-          (detachedFrom !== undefined
-            ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
-            : ''),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const detachedNote =
+        detachedFrom !== undefined
+          ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
+          : '';
+      const failure = this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DBCluster ${logicalId}: ${text}${detachedNote}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -1187,7 +1558,8 @@ export class RDSProvider implements ResourceProvider {
   private async createDBInstance(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -1195,7 +1567,7 @@ export class RDSProvider implements ResourceProvider {
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 63, lowercase: true });
+      generatedNameFor('AWS::RDS::DBInstance', logicalId);
 
     // go-to-k/cdkd#4583: set once CreateDBInstance returned (no self-cleanup).
     let instanceCreated = false;
@@ -1285,6 +1657,8 @@ export class RDSProvider implements ResourceProvider {
       );
       instanceCreated = true;
       createdResourceId = response.DBInstance?.DbiResourceId;
+      // go-to-k/cdkd#5511: reported before the available wait.
+      reportCreatedResource(logicalId, resourceType, dbInstanceIdentifier, createdResourceId);
 
       const instance = response.DBInstance;
       if (!instance) {
@@ -1295,7 +1669,7 @@ export class RDSProvider implements ResourceProvider {
 
       // Wait for instance to become available (skip with --no-wait)
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForInstanceAvailable(dbInstanceIdentifier);
+        await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
       // Describe to get final attributes
@@ -1313,12 +1687,17 @@ export class RDSProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : new ProvisioningError(
-              `Failed to create DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-              resourceType,
-              logicalId,
-              dbInstanceIdentifier,
-              error instanceof Error ? error : undefined
+          : this.wrapCaughtError(
+              mask,
+              error,
+              (text) =>
+                new ProvisioningError(
+                  `Failed to create DBInstance ${logicalId}: ${text}`,
+                  resourceType,
+                  logicalId,
+                  dbInstanceIdentifier,
+                  error instanceof Error ? error : undefined
+                )
             );
       // go-to-k/cdkd#4583: the instance exists and no state record will hold
       // it; never before CreateDBInstance returned (another owner's name).
@@ -1340,7 +1719,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1369,81 +1749,106 @@ export class RDSProvider implements ResourceProvider {
       // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
       // `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
-      // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
-      // absent input field means "no change"), so a property REMOVED from
-      // the template must be sent as its explicit CFn-default reset value
-      // via a local `clearOnUpdateRemoval`. Per the #5004 CloudFormation A/B,
-      // CFn KEEPS the live value on removal for DeletionProtection and
-      // EnableIAMDatabaseAuthentication (and, on DBInstance, MonitoringInterval),
-      // so those are NOT reset (omitted = unchanged). Deliberately NOT reset here:
-      //   * EngineVersion — removal would imply moving to the engine's
-      //     default version, a risky (possibly major) version change cdkd
-      //     must not synthesize; leave unchanged.
-      //   * ManageMasterUserPassword + MasterUserSecret — flipping
-      //     ManageMasterUserPassword off requires supplying a
-      //     MasterUserPassword, which cannot be synthesized from a removal.
-      //   * MonitoringRoleArn — no documented clear value.
-      //   * PubliclyAccessible — CFn documents the default as
-      //     context-dependent (varies by subnet / DNS configuration); no
-      //     single safe reset value.
-      //   * VPCSecurityGroups — classified UNCERTAIN in the #1160 audit
-      //     (readCurrentState placeholder concern on the cluster twin), out
-      //     of this batch's scope.
-      //   * AllocatedStorage — storage cannot shrink; removal is not
-      //     resettable.
-      //   * Port / DBPortNumber — default is engine-dependent; no single
-      //     safe reset value.
-      await this.getClient().send(
-        new ModifyDBInstanceCommand({
-          DBInstanceIdentifier: physicalId,
-          DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
-          PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
-          ApplyImmediately: true,
-          // AllocatedStorage is mutable on ModifyDBInstance (scale-up).
-          // AWS rejects scale-down except in narrow cases; cdkd forwards the
-          // user's value and lets AWS surface the rejection if any.
-          ...(properties['AllocatedStorage'] !== undefined && {
-            AllocatedStorage: Number(properties['AllocatedStorage']),
-          }),
-          // Removal keeps the live value, as CFn does (#5004 A/B).
-          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          ...(newEngineVersion !== undefined && {
-            EngineVersion: newEngineVersion,
-            ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
-          }),
-          ...(properties['Port'] !== undefined && {
-            DBPortNumber: Number(properties['Port']),
-          }),
-          ...(properties['MasterUserPassword'] !== undefined && {
-            MasterUserPassword: properties['MasterUserPassword'] as string,
-          }),
-          ...(properties['VPCSecurityGroups'] !== undefined && {
-            VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
-          }),
-          // #609 security-cluster backfill — 5 mutable via ModifyDBInstance.
-          // `KmsKeyId` is intentionally NOT forwarded here (storage-encryption
-          // key is immutable post-create; a template change replaces the
-          // instance, which cdkd's diff layer schedules independently — same
-          // treatment as StorageEncrypted / MasterUsername above).
-          ...(masterUserSecret?.KmsKeyId !== undefined && {
-            MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
-          }),
-          ...(properties['ManageMasterUserPassword'] !== undefined && {
-            ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
-          }),
-          ...(properties['MonitoringRoleArn'] !== undefined && {
-            MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
-          }),
-          // Removal keeps the live interval, as CFn does (#5004 A/B).
-          ...(properties['MonitoringInterval'] != null && {
-            MonitoringInterval: Number(properties['MonitoringInterval']),
-          }),
-          // Removal keeps the live value, as CFn does (#5004 A/B).
-          EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
-            | boolean
-            | undefined,
-        })
+      // #5153: the managed-password settings ride only a credential change.
+      const sendCredentialSettings = masterCredentialSettingsChanged(
+        properties,
+        previousProperties,
+        context
       );
+      const instancePassword = masterUserPasswordToSend(properties, previousProperties, context);
+      // #1160 removal — ModifyDBInstance has merge semantics (an absent input
+      // field means "no change"), so a property REMOVED from the template is
+      // sent as its CFn reset value only where CloudFormation resets it, per
+      // real A/Bs (#5004, #1160 comment 6401151077):
+      //   * RESET: ManageMasterUserPassword (to false, `managedPasswordOnRemoval`).
+      //   * KEPT (omitted = unchanged): DeletionProtection,
+      //     EnableIAMDatabaseAuthentication, MonitoringInterval, EngineVersion,
+      //     Port, PubliclyAccessible, AllocatedStorage, MonitoringRoleArn.
+      // MasterUserSecret removed while the managed password stays on: the
+      // credential gate re-sends ManageMasterUserPassword=true with no key.
+      // CloudFormation sends neither, and the secret stays on its customer key
+      // either way (#1160 comment 6484915102). VPCSecurityGroups is
+      // classified UNCERTAIN in the #1160 audit and sends nothing.
+      // DBInstanceClass is not required by the registry schema (no top-level
+      // `required`), and a removal sends nothing: CloudFormation sends no class
+      // either, and the update keeps the live one (same comment).
+      const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
+      // #5194: a cluster change in the same deploy can leave this member not
+      // `available` for a moment; only that refusal is waited out and resent.
+      await modifyDbInstanceWhenAvailable({
+        send: () =>
+          this.getClient().send(
+            new ModifyDBInstanceCommand({
+              DBInstanceIdentifier: physicalId,
+              DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
+              PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
+              ApplyImmediately: true,
+              // AllocatedStorage is mutable on ModifyDBInstance (scale-up).
+              // AWS rejects scale-down except in narrow cases; cdkd forwards the
+              // user's value and lets AWS surface the rejection if any.
+              ...(properties['AllocatedStorage'] !== undefined && {
+                AllocatedStorage: Number(properties['AllocatedStorage']),
+              }),
+              // Removal keeps the live value, as CFn does (#5004 A/B).
+              DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+              // #5467: an Engine change CloudFormation's handler applies in place
+              // (aurora to aurora-mysql, oracle-se / oracle-se1 to oracle-se2, an
+              // Oracle CDB conversion) carries the new Engine, as the handler
+              // sends `engine(diff(previous, desired))`. Any other change
+              // replaces (`dbInstanceEngineChangeReplaces`).
+              ...(previousProperties['Engine'] !== properties['Engine'] &&
+                dbInstanceEngineChangeIsInPlace(
+                  previousProperties['Engine'],
+                  properties['Engine']
+                ) && {
+                  Engine: properties['Engine'] as string,
+                }),
+              ...(newEngineVersion !== undefined && {
+                EngineVersion: newEngineVersion,
+                ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
+              }),
+              ...(properties['Port'] !== undefined && {
+                DBPortNumber: Number(properties['Port']),
+              }),
+              // #5153: only a changed password; any supplied one resets credentials.
+              ...(instancePassword !== undefined && { MasterUserPassword: instancePassword }),
+              ...(properties['VPCSecurityGroups'] !== undefined && {
+                VpcSecurityGroupIds: properties['VPCSecurityGroups'] as string[],
+              }),
+              // #609 security-cluster backfill — 5 mutable via ModifyDBInstance.
+              // `KmsKeyId` is intentionally NOT forwarded here (storage-encryption
+              // key is immutable post-create; a template change replaces the
+              // instance, which cdkd's diff layer schedules independently — same
+              // treatment as StorageEncrypted / MasterUsername above).
+              ...(sendCredentialSettings &&
+                masterUserSecret?.KmsKeyId !== undefined && {
+                  MasterUserSecretKmsKeyId: masterUserSecret.KmsKeyId,
+                }),
+              ...(sendCredentialSettings &&
+                properties['ManageMasterUserPassword'] !== undefined && {
+                  ManageMasterUserPassword: properties['ManageMasterUserPassword'] as boolean,
+                }),
+              ...(manageMasterUserPasswordOff && { ManageMasterUserPassword: false }),
+              ...(properties['MonitoringRoleArn'] !== undefined && {
+                MonitoringRoleArn: properties['MonitoringRoleArn'] as string,
+              }),
+              // Removal keeps the live interval, as CFn does (#5004 A/B).
+              ...(properties['MonitoringInterval'] != null && {
+                MonitoringInterval: Number(properties['MonitoringInterval']),
+              }),
+              // Removal keeps the live value, as CFn does (#5004 A/B).
+              EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
+                | boolean
+                | undefined,
+            })
+          ),
+        readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label: 'RDS DBInstance',
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
 
       this.logger.debug(`Successfully updated DBInstance ${logicalId}`);
 
@@ -1472,12 +1877,17 @@ export class RDSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1544,6 +1954,7 @@ export class RDSProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () =>
               (await this.describeDBInstance(physicalId))?.DeletionProtection === true,
@@ -1561,7 +1972,9 @@ export class RDSProvider implements ResourceProvider {
         } catch (disableError) {
           if (!this.isNotFoundError(disableError, 'DBInstanceNotFoundFault')) {
             this.logger.debug(
-              `Could not disable deletion protection for DBInstance ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              maskerOrIdentity(context?.maskSecrets)(
+                `Could not disable deletion protection for DBInstance ${logicalId}: ${describeAwsFailure(disableError).detail}`
+              )
             );
           }
         }
@@ -1577,15 +1990,23 @@ export class RDSProvider implements ResourceProvider {
         properties?.['DBClusterIdentifier'] === undefined
           ? context?.finalSnapshotIdentifier
           : undefined;
-      await this.getClient().send(
-        new DeleteDBInstanceCommand({
-          DBInstanceIdentifier: physicalId,
-          ...(finalSnapshotId
-            ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
-            : { SkipFinalSnapshot: true }),
-          ...deleteAutomatedBackupsInput(properties),
-        })
-      );
+      // Issue #5155: as on the DBCluster delete above.
+      const sendDelete = () =>
+        this.getClient().send(
+          new DeleteDBInstanceCommand({
+            DBInstanceIdentifier: physicalId,
+            ...(finalSnapshotId
+              ? { SkipFinalSnapshot: false, FinalDBSnapshotIdentifier: finalSnapshotId }
+              : { SkipFinalSnapshot: true }),
+            ...deleteAutomatedBackupsInput(properties),
+          })
+        );
+      if (finalSnapshotId && flip.flippedOffByThisRun && !flip.deleteAccepted) {
+        // Issue #5184: waits, then retries a delete AWS refuses as not `available`.
+        await this.deleteInstanceAfterProtectionFlip(logicalId, physicalId, sendDelete);
+      } else {
+        await sendDelete();
+      }
       // AWS took the delete: see `deleteDBClusterOnce`.
       flip.deleteAccepted = true;
       // Not the identifier: it embeds the physical id, which may be secret-derived
@@ -1622,12 +2043,17 @@ export class RDSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete DBInstance ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapDeleteError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete DBInstance ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1670,6 +2096,23 @@ export class RDSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Issue #5426: after a failed cleanup delete of a partially-created cluster,
+   * whether AWS already has it on its way out: `gone` on `DBClusterNotFoundFault`
+   * by class, `deleting` on that status, `undefined` for anything else (an
+   * empty read or another failure included), which keeps the caller's warning.
+   */
+  private async partialClusterRetiring(
+    dbClusterIdentifier: string
+  ): Promise<'gone' | 'deleting' | undefined> {
+    try {
+      const cluster = await this.describeDBCluster(dbClusterIdentifier);
+      return cluster?.Status === 'deleting' ? 'deleting' : undefined;
+    } catch (error) {
+      return error instanceof Error && error.name === 'DBClusterNotFoundFault' ? 'gone' : undefined;
+    }
+  }
+
   private isNotFoundError(error: unknown, faultName: string): boolean {
     if (!(error instanceof Error)) return false;
     const name = (error as { name?: string }).name ?? '';
@@ -1677,6 +2120,75 @@ export class RDSProvider implements ResourceProvider {
     return (
       name === faultName || message.includes('not found') || message.includes('does not exist')
     );
+  }
+
+  /**
+   * The failure wrap the DBSubnetGroup / DBCluster / DBInstance create, update
+   * and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). The delete catches test not-found
+   * before they wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
+
+  /**
+   * A {@link GlobalClusterDetachError} for a failed detach or membership read.
+   * Its message is the "Failed to delete DBCluster" wrap's, which is persisted
+   * to `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its
+   * CLASS plus the `--verbose` pointer (go-to-k/cdkd#2319) and AWS's text goes
+   * to `debug` through the delete's masker. No `cause` is threaded, as before
+   * (the wrap is non-retryable, so no retry classifier needs AWS's text on a
+   * chain).
+   */
+  private wrapGlobalClusterDetachError(
+    error: unknown,
+    mask: (text: string) => string,
+    build: (text: string) => string
+  ): GlobalClusterDetachError {
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) this.logger.debug(mask(build(mask(failure.detail))));
+    // Masked: the class is AWS-authored text too.
+    return new GlobalClusterDetachError(build(mask(failure.summary)));
   }
 
   /**
@@ -1702,7 +2214,8 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     globalClusterId: string,
     removeProtection: boolean,
-    progress: DeleteProgress
+    progress: DeleteProgress,
+    mask: (text: string) => string
   ): Promise<boolean> {
     let cluster = await this.describeDBCluster(physicalId);
     for (let i = 0; removeProtection && cluster?.DeletionProtection === true && i < 6; i++) {
@@ -1754,8 +2267,11 @@ export class RDSProvider implements ResourceProvider {
         // follows reports the cluster's real state.
         if (name === 'DBClusterNotFoundFault') break;
         if (!TRANSIENT_DETACH_FAULTS.has(name)) {
-          throw new GlobalClusterDetachError(
-            safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${describeAwsFailure(error).detail})`
+          throw this.wrapGlobalClusterDetachError(
+            error,
+            mask,
+            (text) =>
+              safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${text})`
           );
         }
         await backOff();
@@ -1776,8 +2292,11 @@ export class RDSProvider implements ResourceProvider {
         if (name === 'GlobalClusterNotFoundFault') {
           stillMember = false;
         } else if (!TRANSIENT_DETACH_FAULTS.has(name)) {
-          throw new GlobalClusterDetachError(
-            safeMsg`could not confirm ${physicalId} left global cluster ${globalClusterId} (${describeAwsFailure(error).detail})`
+          throw this.wrapGlobalClusterDetachError(
+            error,
+            mask,
+            (text) =>
+              safeMsg`could not confirm ${physicalId} left global cluster ${globalClusterId} (${text})`
           );
         }
       }
@@ -1802,6 +2321,102 @@ export class RDSProvider implements ResourceProvider {
     return response.DBClusters?.[0];
   }
 
+  /**
+   * The `VpcSecurityGroupIds` a DBCluster update sends, or `undefined` to omit
+   * it (ModifyDBCluster keeps the live groups then):
+   *
+   * - A non-empty declared list is sent as declared.
+   * - An EMPTY list is omitted: `[]` would detach every group, and
+   *   `readCurrentState` emits `[]` for a cluster with none, which
+   *   `drift --revert` hands back as the desired bag.
+   * - A list the previous template declared and the desired one omits is a
+   *   removal (issue #1160). A real CloudFormation A/B showed CloudFormation
+   *   then attaches the VPC's `default` security group in place of the
+   *   declared ones, so cdkd looks that group up and sends it. A previous
+   *   EMPTY list attached nothing, and a `drift --revert` baseline is a
+   *   readback rather than a template, so neither counts as a removal.
+   */
+  private async dbClusterSecurityGroupsToSend(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<string[] | undefined> {
+    const desired = properties['VpcSecurityGroupIds'] as string[] | undefined;
+    if (desired !== undefined) return desired.length > 0 ? desired : undefined;
+    const previous = previousProperties['VpcSecurityGroupIds'];
+    if (context?.desiredFromAwsReadback === true) return undefined;
+    if (!Array.isArray(previous) || previous.length === 0) return undefined;
+
+    // `missing` names what the lookup did not find (terminal); `awsError` is a
+    // failed call (left retryable).
+    let groupId: string | undefined;
+    let missing: string | undefined;
+    let awsError: unknown;
+    try {
+      const subnetGroupName = (await this.describeDBCluster(physicalId))?.DBSubnetGroup;
+      const vpcId = subnetGroupName
+        ? (
+            await this.getClient().send(
+              new DescribeDBSubnetGroupsCommand({ DBSubnetGroupName: subnetGroupName })
+            )
+          ).DBSubnetGroups?.[0]?.VpcId
+        : undefined;
+      if (!subnetGroupName) missing = 'the cluster reports no DB subnet group';
+      else if (!vpcId) missing = `DB subnet group ${subnetGroupName} reports no VPC`;
+      else {
+        const groups = await this.getEc2Client().send(
+          new DescribeSecurityGroupsCommand({
+            Filters: [
+              { Name: 'vpc-id', Values: [vpcId] },
+              { Name: 'group-name', Values: ['default'] },
+            ],
+          })
+        );
+        groupId = groups.SecurityGroups?.[0]?.GroupId;
+        if (!groupId) missing = `VPC ${vpcId} has no security group named default`;
+      }
+    } catch (error) {
+      awsError = error;
+    }
+    if (groupId === undefined) {
+      // go-to-k/cdkd#2319: the thrown message is persisted, so an AWS failure
+      // contributes only its summary (an EC2 UnauthorizedOperation names the
+      // caller's ARN). The full text goes to debug, masked, and the retry
+      // classifier reads it on `cause`.
+      const mask = context?.maskSecrets ?? ((text: string) => text);
+      const failure = missing === undefined ? describeAwsFailure(awsError) : undefined;
+      if (failure?.redacted === true) {
+        this.logger.debug(
+          safeMsg`${logicalId}: the VPC default security group lookup failed: ${mask(failure.detail)}`
+        );
+      }
+      const shown = mask(failure?.summary ?? '');
+      const refusal = new ProvisioningError(
+        `Failed to update DBCluster ${logicalId}: VpcSecurityGroupIds was removed from the template, so the cluster moves to its VPC's default security group (as CloudFormation does), but cdkd could not find that group: ${missing ?? shown}. Declare VpcSecurityGroupIds in the template to choose the cluster's security groups.`,
+        resourceType,
+        logicalId,
+        physicalId,
+        awsError instanceof Error ? awsError : undefined
+      );
+      if (missing !== undefined) throw markNonRetryable(refusal);
+      // Stamped whenever the message lost text the cause still holds: the
+      // AWS-authored summary, or a masker edit (the classifier must not miss
+      // retry wording a secret overlapped).
+      const withheld =
+        awsError instanceof Error &&
+        (failure?.redacted === true || shown !== (failure?.summary ?? ''));
+      throw withheld ? markRedactedCause(refusal) : refusal;
+    }
+    // A warning, not info: the default group may grant wider access.
+    this.logger.warn(
+      safeMsg`${logicalId}: VpcSecurityGroupIds was removed from the template; attaching the VPC's default security group ${groupId}, as CloudFormation does.`
+    );
+    return [groupId];
+  }
+
   private async describeDBInstance(dbInstanceIdentifier: string) {
     const response = await this.getClient().send(
       new DescribeDBInstancesCommand({
@@ -1812,9 +2427,201 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBCluster to become available
+   * Issue #1160: wait out a member instance's transition (`transitional`) after
+   * its cluster's security groups or port changed. Only that transition is
+   * waited out: a member in a lasting state (maintenance, upgrading,
+   * storage-optimization, ...) or deleted out of band does not hold the update,
+   * as CloudFormation reports the cluster updated in those cases too.
+   */
+  private async waitForMemberAfterClusterChange(
+    dbInstanceIdentifier: string,
+    clusterLogicalId: string,
+    transitional: ReadonlySet<string>,
+    change: string,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      let status: string | undefined;
+      try {
+        status = (await this.describeDBInstance(dbInstanceIdentifier))?.DBInstanceStatus;
+      } catch (error) {
+        if (this.isNotFoundError(error, 'DBInstanceNotFoundFault')) return;
+        throw error;
+      }
+      if (status === undefined || !transitional.has(status)) return;
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      // The member's identifier is another resource's physical id, which this
+      // cluster's masking does not cover (it can be secret-derived): name only
+      // the cluster.
+      safeMsg`Timed out waiting for a member instance of DBCluster ${clusterLogicalId} to finish applying its new ${change}`
+    );
+  }
+
+  /**
+   * A cluster read inside an update wait (issue #5417). A vanished cluster or a
+   * terminal status (`isTerminalDbWaitStatus`) never reaches the awaited state, so
+   * fail now rather than after the 30-minute budget.
+   */
+  private requireClusterWhileWaiting(
+    cluster: DBCluster | undefined,
+    logicalId: string,
+    change: string
+  ): DBCluster {
+    // A deleted cluster usually throws DBClusterNotFoundFault from the describe
+    // itself; this arm covers an empty `DBClusters` list.
+    if (cluster === undefined) {
+      throw new Error(
+        safeMsg`DescribeDBClusters returned no cluster for DBCluster ${logicalId} while waiting for its new ${change}`
+      );
+    }
+    if (isTerminalDbWaitStatus(cluster.Status)) {
+      throw new Error(
+        safeMsg`DBCluster ${logicalId} entered status ${cluster.Status ?? ''} while applying its new ${change}`
+      );
+    }
+    return cluster;
+  }
+
+  /**
+   * Wait until the cluster is out of `modifying` and reports `port` (issue
+   * #1160). `available` alone can still read before the port change starts;
+   * the port cannot.
+   */
+  private async waitForClusterPortApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    port: number,
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'port'
+      );
+      if (cluster.Status !== 'modifying' && cluster.Port === port) return;
+      this.logger.debug(
+        safeMsg`DBCluster ${logicalId} port not applied yet (status ${cluster.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(`Timed out waiting for DBCluster ${logicalId} to apply its new port`);
+  }
+
+  /**
+   * Wait until the cluster is `available` AND reports exactly `expected` as its
+   * VPC security groups, all `active` (issue #1160). `available` alone can still
+   * read before the group swap has started; the group statuses cannot.
+   */
+  private async waitForSecurityGroupsApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    expected: readonly string[],
+    maxWaitMs = 1_800_000
+  ): Promise<void> {
+    const want = [...new Set(expected)].sort().join(' ');
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'VPC security groups'
+      );
+      const groups = cluster.VpcSecurityGroups ?? [];
+      const ids = groups
+        .map((group) => group.VpcSecurityGroupId ?? '')
+        .sort()
+        .join(' ');
+      // `modifying` is the swap's own transition; any lasting state (backing-up,
+      // maintenance, ...) is not this change's to wait out.
+      const settled =
+        cluster.Status !== 'modifying' &&
+        groups.every((group) => group.Status === 'active') &&
+        ids === want;
+      if (settled) return;
+      this.logger.debug(
+        safeMsg`DBCluster ${logicalId} security groups not settled yet (status ${cluster.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for DBCluster ${logicalId} to apply its new VPC security groups`
+    );
+  }
+
+  /**
+   * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
+   * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
+   * and their bounds).
+   */
+  private async deleteAfterProtectionFlip(
+    logicalId: string,
+    physicalId: string,
+    send: () => Promise<unknown>
+  ): Promise<void> {
+    await deleteAfterProtectionFlipWithFinalSnapshot({
+      stateFault: 'InvalidDBClusterStateFault',
+      send,
+      noun: 'cluster',
+      label: 'DBCluster',
+      logicalId,
+      read: async () => {
+        const current = await this.describeDBCluster(physicalId);
+        return current === undefined
+          ? undefined
+          : { deletionProtection: current.DeletionProtection, status: current.Status };
+      },
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
+  }
+
+  /**
+   * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
+   * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
+   * and their bounds).
+   */
+  private async deleteInstanceAfterProtectionFlip(
+    logicalId: string,
+    physicalId: string,
+    send: () => Promise<unknown>
+  ): Promise<void> {
+    await deleteAfterProtectionFlipWithFinalSnapshot({
+      stateFault: 'InvalidDBInstanceStateFault',
+      send,
+      noun: 'instance',
+      label: 'DBInstance',
+      logicalId,
+      read: async () => {
+        const current = await this.describeDBInstance(physicalId);
+        return current === undefined
+          ? undefined
+          : { deletionProtection: current.DeletionProtection, status: current.DBInstanceStatus };
+      },
+      sleep: (ms) => this.sleep(ms),
+      logger: this.logger,
+      remainingMs: enclosingDeadlineRemainingMs(),
+    });
+  }
+
+  /**
+   * Wait for a DBCluster to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForClusterAvailable(
+    logicalId: string,
     dbClusterIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1828,6 +2635,12 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`DBCluster ${dbClusterIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1870,9 +2683,12 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * Wait for a DBInstance to become available
+   * Wait for a DBInstance to become available. A terminal status
+   * (`isTerminalDbWaitStatus`) fails at once rather than after the
+   * 30-minute budget (issue #5426).
    */
   private async waitForInstanceAvailable(
+    logicalId: string,
     dbInstanceIdentifier: string,
     maxWaitMs = 1_800_000
   ): Promise<void> {
@@ -1886,6 +2702,12 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`DBInstance ${dbInstanceIdentifier} status: ${status}`);
 
       if (status === 'available') return;
+      // Issue #5426: a terminal status never becomes 'available'.
+      if (isTerminalDbWaitStatus(status)) {
+        throw new Error(
+          safeMsg`DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+        );
+      }
 
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
@@ -1952,6 +2774,26 @@ export class RDSProvider implements ResourceProvider {
       default:
         return null;
     }
+  }
+
+  /**
+   * Issue #5466: `readCurrentState` reads `SecondsUntilAutoPause`, which
+   * DescribeDBClusters returns on a cluster with `MinCapacity` 0 even when no
+   * template declares it (AWS's 300-second default; measured us-east-1,
+   * 2026-10-28). On the `observedProperties` baseline the comparator walks the
+   * key UNION, so a record captured before this member was read would report
+   * it as drift; the path is compared only where the template declares it.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+    if (resourceType !== 'AWS::RDS::DBCluster') return [];
+    // An absent or empty bag records nothing to scope by: compare.
+    if (properties === undefined || Object.keys(properties).length === 0) return [];
+    const scaling = properties?.['ServerlessV2ScalingConfiguration'] as
+      | ServerlessV2ScalingProps
+      | undefined;
+    return scaling?.SecondsUntilAutoPause === undefined
+      ? ['ServerlessV2ScalingConfiguration.SecondsUntilAutoPause']
+      : [];
   }
 
   /**
@@ -2282,6 +3124,11 @@ export class RDSProvider implements ResourceProvider {
       if (cluster.ServerlessV2ScalingConfiguration?.MaxCapacity !== undefined) {
         sc['MaxCapacity'] = cluster.ServerlessV2ScalingConfiguration.MaxCapacity;
       }
+      // Issue #5466: drift sees the auto-pause delay too.
+      if (cluster.ServerlessV2ScalingConfiguration?.SecondsUntilAutoPause !== undefined) {
+        sc['SecondsUntilAutoPause'] =
+          cluster.ServerlessV2ScalingConfiguration.SecondsUntilAutoPause;
+      }
       result['ServerlessV2ScalingConfiguration'] = sc;
     }
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
@@ -2446,4 +3293,17 @@ export class RDSProvider implements ResourceProvider {
     // DB subnet group reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * Whether the VpcSecurityGroupIds a cluster update SENDS differs from the
+ * previous template's list (order-insensitive). `sent === undefined` sends
+ * nothing, so nothing changes.
+ */
+function securityGroupListChanged(sent: readonly string[] | undefined, previous: unknown): boolean {
+  if (sent === undefined) return false;
+  const before = Array.isArray(previous)
+    ? previous.filter((id): id is string => typeof id === 'string')
+    : [];
+  return [...sent].sort().join(' ') !== [...before].sort().join(' ');
 }

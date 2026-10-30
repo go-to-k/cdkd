@@ -1,4 +1,6 @@
+import { clearCreatedReport } from '../../provisioning/created-resource-sink.js';
 import { noEchoDeleteValuesFromResolved } from '../noecho-delete-reresolution.js';
+import { guardedReplacementCreate } from './create.js';
 import { buildObservedCaptureSiblings } from './observed-capture.js';
 import { noEchoPositionSources } from './noecho.js';
 import {
@@ -10,6 +12,16 @@ import {
 import { type DeployEngine } from '../deploy-engine.js';
 import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js';
 import {
+  getCurrentStackInstanceId,
+  withNameGeneration,
+  withoutGeneratedFallbackName,
+} from '../../provisioning/resource-name.js';
+import {
+  nameGenerationCarriedFrom,
+  nameGenerationField,
+  nextNameGeneration,
+} from '../../state/name-generation.js';
+import {
   checkedReplacementNameChange,
   createFirstThenDeleteOld,
   prepareFinalSnapshotForDelete,
@@ -17,6 +29,17 @@ import {
 } from './replacement.js';
 import { isPinnedToCcApi, preparePropertiesForCcApi } from './routing.js';
 import { extractTemplateAttributes, propertiesToRecord } from './record-shape.js';
+import {
+  unsettledItemsField,
+  unsettledItemsOf,
+  unsettledPropertiesOf,
+} from '../../state/unsettled-properties.js';
+import {
+  addedByFailedUpdateWarning,
+  settleUnsettledPrevious,
+  splitUnhandledRemovals,
+  unsettledAfterUpdate,
+} from '../unsettled-convergence.js';
 import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
@@ -27,7 +50,6 @@ import {
   recordedProtectionEvidence,
   recordedProtectionNote,
 } from '../../provisioning/recorded-protection.js';
-import { withoutGeneratedFallbackName } from '../../provisioning/resource-name.js';
 import {
   prepareRemovalForUpdate,
   removalWarning,
@@ -38,6 +60,7 @@ import {
   renderStatefulReason,
 } from '../../provisioning/stateful-types.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { isMarkedNotGone } from '../../provisioning/not-gone.js';
 import type {
   CloudFormationTemplate,
   ResourceCreateResult,
@@ -50,7 +73,7 @@ import { cachedCreateOnlyPropertyPaths } from '../../provisioning/create-only-pr
 import { hasPassProvenance } from '../secret-redaction/reference-provenance.js';
 import { referenceProvenanceOf } from '../reference-provenance-record.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { formatResourceLine } from '../../utils/resource-line.js';
 import { deleteSkipReason, deleteSkippedMessage } from '../delete-outcome.js';
@@ -65,6 +88,7 @@ import {
   isNameCollisionErrorFrom,
   isUpdateUnsupportedError,
   markNonRetryable,
+  markRedactedCause,
 } from '../retryable-errors.js';
 import {
   createSecretMasker,
@@ -78,11 +102,13 @@ import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
 import { buildResolverContext, maskedInputSources } from './resolver-context.js';
+import { keyOrderFreeJson } from '../deploy-value-equality.js';
 
 /** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
 export async function updateInPlace(
   engine: DeployEngine,
   {
+    changedProperties,
     conditions,
     counts,
     currentProps,
@@ -104,6 +130,11 @@ export async function updateInPlace(
     updateSecrets,
     reattach,
   }: {
+    /**
+     * go-to-k/cdkd#5112: the top-level keys `update.ts` found changed,
+     * template to template (`UpdateContext.changedProperties`).
+     */
+    changedProperties: ReadonlySet<string>;
     conditions: Record<string, boolean> | undefined;
     counts: ProvisionCounts | undefined;
     currentProps: Record<string, unknown>;
@@ -198,7 +229,13 @@ export async function updateInPlace(
       ? withoutGeneratedFallbackName(
           resourceType,
           resolvedProps,
-          preparePropertiesForCcApi(engine.providerRegistry, resourceType, resolvedProps, logicalId)
+          preparePropertiesForCcApi(
+            engine.providerRegistry,
+            resourceType,
+            resolvedProps,
+            logicalId,
+            'omit'
+          )
         )
       : resolvedProps;
   // The previous side the provider diffs against, with each create-only
@@ -217,20 +254,22 @@ export async function updateInPlace(
   // way is dropped from the previous side (go-to-k/cdkd#4064): the
   // record's `{{resolve:...}}` is not a name, so every in-place update
   // was refused, and the desired side names that principal too.
+  const previousWithNoEchoHeld =
+    noEchoHeldPaths.size === 0
+      ? currentPropsAsWritten
+      : {
+          ...currentPropsAsWritten,
+          ...Object.fromEntries(
+            [...noEchoHeldPaths]
+              .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
+              .map((path) => [path, updateProps[path]])
+          ),
+        };
   const { previous: previousWithSecretsDropped, dropped: droppedPrincipalKinds } =
     withUnchangedSecretPrincipalLists(
       resourceType,
       currentResource.physicalId,
-      noEchoHeldPaths.size === 0
-        ? currentPropsAsWritten
-        : {
-            ...currentPropsAsWritten,
-            ...Object.fromEntries(
-              [...noEchoHeldPaths]
-                .filter((path) => Object.prototype.hasOwnProperty.call(updateProps, path))
-                .map((path) => [path, updateProps[path]])
-            ),
-          },
+      previousWithNoEchoHeld,
       desiredForSkipCheckAsWritten
     );
   // go-to-k/cdkd#4461: a child that survived a parent re-created under the
@@ -250,6 +289,35 @@ export async function updateInPlace(
         })
       : undefined;
   const previousForUpdate = reattached?.previous ?? previousWithSecretsDropped;
+  // go-to-k/cdkd#5112: a key whose previous side was rewritten above so the
+  // provider's own diff acts on it (a dropped secret principal list, a
+  // re-attachment) is a change the provider must not skip. The `NoEcho` held
+  // paths are not: their previous side was set EQUAL to what is sent.
+  const changedForProvider = new Set(changedProperties);
+  for (const key of new Set([
+    ...Object.keys(previousWithNoEchoHeld),
+    ...Object.keys(previousForUpdate),
+  ])) {
+    if (
+      keyOrderFreeJson(previousForUpdate[key]) !== keyOrderFreeJson(previousWithNoEchoHeld[key])
+    ) {
+      changedForProvider.add(key);
+    }
+  }
+  // go-to-k/cdkd#5380: the keys an earlier failed update left unsettled, which
+  // `update.ts` already counted in `changedProperties`; the provider is told
+  // which of them to converge against AWS.
+  const unsettled = unsettledPropertiesOf(currentResource);
+  // go-to-k/cdkd#5498: what the failed update had been accepted for adding.
+  const unsettledItems = unsettledItemsOf(currentResource);
+  // Still nothing: an update the engine forces with no change as written (a
+  // `reput` child of a parent re-created under the same id, go-to-k/cdkd#4411).
+  // Every key counts, so no provider skips the write the update exists for.
+  if (changedForProvider.size === 0) {
+    for (const key of new Set([...Object.keys(updateProps), ...Object.keys(previousForUpdate)])) {
+      changedForProvider.add(key);
+    }
+  }
   if (reattached !== undefined) {
     engine.logger.info(
       safeMsg`  ${logicalId} (${resourceType}) lost its attachment to ${reattached.parents.join(', ')}, which this deploy re-created under the same name: attaching it again`
@@ -265,9 +333,35 @@ export async function updateInPlace(
     );
   }
 
+  // go-to-k/cdkd#5487: before the removal step, each unsettled name's previous
+  // value becomes what AWS holds now (a moving one refuses the update), so the
+  // removal step below resets a key the template omits but AWS now carries,
+  // and the provider's own comparison sends only what AWS lacks. `Tags`
+  // keeps the record's side (CloudFormation leaves tags it did not record).
+  const unsettledIdentity = {
+    provider: updateProvider,
+    logicalId,
+    physicalId: currentResource.physicalId,
+    resourceType,
+    recordedProperties: currentResource.properties ?? {},
+  };
+  const previousSettled = await settleUnsettledPrevious({
+    ...unsettledIdentity,
+    names: unsettled,
+    previous: previousForUpdate,
+    desired: updateProps,
+    attemptedItems: unsettledItems,
+  });
+  if (unsettled.has('Tags')) {
+    engine.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): an earlier failed update left Tags unsettled. cdkd re-applies the template's tags and removes only the recorded ones the template dropped; a tag that failed update added and no template declares is left on the resource. Remove it by hand if it should not be there.`
+    );
+  }
+
   // Issue #1160: a property the previous template declared and this one
   // omits. Computed once, outside the retry loop, against the SAME previous
-  // bag the provider diffs (the state record, never an AWS readback); the
+  // bag the provider diffs (the state record — except an unsettled name,
+  // which go-to-k/cdkd#5487 replaced with the AWS readback above); the
   // provider's declared reset values go into the bag it is handed, and an
   // audited type's undeclared removal is named once the in-place update
   // succeeded (a replacement fallback leaves no value in place).
@@ -275,7 +369,7 @@ export async function updateInPlace(
     updateProvider,
     resourceType,
     updateProps,
-    previousForUpdate
+    previousSettled
   );
 
   let result;
@@ -312,6 +406,10 @@ export async function updateInPlace(
   // observed-capture site, which relies on that same no-bags refusal. The property-driven replacement
   // twin in `update-replace.ts` passes `replaceProvider` for the same reason.
   let captureProvider = updateProvider;
+  // go-to-k/cdkd#5064 phase 2: the generation the update-not-supported
+  // fallback created its new resource at (undefined: no fallback, or a legacy
+  // stack, so the record carries its own).
+  let replacedAtGeneration: number | undefined;
   const inlinePolicyClaimed = engine.inlinePolicyClaimedFor(
     resourceType,
     logicalId,
@@ -340,7 +438,7 @@ export async function updateInPlace(
             // unchanged secret reference was dropped (go-to-k/cdkd#4064),
             // and at a `reattach` child's list naming a principal this
             // deploy re-created (go-to-k/cdkd#4461).
-            previousForUpdate,
+            previousSettled,
             // The UPDATE twin of the CREATE call's masker (issue #1932
             // item 3): same resolved bag, same exposure, so the contract
             // is applied on both or it has a hole in the shape of
@@ -365,6 +463,47 @@ export async function updateInPlace(
               recordedAttributes: currentResource.attributes,
               ...(inlinePolicyClaimed && { inlinePolicyClaimed }),
               ...removal.context,
+              changedProperties: changedForProvider,
+              // go-to-k/cdkd#5380: the sink lives on the engine, so a mark
+              // outlives this call's promise (deadline race, Ctrl-C, retry).
+              markUnsettled: (propertyName: string) => {
+                if (typeof propertyName !== 'string' || propertyName === '') return;
+                // Only a top-level key this update sends or the record holds:
+                // anything else names no property this resource has, and the
+                // record must not carry it into every later deploy's diff. (A
+                // name the record already carries unsettled stays by the union
+                // at the failure save.)
+                if (
+                  !Object.hasOwn(resolvedProps, propertyName) &&
+                  !Object.hasOwn(currentResource.properties ?? {}, propertyName)
+                ) {
+                  engine.logger.debug(
+                    safeMsg`${logicalId}: ignored an unsettled mark for ${propertyName}, which is not one of its properties`
+                  );
+                  return;
+                }
+                let marks = engine.unsettledMarks.get(logicalId);
+                if (marks === undefined) {
+                  marks = new Set();
+                  engine.unsettledMarks.set(logicalId, marks);
+                }
+                marks.add(propertyName);
+              },
+              // go-to-k/cdkd#5498: the items a resolved call added, per path.
+              markAttempted: (path: string, items: readonly string[]) => {
+                if (typeof path !== 'string' || path === '') return;
+                let byPath = engine.unsettledItemMarks.get(logicalId);
+                if (byPath === undefined) {
+                  byPath = new Map();
+                  engine.unsettledItemMarks.set(logicalId, byPath);
+                }
+                const names = byPath.get(path) ?? new Set<string>();
+                for (const item of items)
+                  if (typeof item === 'string' && item !== '') names.add(item);
+                byPath.set(path, names);
+              },
+              ...(unsettled.size > 0 && { unsettledProperties: unsettled }),
+              ...(unsettledItems.size > 0 && { unsettledItems }),
             }
           )
         ),
@@ -377,6 +516,11 @@ export async function updateInPlace(
     // before anything below can throw, so a failed deploy can tell a re-put
     // child that wrote nothing from one that may have.
     if (result.sentNothing === true) engine.replacementRun.updatesThatSentNothing.add(logicalId);
+    // go-to-k/cdkd#5380: the update finished, so what it marked settled (an
+    // earlier attempt's marks included). The record built below carries no
+    // `unsettledProperties`, which clears the previous record's.
+    engine.unsettledMarks.delete(logicalId);
+    engine.unsettledItemMarks.delete(logicalId);
     // go-to-k/cdkd#4911: a provider that replaced the resource inside its own
     // `update()` and reports `'partial'` could not delete the OLD one (its
     // delete threw or was skipped), so the rollback must read AWS before
@@ -392,8 +536,22 @@ export async function updateInPlace(
     }
     // An injected reset is sent, never recorded: state keeps the template.
     result = withoutInjectedRemovals(result, removal.injected);
-    if (removal.unhandled.length > 0) {
-      engine.logger.warn(removalWarning(logicalId, resourceType, removal.unhandled));
+    // go-to-k/cdkd#5487: a live-only key the convergence step found is no
+    // template removal; it is named for what it is.
+    const unhandledByCause = splitUnhandledRemovals(
+      removal.unhandled,
+      previousForUpdate,
+      unsettled
+    );
+    if (unhandledByCause.removedFromTemplate.length > 0) {
+      engine.logger.warn(
+        removalWarning(logicalId, resourceType, unhandledByCause.removedFromTemplate)
+      );
+    }
+    if (unhandledByCause.addedByFailedUpdate.length > 0) {
+      engine.logger.warn(
+        addedByFailedUpdateWarning(logicalId, resourceType, unhandledByCause.addedByFailedUpdate)
+      );
     }
   } catch (updateError) {
     // If UPDATE is not supported, fall back to a replacement. Two
@@ -427,605 +585,651 @@ export async function updateInPlace(
     const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
     const replaceOptIn = typedUnsupported && engine.options.replace === true;
     if (ccUnsupported || replaceOptIn) {
-      // `UpdateReplacePolicy: Retain` on the fallback replacement
-      // (issue #2518). Until this landed, the fallback deleted the old
-      // resource whatever the policy said, while every OTHER
-      // replacement path in this engine honoured `Retain`: the
-      // property-driven cleanup below logs "Retaining old ...", the
-      // `--recreate-via-*` path warns and leaks it, and both
-      // delete-first fallbacks refuse the replacement outright. The
-      // same template attribute therefore decided retention on one
-      // path and nothing on the other, so a resource the user
-      // explicitly marked to survive its replacement was destroyed —
-      // and for a stateful type, its data with it.
-      //
-      // Two things made honouring it the right arm rather than
-      // refusing the replacement outright:
-      //   - It is what the SIBLING path already does. A refusal here
-      //     would have swapped one internal divergence (retain there,
-      //     delete here) for another (retain there, refuse here), and
-      //     CloudFormation itself retains on replacement.
-      //   - the rollback replay (`rollback-executor/replay-revert.ts`) ALREADY
-      //     assumes it: an op classified `reverse-replacement-readopt`
-      //     deletes the new resource and points state back at the old
-      //     physical id WITHOUT re-creating it. With the old resource
-      //     deleted, that rollback re-adopted a dead id. (That verdict
-      //     was read off `previousState.updateReplacePolicy` until
-      //     issue #2603 moved it onto the record this path now writes
-      //     — see `retainedOldOnReplacement`, set on the arm below.)
-      //
-      // So under `Retain` this path becomes create-ONLY: the old
-      // resource is left in place (orphaned, exactly as the
-      // property-driven path leaves it) and only the replacement
-      // create runs. `Retain` and `Snapshot` are alternative values of
-      // one attribute, so nothing is skipped by not preparing a final
-      // snapshot on this arm.
-      //
-      // The order flip is safe in the same direction as the
-      // property-driven path's: creating first keeps the old resource
-      // alive if the create fails. What it CANNOT do is reuse a
-      // physical name the retained resource still holds, so both
-      // shapes that follow from that are refused LOUDLY below with the
-      // same error codes the property-driven path already uses.
-      //
-      // TEMPLATE ONLY, via the shared `updateReplacePolicy` binding —
-      // the same read the property-driven guard's exemption uses, so
-      // the two ask "what is the user applying NOW?" of one value.
-      // Only `'Retain'` is honoured: `RetainExceptOnCreate` is a
-      // `DeletionPolicy` value CloudFormation rejects for
-      // `UpdateReplacePolicy`, so it cannot reach here.
-      const retainOldOnReplace = updateReplacePolicy === 'Retain';
-      // Stateful guard for BOTH triggers (issue #2514). A stateful
-      // type (RDS / DynamoDB / EFS / etc.) must not be silently
-      // DELETE+CREATEd — require --force-stateful-recreation.
-      //
-      // It used to sit inside `if (replaceOptIn)`, so the CC
-      // auto-fallback recreated a stateful resource on a plain
-      // `cdkd deploy` with neither `--replace` nor
-      // `--force-stateful-recreation`, while the SAME type behind an
-      // SDK provider was refused twice over. The discriminator was
-      // neither the resource nor the user's intent but which
-      // provisioning layer the type happened to route through — and
-      // routing is re-decided every deploy (`provisionedBy` is
-      // recorded, not pinned), so the guard's presence was not
-      // something a user could reason about. The delete below is
-      // identical on both triggers, so the data-loss consent belongs
-      // to the REPLACEMENT, not to the trigger.
-      //
-      // Conservative variant: this fires mid-deploy with no chance to
-      // run either async emptiness probe, so a deferred S3 bucket — and
-      // likewise a log group with no recorded retention, CloudWatch
-      // Logs' never-expire (issue #2558) — is treated as stateful
-      // (block unless forced).
-      //
-      // `UpdateReplacePolicy: Retain` IS an exemption here since issue
-      // #2518, exactly as it is on the property-driven replacement
-      // guard in `update-replace.ts` and for the same reason: the old resource and its
-      // data survive the replacement (orphaned, not deleted), so there
-      // is no data loss for `--force-stateful-recreation` to confirm.
-      // Demanding the consent flag for a replacement that destroys
-      // nothing would be a refusal whose only remedy is a flag that
-      // means "yes, lose the data" — advice that was actively wrong
-      // for the one user who had already asked to keep it.
-      //
-      // `Snapshot` stays NON-exempt on both paths: cdkd does take the
-      // final snapshot, but a snapshot is a point-in-time copy, not a
-      // surviving resource.
-      const statefulReason = retainOldOnReplace
-        ? null
-        : isStatefulRecreateTargetForReplace(
-            resourceType,
-            currentProps,
-            // The observed bag, for the same reason the property-driven
-            // guard in `update-replace.ts` passes it (issue [#2521]).
-            currentResource.observedProperties
-          );
-      if (statefulReason && engine.options.forceStatefulRecreation !== true) {
-        // No `Retain` note here any more (issue #2518): reaching this
-        // throw MEANS the template is not applying `Retain`, because
-        // `retainOldOnReplace` short-circuits `statefulReason` to
-        // `null` above. The note this replaced said "Retain does NOT
-        // protect this path", which is now false — and it was advice
-        // whose remedy (`--force-stateful-recreation`) deleted the very
-        // resource the user had asked to keep.
-        //
-        // The `Retain` read stays TEMPLATE ONLY — deliberately no
-        // `?? currentResource.updateReplacePolicy` fallback, which is
-        // where the snapshot attribute a few lines below DOES fall
-        // back to state. The two decisions are not the same shape:
-        // omitting a promised snapshot is destructive, so that read is
-        // conservative, while this one describes the attribute the user
-        // is applying NOW. Falling back to state would retain a
-        // resource on the strength of a policy the template being
-        // applied has since dropped.
-        //
-        // Hence the shared `updateReplacePolicy` binding, read once in
-        // this UPDATE branch's own scope: it IS the template-only read,
-        // so the property-driven guard's exemption and this path's ask
-        // the same question of the same value, and a future change to
-        // one cannot leave the other on an older spelling. The snapshot
-        // read below is the deliberate exception and stays spelled out
-        // with its state fallback.
-        //
-        // `markNonRetryable` for the same reason as the property-driven
-        // guard's twin in `update-replace.ts`: a flag plus a state-recorded bag decide
-        // it, and the message carries a template-controlled logical id
-        // into substring-matching classifiers.
-        // Issue #2610 site 10: both arms advise a flag that cannot remove a
-        // resource AWS protects — this path's delete never carries
-        // `removeProtection` either.
-        const protection = recordedProtectionEvidence(
-          resourceType,
-          currentProps,
-          currentResource.observedProperties,
-          engine.stackRegion
-        );
-        throw markNonRetryable(
-          new CdkdError(
-            replaceOptIn
-              ? safeMsg`--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
-                  safeMsg`(${resourceType}) — ${renderStatefulReason(statefulReason)}. ` +
-                  (protection
-                    ? safeMsg`${recordedProtectionNote(protection, '--replace --force-stateful-recreation')} ` +
-                      `Or change the resource's definition to avoid the immutable-property change.`
-                    : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
-                      `change the resource definition to avoid the immutable-property change.`)
-              : safeMsg`${logicalId} (${resourceType}) cannot be updated in place by the ` +
-                  `provisioning layer it routes through, so applying this change would ` +
-                  `DELETE + CREATE it — but it is a stateful resource: ` +
-                  safeMsg`${renderStatefulReason(statefulReason)}. ` +
-                  (protection
-                    ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} ` +
-                      `Or change the resource's definition to avoid the update.`
-                    : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
-                      `change the resource definition to avoid the update.`),
-            'STATEFUL_REPLACE_BLOCKED',
-            // Chain the rejection that routed us here: the message
-            // above names no layer and no AWS text, so this is the
-            // only place that rejection is retained.
-            //
-            // Where it actually SURFACES is narrower than the terminal
-            // output: `formatError` (`src/utils/error-handler.ts`)
-            // renders exactly ONE `Caused by:` level, and the error the
-            // CLI prints is the `ProvisioningError` this method's catch
-            // wraps the refusal in — so that one level is the refusal's
-            // own message and the raw Cloud Control text stays a hop
-            // below it, unprinted. It DOES reach the persisted
-            // `RESOURCE_FAILED` event: `extractDeploymentEventError`
-            // walks the whole chain for `awsErrorCode` / `requestId`,
-            // so `cdkd events` can name the AWS rejection behind the
-            // refusal (pinned in `tests/unit/types/deployment-events.test.ts`).
-            //
-            // Safe to chain now that the refusal is marked:
-            // `isMarkedNonRetryable` is consulted before any chain-text
-            // classification, and `ccUnsupported` reads only the
-            // exception NAME and `ccErrorCode` down the chain, never a
-            // message (issue #3810).
-            updateError instanceof Error ? updateError : undefined
-          )
-        );
+      // go-to-k/cdkd#5064 phase 2: the fallback's new resource takes the next
+      // name generation on a stack with an instance id, as a property-driven
+      // replacement does (`update.ts`): its name differs, so the name check
+      // below makes it create first. The failed `update()` above ran under
+      // the record's own generation.
+      const fallbackStackInstanceId = getCurrentStackInstanceId();
+      const fallbackGeneration =
+        fallbackStackInstanceId === undefined
+          ? undefined
+          : nextNameGeneration(currentResource, logicalId, fallbackStackInstanceId);
+      if (fallbackGeneration !== undefined) {
+        engine.replacementRun.attemptedNameGeneration.set(logicalId, fallbackGeneration);
       }
-      // The replacement create gets a fresh routing decision, against
-      // the record as its unrecognized-property baseline (issue #3713,
-      // same reason as `replaceDecision`). Taken before anything is
-      // deleted, since the name check below needs its route.
-      const replDecision = engine.providerRegistry.getProviderFor({
-        resourceType,
-        properties: resolvedProps,
-        previousProperties: currentResource.properties,
-      });
-      const replProvider = replDecision.provider;
-      const replProps =
-        replDecision.provisionedBy === 'cc-api'
-          ? preparePropertiesForCcApi(
-              engine.providerRegistry,
-              resourceType,
-              resolvedProps,
-              logicalId
-            )
-          : resolvedProps;
-      // go-to-k/cdkd#3937 / #3931, as on the property-driven path: a
-      // name known to move off the old resource's, probed where the
-      // create would adopt a taken one. Under Retain it only probes.
-      const fallbackNameChange = await checkedReplacementNameChange(engine.replacementDeps(), {
-        logicalId,
-        resourceType,
-        oldResourceType: resourceType,
-        stackName,
-        currentResource,
-        desiredProperties: resolvedProps,
-        createProvider: replProvider,
-        createdVia: replDecision.provisionedBy,
-        createProps: replProps,
-        secrets: updateSecrets,
-      });
-      const createFirst = !retainOldOnReplace && fallbackNameChange !== undefined;
-      // go-to-k/cdkd#4682: still in the template, so a custom resource's
-      // delete of the old record gets today's values at its NoEcho
-      // coordinates instead of being skipped. Never persisted or logged.
-      const noEchoDeleteValues = await noEchoDeleteValuesFromResolved({
-        record: currentResource,
-        templateResource: template?.Resources?.[logicalId],
-        resolvedProperties: resolvedProps,
-        noEchoParameters:
-          noEchoPositionSources(engine.noEchoRun, stateResources, template)?.parameters ??
-          new Set(),
-        conditions: engine.noEchoRun.noEchoConditions,
-        secrets: updateSecrets,
-        inputSources:
-          template &&
-          maskedInputSources(
-            engine.resolverContextDeps(),
-            template,
-            stateResources,
-            engine.noEchoRun.noEchoConditions,
-            stackName
-          ),
-      });
-      engine.logger.info(
-        retainOldOnReplace
-          ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
-              `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
-          : createFirst
-            ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (CREATE → DELETE — the new name differs from the old resource's)`
-            : safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
-      );
-      if (retainOldOnReplace) {
-        // go-to-k/cdkd#4438: the kept resource holds this stack's create
-        // token, so the create below must not send it again.
-        await noteRetainedResource(resourceType, logicalId);
-      }
-      if (!retainOldOnReplace && !createFirst) {
-        // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
-        // old resource before the fallback replacement's delete. The
-        // TEMPLATE is authoritative here — unlike a destroy, an update
-        // necessarily has the resource in the template, and the
-        // attribute being applied is the desired one (state records
-        // only what the LAST deploy used, so a template that just
-        // gained `Snapshot` must not be overridden by a stale
-        // `Delete`). State is the fallback for a template that omits
-        // the attribute, and this is the ONLY snapshot read on the
-        // replacement paths that has one: every other site passes
-        // the shared `updateReplacePolicy` binding (read in `update.ts`), which is template-only.
-        // The divergence is deliberate — omitting a promised snapshot is
-        // destructive, so this read is conservative, while the `Retain`
-        // decision in `update.ts` only describes what the user is applying now.
+      const replaceFallback = async () => {
+        // `UpdateReplacePolicy: Retain` on the fallback replacement
+        // (issue #2518). Until this landed, the fallback deleted the old
+        // resource whatever the policy said, while every OTHER
+        // replacement path in this engine honoured `Retain`: the
+        // property-driven cleanup below logs "Retaining old ...", the
+        // `--recreate-via-*` path warns and leaks it, and both
+        // delete-first fallbacks refuse the replacement outright. The
+        // same template attribute therefore decided retention on one
+        // path and nothing on the other, so a resource the user
+        // explicitly marked to survive its replacement was destroyed —
+        // and for a stateful type, its data with it.
         //
-        // Unreachable under `Retain` (issue #2518) and not merely
-        // skipped: `UpdateReplacePolicy` is ONE attribute, so a
-        // template applying `Retain` is not applying `Snapshot`, and
-        // the state fallback cannot reintroduce it — `??` only fires
-        // when the template omits the attribute entirely, which is
-        // exactly when `retainOldOnReplace` is false.
-        const fallbackUpdateReplacePolicy =
-          template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
-          currentResource.updateReplacePolicy;
-        const fallbackFinalSnapshotId = await prepareFinalSnapshotForDelete(
-          engine.replacementDeps(),
-          logicalId,
-          resourceType,
-          currentResource,
-          fallbackUpdateReplacePolicy
-        );
-        // Initialized because the catch below can leave it unassigned.
-        let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
-        try {
-          fallbackDeleteResult = await withPrintingSecrets(updateSecrets, () =>
-            updateProvider.delete(
-              logicalId,
-              currentResource.physicalId,
+        // Two things made honouring it the right arm rather than
+        // refusing the replacement outright:
+        //   - It is what the SIBLING path already does. A refusal here
+        //     would have swapped one internal divergence (retain there,
+        //     delete here) for another (retain there, refuse here), and
+        //     CloudFormation itself retains on replacement.
+        //   - the rollback replay (`rollback-executor/replay-revert.ts`) ALREADY
+        //     assumes it: an op classified `reverse-replacement-readopt`
+        //     deletes the new resource and points state back at the old
+        //     physical id WITHOUT re-creating it. With the old resource
+        //     deleted, that rollback re-adopted a dead id. (That verdict
+        //     was read off `previousState.updateReplacePolicy` until
+        //     issue #2603 moved it onto the record this path now writes
+        //     — see `retainedOldOnReplacement`, set on the arm below.)
+        //
+        // So under `Retain` this path becomes create-ONLY: the old
+        // resource is left in place (orphaned, exactly as the
+        // property-driven path leaves it) and only the replacement
+        // create runs. `Retain` and `Snapshot` are alternative values of
+        // one attribute, so nothing is skipped by not preparing a final
+        // snapshot on this arm.
+        //
+        // The order flip is safe in the same direction as the
+        // property-driven path's: creating first keeps the old resource
+        // alive if the create fails. What it CANNOT do is reuse a
+        // physical name the retained resource still holds, so both
+        // shapes that follow from that are refused LOUDLY below with the
+        // same error codes the property-driven path already uses.
+        //
+        // TEMPLATE ONLY, via the shared `updateReplacePolicy` binding —
+        // the same read the property-driven guard's exemption uses, so
+        // the two ask "what is the user applying NOW?" of one value.
+        // Only `'Retain'` is honoured: `RetainExceptOnCreate` is a
+        // `DeletionPolicy` value CloudFormation rejects for
+        // `UpdateReplacePolicy`, so it cannot reach here.
+        const retainOldOnReplace = updateReplacePolicy === 'Retain';
+        // Stateful guard for BOTH triggers (issue #2514). A stateful
+        // type (RDS / DynamoDB / EFS / etc.) must not be silently
+        // DELETE+CREATEd — require --force-stateful-recreation.
+        //
+        // It used to sit inside `if (replaceOptIn)`, so the CC
+        // auto-fallback recreated a stateful resource on a plain
+        // `cdkd deploy` with neither `--replace` nor
+        // `--force-stateful-recreation`, while the SAME type behind an
+        // SDK provider was refused twice over. The discriminator was
+        // neither the resource nor the user's intent but which
+        // provisioning layer the type happened to route through — and
+        // routing is re-decided every deploy (`provisionedBy` is
+        // recorded, not pinned), so the guard's presence was not
+        // something a user could reason about. The delete below is
+        // identical on both triggers, so the data-loss consent belongs
+        // to the REPLACEMENT, not to the trigger.
+        //
+        // Conservative variant: this fires mid-deploy with no chance to
+        // run either async emptiness probe, so a deferred S3 bucket — and
+        // likewise a log group with no recorded retention, CloudWatch
+        // Logs' never-expire (issue #2558) — is treated as stateful
+        // (block unless forced).
+        //
+        // `UpdateReplacePolicy: Retain` IS an exemption here since issue
+        // #2518, exactly as it is on the property-driven replacement
+        // guard in `update-replace.ts` and for the same reason: the old resource and its
+        // data survive the replacement (orphaned, not deleted), so there
+        // is no data loss for `--force-stateful-recreation` to confirm.
+        // Demanding the consent flag for a replacement that destroys
+        // nothing would be a refusal whose only remedy is a flag that
+        // means "yes, lose the data" — advice that was actively wrong
+        // for the one user who had already asked to keep it.
+        //
+        // `Snapshot` stays NON-exempt on both paths: cdkd does take the
+        // final snapshot, but a snapshot is a point-in-time copy, not a
+        // surviving resource.
+        const statefulReason = retainOldOnReplace
+          ? null
+          : isStatefulRecreateTargetForReplace(
               resourceType,
               currentProps,
-              {
-                expectedRegion: engine.stackRegion,
-                forceDataDelete: engine.options.forceStatefulRecreation === true,
-                ...(fallbackFinalSnapshotId !== undefined && {
-                  finalSnapshotIdentifier: fallbackFinalSnapshotId,
-                }),
-                ...replacementDeleteContext(engine.replacementDeps(), fallbackUpdateReplacePolicy),
-                recordedAttributes: currentResource.attributes,
-                // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
-                recordedNoEchoLeaves: currentResource.noEchoLeaves,
-                ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
-                // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
-                // also logs under; the physical id can be a name it derives.
-                maskSecrets: createUnionSecretMasker([
-                  updateSecrets,
-                  secretNameBagFor(engine.secretsRun, logicalId),
-                ]),
-              }
-            )
-          );
-        } catch (deleteError) {
-          // If old resource doesn't exist (already deleted), proceed with CREATE
-          const deleteMsg = describeAwsFailure(deleteError).detail;
-          // Typed check FIRST, and this arm is the worst of the four
-          // already-deleted classifiers to get wrong (issue
-          // go-to-k/cdkd#3236): reading "already gone" here does not
-          // merely drop a state row, it proceeds to CREATE the
-          // replacement BESIDE an old resource whose delete may still
-          // be running. A `CloudControlWaitAbandonedError` says
-          // exactly that — cdkd stopped watching an operation still in
-          // flight — and its message interpolates the LOGICAL ID, so a
-          // construct named `PageNotFound` satisfies the bare
-          // `NotFound` needle below. The substring match cannot be
-          // made safe; any needle can appear in a user-chosen name.
-          //
-          // This arm carried NO typed guard at all, unlike its two
-          // siblings — so `isInterruptedWaitError` and
-          // `isMarkedNonRetryable` join it here for the same reasons
-          // those siblings state.
-          if (
-            !isWaitAbandonedError(deleteError) &&
-            !isInterruptedWaitError(deleteError) &&
-            !isMarkedNonRetryable(deleteError) &&
-            (deleteMsg.includes('does not exist') ||
-              deleteMsg.includes('not found') ||
-              deleteMsg.includes('NotFound'))
-          ) {
-            engine.logger.debug(
-              safeMsg`Old resource ${logicalId} already gone, proceeding with CREATE`
+              // The observed bag, for the same reason the property-driven
+              // guard in `update-replace.ts` passes it (issue [#2521]).
+              currentResource.observedProperties
             );
-          } else {
-            throw deleteError;
-          }
-        }
-        // Issue #1762: a skip fails the resource here too — the CREATE
-        // below re-provisions the resource, so proceeding would leave
-        // the old one alive and untracked. Deliberately OUTSIDE the
-        // catch: the classifier above reads "already gone" out of an
-        // error MESSAGE, and a skip must never be read that way.
-        // Issue #2422: before the skip check below, which throws.
-        reportDeleteGuards(fallbackDeleteResult, {
-          physicalId: currentResource.physicalId,
-          resourceType,
-          // The layer `updateProvider` was routed to, which can differ from
-          // the record's (a silent-drop auto-route, `--pin-cc-api`).
-          provisionedBy: updateDecision.provisionedBy,
-        });
-        const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
-        if (fallbackSkipReason !== undefined) {
-          throw new Error(
-            deleteSkippedMessage(
-              logicalId,
-              currentResource.physicalId,
-              fallbackSkipReason,
-              'during the UPDATE-not-supported replacement'
+        if (statefulReason && engine.options.forceStatefulRecreation !== true) {
+          // No `Retain` note here any more (issue #2518): reaching this
+          // throw MEANS the template is not applying `Retain`, because
+          // `retainOldOnReplace` short-circuits `statefulReason` to
+          // `null` above. The note this replaced said "Retain does NOT
+          // protect this path", which is now false — and it was advice
+          // whose remedy (`--force-stateful-recreation`) deleted the very
+          // resource the user had asked to keep.
+          //
+          // The `Retain` read stays TEMPLATE ONLY — deliberately no
+          // `?? currentResource.updateReplacePolicy` fallback, which is
+          // where the snapshot attribute a few lines below DOES fall
+          // back to state. The two decisions are not the same shape:
+          // omitting a promised snapshot is destructive, so that read is
+          // conservative, while this one describes the attribute the user
+          // is applying NOW. Falling back to state would retain a
+          // resource on the strength of a policy the template being
+          // applied has since dropped.
+          //
+          // Hence the shared `updateReplacePolicy` binding, read once in
+          // this UPDATE branch's own scope: it IS the template-only read,
+          // so the property-driven guard's exemption and this path's ask
+          // the same question of the same value, and a future change to
+          // one cannot leave the other on an older spelling. The snapshot
+          // read below is the deliberate exception and stays spelled out
+          // with its state fallback.
+          //
+          // `markNonRetryable` for the same reason as the property-driven
+          // guard's twin in `update-replace.ts`: a flag plus a state-recorded bag decide
+          // it, and the message carries a template-controlled logical id
+          // into substring-matching classifiers.
+          // Issue #2610 site 10: both arms advise a flag that cannot remove a
+          // resource AWS protects — this path's delete never carries
+          // `removeProtection` either.
+          const protection = recordedProtectionEvidence(
+            resourceType,
+            currentProps,
+            currentResource.observedProperties,
+            engine.stackRegion
+          );
+          throw markNonRetryable(
+            new CdkdError(
+              replaceOptIn
+                ? safeMsg`--replace would DELETE + CREATE the stateful resource ${logicalId} ` +
+                    safeMsg`(${resourceType}) — ${renderStatefulReason(statefulReason)}. ` +
+                    (protection
+                      ? safeMsg`${recordedProtectionNote(protection, '--replace --force-stateful-recreation')} ` +
+                        `Or change the resource's definition to avoid the immutable-property change.`
+                      : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
+                        `change the resource definition to avoid the immutable-property change.`)
+                : safeMsg`${logicalId} (${resourceType}) cannot be updated in place by the ` +
+                    `provisioning layer it routes through, so applying this change would ` +
+                    `DELETE + CREATE it — but it is a stateful resource: ` +
+                    safeMsg`${renderStatefulReason(statefulReason)}. ` +
+                    (protection
+                      ? safeMsg`${recordedProtectionNote(protection, '--force-stateful-recreation')} ` +
+                        `Or change the resource's definition to avoid the update.`
+                      : `Re-run with --force-stateful-recreation to confirm the data loss, or ` +
+                        `change the resource definition to avoid the update.`),
+              'STATEFUL_REPLACE_BLOCKED',
+              // Chain the rejection that routed us here: the message
+              // above names no layer and no AWS text, so this is the
+              // only place that rejection is retained.
+              //
+              // Where it actually SURFACES is narrower than the terminal
+              // output: `formatError` (`src/utils/error-handler.ts`)
+              // renders exactly ONE `Caused by:` level, and the error the
+              // CLI prints is the `ProvisioningError` this method's catch
+              // wraps the refusal in — so that one level is the refusal's
+              // own message and the raw Cloud Control text stays a hop
+              // below it, unprinted. It DOES reach the persisted
+              // `RESOURCE_FAILED` event: `extractDeploymentEventError`
+              // walks the whole chain for `awsErrorCode` / `requestId`,
+              // so `cdkd events` can name the AWS rejection behind the
+              // refusal (pinned in `tests/unit/types/deployment-events.test.ts`).
+              //
+              // Safe to chain now that the refusal is marked:
+              // `isMarkedNonRetryable` is consulted before any chain-text
+              // classification, and `ccUnsupported` reads only the
+              // exception NAME and `ccErrorCode` down the chain, never a
+              // message (issue #3810).
+              updateError instanceof Error ? updateError : undefined
             )
           );
         }
-        engine.replacementRun.oldDeletedBeforeCreate.add(logicalId);
-      }
-      // Set only on the retain arm; drives the `partial` outcome below.
-      let retainedSurvivorReason: string | undefined;
-      let createResult: ResourceCreateResult;
-      try {
-        createResult =
-          createFirst && fallbackNameChange !== undefined
-            ? await createFirstThenDeleteOld(engine.replacementRun, engine.replacementDeps(), {
-                logicalId,
+        // The replacement create gets a fresh routing decision, against
+        // the record as its unrecognized-property baseline (issue #3713,
+        // same reason as `replaceDecision`). Taken before anything is
+        // deleted, since the name check below needs its route.
+        const replDecision = engine.providerRegistry.getProviderFor({
+          resourceType,
+          properties: resolvedProps,
+          previousProperties: currentResource.properties,
+        });
+        const replProvider = replDecision.provider;
+        const replProps =
+          replDecision.provisionedBy === 'cc-api'
+            ? preparePropertiesForCcApi(
+                engine.providerRegistry,
                 resourceType,
-                oldResourceType: resourceType,
-                currentResource,
-                createProvider: replProvider,
-                createProps: replProps,
-                deleteProvider: updateProvider,
-                deleteProvisionedBy: updateDecision.provisionedBy,
-                deleteProperties: currentProps,
-                secrets: updateSecrets,
-                change: fallbackNameChange,
-                equalIdIsSameResource: !equalIdNamesDifferentResources({
-                  resourceType,
-                  physicalId: currentResource.physicalId,
-                  oldProperties: currentResource.properties,
-                  newProperties: resolvedProps,
-                }),
-                // The same state fallback as the DELETE → CREATE arm's
-                // snapshot read, for the same reason.
-                snapshotPolicy:
-                  template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
-                  currentResource.updateReplacePolicy,
-                deletePolicy:
-                  template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
-                  currentResource.updateReplacePolicy,
-                trigger: 'the provisioning layer cannot update it in place',
-                noEchoDeleteValues,
-              })
-            : await engine.withRetry(
-                () =>
-                  withCurrentResourceSecrets(updateSecrets, () =>
-                    replProvider.create(logicalId, resourceType, replProps, {
-                      maskSecrets: createSecretMasker(updateSecrets),
-                    })
-                  ),
+                resolvedProps,
+                logicalId
+              )
+            : resolvedProps;
+        // go-to-k/cdkd#3937 / #3931, as on the property-driven path: a
+        // name known to move off the old resource's, probed where the
+        // create would adopt a taken one. Under Retain it only probes.
+        const fallbackNameChange = await checkedReplacementNameChange(engine.replacementDeps(), {
+          logicalId,
+          resourceType,
+          oldResourceType: resourceType,
+          stackName,
+          currentResource,
+          desiredProperties: resolvedProps,
+          createProvider: replProvider,
+          createdVia: replDecision.provisionedBy,
+          createProps: replProps,
+          secrets: updateSecrets,
+        });
+        const createFirst = !retainOldOnReplace && fallbackNameChange !== undefined;
+        // go-to-k/cdkd#4682: still in the template, so a custom resource's
+        // delete of the old record gets today's values at its NoEcho
+        // coordinates instead of being skipped. Never persisted or logged.
+        const noEchoDeleteValues = await noEchoDeleteValuesFromResolved({
+          record: currentResource,
+          templateResource: template?.Resources?.[logicalId],
+          resolvedProperties: resolvedProps,
+          noEchoParameters:
+            noEchoPositionSources(engine.noEchoRun, stateResources, template)?.parameters ??
+            new Set(),
+          conditions: engine.noEchoRun.noEchoConditions,
+          secrets: updateSecrets,
+          inputSources:
+            template &&
+            maskedInputSources(
+              engine.resolverContextDeps(),
+              template,
+              stateResources,
+              engine.noEchoRun.noEchoConditions,
+              stackName
+            ),
+        });
+        engine.logger.info(
+          retainOldOnReplace
+            ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing ` +
+                `(CREATE only — UpdateReplacePolicy: Retain keeps the old resource)`
+            : createFirst
+              ? safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (CREATE → DELETE — the new name differs from the old resource's)`
+              : safeMsg`UPDATE not supported for ${logicalId} (${resourceType}), replacing (DELETE → CREATE)`
+        );
+        if (retainOldOnReplace) {
+          // go-to-k/cdkd#4438: the kept resource holds this stack's create
+          // token, so the create below must not send it again.
+          await noteRetainedResource(resourceType, logicalId);
+        }
+        if (!retainOldOnReplace && !createFirst) {
+          // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
+          // old resource before the fallback replacement's delete. The
+          // TEMPLATE is authoritative here — unlike a destroy, an update
+          // necessarily has the resource in the template, and the
+          // attribute being applied is the desired one (state records
+          // only what the LAST deploy used, so a template that just
+          // gained `Snapshot` must not be overridden by a stale
+          // `Delete`). State is the fallback for a template that omits
+          // the attribute, and this is the ONLY snapshot read on the
+          // replacement paths that has one: every other site passes
+          // the shared `updateReplacePolicy` binding (read in `update.ts`), which is template-only.
+          // The divergence is deliberate — omitting a promised snapshot is
+          // destructive, so this read is conservative, while the `Retain`
+          // decision in `update.ts` only describes what the user is applying now.
+          //
+          // Unreachable under `Retain` (issue #2518) and not merely
+          // skipped: `UpdateReplacePolicy` is ONE attribute, so a
+          // template applying `Retain` is not applying `Snapshot`, and
+          // the state fallback cannot reintroduce it — `??` only fires
+          // when the template omits the attribute entirely, which is
+          // exactly when `retainOldOnReplace` is false.
+          const fallbackUpdateReplacePolicy =
+            template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+            currentResource.updateReplacePolicy;
+          const fallbackFinalSnapshotId = await prepareFinalSnapshotForDelete(
+            engine.replacementDeps(),
+            logicalId,
+            resourceType,
+            currentResource,
+            fallbackUpdateReplacePolicy,
+            // The fallback delete's own masker (below), go-to-k/cdkd#2319.
+            createUnionSecretMasker([updateSecrets, secretNameBagFor(engine.secretsRun, logicalId)])
+          );
+          // Initialized because the catch below can leave it unassigned.
+          let fallbackDeleteResult: void | ResourceDeleteResult = undefined;
+          try {
+            fallbackDeleteResult = await withPrintingSecrets(updateSecrets, () =>
+              updateProvider.delete(
                 logicalId,
-                undefined,
-                undefined,
-                replProvider
+                currentResource.physicalId,
+                resourceType,
+                currentProps,
+                {
+                  expectedRegion: engine.stackRegion,
+                  forceDataDelete: engine.options.forceStatefulRecreation === true,
+                  ...(fallbackFinalSnapshotId !== undefined && {
+                    finalSnapshotIdentifier: fallbackFinalSnapshotId,
+                  }),
+                  ...replacementDeleteContext(
+                    engine.replacementDeps(),
+                    fallbackUpdateReplacePolicy
+                  ),
+                  recordedAttributes: currentResource.attributes,
+                  // go-to-k/cdkd#4043: where the record holds a NoEcho mask.
+                  recordedNoEchoLeaves: currentResource.noEchoLeaves,
+                  ...(noEchoDeleteValues !== undefined && { noEchoDeleteValues }),
+                  // go-to-k/cdkd#2007: the bag this deploy resolved, which the call
+                  // also logs under; the physical id can be a name it derives.
+                  maskSecrets: createUnionSecretMasker([
+                    updateSecrets,
+                    secretNameBagFor(engine.secretsRun, logicalId),
+                  ]),
+                }
+              )
+            );
+          } catch (deleteError) {
+            // If old resource doesn't exist (already deleted), proceed with CREATE
+            const deleteMsg = describeAwsFailure(deleteError).detail;
+            // Typed check FIRST, and this arm is the worst of the four
+            // already-deleted classifiers to get wrong (issue
+            // go-to-k/cdkd#3236): reading "already gone" here does not
+            // merely drop a state row, it proceeds to CREATE the
+            // replacement BESIDE an old resource whose delete may still
+            // be running. A `CloudControlWaitAbandonedError` says
+            // exactly that — cdkd stopped watching an operation still in
+            // flight — and its message interpolates the LOGICAL ID, so a
+            // construct named `PageNotFound` satisfies the bare
+            // `NotFound` needle below. The substring match cannot be
+            // made safe; any needle can appear in a user-chosen name.
+            //
+            // This arm carried NO typed guard at all, unlike its two
+            // siblings — so `isInterruptedWaitError` and
+            // `isMarkedNonRetryable` join it here for the same reasons
+            // those siblings state, and `isMarkedNotGone` (a provider's
+            // typed "not this resource's not-found", go-to-k/cdkd#5228).
+            if (
+              !isWaitAbandonedError(deleteError) &&
+              !isInterruptedWaitError(deleteError) &&
+              !isMarkedNonRetryable(deleteError) &&
+              !isMarkedNotGone(deleteError) &&
+              (deleteMsg.includes('does not exist') ||
+                deleteMsg.includes('not found') ||
+                deleteMsg.includes('NotFound'))
+            ) {
+              engine.logger.debug(
+                safeMsg`Old resource ${logicalId} already gone, proceeding with CREATE`
               );
-      } catch (createError) {
-        // The create-first arm's errors are already its own, and the
-        // old resource is untouched there.
-        if (createFirst) throw createError;
-        // Only `Retain` turned this into a create-FIRST path, so only
-        // `Retain` owes the name-collision translation (issue #2518).
-        // Without it the user reads a raw `AlreadyExists` and has no
-        // way to connect it to the policy that caused it.
-        if (!retainOldOnReplace) {
-          // ...but the NON-Retain arm owes the other half (issue
-          // #2616): it is the DELETE → CREATE order, so by the time
-          // this runs the old resource is GONE. Two sub-paths reach
-          // here and the wording covers both: the delete above
-          // succeeded, OR it rejected with a not-found the block's
-          // classifier read as "already gone" — where something ELSE
-          // removed the resource. So the sentence names NO actor: it
-          // states only that the resource is gone, which is true on
-          // both sub-paths and is the fact the user needs. Two review
-          // rounds landed here — "already deleted the old resource"
-          // and then "replacement removed the old resource" both keep
-          // the replacement as the subject of the removal, which the
-          // second sub-path falsifies. Handing back the
-          // provider's raw create error leaves the user unable to tell
-          // "the replacement never started" from "the replacement
-          // destroyed the old resource and then failed" — which is
-          // exactly what decides whether a re-run is safe and whether
-          // anything downstream is now dangling. `--replace`'s
-          // delete-first fallback (`replaceDeleteFirstAndRecreate` (`replacement.ts`))
-          // wraps the identical situation, so this is the same
-          // contract, not a new one -- but NOT the same sentence, and
-          // the difference is deliberate: that sibling still says
-          // "already deleted the old resource", which is correct
-          // THERE because its delete catch rethrows unconditionally,
-          // so the only way past it is a delete that succeeded. This
-          // arm has an "already gone" classifier, so it cannot name an
-          // actor (see below).
-          //
-          // Issue #2038: masked at construction, for the same reason as
-          // that sibling — the create was handed the RESOLVED
-          // `replProps`, so the AWS message this echoes can carry a
-          // substituted secret.
-          //
-          // CHAINED, unlike that sibling: the arm this replaces
-          // rethrew `createError` itself, so its `$metadata` /
-          // `Code` reached `extractDeploymentEventError` and the
-          // persisted `RESOURCE_FAILED` event named the AWS rejection.
-          // Wrapping without a `cause` would have silently traded that
-          // for the sentence. Safe to chain here: nothing between this
-          // throw and the DAG executor re-classifies it — the retry
-          // lives INSIDE `engine.withRetry` above, which has already
-          // given up — so no substring classifier reads the cause's
-          // text (contrast the `Retain` arm below, which needs
-          // `markNonRetryable` because its refusal quotes name-cooldown
-          // spellings the retry loop WOULD act on).
-          //
-          // Chained UNMASKED, unlike the rollback executor's twin which
-          // wraps its cause in `maskSecretsInError` -- a deliberate
-          // asymmetry, recorded because three separate review passes
-          // raised it. This throw is inside `updateInPlace`;
-          // further up, `provisionResource`'s catch re-wraps it with
-          // `maskSecretsInError` over the cause CHAIN, so every link
-          // the walk reaches is masked before anything leaves that
-          // method (bounded — see `maskSecretsInError`'s own contract
-          // for the depth cap and its non-`Error` carve-out; this
-          // chain is 3 deep). The rollback executor has no such
-          // boundary — `replaySingle`'s catch masks TEXT and swallows —
-          // which is why its sites mask per site. The MESSAGE is still
-          // masked at construction here, which is what issue #2616
-          // requires.
-          // go-to-k/cdkd#2676: the message is flattened HERE, so it is masked here
-          // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
-          // value): a later mask sees only the flattened text and misses a needle
-          // that holds a newline.
-          const shownSecrets = unionOfSecretBags([
-            updateSecrets,
-            printingSecretsFor(engine.secretsRun, logicalId),
-          ]);
-          throw new Error(
-            // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
-            safeMsg`Failed to create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
+            } else {
+              throw deleteError;
+            }
+          }
+          // Issue #1762: a skip fails the resource here too — the CREATE
+          // below re-provisions the resource, so proceeding would leave
+          // the old one alive and untracked. Deliberately OUTSIDE the
+          // catch: the classifier above reads "already gone" out of an
+          // error MESSAGE, and a skip must never be read that way.
+          // Issue #2422: before the skip check below, which throws.
+          reportDeleteGuards(fallbackDeleteResult, {
+            physicalId: currentResource.physicalId,
+            resourceType,
+            // The layer `updateProvider` was routed to, which can differ from
+            // the record's (a silent-drop auto-route, `--pin-cc-api`).
+            provisionedBy: updateDecision.provisionedBy,
+          });
+          const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);
+          if (fallbackSkipReason !== undefined) {
+            throw new Error(
+              deleteSkippedMessage(
+                logicalId,
+                currentResource.physicalId,
+                fallbackSkipReason,
+                'during the UPDATE-not-supported replacement'
+              )
+            );
+          }
+          engine.replacementRun.oldDeletedBeforeCreate.add(logicalId);
+          // go-to-k/cdkd#5131: as the --replace fallback, for a type whose
+          // delete returns while AWS still holds the name.
+          await updateProvider.waitForNameReleased?.(
+            logicalId,
+            currentResource.physicalId,
+            resourceType,
+            {
+              isInterrupted: () => engine.userInterrupted,
+              maskSecrets: createSecretMasker(updateSecrets),
+            }
+          );
+        }
+        // Set only on the retain arm; drives the `partial` outcome below.
+        let retainedSurvivorReason: string | undefined;
+        let createResult: ResourceCreateResult;
+        try {
+          createResult =
+            createFirst && fallbackNameChange !== undefined
+              ? await createFirstThenDeleteOld(engine.replacementRun, engine.replacementDeps(), {
+                  stackName,
+                  createdVia: replDecision.provisionedBy,
+                  resolvedProps,
+                  logicalId,
+                  resourceType,
+                  oldResourceType: resourceType,
+                  currentResource,
+                  createProvider: replProvider,
+                  createProps: replProps,
+                  deleteProvider: updateProvider,
+                  deleteProvisionedBy: updateDecision.provisionedBy,
+                  deleteProperties: currentProps,
+                  secrets: updateSecrets,
+                  change: fallbackNameChange,
+                  equalIdIsSameResource: !equalIdNamesDifferentResources({
+                    resourceType,
+                    physicalId: currentResource.physicalId,
+                    oldProperties: currentResource.properties,
+                    newProperties: resolvedProps,
+                  }),
+                  // The same state fallback as the DELETE → CREATE arm's
+                  // snapshot read, for the same reason.
+                  snapshotPolicy:
+                    template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                    currentResource.updateReplacePolicy,
+                  deletePolicy:
+                    template?.Resources?.[logicalId]?.UpdateReplacePolicy ??
+                    currentResource.updateReplacePolicy,
+                  trigger: 'the provisioning layer cannot update it in place',
+                  noEchoDeleteValues,
+                })
+              : await guardedReplacementCreate(
+                  engine,
+                  {
+                    logicalId,
+                    resourceType,
+                    stackName,
+                    createdVia: replDecision.provisionedBy,
+                    resolvedProps,
+                  },
+                  () =>
+                    engine.withRetry(
+                      () =>
+                        withCurrentResourceSecrets(updateSecrets, () =>
+                          replProvider.create(logicalId, resourceType, replProps, {
+                            maskSecrets: createSecretMasker(updateSecrets),
+                          })
+                        ),
+                      logicalId,
+                      undefined,
+                      undefined,
+                      replProvider,
+                      // Delete-first: the old copy is gone unless Retain kept
+                      // it, so only the user's interrupt stops this re-create
+                      // (go-to-k/cdkd#5118).
+                      !retainOldOnReplace
+                    )
+                );
+        } catch (createError) {
+          // The create-first arm's errors are already its own, and the
+          // old resource is untouched there.
+          if (createFirst) throw createError;
+          // Only `Retain` turned this into a create-FIRST path, so only
+          // `Retain` owes the name-collision translation (issue #2518).
+          // Without it the user reads a raw `AlreadyExists` and has no
+          // way to connect it to the policy that caused it.
+          if (!retainOldOnReplace) {
+            // ...but the NON-Retain arm owes the other half (issue
+            // #2616): it is the DELETE → CREATE order, so by the time
+            // this runs the old resource is GONE. Two sub-paths reach
+            // here and the wording covers both: the delete above
+            // succeeded, OR it rejected with a not-found the block's
+            // classifier read as "already gone" — where something ELSE
+            // removed the resource. So the sentence names NO actor: it
+            // states only that the resource is gone, which is true on
+            // both sub-paths and is the fact the user needs. Two review
+            // rounds landed here — "already deleted the old resource"
+            // and then "replacement removed the old resource" both keep
+            // the replacement as the subject of the removal, which the
+            // second sub-path falsifies. Handing back the
+            // provider's raw create error leaves the user unable to tell
+            // "the replacement never started" from "the replacement
+            // destroyed the old resource and then failed" — which is
+            // exactly what decides whether a re-run is safe and whether
+            // anything downstream is now dangling. `--replace`'s
+            // delete-first fallback (`replaceDeleteFirstAndRecreate` (`replacement.ts`))
+            // wraps the identical situation, so this is the same
+            // contract, not a new one -- but NOT the same sentence, and
+            // the difference is deliberate: that sibling still says
+            // "already deleted the old resource", which is correct
+            // THERE because its delete catch rethrows unconditionally,
+            // so the only way past it is a delete that succeeded. This
+            // arm has an "already gone" classifier, so it cannot name an
+            // actor (see below).
+            //
+            // Issue #2038: masked at construction, for the same reason as
+            // that sibling — the create was handed the RESOLVED
+            // `replProps`, so the AWS message this echoes can carry a
+            // substituted secret.
+            //
+            // CHAINED, unlike that sibling: the arm this replaces
+            // rethrew `createError` itself, so its `$metadata` /
+            // `Code` reached `extractDeploymentEventError` and the
+            // persisted `RESOURCE_FAILED` event named the AWS rejection.
+            // Wrapping without a `cause` would have silently traded that
+            // for the sentence. Safe to chain here: nothing between this
+            // throw and the DAG executor re-classifies it — the retry
+            // lives INSIDE `engine.withRetry` above, which has already
+            // given up — so no substring classifier reads the cause's
+            // text (contrast the `Retain` arm below, which needs
+            // `markNonRetryable` because its refusal quotes name-cooldown
+            // spellings the retry loop WOULD act on).
+            //
+            // Chained UNMASKED, unlike the rollback executor's twin which
+            // wraps its cause in `maskSecretsInError` -- a deliberate
+            // asymmetry, recorded because three separate review passes
+            // raised it. This throw is inside `updateInPlace`;
+            // further up, `provisionResource`'s catch re-wraps it with
+            // `maskSecretsInError` over the cause CHAIN, so every link
+            // the walk reaches is masked before anything leaves that
+            // method (bounded — see `maskSecretsInError`'s own contract
+            // for the depth cap and its non-`Error` carve-out; this
+            // chain is 3 deep). The rollback executor has no such
+            // boundary — `replaySingle`'s catch masks TEXT and swallows —
+            // which is why its sites mask per site. The MESSAGE is still
+            // masked at construction here, which is what issue #2616
+            // requires.
+            // go-to-k/cdkd#2676: the message is flattened HERE, so it is masked here
+            // with the PRINTING bag too (a secret-derived name, #4741's previous NoEcho
+            // value): a later mask sees only the flattened text and misses a needle
+            // that holds a newline.
+            const shownSecrets = unionOfSecretBags([
+              updateSecrets,
+              printingSecretsFor(engine.secretsRun, logicalId),
+            ]);
+            // go-to-k/cdkd#2319: an AWS-authored create failure (a raw SDK or
+            // Cloud Control error) names the caller on a denial, so the
+            // persisted message carries its class plus the `--verbose`
+            // pointer, AWS's text goes to `debug` masked, and the wrap is
+            // stamped so a classifier reads that text on the `cause` chain.
+            // A provider's own wrap or a transport failure keeps its text.
+            const createFailure = describeAwsFailure(createError);
+            const createFailureText = (text: string): string =>
+              // Each value masked BEFORE `safeMsg` flattens it (go-to-k/cdkd#2676).
+              safeMsg`Failed to create ${maskSecretsInText(logicalId, shownSecrets)} after the ` +
               safeMsg`UPDATE-not-supported replacement: the old resource (${maskSecretsInText(currentResource.physicalId, shownSecrets)}) ` +
               // go-to-k/cdkd#2676: the wrapped error's (masked) message is embedded
               // as-is and LAST: it can end in cdkd's own remedy command lines.
-              safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(describeAwsFailure(createError).detail, shownSecrets))}`,
-            { cause: createError instanceof Error ? createError : undefined }
-          );
-        }
-        // Same HEURISTIC, and the same bounded blast radius, as
-        // the property-driven create-first path's: a false positive
-        // only rewrites the error text — nothing destructive follows
-        // either branch here, because this arm never deletes.
-        if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
-        // Issue #3808, as on the property-driven path: when the
-        // template's explicit name is not the one the retained resource
-        // holds, "remove Retain so cdkd deletes the old resource first"
-        // would destroy it and still collide.
-        const nameHeldElsewhere = replacementRequestsDifferentName({
-          oldResourceType: resourceType,
-          newResourceType: resourceType,
-          desiredProperties: resolvedProps,
-          recorded: currentResource.properties,
-          observed: currentResource.observedProperties,
-          physicalId: currentResource.physicalId,
-        });
-        if (nameHeldElsewhere !== undefined) {
+              safeMsg`is now gone. Re-run the deploy to create it fresh. Cause: ${asIsMessage(maskSecretsInText(text, shownSecrets))}`;
+            if (createFailure.redacted) {
+              engine.logger.debug(createFailureText(createFailure.detail));
+            }
+            const createFailed = new Error(
+              createFailureText(
+                createFailure.redacted ? createFailure.summary : createFailure.detail
+              ),
+              { cause: createError instanceof Error ? createError : undefined }
+            );
+            throw createFailure.redacted && createError instanceof Error
+              ? markRedactedCause(createFailed)
+              : createFailed;
+          }
+          // Same HEURISTIC, and the same bounded blast radius, as
+          // the property-driven create-first path's: a false positive
+          // only rewrites the error text — nothing destructive follows
+          // either branch here, because this arm never deletes.
+          if (!isNameCollisionErrorFrom(createError, logicalId)) throw createError;
+          // Issue #3808, as on the property-driven path: when the
+          // template's explicit name is not the one the retained resource
+          // holds, "remove Retain so cdkd deletes the old resource first"
+          // would destroy it and still collide.
+          const nameHeldElsewhere = replacementRequestsDifferentName({
+            oldResourceType: resourceType,
+            newResourceType: resourceType,
+            desiredProperties: resolvedProps,
+            recorded: currentResource.properties,
+            observed: currentResource.observedProperties,
+            physicalId: currentResource.physicalId,
+          });
+          if (nameHeldElsewhere !== undefined) {
+            throw markNonRetryable(
+              new CdkdError(
+                safeMsg`${logicalId} (${resourceType}) requires replacement because the ` +
+                  `provisioning layer cannot update it in place, but the create collided. ` +
+                  safeMsg`${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
+                  `UpdateReplacePolicy: Retain would delete this resource and still ` +
+                  `collide. Choose a name no other resource holds, or delete the resource ` +
+                  `holding it if it is yours.`,
+                'NAMED_REPLACEMENT_COLLISION',
+                createError instanceof Error ? createError : undefined
+              )
+            );
+          }
+          const nameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
+          // Verbatim the property-driven twin's verdict and code: with
+          // Retain the old resource keeps the name, so a same-name
+          // replacement can never proceed — under ANY flag, since the
+          // only escape hatches (`--replace`, `--force-stateful-
+          // recreation`) both work by deleting the resource Retain
+          // pins in place.
+          //
+          // `markNonRetryable` for the same reason as the stateful
+          // guard's refusal above: a template attribute and a physical
+          // name decide it, neither of which a retry can change, and the
+          // message interpolates a template-controlled logical id — plus
+          // the name-collision text of its own `cause` — into exactly
+          // what the SUBSTRING-matching retry classifiers read. Chaining
+          // the create rejection is what makes the refusal diagnosable
+          // (`extractDeploymentEventError` walks the chain for
+          // `awsErrorCode`), and it is safe only BECAUSE of the marker:
+          // `isNameCooldownError`'s spellings are retryable, so an
+          // unmarked refusal carrying one would burn the full 64s
+          // schedule on a path that cannot succeed.
           throw markNonRetryable(
             new CdkdError(
               safeMsg`${logicalId} (${resourceType}) requires replacement because the ` +
-                `provisioning layer cannot update it in place, but the create collided. ` +
-                safeMsg`${renderNameHeldElsewhere(nameHeldElsewhere)} — so removing ` +
-                `UpdateReplacePolicy: Retain would delete this resource and still ` +
-                `collide. Choose a name no other resource holds, or delete the resource ` +
-                `holding it if it is yours.`,
+                `provisioning layer cannot update it in place — but its physical name ` +
+                `is still held by the existing resource AND ` +
+                `UpdateReplacePolicy: Retain pins that resource in place. ` +
+                safeMsg`${nameOrigin.descriptor}. ${nameOrigin.remedy} — with Retain, the old ` +
+                `resource keeps the name, so a same-name replacement can never proceed. ` +
+                `Removing UpdateReplacePolicy: Retain lets cdkd delete the old resource ` +
+                `first, which destroys it and any data it holds.`,
               'NAMED_REPLACEMENT_COLLISION',
               createError instanceof Error ? createError : undefined
             )
           );
         }
-        const nameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
-        // Verbatim the property-driven twin's verdict and code: with
-        // Retain the old resource keeps the name, so a same-name
-        // replacement can never proceed — under ANY flag, since the
-        // only escape hatches (`--replace`, `--force-stateful-
-        // recreation`) both work by deleting the resource Retain
-        // pins in place.
-        //
-        // `markNonRetryable` for the same reason as the stateful
-        // guard's refusal above: a template attribute and a physical
-        // name decide it, neither of which a retry can change, and the
-        // message interpolates a template-controlled logical id — plus
-        // the name-collision text of its own `cause` — into exactly
-        // what the SUBSTRING-matching retry classifiers read. Chaining
-        // the create rejection is what makes the refusal diagnosable
-        // (`extractDeploymentEventError` walks the chain for
-        // `awsErrorCode`), and it is safe only BECAUSE of the marker:
-        // `isNameCooldownError`'s spellings are retryable, so an
-        // unmarked refusal carrying one would burn the full 64s
-        // schedule on a path that cannot succeed.
-        throw markNonRetryable(
-          new CdkdError(
-            safeMsg`${logicalId} (${resourceType}) requires replacement because the ` +
-              `provisioning layer cannot update it in place — but its physical name ` +
-              `is still held by the existing resource AND ` +
-              `UpdateReplacePolicy: Retain pins that resource in place. ` +
-              safeMsg`${nameOrigin.descriptor}. ${nameOrigin.remedy} — with Retain, the old ` +
-              `resource keeps the name, so a same-name replacement can never proceed. ` +
-              `Removing UpdateReplacePolicy: Retain lets cdkd delete the old resource ` +
-              `first, which destroys it and any data it holds.`,
-            'NAMED_REPLACEMENT_COLLISION',
-            createError instanceof Error ? createError : undefined
-          )
-        );
-      }
-      // go-to-k/cdkd#4444: the old resource was deleted and the new one holds
-      // its physical id, so whatever AWS stored inside it went with it. The
-      // diff never promoted those children (this was an in-place row); the
-      // executor dispatches them as soon as this resource completes
-      // (`noChangeChildrenOfRecreatedParents`).
-      if (
-        !retainOldOnReplace &&
-        !createFirst &&
-        createResult.physicalId === currentResource.physicalId &&
-        !equalIdNamesDifferentResources({
-          resourceType,
-          physicalId: currentResource.physicalId,
-          oldProperties: currentResource.properties,
-          newProperties: resolvedProps,
-        })
-      ) {
-        engine.replacementRun.recreatedUnderSameId.add(logicalId);
-      }
-      if (retainOldOnReplace) {
-        // Issue #1238's shape, on this path: a name-idempotent Create
-        // API (e.g. SQS `CreateQueue` with an unchanged `QueueName`)
-        // returns the EXISTING resource instead of colliding. With the
-        // old resource retained, recording that id as the "new" one
-        // would re-adopt the very resource Retain just orphaned —
-        // without the new properties ever being applied — so fail
-        // before any state bookkeeping runs. The property-driven twin
-        // makes the same call with the same code.
+        // go-to-k/cdkd#4444: the old resource was deleted and the new one holds
+        // its physical id, so whatever AWS stored inside it went with it. The
+        // diff never promoted those children (this was an in-place row); the
+        // executor dispatches them as soon as this resource completes
+        // (`noChangeChildrenOfRecreatedParents`).
         if (
+          !retainOldOnReplace &&
+          !createFirst &&
           createResult.physicalId === currentResource.physicalId &&
-          // Issue #3892: an equal id can still be a NEW table (Glue).
           !equalIdNamesDifferentResources({
             resourceType,
             physicalId: currentResource.physicalId,
@@ -1033,136 +1237,176 @@ export async function updateInPlace(
             newProperties: resolvedProps,
           })
         ) {
-          const idempotentNameOrigin = replacementNameOrigin(logicalId, currentResource.physicalId);
-          // Marked for the same reason as its collision sibling: the
-          // verdict is two recorded physical ids plus a template
-          // attribute, and the message carries template-controlled
-          // text into the substring classifiers. Nothing to chain —
-          // the create SUCCEEDED; the failure is what it returned.
-          throw markNonRetryable(
-            new CdkdError(
-              safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create ` +
-                `API is name-idempotent: the create returned the existing resource ` +
-                safeMsg`(${currentResource.physicalId}) instead of creating a new one, and ` +
-                `UpdateReplacePolicy: Retain pins that resource in place, so the new ` +
-                safeMsg`properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
-                safeMsg`${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +
-                `the name, so a same-name replacement can never proceed.`,
-              'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
-            )
-          );
+          engine.replacementRun.recreatedUnderSameId.add(logicalId);
         }
-        // Issue #2603: the third and last engine path that leaves the
-        // old physical resource alive on a replacement. Recorded AFTER
-        // the idempotent-create refusal above, which throws — a
-        // resource that fails never reaches `completedOperations`, so
-        // the placement is belt-and-braces rather than load-bearing.
-        engine.replacementRun.retainedOldOnReplacement.add(logicalId);
-        // WARN, not info, and louder than the line the property-driven
-        // cleanup prints. The two arms leak identically, but they are
-        // reached on completely different terms: the property-driven
-        // one requires the user to have changed an immutable property,
-        // which `cdkd diff` shows them beforehand, while THIS arm
-        // fires on `ccUnsupported` ALONE — no flag, no diff signal,
-        // nothing the user did on purpose. A plain `cdkd deploy` that
-        // changes an ordinary property on a `Retain`-declaring cluster
-        // now creates a SECOND cluster and leaves the first running,
-        // where before this PR it hard-refused with
-        // STATEFUL_REPLACE_BLOCKED. Same `⚠` shape as the
-        // `--recreate-via-*` leak warning in `update-replace.ts`, which announces the
-        // strictly LESS surprising version of this outcome.
-        engine.logger.warn(
-          safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
-            safeMsg`resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
-            `tracked by cdkd: it keeps running and incurring cost, and ` +
-            `\`cdkd destroy\` will not remove it. Delete it yourself once you no ` +
-            `longer need its data.`
-        );
-        // ...and declare it through the channel that survives the
-        // terminal (issue #1819). `updatePartial`'s contract is
-        // literally this shape — "updated, but something the update
-        // owned survives untracked" — so the row prints
-        // `partial (<reason>)` instead of `updated`, the run summary
-        // counts it under "of which left an orphaned predecessor" (inside
-        // a nested stack: "Left an orphaned predecessor in a nested
-        // stack", issue #1989), and
-        // a `RESOURCE_SKIPPED` event lands in the durable store
-        // carrying the SURVIVOR's physical id and routing layer, which
-        // is the one datum a cleanup pass needs.
-        //
-        // TWO consequences, stated because neither is cosmetic:
-        //   - the deploy EXITS 2 (`--allow-unaddressed` opts out), the
-        //     same code `cdkd destroy` returns for a skipped delete --
-        //     inside a NESTED stack too: the child's `updatePartial`
-        //     reaches every ancestor's counter through the nested-stack
-        //     context (issue
-        //     [#1989](https://github.com/go-to-k/cdkd/issues/1989)).
-        //     Correct here and arguably more so: a skipped delete
-        //     self-heals on the next run (a nested child's too, issue
-        //     [#4453](https://github.com/go-to-k/cdkd/issues/4453)),
-        //     while this survivor is untracked, so nothing will ever
-        //     retry it.
-        //   - it makes this arm LOUDER than the property-driven twin,
-        //     which retains with only an info line. Deliberate, on the
-        //     trigger asymmetry above, and recorded rather than
-        //     silently unified — bringing the twin along is a
-        //     behaviour change to a path this PR does not otherwise
-        //     touch.
-        retainedSurvivorReason =
-          `UpdateReplacePolicy: Retain kept the old ${resourceType} ` +
-          `(${currentResource.physicalId}), now untracked by cdkd`;
-      }
-      // Annotated rather than inferred: `result` is an evolving `let`,
-      // and a conditional spread makes the literal's type a union that
-      // TS then checks against the wrong constituent.
-      const replacementResult: ResourceUpdateResult = {
-        physicalId: createResult.physicalId,
-        wasReplaced: true,
-        // Spread rather than assigned: under `exactOptionalPropertyTypes`
-        // an explicit `undefined` is not assignable to an optional
-        // property. Behaviorally identical — the reader below is
-        // `result.attributes ?? ...`, which cannot tell absent from
-        // undefined.
-        ...(createResult.attributes && { attributes: createResult.attributes }),
-        // The create's own `NoEcho` declaration, carried for the same
-        // reason the property-driven twin passes `createResult` whole:
-        // this literal REPLACES the update result, so a declaration
-        // dropped here never reaches `registerNoEchoAttributes` below
-        // and the replacement's sensitive attributes land UNMASKED in
-        // `state.json`. Found by review on this PR; the omission
-        // pre-dates it, but `Retain` makes this block the only thing
-        // that runs on the path, so leaving it would ship a literal
-        // known to be wrong in the hunk being rewritten.
-        ...(createResult.noEchoAttributes === true && { noEchoAttributes: true }),
-        ...(createResult.noEchoAttributeNames && {
-          noEchoAttributeNames: createResult.noEchoAttributeNames,
-        }),
-        // go-to-k/cdkd#3869: likewise, or the record keeps no field.
-        ...(createResult.secretNamedAttributeNames && {
-          secretNamedAttributeNames: createResult.secretNamedAttributeNames,
-        }),
-        // The `'partial'` arm of the outcome union, set only when the
-        // retain branch above ran. A ternary rather than a conditional
-        // spread: `ResourceUpdateResult` intersects a DISCRIMINATED
-        // union, and spreading `outcome`/`reason` conditionally makes
-        // the literal's type a union TS then checks against the wrong
-        // constituent — the same trap the annotation above exists for.
-        ...(retainedSurvivorReason !== undefined
-          ? ({ outcome: 'partial', reason: retainedSurvivorReason } as const)
-          : ({ outcome: 'updated' } as const)),
+        if (retainOldOnReplace) {
+          // Issue #1238's shape, on this path: a name-idempotent Create
+          // API (e.g. SQS `CreateQueue` with an unchanged `QueueName`)
+          // returns the EXISTING resource instead of colliding. With the
+          // old resource retained, recording that id as the "new" one
+          // would re-adopt the very resource Retain just orphaned —
+          // without the new properties ever being applied — so fail
+          // before any state bookkeeping runs. The property-driven twin
+          // makes the same call with the same code.
+          if (
+            createResult.physicalId === currentResource.physicalId &&
+            // Issue #3892: an equal id can still be a NEW table (Glue).
+            !equalIdNamesDifferentResources({
+              resourceType,
+              physicalId: currentResource.physicalId,
+              oldProperties: currentResource.properties,
+              newProperties: resolvedProps,
+            })
+          ) {
+            const idempotentNameOrigin = replacementNameOrigin(
+              logicalId,
+              currentResource.physicalId
+            );
+            // Marked for the same reason as its collision sibling: the
+            // verdict is two recorded physical ids plus a template
+            // attribute, and the message carries template-controlled
+            // text into the substring classifiers. Nothing to chain —
+            // the create SUCCEEDED; the failure is what it returned.
+            throw markNonRetryable(
+              new CdkdError(
+                safeMsg`${logicalId} (${resourceType}) requires replacement, but its Create ` +
+                  `API is name-idempotent: the create returned the existing resource ` +
+                  safeMsg`(${currentResource.physicalId}) instead of creating a new one, and ` +
+                  `UpdateReplacePolicy: Retain pins that resource in place, so the new ` +
+                  safeMsg`properties were not applied. ${idempotentNameOrigin.descriptor}. ` +
+                  safeMsg`${idempotentNameOrigin.remedy} — with Retain, the old resource keeps ` +
+                  `the name, so a same-name replacement can never proceed.`,
+                'NAMED_REPLACEMENT_IDEMPOTENT_CREATE'
+              )
+            );
+          }
+          // Issue #2603: the third and last engine path that leaves the
+          // old physical resource alive on a replacement. Recorded AFTER
+          // the idempotent-create refusal above, which throws — a
+          // resource that fails never reaches `completedOperations`, so
+          // the placement is belt-and-braces rather than load-bearing.
+          engine.replacementRun.retainedOldOnReplacement.add(logicalId);
+          // WARN, not info, and louder than the line the property-driven
+          // cleanup prints. The two arms leak identically, but they are
+          // reached on completely different terms: the property-driven
+          // one requires the user to have changed an immutable property,
+          // which `cdkd diff` shows them beforehand, while THIS arm
+          // fires on `ccUnsupported` ALONE — no flag, no diff signal,
+          // nothing the user did on purpose. A plain `cdkd deploy` that
+          // changes an ordinary property on a `Retain`-declaring cluster
+          // now creates a SECOND cluster and leaves the first running,
+          // where before this PR it hard-refused with
+          // STATEFUL_REPLACE_BLOCKED. Same `⚠` shape as the
+          // `--recreate-via-*` leak warning in `update-replace.ts`, which announces the
+          // strictly LESS surprising version of this outcome.
+          engine.logger.warn(
+            safeMsg`  ⚠ ${logicalId} has UpdateReplacePolicy: Retain — the old physical ` +
+              safeMsg`resource (${currentResource.physicalId}) is RETAINED and is no longer ` +
+              `tracked by cdkd: it keeps running and incurring cost, and ` +
+              `\`cdkd destroy\` will not remove it. Delete it yourself once you no ` +
+              `longer need its data.`
+          );
+          // ...and declare it through the channel that survives the
+          // terminal (issue #1819). `updatePartial`'s contract is
+          // literally this shape — "updated, but something the update
+          // owned survives untracked" — so the row prints
+          // `partial (<reason>)` instead of `updated`, the run summary
+          // counts it under "of which left an orphaned predecessor" (inside
+          // a nested stack: "Left an orphaned predecessor in a nested
+          // stack", issue #1989), and
+          // a `RESOURCE_SKIPPED` event lands in the durable store
+          // carrying the SURVIVOR's physical id and routing layer, which
+          // is the one datum a cleanup pass needs.
+          //
+          // TWO consequences, stated because neither is cosmetic:
+          //   - the deploy EXITS 2 (`--allow-unaddressed` opts out), the
+          //     same code `cdkd destroy` returns for a skipped delete --
+          //     inside a NESTED stack too: the child's `updatePartial`
+          //     reaches every ancestor's counter through the nested-stack
+          //     context (issue
+          //     [#1989](https://github.com/go-to-k/cdkd/issues/1989)).
+          //     Correct here and arguably more so: a skipped delete
+          //     self-heals on the next run (a nested child's too, issue
+          //     [#4453](https://github.com/go-to-k/cdkd/issues/4453)),
+          //     while this survivor is untracked, so nothing will ever
+          //     retry it.
+          //   - it makes this arm LOUDER than the property-driven twin,
+          //     which retains with only an info line. Deliberate, on the
+          //     trigger asymmetry above, and recorded rather than
+          //     silently unified — bringing the twin along is a
+          //     behaviour change to a path this PR does not otherwise
+          //     touch.
+          retainedSurvivorReason =
+            `UpdateReplacePolicy: Retain kept the old ${resourceType} ` +
+            `(${currentResource.physicalId}), now untracked by cdkd`;
+        }
+        // Annotated rather than inferred: `result` is an evolving `let`,
+        // and a conditional spread makes the literal's type a union that
+        // TS then checks against the wrong constituent.
+        const replacementResult: ResourceUpdateResult = {
+          physicalId: createResult.physicalId,
+          wasReplaced: true,
+          // Spread rather than assigned: under `exactOptionalPropertyTypes`
+          // an explicit `undefined` is not assignable to an optional
+          // property. Behaviorally identical — the reader below is
+          // `result.attributes ?? ...`, which cannot tell absent from
+          // undefined.
+          ...(createResult.attributes && { attributes: createResult.attributes }),
+          // The create's own `NoEcho` declaration, carried for the same
+          // reason the property-driven twin passes `createResult` whole:
+          // this literal REPLACES the update result, so a declaration
+          // dropped here never reaches `registerNoEchoAttributes` below
+          // and the replacement's sensitive attributes land UNMASKED in
+          // `state.json`. Found by review on this PR; the omission
+          // pre-dates it, but `Retain` makes this block the only thing
+          // that runs on the path, so leaving it would ship a literal
+          // known to be wrong in the hunk being rewritten.
+          ...(createResult.noEchoAttributes === true && { noEchoAttributes: true }),
+          ...(createResult.noEchoAttributeNames && {
+            noEchoAttributeNames: createResult.noEchoAttributeNames,
+          }),
+          // go-to-k/cdkd#3869: likewise, or the record keeps no field.
+          ...(createResult.secretNamedAttributeNames && {
+            secretNamedAttributeNames: createResult.secretNamedAttributeNames,
+          }),
+          // The `'partial'` arm of the outcome union, set only when the
+          // retain branch above ran. A ternary rather than a conditional
+          // spread: `ResourceUpdateResult` intersects a DISCRIMINATED
+          // union, and spreading `outcome`/`reason` conditionally makes
+          // the literal's type a union TS then checks against the wrong
+          // constituent — the same trap the annotation above exists for.
+          ...(retainedSurvivorReason !== undefined
+            ? ({ outcome: 'partial', reason: retainedSurvivorReason } as const)
+            : ({ outcome: 'updated' } as const)),
+        };
+        // Carried explicitly: this literal REPLACES the update result, so
+        // a narrowing the replacement create announced would be dropped
+        // on the floor and the desired bag recorded instead — silently
+        // re-introducing the phantom drift (#1591).
+        if (createResult.effectiveProperties) {
+          replacementResult.effectiveProperties = createResult.effectiveProperties;
+        }
+        // Issue #2608: same decision, same statement — the two must not
+        // be separable by a later edit.
+        return {
+          result: replacementResult,
+          provisionedBy: replDecision.provisionedBy,
+          captureProvider: replProvider,
+        };
       };
-      // Carried explicitly: this literal REPLACES the update result, so
-      // a narrowing the replacement create announced would be dropped
-      // on the floor and the desired bag recorded instead — silently
-      // re-introducing the phantom drift (#1591).
-      if (createResult.effectiveProperties) {
-        replacementResult.effectiveProperties = createResult.effectiveProperties;
-      }
-      result = replacementResult;
-      resultProvisionedBy = replDecision.provisionedBy;
-      // Issue #2608: same decision, same statement — the two must not
-      // be separable by a later edit.
-      captureProvider = replProvider;
+      const fallbackOutcome = await (fallbackGeneration === undefined
+        ? replaceFallback()
+        : withNameGeneration({ logicalId, generation: fallbackGeneration }, replaceFallback));
+      // go-to-k/cdkd#5380: the replacement now holds the record, so a mark the
+      // failed update made describes the resource it replaced. Only once its
+      // create succeeded: a fallback that throws leaves the old resource, which
+      // keeps the mark.
+      engine.unsettledMarks.delete(logicalId);
+      engine.unsettledItemMarks.delete(logicalId);
+      result = fallbackOutcome.result;
+      resultProvisionedBy = fallbackOutcome.provisionedBy;
+      captureProvider = fallbackOutcome.captureProvider;
+      replacedAtGeneration = fallbackGeneration;
     } else {
       // go-to-k/cdkd#4904: this deploy moved an SDK-recorded resource to
       // Cloud Control, which addresses it by the SDK provider's physical id.
@@ -1174,15 +1418,59 @@ export async function updateInPlace(
         !isInterruptedWaitError(updateError) &&
         !isWaitAbandonedError(updateError)
       ) {
-        updateError.message += ccAutoRouteUpdateFailureRemedy(
+        const remedy = ccAutoRouteUpdateFailureRemedy(
           logicalId,
           resourceType,
           updateDecision.ccRouteReason.properties,
           engine.options.parentStackInfo !== undefined
         );
+        // go-to-k/cdkd#2319: appended to AWS's own error, the remedy would be
+        // dropped with AWS's text when the event recorder reduces that error
+        // to its class. Such an error is wrapped instead: the class plus the
+        // remedy in the persisted message, AWS's text in `debug` (masked) and
+        // on the `cause`, which every downstream mark reader walks.
+        const updateFailure = describeAwsFailure(updateError);
+        if (updateFailure.redacted) {
+          const shownSecrets = unionOfSecretBags([
+            updateSecrets,
+            printingSecretsFor(engine.secretsRun, logicalId),
+          ]);
+          engine.logger.debug(
+            safeMsg`${maskSecretsInText(logicalId, shownSecrets)}: the update failed: ${asIsMessage(
+              maskSecretsInText(updateFailure.detail, shownSecrets)
+            )}`
+          );
+          const wrapped = new Error(`${displaySafe(updateFailure.summary)}${remedy}`, {
+            cause: updateError,
+          });
+          // The AWS class stays the recorded `error.name`, as when the error
+          // itself was thrown -- except `CredentialsProviderError`, a name
+          // `isAwsAuthoredFailure` reads as AWS-authored on its own, so the
+          // recorder would reduce the wrap too and drop the remedy.
+          if (updateError.name !== 'CredentialsProviderError') wrapped.name = updateError.name;
+          throw markRedactedCause(wrapped);
+        }
+        updateError.message += remedy;
       }
       throw updateError;
     }
+  }
+
+  // go-to-k/cdkd#5487: an unsettled name is settled only on proof — AWS no
+  // longer changing it and holding what the template declares. Otherwise it
+  // stays on the record, and the next deploy converges it again.
+  const stillUnsettled = result.wasReplaced
+    ? []
+    : await unsettledAfterUpdate({
+        ...unsettledIdentity,
+        names: unsettled,
+        desired: updateProps,
+        attemptedItems: unsettledItems,
+      });
+  if (stillUnsettled.length > 0) {
+    engine.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the update succeeded, but AWS does not yet show the template's ${stillUnsettled.join(', ')}; cdkd keeps ${stillUnsettled.length === 1 ? 'it' : 'them'} unsettled and converges again on the next deploy.`
+    );
   }
 
   // go-to-k/cdkd#4615: journaled on the completed op, so a rollback reverts an
@@ -1295,6 +1583,9 @@ export async function updateInPlace(
   if (result.wasReplaced) engine.noEchoRun.noEchoExactEchoes.delete(logicalId);
   stateResources[logicalId] = {
     physicalId: result.physicalId,
+    ...(replacedAtGeneration === undefined
+      ? nameGenerationCarriedFrom(currentResource)
+      : nameGenerationField(replacedAtGeneration)),
     resourceType,
     properties: recordedProperties,
     // #2790: an update of the same resource cannot set a create-only key, so
@@ -1333,11 +1624,21 @@ export async function updateInPlace(
     ...(dependencies && dependencies.length > 0 && { dependencies }),
     ...extractTemplateAttributes(template, logicalId),
     provisionedBy: resultProvisionedBy,
+    ...(stillUnsettled.length > 0 && {
+      unsettledProperties: stillUnsettled,
+      // go-to-k/cdkd#5498: a key that stays unsettled keeps its attempted names.
+      // go-to-k/cdkd#5498: the one rebuilt record that carries items — only
+      // those of the keys the proof kept unsettled, read off the old record.
+      ...unsettledItemsField(currentResource, stillUnsettled),
+    }),
     ...(keepsParameterRefusal && {
       observedBaselineRefused: true as const,
       observedBaselineRefusalReason: 'unverifiable-parameter' as const,
     }),
   };
+  // go-to-k/cdkd#5511: state now holds the resource, so no failure after
+  // this point journals it as an orphan.
+  clearCreatedReport();
   // 'update' even after the replacement fallback: a principal then
   // claims only on its own `Policies` change (the fewer claims).
   if (updatePartialReason(result) === undefined) {

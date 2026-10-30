@@ -61,7 +61,7 @@ import {
 } from '../../../src/provisioning/masked-retry-logger.js';
 import {
   generateResourceNameWithFallback,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';
 import { NoSuchEntityException } from '@aws-sdk/client-iam';
@@ -681,7 +681,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   const derivedMasker = createSecretMasker(bagOf(FOLDED, LONG, SECRET_ARN));
 
   function derived(raw: string, maxLength: number): string {
-    return withStackName(STACK, () =>
+    return withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       generateResourceNameWithFallback(raw, 'Logical', { maxLength })
     );
   }
@@ -713,7 +713,7 @@ describe('derived physical names (issue #2177 security review)', () => {
       ListAttachedRolePoliciesCommand: new Error('cleanup failed'),
     });
     await expect(
-      withStackName(STACK, () =>
+      withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         new IAMRoleProvider().create(
           'MyRole',
           'AWS::IAM::Role',
@@ -731,7 +731,7 @@ describe('derived physical names (issue #2177 security review)', () => {
 
   it('leaves an ordinary folded RoleName visible -- negative control', async () => {
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMRoleProvider().create(
         'MyRole',
         'AWS::IAM::Role',
@@ -745,7 +745,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   it('masks the derived name on the role update() path too', async () => {
     const roleName = derived(FOLDED, 64);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMRoleProvider().update(
         'MyRole',
         roleName,
@@ -766,7 +766,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     const name = derived(FOLDED, maxLength);
     answerIam();
     const provider = new IAMUserGroupProvider();
-    await withStackName(STACK, async () => {
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
       await provider.create('Principal', type, { [key]: FOLDED, ManagedPolicyArns: [SECRET_ARN] }, {
         maskSecrets: derivedMasker,
       });
@@ -787,7 +787,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     const name = derived(FOLDED, 128);
     answerIam();
     const provider = new IAMInstanceProfileProvider();
-    await withStackName(STACK, async () => {
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
       await provider.create(
         'MyProfile',
         'AWS::IAM::InstanceProfile',
@@ -851,7 +851,7 @@ describe('derived physical names (issue #2177 security review)', () => {
       answerIam();
       const provider = make();
       vi.spyOn(provider, 'delete').mockRejectedValue(new Error(`cannot delete ${oldName}`));
-      const result = await withStackName(STACK, () =>
+      const result = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.update(
           'Res',
           physicalOf(oldName),
@@ -888,7 +888,7 @@ describe('derived physical names (issue #2177 security review)', () => {
       answerIam();
       const provider = make();
       vi.spyOn(provider, 'delete').mockResolvedValue(undefined);
-      await withStackName(STACK, () =>
+      await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.update(
           'Res',
           physicalOf('MyStack-ordinary-name'),
@@ -907,7 +907,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   it('masks a derived managed-policy name on an in-place update(), inside the ARN', async () => {
     const name = derived(FOLDED, 128);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMManagedPolicyProvider().update(
         'MyManaged',
         `arn:aws:iam::111122223333:policy/${name}`,
@@ -925,7 +925,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     // e.g. an imported record: only the DESIRED pair can supply the needle.
     const name = derived(FOLDED, 128);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMManagedPolicyProvider().update(
         'MyManaged',
         `arn:aws:iam::111122223333:policy/${name}`,
@@ -945,7 +945,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   ] as const)('masks a %s name recorded from a state REFERENCE on update()', async (type, key, maxLength) => {
     const name = derived(OLD_PLAIN, maxLength);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMUserGroupProvider().update(
         'Principal',
         name,
@@ -966,7 +966,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     // Only the desired pair can supply this needle (an imported record, say).
     const name = derived(FOLDED, maxLength);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMUserGroupProvider().update(
         'Principal',
         name,
@@ -983,7 +983,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   it('masks an instance-profile name from the DESIRED value when the previous record names none', async () => {
     const name = derived(FOLDED, 128);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMInstanceProfileProvider().update(
         'MyProfile',
         name,
@@ -1000,7 +1000,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   it('masks an instance-profile name recorded from a state REFERENCE on update()', async () => {
     const name = derived(OLD_PLAIN, 128);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMInstanceProfileProvider().update(
         'MyProfile',
         name,
@@ -1021,7 +1021,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     const name = derived(LONG, maxLength);
     expect(name.length).toBe(maxLength); // premise: truncated to exactly this type's cap
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMUserGroupProvider().create('Principal', type, { [key]: LONG, ManagedPolicyArns: [SECRET_ARN] }, {
         maskSecrets: derivedMasker,
       })
@@ -1035,7 +1035,7 @@ describe('derived physical names (issue #2177 security review)', () => {
   it('masks a derived managed-policy name, including inside its ARN', async () => {
     const name = derived(FOLDED, 128);
     answerIam();
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMManagedPolicyProvider().create(
         'MyManaged',
         'AWS::IAM::ManagedPolicy',
@@ -1051,7 +1051,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     const roleName = derived(FOLDED, 64);
     const longer = `${roleName} owner hunter2x`;
     answerIam({ CreateRoleCommand: new Error(`Description '${longer}' is invalid.`) });
-    const error = await withStackName(STACK, () =>
+    const error = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMRoleProvider().create(
         'MyRole',
         'AWS::IAM::Role',
@@ -1074,7 +1074,7 @@ describe('derived physical names (issue #2177 security review)', () => {
     // `MyStack-***-example-com`; the needle must match that rendering.
     const roleName = derived(FOLDED, 64);
     answerIam({ CreateRoleCommand: new Error(`Role ${roleName} already exists.`) });
-    const error = await withStackName(STACK, () =>
+    const error = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       new IAMRoleProvider().create(
         'MyRole',
         'AWS::IAM::Role',
@@ -1856,11 +1856,19 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
     expect(retryable(failure)).toBe(true);
   });
 
-  it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ command, run }) => {
+  // go-to-k/cdkd#2319: every IAM wrap withholds AWS-authored text, so it always
+  // stamps one; its unstamped arm is a cdkd-authored error.
+  it.each(SITES)('$site: an AWS failure is withheld and stamped, a cdkd-authored one passes unstamped', async ({ command, run }) => {
     answerIam({ [command]: malformed('Bad request parameter') });
-    const failure = await failureOf(() => run(retryMasker));
-    expect(failure.message).toContain('Bad request parameter');
-    expect(hasRedactedCause(failure)).toBe(false);
-    expect(retryable(failure)).toBe(false);
+    const aws = await failureOf(() => run(retryMasker));
+    expect(aws.message).not.toContain('Bad request parameter');
+    expect(aws.message).toContain('MalformedPolicyDocumentException. Re-run with --verbose');
+    expect(hasRedactedCause(aws)).toBe(true);
+    expect(retryable(aws)).toBe(false);
+
+    answerIam({ [command]: new Error('Bad request parameter') });
+    const local = await failureOf(() => run(retryMasker));
+    expect(local.message).toContain('Bad request parameter');
+    expect(hasRedactedCause(local)).toBe(false);
   });
 });

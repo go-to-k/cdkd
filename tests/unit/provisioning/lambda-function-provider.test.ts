@@ -29,11 +29,13 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
+
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
+    warn: mockLoggerWarn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
   };
@@ -53,6 +55,7 @@ import {
   inlineCodeFileNameForRuntime,
 } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { withResourceDeadline } from '../../../src/deployment/resource-deadline.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import * as zlib from 'node:zlib';
 import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../../src/types/resource.js';
@@ -162,6 +165,116 @@ describe('LambdaFunctionProvider', () => {
       // Exactly ONE call: CreateFunction. No GetFunction polling.
       expect(mockLambdaSend).toHaveBeenCalledTimes(1);
       expect(mockLambdaSend.mock.calls[0][0]).toBeInstanceOf(CreateFunctionCommand);
+    });
+  });
+
+  // Issue #5300: `Code.S3ObjectStorageMode` (`COPY` | `REFERENCE`) and
+  // `Code.SourceKMSKeyArn` were never forwarded, on CreateFunction or on
+  // UpdateFunctionCode: a template's REFERENCE deployed as the default COPY,
+  // and the package's customer managed key fell back to the AWS owned key.
+  describe('Code S3ObjectStorageMode / SourceKMSKeyArn (issue #5300)', () => {
+    const KEY = 'arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-555555555555';
+    const ROLE = 'arn:aws:iam::123456789012:role/exec';
+
+    async function createInput(code: Record<string, unknown>) {
+      mockLambdaSend.mockResolvedValueOnce({
+        FunctionName: 'fn-5300',
+        FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-5300',
+      });
+      await provider.create('Fn', 'AWS::Lambda::Function', {
+        FunctionName: 'fn-5300',
+        Role: ROLE,
+        Handler: 'index.handler',
+        Runtime: 'nodejs20.x',
+        Code: code,
+      });
+      const cmd = mockLambdaSend.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(CreateFunctionCommand);
+      return cmd.input;
+    }
+
+    async function updateCodeInput(
+      code: Record<string, unknown>,
+      previousCode: Record<string, unknown>
+    ) {
+      mockLambdaSend
+        .mockResolvedValueOnce({}) // UpdateFunctionCode
+        .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } }) // waiter
+        .mockResolvedValueOnce({
+          Configuration: {
+            FunctionName: 'fn-5300',
+            FunctionArn: 'arn:aws:lambda:us-east-1:123456789012:function:fn-5300',
+          },
+        });
+      await provider.update(
+        'Fn',
+        'fn-5300',
+        'AWS::Lambda::Function',
+        { Role: ROLE, Code: code },
+        { Role: ROLE, Code: previousCode }
+      );
+      const codeCmds = mockLambdaSend.mock.calls
+        .map((c) => c[0])
+        .filter((cmd) => cmd instanceof UpdateFunctionCodeCommand);
+      expect(codeCmds).toHaveLength(1);
+      return codeCmds[0].input;
+    }
+
+    it('sends both on CreateFunction', async () => {
+      const input = await createInput({
+        S3Bucket: 'b',
+        S3Key: 'k',
+        S3ObjectVersion: 'v1',
+        S3ObjectStorageMode: 'REFERENCE',
+        SourceKMSKeyArn: KEY,
+      });
+      expect(input.Code).toEqual({
+        S3Bucket: 'b',
+        S3Key: 'k',
+        S3ObjectVersion: 'v1',
+        S3ObjectStorageMode: 'REFERENCE',
+        SourceKMSKeyArn: KEY,
+      });
+    });
+
+    it('leaves both off CreateFunction when the template omits them', async () => {
+      const input = await createInput({ S3Bucket: 'b', S3Key: 'k' });
+      expect(input.Code).toEqual({ S3Bucket: 'b', S3Key: 'k' });
+    });
+
+    it('sends both on UpdateFunctionCode when the code changes', async () => {
+      const input = await updateCodeInput(
+        { S3Bucket: 'b', S3Key: 'new-k', S3ObjectStorageMode: 'REFERENCE', SourceKMSKeyArn: KEY },
+        { S3Bucket: 'b', S3Key: 'old-k', S3ObjectStorageMode: 'REFERENCE', SourceKMSKeyArn: KEY }
+      );
+      expect(input).toMatchObject({
+        FunctionName: 'fn-5300',
+        S3Bucket: 'b',
+        S3Key: 'new-k',
+        S3ObjectStorageMode: 'REFERENCE',
+        SourceKMSKeyArn: KEY,
+      });
+    });
+
+    it('a storage-mode-only change re-sends the code with the new mode', async () => {
+      const input = await updateCodeInput(
+        { S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'REFERENCE' },
+        { S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'COPY' }
+      );
+      expect(input).toMatchObject({ S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'REFERENCE' });
+    });
+
+    // The outcome matches CloudFormation's: a stack update dropping
+    // SourceKMSKeyArn kept the key, and one dropping REFERENCE went back to
+    // COPY (measured A/B, 2026-10-26).
+    it('a removed mode or key is absent from UpdateFunctionCode, matching CloudFormation\'s outcome', async () => {
+      const input = await updateCodeInput(
+        { S3Bucket: 'b', S3Key: 'k' },
+        { S3Bucket: 'b', S3Key: 'k', S3ObjectStorageMode: 'REFERENCE', SourceKMSKeyArn: KEY }
+      );
+      expect(input.S3ObjectStorageMode).toBeUndefined();
+      expect(input.SourceKMSKeyArn).toBeUndefined();
+      expect(input).toMatchObject({ S3Bucket: 'b', S3Key: 'k' });
     });
   });
 
@@ -1851,6 +1964,115 @@ describe('LambdaFunctionProvider', () => {
       // Past initial sleep + the 30-minute per-ENI budget.
       await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
       await expect(promise).resolves.toBeUndefined();
+    });
+
+    // go-to-k/cdkd#5276: the per-ENI budget equalled the default per-resource
+    // deadline, so a slow hyperplane release failed the delete at the engine's
+    // deadline before the give-up could hand the ENI to the Subnet / SG deletes.
+    describe('ENI phase ends before the per-resource deadline (#5276)', () => {
+      const stuckEni = () =>
+        mockEc2Send.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+          if (cmd.constructor.name === 'DescribeNetworkInterfacesCommand') {
+            return {
+              NetworkInterfaces: [
+                {
+                  NetworkInterfaceId: 'eni-stuck',
+                  Description: 'AWS Lambda VPC ENI-fn-vpc',
+                  Status: 'in-use',
+                },
+              ],
+            };
+          }
+          throw new Error('InvalidParameterValue: in-use');
+        });
+
+      const MIN = 60 * 1000;
+      const runDelete = () => {
+        mockLambdaSend
+          .mockResolvedValueOnce({})
+          .mockResolvedValueOnce({ Configuration: { LastUpdateStatus: 'Successful' } })
+          .mockResolvedValueOnce({});
+        return provider.delete('Fn', 'fn-vpc', 'AWS::Lambda::Function', {
+          VpcConfig: { SubnetIds: ['subnet-aaa'], SecurityGroupIds: ['sg-1'] },
+        });
+      };
+      // `beforeDelete` stands for engine time spent inside the same deadline
+      // before delete() runs (a create-first replacement's create, a retry).
+      const startDelete = (timeoutMs?: number, beforeDeleteMs = 0) => {
+        let settled = false;
+        const operation = async () => {
+          if (beforeDeleteMs > 0) await new Promise((r) => setTimeout(r, beforeDeleteMs));
+          return runDelete();
+        };
+        const promise = (
+          timeoutMs === undefined
+            ? operation()
+            : withResourceDeadline(operation, {
+                warnAfterMs: 1000,
+                timeoutMs,
+                onTimeout: () => new Error('engine deadline fired'),
+              })
+        ).finally(() => {
+          settled = true;
+        });
+        return { promise, isSettled: () => settled };
+      };
+
+      it('at the default 30m deadline, gives up 2m before it rather than at the 30m budget', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete(30 * MIN);
+
+        await vi.advanceTimersByTimeAsync(27 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+        expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringContaining('Gave up deleting ENI'));
+      });
+
+      it('follows a shorter --resource-timeout', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete(10 * MIN);
+
+        await vi.advanceTimersByTimeAsync(7 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
+
+      it('counts deadline time spent before delete() ran', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete(30 * MIN, 10 * MIN);
+
+        await vi.advanceTimersByTimeAsync(27 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
+
+      it('keeps the 30m per-ENI budget when the deadline is longer', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete(60 * MIN);
+
+        await vi.advanceTimersByTimeAsync(29 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(2 * MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
+
+      it('keeps the 30m per-ENI budget outside any deadline (rollback replay)', async () => {
+        stuckEni();
+        const { promise, isSettled } = startDelete();
+
+        await vi.advanceTimersByTimeAsync(29 * MIN);
+        expect(isSettled()).toBe(false);
+        await vi.advanceTimersByTimeAsync(2 * MIN);
+        expect(isSettled()).toBe(true);
+        await expect(promise).resolves.toBeUndefined();
+      });
     });
 
     it('returns gracefully when the initial DescribeNetworkInterfaces fails', async () => {

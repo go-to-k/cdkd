@@ -78,6 +78,30 @@ describe('rewriteResourceReferences', () => {
     expect('skippedOutputs' in result.state).toBe(false);
   });
 
+  // go-to-k/cdkd#5064 phase 2: an orphaned record left the stack, so a later
+  // create of its logical id must ask for a name it never held.
+  it('retires each orphaned record at its generation on a stack with an instance id, never on a legacy one', async () => {
+    const resources = (): StackState['resources'] => ({
+      Bucket: {
+        physicalId: 'b-phys',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        nameGeneration: 2,
+        nameGenerationHigh: 4,
+      },
+      Other: { physicalId: 'o-phys', resourceType: 'AWS::S3::Bucket', properties: {} },
+    });
+    const v13 = {
+      ...baseState(resources()),
+      stackInstanceId: '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f',
+      retiredNameGenerations: { Gone: 1 },
+    };
+    const result = await rewriteResourceReferences(v13, ['Bucket'], fakeRegistry());
+    expect(result.state.retiredNameGenerations).toEqual({ Gone: 1, Bucket: 4 });
+    const legacy = await rewriteResourceReferences(baseState(resources()), ['Bucket'], fakeRegistry());
+    expect('retiredNameGenerations' in legacy.state).toBe(false);
+  });
+
   it('rewrites a {Ref: orphan} into the orphan physicalId', async () => {
     const state = baseState({
       Bucket: { physicalId: 'b-phys', resourceType: 'AWS::S3::Bucket', properties: {} },
@@ -141,16 +165,18 @@ describe('rewriteResourceReferences', () => {
     }
   );
 
-  // Issue #974: a CC-routed AWS::S3Tables::Table stores the bare TableARN
-  // (pipe-free, ends in a UUID) as its physical id, so `{Ref: table}` must be
-  // rewritten to the stored TableName property — the same state-lookup seam the
-  // deploy-time resolver uses — not the raw ARN.
-  it('rewrites a {Ref: orphan} of a CC-routed S3Tables::Table into the TableName property', async () => {
+  // Issue #5316: an AWS::S3Tables::Table's `Ref` is its TableARN. The SDK
+  // route's composite holds no segment of it, so `{Ref: table}` is rewritten to
+  // the recorded TableARN attribute — the same state-lookup seam the
+  // deploy-time resolver uses — and never to the table name.
+  it('rewrites a {Ref: orphan} of an SDK-routed S3Tables::Table into the recorded TableARN', async () => {
+    const tableArn = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef';
     const state = baseState({
       Target: {
-        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/1234abcd-56ef',
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics|events',
         resourceType: 'AWS::S3Tables::Table',
         properties: { TableName: 'events' },
+        attributes: { TableARN: tableArn },
       },
       Other: {
         physicalId: 'o-phys',
@@ -162,7 +188,55 @@ describe('rewriteResourceReferences', () => {
     const result = await rewriteResourceReferences(state, ['Target'], fakeRegistry());
 
     expect(result.unresolvable).toEqual([]);
-    expect(result.state.resources['Other']?.properties).toEqual({ SomeRef: 'events' });
+    expect(result.state.resources['Other']?.properties).toEqual({ SomeRef: tableArn });
+  });
+
+  // A table created before cdkd recorded `TableARN` (go-to-k/cdkd#739): the
+  // composite is no value CloudFormation's `Ref` returns, so it is refused
+  // rather than spliced, and the intrinsic stays.
+  it('REFUSES a {Ref: orphan} of an SDK-routed S3Tables::Table with no recorded TableARN', async () => {
+    const composite = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb|analytics|events';
+    const state = baseState({
+      Target: {
+        physicalId: composite,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: { TableName: 'events' },
+        attributes: {},
+      },
+      Other: {
+        physicalId: 'o-phys',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { SomeRef: { Ref: 'Target' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Target'], fakeRegistry());
+
+    expect(result.state.resources['Other']?.properties).toEqual({ SomeRef: { Ref: 'Target' } });
+    expect(result.unresolvable).toHaveLength(1);
+    expect(result.unresolvable[0]?.reason).toContain("no usable 'TableARN'");
+  });
+
+  it('rewrites a {Ref: orphan} of a Cloud Control S3Tables::Table into its physical id, the TableARN', async () => {
+    const tableArn = 'arn:aws:s3tables:us-east-1:123456789012:bucket/my-tb/table/5316abcd';
+    const state = baseState({
+      Target: {
+        physicalId: tableArn,
+        resourceType: 'AWS::S3Tables::Table',
+        properties: { TableName: 'events' },
+        attributes: {},
+      },
+      Other: {
+        physicalId: 'o-phys',
+        resourceType: 'AWS::S3::Bucket',
+        properties: { SomeRef: { Ref: 'Target' } },
+      },
+    });
+
+    const result = await rewriteResourceReferences(state, ['Target'], fakeRegistry());
+
+    expect(result.unresolvable).toEqual([]);
+    expect(result.state.resources['Other']?.properties).toEqual({ SomeRef: tableArn });
   });
 
   it('rewrites array-form Fn::GetAtt via live provider call', async () => {
@@ -581,19 +655,17 @@ describe('rewriteResourceReferences', () => {
     // The `Ref` path is NOT `--force`-gated and never was, so before this arm
     // it silently spliced whatever `cfnRefValueFromPhysicalId` returned. Once
     // the lookup learned to refuse a mask (issue #2847) that became the raw
-    // physical id — an `AWS::S3Tables::Table` ARN ending in a UUID, not the
-    // table name CFn's `Ref` returns — which, unlike the `'***'` it replaced,
+    // physical id — an `AWS::S3Tables::Table` composite, not the TableARN
+    // CFn's `Ref` returns (issue #5316) — which, unlike the `'***'` it replaced,
     // NO later cdkd command recognises. So the refusal is the point: a
     // guarded sentinel must not be traded for an unguarded wrong value.
-    const TABLE_ARN =
-      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-aaaa';
+    const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|aaaa';
     const state = baseState({
       Tbl: {
-        physicalId: TABLE_ARN,
+        physicalId: TABLE_COMPOSITE,
         resourceType: 'AWS::S3Tables::Table',
         properties: {},
-        attributes: { TableName: SECRET_MASK },
-        provisionedBy: 'cc-api',
+        attributes: { TableARN: SECRET_MASK },
       },
       Other: {
         physicalId: 'o',
@@ -604,14 +676,14 @@ describe('rewriteResourceReferences', () => {
 
     const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
 
-    // The intrinsic is LEFT IN PLACE — neither the mask nor the ARN is spliced.
+    // The intrinsic is LEFT IN PLACE — neither the mask nor the composite is spliced.
     expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
-    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_COMPOSITE);
     // And the site is reported, which is what makes the command abort.
     expect(result.unresolvable).toHaveLength(1);
     expect(result.unresolvable[0]?.orphanLogicalId).toBe('Tbl');
     expect(result.unresolvable[0]?.attribute).toBe('Ref');
-    expect(result.unresolvable[0]?.reason).toContain('TableName');
+    expect(result.unresolvable[0]?.reason).toContain('TableARN');
   });
 
   // Issue #1672 / #3892: for an id with more than one `|` the Glue `Ref` anchors
@@ -647,20 +719,18 @@ describe('rewriteResourceReferences', () => {
   });
 
   it('--force does NOT splice the mask or the physical id for a masked Ref recovery key (go-to-k/cdkd#4602)', async () => {
-    // Splicing the physical id would be an unguarded wrong value (a
-    // UUID-tailed `TableARN` where the table NAME belongs, issue #2847);
+    // Splicing the physical id would be an unguarded wrong value (the
+    // composite where the TableARN belongs, issues #2847 / #5316);
     // splicing `***` is the #1498 corrupted-write class. `--force` now
     // refuses it as `cacheFallback` refuses a masked cached attribute: the
     // `Ref` stays and the site is reported unresolved, naming the class.
-    const TABLE_ARN =
-      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-bbbb';
+    const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|bbbb';
     const state = baseState({
       Tbl: {
-        physicalId: TABLE_ARN,
+        physicalId: TABLE_COMPOSITE,
         resourceType: 'AWS::S3Tables::Table',
         properties: {},
-        attributes: { TableName: SECRET_MASK },
-        provisionedBy: 'cc-api',
+        attributes: { TableARN: SECRET_MASK },
       },
       Other: {
         physicalId: 'o',
@@ -674,25 +744,25 @@ describe('rewriteResourceReferences', () => {
     });
 
     expect(result.state.resources['Other']?.properties).toEqual({ Value: { Ref: 'Tbl' } });
-    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_ARN);
+    expect(JSON.stringify(result.state.resources['Other'])).not.toContain(TABLE_COMPOSITE);
     expect(result.unresolvable).toHaveLength(1);
     expect(result.unresolvable[0]?.orphanLogicalId).toBe('Tbl');
-    expect(result.unresolvable[0]?.reason).toMatch(/^the redaction mask: .*'TableName'/);
+    expect(result.unresolvable[0]?.reason).toMatch(/^the redaction mask: .*'TableARN'/);
   });
 
   it('--force reports EVERY reference to a masked Ref, per orphan', async () => {
     const state = baseState({
       TblA: {
-        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/aaaa1',
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|aaaa1',
         resourceType: 'AWS::S3Tables::Table',
         properties: {},
-        attributes: { TableName: SECRET_MASK },
+        attributes: { TableARN: SECRET_MASK },
       },
       TblB: {
-        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/bbbb2',
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|bbbb2',
         resourceType: 'AWS::S3Tables::Table',
         properties: {},
-        attributes: { TableName: SECRET_MASK },
+        attributes: { TableARN: SECRET_MASK },
       },
       Other: {
         physicalId: 'o',
@@ -718,9 +788,10 @@ describe('rewriteResourceReferences', () => {
     // two cases above while breaking `cdkd orphan` for everyone.
     const state = baseState({
       Tbl: {
-        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/cccc',
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|orders_2847',
         resourceType: 'AWS::S3Tables::Table',
         properties: { TableName: 'orders_2847' },
+        attributes: { TableARN: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/cccc' },
       },
       Other: {
         physicalId: 'o',
@@ -731,7 +802,9 @@ describe('rewriteResourceReferences', () => {
 
     const result = await rewriteResourceReferences(state, ['Tbl'], fakeRegistry());
 
-    expect(result.state.resources['Other']?.properties).toEqual({ Value: 'orders_2847' });
+    expect(result.state.resources['Other']?.properties).toEqual({
+      Value: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/cccc',
+    });
     expect(result.unresolvable).toHaveLength(0);
   });
 
@@ -740,10 +813,10 @@ describe('rewriteResourceReferences', () => {
     // this repo's named sibling-site failure, so it gets its own row.
     const state = baseState({
       Tbl: {
-        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/dddd',
+        physicalId: 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|dddd',
         resourceType: 'AWS::S3Tables::Table',
         properties: {},
-        attributes: { TableName: SECRET_MASK },
+        attributes: { TableARN: SECRET_MASK },
       },
       Other: {
         physicalId: 'o',

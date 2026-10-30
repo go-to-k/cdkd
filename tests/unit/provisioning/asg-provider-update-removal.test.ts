@@ -3,7 +3,8 @@
 // Cooldown, TerminationPolicies, NewInstancesProtectedFromScaleIn,
 // CapacityRebalance, DesiredCapacityType, DefaultInstanceWarmup,
 // DeletionProtection), so only InstanceMaintenancePolicy, MaxInstanceLifetime,
-// CapacityReservationSpecification and AvailabilityZoneDistribution reset.
+// CapacityReservationSpecification and AvailabilityZoneDistribution reset — plus
+// AvailabilityZoneImpairmentPolicy, per the #1160 A/B.
 // issue #1160: absent-field removal reset to CFn defaults for
 // AWS::AutoScaling::AutoScalingGroup. UpdateAutoScalingGroup uses merge
 // semantics (an absent input field means "no change"), so a field DROPPED from
@@ -106,7 +107,7 @@ beforeEach(() => {
 });
 
 describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', () => {
-  it('resets only the four properties CloudFormation resets and sends nothing for the nine it keeps (#5004)', async () => {
+  it('resets only the properties CloudFormation resets and sends nothing for the nine it keeps (#5004, #1160)', async () => {
     const provider = new ASGProvider();
     await provider.update(
       'MyAsg',
@@ -170,9 +171,181 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
     expect(input['AvailabilityZoneDistribution']).toEqual({
       CapacityDistributionStrategy: 'balanced-best-effort',
     });
-    // DEFERRED: no SDK-documented default for the sub-fields — removal keeps
-    // the live value (stays absent from the SDK input).
-    expect(input['AvailabilityZoneImpairmentPolicy']).toBeUndefined();
+    // RESET by CloudFormation (#1160 A/B): zonal shift off, previous behavior.
+    expect(input['AvailabilityZoneImpairmentPolicy']).toEqual({
+      ZonalShiftEnabled: false,
+      ImpairedZoneHealthCheckBehavior: 'IgnoreUnhealthy',
+    });
+  });
+
+  // go-to-k/cdkd#1160 CloudFormation A/B (CloudTrail showed the exact
+  // UpdateAutoScalingGroup input CloudFormation sent on each removal).
+  it('resets a removed AvailabilityZoneImpairmentPolicy the way CloudFormation does: zonal shift off, previous behavior re-sent', async () => {
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: ASG_NAME, MinSize: 0, MaxSize: 1 },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 1,
+        AvailabilityZoneImpairmentPolicy: {
+          ZonalShiftEnabled: true,
+          ImpairedZoneHealthCheckBehavior: 'ReplaceUnhealthy',
+        },
+      }
+    );
+
+    expect(updateCallInput()['AvailabilityZoneImpairmentPolicy']).toEqual({
+      ZonalShiftEnabled: false,
+      ImpairedZoneHealthCheckBehavior: 'ReplaceUnhealthy',
+    });
+  });
+
+  // Defensive branch only: the CloudFormation schema requires both members
+  // (nested-required.generated.ts), so no deployable template records a policy
+  // without ImpairedZoneHealthCheckBehavior. Whether AWS accepts this shape is
+  // unmeasured; the case pins only that no non-string value is forwarded.
+  it('sends only ZonalShiftEnabled: false when the removed policy carried no behavior string (schema-unreachable defensive branch; AWS acceptance unmeasured)', async () => {
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: ASG_NAME, MinSize: 0, MaxSize: 1 },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 1,
+        AvailabilityZoneImpairmentPolicy: { ZonalShiftEnabled: true },
+      }
+    );
+
+    expect(updateCallInput()['AvailabilityZoneImpairmentPolicy']).toEqual({
+      ZonalShiftEnabled: false,
+    });
+  });
+
+  it('passes a kept AvailabilityZoneImpairmentPolicy through verbatim', async () => {
+    const provider = new ASGProvider();
+    const policy = { ZonalShiftEnabled: true, ImpairedZoneHealthCheckBehavior: 'IgnoreUnhealthy' };
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: ASG_NAME, MinSize: 0, MaxSize: 1, AvailabilityZoneImpairmentPolicy: policy },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 1,
+        AvailabilityZoneImpairmentPolicy: {
+          ZonalShiftEnabled: true,
+          ImpairedZoneHealthCheckBehavior: 'ReplaceUnhealthy',
+        },
+      }
+    );
+
+    expect(updateCallInput()['AvailabilityZoneImpairmentPolicy']).toEqual(policy);
+  });
+
+  it('sends nothing for a removed DesiredCapacity, ServiceLinkedRoleARN, SkipZonalShiftValidation or Context (CloudFormation keeps / cannot reset them)', async () => {
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { AutoScalingGroupName: ASG_NAME, MinSize: 0, MaxSize: 1 },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 1,
+        DesiredCapacity: 1,
+        ServiceLinkedRoleARN:
+          'arn:aws:iam::123456789012:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_custom',
+        SkipZonalShiftValidation: true,
+        Context: 'reserved',
+      }
+    );
+
+    const input = updateCallInput();
+    for (const key of [
+      'DesiredCapacity',
+      'ServiceLinkedRoleARN',
+      'SkipZonalShiftValidation',
+      'Context',
+    ]) {
+      expect(input, key).not.toHaveProperty(key);
+    }
+  });
+
+  it('sends only the newly declared member on a LaunchTemplate -> MixedInstancesPolicy and VPCZoneIdentifier -> AvailabilityZones switch, as CloudFormation does', async () => {
+    const provider = new ASGProvider();
+    const mixedInstancesPolicy = {
+      LaunchTemplate: {
+        LaunchTemplateSpecification: { LaunchTemplateId: 'lt-0123', Version: '1' },
+        Overrides: [{ InstanceType: 't3.nano' }, { InstanceType: 't3.micro' }],
+      },
+    };
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        MixedInstancesPolicy: mixedInstancesPolicy,
+        AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+      },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        LaunchTemplate: { LaunchTemplateId: 'lt-0123', Version: '1' },
+        VPCZoneIdentifier: ['subnet-a', 'subnet-b'],
+      }
+    );
+
+    const input = updateCallInput();
+    expect(input['MixedInstancesPolicy']).toEqual(mixedInstancesPolicy);
+    expect(input['AvailabilityZones']).toEqual(['us-east-1a', 'us-east-1b']);
+    expect(input).not.toHaveProperty('LaunchTemplate');
+    expect(input).not.toHaveProperty('VPCZoneIdentifier');
+  });
+
+  it('sends only LaunchTemplate and VPCZoneIdentifier on the reverse switch, as CloudFormation does', async () => {
+    const provider = new ASGProvider();
+    await provider.update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        LaunchTemplate: { LaunchTemplateId: 'lt-0123', Version: '1' },
+        VPCZoneIdentifier: ['subnet-a', 'subnet-b'],
+      },
+      {
+        AutoScalingGroupName: ASG_NAME,
+        MinSize: 0,
+        MaxSize: 0,
+        MixedInstancesPolicy: {
+          LaunchTemplate: {
+            LaunchTemplateSpecification: { LaunchTemplateId: 'lt-0123', Version: '1' },
+          },
+        },
+        AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+      }
+    );
+
+    const input = updateCallInput();
+    expect(input['LaunchTemplate']).toEqual({ LaunchTemplateId: 'lt-0123', Version: '1' });
+    expect(input['VPCZoneIdentifier']).toBe('subnet-a,subnet-b');
+    expect(input).not.toHaveProperty('MixedInstancesPolicy');
+    expect(input).not.toHaveProperty('AvailabilityZones');
   });
 
   it('sends nothing for a removed DefaultCooldown spelling (CloudFormation keeps it, #5004)', async () => {

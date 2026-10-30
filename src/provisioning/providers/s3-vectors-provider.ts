@@ -17,6 +17,7 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -35,8 +36,15 @@ import {
   createMaskedLogSinks,
   withDerivedNameMasks,
   type MaskerFn,
+  maskerOrIdentity,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
+import { generatedNameFor } from '../resource-name.js';
+import {
+  wrapMaskedAwsError,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 
 /**
  * SDK Provider for AWS S3 Vectors resources
@@ -53,24 +61,43 @@ export class S3VectorsProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('S3VectorsProvider');
 
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::S3Vectors::VectorBucket',
       new Set(['VectorBucketName', 'EncryptionConfiguration', 'Tags']),
     ],
   ]);
-
-  /**
-   * A failure wrap quoting AWS's text through `mask`, stamped exactly when the
-   * mask changed it (go-to-k/cdkd#4339).
-   */
-  private wrapMaskedError(
-    mask: MaskerFn,
-    error: unknown,
-    build: (maskedText: string) => ProvisioningError
-  ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
-  }
 
   private getClient(): S3VectorsClient {
     if (!this.client) {
@@ -113,11 +140,12 @@ export class S3VectorsProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::S3Vectors::VectorBucket':
-        return this.createVectorBucket(logicalId, resourceType, properties);
+        return this.createVectorBucket(logicalId, resourceType, properties, context);
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -245,7 +273,7 @@ export class S3VectorsProvider implements ResourceProvider {
       resourceArn = got.vectorBucket?.vectorBucketArn;
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -278,7 +306,7 @@ export class S3VectorsProvider implements ResourceProvider {
       }
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -324,20 +352,18 @@ export class S3VectorsProvider implements ResourceProvider {
   private async createVectorBucket(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating S3 VectorBucket ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
-    const vectorBucketName = properties['VectorBucketName'] as string | undefined;
-    if (!vectorBucketName) {
-      throw new ProvisioningError(
-        `VectorBucketName is required for S3 VectorBucket ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
+    // go-to-k/cdkd#5309: the name is optional, as in CloudFormation, which
+    // generates one; so does cdkd, through the shared rule.
+    const vectorBucketName =
+      (properties['VectorBucketName'] as string | undefined) ||
+      generatedNameFor('AWS::S3Vectors::VectorBucket', logicalId);
 
     // CFn spells the two sub-keys `SseType` / `KmsKeyArn` (verified against the
     // live `AWS::S3Vectors::VectorBucket` registry schema and CDK's
@@ -382,12 +408,17 @@ export class S3VectorsProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create S3 VectorBucket ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create S3 VectorBucket ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -426,13 +457,24 @@ export class S3VectorsProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete S3 VectorBucket ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete S3 VectorBucket ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

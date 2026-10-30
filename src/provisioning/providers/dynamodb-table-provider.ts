@@ -1,3 +1,5 @@
+import { timePhase } from '../../utils/phase-timings.js';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import { isDeepStrictEqual } from 'node:util';
 import {
   DynamoDBClient,
@@ -22,6 +24,9 @@ import {
   UpdateContinuousBackupsCommand,
   type PointInTimeRecoverySpecification,
   UpdateTimeToLiveCommand,
+  UpdateKinesisStreamingDestinationCommand,
+  type ApproximateCreationDateTimePrecision,
+  type KinesisDataStreamDestination,
   PolicyNotFoundException,
   ResourceNotFoundException,
   type ContributorInsightsAction,
@@ -41,21 +46,31 @@ import {
   type ProvisionedThroughputDescription,
   type GlobalSecondaryIndexDescription,
   type LocalSecondaryIndexDescription,
+  type SSEDescription,
+  type TableDescription,
 } from '@aws-sdk/client-dynamodb';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { generateResourceName } from '../resource-name.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { markNotGone } from '../not-gone.js';
+import { generatedNameFor } from '../resource-name.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
+  coerceCfnBoolean,
   coerceCfnInteger,
+  configBooleanRefusal,
   configIntegerRefusal,
   replayWarn,
   requireConfigString,
@@ -102,12 +117,14 @@ import {
   relayedIndexBusyDelete,
   waitForIndexesSettled,
 } from '../dynamodb-index-busy-delete.js';
+import { TABLE_GONE_WAIT_ATTEMPTS } from './dynamodb-globaltable-provider.js';
 import {
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS,
   DYNAMODB_DELETE_MIN_RESOURCE_TIMEOUT_MS as DELETE_BUDGET_REUSE_WINDOW_MS,
   type ProtectionCompensationOutcome,
   type ProtectionFlipRecord,
   ProtectionFlipRegistry,
+  DYNAMODB_DELETE_POLL_COST_MS,
   beginDeleteWait,
   compensateRemovedDeletionProtection,
   deleteBudgetKey,
@@ -116,15 +133,20 @@ import {
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
 import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
-import { maskDeep } from '../masked-retry-logger.js';
+import { maskDeep, maskerOrIdentity } from '../masked-retry-logger.js';
+import { startInterruptWatch } from '../interrupt-watch.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isAmbiguousOutcomeError,
   isThrottlingError,
   isTransientServerError,
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
@@ -140,6 +162,13 @@ import type {
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import {
+  isTtlAlreadyDisabled,
+  isTtlRateLimited,
+  planTimeToLive,
+  readTtlSpec,
+  sendTtlWaitingOutRateLimit,
+} from '../dynamodb-ttl.js';
 
 /**
  * A DynamoDB table NAME (3-255 of `a-z A-Z 0-9 _ . -`), the physical id this
@@ -185,7 +214,7 @@ export function mapSSESpecification(
   const out: NonNullable<CreateTableCommandInput['SSESpecification']> = {};
   if (cfn.SSEEnabled !== undefined) {
     // CDK synthesizes a real boolean, but tolerate the stringified form.
-    out.Enabled = cfn.SSEEnabled === true || cfn.SSEEnabled === 'true';
+    out.Enabled = coerceCfnBoolean(cfn.SSEEnabled) === true;
   }
   if (typeof cfn.SSEType === 'string') {
     out.SSEType = cfn.SSEType as NonNullable<
@@ -196,6 +225,81 @@ export function mapSSESpecification(
     out.KMSMasterKeyId = cfn.KMSMasterKeyId;
   }
   return out;
+}
+
+/**
+ * The refusal sentence for an unusable CFn `SSESpecification` (go-to-k/cdkd#5412):
+ * an `SSEEnabled` that is no boolean, a block that is no object, or a declared
+ * `null` (which `configBooleanRefusal` treats as absent, and an absent block
+ * is a removal; CloudFormation rejects `null`). One predicate for `create()`
+ * and `update()`, so the two cannot disagree on a value.
+ */
+function sseSpecificationRefusal(value: unknown, logicalId: string): string | undefined {
+  const path = `AWS::DynamoDB::Table ${logicalId} SSESpecification`;
+  if (value === null) return `${path} must be an object (got null)`;
+  return configBooleanRefusal(value, 'SSEEnabled', path);
+}
+
+/**
+ * The SDK `SSESpecification` an update sends for a changed CFn
+ * `SSESpecification` (go-to-k/cdkd#5412), or `undefined` for none:
+ *
+ * - a declared block is mapped by {@link mapSSESpecification}. The caller
+ *   refuses one `configBooleanRefusal` refuses first (a redacted `***` or an
+ *   unresolved `{{resolve:` `SSEEnabled` would read as `false` and reset the
+ *   table's key);
+ * - a REMOVED block resets the table to the AWS owned key with
+ *   `{ Enabled: false }`, which is what CloudFormation does. As the
+ *   GlobalTable twin's removal arm (go-to-k/cdkd#5355), it is sent only when
+ *   encryption was on: by the LIVE `SSEDescription` when it reports a status,
+ *   else by the previous block's `SSEEnabled`, so a previous value that is no
+ *   boolean sends nothing.
+ *
+ * `{ Enabled: false }` is never sent to a table AWS reports on the AWS owned
+ * key already (`SSEDescription` absent, or `DISABLED` / `DISABLING`), nor a
+ * declared key ARN AWS already reports `ENABLED`: there is nothing to change.
+ * A declared `null` is not a removal and sends nothing (the caller refuses it).
+ * Exported for unit testing.
+ */
+export function sseSpecificationToSend(
+  desired: unknown,
+  previous: unknown,
+  liveSse: SSEDescription | undefined,
+  described: boolean
+): CreateTableCommandInput['SSESpecification'] | undefined {
+  const status = liveSse?.Status;
+  const liveOn = status === 'ENABLED' || status === 'ENABLING' || status === 'UPDATING';
+  const liveOff =
+    described && (liveSse === undefined || status === 'DISABLED' || status === 'DISABLING');
+  if (desired !== undefined) {
+    // A declared `null` maps to nothing: only an ABSENT block is a removal.
+    const mapped = mapSSESpecification(desired);
+    if (mapped === undefined || Object.keys(mapped).length === 0) return undefined;
+    if (mapped.Enabled === false && liveOff) return undefined;
+    // The same key AWS already reports needs no call (a rollback revert after
+    // a forward update failed before its SSE call). AWS reports a key ARN, so
+    // a declared key ARN or bare key id compares; an alias would need a KMS
+    // call to resolve and is sent as before.
+    const liveKeyArn = liveSse?.KMSMasterKeyArn;
+    if (
+      mapped.Enabled === true &&
+      status === 'ENABLED' &&
+      mapped.KMSMasterKeyId !== undefined &&
+      liveKeyArn?.includes(':key/') === true &&
+      (mapped.KMSMasterKeyId === liveKeyArn ||
+        mapped.KMSMasterKeyId === liveKeyArn.slice(liveKeyArn.lastIndexOf(':key/') + 5)) &&
+      (mapped.SSEType === undefined || mapped.SSEType === liveSse?.SSEType)
+    ) {
+      return undefined;
+    }
+    return mapped;
+  }
+  if (liveOff) return undefined;
+  const previousOn =
+    previous !== null && typeof previous === 'object'
+      ? coerceCfnBoolean((previous as Record<string, unknown>)['SSEEnabled']) === true
+      : false;
+  return liveOn || previousOn ? { Enabled: false } : undefined;
 }
 
 /**
@@ -1000,6 +1104,50 @@ export const TABLE_ACTIVE_WAIT_ATTEMPTS = 60;
 const BILLING_FLIP_ACTIVE_WAIT_ATTEMPTS = 600;
 
 /**
+ * Polls (x {@link KINESIS_DESTINATION_SETTLE_POLL_MS}) a Kinesis streaming
+ * destination gets to settle after an `ApproximateCreationDateTimePrecision`
+ * update (go-to-k/cdkd#5385). The update held the destination in `UPDATING`
+ * for about 3.5 minutes (measured us-east-1, 2026-10-27), and
+ * CloudFormation's own update of that member took about 2.5; 10 minutes
+ * leaves room without hiding a wedged destination for long.
+ *
+ * The wait BEFORE the update only covers a destination an earlier deploy left
+ * `ENABLING` / `UPDATING`, so it gets half that. Together the two can reach
+ * 15 minutes per update, and both stop at the enclosing per-resource
+ * deadline, which a billing-mode flip or GSI waits on the same update share.
+ */
+const KINESIS_DESTINATION_SETTLE_POLLS = 300;
+const KINESIS_DESTINATION_PRE_UPDATE_POLLS = 150;
+const KINESIS_DESTINATION_SETTLE_POLL_MS = 2000;
+/**
+ * Polls after an update during which an `ACTIVE` destination still at the OLD
+ * precision reads as "not started yet" rather than as a failure: the update
+ * answered `UPDATING`, and a read right after a write can lag it.
+ */
+const KINESIS_PRECISION_STALE_READ_GRACE_POLLS = 5;
+/**
+ * Re-reads (x {@link KINESIS_DISABLE_SETTLE_POLL_MS}) after
+ * `DisableKinesisStreamingDestination` until the destination reads `DISABLED`
+ * or absent (go-to-k/cdkd#5423). The disable answered `DISABLING`, yet
+ * `DescribeKinesisStreamingDestination` read `ACTIVE` at about 1 s and
+ * `DISABLED` at about 2.5 s (measured us-east-1, 2026-10-28), so a short
+ * cadence keeps the wait near that; 60 s bounds a destination that never
+ * settles, after which the deploy goes on with a warning.
+ */
+const KINESIS_DISABLE_SETTLE_POLLS = 120;
+const KINESIS_DISABLE_SETTLE_POLL_MS = 500;
+/**
+ * The statuses a disabled destination may still read as: what
+ * `readKinesisStreamSpecification` reports as present, plus `DISABLING`.
+ */
+const KINESIS_DISABLE_PENDING_STATUSES: ReadonlySet<string> = new Set([
+  'ACTIVE',
+  'ENABLING',
+  'UPDATING',
+  'DISABLING',
+]);
+
+/**
  * Is this `WarmThroughput` VALUE one cdkd will actually put on the wire
  * (issue #1760)?
  *
@@ -1267,12 +1415,7 @@ function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
   if (!desiredBagIsInformative(properties)) return true;
   // `properties !== undefined &&` rather than a non-null `!` (PR review round
   // 4). The two are identical at runtime — `desiredBagIsInformative` already
-  // proved it — but `scripts/gen-handled-property-wiring.ts` does not walk
-  // through a `NonNullExpression`, so the `!` spelling made this read
-  // INVISIBLE to that critic and silently dropped `WarmThroughput`'s
-  // `getDriftUnknownPaths` / `readCurrentState` evidence from the checked-in
-  // matrix. A property whose drift side no critic can see is a property whose
-  // next regression nothing reports.
+  // proved it.
   return properties !== undefined && wasSentWarmThroughput(properties['WarmThroughput']);
 }
 
@@ -1641,6 +1784,63 @@ function declaresIndexList(value: unknown): boolean {
 }
 
 /**
+ * go-to-k/cdkd#5354: the refusal sentence for a `DeletionProtectionEnabled`
+ * that is not a CFn boolean, or `undefined` when it is one (or is absent).
+ * Shared by `create()` and `update()` so the two read one grammar —
+ * `coerceCfnBoolean`'s, the function the wire read calls.
+ */
+function deletionProtectionRefusal(value: unknown, logicalId: string): string | undefined {
+  return configBooleanRefusal(
+    { DeletionProtectionEnabled: value },
+    'DeletionProtectionEnabled',
+    `AWS::DynamoDB::Table ${logicalId}`
+  );
+}
+
+/**
+ * go-to-k/cdkd#5354: a comparison key for a `LocalSecondaryIndexes` list that
+ * ignores what DynamoDB itself ignores — the order of the indexes, the order of
+ * `Projection.NonKeyAttributes`, and member order inside an entry — so a
+ * recorded list that differs from the template only in spelling is not read
+ * as a change. Anything not shaped like an index list is keyed by its JSON, so
+ * a malformed value still compares unequal to a well-formed one.
+ */
+function localSecondaryIndexesKey(value: unknown): string {
+  if (value === undefined || value === null) return '[]';
+  if (!Array.isArray(value)) return JSON.stringify(value);
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  const entries = value.map((entry) => {
+    if (!isRecord(entry)) return JSON.stringify(entry);
+    const keySchema = Array.isArray(entry['KeySchema'])
+      ? entry['KeySchema'].map((element) =>
+          isRecord(element)
+            ? { AttributeName: element['AttributeName'], KeyType: element['KeyType'] }
+            : element
+        )
+      : entry['KeySchema'];
+    const projection = entry['Projection'];
+    const projectionKey = isRecord(projection)
+      ? {
+          ProjectionType: projection['ProjectionType'],
+          // An empty list projects nothing extra, the same as an absent one.
+          NonKeyAttributes: Array.isArray(projection['NonKeyAttributes'])
+            ? projection['NonKeyAttributes'].length > 0
+              ? [...(projection['NonKeyAttributes'] as unknown[])].map(String).sort()
+              : undefined
+            : projection['NonKeyAttributes'],
+        }
+      : projection;
+    return JSON.stringify({
+      IndexName: entry['IndexName'],
+      KeySchema: keySchema,
+      Projection: projectionKey,
+    });
+  });
+  return JSON.stringify(entries.sort());
+}
+
+/**
  * Index the DESIRED bag's secondary-index list by `IndexName` (issue #1767).
  *
  * Returns an empty map for anything {@link declaresIndexList} rejects — an
@@ -1699,6 +1899,29 @@ function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {
   return maskDeep(value, maskSecrets);
 }
 
+/**
+ * go-to-k/cdkd#5131: {@link DynamoDBTableProvider.waitForNameReleased}'s
+ * bound -- the GlobalTable gone-wait's poll count and interval
+ * (`TABLE_GONE_WAIT_ATTEMPTS`, `INDEX_SETTLE_POLL_INTERVAL_MS`). Mutable for
+ * tests only.
+ */
+export const tableNameReleaseWait = {
+  maxPolls: TABLE_GONE_WAIT_ATTEMPTS,
+  intervalMs: INDEX_SETTLE_POLL_INTERVAL_MS,
+};
+
+/**
+ * go-to-k/cdkd#5514: the post-delete gone-wait `delete()` runs once AWS has
+ * accepted `DeleteTable` -- the GlobalTable gone-wait's cap
+ * (`TABLE_GONE_WAIT_ATTEMPTS` polls at their measured cost, ~12 min) and
+ * interval. The shared delete budget clamps it further. Mutable for tests
+ * only.
+ */
+export const tableDeleteGoneWait = {
+  maxWaitMs: TABLE_GONE_WAIT_ATTEMPTS * DYNAMODB_DELETE_POLL_COST_MS,
+  pollIntervalMs: INDEX_SETTLE_POLL_INTERVAL_MS,
+};
+
 export class DynamoDBTableProvider implements ResourceProvider {
   private dynamoDBClient: DynamoDBClient;
   private createClient: Promise<DynamoDBClient> | undefined;
@@ -1717,11 +1940,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * wrap is stamped `markRedactedCause`, so the retry classifiers read the
    * withheld text on the `cause` chain. An "already exists" and an index-busy
    * refusal are restated ({@link relayedNameCollision},
-   * {@link relayedIndexBusyDelete}). A cdkd-authored or transport error, or a
-   * non-`Error` throw, keeps its text, as in the S3 Tables provider's wrap
-   * (go-to-k/cdkd#5059); the deploy engine masks a thrown message. The delete
-   * checks `ResourceNotFoundException` by type before it wraps, so no "already
-   * deleted" reading depends on AWS's wording.
+   * {@link relayedIndexBusyDelete}); the "already exists" not from a
+   * post-create step's failure ({@link markAuxiliaryFailure}), where "it" would
+   * read as the table (#3826). A cdkd-authored or transport error keeps its
+   * text, masked, stamped only when the mask changed it (`wrapMaskedAwsError`,
+   * issue #4244); a non-`Error` throw is withheld like an AWS one, unstamped
+   * (it has no chain). The delete checks `ResourceNotFoundException` by type
+   * before it wraps, and marks a foreign not-found class {@link markNotGone}.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
@@ -1732,16 +1957,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = mask ?? ((text: string) => text);
+    const m = maskerOrIdentity(mask);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(
-      build(
-        `${m(failure.summary)}${relayedNameCollision(failure.detail)}${relayedIndexBusyDelete(
-          failure.detail
-        )}`
-      )
-    );
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1905,7 +2126,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
     const tableName =
       (properties['TableName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::DynamoDB::Table', logicalId);
     const keySchema = properties['KeySchema'] as KeySchemaElement[] | undefined;
     const attributeDefinitions = properties['AttributeDefinitions'] as
       | AttributeDefinition[]
@@ -2145,7 +2366,45 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // the SDK silently ignore the flag, so the table is created with
       // AWS-owned (default) encryption instead of the requested AWS-managed /
       // customer-managed KMS encryption. Map the field name explicitly.
-      const sse = mapSSESpecification(properties['SSESpecification']);
+      //
+      // An unusable block (`sseSpecificationRefusal`) is refused before
+      // `CreateTable`, with the predicate `update()` refuses it by
+      // (go-to-k/cdkd#5412): mapped, it reads as `false`. A state replay
+      // cannot edit the record from the template, so it warns and creates the
+      // table on the AWS owned key rather than send a block AWS may reject —
+      // unless the record names a key (`SSEType` / `KMSMasterKeyId`): that
+      // table was meant to be on it, so the replay refuses rather than quietly
+      // create it without, as `update()` leaves the key alone.
+      const sseCreateRefusal = sseSpecificationRefusal(properties['SSESpecification'], logicalId);
+      if (sseCreateRefusal !== undefined && context?.replayingState !== true) {
+        throw new ProvisioningError(
+          `${maskSecrets(sseCreateRefusal)}. Nothing was created; fix the template value`,
+          resourceType,
+          logicalId
+        );
+      }
+      const recordedSse = properties['SSESpecification'];
+      if (
+        sseCreateRefusal !== undefined &&
+        recordedSse !== null &&
+        typeof recordedSse === 'object' &&
+        ((recordedSse as Record<string, unknown>)['SSEType'] !== undefined ||
+          (recordedSse as Record<string, unknown>)['KMSMasterKeyId'] !== undefined)
+      ) {
+        throw new ProvisioningError(
+          `${maskSecrets(sseCreateRefusal)}, and the record names a key, so the table was not ` +
+            `created on the AWS owned key in its place. Nothing was created`,
+          resourceType,
+          logicalId
+        );
+      }
+      if (sseCreateRefusal !== undefined) {
+        warn(`${sseCreateRefusal}, so the table is created on the AWS owned key`);
+      }
+      const sse =
+        sseCreateRefusal === undefined
+          ? mapSSESpecification(properties['SSESpecification'])
+          : undefined;
       if (sse && Object.keys(sse).length > 0) {
         createParams.SSESpecification = sse;
       }
@@ -2155,9 +2414,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
         createParams.Tags = desiredTags.map((t): Tag => ({ Key: t.Key, Value: t.Value }));
       }
 
-      // DeletionProtectionEnabled
+      // DeletionProtectionEnabled. Read as a CFn boolean (go-to-k/cdkd#5354):
+      // a template may spell it `"true"`, which the old `as boolean` cast put
+      // on the wire as a string. A value that is no boolean at all is refused
+      // before CreateTable rather than sent for AWS to reject.
       if (properties['DeletionProtectionEnabled'] !== undefined) {
-        createParams.DeletionProtectionEnabled = properties['DeletionProtectionEnabled'] as boolean;
+        const protectionRefusal = deletionProtectionRefusal(
+          properties['DeletionProtectionEnabled'],
+          logicalId
+        );
+        if (protectionRefusal !== undefined) {
+          throw new ProvisioningError(
+            `${maskSecrets(protectionRefusal)}. Nothing was created; fix the template value`,
+            resourceType,
+            logicalId
+          );
+        }
+        createParams.DeletionProtectionEnabled = coerceCfnBoolean(
+          properties['DeletionProtectionEnabled']
+        );
       }
 
       // Table class
@@ -2185,11 +2460,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
       tableCreated = true;
       // An absent or empty id is dropped by `markCreatedBeforeFailure`.
       createdTableId = createOut?.TableDescription?.TableId;
+      // go-to-k/cdkd#5511: report before the ACTIVE wait.
+      reportCreatedResource(logicalId, resourceType, tableName, createdTableId);
 
       this.logger.debug(`CreateTable initiated for ${tableName}, waiting for ACTIVE status`);
 
       // Poll until table is ACTIVE
-      const tableInfo = await this.waitForTableActive(tableName);
+      // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+      const tableInfo = await timePhase(
+        'provider waits',
+        'DynamoDB table: wait for ACTIVE',
+        () => this.waitForTableActive(tableName),
+        logicalId
+      );
 
       // PointInTimeRecoverySpecification and TimeToLiveSpecification do NOT
       // ride on CreateTable — both are separate post-ACTIVE API calls
@@ -2202,7 +2485,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
         undefined,
         maskSecrets
       );
-      await this.applyTimeToLive(tableName, properties['TimeToLiveSpecification']);
+      await this.applyTimeToLive(
+        tableName,
+        properties['TimeToLiveSpecification'],
+        undefined,
+        'create',
+        { logicalId, resourceType, maskSecrets }
+      );
 
       // KinesisStreamSpecification and ContributorInsightsSpecification are
       // also post-ACTIVE control-plane calls (separate
@@ -2260,13 +2549,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
       if (tableCreated) {
         try {
           await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+          retractCreatedResource(logicalId, resourceType, tableName);
           debug(`Rolled back partially-created DynamoDB table ${tableName}`);
         } catch (cleanupError) {
           tableLeftBehind = true;
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+          // denied DeleteTable names the caller's assumed-role ARN.
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to roll back partially-created DynamoDB table ${tableName}: `;
+          if (cleanupFailure.redacted) debug(`${cleanupHead}${cleanupFailure.detail}`);
           warn(
-            `Failed to roll back partially-created DynamoDB table ${tableName}: ${
-              describeAwsFailure(cleanupError).detail
-            }`
+            `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
           );
         }
         markAuxiliaryFailure(error, logicalId);
@@ -2321,6 +2614,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // deploy) or downgrade (a rollback revert or `cdkd drift --revert`).
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
+    // go-to-k/cdkd#5487: before each call that changes the table, so a
+    // failure from there on (the ACTIVE / SSE / Kinesis waits, the deadline,
+    // a later call) leaves the key unsettled for the next deploy to converge.
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     // ONE masked sink for every warning in this method (issue #1997), rather
     // than a `maskSecrets(...)` at each `this.logger.warn` call: a warning added
     // later is masked by construction instead of by the author remembering. It
@@ -2473,6 +2770,56 @@ export class DynamoDBTableProvider implements ResourceProvider {
         }
       }
 
+      // go-to-k/cdkd#5354: a changed `DeletionProtectionEnabled` that is no
+      // boolean is REFUSED on the template path, before any call, rather than
+      // sent for AWS to reject after the tag diff and the billing call have
+      // landed. The state-borne callers warn and skip it (below).
+      const deletionProtectionChanged =
+        JSON.stringify(properties['DeletionProtectionEnabled']) !==
+        JSON.stringify(previousProperties['DeletionProtectionEnabled']);
+      if (
+        deletionProtectionChanged &&
+        context?.replayingState !== true &&
+        context?.desiredFromAwsReadback !== true
+      ) {
+        const protectionRefusal = deletionProtectionRefusal(
+          properties['DeletionProtectionEnabled'],
+          logicalId
+        );
+        if (protectionRefusal !== undefined) {
+          throw new ProvisioningError(
+            `${maskSecrets(protectionRefusal)}. Nothing was applied to the table; fix ` +
+              `the template value`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+      }
+
+      // go-to-k/cdkd#5412: a changed `SSESpecification.SSEEnabled` that is no
+      // boolean is REFUSED on the template path, before any call: read as
+      // `false` it would move the table to the AWS owned key. The state-borne
+      // callers warn and skip it (below).
+      const sseChanged =
+        JSON.stringify(properties['SSESpecification']) !==
+        JSON.stringify(previousProperties['SSESpecification']);
+      const sseRefusal = sseChanged
+        ? sseSpecificationRefusal(properties['SSESpecification'], logicalId)
+        : undefined;
+      if (
+        sseRefusal !== undefined &&
+        context?.replayingState !== true &&
+        context?.desiredFromAwsReadback !== true
+      ) {
+        throw new ProvisioningError(
+          `${maskSecrets(sseRefusal)}. Nothing was applied to the table; fix the template value`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+
       // Get current table description for attributes (also gives us the
       // table ARN we need for tag mutations).
       const response = await this.dynamoDBClient.send(
@@ -2480,6 +2827,42 @@ export class DynamoDBTableProvider implements ResourceProvider {
       );
 
       const table = response.Table;
+
+      // go-to-k/cdkd#5354: DynamoDB has no API that adds, removes or changes a
+      // local secondary index on an existing table, and CloudFormation does NOT
+      // replace the table for it either. Measured (us-east-1, 2026-10-26): a
+      // change set for an LSI projection change reports `Replacement: False` /
+      // `RequiresRecreation: Never`, and executing it — or one adding or
+      // removing an LSI — fails the table's update (`UPDATE_FAILED`) and rolls
+      // the stack back. So the change is REFUSED here, before any mutating
+      // call, instead of being dropped: `update()` used to never read the list,
+      // so the deploy went green, state recorded the new indexes, and AWS kept
+      // the old ones. A change whose desired list the LIVE table already holds
+      // is not refused: that is a record the old drop left wrong, or the
+      // rollback of a change that was itself refused, and this update just
+      // records what AWS has. The state-borne callers warn instead (no
+      // template-side remedy).
+      const desiredLsiKey = localSecondaryIndexesKey(properties['LocalSecondaryIndexes']);
+      if (
+        desiredLsiKey !== localSecondaryIndexesKey(previousProperties['LocalSecondaryIndexes']) &&
+        (table === undefined ||
+          desiredLsiKey !== localSecondaryIndexesKey(table.LocalSecondaryIndexes))
+      ) {
+        const lsiMessage =
+          `AWS::DynamoDB::Table ${logicalId}: LocalSecondaryIndexes changed, but DynamoDB ` +
+          `cannot add, remove or modify a local secondary index on an existing table, and ` +
+          `CloudFormation fails the same update rather than replacing the table`;
+        if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+          throw new ProvisioningError(
+            `${lsiMessage}. Nothing was applied to the table; revert the LocalSecondaryIndexes ` +
+              `change, or create a new table under a new logical ID (a new table starts empty)`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        warn(`${lsiMessage}; the LocalSecondaryIndexes change was not applied`);
+      }
 
       // The StreamArn attribute returned to the deploy engine. Seeded from the
       // DescribeTable snapshot above, but the StreamSpecification branch below
@@ -2496,7 +2879,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           resourceType,
           logicalId,
           previousProperties['Tags'],
-          properties['Tags']
+          properties['Tags'],
+          {
+            forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+            beforeWrite: () => markUnsettled('Tags'),
+            afterAdded: (keys) => {
+              if (keys.length > 0) context?.markAttempted?.('Tags', keys);
+            },
+          }
         );
       }
 
@@ -3033,6 +3423,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // between each — AWS's one-GSI-op-per-call budget, and the wait is
           // what returns the table to a state that accepts the flip (the same
           // index-status race issue #1553 handles).
+          markUnsettled('GlobalSecondaryIndexes');
           await this.runGsiOps(
             physicalId,
             removable.map((name) => ({ Delete: { IndexName: name } })),
@@ -3276,6 +3667,18 @@ export class DynamoDBTableProvider implements ResourceProvider {
             );
           }
         }
+        // go-to-k/cdkd#5487: every key this one call changes, before it.
+        if (billingMode !== prevBillingMode) markUnsettled('BillingMode');
+        if (
+          JSON.stringify(properties['ProvisionedThroughput']) !==
+          JSON.stringify(previousProperties['ProvisionedThroughput'])
+        ) {
+          markUnsettled('ProvisionedThroughput');
+        }
+        if (tableClassChanged) markUnsettled('TableClass');
+        if (updateInput.GlobalSecondaryIndexUpdates !== undefined) {
+          markUnsettled('GlobalSecondaryIndexes');
+        }
         await this.dynamoDBClient.send(new UpdateTableCommand(updateInput));
         // UpdateTable is async; wait for ACTIVE so later branches (and any
         // subsequent UpdateTable for OnDemand/Warm throughput) don't race a
@@ -3362,6 +3765,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 `${ON_DEMAND_LIMIT_RESET}, DynamoDB's reset sentinel)`
             );
           }
+          markUnsettled('OnDemandThroughput');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({
               TableName: physicalId,
@@ -3454,6 +3858,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             maskSecrets
           )
         ) {
+          markUnsettled('WarmThroughput');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({ TableName: physicalId, WarmThroughput: warmThroughputToSend })
           );
@@ -3468,21 +3873,82 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // billing/throughput call above and the GSI calls below). Fire only when
       // the value changed, and wait for ACTIVE afterwards so the GSI block does
       // not race an UPDATING table. The same SSEEnabled->Enabled mapping the
-      // create path needs applies here. A removal (new absent, previous present)
-      // is a deliberate no-op: CFn has no clean "drop SSE back to AWS-owned"
-      // mapping and mapSSESpecification(undefined) returns undefined, so there
-      // is no spec to send (mirrors the WarmThroughput removal stance).
-      if (
-        JSON.stringify(properties['SSESpecification']) !==
-        JSON.stringify(previousProperties['SSESpecification'])
-      ) {
-        const sseUpdate = mapSSESpecification(properties['SSESpecification']);
-        if (sseUpdate && Object.keys(sseUpdate).length > 0) {
+      // create path needs applies here. A REMOVED block resets the table to the
+      // AWS owned key, as CloudFormation does (go-to-k/cdkd#5412, measured:
+      // `SSEDescription` absent once the stack update completed);
+      // `sseSpecificationToSend` decides it, as the GlobalTable twin's removal
+      // arm does (go-to-k/cdkd#5355).
+      if (sseRefusal !== undefined) {
+        // Only a state-borne caller reaches this: the template path refused
+        // the value above. Nothing is sent, since the value cannot say which
+        // key the table should be on.
+        warn(`${sseRefusal}, so the table's encryption was left as it is`);
+      } else if (sseChanged) {
+        // A table still switching keys (an earlier deploy's change, or one
+        // made outside cdkd) is waited out and read again first: DynamoDB
+        // takes one table update at a time, and the decision below reads the
+        // live key.
+        let liveTable = table;
+        const liveSseStatus = table?.SSEDescription?.Status;
+        if (
+          liveSseStatus === 'UPDATING' ||
+          liveSseStatus === 'ENABLING' ||
+          liveSseStatus === 'DISABLING'
+        ) {
+          liveTable = await this.waitForTableSseSettled(physicalId, maskSecrets);
+        }
+        const sseUpdate = sseSpecificationToSend(
+          properties['SSESpecification'],
+          previousProperties['SSESpecification'],
+          liveTable?.SSEDescription,
+          liveTable !== undefined
+        );
+        if (sseUpdate !== undefined) {
+          markUnsettled('SSESpecification');
           await this.dynamoDBClient.send(
             new UpdateTableCommand({ TableName: physicalId, SSESpecification: sseUpdate })
           );
+          await this.waitForTableSseSettled(physicalId, maskSecrets);
+          debug(
+            `Updated SSESpecification on DynamoDB table ${physicalId}` +
+              (properties['SSESpecification'] === undefined
+                ? ' (removed: reset to the AWS owned key)'
+                : '')
+          );
+        }
+      }
+
+      // DeletionProtectionEnabled (go-to-k/cdkd#5354) — its own UpdateTable,
+      // like SSE above. Only `create()` used to send it, so turning protection
+      // on (or off) deployed green while AWS kept the old setting. A REMOVED
+      // value means `false`: CloudFormation turns protection off when the
+      // property is dropped (measured us-east-1, 2026-10-26: a stack update
+      // removing `DeletionProtectionEnabled: true` left the table at `false`).
+      // Nothing is sent when the table already has the desired value (the
+      // `DescribeTable` above), e.g. `true` → `"true"`.
+      if (deletionProtectionChanged) {
+        const rawDeletionProtection = properties['DeletionProtectionEnabled'];
+        const desiredDeletionProtection =
+          rawDeletionProtection === undefined ? false : coerceCfnBoolean(rawDeletionProtection);
+        if (desiredDeletionProtection === undefined) {
+          // Only a state-borne caller reaches this: the template path refused
+          // the value above.
+          warn(
+            `AWS::DynamoDB::Table ${logicalId}: DeletionProtectionEnabled is not a boolean, so ` +
+              `it was not applied`
+          );
+        } else if (table?.DeletionProtectionEnabled !== desiredDeletionProtection) {
+          markUnsettled('DeletionProtectionEnabled');
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              DeletionProtectionEnabled: desiredDeletionProtection,
+            })
+          );
           await this.waitForTableActiveAfterUpdate(physicalId);
-          this.logger.debug(`Updated SSESpecification on DynamoDB table ${physicalId}`);
+          debug(
+            `Set DeletionProtectionEnabled=${desiredDeletionProtection} on DynamoDB table ${physicalId}`
+          );
         }
       }
 
@@ -3521,6 +3987,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['StreamSpecification']) !==
         JSON.stringify(previousProperties['StreamSpecification'])
       ) {
+        // go-to-k/cdkd#5487: every call below changes the stream (its view
+        // type, its tags or resource policy); a failure from here leaves it
+        // unsettled.
+        markUnsettled('StreamSpecification');
         const newViewType = this.extractStreamViewType(properties['StreamSpecification']);
         const prevViewType = this.extractStreamViewType(previousProperties['StreamSpecification']);
         const liveStream = table?.StreamSpecification;
@@ -3633,10 +4103,28 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // flip to PROVISIONED (issue #1617); `currentLiveIndexNames` is the
       // post-removal live set, so the Delete arm skips both those names and any
       // index the record still lists that AWS no longer has.
+      // go-to-k/cdkd#5503: converging an unsettled GlobalSecondaryIndexes
+      // leaves every live index that neither the record nor the template names
+      // (`readUnsettled` keeps them off the previous side, so nothing deletes
+      // them), as CloudFormation would. Say so: one of them may be an index the
+      // failed update itself created, which cdkd cannot tell from another
+      // tool's.
+      if (
+        context?.unsettledProperties?.has('GlobalSecondaryIndexes') === true &&
+        currentLiveIndexNames !== undefined
+      ) {
+        this.warnUndeclaredLiveIndexes(
+          physicalId,
+          currentLiveIndexNames,
+          [previousProperties['GlobalSecondaryIndexes'], properties['GlobalSecondaryIndexes']],
+          maskSecrets
+        );
+      }
       if (
         JSON.stringify(properties['GlobalSecondaryIndexes']) !==
         JSON.stringify(previousProperties['GlobalSecondaryIndexes'])
       ) {
+        markUnsettled('GlobalSecondaryIndexes');
         await this.applyGsiUpdates(
           physicalId,
           resourceType,
@@ -3649,7 +4137,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
           currentLiveIndexByName,
           liveCapacityComparable,
           effectiveBillingMode === 'PAY_PER_REQUEST',
-          maskSecrets
+          maskSecrets,
+          (indexName) => context?.markAttempted?.('GlobalSecondaryIndexes', [indexName])
         );
       }
 
@@ -3659,6 +4148,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['PointInTimeRecoverySpecification']) !==
         JSON.stringify(previousProperties['PointInTimeRecoverySpecification'])
       ) {
+        markUnsettled('PointInTimeRecoverySpecification');
         await this.applyPointInTimeRecovery(
           physicalId,
           properties['PointInTimeRecoverySpecification'],
@@ -3682,10 +4172,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
           properties['TimeToLiveSpecification'],
           previousProperties['TimeToLiveSpecification']
         );
+        // After the refusal: a refused change sent nothing.
+        markUnsettled('TimeToLiveSpecification');
         await this.applyTimeToLive(
           physicalId,
           properties['TimeToLiveSpecification'],
-          previousProperties['TimeToLiveSpecification']
+          previousProperties['TimeToLiveSpecification'],
+          'update',
+          { logicalId, resourceType, maskSecrets }
         );
       }
 
@@ -3709,6 +4203,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
             physicalId
           );
         }
+        markUnsettled('ResourcePolicy');
         await this.applyResourcePolicy(
           table.TableArn,
           properties['ResourcePolicy'],
@@ -3723,6 +4218,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['KinesisStreamSpecification']) !==
         JSON.stringify(previousProperties['KinesisStreamSpecification'])
       ) {
+        markUnsettled('KinesisStreamSpecification');
         await this.applyKinesisStreamingDestination(
           physicalId,
           properties['KinesisStreamSpecification'],
@@ -3737,6 +4233,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         JSON.stringify(properties['ContributorInsightsSpecification']) !==
         JSON.stringify(previousProperties['ContributorInsightsSpecification'])
       ) {
+        markUnsettled('ContributorInsightsSpecification');
         await this.applyContributorInsights(
           physicalId,
           properties['ContributorInsightsSpecification'],
@@ -3753,7 +4250,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
         physicalId,
         properties['GlobalSecondaryIndexes'],
         previousProperties['GlobalSecondaryIndexes'],
-        maskSecrets
+        maskSecrets,
+        () => markUnsettled('GlobalSecondaryIndexes')
       );
 
       return {
@@ -3788,6 +4286,51 @@ export class DynamoDBTableProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5131: `DeleteTable` returns with the table `DELETING`, and
+   * DynamoDB keeps the name until it is gone, so a same-name re-create right
+   * after cdkd's own delete fails `ResourceInUseException`. Polls
+   * `DescribeTable` until `ResourceNotFoundException`, as the GlobalTable
+   * provider's gone-wait does, within its poll budget. Only the replacement
+   * that deleted the table asks. Since go-to-k/cdkd#5514 `delete()` itself
+   * waits for the table to be gone, so this normally answers on its first
+   * poll; it stays for a delete whose own wait was cut short (budget,
+   * interrupt, an unreadable status).
+   */
+  async waitForNameReleased(
+    logicalId: string,
+    physicalId: string,
+    _resourceType: string,
+    context: { isInterrupted: () => boolean; maskSecrets?: (text: string) => string }
+  ): Promise<void> {
+    const mask = context.maskSecrets ?? ((text: string) => text);
+    // A table can stay DELETING for minutes: say why the deploy waits.
+    this.logger.info(
+      mask(`  Waiting for the deleted DynamoDB table ${physicalId} to release its name...`)
+    );
+    for (let poll = 0; poll < tableNameReleaseWait.maxPolls; poll++) {
+      if (context.isInterrupted()) return;
+      try {
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }));
+      } catch (error) {
+        if (error instanceof ResourceNotFoundException) return;
+        this.logger.debug(
+          mask(
+            `DynamoDB table ${logicalId}: name-release check failed: ${describeAwsFailure(error).detail}`
+          )
+        );
+        // A throttle or a server error: poll on, within the bound. Anything
+        // else (access denied, a malformed name) will not change: stop
+        // waiting, and the re-create reports what is wrong.
+        if (!isThrottlingError(error) && !isTransientServerError(error)) return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, tableNameReleaseWait.intervalMs));
+    }
+    this.logger.debug(
+      mask(`DynamoDB table ${logicalId} (${physicalId}) still held its name after the wait`)
+    );
   }
 
   /**
@@ -3852,6 +4395,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
           physicalId,
           typeLabel: 'table',
           logger: this.logger,
+          mask: context?.maskSecrets,
           ...(context?.expectedRegion ? { region: context.expectedRegion } : {}),
           reEnable: async () => {
             await this.dynamoDBClient.send(
@@ -4031,8 +4575,13 @@ export class DynamoDBTableProvider implements ResourceProvider {
           );
           observedProtectionOn = before.Table?.DeletionProtectionEnabled === true;
         } catch (observeError) {
+          // Masked (#5180): the physical id can carry a dynamic-reference
+          // plaintext, and AWS's text quotes it.
+          const mask = maskerOrIdentity(context?.maskSecrets);
           this.logger.debug(
-            `Could not read DeletionProtectionEnabled on ${physicalId} before disabling it: ${describeAwsFailure(observeError).detail}`
+            mask(
+              safeMsg`Could not read DeletionProtectionEnabled on ${mask(physicalId)} before disabling it: ${mask(describeAwsFailure(observeError).detail)}`
+            )
           );
         }
         await this.dynamoDBClient.send(
@@ -4059,13 +4608,17 @@ export class DynamoDBTableProvider implements ResourceProvider {
           await this.waitForTableActiveAfterUpdate(physicalId, TABLE_ACTIVE_WAIT_ATTEMPTS, budget);
         } catch (waitErr) {
           this.logger.debug(
-            `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not wait for table ${physicalId} ACTIVE after disabling protection: ${describeAwsFailure(waitErr).detail}`
+            )
           );
         }
       } catch (flipError) {
         if (!(flipError instanceof ResourceNotFoundException)) {
           this.logger.debug(
-            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
       }
@@ -4122,9 +4675,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
           // — the table is `DELETING`, so a later throw on this path is a wait
           // failing rather than the delete (issue #1978). Recorded here rather
           // than inferred from the error, because a wait's own timeout message
-          // is indistinguishable from a terminal refusal. This type has no
-          // post-delete wait today; the sibling `GlobalTable` provider does,
-          // and the record is set on both so the halves cannot drift.
+          // is indistinguishable from a terminal refusal. The post-delete
+          // gone-wait below never throws, but the record is set on both
+          // DynamoDB types so the halves cannot drift.
           flip.deleteAccepted = true;
         },
         // Re-arm on the CONDITION, not on the clock: an index backfill outlasts
@@ -4187,6 +4740,35 @@ export class DynamoDBTableProvider implements ResourceProvider {
         },
         sleepSeam: deleteTableRetryDelays,
       });
+      // go-to-k/cdkd#5514: `DeleteTable` returns with the table `DELETING`,
+      // and CloudFormation reports DELETE_COMPLETE only once it is gone. A
+      // destroy that returned here let a same-name re-deploy hit
+      // `ResourceInUseException`, a dependent (a KMS key, a role) be deleted
+      // under a live table, and a gone-probe right after the destroy see it.
+      // The delete is ACCEPTED, so the wait never throws: a cap, a Ctrl-C or
+      // an unreadable status warns and returns (`delete-gone-wait.ts`). Only
+      // a typed `ResourceNotFoundException` reads as gone. Clamped to what
+      // the shared delete budget still has, so the path stays under the
+      // per-resource deadline (issue #1955).
+      const mask = maskerOrIdentity(context?.maskSecrets);
+      await waitForGoneAfterDelete({
+        what: mask(`DynamoDB table ${physicalId}`),
+        resourceType,
+        describe: async () => {
+          try {
+            const out = await this.dynamoDBClient.send(
+              new DescribeTableCommand({ TableName: physicalId })
+            );
+            return out.Table?.TableStatus ?? 'UNKNOWN';
+          } catch (describeError) {
+            if (describeError instanceof ResourceNotFoundException) return undefined;
+            throw describeError;
+          }
+        },
+        logger: loopLogger,
+        pollIntervalMs: tableDeleteGoneWait.pollIntervalMs,
+        maxWaitMs: Math.min(tableDeleteGoneWait.maxWaitMs, budget.remainingMs()),
+      });
       this.logger.debug(`Successfully deleted DynamoDB table ${logicalId}`);
       // TERMINAL success — the allowance has no second pass to fund, and the
       // flip record has nothing left to undo. Released together and keyed
@@ -4241,7 +4823,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // rather than start a fresh one. That is the compounding term of issue
       // #1955.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -4253,6 +4835,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this table is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -4267,15 +4855,29 @@ export class DynamoDBTableProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    unsettled: {
+      forceUpsert: boolean;
+      beforeWrite: () => void;
+      // go-to-k/cdkd#5498: the tag keys an accepted TagResource added that the
+      // record lacked (never before the call; a call that throws added nothing).
+      afterAdded?: (keys: string[]) => void;
+    } = {
+      forceUpsert: false,
+      beforeWrite: () => undefined,
+    }
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) {
       this.logger.warn(tagWarning);
     }
-    const tagsToAdd = [...plan.set].map(([k, v]) => ({ Key: k, Value: v }));
+    // go-to-k/cdkd#5487: unsettled Tags re-send every template tag and remove
+    // only the recorded ones the template dropped.
+    const toSet = unsettled.forceUpsert ? planTagDiff(undefined, newTagsRaw).set : plan.set;
+    const tagsToAdd = [...toSet].map(([k, v]) => ({ Key: k, Value: v }));
     const tagsToRemove = plan.remove;
+    if (tagsToRemove.length > 0 || tagsToAdd.length > 0) unsettled.beforeWrite();
 
     if (tagsToRemove.length > 0) {
       await this.dynamoDBClient.send(
@@ -4286,6 +4888,19 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (tagsToAdd.length > 0) {
       await this.dynamoDBClient.send(
         new TagResourceCommand({ ResourceArn: tableArn, Tags: tagsToAdd })
+      );
+      // A malformed recorded tag list cannot say which keys are new: record none
+      // (a missing name only keeps a tag, never removes one).
+      let recordedKeys: Set<string> | undefined;
+      try {
+        recordedKeys = new Set([...planTagDiff(undefined, oldTagsRaw).set.keys()]);
+      } catch {
+        recordedKeys = undefined;
+      }
+      unsettled.afterAdded?.(
+        tagsToAdd
+          .map((t) => t.Key)
+          .filter((key) => recordedKeys !== undefined && !recordedKeys.has(key))
       );
       this.logger.debug(`Added/updated ${tagsToAdd.length} tag(s) on DynamoDB table ${tableArn}`);
     }
@@ -4413,6 +5028,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // Masks the retry line, whose AWS message can quote the target's arn —
       // and with it the table name, a RESOLVED template value.
       maskSecrets?: SecretMasker;
+      // Send no retry once the enclosing resource deadline has run out: the
+      // resource is already reported failed, and a mutation landing after
+      // that (a TTL enable after the rollback's disable, #5451) leaves AWS
+      // disagreeing with state. The last failure is rethrown instead.
+      stopAtDeadline?: boolean;
     } = {}
   ): Promise<T> {
     let delayMs = 2000;
@@ -4434,21 +5054,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
         const retryLine = `Transient error on "${label}" (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in ${delayMs}ms`;
         this.logger.debug(options.maskSecrets ? options.maskSecrets(retryLine) : retryLine);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (options.stopAtDeadline && enclosingDeadlineRemainingMs() <= 0) throw error;
         delayMs = Math.min(delayMs * 2, 30000);
       }
     }
   }
 
-  /**
-   * Apply the table's `TimeToLiveSpecification` via the separate
-   * `UpdateTimeToLive` API (TTL does NOT ride on CreateTable).
-   *
-   * CFn shape is `{ AttributeName: string, Enabled: boolean }`. Called from
-   * both `create()` (after the table is ACTIVE) and `update()` (only when the
-   * value changed). On `update()`-side removal — when the template drops the
-   * block but it was present before — we disable TTL using the PREVIOUS
-   * `AttributeName` (AWS requires the attribute name even to disable TTL).
-   */
   /**
    * Pre-emptively reject a TTL `AttributeName` change between two enabled
    * specs with a clear, actionable message.
@@ -4472,8 +5083,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     spec: unknown,
     previousSpec: unknown
   ): void {
-    const cur = this.readTtlSpec(spec);
-    const prev = this.readTtlSpec(previousSpec);
+    const cur = readTtlSpec(spec);
+    const prev = readTtlSpec(previousSpec);
     if (
       cur.enabled &&
       prev.enabled &&
@@ -4499,74 +5110,108 @@ export class DynamoDBTableProvider implements ResourceProvider {
   }
 
   /**
-   * Normalize a `TimeToLiveSpecification` value into `{ enabled, attributeName }`.
-   * Mirrors {@link applyTimeToLive}'s default (`Enabled` absent => true).
+   * Send the `UpdateTimeToLive` call {@link planTimeToLive} plans for a
+   * `TimeToLiveSpecification` change (issue #5447): `Enabled: false` without
+   * an `AttributeName` disables TTL on the recorded attribute, or on the one
+   * `DescribeTimeToLive` reports when no enabled spec was recorded; a
+   * disabled spec on a new or already-disabled table sends nothing, since AWS
+   * refuses to disable a TTL that is not enabled.
+   *
+   * AWS also refuses a second `UpdateTimeToLive` for a while after the last
+   * one; like CloudFormation, the call is re-sent until AWS accepts it, within
+   * the resource timeout (#5451). A refusal still standing when that runs out
+   * is rethrown as a cdkd-authored error, since the AWS text itself is
+   * redacted from the thrown message.
    */
-  private readTtlSpec(spec: unknown): { enabled: boolean; attributeName: string | undefined } {
-    if (spec === undefined || spec === null) {
-      return { enabled: false, attributeName: undefined };
-    }
-    const s = spec as Record<string, unknown>;
-    const attributeName = s['AttributeName'] as string | undefined;
-    // CFn `Enabled` is a boolean for CDK L2 synth, but a hand-written L1
-    // template can carry the stringified `"true"` / `"false"`. `Boolean("false")`
-    // is `true`, so coerce strings case-insensitively rather than via the bare
-    // `Boolean()` cast (which would treat `"false"` as enabled and either
-    // re-enable a disabled TTL or fire the rename guard spuriously). Absent
-    // `Enabled` defaults to `true` (CFn default).
-    const rawEnabled = s['Enabled'];
-    const enabled =
-      rawEnabled === undefined
-        ? true
-        : typeof rawEnabled === 'string'
-          ? rawEnabled.toLowerCase() === 'true'
-          : Boolean(rawEnabled);
-    return { enabled, attributeName };
-  }
-
   private async applyTimeToLive(
     tableName: string,
     spec: unknown,
-    previousSpec?: unknown
+    previousSpec: unknown,
+    mode: 'create' | 'update',
+    ids: { logicalId: string; resourceType: string; maskSecrets: SecretMasker }
   ): Promise<void> {
-    if (spec !== undefined && spec !== null) {
-      const { enabled, attributeName } = this.readTtlSpec(spec);
-      if (!attributeName) return;
-      await this.retryOnTransientControlPlane(
-        () =>
-          this.dynamoDBClient.send(
-            new UpdateTimeToLiveCommand({
-              TableName: tableName,
-              TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
-            })
-          ),
-        `set TTL on ${tableName}`
+    const plan = planTimeToLive(spec, previousSpec, mode);
+    let enabled: boolean;
+    let attributeName: string;
+    if (plan.kind === 'none') return;
+    if (plan.kind === 'disable-live') {
+      const resp = await this.retryOnTransientControlPlane(
+        () => this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: tableName })),
+        `read TTL on ${tableName}`,
+        undefined,
+        { maskSecrets: ids.maskSecrets }
       );
-      this.logger.debug(
+      const live = resp.TimeToLiveDescription;
+      const status = live?.TimeToLiveStatus;
+      if ((status !== 'ENABLED' && status !== 'ENABLING') || !live?.AttributeName) {
+        this.logger.debug(
+          ids.maskSecrets(
+            `TimeToLive already ${status ?? 'DISABLED'} on DynamoDB table ${tableName}; nothing to disable`
+          )
+        );
+        return;
+      }
+      enabled = false;
+      attributeName = live.AttributeName;
+    } else {
+      enabled = plan.kind === 'enable';
+      attributeName = plan.attributeName;
+    }
+    try {
+      await sendTtlWaitingOutRateLimit(
+        () =>
+          this.retryOnTransientControlPlane(
+            () =>
+              this.dynamoDBClient.send(
+                new UpdateTimeToLiveCommand({
+                  TableName: tableName,
+                  TimeToLiveSpecification: { Enabled: enabled, AttributeName: attributeName },
+                })
+              ),
+            `${enabled ? 'set' : 'disable'} TTL on ${tableName}`,
+            undefined,
+            { maskSecrets: ids.maskSecrets, stopAtDeadline: true }
+          ),
+        {
+          what: ids.maskSecrets(`DynamoDB TimeToLive rate-limit wait on ${tableName}`),
+          announce: () =>
+            this.logger.info(
+              ids.maskSecrets(
+                `DynamoDB table ${ids.logicalId}: TimeToLive was changed recently, and AWS ` +
+                  `refuses another change until its rate-limit interval passes (up to about an ` +
+                  `hour). Retrying every minute, like CloudFormation, within the resource timeout.`
+              )
+            ),
+        }
+      );
+    } catch (error) {
+      // A disable whose goal already holds (an earlier attempt that landed
+      // before a later step failed, or an out-of-band disable).
+      if (!enabled && isTtlAlreadyDisabled(describeAwsFailure(error).detail)) {
+        this.logger.debug(
+          ids.maskSecrets(`TimeToLive already disabled on DynamoDB table ${tableName}`)
+        );
+        return;
+      }
+      if (isTtlRateLimited(describeAwsFailure(error).detail)) {
+        throw new ProvisioningError(
+          `DynamoDB table ${ids.logicalId}: AWS refused to ${enabled ? 'enable' : 'disable'} ` +
+            `TimeToLive because it was already modified within DynamoDB's rate-limit interval, ` +
+            `and kept refusing until the resource timeout ran out. Redeploy once the interval ` +
+            `has passed (up to about an hour), or raise --resource-timeout.`,
+          ids.resourceType,
+          ids.logicalId,
+          tableName,
+          error instanceof Error ? error : undefined
+        );
+      }
+      throw error;
+    }
+    this.logger.debug(
+      ids.maskSecrets(
         `Set TimeToLive Enabled=${enabled} AttributeName=${attributeName} on DynamoDB table ${tableName}`
-      );
-      return;
-    }
-
-    // Removed from the template: disable using the previous AttributeName.
-    if (previousSpec !== undefined && previousSpec !== null) {
-      const prev = previousSpec as Record<string, unknown>;
-      const prevAttributeName = prev['AttributeName'] as string | undefined;
-      if (!prevAttributeName) return;
-      await this.retryOnTransientControlPlane(
-        () =>
-          this.dynamoDBClient.send(
-            new UpdateTimeToLiveCommand({
-              TableName: tableName,
-              TimeToLiveSpecification: { Enabled: false, AttributeName: prevAttributeName },
-            })
-          ),
-        `disable TTL on ${tableName}`
-      );
-      this.logger.debug(
-        `Disabled TimeToLive (AttributeName=${prevAttributeName}) on DynamoDB table ${tableName}`
-      );
-    }
+      )
+    );
   }
 
   /**
@@ -4641,10 +5286,12 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * Called from both `create()` (after the table is ACTIVE) and `update()`
    * (only when the value changed). On `update()`-side removal — template drops
    * the block but it was present before — streaming is disabled to the PREVIOUS
-   * stream ARN. A same-ARN change of only the precision is a deliberate no-op
-   * (re-enabling against an already-enabled stream errors), matching the
-   * pre-existing WarmThroughput "no clean remap" stance; precision changes flow
-   * through on the create / first-enable path.
+   * stream ARN. A same-ARN change of only the precision goes through
+   * `UpdateKinesisStreamingDestination` (go-to-k/cdkd#5385), as CloudFormation
+   * does; a REMOVED precision leaves the live one as it is, which is what
+   * CloudFormation does too (measured us-east-1, 2026-10-27: a stack update
+   * dropping `MILLISECOND` from the template completed with AWS still reading
+   * `MILLISECOND`, while one setting `MICROSECOND` changed it in place).
    */
   private async applyKinesisStreamingDestination(
     tableName: string,
@@ -4663,30 +5310,25 @@ export class DynamoDBTableProvider implements ResourceProvider {
     const newArn = this.extractKinesisStreamArn(spec);
     const prevArn = this.extractKinesisStreamArn(previousSpec);
 
-    // No change in target stream ARN: nothing to do (enable is not idempotent
-    // against an already-enabled destination). A same-ARN change of ONLY the
-    // precision is a deliberate no-op — but warn so the user knows the
-    // precision edit did not reach AWS (UpdateKinesisStreamingDestination
-    // could carry it, but re-enabling against an already-enabled stream
-    // errors; deferred to a dedicated precision-update path).
+    // Same target stream ARN: enable is not idempotent against an
+    // already-enabled destination, so only a precision change has anything to
+    // send, and it goes through UpdateKinesisStreamingDestination.
     if (newArn === prevArn) {
-      if (
-        newArn &&
-        JSON.stringify(
-          (spec as Record<string, unknown> | undefined)?.['ApproximateCreationDateTimePrecision']
-        ) !==
-          JSON.stringify(
-            (previousSpec as Record<string, unknown> | undefined)?.[
-              'ApproximateCreationDateTimePrecision'
-            ]
-          )
-      ) {
-        this.logger.warn(
+      if (!newArn) return;
+      const precision = this.extractKinesisPrecision(spec);
+      const prevPrecision = this.extractKinesisPrecision(previousSpec);
+      if (precision === prevPrecision) return;
+      if (precision === undefined) {
+        // Removed from the template: CloudFormation leaves the live precision
+        // as it is (see the method doc), and so does cdkd.
+        this.logger.debug(
           maskSecrets(
-            `Kinesis streaming ApproximateCreationDateTimePrecision change on ${tableName} was not applied (same stream ARN; precision-only updates are not yet supported)`
+            `Kinesis streaming ApproximateCreationDateTimePrecision removed from ${tableName}; the live value is left as it is, as CloudFormation does`
           )
         );
+        return;
       }
+      await this.updateKinesisStreamingPrecision(tableName, newArn, precision, maskSecrets);
       return;
     }
 
@@ -4700,11 +5342,16 @@ export class DynamoDBTableProvider implements ResourceProvider {
               StreamArn: prevArn,
             })
           ),
-        `disable Kinesis streaming on ${tableName}`
+        `disable Kinesis streaming on ${tableName}`,
+        undefined,
+        { maskSecrets }
       );
       this.logger.debug(
-        `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+        maskSecrets(
+          `Disabled Kinesis streaming destination ${prevArn} on DynamoDB table ${tableName}`
+        )
       );
+      await this.waitForKinesisDisableSettled(tableName, prevArn, maskSecrets);
     }
 
     // Enable streaming to the new stream when present.
@@ -4728,18 +5375,298 @@ export class DynamoDBTableProvider implements ResourceProvider {
                 : {}),
             })
           ),
-        `enable Kinesis streaming on ${tableName}`
+        `enable Kinesis streaming on ${tableName}`,
+        undefined,
+        { maskSecrets }
       );
       this.logger.debug(
-        `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+        maskSecrets(
+          `Enabled Kinesis streaming destination ${newArn} on DynamoDB table ${tableName}`
+        )
       );
     }
+  }
+
+  /**
+   * After `DisableKinesisStreamingDestination`: poll until no destination for
+   * `streamArn` reads as {@link KINESIS_DISABLE_PENDING_STATUSES}
+   * (go-to-k/cdkd#5423).
+   * The read-back reports an `ACTIVE` / `ENABLING` / `UPDATING` destination as
+   * present, and `DescribeKinesisStreamingDestination` went on reading `ACTIVE`
+   * for about a second after the disable answered `DISABLING`, so the
+   * drift baseline captured right after this update recorded a destination
+   * AWS was removing, and every later `cdkd drift` reported it. `DISABLING`
+   * still counts as settling. It also runs before an ARN change's enable,
+   * whose read-back would otherwise find the old destination first.
+   *
+   * Best-effort, since AWS accepted the disable: a destination still
+   * reported after {@link KINESIS_DISABLE_SETTLE_POLLS} reads, a failed read,
+   * or the enclosing per-resource deadline expiring ends the wait with a
+   * warning rather than failing the deploy. Interruptible.
+   */
+  private async waitForKinesisDisableSettled(
+    tableName: string,
+    streamArn: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(
+      maskSecrets(`Kinesis streaming destination on ${tableName} disabling`)
+    );
+    const warnUnsettled = (state: string): void =>
+      this.logger.warn(
+        maskSecrets(
+          `The Kinesis streaming destination ${streamArn} disabled on DynamoDB table ` +
+            `${tableName} ${state}; \`cdkd drift\` may report it until AWS finishes disabling it`
+        )
+      );
+    let last: string | undefined;
+    try {
+      for (let poll = 1; poll <= KINESIS_DISABLE_SETTLE_POLLS; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          warnUnsettled(`still read as ${last ?? 'unread'} when the resource timeout expired`);
+          return;
+        }
+        let destinations: KinesisDataStreamDestination[];
+        try {
+          const response = await this.retryOnTransientControlPlane(
+            () =>
+              this.dynamoDBClient.send(
+                new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+              ),
+            `describe Kinesis streaming on ${tableName}`,
+            undefined,
+            { maskSecrets }
+          );
+          destinations = response?.KinesisDataStreamDestinations ?? [];
+        } catch (error) {
+          this.logger.debug(
+            maskSecrets(
+              `Could not read Kinesis streaming on ${tableName} after the disable: ` +
+                describeAwsFailure(error).detail
+            )
+          );
+          warnUnsettled('could not be read back');
+          return;
+        }
+        // Settled once no entry for the stream is one the read-back reports
+        // (ACTIVE / ENABLING / UPDATING) or DISABLING: DISABLED and
+        // ENABLE_FAILED history entries linger beside a live one.
+        const pending = destinations.find(
+          (d) =>
+            d.StreamArn === streamArn &&
+            d.DestinationStatus !== undefined &&
+            KINESIS_DISABLE_PENDING_STATUSES.has(d.DestinationStatus)
+        );
+        if (!pending) return;
+        last = pending.DestinationStatus ?? 'unknown';
+        if (poll === KINESIS_DISABLE_SETTLE_POLLS) break;
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, Math.min(KINESIS_DISABLE_SETTLE_POLL_MS, enclosingDeadlineRemainingMs()))
+          )
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+    warnUnsettled(
+      `still read as ${last ?? 'unread'} after ` +
+        `${(KINESIS_DISABLE_SETTLE_POLLS * KINESIS_DISABLE_SETTLE_POLL_MS) / 1000} seconds`
+    );
   }
 
   private extractKinesisStreamArn(spec: unknown): string | undefined {
     if (spec === undefined || spec === null) return undefined;
     const arn = (spec as Record<string, unknown>)['StreamArn'];
     return typeof arn === 'string' ? arn : undefined;
+  }
+
+  private extractKinesisPrecision(spec: unknown): ApproximateCreationDateTimePrecision | undefined {
+    if (spec === undefined || spec === null) return undefined;
+    const precision = (spec as Record<string, unknown>)['ApproximateCreationDateTimePrecision'];
+    return typeof precision === 'string'
+      ? (precision as ApproximateCreationDateTimePrecision)
+      : undefined;
+  }
+
+  /**
+   * Change the `ApproximateCreationDateTimePrecision` of an enabled Kinesis
+   * streaming destination in place (go-to-k/cdkd#5385).
+   *
+   * AWS accepts `UpdateKinesisStreamingDestination` only while the
+   * destination is `ACTIVE` — otherwise `ValidationException` "Kinesis
+   * streaming is not in ACTIVE state", which no retry here classifies as
+   * transient — so a destination the previous deploy left `ENABLING` is
+   * waited out first. The update then holds it in `UPDATING` for minutes, and
+   * the read-back only reports an `ACTIVE` / `ENABLING` destination, so the
+   * deploy waits for the new precision to read back `ACTIVE`, as
+   * CloudFormation does. A precision AWS already holds (changed out of band,
+   * or the default `MICROSECOND` named after it was omitted) is refused with
+   * "Precision is already set to the desired value", which is success here.
+   * "Not in ACTIVE state" after the ACTIVE wait means a retried call whose
+   * first attempt landed (the destination is now `UPDATING`), so it falls
+   * through to the settle wait, which still fails unless the destination ends
+   * `ACTIVE` at the new precision.
+   */
+  private async updateKinesisStreamingPrecision(
+    tableName: string,
+    streamArn: string,
+    precision: ApproximateCreationDateTimePrecision,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    await this.waitForKinesisDestinationSettled(
+      tableName,
+      streamArn,
+      undefined,
+      maskSecrets,
+      KINESIS_DESTINATION_PRE_UPDATE_POLLS
+    );
+    try {
+      await this.retryOnTransientControlPlane(
+        () =>
+          this.dynamoDBClient.send(
+            new UpdateKinesisStreamingDestinationCommand({
+              TableName: tableName,
+              StreamArn: streamArn,
+              UpdateKinesisStreamingConfiguration: {
+                ApproximateCreationDateTimePrecision: precision,
+              },
+            })
+          ),
+        `update Kinesis streaming precision on ${tableName}`,
+        undefined,
+        { maskSecrets }
+      );
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'ValidationException')) throw error;
+      const detail = describeAwsFailure(error).detail;
+      if (/already set to the desired value/i.test(detail)) {
+        this.logger.debug(
+          maskSecrets(
+            `Kinesis streaming ApproximateCreationDateTimePrecision on ${tableName} is already ${precision}`
+          )
+        );
+      } else if (/not in ACTIVE state/i.test(detail)) {
+        this.logger.debug(
+          maskSecrets(
+            `Kinesis streaming destination on ${tableName} left ACTIVE during the precision update; verifying the result`
+          )
+        );
+      } else {
+        throw error;
+      }
+    }
+    await this.waitForKinesisDestinationSettled(
+      tableName,
+      streamArn,
+      precision,
+      maskSecrets,
+      KINESIS_DESTINATION_SETTLE_POLLS
+    );
+    this.logger.debug(
+      maskSecrets(
+        `Updated Kinesis streaming ApproximateCreationDateTimePrecision on ${tableName} to ${precision}`
+      )
+    );
+  }
+
+  /**
+   * Poll `DescribeKinesisStreamingDestination` until the destination for
+   * `streamArn` leaves `ENABLING` / `UPDATING`. With `expectedPrecision`, the
+   * settled destination must also be `ACTIVE` at that precision, and any
+   * other settled state fails the deploy. Bounded by `maxPolls` and by the
+   * enclosing per-resource deadline (whose expiry it reports as its own,
+   * non-retryable error rather than the engine's generic timeout), and
+   * interruptible.
+   */
+  private async waitForKinesisDestinationSettled(
+    tableName: string,
+    streamArn: string,
+    expectedPrecision: ApproximateCreationDateTimePrecision | undefined,
+    maskSecrets: SecretMasker,
+    maxPolls: number
+  ): Promise<void> {
+    const watch = startInterruptWatch(
+      maskSecrets(`Kinesis streaming destination on ${tableName} settling`)
+    );
+    let last: KinesisDataStreamDestination | undefined;
+    const sleep = (): Promise<void> =>
+      new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Math.min(KINESIS_DESTINATION_SETTLE_POLL_MS, enclosingDeadlineRemainingMs()))
+        )
+      );
+    try {
+      for (let poll = 1; poll <= maxPolls; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        // The engine's deadline does not cancel this update, so a wait that
+        // outlived it would keep polling with nobody waiting on it.
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new Error(
+              maskSecrets(
+                `The resource timeout expired while waiting for Kinesis streaming destination ` +
+                  `${streamArn} on ${tableName} to settle (last status: ` +
+                  `${last?.DestinationStatus ?? 'none read'})`
+              )
+            )
+          );
+        }
+        const response = await this.retryOnTransientControlPlane(
+          () =>
+            this.dynamoDBClient.send(
+              new DescribeKinesisStreamingDestinationCommand({ TableName: tableName })
+            ),
+          `describe Kinesis streaming on ${tableName}`,
+          undefined,
+          { maskSecrets }
+        );
+        // DISABLED entries linger beside a re-enabled one for the same stream.
+        const matching = (response.KinesisDataStreamDestinations ?? []).filter(
+          (d) => d.StreamArn === streamArn
+        );
+        last = matching.find((d) => d.DestinationStatus !== 'DISABLED') ?? matching[0];
+        const status = last?.DestinationStatus;
+        if (status !== 'ENABLING' && status !== 'UPDATING') {
+          if (expectedPrecision === undefined) return;
+          if (status === 'ACTIVE') {
+            if (last?.ApproximateCreationDateTimePrecision === expectedPrecision) return;
+            if (poll <= KINESIS_PRECISION_STALE_READ_GRACE_POLLS) {
+              await sleep();
+              continue;
+            }
+          }
+          const head =
+            `Kinesis streaming destination ${streamArn} on ${tableName} settled as ` +
+            `${status ?? 'absent'} with ApproximateCreationDateTimePrecision ` +
+            `${last?.ApproximateCreationDateTimePrecision ?? 'unset'}, expected ACTIVE / ` +
+            `${expectedPrecision}`;
+          // AWS's DestinationStatusDescription can name the account (an
+          // access-denied reason quotes the caller's role ARN), so it goes to
+          // debug only and the thrown message carries the --verbose pointer
+          // (go-to-k/cdkd#2319's convention for a status reason).
+          const reason = describeAwsStatusReason(
+            { message: last?.DestinationStatusDescription },
+            ''
+          );
+          if (reason.redacted) this.logger.debug(maskSecrets(`${head}: ${reason.detail}`));
+          throw new Error(maskSecrets(reason.redacted ? `${head}. ${reason.summary}` : head));
+        }
+        await sleep();
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new Error(
+      maskSecrets(
+        `Kinesis streaming destination ${streamArn} on ${tableName} was still ` +
+          `${last?.DestinationStatus ?? 'absent'} after ` +
+          `${(maxPolls * KINESIS_DESTINATION_SETTLE_POLL_MS) / 1000} seconds`
+      )
+    );
   }
 
   /**
@@ -4967,7 +5894,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     tableName: string,
     desiredIndexes: unknown,
     previousIndexes: unknown,
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    beforeSend: () => void = () => undefined
   ): Promise<void> {
     const warn = (message: string): void => this.logger.warn(maskSecrets(message));
     const ops = planIndexContributorInsightsOps(
@@ -4982,6 +5910,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     if (ops.length === 0) return;
     await this.waitForTableAndIndexesActive(tableName);
     for (const op of ops) {
+      // go-to-k/cdkd#5487: per-index insights live inside the index entries,
+      // so a failure from this call on leaves GlobalSecondaryIndexes unsettled.
+      beforeSend();
       await this.sendContributorInsightsOp(tableName, op, maskSecrets);
     }
   }
@@ -5111,6 +6042,73 @@ export class DynamoDBTableProvider implements ResourceProvider {
     throw new Error(
       `Table ${tableName} did not reach ACTIVE status within ${wait.pollsRun} seconds after ` +
         `UpdateTable${wait.note()}`
+    );
+  }
+
+  /**
+   * After an `SSESpecification` `UpdateTable` (go-to-k/cdkd#5412): poll until
+   * the table is `ACTIVE` AND its `SSEDescription` has left `UPDATING` /
+   * `ENABLING` / `DISABLING`, so the next `UpdateTable` in the same `update()`
+   * does not land on a table still switching keys — the predicate the
+   * GlobalTable twin's settle wait uses. The key switch outlives `ACTIVE`, so
+   * the cap is the Kinesis settle wait's (10 minutes), interruptible and
+   * bounded by the enclosing per-resource deadline. Also run BEFORE the SSE
+   * call when the table is already switching keys. Returns the settled
+   * description.
+   */
+  private async waitForTableSseSettled(
+    tableName: string,
+    maskSecrets: SecretMasker
+  ): Promise<TableDescription | undefined> {
+    const watch = startInterruptWatch(maskSecrets(`DynamoDB table ${tableName} switching keys`));
+    let last: string | undefined;
+    try {
+      for (let poll = 1; poll <= KINESIS_DESTINATION_SETTLE_POLLS; poll++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineRemainingMs() <= 0) {
+          throw markNonRetryable(
+            new Error(
+              maskSecrets(
+                `The resource timeout expired while waiting for DynamoDB table ${tableName} ` +
+                  `to finish its encryption change (last status: ${last ?? 'none read'})`
+              )
+            )
+          );
+        }
+        const response = await this.dynamoDBClient.send(
+          new DescribeTableCommand({ TableName: tableName })
+        );
+        const table = response?.Table;
+        const sseStatus = table?.SSEDescription?.Status;
+        last = `${table?.TableStatus ?? 'unknown'} / SSE ${sseStatus ?? 'absent'}`;
+        if (
+          table?.TableStatus === 'ACTIVE' &&
+          sseStatus !== 'UPDATING' &&
+          sseStatus !== 'ENABLING' &&
+          sseStatus !== 'DISABLING'
+        ) {
+          return table;
+        }
+        if (poll === KINESIS_DESTINATION_SETTLE_POLLS) break;
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(
+              0,
+              Math.min(KINESIS_DESTINATION_SETTLE_POLL_MS, enclosingDeadlineRemainingMs())
+            )
+          )
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new Error(
+      maskSecrets(
+        `DynamoDB table ${tableName} was still ${last ?? 'unread'} ` +
+          `${(KINESIS_DESTINATION_SETTLE_POLLS * KINESIS_DESTINATION_SETTLE_POLL_MS) / 1000} ` +
+          `seconds after its encryption change`
+      )
     );
   }
 
@@ -5245,7 +6243,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // REQUIRED, with no identity default: see
     // {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} for why the
     // typechecker is the only fence (issue #3364).
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    // go-to-k/cdkd#5498: called with each index name a Create was ACCEPTED for.
+    onCreated: (indexName: string) => void = () => undefined
   ): Promise<void> {
     // ONE masked sink for the warnings this method emits directly (issue
     // #1997); the helpers below take the masker itself so they can also mask
@@ -5589,7 +6589,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
     }
 
-    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions, maskSecrets);
+    await this.runGsiOps(physicalId, ops, desiredAttributeDefinitions, maskSecrets, onCreated);
   }
 
   /**
@@ -5679,6 +6679,50 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * crash on an ordinary PROVISIONED capacity update with a non-empty secret
    * bag (found by the review of that round).
    */
+  /**
+   * go-to-k/cdkd#5503: warn about each live index that none of `lists` (the
+   * previous side and the template) names. It is left in place, and the
+   * warning says how to remove it, because it may be one an earlier failed
+   * update created, and the record cannot tell that from another tool's. The
+   * command is withheld when the table or index name is secret-derived.
+   */
+  private warnUndeclaredLiveIndexes(
+    physicalId: string,
+    liveIndexNames: ReadonlySet<string>,
+    lists: readonly unknown[],
+    maskSecrets: SecretMasker
+  ): void {
+    const named = new Set<string>();
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue;
+      for (const entry of list as unknown[]) {
+        const name =
+          typeof entry === 'object' && entry !== null
+            ? (entry as Record<string, unknown>)['IndexName']
+            : undefined;
+        if (typeof name === 'string') named.add(name);
+      }
+    }
+    for (const name of liveIndexNames) {
+      if (named.has(name)) continue;
+      const secretDerived = maskSecrets(name) !== name || maskSecrets(physicalId) !== physicalId;
+      this.logger.warn(
+        maskSecrets(
+          `${this.indexScopeAt(name, physicalId, maskSecrets)} is live, but neither cdkd's ` +
+            `record nor the template declares it, so cdkd left it in place while converging ` +
+            `the unsettled GlobalSecondaryIndexes (CloudFormation never deletes an index it did ` +
+            `not record). It may belong to another tool, or an earlier failed cdkd update may ` +
+            `have created it; cdkd cannot tell which. If it should not exist, delete it ` +
+            (secretDerived
+              ? `with an UpdateTable GlobalSecondaryIndexUpdates Delete for the index.`
+              : `with: aws dynamodb update-table --table-name ${physicalId} ` +
+                `--global-secondary-index-updates '[{"Delete":{"IndexName":"${name}"}}]' ` +
+                `(in the table's region)`)
+        )
+      );
+    }
+  }
+
   private indexScopeAt(indexName: unknown, physicalId: string, maskSecrets: SecretMasker): string {
     const name = typeof indexName === 'string' ? maskSecrets(indexName) : '<unnamed>';
     return `GSI ${name} on DynamoDB table ${physicalId}`;
@@ -6691,7 +7735,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // identity default: see
     // {@link DynamoDBTableProvider.coerceOnDemandCeilingsForSend} for why the
     // typechecker is the only fence (issue #3364).
-    maskSecrets: SecretMasker
+    maskSecrets: SecretMasker,
+    // go-to-k/cdkd#5498: called with each index name a Create was ACCEPTED for.
+    onCreated: (indexName: string) => void = () => undefined
   ): Promise<void> {
     // ONE sink for this method, per `.claude/rules/provider-masking.md`: the
     // next debug line added here is masked by construction.
@@ -6709,6 +7755,9 @@ export class DynamoDBTableProvider implements ResourceProvider {
         input.AttributeDefinitions = desiredAttributeDefinitions;
       }
       await this.dynamoDBClient.send(new UpdateTableCommand(input));
+      // go-to-k/cdkd#5498: AFTER the call resolved: AWS accepted the Create, so
+      // this index is one cdkd started (a call that throws added nothing).
+      if (op.Create?.IndexName !== undefined) onCreated(op.Create.IndexName);
       // GSI create/delete is async: the table returns to ACTIVE quickly while a
       // new index is still CREATING -> BACKFILLING. AWS rejects the next GSI op
       // until every index is fully ACTIVE, and CloudFormation likewise waits for
@@ -7023,8 +8072,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
     // declaring nothing is never left in the comparison.
     if (desiredBagIsInformative(properties)) {
       for (const key of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
-        // Same reason as `declaresWarmThroughput` above: the `!` spelling is
-        // invisible to the handled-property-wiring critic.
+        // Same spelling as `declaresWarmThroughput` above: an explicit check
+        // rather than a non-null `!`.
         if (properties !== undefined && !declaresIndexList(properties[key])) paths.push(key);
       }
     }
@@ -7064,6 +8113,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
   ): Record<string, unknown> {
     if (resourceType !== 'AWS::DynamoDB::Table') return properties;
     let result = properties;
+    // go-to-k/cdkd#5354: a template may spell `DeletionProtectionEnabled` as
+    // `'true'` / `'false'`, which create() / update() send as the boolean and
+    // the readback reports as one; read the recorded string the same way so it
+    // is not drift. A value that is no boolean passes through and is compared
+    // as is.
+    const protection = coerceCfnBoolean(result['DeletionProtectionEnabled']);
+    if (protection !== undefined && protection !== result['DeletionProtectionEnabled']) {
+      result = { ...result, DeletionProtectionEnabled: protection };
+    }
     for (const listKey of ['GlobalSecondaryIndexes', 'LocalSecondaryIndexes']) {
       const list = result[listKey];
       if (!Array.isArray(list)) continue;
@@ -7143,6 +8201,181 @@ export class DynamoDBTableProvider implements ResourceProvider {
       if (changed) result = { ...result, [key]: trimmed };
     }
     return { baseline: result, aws };
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the live values of a record's unsettled properties in
+   * the template's shape, for the engine's convergence step. `readCurrentState`
+   * (shaped against the record, so its indexes and warm throughput carry the
+   * members the record declares) with two corrections:
+   *
+   * - a PAY_PER_REQUEST table reports no `ProvisionedThroughput` (DescribeTable
+   *   answers 0/0, which no template declares, and the billing block would
+   *   read it as a change and send an UpdateTable AWS refuses as a no-op);
+   * - the settings read by their own calls (PITR, TTL, resource policy,
+   *   Kinesis, Contributor Insights) are read STRICTLY when unsettled:
+   *   `readCurrentState` omits them on a failed read, which would converge
+   *   them to "not set".
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(
+      physicalId,
+      logicalId,
+      resourceType,
+      recordedProperties
+    );
+    if (typeof live !== 'object' || live === null) return live;
+    const out: Record<string, unknown> = { ...live };
+    if (out['BillingMode'] === 'PAY_PER_REQUEST') delete out['ProvisionedThroughput'];
+    // go-to-k/cdkd#5503: the live indexes, projected onto the names the record
+    // or the template declares. This value becomes the previous side, and
+    // `applyGsiUpdates` deletes every previous index the template lacks, so an
+    // index neither names (one another tool added) would be DELETED, where
+    // CloudFormation, which diffs recorded models, leaves it alone. A recorded
+    // index the template dropped is still on the previous side, and still
+    // deleted. One the template adds that is already live (a failed update
+    // created it) keeps its live value, so it is compared, not re-created.
+    if (names.has('GlobalSecondaryIndexes')) {
+      out['GlobalSecondaryIndexes'] = projectIndexesOnto(
+        out['GlobalSecondaryIndexes'],
+        recordedProperties?.['GlobalSecondaryIndexes'],
+        desiredProperties?.['GlobalSecondaryIndexes'],
+        attemptedItems?.get('GlobalSecondaryIndexes')
+      );
+      if (out['GlobalSecondaryIndexes'] === undefined) delete out['GlobalSecondaryIndexes'];
+    }
+    const strict = async (key: string, read: () => Promise<unknown>): Promise<void> => {
+      if (!names.has(key)) return;
+      const value = await read();
+      if (value === undefined) delete out[key];
+      else out[key] = value;
+    };
+    await strict('PointInTimeRecoverySpecification', () =>
+      this.readPointInTimeRecovery(physicalId, true)
+    );
+    await strict('TimeToLiveSpecification', () => this.readTimeToLive(physicalId, true));
+    await strict('KinesisStreamSpecification', () =>
+      this.readKinesisStreamSpecification(physicalId, true)
+    );
+    await strict('ContributorInsightsSpecification', () =>
+      this.readTableContributorInsights(physicalId, true)
+    );
+    if (names.has('ResourcePolicy')) {
+      const table = (
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }))
+      ).Table;
+      if (!table?.TableArn) {
+        throw new ProvisioningError(
+          `DescribeTable returned no TableArn for the table, which reading its unsettled ResourcePolicy needs`,
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      const tableArn = table.TableArn;
+      await strict('ResourcePolicy', () =>
+        this.readTableResourcePolicy(physicalId, tableArn, true)
+      );
+    }
+    return out;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the unsettled names AWS is still changing. While the
+   * table is CREATING / UPDATING / DELETING every table-level name is (the
+   * separately-applied settings and `Tags` are not); an index CREATING /
+   * UPDATING / DELETING moves `GlobalSecondaryIndexes`; an SSE ENABLING /
+   * DISABLING / UPDATING moves `SSESpecification`; a TTL ENABLING moves
+   * `TimeToLiveSpecification` (DISABLING reads as its destination, no TTL); a
+   * Kinesis destination ENABLING / DISABLING / UPDATING moves
+   * `KinesisStreamSpecification`. A status at rest — an inaccessible key, an
+   * archived table — is not moving: the update runs and AWS's error names it.
+   * A failed read keeps every name, which the engine reports as unconfirmed.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    const SEPARATE = new Set([
+      'Tags',
+      'PointInTimeRecoverySpecification',
+      'TimeToLiveSpecification',
+      'ResourcePolicy',
+      'KinesisStreamSpecification',
+      'ContributorInsightsSpecification',
+    ]);
+    try {
+      const table = (
+        await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: physicalId }))
+      ).Table;
+      const moving = new Set<string>();
+      // Only a status AWS is moving through. An inaccessible-key or archived
+      // table is at rest: the update runs, so AWS's own error names the cause.
+      if (
+        table?.TableStatus === 'CREATING' ||
+        table?.TableStatus === 'UPDATING' ||
+        table?.TableStatus === 'DELETING'
+      ) {
+        for (const name of names) if (!SEPARATE.has(name)) moving.add(name);
+      }
+      if (
+        names.has('GlobalSecondaryIndexes') &&
+        (table?.GlobalSecondaryIndexes ?? []).some(
+          (index) =>
+            index.IndexStatus === 'CREATING' ||
+            index.IndexStatus === 'UPDATING' ||
+            index.IndexStatus === 'DELETING'
+        )
+      ) {
+        moving.add('GlobalSecondaryIndexes');
+      }
+      const sse = table?.SSEDescription?.Status;
+      if (
+        names.has('SSESpecification') &&
+        (sse === 'ENABLING' || sse === 'DISABLING' || sse === 'UPDATING')
+      ) {
+        moving.add('SSESpecification');
+      }
+      if (names.has('TimeToLiveSpecification')) {
+        const ttl = (
+          await this.dynamoDBClient.send(new DescribeTimeToLiveCommand({ TableName: physicalId }))
+        ).TimeToLiveDescription?.TimeToLiveStatus;
+        // DISABLING can last up to an hour and only ever ends disabled, so it
+        // is read as its destination (no TTL, `readTimeToLive`), not as moving.
+        if (ttl === 'ENABLING') moving.add('TimeToLiveSpecification');
+      }
+      if (names.has('KinesisStreamSpecification')) {
+        const destinations =
+          (
+            await this.dynamoDBClient.send(
+              new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
+            )
+          ).KinesisDataStreamDestinations ?? [];
+        if (
+          destinations.some(
+            (d) =>
+              d.DestinationStatus === 'ENABLING' ||
+              d.DestinationStatus === 'DISABLING' ||
+              d.DestinationStatus === 'UPDATING'
+          )
+        ) {
+          moving.add('KinesisStreamSpecification');
+        }
+      }
+      return moving;
+    } catch {
+      return names;
+    }
   }
 
   /**
@@ -7408,7 +8641,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * drift read.
    */
   private async readPointInTimeRecovery(
-    physicalId: string
+    physicalId: string,
+    strict = false
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const pitrResp = await this.dynamoDBClient.send(
@@ -7427,6 +8661,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return pitr;
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read PointInTimeRecovery for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -7441,7 +8676,10 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * TimeToLiveSpecification without one, so we omit it; ENABLING / DISABLING
    * are transient and also omitted so drift doesn't fire on a momentary state.
    */
-  private async readTimeToLive(physicalId: string): Promise<Record<string, unknown> | undefined> {
+  private async readTimeToLive(
+    physicalId: string,
+    strict = false
+  ): Promise<Record<string, unknown> | undefined> {
     try {
       const ttlResp = await this.dynamoDBClient.send(
         new DescribeTimeToLiveCommand({ TableName: physicalId })
@@ -7452,6 +8690,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return undefined;
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read TimeToLive for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -7469,7 +8708,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    */
   private async readTableResourcePolicy(
     physicalId: string,
-    tableArn: string
+    tableArn: string,
+    strict = false
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const rpResp = await this.dynamoDBClient.send(
@@ -7484,6 +8724,15 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return { PolicyDocument: doc };
     } catch (err) {
+      // A table with no policy answers PolicyNotFoundException: "not set",
+      // strict or not, or an unsettled ResourcePolicy would refuse forever.
+      if (
+        strict &&
+        !(err instanceof ResourceNotFoundException) &&
+        !(err instanceof PolicyNotFoundException)
+      ) {
+        throw err;
+      }
       if (!(err instanceof ResourceNotFoundException)) {
         this.logger.debug(
           `Could not read ResourcePolicy for ${physicalId}: ${describeAwsFailure(err).detail}`
@@ -7495,21 +8744,26 @@ export class DynamoDBTableProvider implements ResourceProvider {
 
   /**
    * `KinesisStreamSpecification` — separate DescribeKinesisStreamingDestination
-   * call. Emit-when-present: only surface the key when AWS reports an ACTIVE or
-   * ENABLING destination (DISABLED entries linger in the list, so a status
-   * filter avoids a stale placeholder). Surface only the user-set fields
+   * call. Emit-when-present: only surface the key when AWS reports an ACTIVE,
+   * ENABLING or UPDATING destination (DISABLED entries linger in the list, so a
+   * status filter avoids a stale placeholder; an UPDATING one is a precision
+   * change in flight, go-to-k/cdkd#5385, and still streams). Surface only the user-set fields
    * (StreamArn + precision) so the drift comparator can match the templated
    * value.
    */
   private async readKinesisStreamSpecification(
-    physicalId: string
+    physicalId: string,
+    strict = false
   ): Promise<Record<string, unknown> | undefined> {
     try {
       const kResp = await this.dynamoDBClient.send(
         new DescribeKinesisStreamingDestinationCommand({ TableName: physicalId })
       );
       const active = (kResp.KinesisDataStreamDestinations ?? []).find(
-        (d) => d.DestinationStatus === 'ACTIVE' || d.DestinationStatus === 'ENABLING'
+        (d) =>
+          d.DestinationStatus === 'ACTIVE' ||
+          d.DestinationStatus === 'ENABLING' ||
+          d.DestinationStatus === 'UPDATING'
       );
       if (!active?.StreamArn) return undefined;
       const kspec: Record<string, unknown> = { StreamArn: active.StreamArn };
@@ -7518,6 +8772,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       }
       return kspec;
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read KinesisStreamingDestination for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -7533,7 +8788,8 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * ENABLED so a disabled table doesn't grow a CFn-invalid placeholder.
    */
   private async readTableContributorInsights(
-    physicalId: string
+    physicalId: string,
+    strict = false
   ): Promise<ReturnType<typeof reverseMapTableContributorInsights>> {
     try {
       const ciResp = await this.dynamoDBClient.send(
@@ -7544,6 +8800,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         ciResp.ContributorInsightsMode
       );
     } catch (err) {
+      if (strict) throw err;
       this.logger.debug(
         `Could not read ContributorInsights for ${physicalId}: ${describeAwsFailure(err).detail}`
       );
@@ -7818,4 +9075,40 @@ function isTransientStreamReadFailure(err: unknown): boolean {
     isAmbiguousOutcomeError(err) ||
     err instanceof ResourceNotFoundException
   );
+}
+
+/**
+ * go-to-k/cdkd#5503: the entries of a live `GlobalSecondaryIndexes` list whose
+ * `IndexName` the record or the template names, or `undefined` when none is
+ * left. An entry without a string `IndexName` names nothing and is dropped.
+ */
+export function projectIndexesOnto(
+  live: unknown,
+  recorded: unknown,
+  desired: unknown,
+  // go-to-k/cdkd#5498: the names a failed update's accepted Create added. A
+  // live index named here (exactly, not redacted) joins the previous side, so
+  // the template's omission removes it; nothing else does.
+  attempted: ReadonlySet<string> = new Set()
+): unknown[] | undefined {
+  if (!Array.isArray(live)) return undefined;
+  const named = new Set<string>([...attempted].filter(isUsableAttemptedName));
+  for (const list of [recorded, desired]) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list as unknown[]) {
+      const name =
+        typeof entry === 'object' && entry !== null
+          ? (entry as Record<string, unknown>)['IndexName']
+          : undefined;
+      if (typeof name === 'string') named.add(name);
+    }
+  }
+  const kept = (live as unknown[]).filter((entry) => {
+    const name =
+      typeof entry === 'object' && entry !== null
+        ? (entry as Record<string, unknown>)['IndexName']
+        : undefined;
+    return typeof name === 'string' && named.has(name);
+  });
+  return kept.length > 0 ? kept : undefined;
 }

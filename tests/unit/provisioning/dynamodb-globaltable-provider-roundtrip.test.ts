@@ -44,6 +44,14 @@ const {
   warnSpy: vi.fn(),
 }));
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -277,7 +285,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
         Replicas: [
           { Region: 'us-east-1' },
-          { Region: 'eu-west-1', KMSMasterKeyId: 'alias/foo' },
+          { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/foo' } },
         ],
       });
 
@@ -309,6 +317,27 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         Enabled: true,
         AttributeName: 'expiresAt',
       });
+    });
+
+    it('sends no UpdateTimeToLive for a disabled TTL spec on create (issue #5447)', async () => {
+      // A new table's TTL is DISABLED, and AWS refuses a second disable
+      // ("TimeToLive is already disabled").
+      mockSend.mockResolvedValueOnce({}); // CreateTable
+      mockSend.mockResolvedValueOnce({
+        Table: { TableName: 'X', TableArn: TABLE_ARN, TableStatus: 'ACTIVE' },
+      });
+
+      await provider.create('X', RESOURCE_TYPE, {
+        KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+        AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+        BillingMode: 'PAY_PER_REQUEST',
+        TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false },
+        Replicas: [{ Region: 'us-east-1' }],
+      });
+
+      expect(
+        mockSend.mock.calls.filter((c) => c[0] instanceof UpdateTimeToLiveCommand)
+      ).toHaveLength(0);
     });
 
     it('forwards per-replica Tags to CreateTableCommand.Tags for the local region (post-fix regression)', async () => {
@@ -570,12 +599,10 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(tag.input.Tags).toEqual([{ Key: 'Env', Value: 'Prod' }]);
     });
 
-    it('issues one combined UpdateTable for non-conflicting flat fields (DeletionProtection / TableClass / SSE / Stream / OnDemand)', async () => {
-      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for ARN
-      mockSend.mockResolvedValueOnce({}); // UpdateTable (flat fields)
-      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+    it('issues one combined UpdateTable for the flat fields, then TableClass and SSE each alone (DynamoDB refuses them combined)', async () => {
+      mockSend.mockImplementation(async () => ({
+        Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN },
+      }));
 
       await provider.update(
         'X',
@@ -597,13 +624,21 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       const updateCalls = mockSend.mock.calls
         .map((c) => c[0])
         .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
-      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls).toHaveLength(3);
       const u = updateCalls[0]!.input;
       expect(u.DeletionProtectionEnabled).toBe(true);
-      expect(u.TableClass).toBe('STANDARD_INFREQUENT_ACCESS');
-      expect(u.SSESpecification?.Enabled).toBe(true);
       expect(u.StreamSpecification?.StreamEnabled).toBe(true);
       expect(u.OnDemandThroughput?.MaxWriteRequestUnits).toBe(100);
+      expect(u.TableClass).toBeUndefined();
+      expect(u.SSESpecification).toBeUndefined();
+      expect(updateCalls[1]!.input).toEqual({
+        TableName: TABLE_NAME,
+        TableClass: 'STANDARD_INFREQUENT_ACCESS',
+      });
+      expect(updateCalls[2]!.input).toEqual({
+        TableName: TABLE_NAME,
+        SSESpecification: { Enabled: true, SSEType: 'KMS' },
+      });
     });
 
     it('extracts DeletionProtectionEnabled from Replicas[?Region==local].DPE on update (regression: PR #410)', async () => {
@@ -898,7 +933,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
     });
 
     it('TTL rate limit error: rewraps AWS "Time to live has been modified multiple times" with a friendly hint', async () => {
-      // AWS enforces a ~4-hour TTL change rate limit per table. The
+      // AWS rate-limits TTL changes per table. The
       // raw error message is correct but not actionable. cdkd
       // rewraps with a ProvisioningError that names the rate limit
       // and points at the workaround.
@@ -918,7 +953,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           },
           {}
         )
-      ).rejects.toThrow(/4-hour rate limit on TTL changes/);
+      ).rejects.toThrow(/rate-limits TTL changes per table/);
     });
 
     it('issues a separate UpdateTable for BillingMode flip (PAY_PER_REQUEST -> PROVISIONED with capacity)', async () => {
@@ -1007,7 +1042,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         TABLE_NAME,
         RESOURCE_TYPE,
         {
-          Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1', KMSMasterKeyId: 'alias/x' }],
+          Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/x' } }],
         },
         { Replicas: [{ Region: 'us-east-1' }] }
       );
@@ -1294,34 +1329,33 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       });
     });
 
-    it('issues UpdateReplica for cross-region replica with KMSMasterKeyId change (non-Tags modify path)', async () => {
-      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // wait
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // DescribeTable for tag diff
-      mockSend.mockResolvedValueOnce({}); // UpdateTable Replica Update
-      mockSend.mockResolvedValueOnce({
+    it("sets a cross-region replica's changed KMS key with every region's key in one ReplicaUpdates call", async () => {
+      const localKey = 'arn:aws:kms:us-east-1:123456789012:key/local';
+      mockSend.mockImplementation(async () => ({
         Table: {
-          Replicas: [
-            { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
-            { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
-          ],
+          TableStatus: 'ACTIVE',
+          TableArn: TABLE_ARN,
+          SSEDescription: { Status: 'ENABLED', SSEType: 'KMS', KMSMasterKeyArn: localKey },
+          Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }],
         },
-      }); // waitForReplicaActive
-      mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
+      }));
 
       await provider.update(
         'X',
         TABLE_NAME,
         RESOURCE_TYPE,
         {
+          SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
           Replicas: [
             { Region: 'us-east-1' },
-            { Region: 'eu-west-1', KMSMasterKeyId: 'alias/new' },
+            { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/new' } },
           ],
         },
         {
+          SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
           Replicas: [
             { Region: 'us-east-1' },
-            { Region: 'eu-west-1', KMSMasterKeyId: 'alias/old' },
+            { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: 'alias/old' } },
           ],
         }
       );
@@ -1329,9 +1363,12 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         .map((c) => c[0])
         .filter((c) => c instanceof UpdateTableCommand) as UpdateTableCommand[];
       expect(updateCalls).toHaveLength(1);
-      const ru = updateCalls[0]!.input.ReplicaUpdates?.[0];
-      expect(ru?.Update?.RegionName).toBe('eu-west-1');
-      expect(ru?.Update?.KMSMasterKeyId).toBe('alias/new');
+      // DynamoDB refuses a one-replica key change; the undeclared local key
+      // is the one AWS reports.
+      expect(updateCalls[0]!.input.ReplicaUpdates).toEqual([
+        { Update: { RegionName: 'us-east-1', KMSMasterKeyId: localKey } },
+        { Update: { RegionName: 'eu-west-1', KMSMasterKeyId: 'alias/new' } },
+      ]);
     });
 
     it('propagates Tags to cross-region replica via regional UntagResource + TagResource (Issue #389)', async () => {
@@ -1542,6 +1579,199 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(ttlCalls[0]!.input.TimeToLiveSpecification).toEqual({
         Enabled: false,
         AttributeName: 'expiresAt',
+      });
+    });
+
+    describe('TTL Enabled: false without AttributeName (issue #5447)', () => {
+      function routeSends(ttlDescription?: Record<string, unknown>): void {
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof DescribeTableCommand) {
+            return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+          }
+          if (cmd instanceof DescribeTimeToLiveCommand) {
+            return { TimeToLiveDescription: ttlDescription };
+          }
+          return {};
+        });
+      }
+      function ttlUpdates(): UpdateTimeToLiveCommand[] {
+        return mockSend.mock.calls
+          .map((c) => c[0])
+          .filter((c) => c instanceof UpdateTimeToLiveCommand) as UpdateTimeToLiveCommand[];
+      }
+      function ttlDescribes(): number {
+        return mockSend.mock.calls.filter((c) => c[0] instanceof DescribeTimeToLiveCommand)
+          .length;
+      }
+
+      it('disables TTL on the recorded AttributeName without a DescribeTimeToLive', async () => {
+        routeSends();
+        await provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { Enabled: false } },
+          { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+        );
+        expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+          { Enabled: false, AttributeName: 'expiresAt' },
+        ]);
+        expect(ttlDescribes()).toBe(0);
+      });
+
+      it('disables TTL on the live AttributeName when no enabled spec was recorded', async () => {
+        routeSends({ TimeToLiveStatus: 'ENABLED', AttributeName: 'liveTtl' });
+        await provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { Enabled: false } },
+          {}
+        );
+        expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+          { Enabled: false, AttributeName: 'liveTtl' },
+        ]);
+      });
+
+      it('sends nothing when the live TTL is already disabled', async () => {
+        routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'liveTtl' });
+        await provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { Enabled: false } },
+          {}
+        );
+        expect(ttlDescribes()).toBe(1);
+        expect(ttlUpdates()).toEqual([]);
+      });
+
+      it.each([
+        ['treats AWS "already disabled" as done', 'TimeToLive is already disabled', true],
+        ['still fails on any other refusal of the disable', 'Some other refusal', false],
+      ])('%s for a disable on the recorded AttributeName', async (_label, text, resolves) => {
+        const refusal = Object.assign(new Error(text), {
+          name: 'ValidationException',
+          $fault: 'client',
+          $metadata: {},
+        });
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof UpdateTimeToLiveCommand) throw refusal;
+          return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+        });
+        const run = provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          { TimeToLiveSpecification: { Enabled: false } },
+          { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+        );
+        if (resolves) await expect(run).resolves.toBeDefined();
+        else await expect(run).rejects.toThrow();
+        expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+          { Enabled: false, AttributeName: 'expiresAt' },
+        ]);
+      });
+
+      it('waits out the TTL rate-limit interval and re-sends until AWS accepts (#5451)', async () => {
+        ttlDeadline.remainingMs = Infinity;
+        vi.useFakeTimers();
+        try {
+          let ttlSends = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof UpdateTimeToLiveCommand) {
+              ttlSends += 1;
+              if (ttlSends <= 2) {
+                throw Object.assign(
+                  new Error('Time to live has been modified multiple times within a fixed interval'),
+                  { name: 'ValidationException', $fault: 'client', $metadata: {} }
+                );
+              }
+              return {};
+            }
+            return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+          });
+          const run = provider.update(
+            'X',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { TimeToLiveSpecification: { Enabled: false } },
+            { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true } }
+          );
+          await vi.runAllTimersAsync();
+          await expect(run).resolves.toBeDefined();
+          expect(ttlSends).toBe(3);
+        } finally {
+          vi.useRealTimers();
+          ttlDeadline.remainingMs = 0;
+        }
+      });
+
+      it('retries the live TTL read on a settling refusal', async () => {
+        vi.useFakeTimers();
+        try {
+          let describes = 0;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof DescribeTimeToLiveCommand) {
+              describes += 1;
+              if (describes === 1) {
+                throw Object.assign(new Error('Table is being updated'), {
+                  name: 'ResourceInUseException',
+                  $fault: 'client',
+                  $metadata: {},
+                });
+              }
+              return { TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED', AttributeName: 'liveTtl' } };
+            }
+            if (cmd instanceof DescribeTableCommand) {
+              return { Table: { TableStatus: 'ACTIVE', TableArn: TABLE_ARN } };
+            }
+            return {};
+          });
+          const run = provider.update(
+            'X',
+            TABLE_NAME,
+            RESOURCE_TYPE,
+            { TimeToLiveSpecification: { Enabled: false } },
+            {}
+          );
+          await vi.runAllTimersAsync();
+          await run;
+          expect(describes).toBe(2);
+          expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+            { Enabled: false, AttributeName: 'liveTtl' },
+          ]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('reads the live TTL, and sends nothing, when the template removes a spec recorded as disabled', async () => {
+        // AWS refuses to disable a disabled TTL ("TimeToLive is already disabled").
+        routeSends({ TimeToLiveStatus: 'DISABLED', AttributeName: 'expiresAt' });
+        await provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {},
+          { TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: false } }
+        );
+        expect(ttlDescribes()).toBe(1);
+        expect(ttlUpdates()).toEqual([]);
+      });
+
+      it('repairs a record of a disabled spec that left TTL enabled', async () => {
+        routeSends({ TimeToLiveStatus: 'ENABLED', AttributeName: 'expiresAt' });
+        await provider.update(
+          'X',
+          TABLE_NAME,
+          RESOURCE_TYPE,
+          {},
+          { TimeToLiveSpecification: { Enabled: false } }
+        );
+        expect(ttlUpdates().map((c) => c.input.TimeToLiveSpecification)).toEqual([
+          { Enabled: false, AttributeName: 'expiresAt' },
+        ]);
       });
     });
   });
@@ -2047,6 +2277,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed!['Replicas']).toEqual([
         {
           Region: 'us-east-1',
+          // go-to-k/cdkd#5381: a table that never set a class reads STANDARD,
+          // on its replica entry.
+          TableClass: 'STANDARD',
           ContributorInsightsSpecification: { Enabled: false },
           PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false },
           Tags: [],
@@ -2135,13 +2368,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       expect(observed!['SSESpecification']).toEqual({ SSEEnabled: true, SSEType: 'KMS' });
     });
 
-    it('round-trips DeletionProtectionEnabled boolean from DescribeTable', async () => {
+    it('round-trips DeletionProtectionEnabled boolean from DescribeTable onto the local replica entry', async () => {
       mockSend.mockResolvedValueOnce({
         Table: { TableArn: TABLE_ARN, DeletionProtectionEnabled: true, Replicas: [] },
       });
       queueReadCurrentStateTail({ localReplica: false });
       const observed = bagOf(await provider.readCurrentState(TABLE_NAME, 'X', RESOURCE_TYPE));
-      expect(observed!['DeletionProtectionEnabled']).toBe(true);
+      // go-to-k/cdkd#5381: the CFn schema keeps it per replica, not top-level.
+      expect(observed).not.toHaveProperty('DeletionProtectionEnabled');
+      const replicas = observed!['Replicas'] as Array<Record<string, unknown>>;
+      expect(replicas.find((r) => r['Region'] === 'us-east-1')!['DeletionProtectionEnabled']).toBe(
+        true
+      );
     });
 
     it('surfaces TimeToLiveSpecification when AWS reports ENABLED with AttributeName', async () => {
@@ -3218,7 +3456,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             { Region: 'us-east-1' },
             {
               Region: 'eu-west-1',
-              KMSMasterKeyId: 'alias/new',
+              SSESpecification: { KMSMasterKeyId: 'alias/new' },
               ReadProvisionedThroughputSettings: {
                 ReadCapacityAutoScalingSettings: {
                   MinCapacity: 10,
@@ -3236,7 +3474,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
             { Region: 'us-east-1' },
             {
               Region: 'eu-west-1',
-              KMSMasterKeyId: 'alias/old',
+              SSESpecification: { KMSMasterKeyId: 'alias/old' },
               ReadProvisionedThroughputSettings: {
                 ReadCapacityAutoScalingSettings: {
                   MinCapacity: 5,

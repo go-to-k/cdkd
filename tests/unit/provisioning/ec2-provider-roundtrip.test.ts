@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   ModifyVpcAttributeCommand,
+  ModifyVpcTenancyCommand,
   ModifySubnetAttributeCommand,
   DescribeSubnetsCommand,
   CreateTagsCommand,
@@ -70,6 +71,7 @@ describe('EC2Provider read-update round-trip', () => {
   // Helpers — count mutating SDK calls (anything that writes to AWS).
   const mutatingCommandTypes: Array<new (...args: never[]) => unknown> = [
     ModifyVpcAttributeCommand,
+    ModifyVpcTenancyCommand,
     ModifySubnetAttributeCommand,
     CreateTagsCommand,
     DeleteTagsCommand,
@@ -139,6 +141,84 @@ describe('EC2Provider read-update round-trip', () => {
         (c) => c[0] instanceof ModifyVpcAttributeCommand
       );
       expect(modifyCalls).toHaveLength(1);
+    });
+  });
+
+  describe('AWS::EC2::VPC InstanceTenancy (#5449)', () => {
+    const tenancyCalls = (): unknown[] =>
+      mockSend.mock.calls.filter((c) => c[0] instanceof ModifyVpcTenancyCommand).map((c) => c[0].input);
+
+    it.each([
+      ['dedicated -> default', { InstanceTenancy: 'dedicated' }, { InstanceTenancy: 'default' }],
+      ['a removal from dedicated', { InstanceTenancy: 'dedicated' }, {}],
+    ])('%s sends one ModifyVpcTenancy to default on the same VPC', async (_l, prev, next) => {
+      mockSend.mockResolvedValue({});
+      const base = { CidrBlock: '10.0.0.0/16' };
+      const result = await provider.update(
+        'Vpc',
+        'vpc-123',
+        'AWS::EC2::VPC',
+        { ...base, ...next },
+        { ...base, ...prev }
+      );
+      expect(result.physicalId).toBe('vpc-123');
+      expect(result.wasReplaced).toBe(false);
+      expect(tenancyCalls()).toEqual([{ VpcId: 'vpc-123', InstanceTenancy: 'default' }]);
+    });
+
+    it.each([
+      ['no change', { InstanceTenancy: 'dedicated' }, { InstanceTenancy: 'dedicated' }],
+      ['absent -> default', {}, { InstanceTenancy: 'default' }],
+      ['default -> absent', { InstanceTenancy: 'default' }, {}],
+      ['null -> default', { InstanceTenancy: null }, { InstanceTenancy: 'default' }],
+    ])('%s sends no ModifyVpcTenancy', async (_l, prev, next) => {
+      mockSend.mockResolvedValue({});
+      await provider.update('Vpc', 'vpc-123', 'AWS::EC2::VPC', next, prev);
+      expect(tenancyCalls()).toEqual([]);
+      expect(countMutatingCalls()).toBe(0);
+    });
+
+    it('refuses null -> dedicated as a change to dedicated (null reads as default)', async () => {
+      const error = await provider
+        .update(
+          'Vpc',
+          'vpc-123',
+          'AWS::EC2::VPC',
+          { InstanceTenancy: 'dedicated' },
+          { InstanceTenancy: null }
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(countMutatingCalls()).toBe(0);
+    });
+
+    it('a removal from null sends no ModifyVpcTenancy', async () => {
+      mockSend.mockResolvedValue({});
+      await provider.update('Vpc', 'vpc-123', 'AWS::EC2::VPC', {}, { InstanceTenancy: null });
+      expect(tenancyCalls()).toEqual([]);
+    });
+
+    it('refuses a change to dedicated (CloudFormation replaces) before any call, unwrapped', async () => {
+      const error = await provider
+        .update(
+          'Vpc',
+          'vpc-123',
+          'AWS::EC2::VPC',
+          {
+            InstanceTenancy: 'dedicated',
+            EnableDnsHostnames: true,
+            Tags: [{ Key: 'k', Value: 'new' }],
+          },
+          {
+            InstanceTenancy: 'default',
+            EnableDnsHostnames: false,
+            Tags: [{ Key: 'k', Value: 'old' }],
+          }
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toContain('InstanceTenancy in place only to default');
+      expect(countMutatingCalls()).toBe(0);
     });
   });
 
@@ -308,12 +388,14 @@ describe('EC2Provider read-update round-trip', () => {
     // does not report `✓ reverted` on a console-side change AWS will
     // keep.
     const immutableCases: Array<[string, string]> = [
-      ['AWS::EC2::InternetGateway', 'igw-1'],
-      ['AWS::EC2::VPCGatewayAttachment', 'igw-1|vpc-1'],
-      ['AWS::EC2::NatGateway', 'nat-1'],
-      ['AWS::EC2::RouteTable', 'rtb-1'],
+      // AWS::EC2::VPCGatewayAttachment left this list in go-to-k/cdkd#5216: it
+      // swaps the gateway in place (ec2-vpc-gateway-attachment-vpn.test.ts).
+      // AWS::EC2::NatGateway left this list in go-to-k/cdkd#2762: it updates
+      // Tags and AvailabilityZoneAddresses in place
+      // (ec2-natgateway-regional-2762.test.ts).
+      // InternetGateway / RouteTable / NetworkAcl left it in go-to-k/cdkd#5448:
+      // they update Tags in place (the describe block below).
       ['AWS::EC2::SubnetRouteTableAssociation', 'rtbassoc-1'],
-      ['AWS::EC2::NetworkAcl', 'acl-1'],
       ['AWS::EC2::SubnetNetworkAclAssociation', 'aclassoc-1'],
     ];
 
@@ -327,6 +409,99 @@ describe('EC2Provider read-update round-trip', () => {
 
         // No mutating SDK calls fired — the throw happened before any
         // network IO.
+        expect(countMutatingCalls()).toBe(0);
+      }
+    );
+  });
+
+  describe('InternetGateway / RouteTable / NetworkAcl Tags update in place (#5448)', () => {
+    const tagsOnlyCases: Array<[string, string, Record<string, unknown>]> = [
+      ['AWS::EC2::InternetGateway', 'igw-1', {}],
+      ['AWS::EC2::RouteTable', 'rtb-1', { VpcId: 'vpc-1' }],
+      ['AWS::EC2::NetworkAcl', 'acl-1', { VpcId: 'vpc-1' }],
+    ];
+    const sent = <T>(cmd: new (...args: never[]) => T): T[] =>
+      mockSend.mock.calls.filter((c) => c[0] instanceof cmd).map((c) => c[0] as T);
+
+    it.each(tagsOnlyCases)(
+      '%s round-trip on no-drift state resolves with zero mutating calls',
+      async (resourceType, physicalId, base) => {
+        const props = { ...base, Tags: [{ Key: 'env', Value: 'dev' }] };
+        const result = await provider.update('L', physicalId, resourceType, props, props);
+        expect(result).toEqual({ physicalId, wasReplaced: false });
+        expect(countMutatingCalls()).toBe(0);
+      }
+    );
+
+    it.each(tagsOnlyCases)(
+      '%s applies a changed, an added and a removed tag on the same physical id',
+      async (resourceType, physicalId, base) => {
+        mockSend.mockResolvedValue({});
+        const prev = {
+          ...base,
+          Tags: [
+            { Key: 'env', Value: 'dev' },
+            { Key: 'gone', Value: 'x' },
+            { Key: 'same', Value: 's' },
+          ],
+        };
+        const next = {
+          ...base,
+          Tags: [
+            { Key: 'env', Value: 'prod' },
+            { Key: 'same', Value: 's' },
+            { Key: 'added', Value: 'a' },
+          ],
+        };
+        const result = await provider.update('L', physicalId, resourceType, next, prev);
+
+        expect(result).toEqual({ physicalId, wasReplaced: false });
+        const deletes = sent(DeleteTagsCommand);
+        expect(deletes).toHaveLength(1);
+        expect(deletes[0]!.input).toEqual({ Resources: [physicalId], Tags: [{ Key: 'gone' }] });
+        const creates = sent(CreateTagsCommand);
+        expect(creates).toHaveLength(1);
+        expect(creates[0]!.input).toEqual({
+          Resources: [physicalId],
+          Tags: [
+            { Key: 'env', Value: 'prod' },
+            { Key: 'added', Value: 'a' },
+          ],
+        });
+      }
+    );
+
+    it.each(tagsOnlyCases)(
+      '%s removing the whole Tags property untags every recorded key',
+      async (resourceType, physicalId, base) => {
+        mockSend.mockResolvedValue({});
+        const prev = { ...base, Tags: [{ Key: 'env', Value: 'dev' }] };
+        await provider.update('L', physicalId, resourceType, { ...base }, prev);
+
+        expect(sent(DeleteTagsCommand).map((c) => c.input)).toEqual([
+          { Resources: [physicalId], Tags: [{ Key: 'env' }] },
+        ]);
+        expect(sent(CreateTagsCommand)).toHaveLength(0);
+      }
+    );
+
+    it.each([
+      ['AWS::EC2::RouteTable', 'rtb-1'],
+      ['AWS::EC2::NetworkAcl', 'acl-1'],
+    ])(
+      '%s still refuses a VpcId change (drift --revert path) before any call',
+      async (resourceType, physicalId) => {
+        const error = await provider
+          .update(
+            'L',
+            physicalId,
+            resourceType,
+            { VpcId: 'vpc-2', Tags: [{ Key: 'env', Value: 'prod' }] },
+            { VpcId: 'vpc-1', Tags: [{ Key: 'env', Value: 'dev' }] }
+          )
+          .catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect((error as Error).message).toContain('VpcId is immutable in AWS');
         expect(countMutatingCalls()).toBe(0);
       }
     );

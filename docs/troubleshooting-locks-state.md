@@ -179,14 +179,18 @@ with an already-exists error. See
 ## State File is Corrupted
 
 ```
-StateError: State file for stack MyStack is not valid JSON: Unexpected token } in JSON at position 123
-Caused by: Unexpected token } in JSON at position 123
+StateError: State file for stack MyStack is not valid JSON: invalid JSON at code-unit position 123; 4096 byte(s) read
 ```
 
 The state file is not valid JSON. Either an upload of `state.json` was
 interrupted, or a manual edit broke it. A state bucket created by
 `cdkd bootstrap` keeps every version of the file, so restore the last good
 one.
+
+The message gives where parsing stopped (when the parser reports it) and the
+file's size, but never the file's contents, because `state.json` can hold
+plaintext values. `--verbose` adds the parser's own wording, which can quote
+a few dozen characters of the file.
 
 ::: steps
 1. List the versions of the state file
@@ -264,8 +268,8 @@ cdkd state orphan MyStack --stack-region us-east-1 --resource MyTable1234ABCD
 Use `cdkd state orphan --resource` when the construct is already gone from the
 app. Only `cdkd orphan` accepts `--dry-run`. Without `--resource`,
 `cdkd state orphan MyStack` drops the whole stack record. Do not do that to a
-stack with other live resources, because the next deploy re-creates or collides
-with all of them. [Orphan Instead of Destroy](orphan-vs-destroy.md) compares the
+stack with other live resources, because the next deploy re-creates all of them
+(under new generated names, or colliding where a name is declared). [Orphan Instead of Destroy](orphan-vs-destroy.md) compares the
 commands.
 
 ### The resource exists in AWS but is missing from state
@@ -298,12 +302,13 @@ cdkd deploy MyStack
 StateError: Failed to verify state bucket 'my-bucket': Bucket 'my-bucket' (in ap-northeast-1) is in a different region than the client. cdkd resolves this automatically; if you see this message, please report it.
 ```
 
-The lock path reports the same condition as S3's raw redirect:
+The lock path names the same condition by S3's error class. The error's
+`Caused by:` line still shows S3's own text at the terminal, while the
+persisted deployment event carries only the class:
 
 ```
-LockError: Failed to acquire lock for stack MyStack (ap-northeast-1):
-The bucket you are attempting to access must be addressed using the
-specified endpoint. Please send all future requests to this endpoint.
+LockError: Failed to acquire lock for stack MyStack (ap-northeast-1): PermanentRedirect. Re-run with --verbose for AWS's own message.
+Caused by: The bucket you are attempting to access must be addressed using the specified endpoint. Please send all future requests to this endpoint.
 ```
 
 The state bucket is in a different region from the one your credentials
@@ -338,8 +343,9 @@ been published.
 
 The same stack name and region is recorded under another `--state-prefix` of
 the state bucket. A stack name is one deployment per account and region, as
-in CloudFormation. Two deployments of one name share every generated resource
-name, so each can delete the other's resources.
+in CloudFormation. Two deployments of one name share every declared resource
+name (and every generated one, for a stack first deployed before generated
+names carried a suffix), so each can delete the other's resources.
 [One stack name per account and region](state-store.md#one-stack-name-per-account-and-region)
 explains the rule.
 

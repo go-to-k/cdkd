@@ -1,4 +1,7 @@
+import { refusePendingMovesOut } from '../../state/pending-moves.js';
+import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
 import * as readline from 'node:readline/promises';
+import { isDeepStrictEqual } from 'node:util';
 import {
   pasteableCommand,
   plainOrDescribed,
@@ -40,7 +43,7 @@ import {
 } from '../../provisioning/final-snapshot.js';
 import type { RetainedResource, S3StateBackend } from '../../state/s3-state-backend.js';
 import {
-  keptForReadoption,
+  keptForRetainedRecord,
   recordRetainedForReadoption,
 } from '../../deployment/retained-readoption.js';
 import type { LockManager } from '../../state/lock-manager.js';
@@ -71,8 +74,15 @@ import {
   readProtection,
 } from '../../provisioning/protection-flags.js';
 import { slowCcOperationTimeoutMs } from '../../provisioning/slow-cc-operation-timeouts.js';
-import { withStackName } from '../../provisioning/resource-name.js';
-import { shouldRetainResource, type ResourceState, type StackState } from '../../types/state.js';
+import { withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf, retiredNameGenerationsLeaving } from '../../state/name-generation.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
+import {
+  shouldRetainResource,
+  stackInstanceIdCarriedFrom,
+  type ResourceState,
+  type StackState,
+} from '../../types/state.js';
 import {
   accountArgs,
   withheldAccountClause,
@@ -111,11 +121,13 @@ import {
   ProvisioningError,
   ResourceTimeoutError,
   StackHasActiveImportsError,
+  StackTerminationProtectionError,
   type ActiveImportConsumer,
 } from '../../utils/error-handler.js';
 import type { ExportIndexStore } from '../../state/export-index-store.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { isMarkedNotGone } from '../../provisioning/not-gone.js';
 import { destroyStackRecordsView, withStackRecords } from '../../deployment/stack-records-scope.js';
 import {
   deleteJournaledOrphans,
@@ -138,7 +150,18 @@ import {
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
 import {
+  deleteSupersededEntry,
+  holdsSupersededResources,
+  isSupersededResourceRecord,
+  supersededHeldByOtherTypeWarning,
+  supersededHolderOf,
+  supersededResourcesOf,
+  withoutSuperseded,
+} from '../../deployment/superseded-resources.js';
+import {
   createUnionSecretMasker,
+  unionOfSecretBags,
+  maskSecretsInText,
   type RecordedSecretValues,
 } from '../../deployment/secret-redaction.js';
 
@@ -225,6 +248,12 @@ export interface DestroyRunnerContext {
    * Resource types without a protection field treat this as a no-op.
    */
   removeProtection?: boolean;
+  /**
+   * The command this destroy runs for, when it is `cdkd state destroy`
+   * (go-to-k/cdkd#5238): names its remedy in the under-lock termination-
+   * protection refusal.
+   */
+  stateDestroy?: boolean;
 
   /**
    * `--skip-final-snapshot` (issues #1352 / #1353) — delete
@@ -488,7 +517,9 @@ export interface DestroyRunnerResult {
    * destroy left in AWS with a warning, recorded only in the rollback journal,
    * whose entry is settled. Includes those a nested child left: that child
    * deleted its own state, so its row counts as deleted and its orphans here.
-   * Such a skip still exits 2, but never keeps the state.
+   * And a superseded resource the provider would not address, whose entry is
+   * dropped (go-to-k/cdkd#5111). Such a skip still exits 2, but never keeps
+   * the state.
    */
   journaledOrphanSkips: number;
   /**
@@ -517,6 +548,21 @@ export interface DestroyRunnerResult {
  * child's own state file (`<parent>~<logicalId>`) — see `skippedStateTargets`.
  */
 const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
+
+/**
+ * The pre-delete final snapshot's logger, with every line routed through the
+ * delete's masker (go-to-k/cdkd#2319): its debug line quotes a withheld AWS
+ * failure's text. The `rollback-executor/names.ts` shape.
+ */
+function maskedSnapshotLogger(
+  logger: { info(message: string): void; debug(message: string): void },
+  mask: (text: string) => string
+): { info(message: string): void; debug(message: string): void } {
+  return {
+    info: (message) => logger.info(mask(message)),
+    debug: (message) => logger.debug(mask(message)),
+  };
+}
 
 /**
  * Record one destroy event with its human-authored text masked by the
@@ -559,7 +605,12 @@ export const SKIPPED_REMEDY =
  */
 export function countProtectedResources(state: StackState): number {
   let count = 0;
-  for (const resource of Object.values(state.resources ?? {})) {
+  // go-to-k/cdkd#5111: the superseded copies too, whose delete gets the flag.
+  const records = [
+    ...Object.values(state.resources ?? {}),
+    ...supersededResourcesOf(state).map((entry) => entry.state),
+  ];
+  for (const resource of records) {
     const locator = perType(PROTECTION_PROPERTY_BY_TYPE, resource.resourceType);
     if (locator) {
       const isActive = (recorded: unknown): boolean =>
@@ -673,6 +724,24 @@ async function releaseRegistryMarkerAfterDestroy(
  *   file is preserved (trimmed to the remaining resources, outputs/imports
  *   cleared) so the user can retry.
  */
+/**
+ * Whether `current` still holds exactly the resources `snapshot` holds
+ * (go-to-k/cdkd#5220): the same `resources` rows, field for field, and the
+ * same `supersededResources`. The delete loop acts on the snapshot's rows --
+ * their physical ids, deletion policies and properties -- and the end of a
+ * clean run deletes the whole record, so any difference is unsafe: a row gone
+ * or re-pointed deletes a resource the record no longer owns, a row changed in
+ * place deletes under a stale deletion policy, and a row added since would be
+ * dropped with the record while its resource stays live. Exported for its
+ * unit tests.
+ */
+export function holdsSameResourcesAs(snapshot: StackState, current: StackState): boolean {
+  return (
+    isDeepStrictEqual(snapshot.resources, current.resources) &&
+    isDeepStrictEqual(snapshot.supersededResources, current.supersededResources)
+  );
+}
+
 export async function runDestroyForStack(
   stackName: string,
   state: StackState,
@@ -757,7 +826,7 @@ async function destroyStackInRegion(
     errorCount: 0,
     interrupted: false,
   };
-  // go-to-k/cdkd#4705: the kept resources a later create takes back by name.
+  // go-to-k/cdkd#4705 / #5064: the kept resources under a generated name.
   const retainedForReadoption: RetainedResource[] = [];
   // Review H-2: their record's read, started with the first one, off the
   // critical path.
@@ -848,6 +917,11 @@ async function destroyStackInRegion(
   // unusable row does there depends on which part is torn, which is why this is
   // a refusal rather than a drop.
   refuseMalformedOrphanRecordsForDestroy(state, stackName, regionForState, refusalRecovery);
+  // An unfinished `cdkd refactor` moving resources out of this stack
+  // (go-to-k/cdkd#5212): the destination may already hold them, so deleting
+  // them here would delete another stack's resources.
+  refusePendingMovesOut(state, stackName, regionForState, 'cdkd destroy');
+  // (The refactor marker is read once, under the lock, below.)
   // BELOW the bag guard (which proves the bag can be counted) and ABOVE the
   // delete loop and every `deleteState` (issue #3328, review round 1). NOT
   // "above the fast path" as a discriminating claim — the guard returns early
@@ -916,6 +990,7 @@ async function destroyStackInRegion(
     command: 'destroy',
     logger,
     stateResources: state.resources,
+    stackInstanceId: stackInstanceIdOf(state, displayStackName(stackName)),
     underLock: async (settle) => {
       const held = await acquireStackLock({
         ...stackLockBase,
@@ -969,6 +1044,10 @@ async function destroyStackInRegion(
   // deletes state.json with no confirmation at all — in exactly the
   // first-deploy-fails flow that produces this shape.
   const orphanCount = (state.orphans ?? []).length;
+  // go-to-k/cdkd#5111: a replacement's old resource still to delete keeps the
+  // record from being empty, as an orphan does -- and so does a row cdkd
+  // cannot read, which may name one (`holdsSupersededResources`).
+  const supersededCount = supersededResourcesOf(state).length;
   // AT THE TOP OF THE DESTROY, and REFUSE rather than repair (issue #3207).
   //
   // `parseStateBody` validates the root object and the schema version and
@@ -1007,7 +1086,12 @@ async function destroyStackInRegion(
       (message) => logger.info(message)
     );
   }
-  if (resourceCount === 0 && orphanCount === 0 && journaledOrphans.count === 0) {
+  if (
+    resourceCount === 0 &&
+    orphanCount === 0 &&
+    !holdsSupersededResources(state) &&
+    journaledOrphans.count === 0
+  ) {
     // Issue #2171: this used to delete the state record with NO lock at all,
     // sitting well above the acquire further down. A record reads as empty for
     // exactly one interval that is not idle — the start of a concurrent
@@ -1087,7 +1171,16 @@ async function destroyStackInRegion(
           regionForState,
           refusalRecovery
         );
+        refusePendingMovesOut(recheck.state, stackName, regionForState, 'cdkd destroy');
       }
+      // go-to-k/cdkd#5212: an empty record may be a move's DESTINATION, made
+      // to receive it; deleting it would leave the move unable to finish.
+      refuseRefactorMarker(
+        await readRefactorMarker(ctx.stateBackend),
+        stackName,
+        regionForState,
+        'cdkd destroy'
+      );
       const recheckResources = recheck ? Object.keys(recheck.state.resources).length : 0;
       const recheckOrphans = recheck ? (recheck.state.orphans ?? []).length : 0;
       // go-to-k/cdkd#4584: the journal too, under the lock. A deploy that
@@ -1113,7 +1206,11 @@ async function destroyStackInRegion(
       // Same widening as the entry check (issue #2934): a record that gained
       // ONLY orphan entries is still not empty, and deleting it would drop the
       // only trace of live, billing AWS resources.
-      const stillEmpty = !recheck || (recheckResources === 0 && recheckOrphans === 0);
+      const stillEmpty =
+        !recheck ||
+        (recheckResources === 0 &&
+          recheckOrphans === 0 &&
+          !holdsSupersededResources(recheck.state));
       if (!stillEmpty) {
         // A concurrent writer populated the record between the caller's read
         // and this lock. Deleting now would drop resources cdkd tracks, so
@@ -1218,6 +1315,13 @@ async function destroyStackInRegion(
     // the very banner the y/N answers, while an ESC run in a `resourceType`
     // redraws the lines above it.
     logger.info(`  - ${displaySafe(logicalId)} (${displaySafe(resource.resourceType)})`);
+  }
+  // go-to-k/cdkd#5111: deleted after the resources above.
+  if (supersededCount > 0) {
+    logger.info(safeMsg`\nOld resources a replacement left to delete (${supersededCount}):`);
+    for (const entry of supersededResourcesOf(state)) {
+      logger.info(safeMsg`  - ${entry.logicalId} (${entry.state.resourceType}), superseded`);
+    }
   }
 
   // When `--remove-protection` is set, surface a count of resources that
@@ -1363,7 +1467,7 @@ async function destroyStackInRegion(
     // Issue #2259: refuse a NON-INTERACTIVE run before the interface exists.
     //
     // `rl.question` never settles when stdin is already at EOF, and EOF
-    // delivers no signal, so nothing wakes it. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against
+    // delivers no signal, so nothing wakes it. Measured on Node 24.15.0 (and 24.19 before it) against
     // real `node:readline/promises`: `echo y |` resolves `"y"`, while both
     // `printf 'y' |` (a real answer with no trailing newline) and
     // `< /dev/null` stay pending indefinitely. Without this guard
@@ -1571,6 +1675,54 @@ async function destroyStackInRegion(
     onAcquireFailure: restoreBaseRegionAndClients,
   });
 
+  // Under the lock, re-read what the checks above saw BEFORE the confirmation
+  // prompt (go-to-k/cdkd#5220): another command may have written this record
+  // while the prompt waited -- a `cdkd refactor` that moved a resource to
+  // another stack, a deploy that replaced one -- and deleting from the stale
+  // snapshot would delete a resource the record no longer owns, and one added
+  // since would be dropped with the record. The record must still hold exactly
+  // the snapshot's resources. The refactor marker is read beside it
+  // (go-to-k/cdkd#5212), this destroy's only read of it, so both cost one
+  // concurrent round trip.
+  try {
+    const [current, marker] = await Promise.all([
+      ctx.stateBackend.getState(stackName, regionForState),
+      readRefactorMarker(ctx.stateBackend),
+    ]);
+    if (current === null || !holdsSameResourcesAs(state, current.state)) {
+      throw new CdkdError(
+        safeMsg`cdkd destroy refused stack ${stackName} (${regionForState}): its state ` +
+          'changed after it was read (another command wrote it while this one waited for ' +
+          'confirmation), so nothing was deleted. Re-run cdkd destroy.',
+        'STATE_CHANGED'
+      );
+    }
+    // go-to-k/cdkd#5238: a deploy turning termination protection on while
+    // the prompt waited saves the record with the same rows, so the check
+    // above passes it; the protection the callers checked before the prompt
+    // is checked again here.
+    if (current.state.terminationProtection === true && ctx.removeProtection !== true) {
+      throw new StackTerminationProtectionError(
+        stackName,
+        undefined,
+        {
+          args: accountArgs(refusalRecovery),
+          clause: withheldAccountClause(refusalRecovery, 'the command below prints'),
+        },
+        {
+          command: ctx.stateDestroy === true ? 'cdkd state destroy' : 'cdkd destroy',
+          stackRegion: regionForState,
+        }
+      );
+    }
+    refusePendingMovesOut(current.state, stackName, regionForState, 'cdkd destroy');
+    refuseRefactorMarker(marker, stackName, regionForState, 'cdkd destroy');
+  } catch (error) {
+    await lock.release({ failureMessage: 'Failed to release lock after a state re-check refusal' });
+    restoreBaseRegionAndClients();
+    throw error;
+  }
+
   // Second strong-reference scan, now under the producer's lock. The
   // pre-flight scan above is a UX optimization (fast-fail before the
   // prompt); this second scan is the safety boundary. A consumer that
@@ -1630,6 +1782,9 @@ async function destroyStackInRegion(
   // authoritative, and any stale snapshot is a superset of what still
   // exists, which a re-run resolves via the idempotent "not found" path.
   const remainingResources: Record<string, ResourceState> = { ...state.resources };
+  // go-to-k/cdkd#5111: the superseded resources not yet deleted; a preserved
+  // state keeps exactly these (a malformed entry is carried, never acted on).
+  let remainingSuperseded = state.supersededResources;
 
   // Issue #1752 (G): the state file a user must repair is NOT always this
   // stack's. A skipped nested-stack row's malformed record lives in the CHILD's
@@ -1753,7 +1908,12 @@ async function destroyStackInRegion(
     // Strip `imports` / `outputReads` entirely (rather than writing `[]`) to
     // keep the persisted shape identical to a freshly-deployed stack that
     // has none — the deploy engine omits both keys when empty.
-    const { imports: _imports, outputReads: _outputReads, ...rest } = state;
+    const {
+      imports: _imports,
+      outputReads: _outputReads,
+      supersededResources: _superseded,
+      ...rest
+    } = state;
     // go-to-k/cdkd#4150: EXCEPT while a remaining record's secret-derived
     // principal list still needs that producer-region evidence, or a re-run
     // would classify its reference `local` where this run read `ambiguous`.
@@ -1770,9 +1930,20 @@ async function destroyStackInRegion(
     );
     return {
       ...rest,
+      // go-to-k/cdkd#5111: `supersededResources` is written below, from what is left.
+      ...stackInstanceIdCarriedFrom(withoutSuperseded(state)),
+      // go-to-k/cdkd#5064 phase 2: a partial destroy keeps the record; what it
+      // deleted or kept left the stack, so a redeploy re-adding a logical id
+      // asks for a name no earlier copy held.
+      ...retiredNameGenerationsLeaving(state, remainingResources),
       ...(keepEvidence && _imports !== undefined && { imports: _imports }),
       ...(keepEvidence && _outputReads !== undefined && { outputReads: _outputReads }),
       resources: { ...remainingResources },
+      // go-to-k/cdkd#5111: what is left of them; none left drops the field.
+      ...(remainingSuperseded !== undefined &&
+        !(Array.isArray(remainingSuperseded) && remainingSuperseded.length === 0) && {
+          supersededResources: remainingSuperseded,
+        }),
       outputs: {},
       // The bag is REWRITTEN (empty), so its export set is known — and empty
       // (issue #2193). Carrying the record's previous set through `...rest`
@@ -1870,6 +2041,7 @@ async function destroyStackInRegion(
         journaledUnderLock,
         { ...state.resources },
         stackName,
+        stackInstanceIdOf(state, displayStackName(stackName)),
         {
           providerRegistry: destroyProviderRegistry,
           region: regionForState,
@@ -1891,7 +2063,11 @@ async function destroyStackInRegion(
           // A nested child's own record lacks the regions its parent reads.
           ...(state.parentStack !== undefined && { producerRegionsIncomplete: true }),
         },
-        { isInterrupted: () => lock.interrupted, noEchoValues }
+        {
+          isInterrupted: () => lock.interrupted,
+          noEchoValues,
+          retiredNameGenerations: state.retiredNameGenerations,
+        }
       );
       result.errorCount += orphanOutcome.failures;
       journaledOrphanFailures = orphanOutcome.failures;
@@ -2025,9 +2201,15 @@ async function destroyStackInRegion(
     // A name its provider DERIVED from a plaintext one (the stack-name prefix
     // and the truncation `generateResourceNameWithFallback` applies) is
     // spelled in this stack's naming scope, as the deploy that created it
-    // derived it; a destroy binds none of its own.
+    // derived it (go-to-k/cdkd#5064: its lifetime too); a destroy binds none
+    // of its own.
+    const namingScope = nameScopeOf(
+      stackName,
+      stackInstanceIdOf(state, displayStackName(stackName)),
+      state
+    );
     const printingBagOf = (logicalId: string): RecordedSecretValues =>
-      withStackName(stackName, () => judgedBagOf(logicalId));
+      withStackScope(namingScope, () => judgedBagOf(logicalId));
 
     // Process levels in reverse order for deletion.
     for (let levelIndex = executionLevels.length - 1; levelIndex >= 0; levelIndex--) {
@@ -2082,8 +2264,10 @@ async function destroyStackInRegion(
             );
             result.retainedCount++;
             // go-to-k/cdkd#4705: a kept resource a later create of this stack
-            // takes back by its generated name is recorded for that create.
-            if (keptForReadoption(resource)) {
+            // takes back by its generated name is recorded for that create;
+            // go-to-k/cdkd#5064: every kept generated-name resource is, so the
+            // next lifetime's first deploy can name `cdkd import` for it.
+            if (keptForRetainedRecord(resource)) {
               retainedForReadoption.push({
                 logicalId,
                 resourceType: resource.resourceType,
@@ -2204,7 +2388,10 @@ async function destroyStackInRegion(
                   resource.physicalId,
                   logicalId,
                   destroyAwsClients ?? ctx.baseAwsClients,
-                  logger
+                  // The delete's own masker, as its DeleteContext carries: the
+                  // snapshot helper's debug line quotes a withheld AWS failure's
+                  // text (go-to-k/cdkd#2319).
+                  maskedSnapshotLogger(logger, createUnionSecretMasker([printingBagOf(logicalId)]))
                 );
               } else {
                 throw unsupportedFinalSnapshotError(
@@ -2617,11 +2804,16 @@ async function destroyStackInRegion(
             // Reading it as "already deleted" is the same orphan class the note
             // above describes, arriving from cdkd having stopped WATCHING a
             // delete rather than from a refusal.
+            // `isMarkedNotGone` (go-to-k/cdkd#5228) is a provider's typed
+            // verdict that the failure is not its resource's not-found. It is
+            // apart from `isMarkedNonRetryable` so the retry loop above still
+            // retries a transient failure that carries a needle.
             if (
               !isInterruptedWaitError(error) &&
               !isFinalSnapshotError(error) &&
               !isMarkedNonRetryable(error) &&
               !isWaitAbandonedError(error) &&
+              !isMarkedNotGone(error) &&
               (msg.includes('does not exist') ||
                 msg.includes('not found') ||
                 msg.includes('No policy found') ||
@@ -2688,6 +2880,116 @@ async function destroyStackInRegion(
       );
 
       await Promise.all(deletePromises);
+    }
+
+    // go-to-k/cdkd#5111: the old copies a replacement left to delete, AFTER the
+    // stack's own resources, any of which may still have used one. A failure
+    // or a skip keeps its entry, and with it the state, for a re-run.
+    for (const entry of supersededResourcesOf(state)) {
+      if (lock.interrupted) break;
+      const { logicalId } = entry;
+      const { physicalId, resourceType } = entry.state;
+      const drop = (): void => {
+        remainingSuperseded = (remainingSuperseded ?? []).filter((row) => row !== entry);
+      };
+      // Every line names the id under the row's printing bag: the id can
+      // spell a secret-derived name (go-to-k/cdkd#3869).
+      // The OLD record's own needles too, judged as an orphan's are, beside
+      // the row's current one (a rotated secret's name).
+      const bag = unionOfSecretBags([
+        printingBagOf(logicalId),
+        orphanRecordsPrintingBag([entry], noEchoValues),
+      ]);
+      // A record names its id (a rollback took it back): deleted above, as
+      // that record's resource, or kept with it -- never deleted here.
+      const holder = supersededHolderOf(entry, state.resources);
+      if (holder !== undefined) {
+        drop();
+        if (holder.resourceType !== resourceType) {
+          withPrintingSecrets(bag, () =>
+            logger.warn(
+              safeMsg`  ⚠ ${supersededHeldByOtherTypeWarning(entry, holder.resourceType)}`
+            )
+          );
+        }
+        continue;
+      }
+      await withPrintingSecrets(bag, async () => {
+        logger.info(safeMsg`Deleting ${logicalId}'s superseded ${resourceType} (${physicalId})...`);
+        let outcome: Awaited<ReturnType<typeof deleteSupersededEntry>>;
+        try {
+          outcome = await withStackRecords(
+            {
+              live: () => Object.entries(remainingResources),
+              survivors: () => Object.entries(remainingResources),
+            },
+            () =>
+              deleteSupersededEntry(entry, {
+                provider: destroyProviderRegistry.getProviderFor({
+                  resourceType,
+                  ...(entry.state.provisionedBy !== undefined && {
+                    provisionedBy: entry.state.provisionedBy,
+                  }),
+                }).provider,
+                region: state.region ?? regionForState,
+                ...(ctx.removeProtection === true && { removeProtection: true }),
+                ...(ctx.stackDestroy === true && { stackDestroy: true }),
+                maskSecrets: createUnionSecretMasker([bag]),
+                stop: () => lock.interrupted,
+              })
+          );
+        } catch (error) {
+          outcome = { kind: 'failed', error };
+        }
+        if (outcome.kind === 'deleted') {
+          result.deletedCount++;
+          drop();
+          logger.info(safeMsg`  ✓ Deleted ${logicalId}'s superseded ${resourceType}`);
+          return;
+        }
+        const why =
+          outcome.kind === 'notDeleted'
+            ? outcome.reason
+            : maskSecretsInText(describeAwsFailure(outcome.error).detail, bag);
+        if (outcome.kind === 'notDeleted') {
+          // As the deploy treats it: a provider that will not address it
+          // would refuse every re-run, so the record goes, with this line.
+          drop();
+          result.skippedCount++;
+          result.journaledOrphanSkips++;
+          logger.warn(
+            safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+              'Delete it manually — it is no longer tracked in state.'
+          );
+          return;
+        }
+        result.errorCount++;
+        logger.warn(
+          safeMsg`  ⚠ ${logicalId}'s superseded ${resourceType} (${physicalId}) was not deleted: ${why}. ` +
+            'State preserved: it stays recorded, and a re-run of the destroy retries it.'
+        );
+      });
+    }
+
+    // A superseded row cdkd cannot read is carried, never acted on, and may
+    // name a live resource: a skip, so the state that holds it is kept.
+    const unreadableSuperseded = Array.isArray(state.supersededResources)
+      ? state.supersededResources.filter((row) => !isSupersededResourceRecord(row)).length
+      : holdsSupersededResources(state)
+        ? 1
+        : 0;
+    if (unreadableSuperseded > 0) {
+      result.skippedCount += unreadableSuperseded;
+      // The summary's skip hints name this record (`state show` / `state orphan`).
+      skippedStateTargets.add(stackName);
+      const one = unreadableSuperseded === 1;
+      logger.warn(
+        safeMsg`  ⚠ ${unreadableSuperseded} superseded resource ` +
+          (one ? 'entry' : 'entries') +
+          ' in state could not be read, so nothing was deleted for ' +
+          (one ? 'it' : 'them') +
+          '. State preserved: it may name a resource still in AWS.'
+      );
     }
 
     // Carry the graceful-interrupt outcome (issue #816) into the result so the

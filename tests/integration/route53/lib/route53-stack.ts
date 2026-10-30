@@ -18,8 +18,11 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  * - The NameServers list read BOTH ways: through Fn::Join, and bare so the
  *   Output persists a JSON array whose element count is observable (#1873)
  * - HostedZoneTags + QueryLoggingConfig REMOVAL resets (#1160 route53 batch)
+ * - HostedZoneFeatures.EnableAcceleratedRecovery enable on create, disable on
+ *   removal, each waited for (#5465)
  * - RecordSet renames (Name / Type / SetIdentifier) under CDKD_TEST_RENAME (#3741)
  * - A RecordSet whose name contains `|`, its `Ref`, and an in-place update (#3890)
+ * - HostedZone `DelegationSetId` on a reusable delegation set verify.sh makes (#2762)
  *
  * The REMOVAL phase (gated on CDKD_TEST_REMOVAL, issue #1160 route53 batch)
  * drops the `Dropped` hosted-zone tag and the whole `QueryLoggingConfig`
@@ -118,9 +121,24 @@ export class Route53Stack extends cdk.Stack {
     // feature (free; targets a 60-minute RTO for DNS operations during
     // us-east-1 service disruptions) is set via a post-create
     // UpdateHostedZoneFeatures control-plane call. CDK L2's `HostedZone`
-    // does not expose the `hostedZoneFeatures` property, so reach the L1
-    // via `addPropertyOverride`.
-    zoneL1.addPropertyOverride('HostedZoneFeatures.AcceleratedRecoveryStatus', 'ENABLED');
+    // does not expose the `hostedZoneFeatures` property, so set it on the
+    // L1 — through the typed `hostedZoneFeatures` prop, so the template
+    // carries the CloudFormation member `EnableAcceleratedRecovery` and not
+    // the read-side `AcceleratedRecoveryStatus` (issue #5465). The removal
+    // phase drops it, which disables the feature as CloudFormation does.
+    if (!removal) {
+      zoneL1.hostedZoneFeatures = { enableAcceleratedRecovery: true };
+    }
+
+    // Issue #2762: create-only `DelegationSetId`, which used to route the zone
+    // through Cloud Control (the SDK provider did not handle it). CloudFormation has no resource
+    // type for a reusable delegation set, so verify.sh creates one before the
+    // first deploy, passes its id here, and deletes it after destroy. The same
+    // value in every phase: a change would replace the zone.
+    const delegationSetId = process.env.CDKD_TEST_DELEGATION_SET_ID;
+    if (delegationSetId) {
+      zoneL1.addPropertyOverride('DelegationSetId', delegationSetId);
+    }
 
     // A Record
     new route53.ARecord(this, 'TestARecord', {

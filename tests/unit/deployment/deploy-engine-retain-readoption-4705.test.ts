@@ -4,6 +4,7 @@ import { provisionResource as provisionResourceFn } from '../../../src/deploymen
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 vi.mock('../../../src/utils/logger.js', () => {
   const fns = {
@@ -90,18 +91,26 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
   }
 
   async function remove(
-    rows: Array<{ id: string; type: string; physicalId: string; policy: string; properties?: Record<string, unknown> }>
+    rows: Array<{ id: string; type: string; physicalId: string; policy: string; properties?: Record<string, unknown>; via?: string }>,
+    /** The stack's instance id (go-to-k/cdkd#5064); absent = a legacy stack. */
+    stackInstanceId?: string
   ): Promise<void> {
     const e = engine();
     const stateResources: Record<string, unknown> = Object.fromEntries(
       rows.map((r) => [
         r.id,
-        { physicalId: r.physicalId, resourceType: r.type, properties: r.properties ?? {}, attributes: {}, dependencies: [], deletionPolicy: r.policy, provisionedBy: 'sdk' },
+        { physicalId: r.physicalId, resourceType: r.type, properties: r.properties ?? {}, attributes: {}, dependencies: [], deletionPolicy: r.policy, provisionedBy: r.via ?? 'sdk' },
       ])
     );
     (e as unknown as { doDeploy: () => Promise<unknown> }).doDeploy = async () => {
+      const scope = {
+        stackName: 'MyStack',
+        stackInstanceId,
+        nameGenerations: stackInstanceId === undefined ? undefined : new Map<string, number>(),
+      };
       await Promise.all(
         rows.map((r) =>
+          withStackScope(scope, () =>
           provisionResourceFn(
             e,
             r.id,
@@ -109,6 +118,7 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
             stateResources as unknown as Record<string, never>,
             'MyStack',
             { Resources: {} }
+          )
           )
         )
       );
@@ -141,13 +151,34 @@ describe('a Retain removal on deploy records what it kept (CB-14a)', () => {
     expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
   });
 
-  it('records nothing for a declared name, a type whose create fails on a taken name, or a Delete removal', async () => {
-    await remove([
-      { id: 'Named', type: 'AWS::S3::Bucket', physicalId: 'mine', policy: 'Retain', properties: { BucketName: 'mine' } },
-      { id: 'Role', type: 'AWS::IAM::Role', physicalId: 'r', policy: 'Retain' },
-      { id: 'Gone', type: 'AWS::S3::Bucket', physicalId: 'g', policy: 'Delete' },
+  const ID = '3d1f2e4c-5b6a-4c7d-8e9f-0a1b2c3d4e5f';
+
+  it('on a stack with an instance id, records a kept type no create adopts (an IAM role), as a destroy does (go-to-k/cdkd#5064)', async () => {
+    await remove([{ id: 'Role', type: 'AWS::IAM::Role', physicalId: 'r', policy: 'Retain' }], ID);
+    expect(saved.at(-1)).toEqual([
+      { logicalId: 'Earlier', resourceType: 'AWS::SQS::Queue', physicalId: 'q' },
+      { logicalId: 'Role', resourceType: 'AWS::IAM::Role', physicalId: 'r' },
     ]);
+  });
+
+  it('on a legacy stack, records no kept type a create cannot adopt: no record where #4705 wrote none', async () => {
+    await remove([{ id: 'Role', type: 'AWS::IAM::Role', physicalId: 'r', policy: 'Retain' }]);
     expect(saved).toEqual([]);
     expect(stateBackend.loadRetainedRecord).not.toHaveBeenCalled();
   });
+
+  for (const stackInstanceId of [undefined, ID]) {
+    it(`records nothing for a declared name, a name-adopting type made through Cloud Control, or a Delete removal (${stackInstanceId === undefined ? 'legacy' : 'id'} stack)`, async () => {
+      await remove(
+        [
+          { id: 'Named', type: 'AWS::S3::Bucket', physicalId: 'mine', policy: 'Retain', properties: { BucketName: 'mine' } },
+          { id: 'CcBucket', type: 'AWS::S3::Bucket', physicalId: 'cc', policy: 'Retain', via: 'cc-api' },
+          { id: 'Gone', type: 'AWS::S3::Bucket', physicalId: 'g', policy: 'Delete' },
+        ],
+        stackInstanceId
+      );
+      expect(saved).toEqual([]);
+      expect(stateBackend.loadRetainedRecord).not.toHaveBeenCalled();
+    });
+  }
 });

@@ -1402,6 +1402,51 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       }
     });
 
+    it('keeps the sdk-wire log for the diagnosis, and its red reaches the failed list', () => {
+      // The diagnosis lists the nested paths a red sdk-wire run named
+      // (go-to-k/cdkd#3723), so the log must be written where Diagnose reads it,
+      // and capturing it must not swallow the suites' status.
+      const regen = shellOf('Regenerate the derived artifacts');
+      const diagnose = shellOf('Diagnose what needs a decision');
+      expect(diagnose).toMatch(/--sdk-wire-log \/tmp\/sdk-wire\.log/);
+      const fn = regen.match(/^\s*sdk_wire_suites\(\) \{\n[\s\S]*?^\s*\}\n/m);
+      expect(fn, 'the sdk_wire_suites function is gone').not.toBeNull();
+      expect(regen).toMatch(/^\s*run_check sdk-wire-coverage sdk_wire_suites$/m);
+      const collector = regen.match(/^\s*run_check\(\) \{\n[\s\S]*?^\s*\}\n/m);
+      expect(collector, 'the run_check function is gone').not.toBeNull();
+      // Run the step's own two functions against a stub `vp`, failing and
+      // passing, under the step's shell options.
+      const dir = mkdtempSync(join(tmpdir(), 'cdkd-wire-step-'));
+      try {
+        for (const [rc, expected] of [
+          [1, 'sdk-wire-coverage'],
+          [0, ''],
+        ] as const) {
+          writeFileSync(join(dir, 'vp'), `#!/bin/sh\necho "stub vp $*"\nexit ${rc}\n`, {
+            mode: 0o755,
+          });
+          const script = [
+            'set -euo pipefail',
+            'failed_checks=""',
+            collector![0],
+            fn![0].replaceAll('/tmp/sdk-wire.log', join(dir, 'sdk-wire.log')),
+            'run_check sdk-wire-coverage sdk_wire_suites',
+            'echo "FAILED=${failed_checks}"',
+          ].join('\n');
+          const out = execFileSync('bash', ['-c', script], {
+            encoding: 'utf8',
+            env: { ...process.env, PATH: `${dir}:${process.env['PATH']}` },
+          });
+          expect(out).toContain(`FAILED=${expected}\n`);
+          expect(readFileSync(join(dir, 'sdk-wire.log'), 'utf8')).toBe(
+            'stub vp test run sdk-wire-coverage\n'
+          );
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('carries the failed-check list ACROSS steps', () => {
       // `|| echo` stops `set -e` aborting and nothing else, so the red never
       // reached the diagnosis — a failing coverage check rendered as "nothing

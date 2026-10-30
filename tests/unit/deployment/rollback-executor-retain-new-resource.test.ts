@@ -23,7 +23,7 @@ import {
   type RollbackExecutorContext,
 } from '../../../src/deployment/rollback-executor.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { awsSdkError } from '../_aws-sdk-error.js';
+import { awsSdkError, relayedAwsSdkError } from '../_aws-sdk-error.js';
 import { displayIdent } from '../../../src/utils/display-safe.js';
 import {
   PASTE_PAYLOADS,
@@ -693,9 +693,14 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
           'where cdkd rollback --orphan cannot reach it: resolve the cause and re-run the rollback of the top-level stack'
         );
       }
-      // The collision text stays in the prose, and the unroutable refusal's
-      // fix-forward pointer ends its sentence rather than offering the command.
-      expect(collision).toContain('Underlying collision: "Queue already exists"');
+      // The collision stays in the prose -- an escaped SDK error named by its
+      // class, never AWS's text (go-to-k/cdkd#2319) -- and the unroutable
+      // refusal's fix-forward pointer ends its sentence rather than offering
+      // the command.
+      expect(collision).toContain(
+        `Underlying collision: "ResourceConflictException. Re-run with verbose logging for AWS's own message."`
+      );
+      expect(collision).not.toContain('Queue already exists');
       expect(unrouted).toContain('fix forward with cdkd deploy. This op is reverted inside');
     });
 
@@ -704,7 +709,7 @@ describe('a replacement rollback honours UpdateReplacePolicy: Retain on the NEW 
       // `Underlying collision:` line, so the prose line (which names `cdkd
       // rollback`) and the `--orphan` line carry no copy of a payload id.
       const errors: Array<{ logicalId?: string; message?: string }> = [];
-      const create = vi.fn((logicalId: string) => Promise.reject(awsSdkError(`Queue ${logicalId} already exists`)));
+      const create = vi.fn((logicalId: string) => Promise.reject(relayedAwsSdkError(`Queue ${logicalId} already exists`)));
       const { ctx } = makeCtx({ create, delete: vi.fn() });
       ctx.recordEvent = (e) => {
         if (e.error) errors.push({ logicalId: e.logicalId, message: e.error.message });

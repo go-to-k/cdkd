@@ -47,6 +47,11 @@ instance-hour.
    (`ModifyInstanceGroups`, polled to `RUNNING`). Asserts the group Id is
    unchanged (in-place, no replacement) and the group has `2` `RUNNING`
    instances.
+2b. **Drift** (issue #5179): one `cdkd drift --json` over the deployed stack.
+   Cloud Control addresses the type by `InstanceGroupId` + `JobFlowId` and
+   refuses the bare group id cdkd records, so the type is deny-listed off the
+   drift fallback. Asserts the group is in `notSupported` and in no
+   `notCompared` entry (before the fix: `readFailed`, exit 2).
 3. **Destroy** and assert the cluster is `TERMINATED` and the VPC / state
    are gone. There is no standalone "delete instance group" API — the group
    is released when the parent cluster terminates (the provider's delete

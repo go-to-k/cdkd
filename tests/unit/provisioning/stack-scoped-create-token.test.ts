@@ -3,7 +3,7 @@ import {
   allowUnscopedCreateTokensForTests,
   stackScopedCreateToken,
 } from '../../../src/provisioning/providers/idempotency-token.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 /**
  * go-to-k/cdkd#4428: the deterministic file-system create tokens (EFS
@@ -18,7 +18,7 @@ describe('stackScopedCreateToken', () => {
   });
 
   const token = (stack: string, logicalId = 'MyFs', inputs: unknown[] = ['LUSTRE', ['subnet-1']]) =>
-    withStackName(stack, () =>
+    withStackScope({ stackName: stack, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       stackScopedCreateToken({ logicalId, immutableInputs: inputs, maxLength: 63 })
     );
 
@@ -60,10 +60,10 @@ describe('stackScopedCreateToken', () => {
     const longA = `${'A'.repeat(200)}1`;
     const longB = `${'A'.repeat(200)}2`;
     for (const maxLength of [63, 64]) {
-      const a = withStackName('DevStack', () =>
+      const a = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         stackScopedCreateToken({ logicalId: longA, immutableInputs: [], maxLength })
       );
-      const b = withStackName('DevStack', () =>
+      const b = withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         stackScopedCreateToken({ logicalId: longB, immutableInputs: [], maxLength })
       );
       expect(a.length).toBe(maxLength);

@@ -1203,7 +1203,7 @@ set +e
 CDKD_TEST_PREFLIGHT_ARM=H node "${LOCAL_DIST}" deploy "${PREFLIGHT_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes >"${PREFLIGHT_LOG}" 2>&1
+  --yes --verbose >"${PREFLIGHT_LOG}" 2>&1
 ARM_H_RC=$?
 set -e
 cat "${PREFLIGHT_LOG}"
@@ -1214,8 +1214,15 @@ fi
 # AWS's own rejection, from UpdateUserPool. Anchored on the provider's
 # catch-wrap ("Failed to update Cognito User Pool ..."), which a cdkd
 # PRE-FLIGHT refusal never carries even though its text quotes the same AWS
-# sentence -- so this line cannot be satisfied by a refusal that sent nothing.
-if ! grep -q "Failed to update PreflightWebAuthnOnPool: Failed to update Cognito User Pool PreflightWebAuthnOnPool: .*Only PASSWORD and WEB_AUTHN (if configured) can be enabled as an auth factor if MFA is enabled" "${PREFLIGHT_LOG}"; then
+# sentence -- so neither line can be satisfied by a refusal that sent nothing.
+# The thrown wrap names AWS's error by its class only (go-to-k/cdkd#2319); the
+# sentence itself is on the wrap's --verbose debug line.
+if ! grep -qE "Failed to update PreflightWebAuthnOnPool: Failed to update Cognito User Pool PreflightWebAuthnOnPool: [A-Za-z]+\. Re-run with --verbose" "${PREFLIGHT_LOG}"; then
+  echo "FAIL: arm H did not fail with the UpdateUserPool catch-wrap (error class + --verbose pointer) for PreflightWebAuthnOnPool" >&2
+  grep -i "PreflightWebAuthnOnPool" "${PREFLIGHT_LOG}" >&2 || true
+  exit 1
+fi
+if ! grep -q "Failed to update Cognito User Pool PreflightWebAuthnOnPool: .*Only PASSWORD and WEB_AUTHN (if configured) can be enabled as an auth factor if MFA is enabled" "${PREFLIGHT_LOG}"; then
   echo "FAIL: arm H did not fail with AWS's own UpdateUserPool rejection for PreflightWebAuthnOnPool" >&2
   grep -i "PreflightWebAuthnOnPool" "${PREFLIGHT_LOG}" >&2 || true
   exit 1

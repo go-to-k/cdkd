@@ -96,6 +96,9 @@ describe('runDestroyForStack honors the non-retryable marker (issue #1778)', () 
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn().mockResolvedValue(undefined),
+        // Under-lock re-read (#5220): `makeState()` always returns the same
+        // shape, so a fresh call matches whatever snapshot the case passed.
+        getState: vi.fn(async () => ({ state: makeState(), etag: 'e' })),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {

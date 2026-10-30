@@ -76,6 +76,7 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -91,8 +92,18 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import {
+  markNonRetryable,
+  wrapMaskedAwsError,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -244,6 +255,7 @@ interface CfnTargetDescription {
   Id?: string;
   Port?: number | string;
   AvailabilityZone?: string;
+  QuicServerId?: string;
 }
 
 // ─── Targets reads (go-to-k/cdkd#3989) ──────────────────────────────
@@ -263,8 +275,8 @@ type TargetsSide = 'desired' | 'recorded';
 
 type TargetsRead =
   | { kind: 'list'; items: CfnTargetDescription[] }
-  // `onlySecret`: well-shaped, and malformed ONLY because an `Id` holds a
-  // dynamic reference or its mask.
+  // `onlySecret`: well-shaped, and malformed ONLY because an `Id` or
+  // `QuicServerId` holds a dynamic reference or its mask.
   | { kind: 'malformed'; onlySecret: boolean };
 
 /** An integer port, as a number or a digit string (CFn coerces scalars). */
@@ -285,9 +297,19 @@ function isWellFormedTarget(entry: unknown, side: TargetsSide, ignoreSecrets = f
   const e = entry as Record<string, unknown>;
   const id = e['Id'];
   if (typeof id !== 'string' || id.length === 0) return false;
-  if (side === 'desired' && !ignoreSecrets && holdsSecretDerivedEntry(id)) return false;
+  // The `QuicServerId` is a wire value too: a recorded reference or mask there
+  // would reach RegisterTargets / DeregisterTargets as a literal token.
+  if (
+    side === 'desired' &&
+    !ignoreSecrets &&
+    (holdsSecretDerivedEntry(id) || holdsSecretDerivedEntry(e['QuicServerId']))
+  ) {
+    return false;
+  }
   if (e['Port'] != null && !isTargetPort(e['Port'])) return false;
   const az = e['AvailabilityZone'];
+  const quic = e['QuicServerId'];
+  if (quic != null && (typeof quic !== 'string' || quic.length === 0)) return false;
   return az == null || (typeof az === 'string' && az.length > 0);
 }
 
@@ -305,12 +327,14 @@ function readTargets(value: unknown, side: TargetsSide): TargetsRead {
 }
 
 /**
- * A recorded `Targets` list minus every entry whose `Id` is secret-derived: the
+ * A recorded `Targets` list minus every entry whose `Id` or `QuicServerId` is secret-derived: the
  * diff would otherwise deregister a literal `{{resolve:...}}` id. Dropping it
  * only misses that one removal, the safe direction.
  */
 function removableRecordedTargets(items: CfnTargetDescription[]): CfnTargetDescription[] {
-  return items.filter((e) => !holdsSecretDerivedEntry(e.Id));
+  return items.filter(
+    (e) => !holdsSecretDerivedEntry(e.Id) && !holdsSecretDerivedEntry(e.QuicServerId)
+  );
 }
 
 /**
@@ -343,6 +367,7 @@ function toTargetDescriptions(
       Id: e.Id as string,
       ...(port !== undefined && { Port: port }),
       ...(e.AvailabilityZone != null && { AvailabilityZone: e.AvailabilityZone }),
+      ...(e.QuicServerId != null && { QuicServerId: e.QuicServerId }),
     };
   });
 }
@@ -350,13 +375,13 @@ function toTargetDescriptions(
 /** The refusal's cause clause for a desired list refused only for a dynamic reference. */
 function targetsSecretCause(read: TargetsRead): string {
   return read.kind === 'malformed' && read.onlySecret
-    ? ' (an Id holds a dynamic reference or its mask, which names no target Elastic Load ' +
+    ? ' (an Id or QuicServerId holds a dynamic reference or its mask, which names no target Elastic Load ' +
         'Balancing accepts)'
     : '';
 }
 
 const TARGETS_WHAT =
-  'targets, each with a string Id and, where given, an integer Port and a string AvailabilityZone';
+  'targets, each with a string Id and, where given, an integer Port, a string AvailabilityZone and a string QuicServerId';
 
 /**
  * The removal resolver of all three attribute bags: a key REMOVED from
@@ -534,11 +559,13 @@ function elbv2ArnScope(resourceType: string, physicalId: string): string | undef
 
 /**
  * Issue #1160: Listener properties whose REMOVAL `ModifyListener` does not
- * apply. The API keeps any field it is not sent, and cdkd sends no reset:
- * CloudFormation's behavior on these removals is unmeasured, and a reset value
- * (`AlpnPolicy: ['None']`, `MutualAuthentication: { Mode: 'off' }`) is
- * rejected on a listener whose protocol does not take the field. Each is
- * named in `updateListener`'s own warning instead.
+ * apply. The API keeps any field it is not sent, and cdkd sends no reset,
+ * because CloudFormation keeps each of them too (CFn A/B us-east-1
+ * 2026-10-20: every one of the six, removed alone and removed beside a
+ * DefaultActions change, kept its live value, and no update failed). Each
+ * still changes how a client connects (port, protocol, TLS policy,
+ * certificate, ALPN, mTLS), so a kept value can mislead, and each is named in
+ * `updateListener`'s own warning.
  */
 const LISTENER_LEFT_IN_PLACE_ON_REMOVAL = [
   'AlpnPolicy',
@@ -563,10 +590,10 @@ const CLEARED_BY_TLS_DOWNGRADE: ReadonlySet<string> = new Set(['SslPolicy', 'Cer
 
 /**
  * The ONE warning line for {@link LISTENER_LEFT_IN_PLACE_ON_REMOVAL} removals.
- * Names are template-borne, so they go through `safeMsg`. It claims nothing
- * about CloudFormation's behavior. A rollback revert restores an earlier
- * state record, so there the property is one the failed deploy ADDED, and
- * the line says that instead.
+ * Names are template-borne, so they go through `safeMsg`. The deploy line
+ * says CloudFormation keeps the value too (the CFn A/B above). A rollback
+ * revert restores an earlier state record, so there the property is one the
+ * failed deploy ADDED, and the line says that instead.
  */
 const listenerLeftInPlaceWarning = (
   logicalId: string,
@@ -577,7 +604,7 @@ const listenerLeftInPlaceWarning = (
   const subject = one ? 'property' : 'properties';
   return caller === 'rollback'
     ? safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ModifyListener keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
-    : safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; ModifyListener keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
+    : safeMsg`${logicalId} (AWS::ElasticLoadBalancingV2::Listener): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyListener keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
 };
 
 /**
@@ -604,6 +631,41 @@ export class ELBv2Provider implements ResourceProvider {
   private elbv2Client?: ElasticLoadBalancingV2Client;
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('ELBv2Provider');
+
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision, except from a post-create
+   * wiring step's failure ({@link markAuxiliaryFailure}), where "it" would read
+   * as this resource (#3826). A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   /** `--remove-protection` flips per load balancer, kept across `delete()` re-entry (#2204). */
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
@@ -747,7 +809,8 @@ export class ELBv2Provider implements ResourceProvider {
         'ListenerAttributes',
         'Tags',
         // Cleared by AWS on an HTTPS -> HTTP / TLS -> TCP change, otherwise
-        // left in place and named in updateListener's own warning (no reset).
+        // left in place, as CloudFormation leaves them (CFn A/B 2026-10-20),
+        // and named in updateListener's own warning (no reset).
         ...LISTENER_LEFT_IN_PLACE_ON_REMOVAL,
       ]),
     ],
@@ -836,8 +899,9 @@ export class ELBv2Provider implements ResourceProvider {
   /**
    * Mask a caught AWS error's message before it is interpolated into a line
    * this provider logs (issue #2050, review round 2). A thrown `create()` /
-   * `update()` failure goes through {@link wrapMaskedError} instead, which
-   * masks the same text and also stamps the wrap.
+   * `update()` / `delete()` failure goes through {@link wrapCaughtError}
+   * instead, which names an AWS-authored failure by its class and masks the
+   * rest the same way; the wrap is stamped when it withholds or masks.
    *
    * Masks `error.message` rather than the assembled sentence ON PURPOSE. The
    * two are NOT equivalent: handing the masker the raw message can reach
@@ -848,7 +912,29 @@ export class ELBv2Provider implements ResourceProvider {
    */
   private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
     const mask = maskerOrIdentity(maskSecrets);
-    return mask(error instanceof Error ? error.message : String(error));
+    // `.detail`: the same text, without out-throwing the cleanup catch it runs
+    // in on a value `String()` cannot convert (go-to-k/cdkd#3361).
+    return mask(describeAwsFailure(error).detail);
+  }
+
+  /**
+   * The cleanup-failure text a partial-create `warn` quotes after `head`, with
+   * its closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
+   * its CLASS at warn, since a denied `Delete*` names the caller's assumed-role
+   * ARN; AWS's own text goes to `debug` under the same `head`, masked. A
+   * cdkd-authored or transport error keeps its text, masked as
+   * {@link maskErrorMessage} does.
+   */
+  private cleanupFailureText(
+    head: string,
+    cleanupError: unknown,
+    maskSecrets: SecretMasker | undefined
+  ): string {
+    const failure = describeAwsFailure(cleanupError);
+    if (!failure.redacted) return `${this.maskErrorMessage(cleanupError, maskSecrets)}.`;
+    const mask = maskerOrIdentity(maskSecrets);
+    this.logger.debug(mask(`${head}${mask(failure.detail)}`));
+    return mask(failure.summary);
   }
 
   /**
@@ -887,34 +973,6 @@ export class ELBv2Provider implements ResourceProvider {
     } else {
       this.logger.debug(debugText);
     }
-  }
-
-  /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked RAW, as {@link maskErrorMessage} does (issue #2050).
-   *
-   * NOT a duplicate of {@link maskedRetryLogger}, and strictly WIDER than it.
-   * `withRetry` rethrows the RAW error, and `deploy-engine.ts` prints the
-   * resulting message at ERROR — i.e. at DEFAULT verbosity — so a masked
-   * give-up `warn` was being followed one line later by the identical text
-   * unmasked. It is also the ONLY disclosure surface for a NON-RETRYABLE
-   * rejection, where `withRetry` emits nothing at all: its give-up summary is
-   * gated on `propagationRetries > 0 || serverErrorRetries > 0`, and a
-   * validation error that fails on attempt 0 satisfies neither.
-   *
-   * The `cause` stays the ORIGINAL, unmasked error, and a message the mask
-   * changed is stamped so the retry classifiers read that chain rather than
-   * the masked message (`wrapMaskedAwsError`, issue #4259): a secret that
-   * spells part of the retry table's wording would otherwise turn a transient
-   * failure terminal. A method, so `gen-update-wrap-coverage` sees the catch
-   * that throws it as a wrap.
-   */
-  private wrapMaskedError(
-    mask: MaskerFn,
-    error: unknown,
-    build: (maskedText: string) => ProvisioningError
-  ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -1003,7 +1061,7 @@ export class ELBv2Provider implements ResourceProvider {
               loadBalancerNameFromArn(physicalId)
             )
           : maskerOrIdentity(context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -1269,6 +1327,8 @@ export class ELBv2Provider implements ResourceProvider {
       const lbArn = lb.LoadBalancerArn;
 
       this.logger.debug(`Successfully created LoadBalancer ${logicalId}: ${lbArn}`);
+      // go-to-k/cdkd#5511: only a load balancer the name was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, lbArn);
 
       // CreateLoadBalancerCommand has succeeded — AWS has now committed
       // the LB. If the subsequent ModifyLoadBalancerAttributesCommand
@@ -1409,11 +1469,13 @@ export class ELBv2Provider implements ResourceProvider {
         } else {
           try {
             await this.getClient().send(new DeleteLoadBalancerCommand({ LoadBalancerArn: lbArn }));
+            retractCreatedResource(logicalId, resourceType, lbArn);
             this.logger.debug(
               `Cleaned up partially-created LoadBalancer ${logicalId} (${lbArn}) after wiring failure`
             );
           } catch (cleanupError) {
             leftBehindArn = lbArn;
+            const lbCleanupHead = `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): `;
             this.logger.warn(
               // Masked for uniformity with the sibling lines in this same `try`
               // (issue #2063), matching the Listener / TargetGroup create paths.
@@ -1421,7 +1483,7 @@ export class ELBv2Provider implements ResourceProvider {
               // property value reaching here would be surprising — but
               // "surprising" is not "impossible", and an unmasked line sitting
               // beside masked ones is what a later author copies.
-              `Failed to clean up partially-created LoadBalancer ${logicalId} (${lbArn}): ${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
+              `${lbCleanupHead}${this.cleanupFailureText(lbCleanupHead, cleanupError, maskSecrets)} Manual deletion may be required before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-load-balancer --load-balancer-arn ${lbArn}`.render()}`
             );
           }
         }
@@ -1441,7 +1503,7 @@ export class ELBv2Provider implements ResourceProvider {
       // NON-RETRYABLE `CreateLoadBalancer` rejection — nothing on this path
       // goes through `withRetry`, so there is no give-up summary behind it.
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1962,6 +2024,7 @@ export class ELBv2Provider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'deletion_protection.enabled',
           observe: async () => {
             const resp = await this.getClient().send(
@@ -1986,7 +2049,9 @@ export class ELBv2Provider implements ResourceProvider {
       } catch (flipError) {
         if (!this.isNotFoundError(flipError)) {
           this.logger.debug(
-            `Could not disable deletion_protection.enabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable deletion_protection.enabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
       }
@@ -2019,13 +2084,24 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete LoadBalancer ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete LoadBalancer ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2131,6 +2207,8 @@ export class ELBv2Provider implements ResourceProvider {
       const tgArn = tg.TargetGroupArn;
 
       this.logger.debug(`Successfully created TargetGroup ${logicalId}: ${tgArn}`);
+      // go-to-k/cdkd#5511: only a target group the name was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, tgArn);
 
       // TargetGroupAttributes and Targets ride on separate post-create calls
       // (ModifyTargetGroupAttributes / RegisterTargets). CreateTargetGroup has
@@ -2187,19 +2265,20 @@ export class ELBv2Provider implements ResourceProvider {
           }
           try {
             await this.getClient().send(new DeleteTargetGroupCommand({ TargetGroupArn: tgArn }));
+            retractCreatedResource(logicalId, resourceType, tgArn);
             this.logger.debug(
               `Cleaned up partially-created TargetGroup ${logicalId} (${tgArn}) after wiring failure`
             );
           } catch (cleanupError) {
             leftBehindArn = tgArn;
+            const tgCleanupHead = `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): `;
             this.logger.warn(
               // Masked for uniformity with the sibling lines in this same `try`
               // (issue #2050). The cleanup call carries only a physical ARN, so a
               // resolved property value reaching here would be surprising — but
               // "surprising" is not "impossible", and an unmasked line sitting
               // beside masked ones is what a later author copies.
-              `Failed to clean up partially-created TargetGroup ${logicalId} (${tgArn}): ` +
-                `${this.maskErrorMessage(cleanupError, maskSecrets)}. Manual deletion may be ` +
+              `${tgCleanupHead}${this.cleanupFailureText(tgCleanupHead, cleanupError, maskSecrets)} Manual deletion may be ` +
                 `required before the next deploy: ` +
                 `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-target-group --target-group-arn ${tgArn}`.render()}`
             );
@@ -2216,7 +2295,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2389,39 +2468,84 @@ export class ELBv2Provider implements ResourceProvider {
 
       // ─── Targets ─────────────────────────────────────────────────────
       // RegisterTargets / DeregisterTargets diff keyed on the full
-      // (Id, Port, AvailabilityZone) tuple — a changed Port registers the new
+      // (Id, Port, AvailabilityZone, QuicServerId) tuple — a changed Port registers the new
       // tuple and deregisters the old one. Register first so a target whose
-      // spelling changed never has a window with zero registrations.
+      // spelling changed never has a window with zero registrations; the one
+      // exception is a QuicServerId-only change (see `deregisterFirst`), which
+      // AWS only accepts as deregister then register.
       // BOTH sides are normalized against the SAME group port so the keys are
       // comparable — see toTargetDescriptions' note on why the omitted-Port
       // case is a destructive diff rather than a cosmetic one. Both were read
       // by `readUpdateTargets` above.
       const targetKey = (t: TargetDescription) =>
-        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
+        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null, t.QuicServerId ?? null]);
       const oldTargetKeys = new Set(oldTargets.map(targetKey));
       const newTargetKeys = new Set(newTargets.map(targetKey));
       const targetsToRegister = newTargets.filter((t) => !oldTargetKeys.has(targetKey(t)));
       const targetsToDeregister = oldTargets.filter((t) => !newTargetKeys.has(targetKey(t)));
+      // A target whose only change is its QuicServerId sits in BOTH sets under
+      // the same (Id, Port, AvailabilityZone). AWS cannot modify a registered
+      // target's server id: it must be deregistered, then registered again. So
+      // those deregister FIRST: measured on a QUIC target group, RegisterTargets
+      // for a different server id while one is registered is REFUSED ("deregister
+      // the target first"). A change TO an absent server id is the exception: a
+      // QUIC target group refuses a target without one, so deregistering first
+      // would take the live target down for a register that cannot succeed;
+      // that case stays register-first and AWS's refusal leaves it intact.
+      // (A secret-derived recorded server id never reaches this path: its tuple
+      // is filtered out of the recorded side, so there is nothing to pair.)
+      const baseKey = (t: TargetDescription) =>
+        JSON.stringify([t.Id, t.Port ?? null, t.AvailabilityZone ?? null]);
+      const quicRegisterBaseKeys = new Set(
+        targetsToRegister.filter((t) => t.QuicServerId !== undefined).map(baseKey)
+      );
+      const deregisterFirst = targetsToDeregister.filter((t) =>
+        quicRegisterBaseKeys.has(baseKey(t))
+      );
+      const deregisterAfter = targetsToDeregister.filter(
+        (t) => !quicRegisterBaseKeys.has(baseKey(t))
+      );
+      const sendDeregister = async (targets: TargetDescription[]): Promise<void> => {
+        if (targets.length === 0) return;
+        await this.getClient().send(
+          new DeregisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targets })
+        );
+        this.logger.debug(`Deregistered ${targets.length} target(s) for ${logicalId}`);
+      };
+      // Wait BEFORE the early deregister, so the unregistered window is one
+      // RegisterTargets call.
       if (targetsToRegister.length > 0) {
         await this.waitForLambdaTargetsActive(
           logicalId,
           properties['TargetType'],
           targetsToRegister
         );
-        await this.getClient().send(
-          new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targetsToRegister })
-        );
+      }
+      await sendDeregister(deregisterFirst);
+      if (targetsToRegister.length > 0) {
+        try {
+          await this.getClient().send(
+            new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: targetsToRegister })
+          );
+        } catch (registerError) {
+          if (deregisterFirst.length === 0) throw registerError;
+          // The early deregister already took those targets down: put them back.
+          try {
+            await this.getClient().send(
+              new RegisterTargetsCommand({ TargetGroupArn: physicalId, Targets: deregisterFirst })
+            );
+          } catch (reRegisterError) {
+            throw new Error(
+              `${deregisterFirst.length} target(s) were deregistered to change their QuicServerId and ` +
+                `could not be registered again; register them with their previous QuicServerId`,
+              { cause: new AggregateError([registerError, reRegisterError]) }
+            );
+          }
+          throw registerError;
+        }
         this.logger.debug(`Registered ${targetsToRegister.length} target(s) for ${logicalId}`);
       }
-      if (targetsToDeregister.length > 0) {
-        await this.getClient().send(
-          new DeregisterTargetsCommand({
-            TargetGroupArn: physicalId,
-            Targets: targetsToDeregister,
-          })
-        );
-        this.logger.debug(`Deregistered ${targetsToDeregister.length} target(s) for ${logicalId}`);
-      }
+      await sendDeregister(deregisterAfter);
 
       // Describe to get current attributes
       const describeResponse = await this.getClient().send(
@@ -2448,7 +2572,7 @@ export class ELBv2Provider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2494,13 +2618,24 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete TargetGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete TargetGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2595,6 +2730,8 @@ export class ELBv2Provider implements ResourceProvider {
       const listenerArn = listener.ListenerArn;
 
       this.logger.debug(`Successfully created Listener ${logicalId}: ${listenerArn}`);
+      // go-to-k/cdkd#5511: only a listener the port was free for.
+      if (heldBefore === 'free') reportCreatedResource(logicalId, resourceType, listenerArn);
 
       // CreateListener does NOT accept ListenerAttributes (e.g.
       // `tcp.idle_timeout.seconds`, `routing.http.response.server.enabled`) —
@@ -2690,16 +2827,17 @@ export class ELBv2Provider implements ResourceProvider {
         }
         try {
           await this.getClient().send(new DeleteListenerCommand({ ListenerArn: listenerArn }));
+          retractCreatedResource(logicalId, resourceType, listenerArn);
           this.logger.debug(
             `Cleaned up partially-created Listener ${logicalId} (${listenerArn}) after attributes-wiring failure`
           );
         } catch (cleanupError) {
           leftBehindArn = listenerArn;
+          const listenerCleanupHead = `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): `;
           this.logger.warn(
             // Masked for the same reason as the TargetGroup cleanup above
             // (issue #2050).
-            `Failed to clean up partially-created Listener ${logicalId} (${listenerArn}): ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Outside a rollback's re-create, the failed deploy's rollback ` +
+            `${listenerCleanupHead}${this.cleanupFailureText(listenerCleanupHead, cleanupError, maskSecrets)} Outside a rollback's re-create, the failed deploy's rollback ` +
               `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
               `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws elbv2 delete-listener --listener-arn ${listenerArn}`.render()}`
@@ -2721,7 +2859,7 @@ export class ELBv2Provider implements ResourceProvider {
       // classifier walks it for `$metadata`, so only the human-readable
       // message is masked.
       const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2754,7 +2892,8 @@ export class ELBv2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
-    // Issue #1160: a removed property ModifyListener is not sent stays live.
+    // Issue #1160: a removed property ModifyListener is not sent stays live,
+    // as CloudFormation leaves it (LISTENER_LEFT_IN_PLACE_ON_REMOVAL).
     // Exempt: SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP
     // change, which AWS drops itself. Named once, and only after the update
     // SUCCEEDED (the shared caller's warning has the same timing). Not on
@@ -2906,7 +3045,7 @@ export class ELBv2Provider implements ResourceProvider {
       // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
       // create path above.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -2952,13 +3091,24 @@ export class ELBv2Provider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Listener ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Listener ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3164,17 +3314,44 @@ export class ELBv2Provider implements ResourceProvider {
     const holds = (want: TargetDescription, have: TargetDescription): boolean =>
       want.Id === have.Id &&
       (want.Port ?? null) === (have.Port ?? null) &&
+      (want.AvailabilityZone === undefined || want.AvailabilityZone === have.AvailabilityZone) &&
+      (want.QuicServerId === undefined || want.QuicServerId === have.QuicServerId);
+    // A desired entry that names ANOTHER server id for a live Id / Port replaces it.
+    const replaces = (want: TargetDescription, have: TargetDescription): boolean =>
+      want.QuicServerId !== undefined &&
+      have.QuicServerId !== undefined &&
+      want.Id === have.Id &&
+      (want.Port ?? null) === (have.Port ?? null) &&
       (want.AvailabilityZone === undefined || want.AvailabilityZone === have.AvailabilityZone);
-    const retained = live.filter((have) => !newTargets.some((want) => holds(want, have)));
+    const retained = live.filter(
+      (have) => !newTargets.some((want) => holds(want, have) || replaces(want, have))
+    );
     if (retained.length > 0) {
       this.logger.warn(
         safeMsg`The recorded Targets of TargetGroup ${logicalId} is not a list cdkd can read, so cdkd read the registered targets from Elastic Load Balancing; the target group holds ${retained.length} target(s) the desired Targets does not name, and cdkd left them registered. Deregister them yourself if they are no longer wanted.`
       );
     }
-    return {
-      newTargets,
-      oldTargets: newTargets.filter((want) => live.some((have) => holds(want, have))),
-    };
+    // A live target with the desired Id / Port but ANOTHER server id is what the
+    // desired entry changes: carry the live tuple as the old side so the diff
+    // deregisters it before registering the new one (AWS refuses the register
+    // while the old server id is held).
+    const oldTargets: TargetDescription[] = [];
+    for (const want of newTargets) {
+      if (live.some((have) => holds(want, have))) {
+        oldTargets.push(want);
+        continue;
+      }
+      const changed = live.find((have) => replaces(want, have));
+      if (changed !== undefined) {
+        oldTargets.push({
+          Id: changed.Id,
+          ...(changed.Port !== undefined && { Port: changed.Port }),
+          ...(want.AvailabilityZone !== undefined && { AvailabilityZone: want.AvailabilityZone }),
+          QuicServerId: changed.QuicServerId,
+        });
+      }
+    }
+    return { newTargets, oldTargets };
   }
 
   /**
@@ -3467,8 +3644,8 @@ export class ELBv2Provider implements ResourceProvider {
    * Two AWS-SUBSTITUTED values are dropped, because echoing back a value the
    * template never wrote is phantom drift against a `properties`-fallback
    * baseline — and, worse, a DESTRUCTIVE one: `updateTargetGroup` keys its
-   * register / deregister diff on the whole `(Id, Port, AvailabilityZone)`
-   * tuple, so one extra member makes the SAME live target read as a different
+   * register / deregister diff on the whole `(Id, Port, AvailabilityZone,
+   * QuicServerId)` tuple, so one extra member makes the SAME live target read as a different
    * one and `--revert` deregisters it.
    *
    *  - `Port` when it equals the target group's own port — what AWS
@@ -3510,10 +3687,15 @@ export class ELBv2Provider implements ResourceProvider {
         if (typeof id !== 'string' || id.length === 0) continue;
         const port = desc.Target?.Port;
         const az = desc.Target?.AvailabilityZone;
+        const quicServerId = desc.Target?.QuicServerId;
         targets.push({
           Id: id,
           ...(port !== undefined && port !== groupPort && { Port: port }),
           ...(isIpTargetGroup && az !== undefined && az !== 'all' && { AvailabilityZone: az }),
+          // Echoed: the diff key includes it, so omitting it would make a
+          // registered QUIC target read as a different tuple and be deregistered.
+          ...(typeof quicServerId === 'string' &&
+            quicServerId.length > 0 && { QuicServerId: quicServerId }),
         });
       }
       result['Targets'] = targets;

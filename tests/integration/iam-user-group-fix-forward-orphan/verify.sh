@@ -469,6 +469,18 @@ for lid in GroupA GroupC; do
     exit 1
   fi
 done
+# go-to-k/cdkd#2319: each refused cleanup is named by its error class. AWS's
+# denial names this run's restricted role and the account id; its text goes to
+# the --verbose debug line only.
+for lid in UserA UserC GroupA GroupC; do
+  kind=user
+  case "${lid}" in Group*) kind=group ;; esac
+  if ! printf '%s' "${INJECT_FLAT}" \
+      | grep -qE "Failed to clean up partially-created IAM ${kind} ${lid} \([^)]*\): [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\. Manual deletion"; then
+    echo "[verify] FAIL: ${lid}'s refused-cleanup warning is not '...: <ErrorClass>. Re-run with --verbose for AWS's own message.' (go-to-k/cdkd#2319; output above)" >&2
+    exit 1
+  fi
+done
 STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 for lid in UserA UserC GroupA GroupC; do
   if [ "$(printf '%s' "${STATE_2}" | jq --arg l "${lid}" '.resources | has($l)')" != "false" ]; then

@@ -3,9 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // Issue #1160: removing AlpnPolicy, MutualAuthentication, Certificates,
 // SslPolicy, Port or Protocol from a listener's template sent nothing for it,
 // so ModifyListener kept the old value, and cdkd said nothing. cdkd still
-// sends no reset (CloudFormation's behavior on these removals is unmeasured)
-// and now names each one in a warning, except SslPolicy / Certificates on an
-// HTTPS -> HTTP or TLS -> TCP change, which AWS drops itself.
+// sends no reset, because CloudFormation keeps each of them too (CFn A/B
+// us-east-1 2026-10-20), and names each one in a warning that says so, except
+// SslPolicy / Certificates on an HTTPS -> HTTP or TLS -> TCP change, which AWS
+// drops itself.
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
 
@@ -92,9 +93,10 @@ describe('ELBv2 Listener update: a removed property ModifyListener keeps (#1160)
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain('MyListener (AWS::ElasticLoadBalancingV2::Listener)');
     expect(warnings()[0]).toContain('property AlpnPolicy was removed from the template');
-    expect(warnings()[0]).toContain('the current AWS value stays in place');
-    // No claim about what CloudFormation would do: it is unmeasured.
-    expect(warnings()[0]).not.toContain('CloudFormation');
+    // CloudFormation keeps a removed AlpnPolicy too (CFn A/B 2026-10-20).
+    expect(warnings()[0]).toContain(
+      'was removed from the template and keeps its current AWS value, as CloudFormation leaves it;'
+    );
   });
 
   it('a removed MutualAuthentication is not sent and is named in the warning', async () => {
@@ -129,7 +131,9 @@ describe('ELBv2 Listener update: a removed property ModifyListener keeps (#1160)
     expect(input['Port']).toBeUndefined();
     expect(input['Protocol']).toBeUndefined();
     expect(warnings()).toHaveLength(1);
-    expect(warnings()[0]).toContain('properties Port, Protocol were removed');
+    expect(warnings()[0]).toContain(
+      'properties Port, Protocol were removed from the template and keep their current AWS value, as CloudFormation leaves them;'
+    );
   });
 
   it('a removed Protocol keeps the live protocol, so a removed SslPolicy is still named', async () => {
@@ -231,6 +235,8 @@ describe('ELBv2 Listener update: a removed property ModifyListener keeps (#1160)
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toContain('is absent from the state being restored');
     expect(warnings()[0]).toContain('the rollback leaves the value the failed deploy applied');
+    // The CFn A/B measured template removals, not a rollback replay.
+    expect(warnings()[0]).not.toContain('CloudFormation');
   });
 
   it('warns nothing when ModifyListener fails', async () => {

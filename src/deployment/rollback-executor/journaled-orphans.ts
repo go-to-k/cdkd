@@ -24,7 +24,8 @@ import {
 } from '../../state/malformed-resources-bag.js';
 import type { Logger } from '../../types/config.js';
 import { logicalIdShown, resourceTypeShown } from '../../provisioning/composite-id.js';
-import { withSkipPrefix, withStackName } from '../../provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { pasteableCommand, withheldTargetClause } from '../../utils/pasteable-command.js';
@@ -272,6 +273,8 @@ export async function deleteJournaledOrphans(
   orphans: JournaledOrphans,
   stateResources: Record<string, ResourceState>,
   stackName: string,
+  /** The stack's instance id (go-to-k/cdkd#5064): its record's, `undefined` for a legacy one. */
+  stackInstanceId: string | undefined,
   ctx: RollbackExecutorContext,
   options: {
     isInterrupted?: () => boolean;
@@ -287,6 +290,11 @@ export async function deleteJournaledOrphans(
      * schema v11 holds such a value in plaintext. `cdkd destroy` re-binds them.
      */
     noEchoValues?: RecordedSecretValues | undefined;
+    /**
+     * go-to-k/cdkd#5064 phase 2: the stack's retired name generations, so a
+     * re-added logical id's name derives as its record's create did.
+     */
+    retiredNameGenerations?: Record<string, number> | undefined;
   } = {}
 ): Promise<{
   failures: number;
@@ -349,15 +357,22 @@ export async function deleteJournaledOrphans(
     const ops = [...(companions ?? []), ...orphanOps];
     const replay = (): ReturnType<typeof replayFailedOperations> =>
       withPrintingSecrets(printing, () =>
-        withStackName(stackName, () =>
-          replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
-            // A destroy run, not a rollback: its own run events frame these
-            // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
-            emitEnvelope: false,
-            inlinePolicyWriters,
-            forDestroy: true,
-            ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
-          })
+        withStackScope(
+          nameScopeOf(stackName, stackInstanceId, {
+            resources: stateResources,
+            ...(options.retiredNameGenerations !== undefined && {
+              retiredNameGenerations: options.retiredNameGenerations,
+            }),
+          }),
+          () =>
+            replayFailedOperations(ops, stateResources, stackName, maskedCtx, {
+              // A destroy run, not a rollback: its own run events frame these
+              // ops, so no ROLLBACK_STARTED / ROLLBACK_FINISHED envelope.
+              emitEnvelope: false,
+              inlinePolicyWriters,
+              forDestroy: true,
+              ...(options.isInterrupted && { isInterrupted: options.isInterrupted }),
+            })
         )
       );
     const result =
@@ -450,6 +465,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
     | 'dropRollbackJournalFailedOperations'
   >;
   stackName: string;
+  /** The stack's instance id (go-to-k/cdkd#5064): its record's, `undefined` for a legacy one. */
+  stackInstanceId: string | undefined;
   region: string;
   /**
    * The stack's resources after the deploy; undefined when its record cannot
@@ -458,6 +475,8 @@ export async function settleJournaledOrphansOnSuccess(args: {
   stateResources: Record<string, ResourceState> | undefined;
   /** The record's rollback-orphan records (the caller guarded the container). */
   rollbackOrphans: unknown;
+  /** go-to-k/cdkd#5064 phase 2: the record's retired name generations. */
+  retiredNameGenerations?: Record<string, number> | undefined;
   /** This deploy's completed ops, newer than every segment. */
   newerOperations: readonly CompletedOperation[];
   /** This deploy's run id (see `loadJournaledOrphans`). */
@@ -575,12 +594,17 @@ export async function settleJournaledOrphansOnSuccess(args: {
         acting,
         { ...stateResources },
         stackName,
+        args.stackInstanceId,
         // go-to-k/cdkd#4658 / #4696: the replay's delete asks the holder scan
         // and the identity of a journaled orphan; the ones this settle just
         // proved are not asked again (no second identity read).
         { ...ctx, writtenThisRun, foreignHolder: args.foreignHolder, orphanDeleteProven: proven },
         // The warning below names `--drop-failed` itself.
-        { pointAtDrop: false, ...(args.isInterrupted && { isInterrupted: args.isInterrupted }) }
+        {
+          pointAtDrop: false,
+          ...(args.isInterrupted && { isInterrupted: args.isInterrupted }),
+          retiredNameGenerations: args.retiredNameGenerations,
+        }
       );
       leftInPlace = outcome.leftInPlace;
       failedDeletes = outcome.failedLogicalIds;

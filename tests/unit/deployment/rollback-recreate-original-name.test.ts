@@ -63,7 +63,7 @@ import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-pr
 import {
   generateResourceNameWithFallback,
   withSkipPrefix,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
@@ -176,7 +176,7 @@ function replaceRole(oldId: string, newId: string): {
 
 /** The replay, inside the scope a segment recorded with `skipPrefix` gets. */
 function replayIn<T>(skipPrefix: boolean, fn: () => Promise<T>): Promise<T> {
-  return withSkipPrefix(skipPrefix, () => withStackName(STACK, fn));
+  return withSkipPrefix(skipPrefix, () => withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, fn));
 }
 
 function lines(level: 'info' | 'warn'): string[] {
@@ -458,7 +458,7 @@ describe('replayPrefixChoice reads the name each type records in its physical id
     via: 'sdk' | 'cc-api' | undefined = 'sdk'
   ): ReturnType<typeof replayPrefixChoice> =>
     withSkipPrefix(skip, () =>
-      withStackName(STACK, () =>
+      withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         replayPrefixChoice({ resourceType, properties, logicalId: 'L', physicalId, via })
       )
     );
@@ -534,7 +534,7 @@ describe('replayPrefixChoice reads the name each type records in its physical id
     // An ELBv2 name caps at 32: with the stack prefix a real name overflows it,
     // and only the provider's own truncation reproduces the id.
     const long = 'orders-api-internal-load-balancer';
-    const kept = withStackName(STACK, () =>
+    const kept = withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       generateResourceNameWithFallback(long, 'L', { maxLength: 32 })
     );
     expect(kept.length).toBeLessThanOrEqual(32);

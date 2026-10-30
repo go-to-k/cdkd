@@ -44,11 +44,13 @@ import { ResourceNotFoundException } from '@aws-sdk/client-cognito-identity-prov
 import {
   CognitoUserPoolProvider,
   REFUSED_ECHO_ERRORS,
+  isRefusedEcho,
   USER_POOL_ECHO_MEMBERS,
   USER_POOL_KEPT_ON_OMISSION,
   userPoolDeletionProtectionUpdate,
 } from '../../../../src/provisioning/providers/cognito-provider.js';
 import { isRetryableTransientError } from '../../../../src/deployment/retryable-errors.js';
+import { isAwsAuthoredFailure, VERBOSE_POINTER } from '../../../../src/utils/aws-failure-text.js';
 
 const POOL = 'us-east-1_abc';
 const TRIGGER = 'arn:aws:lambda:us-east-1:123456789012:function:pre-auth';
@@ -181,6 +183,24 @@ const updates = (): Array<Record<string, unknown>> =>
 const isEcho = (u: Record<string, unknown>): boolean => Object.keys(u).length > 2;
 const deleteCalls = (): number =>
   commands().filter((c) => c.constructor.name === 'DeleteUserPoolCommand').length;
+
+/**
+ * The delete failure carries `text` in its message or on its `cause` chain: an
+ * AWS-authored failure is named by its class, and AWS's text stays on the
+ * `cause` (go-to-k/cdkd#2319).
+ */
+const says =
+  (text: string) =>
+  (error: unknown): boolean => {
+    // The top-level wrap, never the raw AWS error: its `cause` carries `text`,
+    // and its own message is the class-only shape for an AWS-authored cause
+    // (the cause's own text otherwise).
+    if (!(error instanceof Error) || !(error.cause instanceof Error)) return false;
+    const cause = error.cause;
+    if (!cause.message.includes(text)) return false;
+    const tail = isAwsAuthoredFailure(cause) ? `${cause.name}. ${VERBOSE_POINTER}` : cause.message;
+    return /^Failed to delete Cognito User Pool \S+: /.test(error.message) && error.message.endsWith(`: ${tail}`);
+  };
 
 const del = (
   context: Record<string, unknown> = CTX,
@@ -320,7 +340,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // wrong read is caught: the re-enable must carry what the pool holds NOW.
     const later = { ...livePool('INACTIVE'), SmsAuthenticationMessage: 'later {####}' };
     script({ reads: [livePool('ACTIVE'), later], dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const [, reEnable] = updates();
     expect(reEnable).toEqual(userPoolDeletionProtectionUpdate(POOL, later as never, 'ACTIVE'));
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining(`re-enabled on ${POOL}`));
@@ -403,13 +423,27 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     ['a tagging refusal', named('UserPoolTaggingException', 'x')],
   ])('does NOT fall back when the echo fails with %s: the guard stays on, at warn', async (_l, err) => {
     script({ echoError: { INACTIVE: err }, dels: [named('InvalidParameterException', 'deletion protection is activated')] });
-    await expect(del()).rejects.toThrow('deletion protection is activated');
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
     // Only the echoed flip: no settings-resetting bare write.
     expect(updates()).toHaveLength(1);
     expect(isEcho(updates()[0]!)).toBe(true);
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining(`DeletionProtection was left on, because UpdateUserPool refused to turn it off (${err.name}`)
     );
+  });
+
+  // The no-answer warn prints `describeAwsFailure(...).summary`, which for a
+  // failure AWS did not author is its RAW message: it goes through the
+  // operation's masker, as the debug line beside it always did.
+  it('masks the no-answer warn, whose summary is the raw message of a failure AWS did not author', async () => {
+    const SECRET = 'hunter2-resolved-secret';
+    const timeout = Object.assign(new Error(`socket hang up near ${SECRET}`), { name: 'TimeoutError' });
+    script({ echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
+    const maskSecrets = (text: string): string => text.split(SECRET).join('***');
+    await expect(del({ ...CTX, maskSecrets })).rejects.toThrow();
+    const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warned).toContain('failed without an answer from AWS (socket hang up near ***)');
+    expect(warned).not.toContain(SECRET);
   });
 
   it('an echo that got NO answer and did NOT land: no "left on" claim, and the re-enable still writes the guard back', async () => {
@@ -436,7 +470,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
   it('an echo that got NO answer but DID land is re-enabled with an echo, reporting no reset', async () => {
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     script({ echoLandedError: { INACTIVE: timeout }, dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().map((u) => [isEcho(u), u['DeletionProtection']])).toEqual([
       [true, 'INACTIVE'],
       [true, 'ACTIVE'],
@@ -471,6 +505,32 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('left on'));
   });
 
+  // go-to-k/cdkd#3361: `isRefusedEcho` read the failure's `name` with a bare
+  // `String()`. A thrown value's `name` is as arbitrary as the value, and this
+  // predicate runs inside the echo catches that decide the bare fallback, so a
+  // `name` `String()` cannot convert must answer "not refused", never throw.
+  it('isRefusedEcho answers false, without throwing, for a name String() cannot convert', () => {
+    expect(isRefusedEcho({ name: Object.create(null) })).toBe(false);
+    const err = named('InvalidParameterException', 'refused');
+    Object.defineProperty(err, 'name', { value: Object.create(null) });
+    expect(isRefusedEcho(err)).toBe(false);
+  });
+
+  // go-to-k/cdkd#3361, end to end: the flip's own failure is best-effort (the
+  // delete goes on and reports AWS's refusal), so an out-throw from
+  // `isRefusedEcho` or `warnGuardLeftOn` on an unconvertible `name` cost the
+  // operator the "left on" warn, the one line naming why the guard is still on.
+  it('an echo refusal whose name cannot be stringified still warns the guard was left on', async () => {
+    const err = named('InvalidParameterException', 'refused');
+    Object.defineProperty(err, 'name', { value: Object.create(null) });
+    script({ echoError: { INACTIVE: err }, dels: [named('InvalidParameterException', 'deletion protection is activated')] });
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
+    expect(updates()).toHaveLength(1);
+    expect(childLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('DeletionProtection was left on, because UpdateUserPool refused to turn it off')
+    );
+  });
+
   it('names cognito-idp:UpdateUserPool when the echo is access-denied', async () => {
     script({ echoError: { INACTIVE: named('AccessDeniedException', 'no') }, dels: [domainRefusal()] });
     await expect(del()).rejects.toThrow();
@@ -485,7 +545,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       bareError: { INACTIVE: named('ConcurrentModificationException', 'busy') },
       dels: [named('InvalidParameterException', 'deletion protection is activated')],
     });
-    await expect(del()).rejects.toThrow('deletion protection is activated');
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
     expect(updates()).toHaveLength(2);
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -517,7 +577,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       ],
       dels: [named('InvalidParameterException', 'deletion protection is activated')],
     });
-    await expect(del()).rejects.toThrow('deletion protection is activated');
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
     expect(updates()).toHaveLength(0);
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -543,7 +603,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
 
   it('a read that returned no pool is not flipped either, and the warn says so plainly', async () => {
     script({ reads: [null], dels: [named('InvalidParameterException', 'deletion protection is activated')] });
-    await expect(del()).rejects.toThrow('deletion protection is activated');
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('could not be read first (DescribeUserPool returned no pool)')
     );
@@ -565,7 +625,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().map((u) => [isEcho(u), u['DeletionProtection']])).toEqual([
       [true, 'INACTIVE'],
       [false, 'INACTIVE'],
@@ -593,7 +653,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     // Flip: echo with SES, echo without it, then bare -- all before the delete.
     expect(
       updates()
@@ -627,7 +687,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`LambdaConfig.PreSignUp=${shared}, LambdaConfig.PostConfirmation=${shared}`)
     );
@@ -640,7 +700,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       bareLandedError: { INACTIVE: timeout },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     // The fresh read shows the guard OFF after a bare attempt: it landed.
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -669,7 +729,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(updates().map((u) => [isEcho(u), u['DeletionProtection']])).toEqual([
       [true, 'ACTIVE'],
       [false, 'ACTIVE'],
@@ -687,7 +747,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       bareError: { INACTIVE: timeout },
       dels: [named('InvalidParameterException', 'deletion protection is activated')],
     });
-    await expect(del()).rejects.toThrow('deletion protection is activated');
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
     // The pool read ACTIVE (settings possibly intact): never a bare write,
     // even though the echo is refused.
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
@@ -720,7 +780,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('INACTIVE'), fiveHundredRead()],
       dels: [domainRefusal()],
     });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('advanced security reset:'));
     expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('MAY have been reset'));
   });
@@ -733,7 +793,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), fiveHundredRead()],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('MAY have been reset'));
   });
 
@@ -741,7 +801,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     const provider = new CognitoUserPoolProvider();
     // Attempt 1: echo refused, bare flip lands (definite), retryable delete failure.
     script({ echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     // Out of band the guard is turned back on. Attempt 2: echo refused again,
     // the bare write times out; the delete fails; the re-enable read fails.
     cognitoSend.mockReset();
@@ -752,7 +812,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), fiveHundredRead()],
       dels: [domainRefusal()],
     });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('advanced security reset:'));
     expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('MAY have been reset'));
   });
@@ -763,7 +823,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), null],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`${POOL} is LIVE with its self sign-up, Lambda triggers and advanced security reset`)
     );
@@ -781,7 +841,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // read lags and says ACTIVE.
     cognitoSend.mockReset();
     script({ reads: [livePool('INACTIVE'), livePool('ACTIVE')], dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
     expect(reEnables).toHaveLength(1);
     expect(isEcho(reEnables[0]!)).toBe(true);
@@ -792,7 +852,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
   it('a bare flip timing out warns that the reset is unknown, not that the settings were kept', async () => {
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     script({ echoError: { INACTIVE: echoRefusal() }, bareError: { INACTIVE: timeout }, dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringMatching(/whether DeletionProtection was turned off ALONE is unknown; if it was, the pool's self sign-up/)
     );
@@ -815,7 +875,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const report = childLogger.error.mock.calls
       .map((c) => String(c[0]))
       .find((m) => m.includes('is LIVE with'))!;
@@ -832,7 +892,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), fiveHundredRead()],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining(`${POOL} is LIVE with its self sign-up`));
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('could NOT re-enable DeletionProtection'));
   });
@@ -842,7 +902,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { INACTIVE: echoRefusal(), ACTIVE: throttle() },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
     expect(reEnables).toHaveLength(1);
     expect(isEcho(reEnables[0]!)).toBe(true);
@@ -853,7 +913,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     const provider = new CognitoUserPoolProvider();
     // Attempt 1: refused echo -> bare flip -> a RETRYABLE delete failure.
     script({ echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE')).toHaveLength(0);
 
     // Attempt 2: the pool reads INACTIVE (attempt 1 turned it off) -> no flip;
@@ -865,7 +925,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(updates().map((u) => [isEcho(u), u['DeletionProtection']])).toEqual([
       [true, 'ACTIVE'],
       [false, 'ACTIVE'],
@@ -878,7 +938,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     const provider = new CognitoUserPoolProvider();
     // Attempt 1: bare flip over the ORIGINAL pool, retryable delete failure.
     script({ echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     // Attempt 2: the guard is ACTIVE again (turned back on out of band) over
     // the already-RESET pool; the echo is refused again, so a second bare flip
     // goes out, then the delete fails terminally.
@@ -894,7 +954,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
       dels: [domainRefusal()],
     });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     // The report names what the pool held BEFORE cdkd first reset it.
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`AllowAdminCreateUserOnly=true, LambdaConfig.PreAuthentication=${TRIGGER}`)
@@ -913,7 +973,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // stay intact); the delete fails terminally; the re-enable's echo is refused.
     cognitoSend.mockReset();
     script({ echoError: { ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     // No bare ACTIVE against a pool whose settings are intact, and no false
     // "reset" report.
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
@@ -929,14 +989,14 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // Attempt 1: echo refused, the bare write lands (a definite reset), and
     // the delete fails retryably.
     script({ echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     // Out of band the guard is turned back on. Attempt 2: the echo gets no
     // answer and does not land; the delete fails terminally; the fresh read
     // says ACTIVE.
     cognitoSend.mockReset();
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     script({ echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('already read it on, and cdkd wrote it back (AWS accepted the write)'));
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(`${POOL} is LIVE with its self sign-up, Lambda triggers and advanced security reset`)
@@ -946,7 +1006,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
   it('after a CONFIRMED flip, a fresh read of ACTIVE (a stale read) still writes the echoed ACTIVE back', async () => {
     // The flip returned 200; the re-enable's read lags and says ACTIVE.
     script({ reads: [livePool('ACTIVE'), livePool('ACTIVE')], dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
     expect(reEnables).toHaveLength(1);
     expect(isEcho(reEnables[0]!)).toBe(true);
@@ -965,7 +1025,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     const timeout = Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
     const noFlag = { ...livePool('ACTIVE'), DeletionProtection: undefined };
     script({ reads: [noFlag], echoError: { INACTIVE: timeout }, dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE')).toHaveLength(0);
   });
 
@@ -978,7 +1038,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       bareError: { INACTIVE: timeout },
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE')).toHaveLength(0);
   });
 
@@ -986,12 +1046,12 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     const provider = new CognitoUserPoolProvider();
     // Run 1: echo refused, bare flip lands (definite), retryable delete failure.
     script({ echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     // Run 2 (within the reuse window, guard back on): the echo now lands; the
     // delete fails terminally; the re-enable's echo is refused.
     cognitoSend.mockReset();
     script({ echoError: { ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     // Run 1's reset really happened: still reported, as an EARLIER reset the
     // echo since may have undone -- not in the present tense ...
     expect(childLogger.error).toHaveBeenCalledWith(
@@ -1009,13 +1069,13 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     // Confirmed flip; terminal delete failure; the re-enable read lags (ACTIVE)
     // and the write-back is throttled.
     script({ reads: [livePool('ACTIVE'), livePool('ACTIVE')], echoError: { ACTIVE: throttle() }, dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('still off'));
     // A later delete: the guard reads OFF (the flip had landed), no flip is
     // sent, the delete fails again -- and the retained record re-enables it.
     cognitoSend.mockReset();
     script({ reads: [livePool('INACTIVE')], dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
     expect(reEnables).toHaveLength(1);
     expect(isEcho(reEnables[0]!)).toBe(true);
@@ -1025,16 +1085,16 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     const provider = new CognitoUserPoolProvider();
     // Run 1: bare lands (definite), retryable failure.
     script({ echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     // Run 2: guard back on out of band; the echo lands (echoedSince); retryable.
     cognitoSend.mockReset();
     script({ dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     // Run 3: guard back on again; the echo is refused, bare lands again; the
     // delete fails terminally; the re-enable echo is refused -> bare ACTIVE.
     cognitoSend.mockReset();
     script({ echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE').map(isEcho)).toEqual([true, false]);
   });
 
@@ -1045,9 +1105,9 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), livePool('INACTIVE')],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(
-      expect.stringMatching(/could NOT re-enable DeletionProtection.*\(busy\)/)
+      expect.stringMatching(/could NOT re-enable DeletionProtection.*\(ConcurrentModificationException\. Re-run/)
     );
   });
 
@@ -1059,7 +1119,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), livePool('ACTIVE')],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('writing it back failed'));
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('answered ResourceNotFoundException'));
   });
@@ -1072,7 +1132,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), null],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('MAY have been reset'));
   });
 
@@ -1137,7 +1197,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       if (name === 'DeleteUserPoolCommand') throw domainRefusal();
       throw new Error(`unexpected ${name}`);
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(
       updates()
         .filter((u) => u['DeletionProtection'] === 'ACTIVE')
@@ -1166,7 +1226,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       if (name === 'DeleteUserPoolCommand') throw domainRefusal();
       throw new Error(`unexpected ${name}`);
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const errors = childLogger.error.mock.calls.map((c) => String(c[0]));
     expect(errors).toContainEqual(
       expect.stringMatching(
@@ -1205,11 +1265,11 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       if (name === 'DeleteUserPoolCommand') throw domainRefusal();
       throw new Error(`unexpected ${name}`);
     });
-    await expect(del(CTX, provider)).rejects.toThrow('boom');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('boom'));
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('which stays that way if the delete fails.'));
     expect(childLogger.error).not.toHaveBeenCalled();
     // Attempt 2: reads INACTIVE on the default sender, no flip, terminal delete failure.
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining('us-east-1_abc is LIVE with its SES email configuration reset')
     );
@@ -1226,7 +1286,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       bareError: { INACTIVE: timeout },
       dels: [named('InvalidParameterException', 'deletion protection is activated')],
     });
-    await expect(del()).rejects.toThrow('deletion protection is activated');
+    await expect(del()).rejects.toSatisfy(says('deletion protection is activated'));
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(
         'is LIVE and its self sign-up, Lambda triggers, advanced security and SES email configuration MAY have been reset'
@@ -1237,10 +1297,10 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     cognitoSend.mockReset();
     const provider = new CognitoUserPoolProvider();
     script({ reads: [dev], echoError: { INACTIVE: echoRefusal() }, dels: [throttle()] });
-    await expect(del(CTX, provider)).rejects.toThrow('Rate exceeded');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('Rate exceeded'));
     cognitoSend.mockReset();
     script({ reads: [dev], echoError: { ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
-    await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+    await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(
         'is LIVE; its self sign-up, Lambda triggers, advanced security and SES email configuration were reset by an earlier'
@@ -1261,7 +1321,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       if (name === 'DeleteUserPoolCommand') throw domainRefusal();
       throw new Error(`unexpected ${name}`);
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(
       updates()
         .filter((u) => u['DeletionProtection'] === 'ACTIVE')
@@ -1333,7 +1393,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       await expect(del(CTX, provider)).rejects.toThrow();
       attempt = 2;
       cognitoSend.mockClear();
-      await expect(del(CTX, provider)).rejects.toThrow('domain configured');
+      await expect(del(CTX, provider)).rejects.toSatisfy(says('domain configured'));
       const sent = updates();
       expect(sent.filter((u) => u['DeletionProtection'] === 'INACTIVE').map((u) => u['EmailConfiguration'] !== undefined)).toEqual([
         true,
@@ -1358,7 +1418,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       if (name === 'DeleteUserPoolCommand') throw domainRefusal();
       throw new Error(`unexpected ${name}`);
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('SES email configuration reset'));
   });
 
@@ -1410,7 +1470,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
   it('a re-enable that reads ON but whose echoed ACTIVE answers not-found takes the not-found arm', async () => {
     const gone = new ResourceNotFoundException({ $metadata: { httpStatusCode: 400 }, message: 'gone' });
     script({ reads: [livePool('ACTIVE'), livePool('ACTIVE')], echoError: { ACTIVE: gone }, dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('writing it back failed'));
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('answered ResourceNotFoundException'));
   });
@@ -1421,7 +1481,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), livePool('ACTIVE')],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE').map(isEcho)).toEqual([true, false]);
     expect(childLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('already read it on, and cdkd wrote it back (AWS accepted the write)')
@@ -1435,7 +1495,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), livePool('ACTIVE')],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(childLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('still off'));
     expect(childLogger.warn).toHaveBeenCalledWith(expect.stringContaining('writing it back failed'));
   });
@@ -1455,7 +1515,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       if (name === 'DeleteUserPoolCommand') throw domainRefusal();
       throw new Error(`unexpected ${name}`);
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const sent = updates();
     // Flip: echo with SES refused -> echo without it lands. Re-enable: same.
     expect(sent.map((u) => [u['EmailConfiguration'] !== undefined, isEcho(u), u['DeletionProtection']])).toEqual([
@@ -1476,7 +1536,7 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
 
   it('never re-enables bare after an ECHOED flip: a refused echo on the re-enable is an ERROR line', async () => {
     script({ echoError: { ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     const reEnables = updates().filter((u) => u['DeletionProtection'] === 'ACTIVE');
     expect(reEnables).toHaveLength(1);
     expect(reEnables[0]).toMatchObject({ LambdaConfig: { PreAuthentication: TRIGGER } });
@@ -1491,14 +1551,14 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
       reads: [livePool('ACTIVE'), fiveHundredRead()],
       dels: [domainRefusal()],
     });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE')).toHaveLength(0);
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('could NOT re-enable DeletionProtection'));
   });
 
   it('a fresh read that returns no pool sends no UpdateUserPool, and never claims the guard was re-enabled', async () => {
     script({ reads: [livePool('ACTIVE'), null], dels: [domainRefusal()] });
-    await expect(del()).rejects.toThrow('domain configured');
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
     expect(updates().filter((u) => u['DeletionProtection'] === 'ACTIVE')).toHaveLength(0);
     expect(childLogger.error).toHaveBeenCalledWith(expect.stringContaining('could NOT re-enable DeletionProtection'));
     expect(childLogger.warn).not.toHaveBeenCalledWith(expect.stringContaining('re-enabled on'));

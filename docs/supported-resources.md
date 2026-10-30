@@ -37,7 +37,7 @@ Three related questions have their own pages:
 - The [provider coverage matrix](_generated/provider-coverage.md) lists every
   public CloudFormation resource type with its tier: Tier 1 (SDK provider),
   Tier 2 (Cloud Control) or Tier 3 (unsupported). It is generated, and it has
-  a machine-readable [JSON form](_generated/provider-coverage.json).
+  a machine-readable [JSON form](https://raw.githubusercontent.com/go-to-k/cdkd/main/docs/_generated/provider-coverage.json).
 
 ## Resource types
 

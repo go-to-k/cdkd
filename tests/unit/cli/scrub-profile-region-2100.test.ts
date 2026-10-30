@@ -28,17 +28,23 @@ vi.mock('@aws-sdk/client-sts', () => ({
 }));
 
 /** Env-agnostic synthesized stacks: no `region`. */
-const synthStacks = vi.hoisted(() => ({ names: ['MyStack'] }));
+const synthStacks = vi.hoisted(() => ({
+  names: ['MyStack'],
+  /** When set, the synthesized stacks verbatim (regions and display paths). */
+  full: undefined as undefined | Array<Record<string, unknown>>,
+}));
 vi.mock('../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
     synthesize: vi.fn(async () => ({
       manifest: {},
       assemblyDir: '/tmp/cdk.out',
-      stacks: synthStacks.names.map((n) => ({
-        stackName: n,
-        displayName: n,
-        template: { Resources: {} },
-      })),
+      stacks:
+        synthStacks.full ??
+        synthStacks.names.map((n) => ({
+          stackName: n,
+          displayName: n,
+          template: { Resources: {} },
+        })),
     })),
     expandMacrosForStacks: vi.fn(async () => undefined),
   })),
@@ -115,6 +121,7 @@ beforeEach(() => {
   profile.region = 'ap-northeast-1';
   held.regions.clear();
   synthStacks.names = ['MyStack'];
+  synthStacks.full = undefined;
   bucketArgs.value.length = 0;
   indexRegions.value.length = 0;
   backend.stateExistsOwnedBy.mockImplementation(async (_stack: string, region: string) =>
@@ -182,5 +189,31 @@ describe('cdkd scrub of an env-agnostic stack, under a profile region (go-to-k/c
 
     expect(backend.stateExistsOwnedBy).not.toHaveBeenCalled();
     expect(readRegions()).toEqual(['ap-northeast-1']);
+  });
+});
+
+// go-to-k/cdkd#5176: two Stage stacks sharing a stackName in two regions are two
+// records. The per-stack region was kept in a map keyed by NAME, so both were
+// read in whichever region was written last.
+describe('cdkd scrub of a stackName two regions share (go-to-k/cdkd#5176)', () => {
+  const shared = (stage: string, region: string): Record<string, unknown> => ({
+    stackName: 'Shared',
+    displayName: `${stage}/Api`,
+    stagePath: stage,
+    region,
+    template: { Resources: {} },
+  });
+
+  it('reads each record in its own region, for --all and for the shared name', async () => {
+    synthStacks.full = [shared('UsEast', 'us-east-1'), shared('UsWest', 'us-west-2')];
+    const sharedReads = (): unknown[] =>
+      backend.getState.mock.calls.filter((c) => c[0] === 'Shared').map((c) => c[1]);
+
+    await scrubCommand([], options({ all: true }));
+    expect(sharedReads()).toEqual(['us-east-1', 'us-west-2']);
+
+    backend.getState.mockClear();
+    await scrubCommand(['Shared'], options());
+    expect(sharedReads()).toEqual(['us-east-1', 'us-west-2']);
   });
 });

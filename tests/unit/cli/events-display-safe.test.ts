@@ -324,6 +324,34 @@ describe('cdkd events leaves ORDINARY text untouched (issue #2438)', () => {
     );
   });
 
+  // go-to-k/cdkd#2319: an AWS-authored failure is recorded as its class, so
+  // the line does not repeat it as name, code and message.
+  it.each([
+    ['AccessDenied', 'AccessDenied', "AccessDenied. Re-run with --verbose for AWS's own message."],
+    [
+      'AccessDenied',
+      'AccessDeniedException',
+      "AccessDenied (AccessDeniedException). Re-run with --verbose for AWS's own message.",
+    ],
+  ])('shows a class-only message once (name %s, code %s)', (name, code, expected) => {
+    printRunEvents('TestStack', 'us-east-1', 'run-1', [
+      {
+        timestamp: '2026-01-01T00:00:00.000Z',
+        eventType: 'RESOURCE_FAILED',
+        stackName: 'TestStack',
+        logicalId: 'Bucket',
+        error: {
+          name,
+          message: "AccessDenied. Re-run with --verbose for AWS's own message.",
+          awsErrorCode: code,
+        },
+      },
+    ]);
+
+    const lines = infoSpy.mock.calls.map((c) => String(c[0]));
+    expect(lines[2]).toBe(`      ${red(expected)}`);
+  });
+
   it('leaves every declared event type colouring unchanged', () => {
     expect(colorizeEventType('RESOURCE_SKIPPED')).toBe(yellow('RESOURCE_SKIPPED'));
     expect(colorizeEventType('RESOURCE_GUARD_INDETERMINATE')).toBe(

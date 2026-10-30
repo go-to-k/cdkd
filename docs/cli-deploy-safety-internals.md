@@ -24,11 +24,12 @@ silently doing nothing.
 
 This is measured on a live resource by
 [`tests/integration/sdk-to-cc-autoroute/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/sdk-to-cc-autoroute/),
-which adds `EvaluationWindow` to a deployed `AWS::CloudWatch::Alarm` with no
+which adds `ResourcePolicyDocument` to a deployed `AWS::Logs::LogGroup` with no
 flag and then asserts: the deploy renders the per-resource verb `updated` and
 not `replaced`, the record moved to `'cc-api'`, the physical id is unchanged,
-the property reads back from `DescribeAlarms`, and a tag attached out of band
-before the redeploy survived. A later phase deliberately recreates the alarm
+the property reads back from `DescribeResourcePolicies` (the log group's
+resource-scoped policy), and a tag attached out of band
+before the redeploy survived. A later phase deliberately recreates the log group
 and checks that tag dies, so its survival above means something.
 
 **An earlier opt-out deploy does not defeat this, with one exception.** cdkd
@@ -37,8 +38,8 @@ records only what the SDK provider actually sent, so after a
 simply absent from the record: the later flag-less deploy sees a genuine
 addition, re-routes the resource, and Cloud Control sends the field. The same
 `sdk-to-cc-autoroute` fixture measures that pair — its `--prefer-sdk-route`
-phase asserts the record does NOT carry `EvaluationWindow`, and the flag-less
-phase after it reads the property back off the live alarm.
+phase asserts the record does NOT carry `ResourcePolicyDocument`, and the flag-less
+phase after it reads the property back off the live log group.
 
 **The exception is a create-only drop.** cdkd keeps such a property IN the
 record, so a redeploy that still passes the flag sees no difference and does not
@@ -261,7 +262,10 @@ or renamed, keeping its name), the error names that id: give the new resource
 another name, or deploy that id's removal first. A log group declared
 explicitly that something else already created — for example a Lambda
 function's `/aws/lambda/<name>` group, created on its first invocation — is
-refused the same way. A create under a name cdkd generates is not looked up.
+refused the same way. A create under a name cdkd generates is not looked up
+here; the [name check](state-store-name-check.md) looks it up before the
+deploy starts, and on a stack with a `stackInstanceId` that check also covers
+a replacement's new resource at its next-generation name.
 An ELBv2 load balancer or target group is looked up under the name the create
 sends, which carries the stack-name prefix under `--prefix-user-supplied-names`.
 
@@ -275,7 +279,7 @@ checks that the old resource holds the name the create actually sent:
 | The create sent | Shown to be the old resource's when |
 | --- | --- |
 | An explicit name from the template | State records that name for the old resource, or its physical id names it |
-| No name (cdkd generates one) | The old resource's physical id names the name cdkd generates for this deploy — for types whose generated name cdkd can predict |
+| No name (cdkd generates one) | The old resource's physical id names the name cdkd generates for this deploy — for types whose generated name cdkd can predict, and only on a stack without a `stackInstanceId`: on one with it, the replacement asks for the next name generation, which the old resource never held, so nothing is deleted |
 | A name the provider rewrites (IAM, ELBv2 prefix the stack name) | The old resource's physical id names the rewritten name this deploy sends |
 | A type cdkd has no name property for (Cloud Control only) | Both were created through Cloud Control, the create sent the old physical id itself as a `...Name` / `...Identifier` property, and every such property it sent matches the old resource's |
 

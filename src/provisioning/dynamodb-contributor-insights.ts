@@ -111,7 +111,7 @@ export function planContributorInsightsOp(
 export const INDEX_CONTRIBUTOR_INSIGHTS_PATH = `GlobalSecondaryIndexes[].${CONTRIBUTOR_INSIGHTS_KEY}`;
 
 /** Index a CFn `GlobalSecondaryIndexes` value by `IndexName`. */
-function indexEntriesByName(value: unknown): Map<string, Record<string, unknown>> {
+export function indexEntriesByName(value: unknown): Map<string, Record<string, unknown>> {
   const byName = new Map<string, Record<string, unknown>>();
   if (!Array.isArray(value)) return byName;
   for (const entry of value as unknown[]) {

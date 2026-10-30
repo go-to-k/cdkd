@@ -1,4 +1,5 @@
 import { withReplayDeletePrinting } from './replay-scope.js';
+import { nameGenerationOf, withNameGenerationReached } from '../../state/name-generation.js';
 import { replacementDeletePolicy } from '../../provisioning/final-snapshot.js';
 import { displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
@@ -43,6 +44,8 @@ import { resolveReplayProps, refuseMaskedReplayBaseline } from './replay-props.j
 import { updateWithRollbackRetry, recordAfterRollbackUpdate } from './replay-retry.js';
 import { maskRestoredNoEchoRecord, substituteMarkedNoEchoLeaves } from './replay-noecho.js';
 import type { ReplayOpScope } from './replay-scope.js';
+import { unsettledContextOf } from '../../state/unsettled-properties.js';
+import { withUnprovenUnsettled } from '../unsettled-convergence.js';
 
 /**
  * How the reverse replacement hands this arm an old resource that survived
@@ -305,7 +308,9 @@ export async function replayReadopt(s: ReplayOpScope, survivor?: ReadoptSurvivor
       }
     );
   }
-  stateResources[op.logicalId] = prev;
+  // go-to-k/cdkd#5064 phase 2: the copy this re-adopt drops held the
+  // generation the replacement reached, so the next one goes past it.
+  stateResources[op.logicalId] = withNameGenerationReached(prev, op.logicalId, op.nameGeneration);
   logger.info(`  Rollback: ${safe(op.logicalId)} restored to the ${oldKind} old resource`);
   await afterOp?.(op.logicalId);
   // The SURVIVOR's routing layer, which is NOT the op's. Follow-up to
@@ -570,6 +575,7 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
       logicalId: op.logicalId,
       physicalId: current.physicalId,
       via: revertVia,
+      nameGeneration: nameGenerationOf(current, op.logicalId),
     },
     logger,
     mask,
@@ -630,6 +636,9 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
           replayingState: true,
           recordedAttributes: current.attributes,
           ...(revertClaimed && { inlinePolicyClaimed: revertClaimed }),
+          // go-to-k/cdkd#5380: what either record names unsettled is
+          // converged against AWS, since the record built below clears it.
+          ...unsettledContextOf(current, previousState),
         },
       ],
       op.logicalId,
@@ -653,6 +662,24 @@ export async function replayRevert(s: ReplayOpScope): Promise<void> {
     ),
     previousState,
     noEcho.substituted
+  );
+  // go-to-k/cdkd#5487: a name either record carried unsettled is settled only
+  // on proof (AWS no longer changing it and holding the restored value).
+  stateResources[op.logicalId] = await withUnprovenUnsettled(
+    stateResources[op.logicalId]!,
+    {
+      provider,
+      logicalId: op.logicalId,
+      physicalId: current.physicalId,
+      resourceType: op.resourceType,
+      recordedProperties: current.properties ?? {},
+      names: unsettledContextOf(current, previousState).unsettledProperties ?? new Set(),
+      desired: desiredProps ?? {},
+      ...(unsettledContextOf(current, previousState).unsettledItems !== undefined && {
+        attemptedItems: unsettledContextOf(current, previousState).unsettledItems,
+      }),
+    },
+    (message) => logger.warn(mask(message))
   );
   // go-to-k/cdkd#4225: a PARTIAL revert is no completed writer, as on
   // the deploy side.

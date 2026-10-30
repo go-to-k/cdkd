@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { LiveRenderer } from '../../../src/utils/live-renderer.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 class FakeStream {
   isTTY = true;
@@ -125,9 +125,9 @@ describe('LiveRenderer', () => {
     r.start();
     const planted = 'X\x1b[2J\r\nY\u2028\u202e';
     // U+200B survives `displaySafe`, so it pins `displayStackName` on the prefix.
-    withStackName(`S1${planted}\u200b`, () => r.addTask('A', `Deleting A${planted} (T${planted})`));
-    withStackName('S2', () => r.addTask('B', 'Deleting B'));
-    withStackName('S2', () => r.updateTaskLabel('B', `Deleting B${planted}`));
+    withStackScope({ stackName: `S1${planted}\u200b`, stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('A', `Deleting A${planted} (T${planted})`));
+    withStackScope({ stackName: 'S2', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('B', 'Deleting B'));
+    withStackScope({ stackName: 'S2', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.updateTaskLabel('B', `Deleting B${planted}`));
     const lastDraw = stream.chunks[stream.chunks.length - 1] ?? '';
     r.stop();
 
@@ -144,9 +144,9 @@ describe('LiveRenderer', () => {
     const stream = new FakeStream();
     const r = makeRenderer(stream);
     r.start();
-    withStackName('Parent~Child', () => r.addTask('A', 'Deleting A (AWS::S3::Bucket) [CC API]'));
-    withStackName('Other', () => r.addTask('B', 'Creating B'));
-    withStackName('Other', () =>
+    withStackScope({ stackName: 'Parent~Child', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('A', 'Deleting A (AWS::S3::Bucket) [CC API]'));
+    withStackScope({ stackName: 'Other', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('B', 'Creating B'));
+    withStackScope({ stackName: 'Other', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       r.updateTaskLabel('B', 'Creating B [taking longer than expected, 3m+]')
     );
     const lastDraw = stream.chunks[stream.chunks.length - 1] ?? '';
@@ -308,8 +308,8 @@ describe('LiveRenderer', () => {
       const r = makeRenderer(stream);
       r.start();
 
-      withStackName('Tokyo', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS::Queue)'));
-      withStackName('Virginia', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS::Queue)'));
+      withStackScope({ stackName: 'Tokyo', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS::Queue)'));
+      withStackScope({ stackName: 'Virginia', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS::Queue)'));
 
       // Reset to look only at the next steady-state frame (addTask itself
       // also draws, so the buffer holds intermediate frames we don't want
@@ -332,8 +332,8 @@ describe('LiveRenderer', () => {
       const r = makeRenderer(stream);
       r.start();
 
-      withStackName('Tokyo', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS)'));
-      withStackName('Virginia', () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS)'));
+      withStackScope({ stackName: 'Tokyo', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS)'));
+      withStackScope({ stackName: 'Virginia', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('SharedQueue', 'Creating SharedQueue (SQS)'));
 
       // Both stacks visible while both are in flight.
       vi.advanceTimersByTime(80);
@@ -341,7 +341,7 @@ describe('LiveRenderer', () => {
       expect(stream.output()).toContain('[Virginia]');
 
       // Tokyo's task completes first.
-      withStackName('Tokyo', () => r.removeTask('SharedQueue'));
+      withStackScope({ stackName: 'Tokyo', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.removeTask('SharedQueue'));
 
       stream.reset();
       vi.advanceTimersByTime(80);
@@ -361,7 +361,7 @@ describe('LiveRenderer', () => {
       const r = makeRenderer(stream);
       r.start();
 
-      withStackName('SoloStack', () => {
+      withStackScope({ stackName: 'SoloStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
         r.addTask('A', 'Creating A');
         r.addTask('B', 'Creating B');
       });
@@ -382,13 +382,13 @@ describe('LiveRenderer', () => {
       const r = makeRenderer(stream);
       r.start();
 
-      withStackName('Tokyo', () => r.addTask('A', 'Creating A'));
+      withStackScope({ stackName: 'Tokyo', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('A', 'Creating A'));
       vi.advanceTimersByTime(80);
       // Single stack → no prefix yet.
       expect(stream.output()).not.toContain('[Tokyo]');
 
       stream.reset();
-      withStackName('Virginia', () => r.addTask('B', 'Creating B'));
+      withStackScope({ stackName: 'Virginia', stackInstanceId: undefined, nameGenerations: new Map() }, () => r.addTask('B', 'Creating B'));
       vi.advanceTimersByTime(80);
       // Two stacks → both rows now carry the prefix.
       const out = stream.output();
@@ -408,7 +408,7 @@ describe('LiveRenderer', () => {
       vi.useRealTimers(); // setTimeout-based interleave needs real timers
 
       const work = (stackName: string, delay: number) =>
-        withStackName(stackName, async () => {
+        withStackScope({ stackName: stackName, stackInstanceId: undefined, nameGenerations: new Map() }, async () => {
           r.addTask('Shared', `Creating Shared in ${stackName}`);
           await new Promise((res) => setTimeout(res, delay));
           // Both stacks' tasks must coexist between addTask and removeTask

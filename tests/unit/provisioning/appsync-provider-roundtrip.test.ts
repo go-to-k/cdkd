@@ -62,7 +62,9 @@ import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handle
  * resource types — every Update* SDK call is issued with the right
  * camelCase / PascalCase shape, no-op diffs skip the call entirely, and
  * immutable identity-field changes reject with
- * `ResourceUpdateNotSupportedError`.
+ * `ResourceUpdateNotSupportedError`. A GraphQLApi `Name` and a DataSource
+ * `Type` are NOT immutable: CloudFormation updates both in place
+ * (go-to-k/cdkd#5359).
  */
 describe('AppSyncProvider.update', () => {
   let provider: AppSyncProvider;
@@ -142,12 +144,39 @@ describe('AppSyncProvider.update', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('rejects when Name changes (immutable identity)', async () => {
+    it('renames in place when only Name changes, keeping the API id (go-to-k/cdkd#5359)', async () => {
+      // CloudFormation renames an API with UpdateGraphqlApi (measured: same
+      // API id, new name), so a Name diff ALONE fires the call.
+      mockSend.mockResolvedValueOnce({}); // UpdateGraphqlApi
       const newProps = { Name: 'NewName', AuthenticationType: 'API_KEY' };
       const oldProps = { Name: 'OldName', AuthenticationType: 'API_KEY' };
-      await expect(
-        provider.update('L', 'api-1', 'AWS::AppSync::GraphQLApi', newProps, oldProps)
-      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      const result = await provider.update(
+        'L',
+        'api-1',
+        'AWS::AppSync::GraphQLApi',
+        newProps,
+        oldProps
+      );
+      expect(result).toMatchObject({ physicalId: 'api-1', wasReplaced: false });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateGraphqlApiCommand);
+      expect(cmd.input).toMatchObject({
+        apiId: 'api-1',
+        name: 'NewName',
+        authenticationType: 'API_KEY',
+      });
+    });
+
+    it('a desired bag without Name keeps the recorded name and fires no call on its own', async () => {
+      const result = await provider.update(
+        'L',
+        'api-1',
+        'AWS::AppSync::GraphQLApi',
+        { AuthenticationType: 'API_KEY' },
+        { Name: 'OldName', AuthenticationType: 'API_KEY' }
+      );
+      expect(result.physicalId).toBe('api-1');
       expect(mockSend).not.toHaveBeenCalled();
     });
 
@@ -343,6 +372,83 @@ describe('AppSyncProvider.update', () => {
       await provider.update('L', 'api-1', 'AWS::AppSync::GraphQLSchema', same, same);
       expect(mockSend).not.toHaveBeenCalled();
     });
+
+    // go-to-k/cdkd#5359: an ApiId change used to return success with no call
+    // whenever the definition was unchanged, leaving the new API without the
+    // schema. CloudFormation fails this update (measured: `Internal Failure`,
+    // rolled back), so it is refused before the definition comparison, on
+    // every definition arm.
+    for (const [label, desiredRest, previousRest] of [
+      [
+        'an unchanged inline Definition',
+        { Definition: 'type Query { hello: String }' },
+        { Definition: 'type Query { hello: String }' },
+      ],
+      [
+        'a changed inline Definition',
+        { Definition: 'type Query { hello: String, world: String }' },
+        { Definition: 'type Query { hello: String }' },
+      ],
+      [
+        'an unchanged DefinitionS3Location',
+        { DefinitionS3Location: 's3://bucket/schema.graphql' },
+        { DefinitionS3Location: 's3://bucket/schema.graphql' },
+      ],
+      ['no definition at all', {}, {}],
+    ] as const) {
+      it(`refuses an ApiId change with ${label}, sending nothing`, async () => {
+        const error = await provider
+          .update(
+            'L',
+            'api-1',
+            'AWS::AppSync::GraphQLSchema',
+            { ApiId: 'api-2', ...desiredRest },
+            { ApiId: 'api-1', ...previousRest }
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+        expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+        expect((error as Error).message).toContain('GraphQLSchema.ApiId cannot move a schema');
+        expect((error as Error).message).toContain('--replace');
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+    }
+
+    it('a recorded secret reference resolving to the same API id is no ApiId change', async () => {
+      // go-to-k/cdkd#4275: the physical id (the API id) decides.
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'L',
+        'api-1',
+        'AWS::AppSync::GraphQLSchema',
+        { ApiId: 'api-1', Definition: 'type Query { a: String }' },
+        {
+          ApiId: '{{resolve:secretsmanager:s:SecretString:api}}',
+          Definition: 'type Query { b: String }',
+        }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(StartSchemaCreationCommand);
+      expect(mockSend.mock.calls[0]?.[0].input.apiId).toBe('api-1');
+    });
+
+    it('a recorded secret reference resolving to ANOTHER API id is still refused', async () => {
+      await expect(
+        provider.update(
+          'L',
+          'api-1',
+          'AWS::AppSync::GraphQLSchema',
+          { ApiId: 'api-2', Definition: 'type Query { a: String }' },
+          {
+            ApiId: '{{resolve:secretsmanager:s:SecretString:api}}',
+            Definition: 'type Query { a: String }',
+          }
+        )
+      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
   });
 
   // ─── DataSource ──────────────────────────────────────────────────────
@@ -447,20 +553,66 @@ describe('AppSyncProvider.update', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('rejects when Type changes (immutable identity field)', async () => {
+    it('changes Type in place with UpdateDataSource (go-to-k/cdkd#5359)', async () => {
+      // CloudFormation changes a data source's Type with UpdateDataSource
+      // (measured: NONE to HTTP, same data source ARN), so a Type diff fires
+      // the call carrying the NEW type and the new type's config.
+      mockSend.mockResolvedValueOnce({});
       const newProps = {
         ApiId: 'api-1',
-        Name: 'ddb-ds',
-        Type: 'AWS_LAMBDA',
+        Name: 'ds',
+        Type: 'HTTP',
+        HttpConfig: { Endpoint: 'https://example.com' },
       };
-      const oldProps = {
-        ApiId: 'api-1',
-        Name: 'ddb-ds',
-        Type: 'AMAZON_DYNAMODB',
-      };
-      await expect(
-        provider.update('L', 'api-1|ddb-ds', 'AWS::AppSync::DataSource', newProps, oldProps)
-      ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+      const oldProps = { ApiId: 'api-1', Name: 'ds', Type: 'NONE' };
+      const result = await provider.update(
+        'L',
+        'api-1|ds',
+        'AWS::AppSync::DataSource',
+        newProps,
+        oldProps
+      );
+      expect(result.physicalId).toBe('api-1|ds');
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const cmd = mockSend.mock.calls[0]?.[0];
+      expect(cmd).toBeInstanceOf(UpdateDataSourceCommand);
+      expect(cmd.input).toMatchObject({
+        apiId: 'api-1',
+        name: 'ds',
+        type: 'HTTP',
+        httpConfig: { endpoint: 'https://example.com' },
+      });
+    });
+
+    it('a Type diff ALONE fires UpdateDataSource with the new type', async () => {
+      mockSend.mockResolvedValueOnce({});
+      await provider.update(
+        'L',
+        'api-1|ds',
+        'AWS::AppSync::DataSource',
+        { ApiId: 'api-1', Name: 'ds', Type: 'AWS_LAMBDA' },
+        { ApiId: 'api-1', Name: 'ds', Type: 'AMAZON_DYNAMODB' }
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0].input).toMatchObject({ type: 'AWS_LAMBDA' });
+    });
+
+    it('still refuses an ApiId or Name change (create-only on CloudFormation)', async () => {
+      for (const [field, value] of [
+        ['ApiId', 'api-2'],
+        ['Name', 'other'],
+      ] as const) {
+        const base = { ApiId: 'api-1', Name: 'ds', Type: 'NONE' };
+        await expect(
+          provider.update(
+            'L',
+            'api-1|ds',
+            'AWS::AppSync::DataSource',
+            { ...base, [field]: value },
+            base
+          )
+        ).rejects.toThrow(`DataSource.${field} is immutable`);
+      }
       expect(mockSend).not.toHaveBeenCalled();
     });
   });

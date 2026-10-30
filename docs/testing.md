@@ -177,7 +177,7 @@ destroy both succeed.
 
 CI does not run integration tests. The maintainer runs the ones a pull request
 needs before merging it, and records each run in
-[the integ-run ledger](_generated/integ-last-run.tsv).
+[the integ-run ledger](https://github.com/go-to-k/cdkd/blob/main/docs/_generated/integ-last-run.tsv).
 
 ### Prerequisites
 

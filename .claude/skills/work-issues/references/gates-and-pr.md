@@ -73,7 +73,7 @@ the generators and `vp run integ-ledger-normalize`, commit what changed
 (`merge=union` hides the ledger conflict locally), push plainly:
 lossless under the squash merge (#3813).
 
-**Re-run the SUITE after the rebase, after `pnpm install --frozen-lockfile`
+**Re-run the SUITE after the rebase, after `vp install --frozen-lockfile`
 and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
 Stale `dist/` is the usual failure; a dependency bump is the other, which
 `[ -d node_modules ]` pre-flights skip. **Re-run the generators too**

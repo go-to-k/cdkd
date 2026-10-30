@@ -99,42 +99,75 @@ export function inferCrossStackStackDeps(
   stacks: readonly CrossStackScanStack[],
   opts?: InferCrossStackStackDepsOptions
 ): Map<string, Set<string>> {
+  // By NAME, for callers that key stacks by name (destroy's ordering). Two
+  // stacks sharing a name (one Stage per region, #5176) contribute the UNION
+  // of their producers, never only the last one's.
+  const result = new Map<string, Set<string>>();
+  for (const [consumer, producers] of inferCrossStackDepsByStack(stacks, opts)) {
+    const names = result.get(consumer.stackName) ?? new Set<string>();
+    for (const producer of producers) {
+      if (producer.stackName !== consumer.stackName) names.add(producer.stackName);
+    }
+    result.set(consumer.stackName, names);
+  }
+  return result;
+}
+
+/**
+ * {@link inferCrossStackStackDeps} keyed by stack OBJECT, for a caller whose
+ * stacks may share a physical name (one CDK Stage per region, #5176).
+ *
+ * - `Fn::ImportValue` binds to the stack whose template EXPORTS the name, not
+ *   to a stack found by name: in the consumer's own region when one does
+ *   (exports are region-scoped), else every exporter (cdkd resolves a
+ *   cross-region import; an extra ordering edge is safe).
+ * - `Fn::GetStackOutput` names the producer by `StackName`; a literal
+ *   `Region` argument picks the stacks of that region (or env-agnostic ones),
+ *   and without one the consumer's own region is preferred, as the resolver
+ *   reads there. Among several left, the consumer's own Stage wins.
+ *
+ * Regions here are the SYNTHESIZED ones (`region`, undefined when
+ * env-agnostic), which is what the template carries.
+ */
+export function inferCrossStackDepsByStack<
+  T extends CrossStackScanStack & { region?: string | undefined; stagePath?: string | undefined },
+>(stacks: readonly T[], opts?: InferCrossStackStackDepsOptions): Map<T, Set<T>> {
   const kinds = opts?.kinds ?? (['ImportValue', 'GetStackOutput'] as const);
   const wantImportValue = kinds.includes('ImportValue');
   const wantGetStackOutput = kinds.includes('GetStackOutput');
-  // exportName -> producer stackName. Built from every stack's
-  // `Outputs[*].Export.Name` literal string.
-  const exportOwner = new Map<string, string>();
+  // exportName -> every stack exporting it (`Outputs[*].Export.Name` literal).
+  const exporters = new Map<string, T[]>();
   for (const stack of stacks) {
     const outputs = stack.template.Outputs;
     if (!outputs) continue;
     for (const output of Object.values(outputs)) {
       const name = output?.Export?.Name;
       if (typeof name === 'string' && name !== '') {
-        // First writer wins; a duplicate export name across stacks is an
-        // AWS-side error anyway, so we don't try to be clever here.
-        if (!exportOwner.has(name)) {
-          exportOwner.set(name, stack.stackName);
-        }
+        const list = exporters.get(name) ?? [];
+        if (!list.includes(stack)) list.push(stack);
+        exporters.set(name, list);
       }
     }
   }
+  const preferRegion = (candidates: T[], region: string | undefined): T[] => {
+    const same = candidates.filter((c) => c.region === region);
+    return same.length > 0 ? same : candidates;
+  };
 
-  const stackNames = new Set(stacks.map((s) => s.stackName));
-  const result = new Map<string, Set<string>>();
-
+  const result = new Map<T, Set<T>>();
   for (const stack of stacks) {
-    const producers = new Set<string>();
+    const producers = new Set<T>();
 
     // Collect raw cross-stack references by walking the whole template.
     collectTemplateCrossStackRefs(stack.template, (kind, value, unconditional) => {
-      let producer: string | undefined;
+      let found: T[] = [];
       if (kind === 'ImportValue') {
         if (!wantImportValue) return;
         // Fn::ImportValue arg must be a literal export name to be statically
         // resolvable; nested intrinsics are skipped.
         if (typeof value === 'string') {
-          producer = exportOwner.get(value);
+          const owners = (exporters.get(value) ?? []).filter((s) => s !== stack);
+          found = preferRegion(owners, stack.region);
         }
       } else {
         if (
@@ -151,19 +184,26 @@ export function inferCrossStackStackDeps(
         // Fn::GetStackOutput arg is an object whose StackName names the
         // producer stack directly.
         if (value && typeof value === 'object' && !Array.isArray(value)) {
-          const sn = (value as Record<string, unknown>)['StackName'];
+          const args = value as Record<string, unknown>;
+          const sn = args['StackName'];
           if (typeof sn === 'string') {
-            producer = sn;
+            let named = stacks.filter((s) => s.stackName === sn && s !== stack);
+            const region = args['Region'];
+            if (typeof region === 'string') {
+              named = named.filter((s) => s.region === region || s.region === undefined);
+            } else {
+              named = preferRegion(named, stack.region);
+            }
+            const sameStage = named.filter((s) => s.stagePath === stack.stagePath);
+            found = sameStage.length > 0 ? sameStage : named;
           }
         }
       }
-      // Only add edges between two distinct stacks BOTH in the input set.
-      if (producer && producer !== stack.stackName && stackNames.has(producer)) {
-        producers.add(producer);
-      }
+      // Only edges between two distinct stacks BOTH in the input set.
+      for (const producer of found) producers.add(producer);
     });
 
-    result.set(stack.stackName, producers);
+    result.set(stack, producers);
   }
 
   return result;

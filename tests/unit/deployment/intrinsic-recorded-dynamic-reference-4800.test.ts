@@ -174,15 +174,17 @@ describe('a value served from a persisted record is re-resolved (#4800)', () => 
     expect(resolved).toBe(PLAIN_ARN);
   });
 
-  it('a Ref served from the persisted properties whose physical id cannot prove it is served as recorded', async () => {
-    // A Cloud Control S3Tables table: its physical id is an ARN ending in a
-    // UUID, so nothing proves which value of the secret the table was named
-    // with (go-to-k/cdkd#4800 review M1).
+  it('a Ref served from the persisted record whose physical id cannot prove it is served as recorded', async () => {
+    // A CodeCommit repository: its Ref is the recorded RepositoryId and its
+    // physical id the repository name, so nothing proves which value of the
+    // secret the recorded id was written with (go-to-k/cdkd#4800 review M1).
+    // (The vehicle was a Cloud Control S3Tables table's TableName until issue
+    // #5316 made a Table's Ref its TableARN.)
     const producer = record(
-      'AWS::S3Tables::Table',
-      'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/0b1c2d3e',
-      { TableName: QUEUE_REF },
-      {}
+      'AWS::CodeCommit::Repository',
+      'repo-0b1c2d3e',
+      { RepositoryDescription: QUEUE_REF },
+      { RepositoryId: QUEUE_REF }
     );
     const resolved = await resolveWith(producer, { Ref: 'Producer' }, { bag: new Map() });
     expect(resolved).toBe(QUEUE_REF);

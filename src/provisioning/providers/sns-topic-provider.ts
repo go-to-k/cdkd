@@ -18,11 +18,17 @@ import {
 } from '@aws-sdk/client-sns';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { stringifyValue } from '../../utils/stringify.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
@@ -39,7 +45,12 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import {
   hasErrorName,
@@ -253,6 +264,9 @@ export class SNSTopicProvider implements ResourceProvider {
         // ARN to delete. Has never been observed in practice.
         throw new Error('CreateTopic did not return TopicArn');
       }
+      // go-to-k/cdkd#5511: only a topic the name was free for is this create's.
+      if (wiringDeclared && heldBefore === 'free')
+        reportCreatedResource(logicalId, resourceType, topicArn);
 
       // CreateTopicCommand has succeeded — AWS has now committed the
       // Topic (and any inline Tags + Attributes). If a subsequent
@@ -365,13 +379,21 @@ export class SNSTopicProvider implements ResourceProvider {
         } else {
           try {
             await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
+            retractCreatedResource(logicalId, resourceType, topicArn);
             this.logger.debug(
               `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
             );
           } catch (cleanupError) {
             leftBehindArn = topicArn;
+            // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+            // denied DeleteTopic names the caller's assumed-role ARN.
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): `;
+            if (cleanupFailure.redacted) {
+              this.logger.debug(maskSecrets(`${cleanupHead}${cleanupFailure.detail}`));
+            }
             warn(
-              `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): ${describeAwsFailure(cleanupError).detail}. Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
+              `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
             );
           }
         }
@@ -394,12 +416,17 @@ export class SNSTopicProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create SNS topic ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        topicName,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create SNS topic ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            topicName,
+            cause
+          )
       );
       if (leftBehindArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
       throw thrown;
@@ -452,12 +479,17 @@ export class SNSTopicProvider implements ResourceProvider {
       // raised deeper in the body already carries better context than a re-wrap.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update SNS topic ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update SNS topic ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -758,6 +790,40 @@ export class SNSTopicProvider implements ResourceProvider {
   }
 
   /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}) so a create-first replacement still
+   * recognises the collision, except from a post-create step's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as this resource. A
+   * non-`Error` throw is withheld the same way, unstamped: it has no chain.
+   *
+   * A cdkd-authored or transport error keeps its text, masked, stamped exactly
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244). The delete
+   * tests its typed not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
    * Delete an SNS topic
    */
   async delete(
@@ -786,13 +852,24 @@ export class SNSTopicProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete SNS topic ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete SNS topic ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1053,7 +1130,7 @@ export class SNSTopicProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['TopicName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 256 });
+    return generatedNameFor('AWS::SNS::Topic', logicalId);
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

@@ -88,6 +88,8 @@ import {
   sdkClientVersions,
   renderDiagnosis,
   renderName,
+  parseWireMissingNested,
+  WIRE_MISSING_NESTED,
   sdkModelsMember,
   sdkVersionLag,
   readProviderRegistrationSource,
@@ -97,6 +99,8 @@ import {
 // defect was two definitions of "settled", and a second copy here would be a
 // third.
 import { classifyCoverage } from '../provisioning/_property-coverage-utils.js';
+// The producer of the announcement `parseWireMissingNested` reads.
+import { WIRE_MISSING_NESTED as HARNESS_WIRE_MISSING_NESTED } from '../provisioning/sdk-wire-harness.js';
 // The real acceptance gate for a rendered fragment: filename shape, the `- `
 // opener, no dated heading, one bullet. Asserting those by hand here would be
 // a second copy of rules `assemble-changelog.ts` owns.
@@ -191,7 +195,7 @@ describe('parseNestedKeyDivergences', () => {
       [
         'nested-key-coverage: FAILED',
         '  AWS::Glue::Connection: OAuth2Credentials [definition-member-missing] (SDK interface `OAuth2Properties` has no member)',
-        '  AWS::ECS::Service: someKey [case-divergence] (SDK models `SomeKey`)',
+        '  AWS::CloudFront::Distribution: DefaultCacheBehavior.AllowedMethods [array-vs-wrapper] (SDK models `AllowedMethods`)',
         'some unrelated trailing line',
       ].join('\n')
     );
@@ -201,8 +205,9 @@ describe('parseNestedKeyDivergences', () => {
     expect(divergences[0]!.nestedKey).toBe('OAuth2Credentials');
     expect(divergences[0]!.bucket).toBe('definition-member-missing');
     expect(divergences[0]!.detail).toContain('has no member');
-    expect(divergences[1]!.bucket).toBe('case-divergence');
-    expect(divergences[1]!.nestedKey).toBe('someKey');
+    expect(divergences[1]!.bucket).toBe('array-vs-wrapper');
+    expect(divergences[1]!.nestedKey).toBe('DefaultCacheBehavior.AllowedMethods');
+    expect(divergences[1]!.detail).toBe('SDK models `AllowedMethods`');
   });
 
   it('returns nothing, and no failure flag, for output with no findings', () => {
@@ -213,15 +218,14 @@ describe('parseNestedKeyDivergences', () => {
   });
 
   it('FLAGS a failure it could not read, in every mode the checker announces one', () => {
-    // The checker's four FAIL verdicts and its crash path all legitimately
+    // The checker's three FAIL verdicts and its crash path all legitimately
     // print no finding line this parser recognises. Throwing on them discarded
     // the whole diagnosis; returning a bare `[]` rendered "additions only" over
     // a red check. Both were shipped; the flag is the third answer.
     for (const failing of [
-      'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.',
+      'nested-key-coverage: FAIL — nested CFn->SDK shape divergence(s) detected.',
       'nested-key-coverage: FAIL — stale NESTED_KEY_ALLOW_LIST entr(ies) match no audited key',
       'nested-key-coverage: FAIL — stale segmentRenames entr(ies) no longer resolve anything',
-      'nested-key-coverage: FAIL — stale terminalRenames entr(ies): the un-renamed terminal',
       'nested-key-coverage: failed — Cannot find module',
     ]) {
       const out = parseNestedKeyDivergences(failing);
@@ -237,12 +241,12 @@ describe('parseNestedKeyDivergences', () => {
     // with no warning. Two of these five parse strictly; three do not.
     const out = parseNestedKeyDivergences(
       [
-        'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.',
-        '  AWS::ECS::Service: someKey [case-divergence]',
-        '  AWS::Glue::Connection: OAuth2Props [no-sdk-member]',
-        '  AWS::S3::Bucket: a key with spaces [no-sdk-member]',
+        'nested-key-coverage: FAIL — nested CFn->SDK shape divergence(s) detected.',
+        '  AWS::CloudFront::Distribution: AllowedMethods [array-vs-wrapper]',
+        '  AWS::Glue::Connection: OAuth2Props [definition-member-missing]',
+        '  AWS::S3::Bucket: a key with spaces [definition-member-missing]',
         '  AWS::S3::Bucket: Some.Key [newBucket]',
-        '  AWS::S3::Bucket: Other.Key [no-sdk-member] (detail).',
+        '  AWS::S3::Bucket: Other.Key [definition-member-missing] (detail).',
       ].join('\n')
     );
     expect(out.divergences.length).toBe(2);
@@ -261,8 +265,8 @@ describe('parseNestedKeyDivergences', () => {
 
   it('does not flag a failure when it DID read findings out of one', () => {
     const out = parseNestedKeyDivergences(
-      'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
-        '  AWS::ECS::Service: someKey [case-divergence]\n'
+      'nested-key-coverage: FAIL — nested CFn->SDK shape divergence(s) detected.\n' +
+        '  AWS::CloudFront::Distribution: AllowedMethods [array-vs-wrapper]\n'
     );
     expect(out.divergences).toHaveLength(1);
     expect(out.unparsedFailure).toBe(false);
@@ -280,7 +284,7 @@ describe('parseNestedKeyDivergences', () => {
     const announcements = [...producer.matchAll(/nested-key-coverage: (?:FAIL|failed)/g)].map(
       (m) => m[0]
     );
-    expect(announcements.length, 'the checker no longer announces failure this way').toBeGreaterThanOrEqual(5);
+    expect(announcements.length, 'the checker no longer announces failure this way').toBeGreaterThanOrEqual(4);
     for (const announcement of new Set(announcements)) {
       expect(NESTED_KEY_FAILURE_RE.test(announcement), `unmatched: ${announcement}`).toBe(true);
     }
@@ -634,6 +638,25 @@ describe('renderDiagnosis', () => {
     },
   };
 
+  it('an array-vs-wrapper alone renders the wrapping step, not the SDK-lag procedure', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [
+        {
+          resourceType: 'AWS::CloudFront::Distribution',
+          nestedKey: 'NewList',
+          bucket: 'array-vs-wrapper',
+          detail: 'SDK wraps it as `NewLists` ({ Quantity, Items })',
+        },
+      ],
+      skipped: [],
+    });
+    expect(md).toContain('For an `array-vs-wrapper`');
+    expect(md).not.toContain('For a `definition-member-missing`');
+    expect(md).not.toContain('Installed vs published');
+  });
+
   it('names the property, the site, and which way the SDK evidence leans', () => {
     const md = renderDiagnosis({
       removed: [removedEntry],
@@ -756,6 +779,11 @@ describe('renderDiagnosis', () => {
       divergences: [
         { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'definition-member-missing', detail: '' },
       ],
+      // The by-hand SDK-lag commands render for the findings the published
+      // client did not settle — the only ones still carrying that question.
+      unresolvedSdkLag: [
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'definition-member-missing', detail: '' },
+      ],
       skipped: [],
     });
     expect(md).toContain('aws cloudformation describe-type');
@@ -764,6 +792,10 @@ describe('renderDiagnosis', () => {
     // cannot; without it an allow-list entry can be added over a stale SDK.
     expect(md).toContain('npm view @aws-sdk/client-');
     expect(md).toContain('audit:nested-key-coverage:check');
+    // An unforwarded NEW nested member is the wire suites' finding, not this
+    // check's; the procedure points there too (on a refresh with no shape
+    // divergence the `sdk-wire-coverage` failed-check section is the pointer).
+    expect(md).toContain('vp test run sdk-wire-coverage');
   });
 
   it('says the lag reading is RULED OUT when the client is current', () => {
@@ -771,7 +803,7 @@ describe('renderDiagnosis', () => {
       removed: [],
       writableAdded: [],
       divergences: [
-        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'no-sdk-member', detail: '' },
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'definition-member-missing', detail: '' },
       ],
       skipped: [],
       sdkLag: [
@@ -797,7 +829,7 @@ describe('renderDiagnosis', () => {
       removed: [],
       writableAdded: [],
       divergences: [
-        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'no-sdk-member', detail: '' },
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'SomeKey', bucket: 'definition-member-missing', detail: '' },
       ],
       skipped: [],
       sdkLag: [
@@ -815,21 +847,6 @@ describe('renderDiagnosis', () => {
     expect(md).toContain('3.1127.0');
     expect(md).toContain('LIVE');
     expect(md).not.toContain('would fix');
-  });
-
-  it('omits the SDK-lag step when every divergence is a case-divergence', () => {
-    // There is no judgement in a case divergence — the SDK has the key under a
-    // different capitalisation — so the lag question does not arise.
-    const md = renderDiagnosis({
-      removed: [],
-      writableAdded: [],
-      divergences: [
-        { resourceType: 'AWS::ECS::Service', nestedKey: 'SomeKey', bucket: 'case-divergence', detail: '' },
-      ],
-      skipped: [],
-    });
-    expect(md).toContain('case-divergence` means the SDK models the key');
-    expect(md).not.toContain('npm view');
   });
 
   it('names read-only additions as needing nothing, since the diff still shows them', () => {
@@ -955,7 +972,7 @@ describe('the render guards, at every site that reaches Markdown', () => {
         {
           resourceType: POISON_TYPE,
           nestedKey: POISON,
-          bucket: 'no-sdk-member',
+          bucket: 'definition-member-missing',
           // Non-empty: an empty detail short-circuits the ternary, so the
           // `renderDetail` CALL SITE could be reverted with the count intact.
           detail: 'SDK has `X`',
@@ -1630,7 +1647,7 @@ describe('the SDK-lag section', () => {
   const divergence = {
     resourceType: 'AWS::Glue::Connection',
     nestedKey: 'OAuth2Properties.X',
-    bucket: 'no-sdk-member',
+    bucket: 'definition-member-missing',
     detail: '',
   };
 
@@ -1869,7 +1886,19 @@ describe('buildSdkLag', () => {
     expect(rows).toEqual([]);
   });
 
-  const glue = { resourceType: 'AWS::Glue::Connection', bucket: 'no-sdk-member' };
+  it('never asks anything for an array-vs-wrapper (no SDK bump changes a wrapper)', () => {
+    expect(
+      buildSdkLag(
+        [{ resourceType: 'AWS::CloudFront::Distribution', bucket: 'array-vs-wrapper' }],
+        () => [{ client: '@aws-sdk/client-cloudfront', version: '3.0.0' }],
+        () => {
+          throw new Error('an array-vs-wrapper must not trigger a version lookup');
+        }
+      )
+    ).toEqual([]);
+  });
+
+  const glue = { resourceType: 'AWS::Glue::Connection', bucket: 'definition-member-missing' };
   const clientsFor = () => [
     { client: '@aws-sdk/client-sts', version: '3.0.0' },
     { client: '@aws-sdk/client-glue', version: '3.1.0' },
@@ -1901,7 +1930,7 @@ describe('buildSdkLag', () => {
       { client: '@aws-sdk/client-sts', version: '3.0.0' },
     ];
     const rows = buildSdkLag(
-      [{ resourceType: 'AWS::Logs::LogGroup', bucket: 'no-sdk-member' }],
+      [{ resourceType: 'AWS::Logs::LogGroup', bucket: 'definition-member-missing' }],
       ambiguous,
       lag
     );
@@ -1918,7 +1947,7 @@ describe('buildSdkLag', () => {
   it('asks each client at most once', () => {
     const asked: string[] = [];
     buildSdkLag(
-      [glue, { resourceType: 'AWS::Glue::Crawler', bucket: 'no-sdk-member' }],
+      [glue, { resourceType: 'AWS::Glue::Crawler', bucket: 'definition-member-missing' }],
       clientsFor,
       (client, installed) => {
         asked.push(client);
@@ -1927,21 +1956,6 @@ describe('buildSdkLag', () => {
     );
     // `npm view` is a network call; two types sharing a client must not pay twice.
     expect(asked).toEqual(['@aws-sdk/client-glue']);
-  });
-
-  it('never asks anything for a case-divergence', () => {
-    const asked: string[] = [];
-    const rows = buildSdkLag(
-      [{ resourceType: 'AWS::ECS::Service', bucket: 'case-divergence' }],
-      clientsFor,
-      (client, installed) => {
-        asked.push(client);
-        return { installed, latest: '9.9.9', behind: true };
-      }
-    );
-    // There is no judgement in a case divergence, so it justifies no lookup.
-    expect(asked).toEqual([]);
-    expect(rows).toEqual([]);
   });
 
   it('drops a client whose lag could not be read, rather than inventing a row', () => {
@@ -2241,19 +2255,6 @@ describe('the script end to end', () => {
       expect(md, `accepted ${argv.join(' ')}`).toContain('given more than once');
       expect(md).not.toContain('Nothing in this refresh needs a decision');
     }
-  }, 60_000);
-
-  it('renders a case-divergence without asking npm anything', () => {
-    const md = run(
-      'nested-key-coverage: FAIL — nested CFn->SDK key divergence(s) detected.\n' +
-        '  AWS::ECS::Service: someKey [case-divergence] (SDK models `SomeKey`)\n'
-    );
-    expect(md).toContain('AWS::ECS::Service');
-    expect(md).toContain('someKey');
-    expect(md).toContain('case-divergence');
-    // The lag section is the network-touching one and a case divergence must
-    // not reach it.
-    expect(md).not.toContain('Installed vs published');
   }, 60_000);
 });
 
@@ -2884,7 +2885,7 @@ describe('countDecisions', () => {
     expect(
       countDecisions({
         ...none,
-        divergences: [{ resourceType: 'A', nestedKey: 'k', bucket: 'no-sdk-member', detail: 'd' }],
+        divergences: [{ resourceType: 'A', nestedKey: 'k', bucket: 'array-vs-wrapper', detail: 'd' }],
       })
     ).toBe(1);
     expect(countDecisions({ ...none, nestedKeyUnparsed: true })).toBe(1);
@@ -5200,15 +5201,15 @@ describe('partitionPendingSdkBump', () => {
     expect(result.divergences).toHaveLength(1);
   });
 
-  it('leaves a no-sdk-member finding alone and downloads nothing for it', () => {
-    // It carries no detail, because it is a member-index question over the
-    // whole client rather than an interface-scoped one. There is no question to
-    // re-ask, so re-asking anything would be inventing one.
+  it('leaves an array-vs-wrapper finding alone and downloads nothing for it', () => {
+    // It is a shape question (a bare CFn array against an SDK wrapper), not an
+    // interface-scoped member question. There is no question to re-ask, so
+    // re-asking anything would be inventing one.
     let fetches = 0;
     const result = partitionPendingSdkBump({
       divergences: [
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { resourceType: 'AWS::Glue::Connection', nestedKey: 'IPV6Enabled', bucket: 'no-sdk-member', detail: '' } as any,
+        { resourceType: 'AWS::Glue::Connection', nestedKey: 'IPV6Enabled', bucket: 'array-vs-wrapper', detail: '' } as any,
       ],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       sdkLag: [GLUE_LAG] as any,
@@ -5222,18 +5223,17 @@ describe('partitionPendingSdkBump', () => {
   });
 
   it('settles nothing for a bucket that is not definition-member-missing, however the detail reads', () => {
-    // The bucket gate is not redundant with the parse. Today the key pass emits
-    // no detail, so the parse alone would refuse — but a producer that later
-    // gave `no-sdk-member` the same sentence would start settling findings whose
-    // question is a member-index one over the whole client, which this evidence
-    // does not answer. The gate is what holds then, and only a case shaped like
-    // that future can hold the gate.
+    // The bucket gate is not redundant with the parse. A producer that gave
+    // another bucket (`array-vs-wrapper` here) the same sentence would start
+    // settling findings whose question is not an interface-scoped member one,
+    // which this evidence does not answer. The gate is what holds then, and only
+    // a case shaped like that future can hold the gate.
     const result = partitionPendingSdkBump({
       divergences: [
         {
           resourceType: 'AWS::Glue::Connection',
           nestedKey: 'BasicAuthenticationCredentials',
-          bucket: 'no-sdk-member',
+          bucket: 'array-vs-wrapper',
           detail: detailFor('AuthenticationConfiguration', 'BasicAuthenticationCredentials'),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
@@ -5607,7 +5607,7 @@ describe('countDecisions counts a pending bump per BUMP', () => {
     const n = countDecisions({
       removed: [{ resourceType: 'AWS::S3::Bucket', properties: ['Gone'], candidates: {}, sdk: {} }],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      divergences: [{ resourceType: 'AWS::Glue::Connection', nestedKey: 'K', bucket: 'no-sdk-member', detail: '' }] as any,
+      divergences: [{ resourceType: 'AWS::Glue::Connection', nestedKey: 'K', bucket: 'array-vs-wrapper', detail: '' }] as any,
       failedChecks: ['property-coverage'],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       pendingSdkBump: [pending('@aws-sdk/client-glue', '3.1127.0', 'A')] as any,
@@ -6491,4 +6491,85 @@ describe('main()’s tolerance read (issue #3005)', () => {
   // `REPO_ROOT` is `join(__dirname, '..')`: relocating the SCRIPT relocates the
   // pin, so the arm is reachable with the committed file untouched. Measured on
   // the cases above: removing the wrap now reds two of the three.
+});
+
+describe('sdk-wire nested paths (go-to-k/cdkd#3723)', () => {
+  const SCRIPT = join(REPO_ROOT, 'scripts/diagnose-schema-refresh.mjs');
+
+  // The harness's failure as vitest renders it, not a hand-written line: the
+  // parser must read what the suite PRINTS, and a reword of either side (or a
+  // change in how vitest prefixes a message) reds here.
+  const vitestFailure = (resourceType: string, missing: string[]): string => {
+    try {
+      expect(missing, `${HARNESS_WIRE_MISSING_NESTED} ${resourceType} [${missing.join(' ')}]`).toEqual(
+        []
+      );
+    } catch (error) {
+      return `AssertionError: ${(error as Error).message}`;
+    }
+    throw new Error('the assertion did not fail');
+  };
+
+  it('reads the announcement the harness writes', () => {
+    expect(WIRE_MISSING_NESTED).toBe(HARNESS_WIRE_MISSING_NESTED);
+    const log = [
+      ' FAIL  tests/unit/provisioning/sdk-wire-coverage-9.test.ts > AWS::Glue::Connection > its bags',
+      vitestFailure('AWS::Glue::Connection', ['ConnectionInput.AuthenticationConfiguration.SecretArn']),
+      // vitest prints a failure in the summary AND the detail: one entry.
+      vitestFailure('AWS::Glue::Connection', ['ConnectionInput.AuthenticationConfiguration.SecretArn']),
+      vitestFailure('AWS::SNS::Topic', ['DeliveryStatusLogging.Region', 'Subscription.Filter']),
+      ' FAIL  some other test > unrelated',
+    ].join('\n');
+    expect(parseWireMissingNested(log)).toEqual([
+      { resourceType: 'AWS::Glue::Connection', paths: ['ConnectionInput.AuthenticationConfiguration.SecretArn'] },
+      { resourceType: 'AWS::SNS::Topic', paths: ['DeliveryStatusLogging.Region', 'Subscription.Filter'] },
+    ]);
+    expect(parseWireMissingNested('Tests  991 passed (991)')).toEqual([]);
+  });
+
+  it('lists the paths under the failed check, through the name guards', () => {
+    const md = renderDiagnosis({
+      removed: [],
+      writableAdded: [],
+      divergences: [],
+      failedChecks: ['sdk-wire-coverage'],
+      wireMissingNested: [
+        { resourceType: 'AWS::SNS::Topic', paths: ['Subscription.Filter', 'Bad`Path'] },
+      ],
+      skipped: [],
+    });
+    const at = md.search(/^#### .*`sdk-wire-coverage`/m);
+    expect(at, 'no section for the check').toBeGreaterThan(-1);
+    const section = md.slice(at);
+    expect(section).toContain(CHECK_GUIDANCE['sdk-wire-coverage']![0]);
+    expect(section).toContain(
+      '- `AWS::SNS::Topic`: `Subscription.Filter`, **[key rejected: unexpected characters]**'
+    );
+  });
+
+  it('counts a log naming paths as the failed check, even when --failed-checks omits it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-wire-'));
+    try {
+      const log = join(dir, 'sdk-wire.log');
+      writeFileSync(log, vitestFailure('AWS::SNS::Topic', ['Subscription.Filter']));
+      const out = join(dir, 'count.txt');
+      const md = execFileSync(
+        'node',
+        [SCRIPT, '--sdk-wire-log', log, '--decision-count-out', out],
+        { encoding: 'utf8' }
+      );
+      expect(readFileSync(out, 'utf8').trim()).toBe('1');
+      expect(md).toContain('- `AWS::SNS::Topic`: `Subscription.Filter`');
+      // Named once, not twice, when the list already carries it.
+      const both = execFileSync(
+        'node',
+        [SCRIPT, '--sdk-wire-log', log, '--failed-checks', 'sdk-wire-coverage', '--decision-count-out', out],
+        { encoding: 'utf8' }
+      );
+      expect(readFileSync(out, 'utf8').trim()).toBe('1');
+      expect(both.match(/^#### .*`sdk-wire-coverage`/gm)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

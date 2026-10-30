@@ -95,11 +95,19 @@ function res(dependencies: string[] = [], extra: Partial<ResourceState> = {}): R
   };
 }
 
+// The under-lock re-read (#5220) needs to see the record each case destroys.
+// Every case builds it through `makeState`, either inline (evaluated as an
+// ARGUMENT to `runDestroyForStack`, immediately before the ctx-builder call,
+// left-to-right argument evaluation) or into a local `state` assigned just
+// before, so tracking the last call here is the one place each file's
+// default `getState` (below) needs to echo it back from.
+let lastMadeState: StackState | undefined;
+
 function makeState(
   resources: Record<string, ResourceState>,
   extra: Partial<StackState> = {}
 ): StackState {
-  return {
+  const state: StackState = {
     version: 8,
     stackName: 'TestStack',
     region: REGION,
@@ -108,6 +116,8 @@ function makeState(
     lastModified: 1,
     ...extra,
   };
+  lastMadeState = state;
+  return state;
 }
 
 describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
@@ -129,6 +139,9 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        getState: vi.fn(async () =>
+          lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+        ),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {
@@ -408,7 +421,7 @@ describe('runDestroyForStack graceful SIGINT (issue #816)', () => {
  *
  * `rl.question` never settles when stdin is already at EOF, and EOF carries no
  * signal, so the abort arm the SIGINT block above fences could not help: there
- * was nothing to abort ON. Measured on Node 24.15.0, the version `.node-version` pins (and 24.19 before it) against real
+ * was nothing to abort ON. Measured on Node 24.15.0 (and 24.19 before it) against real
  * `node:readline/promises` -- `echo y |` resolves `"y"`, while `printf 'y' |`
  * (a real answer with no trailing newline) and `< /dev/null` both stay pending
  * indefinitely.
@@ -440,6 +453,9 @@ describe('runDestroyForStack non-interactive confirmation (issue #2259)', () => 
       stateBackend: {
         saveState: mockSaveState,
         deleteState: mockDeleteState,
+        getState: vi.fn(async () =>
+          lastMadeState ? { state: lastMadeState, etag: 'e' } : null
+        ),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {

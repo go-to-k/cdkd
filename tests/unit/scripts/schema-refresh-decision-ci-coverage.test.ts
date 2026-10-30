@@ -290,6 +290,13 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
       'run; CI has one, so every member is reached without naming any of them. The sibling suite ' +
       'fences the refresh-side list against the silentDrop family.',
   },
+  'sdk-wire-coverage': {
+    command: 'vp run test',
+    covers: ['failedChecks'],
+    why:
+      'The refresh runs the sdk-wire suites by filter because it has no whole-suite run; CI ' +
+      'reaches every one of them through the unfiltered unit suite (go-to-k/cdkd#3723).',
+  },
   'audit:nested-key-coverage:check': {
     command: 'vp run audit:nested-key-coverage:check',
     covers: ['divergences', 'nestedKeyUnparsed', 'pendingSdkBump'],
@@ -657,12 +664,13 @@ describe('a refresh PR carrying decisions cannot pass ci-ok (issue #3005)', () =
 
   it('derives a real graded-check population from the refresh workflow', () => {
     const graded = gradedChecks();
-    // Four `run_check` names plus the separately-invoked nested-key critic. A
+    // Five `run_check` names plus the separately-invoked nested-key critic. A
     // literal, not a relation to CI_COVERAGE's size — a floor computed from the
     // thing it guards is satisfied by the collapse it exists to catch.
     expect(graded.length, `graded checks derived: ${JSON.stringify(graded)}`).toBeGreaterThanOrEqual(
-      5
+      6
     );
+    expect(graded).toContain('sdk-wire-coverage');
     expect(graded).toContain('audit:nested-key-coverage:check');
   });
 

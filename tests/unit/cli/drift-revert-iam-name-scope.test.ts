@@ -103,6 +103,7 @@ vi.mock('../../../src/provisioning/cloud-control-provider.js', () => ({
 import { createDriftCommand } from '../../../src/cli/commands/drift.js';
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { IAMManagedPolicyProvider } from '../../../src/provisioning/providers/iam-managed-policy-provider.js';
+import { getCurrentStackInstanceId } from '../../../src/provisioning/resource-name.js';
 
 const ROLE = 'AWS::IAM::Role';
 const LB = 'AWS::ElasticLoadBalancingV2::LoadBalancer';
@@ -145,7 +146,10 @@ const LIVE_POLICY_DOC = {
 const ROLE_ID = 'TestStack-my-role';
 const POLICY_ARN = 'arn:aws:iam::123456789012:policy/TestStack-my-policy';
 
-function state(resources: StackState['resources']): { state: StackState; etag: string } {
+function state(
+  resources: StackState['resources'],
+  stackInstanceId?: string
+): { state: StackState; etag: string } {
   return {
     state: {
       version: 2,
@@ -154,6 +158,7 @@ function state(resources: StackState['resources']): { state: StackState; etag: s
       resources,
       outputs: {},
       lastModified: 0,
+      ...(stackInstanceId !== undefined && { stackInstanceId }),
     },
     etag: '"etag-1"',
   };
@@ -501,5 +506,44 @@ describe('drift keeps the recorded IAM name (issues #4023, #4081)', () => {
       expect(bags.map((bag) => bag['RoleName'])).not.toContain(ROLE_ID);
     }
     expect(lines(errorSpy)).toBe('');
+  });
+
+  // go-to-k/cdkd#5064: `runDriftForStack` opens `namingScope` —
+  // `withStackScope({ stackName, stackInstanceId })` — around its WHOLE body,
+  // detection included, so a provider's `readCurrentState` call made during
+  // detection (every mode, not only `--revert`) sees the RECORD's id.
+  it('#5064: detection reads a resource inside the record stack instance scope', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const seenIds: Array<string | undefined> = [];
+    mockGetProvider.mockImplementation((type: string) =>
+      type === ROLE
+        ? {
+            readCurrentState: async () => {
+              seenIds.push(getCurrentStackInstanceId());
+              return { RoleName: 'my-role', AssumeRolePolicyDocument: ASSUME, Description: 'deployed' };
+            },
+          }
+        : fakeElbv2
+    );
+    mockGetState.mockResolvedValue(
+      state(
+        {
+          Role: {
+            physicalId: ROLE_ID,
+            resourceType: ROLE,
+            properties: {
+              RoleName: 'my-role',
+              AssumeRolePolicyDocument: ASSUME,
+              Description: 'deployed',
+            },
+          },
+        },
+        STACK_INSTANCE_ID
+      )
+    );
+
+    await detect();
+
+    expect(seenIds).toEqual([STACK_INSTANCE_ID]);
   });
 });

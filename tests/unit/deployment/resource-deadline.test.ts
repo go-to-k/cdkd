@@ -4,6 +4,7 @@ import {
   InvalidResourceDeadlineError,
   whileEnclosingDeadlinesPaused,
   enclosingDeadlineExpired,
+  enclosingDeadlineRemainingMs,
 } from '../../../src/deployment/resource-deadline.js';
 
 describe('withResourceDeadline', () => {
@@ -280,5 +281,73 @@ describe('whileEnclosingDeadlinesPaused', () => {
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(seen).toEqual([false, true]);
+  });
+});
+
+describe('enclosingDeadlineRemainingMs (issue #5155)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('is Infinity outside any deadline', () => {
+    expect(enclosingDeadlineRemainingMs()).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('reports what is left, and the tighter of two nested budgets', async () => {
+    const seen: number[] = [];
+    const outer = withResourceDeadline(
+      async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+        seen.push(enclosingDeadlineRemainingMs());
+        await withResourceDeadline(
+          async () => {
+            seen.push(enclosingDeadlineRemainingMs());
+          },
+          { warnAfterMs: 100, timeoutMs: 60_000, onTimeout: () => new Error('inner') }
+        );
+      },
+      { warnAfterMs: 1_000, timeoutMs: 10_000, onTimeout: () => new Error('outer') }
+    );
+    await outer;
+    // 10 s budget, 1 s used; the inner 60 s budget is capped by the outer 9 s.
+    expect(seen).toEqual([9_000, 9_000]);
+  });
+
+  it('stays frozen while the enclosing deadline is paused', async () => {
+    const seen: number[] = [];
+    await withResourceDeadline(
+      async () => {
+        await whileEnclosingDeadlinesPaused(async () => {
+          seen.push(enclosingDeadlineRemainingMs());
+          await vi.advanceTimersByTimeAsync(3_000);
+          seen.push(enclosingDeadlineRemainingMs());
+        });
+      },
+      { warnAfterMs: 1_000, timeoutMs: 10_000, onTimeout: () => new Error('timed out') }
+    );
+    expect(seen).toEqual([10_000, 10_000]);
+  });
+
+  it('is 0 once the deadline has expired', async () => {
+    const seen: number[] = [];
+    let release!: () => void;
+    const late = new Promise<void>((r) => (release = r));
+    const deadline = withResourceDeadline(
+      async () => {
+        await late;
+        seen.push(enclosingDeadlineRemainingMs());
+      },
+      { warnAfterMs: 1_000, timeoutMs: 2_000, onTimeout: () => new Error('timed out') }
+    );
+    const settled = expect(deadline).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await settled;
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([0]);
   });
 });

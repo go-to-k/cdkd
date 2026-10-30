@@ -216,6 +216,40 @@ left out. For an imported resource, and for a resource whose state was
 written by an older cdkd, cdkd assumes the create-only properties are already
 in AWS.
 
+### Names of resources the template does not name
+
+A resource your template does not name gets the same generated name on either
+layer, so moving it between layers or recreating it on the other one never
+changes the name cdkd expects. cdkd never sends a CodeBuild project or a
+budget through Cloud Control, so their SDK providers always name them.
+
+An `AWS::Lambda::Permission` has no name property; its statement id is the
+name. The SDK provider generates it as `<StackName>-<LogicalId>-<suffix>`, as
+CloudFormation does, with a new one each time the permission is replaced, and
+Cloud Control's handler picks its own. A stack without stack instance ids keeps
+sending the bare logical id.
+
+A stack first deployed by a cdkd without stack instance ids keeps the names
+each layer gave before:
+
+| Type | SDK provider | Cloud Control |
+| --- | --- | --- |
+| `AWS::Logs::LogGroup` | `/cdkd/<StackName>-<LogicalId>` | `<StackName>-<LogicalId>` |
+| `AWS::SSM::Parameter` | `/<StackName>-<LogicalId>` | `<StackName>-<LogicalId>` |
+| `AWS::CodeBuild::Project` | `<LogicalId>` | No Cloud Control route |
+| Auto Scaling group, DynamoDB global table, ECS task definition family, Lambda network connector, EventBridge pipe, EventBridge Scheduler schedule | `<StackName>-<LogicalId>` | Named by AWS |
+| EC2 security group, CloudTrail trail, Glue job, crawler, connection and trigger, Firehose delivery stream | `<LogicalId>` | Named by AWS |
+
+Neither layer generates the name of an `AWS::Events::EventBus`, which
+CloudFormation requires. A Cloud Control create of an un-named
+`AWS::S3Express::DirectoryBucket` reads the zone id the name must end with
+from `LocationName`. When `LocationName` is an Availability Zone name rather
+than a zone id such as `use1-az5`, the create is refused; set `LocationName`
+to the zone id or declare `BucketName`.
+
+A generated security group name never starts with `sg-`, which EC2 refuses:
+for a stack whose name starts with `sg-` in any case, the hyphen is dropped.
+
 ## Related
 
 - [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md): the flags

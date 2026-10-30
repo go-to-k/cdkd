@@ -13,7 +13,7 @@ import {
   registerAllProviders,
 } from '../../../src/provisioning/register-providers.js';
 import { nameAdoptingSdkCreateTypes } from '../../../src/deployment/replacement-name-holder/deploy-name.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 
 const providerClasses = await loadProviderClasses();
 const registry = new ProviderRegistry();
@@ -25,7 +25,7 @@ describe('the name-adopting create types (go-to-k/cdkd#4705)', () => {
     (resourceType) => {
       const provider = registry.getProvider(resourceType);
       expect(typeof provider.generatedCreateName).toBe('function');
-      const name = withStackName('PerfApp', () =>
+      const name = withStackScope({ stackName: 'PerfApp', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.generatedCreateName!(resourceType, 'Thing', {})
       );
       expect(typeof name).toBe('string');
@@ -51,7 +51,7 @@ describe('the name-adopting create types (go-to-k/cdkd#4705)', () => {
       'AWS::StepFunctions::StateMachine': { StateMachineName: 'mine' },
     };
     expect(
-      withStackName('PerfApp', () =>
+      withStackScope({ stackName: 'PerfApp', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provider.generatedCreateName!(resourceType, 'Thing', declared[resourceType]!)
       )
     ).toBeUndefined();

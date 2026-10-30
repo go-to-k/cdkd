@@ -18,7 +18,7 @@ import {
   type CreateTokenLedgerStore,
 } from '../../../src/provisioning/providers/create-token-ledger.js';
 import { stackScopedCreateToken } from '../../../src/provisioning/providers/idempotency-token.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import {
   notifyStateSaved,
   type CreateTokenLedgerDoc,
@@ -60,7 +60,7 @@ const FS = { logicalId: 'Fs', immutableInputs: ['LUSTRE', ['subnet-1']], maxLeng
 
 /** One deploy: a fresh ledger over `store`, inside the stack's scope. */
 const inDeploy = <T,>(store: CreateTokenLedgerStore, fn: () => Promise<T>): Promise<T> =>
-  withStackName('DevStack', () => withCreateTokenLedger(new CreateTokenLedger(store), fn));
+  withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withCreateTokenLedger(new CreateTokenLedger(store), fn));
 
 describe('reserveStackCreateToken', () => {
   beforeEach(() => {
@@ -69,8 +69,8 @@ describe('reserveStackCreateToken', () => {
   });
 
   it('outside a bound ledger is the nonce-free stack-scoped token', async () => {
-    const token = await withStackName('DevStack', () => reserveStackCreateToken(FS));
-    expect(token.value).toBe(withStackName('DevStack', () => stackScopedCreateToken(FS)));
+    const token = await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => reserveStackCreateToken(FS));
+    expect(token.value).toBe(withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => stackScopedCreateToken(FS)));
     expect(token.earlierFirstSentAt).toBeUndefined();
   });
 
@@ -79,7 +79,7 @@ describe('reserveStackCreateToken', () => {
     const token = await inDeploy(mem.store, () => reserveStackCreateToken(FS));
     const saved = mem.current()!;
     expect(saved.sent['Fs']?.token).toBe(token.value);
-    expect(token.value).not.toBe(withStackName('DevStack', () => stackScopedCreateToken(FS)));
+    expect(token.value).not.toBe(withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => stackScopedCreateToken(FS)));
     expect(token.value).toMatch(/^cdkd-Fs-[0-9a-f]{12}$/);
   });
 
@@ -177,7 +177,7 @@ describe('reserveStackCreateToken', () => {
       stackName: 'Evil\n[ok] FORGED\u001b[2J',
       region: 'us-east-1',
     });
-    const error = await withStackName('DevStack', () =>
+    const error = await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       withCreateTokenLedger(ledger, () => reserveStackCreateToken(FS))
     ).then(
       () => undefined,
@@ -211,7 +211,7 @@ describe('reserveStackCreateToken', () => {
   it('an unwritable ledger REFUSES the create and takes back the entry it could not save; a retry reads again', async () => {
     const mem = memoryStore();
     mem.store.failSave = true;
-    await withStackName('DevStack', () => {
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const ledger = new CreateTokenLedger(mem.store);
       return withCreateTokenLedger(ledger, async () => {
         await expect(reserveStackCreateToken(FS)).rejects.toThrow('the create of Fs was not sent');
@@ -230,7 +230,7 @@ describe('reserveStackCreateToken', () => {
     await inDeploy(mem.store, () => reserveStackCreateToken(FS));
     await inDeploy(mem.store, () => reserveStackCreateToken({ ...FS, logicalId: 'Kept' }));
     const nonce = mem.current()!.nonce;
-    await withStackName('DevStack', () => {
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const ledger = new CreateTokenLedger(mem.store);
       return withCreateTokenLedger(ledger, async () => {
         mem.store.failLoad = true;
@@ -254,7 +254,7 @@ describe('reserveStackCreateToken', () => {
       await reserveStackCreateToken({ ...FS, logicalId: 'Kept' });
     });
     const stored = mem.current()!;
-    await withStackName('DevStack', () => {
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const ledger = new CreateTokenLedger(mem.store);
       return withCreateTokenLedger(ledger, async () => {
         await forgetRecordedCreateTokens(['Nothing']); // loads the ledger
@@ -385,7 +385,7 @@ describe('reserveStackCreateToken', () => {
 
   it('a token issued in this deploy is issued again for a retry even after the ledger failed', async () => {
     const mem = memoryStore();
-    await withStackName('DevStack', () => {
+    await withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const ledger = new CreateTokenLedger(mem.store);
       return withCreateTokenLedger(ledger, async () => {
         const first = await reserveStackCreateToken(FS);
@@ -430,7 +430,7 @@ describe('a ledger that outlived its state record (go-to-k/cdkd#4438, mixed vers
     opts: { stateExists: boolean; savesState: boolean },
     fn: () => Promise<T>
   ): Promise<T> =>
-    withStackName('DevStack', () =>
+    withStackScope({ stackName: 'DevStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       withCreateTokenLedger(new CreateTokenLedger(store, STACK), async () => {
         noteDeployStateRecord(opts.stateExists);
         const result = await fn();

@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { RDSDBProxyProvider } from '../../../src/provisioning/providers/rds-dbproxy-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
@@ -276,8 +277,11 @@ describe('RDSDBProxyProvider', () => {
     });
   });
 
-  // Issue #1160: ModifyDBProxy keeps an omitted setting, and so does
-  // CloudFormation's DBProxy handler, so a removal sends nothing and WARNS.
+  // Issue #1160: ModifyDBProxy keeps an omitted setting, and CloudFormation
+  // keeps RequireTLS / IdleClientTimeout / DebugLogging / VpcSecurityGroupIds
+  // too (CFn A/B), so their removal sends nothing and WARNS. CloudFormation
+  // SENDS an Auth removal and AWS refuses it while DefaultAuthScheme is NONE
+  // or unset, so cdkd refuses that one before any call.
   describe('update: a removed property is kept and warned about (#1160)', () => {
     const warn = vi.mocked(getLogger().child('RDSDBProxyProvider').warn);
     const base = {
@@ -297,13 +301,119 @@ describe('RDSDBProxyProvider', () => {
       warn.mockReset();
     });
 
-    it('sends no ModifyDBProxy for removals alone and names every removed property once', async () => {
-      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, { ...base, ...optional });
+    const { Auth, ...keptByCfn } = optional;
+    const withAuth = { ...base, Auth };
+
+    it('sends no ModifyDBProxy for removals alone and names every removed property once, saying CloudFormation keeps them too', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, withAuth, {
+        ...withAuth,
+        ...keptByCfn,
+      });
       expect(mockSend).not.toHaveBeenCalled();
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls[0]![0]).toBe(
-        'Proxy (AWS::RDS::DBProxy): properties Auth, RequireTLS, IdleClientTimeout, DebugLogging, VpcSecurityGroupIds were removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.'
+        'Proxy (AWS::RDS::DBProxy): properties RequireTLS, IdleClientTimeout, DebugLogging, VpcSecurityGroupIds were removed from the template and keep their current AWS value, as CloudFormation leaves them; ModifyDBProxy keeps a setting it is not sent. Declare the property with the value you want to change it.'
       );
+    });
+
+    it('words a single removal in the singular', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, withAuth, {
+        ...withAuth,
+        DebugLogging: true,
+      });
+      expect(warn.mock.calls[0]![0]).toBe(
+        'Proxy (AWS::RDS::DBProxy): property DebugLogging was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyDBProxy keeps a setting it is not sent. Declare the property with the value you want to change it.'
+      );
+    });
+
+    const authRefusal =
+      "Proxy (AWS::RDS::DBProxy): Auth was removed from the template, but AWS requires Auth while DefaultAuthScheme is NONE or unset, and CloudFormation's update fails on the same change. Declare Auth again; nothing was changed.";
+
+    for (const [label, scheme] of [
+      ['unset', undefined],
+      ['NONE', 'NONE'],
+    ] as const) {
+      it(`refuses an Auth removal before any call when DefaultAuthScheme is ${label}`, async () => {
+        const desired = {
+          ...base,
+          DebugLogging: false,
+          ...(scheme !== undefined && { DefaultAuthScheme: scheme }),
+        };
+        const error = await provider
+          .update('Proxy', PROXY_NAME, RESOURCE_TYPE, desired, { ...withAuth, DebugLogging: true })
+          .then(
+            () => undefined,
+            (e: unknown) => e
+          );
+        expect(error).toBeInstanceOf(ProvisioningError);
+        expect((error as Error).message).toBe(authRefusal);
+        // Terminal: a retry would refuse the same template again.
+        expect(isMarkedNonRetryable(error)).toBe(true);
+        expect(mockSend).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      });
+    }
+
+    it("follows the caller's removed set over the presence test", async () => {
+      // The set says Auth was removed although both sides still declare it:
+      // only a set-driven read refuses.
+      await expect(
+        provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, withAuth, withAuth, {
+          removedProperties: new Set(['Auth']),
+        })
+      ).rejects.toThrow(authRefusal);
+      expect(mockSend).not.toHaveBeenCalled();
+
+      // The set is empty although the desired side dropped Auth: only a
+      // presence-driven read refuses.
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, withAuth, {
+        removedProperties: new Set(),
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('keeps Auth and warns, claiming nothing about CloudFormation, when DefaultAuthScheme is set', async () => {
+      // CloudFormation's removal would be accepted here; the provider cannot
+      // send it (it does not handle DefaultAuthScheme), so it keeps Auth.
+      const desired = { ...base, DefaultAuthScheme: 'IAM_AUTH' };
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, desired, {
+        ...desired,
+        Auth,
+        DebugLogging: true,
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toBe(
+        'Proxy (AWS::RDS::DBProxy): properties Auth, DebugLogging were removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.'
+      );
+    });
+
+    it('does not refuse an Auth removal on a rollback replay, and words it as the state being restored', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, withAuth, {
+        removedProperties: new Set(['Auth']),
+        replayingState: true,
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(' property Auth is absent from the state being restored;');
+    });
+
+    it('keeps Auth without a refusal or a warning on drift --revert (the real caller passes an empty removed set)', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, withAuth, {
+        removedProperties: new Set(),
+        desiredFromAwsReadback: true,
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does not refuse on drift --revert even if a removed set named Auth (defensive guard; no real caller passes this)', async () => {
+      await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, base, withAuth, {
+        removedProperties: new Set(['Auth']),
+        desiredFromAwsReadback: true,
+      });
+      expect(mockSend).not.toHaveBeenCalled();
     });
 
     it('passes a kept change through and omits the removed field from the call', async () => {

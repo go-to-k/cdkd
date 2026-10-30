@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope, generateResourceName } from '../../../src/provisioning/resource-name.js';
 import { markAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
@@ -135,7 +135,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
   }
 
   /**
-   * Drive `provisionResource` INSIDE a `withStackName` scope, as the engine's
+   * Drive `provisionResource` INSIDE a `withStackScope` scope, as the engine's
    * own `deploy()` does: `looksLikeCdkdGeneratedName` reads it, and a test
    * without the scope takes the unresolvable branch and passes for the wrong
    * reason -- so every negative case here would be vacuous.
@@ -144,7 +144,8 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     changeType: ChangeType = 'CREATE',
     stackName: string = STACK,
     physicalIdOverride?: string,
-    logicalIdOverride?: string
+    logicalIdOverride?: string,
+    stackInstanceId?: string
   ): Promise<string[]> {
     const id = logicalIdOverride ?? LOGICAL;
     if (physicalIdOverride !== undefined || logicalIdOverride !== undefined) {
@@ -162,7 +163,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [id]: { Type: TYPE, Properties: { Source: 'arn:b' } } },
     };
-    await withStackName(stackName, () =>
+    await withStackScope({ stackName: stackName, stackInstanceId, nameGenerations: new Map() }, () =>
       provisionResource(engine, id, change, {}, stackName, template).then(
         () => {
           throw new Error('expected the create to fail');
@@ -187,6 +188,20 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     expect(advice).toContain(`${STACK}-${LOGICAL}`);
     expect(advice).toContain('DeletionPolicy: Retain');
     expect(advice).toContain(`cdkd import ${STACK} --resource '${LOGICAL}=${STACK}-${LOGICAL}'`);
+  });
+
+  // go-to-k/cdkd#5064: a v13 stack's SUFFIXED name must be recognized as
+  // cdkd's own too, which needs `orphanedNameCollisionAdvice` to read the SAME
+  // stack instance id the scope carries, not just the stack name.
+  it('also names a v13 suffixed name as cdkd’s own orphan', async () => {
+    const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const suffixedName = withStackScope({ stackName: STACK, stackInstanceId: ID, nameGenerations: new Map() }, () =>
+      generateResourceName(LOGICAL, { maxLength: 64 })
+    );
+    const advice = adviceIn(await attempt('CREATE', STACK, suffixedName, undefined, ID));
+
+    expect(advice).toBeDefined();
+    expect(advice).toContain(suffixedName);
   });
 
   it('names CloudFormation as the DIFFERENCE, not as doing the same thing', async () => {
@@ -333,7 +348,7 @@ describe('plain-CREATE collision on a cdkd-derived name (#2902)', () => {
     const template: CloudFormationTemplate = {
       Resources: { [LOGICAL]: { Type: REPLACED_TYPE, Properties: { Source: 'arn:b' } } },
     };
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provisionResource(engine, LOGICAL, change, stateResources, STACK, template).then(
         () => {
           throw new Error('expected the replacement collision refusal');

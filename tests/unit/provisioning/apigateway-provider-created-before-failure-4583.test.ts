@@ -38,6 +38,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const STAGE = 'AWS::ApiGateway::Stage';
 const METHOD = 'AWS::ApiGateway::Method';
@@ -160,6 +164,92 @@ describe('ApiGatewayProvider createdBeforeFailure mark (go-to-k/cdkd#4583)', () 
       const error = await failure(provider, 'MyMethod', METHOD, { ...props, ResourceId: 'res|id' });
       expect(mockSend).not.toHaveBeenCalled();
       expect(createdBeforeFailure(error, 'MyMethod', METHOD)).toBeUndefined();
+    });
+  });
+
+  // go-to-k/cdkd#5511: the engine-owned sink holds the id once the create call
+  // returned, before the follow-up calls.
+  describe('created-resource sink (go-to-k/cdkd#5511)', () => {
+    const stageProps = {
+      RestApiId: 'api-id',
+      StageName: 'prod',
+      DeploymentId: 'deploy-123',
+      MethodSettings: [{ ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 100 }],
+    };
+    const methodProps = {
+      RestApiId: 'api-id',
+      ResourceId: 'resource-id',
+      HttpMethod: 'POST',
+      AuthorizationType: 'NONE',
+      Integration: { Type: 'MOCK' },
+    };
+
+    it('Stage: reports the stage name before the post-create patch', async () => {
+      const sink = new CreatedResourceSink('MyStage', STAGE);
+      let atPatch: unknown = 'unset';
+      mockSend.mockResolvedValueOnce({}); // CreateStage
+      mockSend.mockImplementationOnce(() => {
+        atPatch = sink.report; // UpdateStage
+        return Promise.reject(new Error('BadRequestException: bad patch'));
+      });
+      mockSend.mockRejectedValueOnce(new Error('DeleteStage boom'));
+      await collectCreatedResources(sink, () => failure(provider, 'MyStage', STAGE, stageProps));
+      expect(atPatch).toEqual({ physicalId: 'prod' });
+      expect(sink.report).toEqual({ physicalId: 'prod' });
+    });
+
+    it('Stage: a successful cleanup delete leaves nothing reported', async () => {
+      const sink = new CreatedResourceSink('MyStage', STAGE);
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('BadRequestException: bad patch'));
+      mockSend.mockResolvedValueOnce({});
+      await collectCreatedResources(sink, () => failure(provider, 'MyStage', STAGE, stageProps));
+      expect(mockSend.mock.calls[2]?.[0].constructor.name).toBe('DeleteStageCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('Stage: nothing is reported when CreateStage itself fails', async () => {
+      const sink = new CreatedResourceSink('MyStage', STAGE);
+      mockSend.mockRejectedValueOnce(new Error('ConflictException: Stage already exists'));
+      await collectCreatedResources(sink, () => failure(provider, 'MyStage', STAGE, stageProps));
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('Method: reports the composite id before the wiring calls', async () => {
+      const sink = new CreatedResourceSink('MyMethod', METHOD);
+      let atWiring: unknown = 'unset';
+      mockSend.mockResolvedValueOnce({}); // PutMethod
+      mockSend.mockImplementationOnce(() => {
+        atWiring = sink.report; // PutIntegration
+        return Promise.reject(new Error('PutIntegration boom'));
+      });
+      mockSend.mockRejectedValueOnce(new Error('DeleteMethod boom'));
+      await collectCreatedResources(sink, () =>
+        failure(provider, 'MyMethod', METHOD, methodProps)
+      );
+      expect(atWiring).toEqual({ physicalId: 'api-id|resource-id|POST' });
+      expect(sink.report).toEqual({ physicalId: 'api-id|resource-id|POST' });
+    });
+
+    it('Method: a successful cleanup delete leaves nothing reported', async () => {
+      const sink = new CreatedResourceSink('MyMethod', METHOD);
+      mockSend.mockResolvedValueOnce({});
+      mockSend.mockRejectedValueOnce(new Error('PutIntegration boom'));
+      mockSend.mockResolvedValueOnce({});
+      await collectCreatedResources(sink, () =>
+        failure(provider, 'MyMethod', METHOD, methodProps)
+      );
+      expect(mockSend.mock.calls[2]?.[0].constructor.name).toBe('DeleteMethodCommand');
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('Method: nothing is reported when PutMethod itself fails', async () => {
+      const sink = new CreatedResourceSink('MyMethod', METHOD);
+      mockSend.mockRejectedValueOnce(new Error('ConflictException: Method already exists'));
+      await collectCreatedResources(sink, () =>
+        failure(provider, 'MyMethod', METHOD, methodProps)
+      );
+      expect(sink.report).toBeUndefined();
     });
   });
 });

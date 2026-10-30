@@ -1,4 +1,9 @@
 import { CrossPrefixGuard } from '../../state/stack-registry.js';
+import {
+  nameGenerationCarriedFrom,
+  nameGenerationHighWaterOf,
+} from '../../state/name-generation.js';
+import { isNameGeneration } from '../../provisioning/resource-name.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { constructPathOf } from '../../analyzer/destructive-changes.js';
@@ -14,6 +19,11 @@ import {
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -134,9 +144,11 @@ import {
   hasReasonlessBaselineRefusal,
   hasUnverifiableParameterRefusal,
   orphansCarriedFrom,
+  stackInstanceIdCarriedFrom,
   type ResourceState,
   type StackState,
 } from '../../types/state.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import {
   refuseMalformedOutputs,
   refuseMalformedOrphanRecords,
@@ -1331,6 +1343,21 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       if (migrationPending) {
         saveOptions.migrateLegacy = true;
       }
+      // State schema v13 (go-to-k/cdkd#5064): an import CREATING the record is
+      // the stack's first state write, so it takes the stack's lifetime id --
+      // the one a first deploy interrupted before its record wrote ahead (the
+      // import adopts what that deploy made), or a fresh one. Under the lock;
+      // an existing record's id (or absence) was carried by `buildStackState`.
+      if (existingState === null) {
+        stackState = {
+          ...stackState,
+          stackInstanceId: await stateBackend.stackInstanceIdForFirstWrite(
+            stackInfo.stackName,
+            targetRegion,
+            { writeAhead: false }
+          ),
+        };
+      }
       await recordImportOnRollbackJournal(
         stateBackend,
         stackInfo.stackName,
@@ -2049,7 +2076,13 @@ function parseMappingJson(raw: string, source: string): Record<string, string> {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`Failed to parse ${source} as JSON: ` + describeAwsFailure(err).detail);
+    // V8's `SyntaxError` quotes a window of the input, so the message names
+    // only the failure's offset and size (issue #5254); V8's text goes to
+    // `debug` only.
+    getLogger().debug(safeMsg`${source} failed to parse: ${parseFailureDebugDetail(err)}`);
+    throw new Error(
+      `Failed to parse ${source} as JSON: ` + describeJsonParseFailure(err, utf8ByteLength(raw))
+    );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${source} must be a JSON object {logicalId: physicalId}`);
@@ -2469,6 +2502,17 @@ export function buildStackState(
     }
     resources[row.logicalId] = {
       physicalId: row.physicalId,
+      // go-to-k/cdkd#5064 phase 2: the name generation describes the resource
+      // a record names, so it is kept only on an UNCHANGED physical id. A
+      // resource adopted in place of another records none, only the highest
+      // generation the replaced record reached; the next replacement goes past
+      // that and any generation whose name the adopted one already carries
+      // (`nextNameGeneration`).
+      ...importedNameGenerationFields(
+        prior,
+        row,
+        existingState?.retiredNameGenerations?.[row.logicalId]
+      ),
       resourceType: row.resourceType,
       properties: tmplResource.Properties ?? {},
       // Issue #1098: persist the provider-returned attribute snapshot so an
@@ -2553,6 +2597,10 @@ export function buildStackState(
     // fields — so without this line the import would silently delete the only
     // record that a live, billing `Retain` resource is still standing in AWS.
     ...(existingState ? orphansCarriedFrom(existingState) : {}),
+    // State schema v13: the stack's lifetime id travels with its record; a
+    // record built from nothing gets the one its caller resolves before the
+    // save (`stackInstanceIdForFirstWrite`).
+    ...(existingState ? stackInstanceIdCarriedFrom(existingState) : {}),
     // ...but the skipped-outputs record (issue #2740) is DROPPED, not carried,
     // even though it describes that same bag. It records what the last DEPLOY
     // could not resolve, and an import refreshes `attributes` for every
@@ -4293,9 +4341,10 @@ export async function captureObservedForImportedResources(
           // `resolveImportedProperties` masks with `maskSecretsInText`; that is
           // not available here, because the secrets map on this path is EMPTY by
           // construction, so there is no needle set to mask against. And the
-          // message can carry a plaintext: `CloudControlProvider.readCurrentState`
-          // does a bare `JSON.parse` on the resource model and rethrows, and V8
-          // embeds an input snippet in a `SyntaxError` -- measured on node
+          // message can carry a plaintext: a provider's `readCurrentState` that
+          // rethrows a `JSON.parse` failure (`CloudControlProvider`'s did until
+          // issue #5254) carries V8's `SyntaxError`, which embeds an input
+          // snippet -- measured on node
           // v24.19.0, `JSON.parse('{"Password": SUPER-SECRET-abc}')` reports
           // `..."assword": SUPER-SECR"...`. So log what identifies the failure
           // without quoting the input, the way `parseResourceModel` already does.
@@ -4665,6 +4714,24 @@ async function importNestedStackChildrenRecursive(args: {
       childStackState.parentStack = parentStackName;
       childStackState.parentLogicalId = childLogicalId;
       childStackState.parentRegion = parentRegion;
+      // State schema v13 (go-to-k/cdkd#5064): the child is built from nothing,
+      // but it may have a record already (a re-import), whose lifetime id --
+      // or legacy absence -- it keeps. Otherwise the child's first state write
+      // takes its own id, as its first deploy would. Under the child's lock.
+      const childPrior = await stateBackend.getState(childStackName, childRegion);
+      const childStackInstanceId = childPrior
+        ? stackInstanceIdOf(childPrior.state, displaySafe(childStackName))
+        : await stateBackend.stackInstanceIdForFirstWrite(childStackName, childRegion, {
+            writeAhead: false,
+          });
+      if (childPrior) {
+        // The id checked above, with the lifetime's retired name generations
+        // and the superseded resources still to delete (#5111): a rebuild
+        // from nothing would drop them, leaving live resources unrecorded.
+        Object.assign(childStackState, stackInstanceIdCarriedFrom(childPrior.state));
+      } else if (childStackInstanceId !== undefined) {
+        childStackState.stackInstanceId = childStackInstanceId;
+      }
 
       // Resolve intrinsics in child Properties (same reason as root —
       // sub-resource provider deletes read resolved props), populate
@@ -4793,9 +4860,15 @@ function readNestedChildTemplate(
   try {
     return JSON.parse(raw) as CloudFormationTemplate;
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the template, which can hold a
+    // plaintext value, so the message names only the failure's offset and
+    // size (issue #5254); V8's text goes to `debug` only.
+    getLogger().debug(
+      safeMsg`Nested-stack template for '${childLogicalId}' failed to parse: ${parseFailureDebugDetail(err)}`
+    );
     throw new Error(
       `Failed to parse nested-stack template for '${childLogicalId}' at ` +
-        `${templatePath}: ${describeAwsFailure(err).detail}`
+        `${templatePath}: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
 }
@@ -4860,4 +4933,40 @@ export function indexGrandchildTemplatePaths(
 /** `{ constructPath }` when the template declares one, else nothing. */
 function constructPathField(path: string | undefined): { constructPath?: string } {
   return path === undefined ? {} : { constructPath: path };
+}
+
+/**
+ * go-to-k/cdkd#5064 phase 2: the name-generation fields of a record `cdkd
+ * import` rebuilds over `prior`. Kept verbatim on an unchanged physical id; a
+ * resource adopted in place of another records the highest generation the
+ * replaced record reached as its high-water mark. A row the import is
+ * repairing (unreadable, or holding a malformed generation) contributes
+ * nothing: the import is its way out, never a second refusal.
+ *
+ * @internal Exported for its unit test.
+ */
+export function importedNameGenerationFields(
+  prior: ResourceState | null | undefined,
+  row: { logicalId: string; physicalId?: string | undefined },
+  /** The logical id's retired generation, when an earlier record of it left the stack. */
+  retired?: unknown
+): Pick<ResourceState, 'nameGeneration' | 'nameGenerationHigh'> {
+  // A copy that left the stack may still hold that generation's name (Retain):
+  // the next replacement goes past it.
+  const retiredReached = isNameGeneration(retired) ? retired : 0;
+  const reachedField = (reached: number): Pick<ResourceState, 'nameGenerationHigh'> =>
+    reached === 0 ? {} : { nameGenerationHigh: reached };
+  if (prior === null || typeof prior !== 'object') return reachedField(retiredReached);
+  try {
+    if (prior.physicalId !== row.physicalId) {
+      return reachedField(
+        Math.max(retiredReached, nameGenerationHighWaterOf(prior, row.logicalId))
+      );
+    }
+    // Read first: a malformed value is dropped, not carried into the repair.
+    nameGenerationHighWaterOf(prior, row.logicalId);
+    return nameGenerationCarriedFrom(prior);
+  } catch {
+    return reachedField(retiredReached);
+  }
 }

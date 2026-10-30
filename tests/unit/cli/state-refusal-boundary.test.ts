@@ -17,6 +17,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
  * legacy refusals) are pinned in `state-ref-display-boundary.test.ts` and in
  * the `state resources` / `state show` / `state refresh-observed` suites.
  */
+import {
+  LEAK_BODY,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+} from '../_json-parse-leak.js';
 import { setStdinIsTty } from '../../stdin-tty.js';
 import {
   PASTE_PAYLOADS,
@@ -29,15 +34,24 @@ import {
 const infoSpy = vi.hoisted(() => vi.fn());
 const warnSpy = vi.hoisted(() => vi.fn());
 const errorSpy = vi.hoisted(() => vi.fn());
+const debugSpy = vi.hoisted(() => vi.fn());
+// A provider's own logger (`getLogger().child(...)`), kept apart from the
+// command's so a case can tell which one printed a line.
+const childSpies = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
 
 vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     setLevel: vi.fn(),
-    debug: vi.fn(),
+    debug: debugSpy,
     info: infoSpy,
     warn: warnSpy,
     error: errorSpy,
-    child: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    child: () => childSpies,
   }),
   reserveStdoutForPayload: vi.fn(),
 }));
@@ -46,6 +60,7 @@ vi.mock('../../../src/cli/config-loader.js', () => ({
   resolveStateBucketWithDefault: vi.fn(async () => 'test-bucket'),
 }));
 
+const mockCloudControlSend = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/utils/aws-clients.ts', () => ({
   AwsClients: vi.fn().mockImplementation(() => ({
     get s3() {
@@ -55,7 +70,8 @@ vi.mock('../../../src/utils/aws-clients.ts', () => ({
   })),
   setAwsClients: vi.fn(),
   runWithStackAwsClients: (_clients: unknown, fn: () => unknown) => fn(),
-  getAwsClients: vi.fn(),
+  // The real `CloudControlProvider` a #5254 case builds reads its client here.
+  getAwsClients: vi.fn(() => ({ cloudControl: { send: mockCloudControlSend } })),
 }));
 
 const mockListStacks = vi.fn<() => Promise<Array<{ stackName: string; region?: string }>>>();
@@ -100,6 +116,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 import { createStateCommand, resolveSingleRegion } from '../../../src/cli/commands/state.js';
+import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 
 /** The four paste families, whose `'` / `$( )` / backtick / `;` a hand quote let run. */
 const HOSTILE = PASTE_PAYLOADS.map((p) => p.value);
@@ -235,6 +252,9 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
     infoSpy.mockReset();
     warnSpy.mockReset();
     errorSpy.mockReset();
+    debugSpy.mockReset();
+    for (const fn of Object.values(childSpies)) fn.mockReset();
+    mockCloudControlSend.mockReset();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit-mock');
     }) as never);
@@ -561,6 +581,68 @@ describe('the command sites (go-to-k/cdkd#3179, go-to-k/cdkd#3027)', () => {
       expect(lines(warnSpy)).toContain(
         '  ✗ S/L ("AWS::S3::Bucket) (x"): readCurrentState failed — boom'
       );
+    });
+
+    it('prints only the class of a readback parse failure, never its body window (issue #5254)', async () => {
+      // `CloudControlProvider.readCurrentState` parses the resource model, and
+      // V8's `SyntaxError` quotes a window of it, which can be a plaintext
+      // property value.
+      expectV8QuotesLeakToken();
+      let v8: unknown;
+      try {
+        JSON.parse(LEAK_BODY);
+      } catch (e) {
+        v8 = e;
+      }
+      mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: {
+          resources: { L: { resourceType: 'AWS::S3::Bucket', physicalId: 'p', properties: {} } },
+        },
+        etag: 'e',
+      });
+      mockReadCurrentState.mockRejectedValue(v8);
+      await runState(['refresh-observed', '--all', '--yes']);
+      expect(lines(warnSpy)).toContain(
+        '  ✗ S/L (AWS::S3::Bucket): readCurrentState failed — SyntaxError (its text is ' +
+          'withheld: a parse error quotes the body it read)'
+      );
+      expectLeakTokenOnlyAtDebug({ debug: debugSpy, info: infoSpy, warn: warnSpy, error: errorSpy });
+    });
+
+    it("routes CloudControlProvider.readCurrentState's parse failure to the class-only line (issue #5254)", async () => {
+      // The REAL provider, not a hand-built error: its throw must stay a
+      // `SyntaxError` for this command's class-only arm to take it, and its own
+      // message must quote no body either.
+      expectV8QuotesLeakToken();
+      mockCloudControlSend.mockResolvedValue({
+        ResourceDescription: { Identifier: 'p', Properties: LEAK_BODY },
+      });
+      const cc = new CloudControlProvider();
+      mockReadCurrentState.mockImplementation(() =>
+        cc.readCurrentState('p', 'L', 'AWS::S3::Bucket')
+      );
+      mockListStacks.mockResolvedValue([{ stackName: 'S', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({
+        state: {
+          resources: { L: { resourceType: 'AWS::S3::Bucket', physicalId: 'p', properties: {} } },
+        },
+        etag: 'e',
+      });
+      await runState(['refresh-observed', '--all', '--yes']);
+      expect(lines(warnSpy)).toContain(
+        '  ✗ S/L (AWS::S3::Bucket): readCurrentState failed — SyntaxError (its text is ' +
+          'withheld: a parse error quotes the body it read)'
+      );
+      const both = (a: typeof debugSpy, b: typeof debugSpy) => ({
+        mock: { calls: [...a.mock.calls, ...b.mock.calls] },
+      });
+      expectLeakTokenOnlyAtDebug({
+        debug: both(debugSpy, childSpies.debug),
+        info: both(infoSpy, childSpies.info),
+        warn: both(warnSpy, childSpies.warn),
+        error: both(errorSpy, childSpies.error),
+      });
     });
 
     it('bounds the record on every per-stack line', async () => {

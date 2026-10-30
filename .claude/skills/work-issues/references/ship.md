@@ -3,16 +3,17 @@
 ## 9. Ship: merge → pull → rebuild → cleanup
 
 The PARENT's serialization point: run your own review round on a merge-ready
-lane (`references/verify.md` §8-i — before EVERY merge, even when the lane's
-reviewers passed; go-to-k/cdkd#3906), grant it its turn only once that round is
-CLEAN (one lane at a time), then run `/run-integ` and
+lane (`verify.md` §8-i — before EVERY merge, even when the lane's
+reviewers passed; #3906). Grant it its turn only once that round AND its
+delta reviews are CLEAN, since every fix round voids an integ started beside
+them (#5337). One lane at a time: run `/run-integ` and
 `gh pr merge` yourself FROM THAT LANE'S WORKTREE — never the lane agent. The
 auto-mode classifier can refuse the PARENT's calls too: any refused call goes
-to `AskUserQuestion`, never a reworded retry (go-to-k/cdkd#4059); only
+to `AskUserQuestion`, never a reworded retry (#4059); only
 `/run-integ` step 9's one retry (marker set or ledger push) is exempt.
 Ship from a SECOND sibling on the PR's branch while that tree holds a follow-up
 (`git -C <MAIN_CHECKOUT> worktree add <MAIN_CHECKOUT>/.claude/worktrees/<name> <branch>`),
-running BOTH the integ and the merge there (the marker is per tree). A fix
+running BOTH the integ and the merge there. A fix
 round DURING that tree's integ edits a `--detach` sibling, pushes
 `HEAD:<branch>` (bash reads `verify.sh` live), and fast-forwards that tree
 before the marker, re-running an integ the fix touches (#4561). Never two
@@ -20,19 +21,38 @@ lanes' integs or merges at once, nor a merge during another lane's integ: it
 can move `main` under that batch (#4864). A turn blocked on a fixture fix
 yields to the next merge-ready lane. ANY turn holding HOURS tells the user
 unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger blocks until EVERY run ends and reports ONCE; its brief, like a lane's,
-bans attribution lines in the ledger commit (#5104). Size it for ONE context
-(§8-d probe alone, then fixture batches), each run's fixture, PID, log,
-state prefix appended to `<scratch>/integ-<PR>.live` at launch for a finisher.
+ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
+it (#5245); the `.live` Monitor below is the only progress signal. Its brief
+(the runner never reads this file) makes marker and ledger due once the last PID
+exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN, take each
+verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
+its own, #5519) and wait on ONE command exiting with that PID (no per-line
+Monitor: each line re-ends it, #5413), bans attribution
+lines in the ledger commit (#5104), and STOPs on an unreadable state record,
+never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
+and the fixture): the PR is blamed when that file is in its diff, cleared when
+the grep hits only outside it, else UNATTRIBUTED (#4981). Size it for ONE
+context (§8-d probe alone, then fixture batches), each run's fixture,
+`pid=<N>` (bare digits, #5248), log, state
+prefix appended as a line to `<scratch>/integ-<PR>.live` at launch. BEFORE
+dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
+open PRs touching each fixture: a held one gets a lock watcher, not a runner
+(#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
+re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
+read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`; a bare digit
+grep matches a `mktemp` path's zeroes, and `kill -0 0000` always succeeds),
+`SendMessage`s the runner as each exits, and alarms when no PID has run for 15
+min unreported (#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 - The `integ-destroy` marker is read from the tree the command runs in, so a
-  merge from the main tree consults the WRONG store (go-to-k/cdkd#2363); read
-  it by hand with `mise exec -- markgate`, as PATH's may predate `hash: diff`. Its
+  merge from the main tree consults the WRONG store (#2363); read
+  it by hand with `mise exec -- markgate`, as PATH's may predate `hash: diff`
+  (a sibling `mise trust`s first: an untrusted `.mise.toml` fails it). Its
   `hash: diff` covers this branch's delta against `origin/main`, so run the
-  integ AFTER the flatten/rebase below (`references/verify.md` §8-b says which
+  integ AFTER the flatten/rebase below (`verify.md` §8-b says which
   rebases stale it). While a scoped file this branch changes is busy on `main`
-  (go-to-k/cdkd#4183), run the set as ONE parallel batch (building fixtures per
+  (#4183), run the set as ONE parallel batch (building fixtures per
   `/run-integ` step 1), then set the marker, record, push and merge without
   starting other work between them (the Merge bullets below still apply).
 - **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
@@ -40,14 +60,13 @@ A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
 
 ### Flatten, then rebase
 
-**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** The integ ledger
-`docs/_generated/integ-last-run.tsv` gains a row at the same place on every lane
-that ran one, so a commit-by-commit rebase re-conflicts once per commit; the
-repo squash-merges, so flattening loses nothing. Both rewrite a PUSHED branch,
+**FLATTEN BEFORE YOU REBASE — the default step, not a remedy.** Every integ lane adds
+a ledger row at the same place, so a per-commit rebase re-conflicts on each
+commit; squash merges mean flattening loses nothing. Both rewrite a PUSHED branch,
 so FIRST push plainly until `git rev-list origin/<branch>..HEAD` is empty (a
 denied plain push is re-authorized, never routed round through the arm). Then,
 when the harness denies the `git reset`, the rebase or the `--force-with-lease`
-push, take §7's MERGE ARM from `origin/<branch>` (go-to-k/cdkd#4327) in
+push, take §7's MERGE ARM from `origin/<branch>` (#4327) in
 `<LANE_TREE>` by literal path:
 `checkout -B <branch> origin/<branch>`, `merge origin/main`, re-run the
 generators and `vp run integ-ledger-normalize` (`merge=union` hides the ledger
@@ -59,11 +78,11 @@ on that yes:
 ```bash
 git reset --soft "$(git merge-base origin/main HEAD)"   # one commit
 # From another tree, `.claude/hooks/bughunt-clean-gate.sh` refuses `-C "$VAR"`
-# on a `git commit` / `gh pr create|merge` segment, so every gated line takes
-# the LITERAL path; keep `$(git -C <literal path> merge-base origin/main HEAD)`.
+# on a `git commit` / `gh pr create|merge` segment: use the LITERAL path, in this
+# line's `$(git -C <path> merge-base ...)` too.
 # Never the origin/main TIP: --soft onto it stages a revert of main's newer files.
 # Message to a FILE named per BRANCH, never -m: inside -m "..." a backtick RUNS.
-# DERIVE, WRITE and COMMIT in ONE call -- shell state dies between tool calls.
+# DERIVE, WRITE and COMMIT in ONE call: shell state dies between calls.
 MSGREF=$(git branch --show-current | tr / -); MSGREF=${MSGREF:-$$}   # empty when detached
 MSGFILE="${TMPDIR:-/tmp}/cdkd-squash-${MSGREF}.txt"
 cat > "$MSGFILE" <<'EOF'
@@ -73,12 +92,15 @@ git commit -F "$MSGFILE"
 git show --stat --format= HEAD   # lane paths ONLY, else it reverts peers: redo via reflog
 git rebase origin/main   # its OWN call, then `git status`: at most one conflict,
                          # and a regen / `commit --amend` chained after a STOPPED
-                         # rebase amends the detached onto-commit (go-to-k/cdkd#3671)
+                         # rebase amends the detached onto-commit (#3671)
 ```
 
-- **A GENERATED file is REGENERATED, never hand-merged**: re-run the generator,
-  commit ITS output. Upstream whole only clears the conflict: it lacks this
-  lane's inputs, so regenerate before the push (go-to-k/cdkd#4460).
+- **A GENERATED file is REGENERATED, never hand-merged nor trusted when git
+  merged it CLEANLY** (`update-wrap-coverage.json` came out inconsistent):
+  take upstream's copy whole — it is the generator's BASELINE — re-run the
+  generator, commit ITS output before the push (#4460). Take it with
+  `git show origin/main:<file> > <file>`: mid-rebase `checkout -- <file>` hits
+  `dirty-path-restore-gate` on the staged copy.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
@@ -116,7 +138,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   ```
 
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
-  test runs only after the push: re-run `pnpm install --frozen-lockfile` (on a
+  test runs only after the push: re-run `vp install --frozen-lockfile` (on a
   stale install gen exits 1), then `vp run gen:all-matrices && vp run format`
   (it ends in the ledger normalize) after EVERY rebase; push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
@@ -136,7 +158,7 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
 - **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
   merge the release PR, confirm the npm version, then comment on the issue in
   English — thanks, the version it shipped in, "feel free to open an issue"
-  (go-to-k/cdkd#3624).
+  (#3624).
 
 ### Pull, then rebuild the linked binary
 
@@ -145,18 +167,17 @@ The linked binary is the main checkout's `dist/cli.js`. MAIN-CHECKOUT (SKILL.md
 
 ```bash
 git checkout main && git pull origin main    # bring the merges local
-pnpm install --frozen-lockfile && vp run build   # a merged dependency bump (#3951)
+vp install --frozen-lockfile && vp run build   # a merged dependency bump (#3951)
 ```
 
 IN-PLACE — run THIS block INSTEAD, never both: `checkout main` fails here, and
 building THIS tree leaves the user on the old binary. `MAIN` is derived per
-block — each fenced block is its own shell:
+block (each fenced block is its own shell) from `git worktree list`'s FIRST row:
 
 ```bash
-# The main checkout is always the FIRST row of `git worktree list`.
 MAIN=$(git worktree list --porcelain | awk 'NR==1{print substr($0,10)}')
 git -C "$MAIN" pull origin main
-( cd "$MAIN" && pnpm install --frozen-lockfile && vp run build )
+( cd "$MAIN" && vp install --frozen-lockfile && vp run build )
 ```
 
 A dirty shared main tree fails that pull (§7); never restore the offending
@@ -173,11 +194,11 @@ means the owner is presumed LIVE — leave it.
 MAIN-CHECKOUT — run THIS block, and not the next one:
 
 ```bash
-git worktree remove .claude/worktrees/<branch>   # --force if it refuses on artifacts
+git worktree remove .claude/worktrees/<branch>  # --force if it refuses on artifacts
 git worktree prune
-git branch -D <branch>                           # -D, not -d (squash); PR MERGED first
-git worktree list                                # every worktree THIS run added is gone
-git branch --list '<your prefix>*'               # ...and so is every branch it added
+git branch -D <branch>  # -D, not -d (squash); PR MERGED first
+git worktree list  # every worktree THIS run added is gone
+git branch --list '<your prefix>*'  # ...and so is every branch it added
 ```
 
 IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove the
@@ -194,15 +215,16 @@ DIRTY=$(git status --porcelain)
 [ -z "$DIRTY" ] \
   && git switch --no-guess <LAUNCH_BRANCH> \
   && git branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
-git branch --show-current      # must print <LAUNCH_BRANCH>
-git branch --list '<your prefix>*'             # ...and every branch this run added is gone
+git branch --show-current  # must print <LAUNCH_BRANCH>
+git branch --list '<your prefix>*'  # ...and every branch this run added is gone
 ```
 
 `--no-guess`: plain `git switch` re-creates a gone branch from `origin` and
 reports success instead of falling through. The dirty check is a TEST, since
 `--porcelain` exits 0 either way and `git switch` carries uncommitted changes
 ACROSS; unchained, a FAILED switch still runs the `-D`. The delete is PLURAL
-(§10-d adds a retro branch) and unconditional: confirm each PR reads `MERGED`.
+(§10-d adds a retro branch, so this runs LAST, not per-lane) and
+unconditional: confirm each PR reads `MERGED`.
 
 Fallback — INSTEAD of the block above, ONLY when `LAUNCH_BRANCH` was empty at
 probe time (launched detached) or is now gone. Keep it chained: after a failed
@@ -213,9 +235,6 @@ git fetch origin \
   && git switch --detach origin/main \
   && git branch -D <each branch this run created in THIS tree>
 ```
-
-**This step runs LAST, not per-lane**:
-§10-d still creates its retro branch in this tree.
 
 ### Release the claims
 

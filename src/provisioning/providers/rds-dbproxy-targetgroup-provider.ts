@@ -15,7 +15,13 @@ import {
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { markNonRetryable, markRedactedCause } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString } from '../config-shape.js';
 import type { CreateContext, ResourceNotFound, UpdateContext } from '../../types/resource.js';
@@ -33,7 +39,12 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { holdsSecretDerivedEntry, recordedPrincipalsRepair } from '../iam-policy-targets.js';
 import {
   DBPROXY_TAG_OPTIONS,
@@ -312,9 +323,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       } catch (error) {
         // An adjustment of the proxy's own target group, not the registration
         // this resource creates: never this resource's collision (#3826).
-        throw markAuxiliaryFailure(
-          this.wrapError(error, 'CREATE (pool config)', resourceType, logicalId, undefined),
-          logicalId
+        // Marked BEFORE the wrap, so the wrap does not restate the collision.
+        throw this.wrapError(
+          markAuxiliaryFailure(error, logicalId),
+          'CREATE (pool config)',
+          resourceType,
+          logicalId,
+          undefined,
+          mask
         );
       }
     }
@@ -344,7 +360,8 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           'CREATE (register targets)',
           resourceType,
           logicalId,
-          undefined
+          undefined,
+          mask
         );
       }
     }
@@ -362,7 +379,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       // Every throw from here on leaves the registration above live with
       // nothing recorded, so each retires it first.
       throw await this.retireRegistrationAfterFailedCreate(
-        this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined),
+        this.wrapError(error, 'CREATE (describe)', resourceType, logicalId, undefined, mask),
         dbProxyName,
         targetGroupName,
         dbClusterIdentifiers,
@@ -386,6 +403,12 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#5511: the id the mark uses is known only here, after the
+    // describe; reported before the tagging call, when targets were registered.
+    if (dbClusterIdentifiers.length > 0 || dbInstanceIdentifiers.length > 0) {
+      reportCreatedResource(logicalId, resourceType, targetGroupArn);
+    }
+
     if (tags.length > 0) {
       try {
         await client.send(
@@ -393,7 +416,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         );
       } catch (error) {
         throw await this.retireRegistrationAfterFailedCreate(
-          this.wrapError(error, 'CREATE (add tags)', resourceType, logicalId, undefined),
+          this.wrapError(error, 'CREATE (add tags)', resourceType, logicalId, undefined, mask),
           dbProxyName,
           targetGroupName,
           dbClusterIdentifiers,
@@ -746,7 +769,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE (pool config)', resourceType, logicalId, physicalId);
+        throw this.wrapError(
+          error,
+          'UPDATE (pool config)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
       }
     }
 
@@ -790,7 +820,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         // Idempotent: a target that's already gone is fine. The region was
         // checked before the first call, so this NotFound is this region's.
         if (!(error instanceof DBProxyTargetNotFoundFault)) {
-          throw this.wrapError(error, 'UPDATE (deregister)', resourceType, logicalId, physicalId);
+          throw this.wrapError(
+            error,
+            'UPDATE (deregister)',
+            resourceType,
+            logicalId,
+            physicalId,
+            mask
+          );
         }
       }
     }
@@ -813,7 +850,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           })
         );
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE (register)', resourceType, logicalId, physicalId);
+        throw this.wrapError(error, 'UPDATE (register)', resourceType, logicalId, physicalId, mask);
       }
     }
 
@@ -826,7 +863,14 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           new RemoveTagsFromResourceCommand({ ResourceName: physicalId, TagKeys: tagsToRemove })
         );
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE (remove tags)', resourceType, logicalId, physicalId);
+        throw this.wrapError(
+          error,
+          'UPDATE (remove tags)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
       }
     }
     if (tagsToAdd.length > 0) {
@@ -835,7 +879,7 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           new AddTagsToResourceCommand({ ResourceName: physicalId, Tags: tagsToAdd })
         );
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE (add tags)', resourceType, logicalId, physicalId);
+        throw this.wrapError(error, 'UPDATE (add tags)', resourceType, logicalId, physicalId, mask);
       }
     }
 
@@ -1020,7 +1064,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         );
         return;
       }
-      throw this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId);
+      const thrown = this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // not-founds above mean this registration is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1214,6 +1264,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           DBInstanceIdentifiers: instances,
         })
       );
+      if (leftBehind) {
+        retractCreatedResource(
+          leftBehind.logicalId,
+          leftBehind.resourceType,
+          leftBehind.physicalId
+        );
+      }
       return original;
     } catch (cleanupError) {
       // Template-chosen names, so the command renders through
@@ -1229,9 +1286,19 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
         targets = aws`${targets} --db-instance-identifiers`;
         for (const id of instances) targets = aws`${targets} ${id}`;
       }
+      // The appended text is persisted with the original's, so AWS's own
+      // wording goes to `debug` and the message names its class (issue #2319).
+      const cleanupFailure = describeAwsFailure(cleanupError);
+      if (cleanupFailure.redacted) {
+        this.logger.debug(
+          maskerOrIdentity(maskSecrets)(
+            `Deregistering the targets a failed create registered failed: ${cleanupFailure.detail}`
+          )
+        );
+      }
       original.message +=
         ` The targets this create registered are still registered and could not be ` +
-        `deregistered (${describeAwsFailure(cleanupError).detail}). Manual cleanup: ` +
+        `deregistered (${maskerOrIdentity(maskSecrets)(cleanupFailure.summary).replace(/\.$/, '')}). Manual cleanup: ` +
         aws`aws rds deregister-db-proxy-targets --db-proxy-name ${dbProxyName} --target-group-name ${targetGroupName}${targets}`.render();
       if (leftBehind) {
         markCreatedBeforeFailure(
@@ -1283,8 +1350,13 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
           logicalId,
           physicalId
         );
+        // The names are state-borne and can be a plaintext an in-process
+        // rollback resolved, so each is masked as a value (go-to-k/cdkd#2007).
+        const mask = maskerOrIdentity(context?.maskSecrets);
         this.logger.debug(
-          `${dbProxyName}/${targetGroupName ?? '*'} is already gone; the record needs no deregistration`
+          mask(
+            `${mask(dbProxyName)}/${targetGroupName === undefined ? '*' : mask(targetGroupName)} is already gone; the record needs no deregistration`
+          )
         );
         return true;
       }
@@ -1338,22 +1410,44 @@ export class RDSDBProxyTargetGroupProvider implements ResourceProvider {
     return live;
   }
 
+  /**
+   * The `ProvisioningError` a failed create, update or delete call throws
+   * (issue #2319). Its message is persisted to `deployments/{runId}.jsonl`,
+   * and an RDS `AccessDenied` names the caller's assumed-role ARN, so an
+   * AWS-authored failure is named by its class plus the `--verbose` pointer:
+   * AWS's own text goes to `debug` through the operation's masker, the
+   * original error stays the `cause`, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on
+   * that chain. An "already exists" is restated ({@link relayedNameCollision})
+   * unless an auxiliary call raised it ({@link isAuxiliaryFailure}). A
+   * cdkd-authored or transport error keeps its text, masked, stamped only when
+   * the mask changed it (`wrapMaskedAwsError`); a non-`Error` throw is withheld
+   * like an AWS one, unstamped (it has no chain). The delete catch tests
+   * not-found by type before it wraps.
+   */
   private wrapError(
     error: unknown,
     op: string,
     resourceType: string,
     logicalId: string,
-    physicalId: string | undefined
+    physicalId: string | undefined,
+    mask: (text: string) => string
   ): ProvisioningError {
-    const message = error instanceof Error ? error.message : String(error);
     const cause = error instanceof Error ? error : undefined;
-    return new ProvisioningError(
-      `${op} failed for ${logicalId}: ${message}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `${op} failed for ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 }
 

@@ -31,7 +31,7 @@ import { parseRollbackJournal } from '../../../src/types/rollback-journal.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import {
   applyDefaultNameForFallback,
-  withStackName,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
 
@@ -40,7 +40,7 @@ function applyDefaultNameForFallbackUnderStack(
   logicalId: string,
   type: string
 ): Record<string, unknown> {
-  return withStackName('MyStack', () => applyDefaultNameForFallback(logicalId, type, {}));
+  return withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => applyDefaultNameForFallback(logicalId, type, {}));
 }
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
@@ -431,7 +431,7 @@ describe('replayRollback reverses a Type-change replacement through BOTH types',
         provisionedBy: 'cc-api',
       }),
     });
-    await withStackName(STACK, () =>
+    await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([op], { Thing: newRecord() }, STACK, ctx)
     );
     const create = providerFor('AWS::SQS::Queue', 'cc-api').create;

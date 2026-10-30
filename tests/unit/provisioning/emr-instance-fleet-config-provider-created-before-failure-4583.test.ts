@@ -46,6 +46,10 @@ import {
   resetEMRInstanceFleetCreateRetryStateForTests,
 } from '../../../src/provisioning/providers/emr-instance-fleet-config-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TYPE = 'AWS::EMR::InstanceFleetConfig';
@@ -107,6 +111,35 @@ describe('EMRInstanceFleetConfigProvider create marks a created-before-failure f
     const error = await createError();
     expect(createdBeforeFailure(error, 'Fleet', TYPE)).toBe(FLEET_ID);
     expect(isMarkedNonRetryable(error)).toBe(true); // go-to-k/cdkd#4945
+  });
+
+  it('reports the fleet id before the readiness poll (#5511)', async () => {
+    const sink = new CreatedResourceSink('Fleet', TYPE);
+    let atPoll: unknown = 'unset';
+    routeSend(
+      () => ({ InstanceFleetId: FLEET_ID }),
+      () => {
+        atPoll = sink.report;
+        throw Object.assign(new Error('not authorized to perform ListInstanceFleets'), {
+          name: 'AccessDeniedException',
+        });
+      }
+    );
+    await collectCreatedResources(sink, () => createError());
+    expect(atPoll).toEqual({ physicalId: FLEET_ID });
+    expect(sink.report).toEqual({ physicalId: FLEET_ID });
+  });
+
+  it('reports nothing when AddInstanceFleet itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Fleet', TYPE);
+    routeSend(
+      () => {
+        throw Object.assign(new Error('Cluster is terminated'), { name: 'InvalidRequestException' });
+      },
+      () => ({ InstanceFleets: [] })
+    );
+    await collectCreatedResources(sink, () => createError());
+    expect(sink.report).toBeUndefined();
   });
 
   it('leaves no mark when AddInstanceFleet itself fails', async () => {

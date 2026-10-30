@@ -32,6 +32,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { LambdaMicrovmImageProvider } from '../../../src/provisioning/providers/lambda-microvm-image-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const TYPE = 'AWS::Lambda::MicrovmImage';
 const ARN = 'arn:aws:lambda:us-east-1:123456789012:microvm-image:my-image';
@@ -98,5 +102,29 @@ describe('LambdaMicrovmImageProvider create marks a created-before-failure image
     expect(error).toBeDefined();
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'Image', TYPE)).toBeUndefined();
+  });
+
+  it('reports the image ARN to the sink before the build wait (#5511)', async () => {
+    const sink = new CreatedResourceSink('Image', TYPE);
+    let reportAtWait: unknown = 'not-called';
+    mockSend.mockResolvedValueOnce({ imageArn: ARN, state: 'CREATING' });
+    mockSend.mockImplementationOnce(() => {
+      reportAtWait = sink.report;
+      return Promise.reject(new Error('throttled'));
+    });
+    await expect(
+      collectCreatedResources(sink, () => provider.create('Image', TYPE, props()))
+    ).rejects.toThrow();
+    expect(reportAtWait).toEqual({ physicalId: ARN });
+    expect(sink.report).toEqual({ physicalId: ARN });
+  });
+
+  it('reports nothing when CreateMicrovmImage itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Image', TYPE);
+    mockSend.mockRejectedValueOnce(new Error('ConflictException: already exists'));
+    await expect(
+      collectCreatedResources(sink, () => provider.create('Image', TYPE, props()))
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
   });
 });

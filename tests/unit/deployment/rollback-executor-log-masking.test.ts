@@ -10,7 +10,7 @@ import { SECRET_MASK, scrubResourceRecord } from '../../../src/deployment/secret
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
-import { awsSdkError } from '../_aws-sdk-error.js';
+import { awsSdkError, relayedAwsSdkError } from '../_aws-sdk-error.js';
 
 // Issues #2038 (the `withRetry` give-up summary) and #2031 (the direct
 // `logger.warn` + the DURABLE deployment-events record).
@@ -366,9 +366,12 @@ describe('rollback replay - the failure warn + the events record are masked (iss
       | { error?: { message?: string; name?: string; awsErrorCode?: string; requestId?: string } }
       | undefined;
     expect(failed).toBeDefined();
-    // Masking happened ...
+    // The AWS-authored text is withheld from the persisted copy
+    // (go-to-k/cdkd#2319), so no plaintext can reach it ...
     expect(failed!.error?.message).not.toContain(SECRET_PLAINTEXT);
-    expect(failed!.error?.message).toContain(SECRET_MASK);
+    expect(failed!.error?.message).toBe(
+      "ValidationException. Re-run with --verbose for AWS's own message."
+    );
     // ... and nothing else was lost on the way through.
     expect(failed!.error?.name).toBe('ValidationException');
     expect(failed!.error?.awsErrorCode).toBe('ValidationException');
@@ -530,7 +533,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
   it('the Retain collision refusal masks a spaced secret before collapsing the AWS text', async () => {
     const create = vi
       .fn()
-      .mockRejectedValue(awsSdkError(`Resource already exists. Value '${SPACED_PLAINTEXT}' is taken`));
+      .mockRejectedValue(relayedAwsSdkError(`Resource already exists. Value '${SPACED_PLAINTEXT}' is taken`));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, warns, events } = makeCtx({ create, delete: del });
     const prev = res({ physicalId: 'phys-OLD', properties: { ...IDP_NAME, ProviderDetails: { password: SPACED_EXPR } } });
@@ -594,7 +597,7 @@ describe('rollback replay - the reverse-replacement arms are masked (issue #2038
     // secret: capped before masking, its first characters survive unmasked.
     const lead = 'Resource already exists. ';
     const fill = 'x'.repeat(4090 - lead.length);
-    const create = vi.fn().mockRejectedValue(awsSdkError(`${lead}${fill}${SECRET_PLAINTEXT} is taken`));
+    const create = vi.fn().mockRejectedValue(relayedAwsSdkError(`${lead}${fill}${SECRET_PLAINTEXT} is taken`));
     const del = vi.fn().mockResolvedValue(undefined);
     const { ctx, warns, events } = makeCtx({ create, delete: del });
     const prev = res({ physicalId: 'phys-OLD', properties: { ...IDP_NAME, ProviderDetails: { password: SECRET_EXPR } } });

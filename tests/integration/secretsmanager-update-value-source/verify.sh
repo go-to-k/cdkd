@@ -22,7 +22,12 @@
 #      literal changes. Assert BOTH values moved — a new AWSCURRENT, the old
 #      one now AWSPREVIOUS, two versions each — so Phase 2 cannot pass on a
 #      provider that simply never sends a value.
-#   4. Destroy; assert both secrets are gone (or scheduled for deletion), the
+#   4. UPDATE (CDKD_TEST_UPDATE=regen CDKD_TEST_REMOVAL=true), issue #1160:
+#      the `Typed` secret's `Type` (DatadogApiKey, asserted live since Phase 1)
+#      is removed from the template and its Description changes. A real
+#      CloudFormation A/B updated in place and KEPT the live Type, so assert
+#      the Description moved (UpdateSecret fired) and the Type is unchanged.
+#   5. Destroy; assert every secret is gone (or scheduled for deletion), the
 #      state file is removed, and the state bucket's object versions are
 #      swept (the literal marker lands in state.json verbatim).
 #
@@ -77,6 +82,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 GENERATED_NAME="${STACK}-generated"
 LITERAL_NAME="${STACK}-literal"
+TYPED_NAME="${STACK}-typed"
 
 # Resolve the built CLI path without a `cd` into dist/ that fails cryptically
 # (aborting under `set -e`) when dist/ is unbuilt -- the friendly guard below
@@ -97,7 +103,7 @@ cleanup() {
     destroy_rc=$?
   fi
   # Best-effort delete by fixed name in case state destroy missed them.
-  for name in "${GENERATED_NAME}" "${LITERAL_NAME}"; do
+  for name in "${GENERATED_NAME}" "${LITERAL_NAME}" "${TYPED_NAME}"; do
     aws secretsmanager delete-secret --secret-id "${name}" \
       --force-delete-without-recovery --region "${REGION}" >/dev/null 2>&1 || true
   done
@@ -169,6 +175,10 @@ probe_tag_value() { # usage: probe_tag_value <secret-name> -> value of cdkd-upda
   aws secretsmanager describe-secret --secret-id "$1" --region "${REGION}" \
     --query "Tags[?Key=='cdkd-update-probe'].Value | [0]" --output text || return 1
 }
+secret_field() { # usage: secret_field <secret-name> <Type|Description|ARN>
+  aws secretsmanager describe-secret --secret-id "$1" --region "${REGION}" \
+    --query "$2" --output text || return 1
+}
 assert_eq() { # usage: assert_eq "<what>" <expected> <actual>
   if [ "$2" != "$3" ]; then
     echo "FAIL: $1 — expected '$2', got '$3'" >&2
@@ -184,7 +194,7 @@ assert_nonempty() { # usage: assert_nonempty "<what>" <value>
 
 # --- Phase 1: baseline deploy -----------------------------------------------
 echo "==> Phase 1: deploy baseline (generated + literal secret, no tag)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 GEN_V1="$(current_version_id "${GENERATED_NAME}")"
@@ -195,10 +205,17 @@ assert_eq "Phase 1 generated version count" "1" "$(version_count "${GENERATED_NA
 assert_eq "Phase 1 literal version count" "1" "$(version_count "${LITERAL_NAME}")"
 assert_eq "Phase 1 generated probe tag (must be absent)" "None" "$(probe_tag_value "${GENERATED_NAME}")"
 echo "    generated AWSCURRENT=${GEN_V1}, literal AWSCURRENT=${LIT_V1}, one version each"
+# Issue #1160 baseline: the Type is LIVE before Phase 4 removes it, so the
+# retention assertion there cannot pass on a secret that never had one.
+assert_eq "Phase 1 typed secret Type" "DatadogApiKey" "$(secret_field "${TYPED_NAME}" Type)"
+assert_eq "Phase 1 typed secret Description" "cdkd issue #1160 probe: Type declared" "$(secret_field "${TYPED_NAME}" Description)"
+TYPED_ARN_1="$(secret_field "${TYPED_NAME}" ARN)"
+assert_nonempty "Phase 1 typed secret ARN" "${TYPED_ARN_1}"
+echo "    typed secret Type=DatadogApiKey"
 
 # --- Phase 2: Tags-only UPDATE — the value must NOT move ---------------------
 echo "==> Phase 2: re-deploy with a tag added to both secrets (Tags-only in-place UPDATE)"
-CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 # The update REACHED AWS (so a no-op deploy cannot pass this phase)...
@@ -217,7 +234,7 @@ echo "    tag reached AWS; AWSCURRENT unchanged on both secrets; still one versi
 
 # --- Phase 3: source CHANGED — the value MUST move (positive control) --------
 echo "==> Phase 3: re-deploy with GenerateSecretString changed (PasswordLength 40) and a new literal"
-CDKD_TEST_UPDATE=regen node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=regen node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 GEN_V3="$(current_version_id "${GENERATED_NAME}")"
@@ -238,13 +255,26 @@ assert_eq "Phase 3 generated version count" "2" "$(version_count "${GENERATED_NA
 assert_eq "Phase 3 literal version count" "2" "$(version_count "${LITERAL_NAME}")"
 echo "    both values moved: new AWSCURRENT, previous current is AWSPREVIOUS, two versions each"
 
-# --- Phase 4: destroy --------------------------------------------------------
-echo "==> Phase 4: destroy"
+# --- Phase 4: Type REMOVED — CloudFormation keeps it (issue #1160) -----------
+echo "==> Phase 4: re-deploy with the typed secret's Type removed and its Description changed"
+CDKD_TEST_UPDATE=regen CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+
+# The companion change REACHED AWS, so UpdateSecret ran in this deploy...
+assert_eq "Phase 4 typed secret Description (UpdateSecret must have fired)" "cdkd issue #1160 probe: Type removed" "$(secret_field "${TYPED_NAME}" Description)"
+# ...in place (CloudFormation does not replace the secret)...
+assert_eq "Phase 4 typed secret ARN (in-place update, no replacement)" "${TYPED_ARN_1}" "$(secret_field "${TYPED_NAME}" ARN)"
+# ...and the removed Type is KEPT, as CloudFormation does.
+assert_eq "Phase 4 typed secret Type (issue #1160: CloudFormation keeps a removed Type)" "DatadogApiKey" "$(secret_field "${TYPED_NAME}" Type)"
+echo "    Description updated in place; removed Type kept (DatadogApiKey)"
+
+# --- Phase 5: destroy --------------------------------------------------------
+echo "==> Phase 5: destroy"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 # Each secret must be gone (ResourceNotFound) or scheduled for deletion —
 # `DeleteSecret` without force leaves it describable with a DeletedDate.
-for name in "${GENERATED_NAME}" "${LITERAL_NAME}"; do
+for name in "${GENERATED_NAME}" "${LITERAL_NAME}" "${TYPED_NAME}"; do
   if gone_probe aws secretsmanager describe-secret --secret-id "${name}" --region "${REGION}"; then
     DELETED_DATE="GONE"
   elif ! DELETED_DATE="$(aws secretsmanager describe-secret --secret-id "${name}" --region "${REGION}" \
@@ -271,4 +301,4 @@ s3_purge_prefix_versions "${STATE_BUCKET}" "${STATE_PREFIX}" all || true
 s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "secretsmanager-update-value-source state teardown"
 echo "    state bucket versions swept"
 
-echo "[verify] PASS — Secrets Manager in-place UPDATE keeps the value unless its source changed (issue #2472)"
+echo "[verify] PASS — Secrets Manager in-place UPDATE keeps the value unless its source changed (issue #2472), and keeps a removed Type (issue #1160)"

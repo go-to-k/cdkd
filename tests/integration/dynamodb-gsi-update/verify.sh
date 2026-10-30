@@ -15,6 +15,18 @@
 # Phases:
 #   1. Deploy the table with only the `pk` partition key; capture its
 #      CreationDateTime + assert no GSI.
+#   1c. Add `gsi1` under a 10s per-type deadline with --no-rollback: the
+#      deploy fails mid backfill and the record must name
+#      GlobalSecondaryIndexes unsettled; a same-template retry while CREATING
+#      must be refused; the record also names gsi1 as the index the accepted
+#      Create added (`unsettledItems`, go-to-k/cdkd#5498). Once ACTIVE, a
+#      redeploy of the base template must clear both and DELETE gsi1, as
+#      CloudFormation would: the failed update created it, and the template no
+#      longer names it.
+#   1d. The same cut-short add WITHOUT --no-rollback (go-to-k/cdkd#5505): the
+#      automatic rollback waits for gsi1 to settle and reverts it, so right
+#      after the failed deploy returns gsi1 is gone and the record names
+#      nothing unsettled, with no further deploy.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true (adds GSI `gsi1` on `gsipk`).
 #      Assert: deploy succeeds, the table's CreationDateTime is UNCHANGED (no
 #      replacement), GSI `gsi1` exists and reaches ACTIVE, and the table routes
@@ -114,6 +126,12 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # Each assertion below can `exit 1` between the write and its own `rm -f`, and
 # a PID-suffixed leftover in TMPDIR is invisible until it accumulates.
 DEPLOY_LOG="${TMPDIR:-/tmp}/cdkd-1768-deploy.$$.log"
+# Phase 1c's converging deploy (go-to-k/cdkd#5503); removed by cleanup().
+P1C_CONVERGE_LOG="${TMPDIR:-/tmp}/cdkd-5503-converge.$$.log"
+# Phase 1c's same-template retry (go-to-k/cdkd#5487); removed by cleanup().
+P1C_RETRY_LOG="${TMPDIR:-/tmp}/cdkd-5487-retry.$$.log"
+# Phase 1d's auto-rolled-back deploy (go-to-k/cdkd#5505); removed by cleanup().
+P1D_LOG="${TMPDIR:-/tmp}/cdkd-5505-rollback.$$.log"
 STATE_JSON="${TMPDIR:-/tmp}/cdkd-1767-state.$$.json"
 DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-1767-drift.$$.json"
 # The Phase 3 destroy log, read by the issue #1931 assertions below. Declared
@@ -184,7 +202,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}"
+  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -263,6 +281,192 @@ case "${WARM_P1}" in
     ;;
 esac
 echo "    baseline WarmThroughput=${WARM_P1}"
+
+# --- Phase 1c: a GSI add the deadline cut short (go-to-k/cdkd#5487) ------
+# UpdateTable's GSI Create is accepted at once and the index backfills
+# (CREATING) for minutes, so a 10s per-type deadline fails the update after
+# the call. Before the fix the record kept "no GSI", so the redeploy of the
+# base template below diffed empty and the index stayed. Now the record names
+# GlobalSecondaryIndexes unsettled and gsi1 as the index the accepted Create
+# added (go-to-k/cdkd#5498); a same-template retry while the index is CREATING
+# is refused (a moving index is never diffed); once it is ACTIVE, the base
+# redeploy converges the name and DELETES gsi1: the failed update created it
+# and the template no longer names it, which CloudFormation would delete too.
+# An index another tool added is still kept (go-to-k/cdkd#5503; the unit
+# tests and the I-phase arms cover that side).
+table_unsettled() { # the table record's unsettledProperties, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE_NAME}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
+        | (.unsettledProperties // [])[]] | join(",")'
+}
+table_attempted_gsis() { # the table record's attempted index names, comma-joined
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE_NAME}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
+        | (.unsettledItems.GlobalSecondaryIndexes // [])[]] | join(",")'
+}
+table_has_items_field() {
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" \
+    | jq -r --arg name "${TABLE_NAME}" '[.resources[]
+        | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)
+        | has("unsettledItems")] | any'
+}
+gsi_status() {
+  aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query "Table.GlobalSecondaryIndexes[?IndexName=='${GSI_NAME}'].IndexStatus | [0]" --output text
+}
+echo "==> Phase 1c: add ${GSI_NAME} under a 10s DynamoDB deadline (must fail while the index backfills)"
+set +e
+CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback \
+  --resource-warn-after AWS::DynamoDB::Table=5s --resource-timeout AWS::DynamoDB::Table=10s
+P1C_EXIT=$?
+set -e
+if [ "${P1C_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 1c's deploy succeeded; the 10s deadline must cut the GSI backfill short (premise of the arm)" >&2
+  exit 1
+fi
+case ",$(table_unsettled)," in
+  *,GlobalSecondaryIndexes,*) : ;;
+  *) echo "FAIL: table record's unsettledProperties after the cut-short GSI add is '$(table_unsettled)', expected it to name GlobalSecondaryIndexes (go-to-k/cdkd#5487)" >&2; exit 1 ;;
+esac
+if [ "$(table_attempted_gsis)" != "${GSI_NAME}" ]; then
+  echo "FAIL: table record's attempted indexes after the cut-short GSI add are '$(table_attempted_gsis)', expected exactly '${GSI_NAME}' (go-to-k/cdkd#5498)" >&2
+  exit 1
+fi
+echo "    the record names GlobalSecondaryIndexes unsettled and ${GSI_NAME} as the accepted Create"
+if [ "$(gsi_status)" = "CREATING" ]; then
+  set +e
+  CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --no-rollback >"${P1C_RETRY_LOG}" 2>&1
+  P1C_RETRY_EXIT=$?
+  set -e
+  if [ "${P1C_RETRY_EXIT}" -eq 0 ] || ! grep -q "AWS is still changing it" "${P1C_RETRY_LOG}"; then
+    echo "FAIL: the same-template retry while ${GSI_NAME} is CREATING must be refused as in transition (exit ${P1C_RETRY_EXIT}):" >&2
+    cat "${P1C_RETRY_LOG}" >&2
+    exit 1
+  fi
+  echo "    the same-template retry during the backfill was refused and kept the name"
+fi
+P1C_STATUS=""
+P1C_T0="$(date +%s)"
+for _ in $(seq 1 360); do
+  P1C_STATUS="$(gsi_status)"
+  [ "${P1C_STATUS}" = "ACTIVE" ] && break
+  sleep 5
+done
+if [ "${P1C_STATUS}" != "ACTIVE" ]; then
+  echo "FAIL: ${GSI_NAME} is '${P1C_STATUS}' after the cut-short add, expected it to reach ACTIVE within the 30-min bound" >&2
+  exit 1
+fi
+echo "    ${GSI_NAME} reached ACTIVE $(( $(date +%s) - P1C_T0 ))s after the cut-short add returned"
+echo "==> Phase 1c: redeploy the base template (no GSI, the record's own value)"
+env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P1C_CONVERGE_LOG}"
+# The Delete is cdkd's; a DELETING index may still be listed briefly.
+for _ in $(seq 1 120); do
+  P1C_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+  [ "${P1C_COUNT}" = "0" ] && break
+  [ "$(gsi_status)" = "DELETING" ] || break
+  sleep 5
+done
+if [ "${P1C_COUNT}" != "0" ]; then
+  echo "FAIL: ${GSI_NAME} is still on the table after the converging deploy (${P1C_COUNT} GSI(s), status '$(gsi_status)'): the failed update created it and the template dropped it, so the redeploy must delete it (go-to-k/cdkd#5498)" >&2
+  exit 1
+fi
+if grep -qF "GSI ${GSI_NAME} on DynamoDB table ${TABLE_NAME} is live, but neither" "${P1C_CONVERGE_LOG}"; then
+  echo "FAIL: the converging deploy warned ${GSI_NAME} is undeclared, but the record names it as attempted (go-to-k/cdkd#5498)" >&2
+  exit 1
+fi
+if [ -n "$(table_unsettled)" ]; then
+  echo "FAIL: table record still names unsettled properties after the converging deploy: $(table_unsettled)" >&2
+  exit 1
+fi
+if [ "$(table_has_items_field)" != "false" ]; then
+  echo "FAIL: table record still carries unsettledItems after the converging deploy" >&2
+  exit 1
+fi
+echo "    the unsettled GSI add converged: the redeploy deleted ${GSI_NAME} and cleared the names and items (go-to-k/cdkd#5498)"
+
+# --- Phase 1d: the automatic rollback reverts the cut-short add (go-to-k/cdkd#5505)
+# Phase 1c's add again, but WITHOUT --no-rollback. CloudFormation rolls a
+# failed update back at once; cdkd's automatic rollback now does the same for
+# what the failed update left unsettled: it waits for the abandoned call and
+# for gsi1 to leave CREATING, then deletes it (the failed update added it, and
+# the pre-failure record does not name it). So right after the failed deploy
+# returns — no further deploy — gsi1 is gone and the record names nothing
+# unsettled. Before the fix the rollback left gsi1 CREATING and the names on
+# the record, which Phase 1c's --no-rollback run still asserts.
+echo "==> Phase 1d: add ${GSI_NAME} under a 10s DynamoDB deadline, with the automatic rollback"
+set +e
+# CDKD_NO_WAIT / CDKD_FULL_WAIT dropped: a no-wait revert would return mid-DELETING.
+env -u CDKD_NO_WAIT -u CDKD_FULL_WAIT CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  --resource-warn-after AWS::DynamoDB::Table=5s --resource-timeout AWS::DynamoDB::Table=10s \
+  >"${P1D_LOG}" 2>&1
+P1D_EXIT=$?
+set -e
+cat "${P1D_LOG}"
+if [ "${P1D_EXIT}" -eq 0 ]; then
+  echo "FAIL: Phase 1d's deploy succeeded; the 10s deadline must cut the GSI backfill short (premise of the arm)" >&2
+  exit 1
+fi
+# Read AWS first, the moment the deploy returned: the subject of the arm.
+P1D_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+  --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+P1D_STATUS="$(gsi_status)"
+if [ "${P1D_COUNT}" != "0" ] && [ "${P1D_STATUS}" != "DELETING" ]; then
+  echo "FAIL: ${GSI_NAME} is still on the table right after the auto-rolled-back deploy (${P1D_COUNT} GSI(s), status '${P1D_STATUS}'): the automatic rollback must revert the failed update's GSI add (go-to-k/cdkd#5505)" >&2
+  exit 1
+fi
+# The record checks below read "nothing unsettled" off an empty result, so
+# first prove the state file was read and holds exactly one table record.
+P1D_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+P1D_RECORDS="$(jq -r --arg name "${TABLE_NAME}" '[.resources[]
+    | select(.resourceType == "AWS::DynamoDB::Table" and .physicalId == $name)] | length' <<<"${P1D_STATE}")"
+if [ "${P1D_RECORDS}" != "1" ]; then
+  echo "FAIL: expected exactly one ${TABLE_NAME} record in the state after the automatic rollback, found '${P1D_RECORDS}' (the record checks would be vacuous)" >&2
+  exit 1
+fi
+if [ -n "$(table_unsettled)" ]; then
+  echo "FAIL: table record still names unsettled properties after the automatic rollback reverted them: $(table_unsettled) (go-to-k/cdkd#5505)" >&2
+  exit 1
+fi
+if [ "$(table_has_items_field)" != "false" ]; then
+  echo "FAIL: table record still carries unsettledItems after the automatic rollback reverted them (go-to-k/cdkd#5505)" >&2
+  exit 1
+fi
+# Premise: the revert is cdkd's (not an index that never got created). Both
+# of the arm's lines are accepted: the update call the 10s deadline abandoned
+# keeps running until gsi1 is ACTIVE and usually completes, rewriting the
+# record ("Rollback: reverting the failed UPDATE of ..., whose call completed
+# after the deploy gave up on it, ..."); if it fails instead, the line names
+# what it left unsettled ("Rollback: reverting what the failed UPDATE of ...
+# left unsettled (GlobalSecondaryIndexes) ..."). The sentinel is the shared
+# tail, so a reworded line fails here instead of passing silently.
+if ! grep -qE 'Rollback: reverting (what )?the failed UPDATE of .*to its pre-deploy properties' "${P1D_LOG}"; then
+  if grep -q 'to its pre-deploy properties' "${P1D_LOG}"; then
+    echo "FAIL: the rollback's revert line changed wording; update this arm's needle (go-to-k/cdkd#5505)" >&2
+  else
+    echo "FAIL: the automatic rollback logged no revert of the failed GSI add (go-to-k/cdkd#5505)" >&2
+  fi
+  exit 1
+fi
+# A DELETING index may still be listed briefly; Phase 2 needs it gone.
+for _ in $(seq 1 120); do
+  P1D_COUNT="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
+    --query 'length(Table.GlobalSecondaryIndexes || `[]`)' --output text)"
+  [ "${P1D_COUNT}" = "0" ] && break
+  [ "$(gsi_status)" = "DELETING" ] || break
+  sleep 5
+done
+if [ "${P1D_COUNT}" != "0" ]; then
+  echo "FAIL: ${GSI_NAME} is still on the table after the automatic rollback (status '$(gsi_status)')" >&2
+  exit 1
+fi
+echo "    the automatic rollback reverted the cut-short GSI add: ${GSI_NAME} gone and the names cleared right after the failed deploy (go-to-k/cdkd#5505)"
 
 # --- Phase 2: add a GSI (in-place UPDATE, must NOT replace) ------------
 echo "==> Phase 2: re-deploy adding GSI ${GSI_NAME} (in-place UpdateTable)"

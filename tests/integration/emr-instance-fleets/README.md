@@ -71,10 +71,16 @@ Every fleet carries a per-`InstanceTypeConfig` `Configurations` block with a
    `ResizeSpecifications` (an On-Demand timeout of `25` minutes, asserted live
    in Phase 1) is dropped from the template while `TargetOnDemandCapacity` goes
    `2 -> 1`. `ModifyInstanceFleet` keeps a field it is not sent and cdkd sends
-   no reset, so the phase asserts the deploy warns naming the removed property
-   (with no CloudFormation-reset claim), the live timeout stays `25`, and the
+   no reset, as CloudFormation leaves it (CFn A/B on issue #1160), so the phase
+   asserts the deploy warns naming the removed property and saying
+   CloudFormation keeps it too, the live timeout stays `25`, and the
    companion resize landed. Phase 2 is the negative control: it removes
    nothing and must not warn.
+2c. **Drift** (issue #5179): one `cdkd drift --json` over the deployed stack.
+   Cloud Control addresses the type by `ClusterId` + `InstanceFleetId` and
+   refuses the bare fleet id cdkd records, so the type is deny-listed off the
+   drift fallback. Asserts the fleet is in `notSupported` and in no
+   `notCompared` entry (before the fix: `readFailed`, exit 2).
 3. **Destroy** and assert the cluster is `TERMINATED`, that no `ACTIVE` cluster
    carrying the fixture tag remains, and that the cdkd state file is gone. (The
    VPC is torn down by `cdkd destroy` and swept best-effort by the cleanup trap,

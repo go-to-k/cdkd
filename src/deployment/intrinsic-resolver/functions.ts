@@ -11,7 +11,7 @@ import {
   recordLeafResolution,
   regionLogText,
 } from './masking.js';
-import { markNonRetryable } from '../retryable-errors.js';
+import { markNonRetryable, markRedactedCause } from '../retryable-errors.js';
 import { injectiveKey } from '../../state/record-keys.js';
 import {
   ambientCredentialConfig,
@@ -753,11 +753,25 @@ export async function resolveGetAZs(
     // the raw value `loggedRegionText` was derived from.
     const loggedRegion = displayMasked(resolver, loggedRegionText ?? region, context);
     const masks = namedRequestMasks(resolver, [[region, loggedRegion]], context);
-    throw new Error(
+    // go-to-k/cdkd#2319: a thrown message is persisted to
+    // `deployments/{runId}.jsonl`, and an EC2 `UnauthorizedOperation` names
+    // the caller's ARN. An AWS-authored failure is named by its class plus the
+    // `--verbose` pointer, AWS's text goes to `debug` masked, and the masked
+    // error rides as `cause`, stamped so the retry classifiers read it. A
+    // cdkd-authored or transport error, or a non-`Error` value (#3361), keeps
+    // its text.
+    const failure = describeAwsFailure(error);
+    const message = (text: string): string =>
       `Fn::GetAZs: failed to describe availability zones for region ` +
-        `${quotedRender(loggedRegion, "'")}: ` +
-        `${masks.text(describeAwsFailure(error).detail)}`
+      `${quotedRender(loggedRegion, "'")}: ${masks.text(text)}`;
+    if (!(error instanceof Error) || !failure.redacted) throw new Error(message(failure.detail));
+    resolver.logger.debug(message(failure.detail));
+    const masked = masks.error(error);
+    const wrapped = new Error(
+      message(failure.summary),
+      masked instanceof Error ? { cause: masked } : undefined
     );
+    throw masked instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   // An EMPTY list is never a legitimate answer: every enabled AWS region has

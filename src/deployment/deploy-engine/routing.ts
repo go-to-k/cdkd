@@ -119,7 +119,10 @@ export function preparePropertiesForCcApi(
   providerRegistry: ProviderRegistry,
   resourceType: string,
   resolvedProps: Record<string, unknown>,
-  logicalId: string
+  logicalId: string,
+  // `'omit'` for an UPDATE, which takes the generated name back out: a name
+  // only a create needs must not fail it (go-to-k/cdkd#5095).
+  underivable: 'refuse' | 'omit' = 'refuse'
 ): Record<string, unknown> {
   const sdkProvider = providerRegistry.getRegisteredTypes().includes(resourceType)
     ? providerRegistry.getProvider(resourceType)
@@ -127,5 +130,5 @@ export function preparePropertiesForCcApi(
   if (sdkProvider?.preparePropertiesForFallback) {
     return sdkProvider.preparePropertiesForFallback(logicalId, resourceType, resolvedProps);
   }
-  return applyDefaultNameForFallback(logicalId, resourceType, resolvedProps);
+  return applyDefaultNameForFallback(logicalId, resourceType, resolvedProps, underivable);
 }

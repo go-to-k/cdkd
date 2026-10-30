@@ -18,16 +18,17 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *           ::Authorizer (+ AWS::Lambda::Function for the REQUEST authorizer URI)
  *
  * Issue #609 also rides this fixture: the `::Integration` silent-drop backfill
- * adds ten properties whose delivery is asserted here on CREATE and on UPDATE
- * (they change VALUE across the phases rather than being removed — the
- * backfill wires delivery, and absent-field removal for that group stays with
- * the #1160 umbrella until each field has its own live CFn A/B).
+ * adds ten properties whose delivery is asserted here on CREATE and on UPDATE.
  *
  * Phase 1 sets one-or-more removable fields on each of the five resources.
  * Phase 2 (CDKD_TEST_UPDATE=true) removes them and the verify script asserts
- * AWS kept what CloudFormation keeps (#5004) and reset only CorsConfiguration
- * (a pre-#5004 cdkd reset the rest). Fields that are required per protocol/authorizer type (Name, Target,
- * PayloadFormatVersion, IdentitySource, ...) stay set in both phases.
+ * AWS kept what CloudFormation keeps (#5004) and reset CorsConfiguration and
+ * ClearAuthorizer's IdentitySource (CloudFormation clears it, #1160 A/B).
+ * Phase 2b (CDKD_TEST_REMOVAL=true) also removes the WebSocket MOCK
+ * integration's and `$default` route's #609 fields (CloudFormation keeps them,
+ * #1160 A/B) and changes only the service integration's Description. Phase 2c
+ * (CDKD_TEST_SUBTYPE_REMOVED=true) removes its IntegrationSubtype, which
+ * CloudFormation fails, so cdkd must refuse the deploy.
  */
 export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -35,7 +36,11 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
 
     // Phase 2b (issue #609): the members whose removal needs a dedicated
     // Delete* API rather than an omitted UpdateStage / UpdateRoute member.
-    const removal = process.env.CDKD_TEST_REMOVAL === 'true';
+    // Phase 2c (issue #1160): the template drops the service integration's
+    // IntegrationSubtype, which CloudFormation fails, so cdkd must refuse it.
+    // It builds on phase 2b and changes nothing else.
+    const subtypeRemoved = process.env.CDKD_TEST_SUBTYPE_REMOVED === 'true';
+    const removal = process.env.CDKD_TEST_REMOVAL === 'true' || subtypeRemoved;
     // Removal BUILDS ON the update phase rather than reverting to the
     // baseline: phase 2b must keep everything phase 2 already removed removed,
     // and keep its updated values, so the only delta it introduces is the
@@ -59,6 +64,9 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     const api = new apigwv2.CfnApi(this, 'Api', {
       name: `${this.stackName}-api`,
       protocolType: 'HTTP',
+      // Issue #5390: Tags is a MAP on this type. Phase 2 changes k1's value and
+      // drops k2; CloudFormation re-tags k1 and untags k2 (real A/B).
+      tags: update ? { k1: 'v1x' } : { k1: 'v1', k2: 'v2' },
       // Removed on UPDATE: CorsConfiguration is RESET (CloudFormation resets it);
       // Description / DisableExecuteApiEndpoint / IpAddressType are RETAINED
       // (CloudFormation keeps them, #5004).
@@ -141,8 +149,10 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     new apigwv2.CfnIntegration(this, 'EventsIntegration', {
       apiId: api.ref,
       integrationType: 'AWS_PROXY',
-      // Issue #609: IntegrationSubtype + CredentialsArn.
-      integrationSubtype: 'EventBridge-PutEvents',
+      // Issue #609: IntegrationSubtype + CredentialsArn. Issue #1160: phase 2c
+      // REMOVES the subtype, which CloudFormation fails (real A/B), so cdkd
+      // must refuse that deploy before any call.
+      ...(subtypeRemoved ? {} : { integrationSubtype: 'EventBridge-PutEvents' }),
       credentialsArn: eventsRole.roleArn,
       payloadFormatVersion: '1.0',
       requestParameters: {
@@ -150,6 +160,11 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
         DetailType: update ? 'updated' : 'before',
         Detail: '$request.body',
       },
+      // Issue #1160: phase 2b changes ONLY the Description. AWS re-validates
+      // the EventBridge operation's required parameter mapping on every
+      // UpdateIntegration, so cdkd must send the unchanged RequestParameters
+      // beside the subtype or AWS rejects the call.
+      ...(removal ? { description: 'description-only change' } : {}),
     });
 
     // ── The issue #1602 integration ─────────────────────────────────
@@ -214,6 +229,20 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       ...(update ? {} : { authorizerResultTtlInSeconds: 300 }),
     });
 
+    // ── Authorizer (REQUEST, caching OFF) ───────────────────────────
+    // Issue #1160: CloudFormation CLEARS a removed IdentitySource (real A/B),
+    // and AWS allows that only with caching off (TTL 0) — the authorizer above
+    // keeps TTL 300, so this one carries the removal. Removed in phase 2.
+    new apigwv2.CfnAuthorizer(this, 'ClearAuthorizer', {
+      apiId: api.ref,
+      name: `${this.stackName}-clear-auth`,
+      authorizerType: 'REQUEST',
+      authorizerUri,
+      authorizerPayloadFormatVersion: '2.0',
+      authorizerResultTtlInSeconds: 0,
+      ...(update ? {} : { identitySource: ['$request.header.Authorization'] }),
+    });
+
     // ── Route ───────────────────────────────────────────────────────
     new apigwv2.CfnRoute(this, 'Route', {
       apiId: api.ref,
@@ -251,15 +280,21 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     // NOT covered here: ConnectionId, which requires a live VPC Link (VPC +
     // subnets + SG, minutes per run) for a plain pass-through field. It is
     // pinned by the unit tests instead.
+    // Issue #1160: phase 2b REMOVES all four; CloudFormation KEEPS each live
+    // value (real A/B), so they must survive at their phase 2 values.
     new apigwv2.CfnIntegration(this, 'WsMockIntegration', {
       apiId: wsApi.ref,
       integrationType: 'MOCK',
-      requestTemplates: {
-        $default: update ? '{"statusCode":202}' : '{"statusCode":200}',
-      },
-      templateSelectionExpression: '\\$default',
-      passthroughBehavior: update ? 'NEVER' : 'WHEN_NO_MATCH',
-      contentHandlingStrategy: update ? 'CONVERT_TO_BINARY' : 'CONVERT_TO_TEXT',
+      ...(removal
+        ? {}
+        : {
+            requestTemplates: {
+              $default: update ? '{"statusCode":202}' : '{"statusCode":200}',
+            },
+            templateSelectionExpression: '\\$default',
+            passthroughBehavior: update ? 'NEVER' : 'WHEN_NO_MATCH',
+            contentHandlingStrategy: update ? 'CONVERT_TO_BINARY' : 'CONVERT_TO_TEXT',
+          }),
     });
 
     // TWO routes, because AWS scopes the properties differently: it rejects
@@ -286,9 +321,16 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     new apigwv2.CfnRoute(this, 'WsDefaultRoute', {
       apiId: wsApi.ref,
       routeKey: '$default',
-      // Issue #609: both expressions change value on update.
-      modelSelectionExpression: update ? '$request.body.updatedAction' : '$request.body.action',
-      routeResponseSelectionExpression: '$default',
+      // Issue #609: both expressions change value on update. Issue #1160:
+      // phase 2b REMOVES both; CloudFormation KEEPS them (real A/B).
+      ...(removal
+        ? {}
+        : {
+            modelSelectionExpression: update
+              ? '$request.body.updatedAction'
+              : '$request.body.action',
+            routeResponseSelectionExpression: '$default',
+          }),
     });
 
     // Access logs for the WebSocket stage's AccessLogSettings.
@@ -341,7 +383,9 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
       stageName: '$default',
       autoDeploy: true,
       // Removed on UPDATE, RETAINED by CloudFormation (#5004): StageVariables.
-      ...(update ? {} : { stageVariables: { foo: 'bar' } }),
+      // Removed on UPDATE, UNTAGGED by CloudFormation (#5390 A/B): the whole
+      // map-shaped Tags block.
+      ...(update ? {} : { stageVariables: { foo: 'bar' }, tags: { k1: 'v1', k2: 'v2' } }),
     });
 
     new cdk.CfnOutput(this, 'ApiId', { value: api.ref });

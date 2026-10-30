@@ -7,7 +7,8 @@
  * branch serving a value out of a PERSISTED `attributes` bag must call this",
  * and one branch did not: `Ref`. For a handful of types CloudFormation's `Ref`
  * is not the physical id but a value cdkd stores in `properties` / `attributes`
- * — `AWS::S3Tables::Table.TableName` (issue #974),
+ * — `AWS::S3Tables::Table.TableARN` (issue #5316; `TableName` before it, under
+ * issue #974),
  * `AWS::Backup::BackupSelection.SelectionId` (issue #995),
  * `AWS::CodeCommit::Repository.RepositoryId` (issue #1045), the
  * `AWS::AppSync::*` child ARNs (issue #1681) — and
@@ -21,16 +22,17 @@
  *
  * It became REACHABLE with this PR rather than being new: `CloudControlProvider.import`
  * now masks every model key it cannot certify is a `readOnlyProperties`
- * attribute, and `TableName` is WRITABLE, so it is masked even when
- * `cloudformation:DescribeType` IS granted. Without the grant the fail-closed
- * arm masks the whole model.
+ * attribute, and without `cloudformation:DescribeType` its fail-closed arm
+ * masks the whole model. (The vehicle here was a Cloud-Control-routed table's
+ * writable `TableName` until issue #5316 made a Table's `Ref` its TableARN;
+ * the SDK-routed table's recorded `TableARN` is the vehicle now.)
  *
  * WHAT EACH CASE MUST DISCRIMINATE. "The result is not `***`" is satisfied by a
  * lookup that never ran, so every masked case also pins the RECORDED READ, and
  * every recorded-read case is paired with an unmasked control proving the same
- * record resolves normally and records nothing. The chosen fixture value is an
- * ARN whose tail is a UUID — the real CC-routed shape — so "returned the
- * physical id" can never be confused with "returned the table name".
+ * record resolves normally and records nothing. The physical id is the SDK
+ * route's composite and the recovered value a TableARN, so "returned the
+ * physical id" can never be confused with "returned the recovered ARN".
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
@@ -63,13 +65,15 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 const TABLE_TYPE = 'AWS::S3Tables::Table';
 /**
- * A #614-routed Table's physical id: the BARE `TableARN`, pipe-free, ending in
- * a UUID rather than the table name. Its shape is what makes the fall-through
- * observable — no assertion below can mistake it for a recovered `TableName`.
+ * An SDK-routed Table's physical id: the composite
+ * `<tableBucketARN>|<namespace>|<tableName>`, whose `Ref` (the TableARN, issue
+ * #5316) is recovered from the recorded `TableARN` attribute. Its shape is what
+ * makes the fall-through observable — no assertion below can mistake it for a
+ * recovered ARN.
  */
+const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns_zz2847|orders_zz2847';
 const TABLE_ARN =
   'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-zz2847zz';
-const TABLE_NAME = 'orders_zz2847';
 
 function contextFor(
   record: Partial<ResourceState> & { resourceType?: string },
@@ -83,7 +87,7 @@ function contextFor(
     template,
     resources: {
       T: {
-        physicalId: record.physicalId ?? TABLE_ARN,
+        physicalId: record.physicalId ?? TABLE_COMPOSITE,
         resourceType,
         properties: record.properties ?? {},
         ...(record.attributes && { attributes: record.attributes }),
@@ -98,12 +102,12 @@ describe('refStateLookupFromResource refuses to serve a masked Ref value (#2847)
   it('skips a masked leaf and reports the key, so the caller falls back instead of returning ***', () => {
     const reported: string[] = [];
     const lookup = refStateLookupFromResource(
-      { properties: { TableName: SECRET_MASK } },
+      { attributes: { TableARN: SECRET_MASK } },
       (key) => reported.push(key)
     );
 
-    expect(lookup(['TableName', 'Name'])).toBeUndefined();
-    expect(reported).toEqual(['TableName']);
+    expect(lookup(['TableARN'])).toBeUndefined();
+    expect(reported).toEqual(['TableARN']);
   });
 
   it('serves an ORDINARY value and reports nothing — the other direction', () => {
@@ -111,11 +115,11 @@ describe('refStateLookupFromResource refuses to serve a masked Ref value (#2847)
     // every masked case in this file.
     const reported: string[] = [];
     const lookup = refStateLookupFromResource(
-      { properties: { TableName: TABLE_NAME } },
+      { attributes: { TableARN: TABLE_ARN } },
       (key) => reported.push(key)
     );
 
-    expect(lookup(['TableName', 'Name'])).toBe(TABLE_NAME);
+    expect(lookup(['TableARN'])).toBe(TABLE_ARN);
     expect(reported).toEqual([]);
   });
 
@@ -126,11 +130,11 @@ describe('refStateLookupFromResource refuses to serve a masked Ref value (#2847)
     // `cdkd import` writes.
     const reported: string[] = [];
     const lookup = refStateLookupFromResource(
-      { properties: { TableName: SECRET_MASK }, attributes: { TableName: TABLE_NAME } },
+      { properties: { TableARN: SECRET_MASK }, attributes: { TableARN: TABLE_ARN } },
       (key) => reported.push(key)
     );
 
-    expect(lookup(['TableName', 'Name'])).toBe(TABLE_NAME);
+    expect(lookup(['TableARN'])).toBe(TABLE_ARN);
     expect(reported).toEqual([]);
   });
 
@@ -158,14 +162,14 @@ describe('refStateLookupFromResource refuses to serve a masked Ref value (#2847)
     // behaviour is pinned by the case above, which passes a callback.
     const refValue = cfnRefValueFromPhysicalId(
       TABLE_TYPE,
-      TABLE_ARN,
-      refStateLookupFromResource({ properties: { TableName: SECRET_MASK } })
+      TABLE_COMPOSITE,
+      refStateLookupFromResource({ attributes: { TableARN: SECRET_MASK } })
     );
 
     expect(refValue).toBe(SECRET_MASK);
     // ...and specifically NOT the fall-through, which is the value that
     // reaches AWS unrecognised.
-    expect(refValue).not.toBe(TABLE_ARN);
+    expect(refValue).not.toBe(TABLE_COMPOSITE);
   });
 });
 
@@ -177,9 +181,9 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     resetAccountInfoCache();
   });
 
-  it('resolves a masked S3Tables TableName to something other than the mask, and NOTES the read', async () => {
+  it('resolves a masked S3Tables TableARN to something other than the mask, and NOTES the read', async () => {
     const redactedAttributeReads: RedactedAttributeRead[] = [];
-    const context = contextFor({ properties: { TableName: SECRET_MASK } }, redactedAttributeReads);
+    const context = contextFor({ attributes: { TableARN: SECRET_MASK } }, redactedAttributeReads);
 
     const value = await resolver.resolve({ Ref: 'T' }, context);
 
@@ -187,32 +191,32 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     expect(value).not.toBe(SECRET_MASK);
     // POSITIVE: and the read is recorded, which is what makes
     // the engine's `refuseRedactedAttributeReads` fail the resource rather than
-    // let the (wrong-but-not-secret) ARN ship. Without this the negative above
+    // let the (wrong-but-not-secret) composite ship. Without this the negative above
     // would be satisfied by a plain silent fall-through.
     expect(redactedAttributeReads.map((read) => read.display)).toEqual([
-      'Ref T (state key TableName)',
+      'Ref T (state key TableARN)',
     ]);
   });
 
   it('records the read ONCE however many times the same Ref is resolved', async () => {
     const redactedAttributeReads: RedactedAttributeRead[] = [];
-    const context = contextFor({ properties: { TableName: SECRET_MASK } }, redactedAttributeReads);
+    const context = contextFor({ attributes: { TableARN: SECRET_MASK } }, redactedAttributeReads);
 
     await resolver.resolve({ Ref: 'T' }, context);
     await resolver.resolve({ Ref: 'T' }, context);
 
     expect(redactedAttributeReads.map((read) => read.display)).toEqual([
-      'Ref T (state key TableName)',
+      'Ref T (state key TableARN)',
     ]);
   });
 
-  it('resolves an ORDINARY TableName normally and records nothing', async () => {
+  it('resolves an ORDINARY TableARN normally and records nothing', async () => {
     const redactedAttributeReads: RedactedAttributeRead[] = [];
-    const context = contextFor({ properties: { TableName: TABLE_NAME } }, redactedAttributeReads);
+    const context = contextFor({ attributes: { TableARN: TABLE_ARN } }, redactedAttributeReads);
 
     const value = await resolver.resolve({ Ref: 'T' }, context);
 
-    expect(value).toBe(TABLE_NAME);
+    expect(value).toBe(TABLE_ARN);
     expect(redactedAttributeReads).toEqual([]);
   });
 
@@ -337,30 +341,27 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // result is PERSISTED into `resource.properties`, and while the skip fired
     // here it persisted the raw physical id — which `cdkd export` writes into
     // the imported template and `cdkd drift --revert` sends to AWS.
-    const context = contextFor({ properties: { TableName: SECRET_MASK } });
+    const context = contextFor({ attributes: { TableARN: SECRET_MASK } });
 
     // Pinned to the VALUE, not to a bare negative: `undefined` would satisfy
-    // `not.toBe(TABLE_ARN)` while saying nothing about what is served.
+    // `not.toBe(TABLE_COMPOSITE)` while saying nothing about what is served.
     await expect(resolver.resolve({ Ref: 'T' }, context)).resolves.toBe(SECRET_MASK);
   });
 
-  it('reports the FIRST masked key when several of a type\'s alias keys are masked', async () => {
-    // `AWS::S3Tables::Table` is the only type with an alias list
-    // (`['TableName', 'Name']`), so it is the only place `maskedKey ??= key`
-    // is observable. Without this row, changing `??=` to a plain `=` — report
-    // the LAST masked key rather than the first — stays green across every
-    // other case in this file.
-    const redactedAttributeReads: RedactedAttributeRead[] = [];
-    const context = contextFor(
+  it('reports the FIRST masked key when several of the looked-up keys are masked', () => {
+    // No resolver branch passes an alias list since issue #5316 retired the
+    // S3Tables `['TableName', 'Name']` one, so the seam is driven directly:
+    // without this row, changing `masked ??=` to a plain `=` — report the LAST
+    // masked key rather than the first — stays green across every other case
+    // in this file.
+    const reported: string[] = [];
+    const lookup = refStateLookupFromResource(
       { properties: { TableName: SECRET_MASK, Name: SECRET_MASK } },
-      redactedAttributeReads
+      (key) => reported.push(key)
     );
 
-    await resolver.resolve({ Ref: 'T' }, context);
-
-    expect(redactedAttributeReads.map((read) => read.display)).toEqual([
-      'Ref T (state key TableName)',
-    ]);
+    expect(lookup(['TableName', 'Name'])).toBeUndefined();
+    expect(reported).toEqual(['TableName']);
   });
 
   it('keeps BOTH entries when an attribute read RENDERS identically to a Ref one', async () => {
@@ -373,9 +374,9 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // THE COLLISION IS BUILT FROM TWO TEMPLATE-CONTROLLED NAMES, both of which
     // cdkd accepts because it validates neither and never hands the template to
     // CloudFormation. `Fn::GetAtt` on logical id `Ref Foo` and attribute
-    // `Bar (state key TableName)` renders `Ref Foo.Bar (state key TableName)`;
+    // `Bar (state key TableARN)` renders `Ref Foo.Bar (state key TableARN)`;
     // so does a `Ref` to a resource whose logical id is `Foo.Bar` and whose
-    // `TableName` is masked. The state KEY cannot be the vehicle -- those come
+    // `TableARN` is masked. The state KEY cannot be the vehicle -- those come
     // from cdkd's own fixed lists -- so the dot has to come from the id.
     //
     // ORDER IS LOAD-BEARING: the attribute read is recorded FIRST, so under the
@@ -395,27 +396,28 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
           physicalId: 'cr-phys',
           resourceType: 'Custom::Thing',
           properties: {},
-          attributes: { 'Bar (state key TableName)': SECRET_MASK },
+          attributes: { 'Bar (state key TableARN)': SECRET_MASK },
           dependencies: [],
         },
         'Foo.Bar': {
-          physicalId: TABLE_ARN,
+          physicalId: TABLE_COMPOSITE,
           resourceType: TABLE_TYPE,
-          properties: { TableName: SECRET_MASK },
+          properties: {},
+          attributes: { TableARN: SECRET_MASK },
           dependencies: [],
         },
       },
       redactedAttributeReads,
     };
 
-    await resolver.resolve({ 'Fn::GetAtt': ['Ref Foo', 'Bar (state key TableName)'] }, context);
+    await resolver.resolve({ 'Fn::GetAtt': ['Ref Foo', 'Bar (state key TableARN)'] }, context);
     await resolver.resolve({ Ref: 'Foo.Bar' }, context);
 
     // The renderings really do collide -- without this the case would pass on
     // two entries that were never in danger of being de-duped.
     expect(redactedAttributeReads.map((read) => read.display)).toEqual([
-      'Ref Foo.Bar (state key TableName)',
-      'Ref Foo.Bar (state key TableName)',
+      'Ref Foo.Bar (state key TableARN)',
+      'Ref Foo.Bar (state key TableARN)',
     ]);
     // ...and the SURVIVING second entry is the one the Outputs guard selects on.
     expect(redactedAttributeReads.map((read) => read.kind)).toEqual([
@@ -432,7 +434,7 @@ describe('resolveRef records a redacted read instead of shipping the mask (#2847
     // the documented "names differing only above the mask collapse" property
     // is unaffected by comparing it.
     const redactedAttributeReads: RedactedAttributeRead[] = [];
-    const context = contextFor({ properties: { TableName: SECRET_MASK } }, redactedAttributeReads);
+    const context = contextFor({ attributes: { TableARN: SECRET_MASK } }, redactedAttributeReads);
 
     await resolver.resolve({ Ref: 'T' }, context);
     await resolver.resolve({ Ref: 'T' }, context);

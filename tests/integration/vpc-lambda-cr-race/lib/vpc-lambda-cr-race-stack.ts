@@ -3,6 +3,8 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 
 /**
  * Regression test for the Pending-Lambda race fixed in
@@ -27,6 +29,21 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *
  * Post-fix outcome: deploy succeeds; destroy succeeds (the existing
  * pre-delete VPC detach + ENI cleanup paths handle teardown).
+ *
+ * Second arm (`NotifyFn` + `NotifyBucket`): the same race through a different
+ * consumer. A second VPC-attached Lambda is the DESTINATION of an S3 event
+ * notification, which CDK synthesizes into a `Custom::S3BucketNotifications`
+ * custom resource whose handler calls `PutBucketNotificationConfiguration`.
+ * S3 validates the destination, and rejects it while it is still `Pending`
+ * ("Unable to validate the following destination configurations"). The custom
+ * resource's OWN backing function is a plain Lambda that is already Active, so
+ * the backing-function wait never covers this one: only a wait on the function
+ * the properties point at does.
+ *
+ * Pre-fix outcome: deploy fails on the notification resource and rolls back.
+ * Post-fix outcome: deploy succeeds.
+ *
+ * covers: Custom::S3BucketNotifications
  */
 export class VpcLambdaCrRaceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -115,9 +132,37 @@ def handler(event, context):
       },
     });
 
+    // Second arm: a VPC-attached Lambda as an S3 notification destination.
+    // The handler body is irrelevant (the notification never has to fire); the
+    // VPC attachment is what keeps the function `Pending` while cdkd runs the
+    // `Custom::S3BucketNotifications` handler.
+    const notifyFn = new lambda.Function(this, 'NotifyFn', {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline('exports.handler = async () => {};'),
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [sg],
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    const notifyBucket = new s3.Bucket(this, 'NotifyBucket', {
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+    notifyBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(notifyFn),
+      { suffix: 'manifest-files.json' }
+    );
+
     new cdk.CfnOutput(this, 'HandlerArn', {
       value: handlerFn.functionArn,
       description: 'ARN of the VPC-attached CR handler Lambda',
+    });
+    new cdk.CfnOutput(this, 'NotifyBucketName', {
+      value: notifyBucket.bucketName,
+      description: 'Bucket whose notification targets the VPC-attached NotifyFn',
     });
   }
 }

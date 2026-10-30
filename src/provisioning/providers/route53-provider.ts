@@ -33,8 +33,17 @@ import {
   markNameCollision,
   markRedactedCause,
   relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { markNotGone } from '../not-gone.js';
+import { isTruthyCfnBoolean } from '../data-delete-intent.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   isPlainImportValue,
@@ -43,7 +52,7 @@ import {
   VALUE_NOT_SHOWN,
 } from '../import-helpers.js';
 import { commandHole } from '../../utils/pasteable-command.js';
-import { readConfigString } from '../config-shape.js';
+import { readConfigString, replayWarn, requireConfigString } from '../config-shape.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import {
   COMPOSITE_ID_SEPARATOR,
@@ -82,6 +91,46 @@ import {
 export function isZoneDisabledForMutationError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('is marked disabled for mutation');
 }
+
+/**
+ * Whether a HostedZone's properties enable accelerated recovery. The
+ * CloudFormation member is `HostedZoneFeatures.EnableAcceleratedRecovery`
+ * (boolean, the schema's only member); `AcceleratedRecoveryStatus` is the
+ * GetHostedZone read-side status, not a template property (issue #5465).
+ *
+ * `acceptReadSideKey` also reads that status, for two sides that can carry
+ * it: a `drift --revert` desired side (a drift baseline recorded before #5465
+ * holds the readback under it) and an update's previous side (state recorded
+ * from a template that used it as an override, which the pre-#5465 provider
+ * enabled). Never a deploy's desired side: it is not a template property.
+ */
+function declaresAcceleratedRecovery(
+  properties: Record<string, unknown>,
+  acceptReadSideKey = false
+): boolean {
+  const features = properties['HostedZoneFeatures'] as Record<string, unknown> | undefined;
+  if (isTruthyCfnBoolean(features?.['EnableAcceleratedRecovery'])) return true;
+  const legacyStatus = features?.['AcceleratedRecoveryStatus'];
+  return (
+    acceptReadSideKey &&
+    features?.['EnableAcceleratedRecovery'] === undefined &&
+    typeof legacyStatus === 'string' &&
+    ACCELERATED_RECOVERY_ON_STATUSES.has(legacyStatus)
+  );
+}
+
+/**
+ * The `AcceleratedRecoveryStatus` values `readCurrentState` reports as
+ * `EnableAcceleratedRecovery: true`: settled on, on its way there, or a
+ * DISABLE that failed (the feature is still on). Every other status
+ * (DISABLED, a disabling phase, a failed enable) reads `false`.
+ */
+const ACCELERATED_RECOVERY_ON_STATUSES: ReadonlySet<string> = new Set([
+  'ENABLED',
+  'ENABLING',
+  'ENABLING_HOSTED_ZONE_LOCKED',
+  'DISABLE_FAILED',
+]);
 
 /**
  * A `HostedZoneName` that resolved cleanly but matches no zone.
@@ -127,9 +176,14 @@ class HostedZoneNameNotFoundError extends ProvisioningError {
  * that scalar verbatim before issue #1658, so state files in the wild carry
  * BOTH shapes, and the scalar can contain `|` too.
  */
-export function parseRecordSetCompositeId(
-  physicalId: string
-): { hostedZoneId: string; name: string; type: string; nameCarriesSeparator: boolean } | undefined {
+export function parseRecordSetCompositeId(physicalId: string):
+  | {
+      hostedZoneId: string;
+      name: string;
+      type: string;
+      nameCarriesSeparator: boolean;
+    }
+  | undefined {
   const firstPipe = physicalId.indexOf(COMPOSITE_ID_SEPARATOR);
   const lastPipe = physicalId.lastIndexOf(COMPOSITE_ID_SEPARATOR);
   if (firstPipe < 0 || lastPipe === firstPipe) return undefined;
@@ -250,6 +304,24 @@ function templateZoneVisibility(properties: Record<string, unknown>): boolean | 
     (v) => typeof v === 'object' && v !== null && !Array.isArray(v) && !isIntrinsicOnly(v)
   );
   return attachesAVpc ? true : undefined;
+}
+
+/**
+ * Issue #1160: a `VPCs` REMOVED whole from the template, or emptied to `[]`,
+ * is not applied. CloudFormation does the same (CFn A/B us-east-1
+ * 2026-10-20: a private zone with one VPC and one with two, each updated to
+ * drop `VPCs`, kept every association, and the two-VPC zone updated again to
+ * `VPCs: []` kept both; no update failed). Route 53 also cannot make a private
+ * zone public, and refuses to disassociate its last VPC, so no reset exists.
+ * {@link Route53Provider.syncVPCAssociations} returns early on either shape,
+ * and `updateHostedZone` names the kept associations in one warning.
+ */
+const VPCS_KEPT_ON_REMOVAL_NOTE =
+  'A private hosted zone stays private and keeps at least one VPC; to change its associations, declare the VPCs you want and deploy.';
+
+/** True when a desired `VPCs` value declares no VPC: absent, null or `[]`. */
+function declaresNoVpcs(vpcs: unknown): boolean {
+  return vpcs == null || (Array.isArray(vpcs) && vpcs.length === 0);
 }
 
 /** `text` closed as a sentence, for a wrap that continues after it. */
@@ -376,10 +448,12 @@ export class Route53Provider implements ResourceProvider {
    * classifiers read the withheld text on the `cause` chain (`is marked
    * disabled for mutation`, `not authorized to perform`). An "already exists"
    * (a duplicate record) is restated ({@link relayedNameCollision}), which
-   * `isRecreateRetryableError` reads on the top-level message. A cdkd-authored
-   * or transport error, or a non-`Error` throw, keeps its text; the deploy
-   * engine masks a thrown message. Both deletes recognise "already gone" on
-   * the RAW error before they wrap.
+   * `isRecreateRetryableError` reads on the top-level message, unless a
+   * post-create call raised it ({@link isAuxiliaryFailure}). A cdkd-authored
+   * or transport error keeps its text, masked, stamped only when the mask
+   * changed it (`wrapMaskedAwsError`); a non-`Error` throw is withheld like an
+   * AWS one, unstamped (it has no chain). Both deletes recognise "already
+   * gone" on the RAW error before they wrap.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
@@ -389,11 +463,48 @@ export class Route53Provider implements ResourceProvider {
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
     const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = mask ?? ((text: string) => text);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
     this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (this
+   * resource's own not-found returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(mask, error, build);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
+  }
+
+  /**
+   * The failure text a cleanup or adopt `warn` quotes after `head`, with its
+   * closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
+   * its CLASS at warn, since a denied call names the caller's assumed-role
+   * ARN; AWS's own text goes to `debug` under the same `head`, masked. A
+   * cdkd-authored or transport error keeps its text, masked.
+   */
+  private warnFailureText(
+    head: string,
+    error: unknown,
+    mask: ((text: string) => string) | undefined
+  ): string {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return `${m(failure.detail)}.`;
+    this.logger.debug(m(`${head}${m(failure.detail)}`));
+    return m(failure.summary);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -406,6 +517,7 @@ export class Route53Provider implements ResourceProvider {
         'VPCs',
         'QueryLoggingConfig',
         'HostedZoneFeatures',
+        'DelegationSetId',
       ]),
     ],
     [
@@ -452,7 +564,13 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<ResourceCreateResult> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.createHostedZone(logicalId, resourceType, properties, context?.maskSecrets);
+        return this.createHostedZone(
+          logicalId,
+          resourceType,
+          properties,
+          context?.maskSecrets,
+          context
+        );
       case 'AWS::Route53::RecordSet':
         return this.createRecordSet(logicalId, resourceType, properties, context?.maskSecrets);
       default:
@@ -480,7 +598,8 @@ export class Route53Provider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context
         );
       case 'AWS::Route53::RecordSet':
         return this.updateRecordSet(
@@ -542,7 +661,8 @@ export class Route53Provider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Route 53 hosted zone ${logicalId}`);
 
@@ -552,6 +672,30 @@ export class Route53Provider implements ResourceProvider {
         `Name is required for hosted zone ${logicalId}`,
         resourceType,
         logicalId
+      );
+    }
+
+    // go-to-k/cdkd#2762: create-only (declaring it used to route the zone
+    // through Cloud Control). Sent as declared; Route 53 accepts both the bare
+    // id and its `/delegationset/` form (measured us-east-1, 2026-10-27). A
+    // non-string is refused, not dropped: dropping it would give the zone a
+    // fresh set of name servers, which cannot be changed afterwards.
+    let delegationSetId: string | undefined;
+    try {
+      delegationSetId =
+        requireConfigString(
+          properties['DelegationSetId'],
+          '',
+          'AWS::Route53::HostedZone DelegationSetId',
+          replayWarn(this.logger, context)
+        ) || undefined;
+    } catch (error) {
+      throw new ProvisioningError(
+        `Hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`,
+        resourceType,
+        logicalId,
+        undefined,
+        error instanceof Error ? error : undefined
       );
     }
 
@@ -602,29 +746,33 @@ export class Route53Provider implements ResourceProvider {
         maxLength: 128,
       });
 
-      const response = await this.createOrAdoptHostedZone({
-        Name: name,
-        CallerReference: callerReferenceToken.value,
-        ...(createComment !== ''
-          ? {
-              HostedZoneConfig: {
-                Comment: createComment,
-                // When VPCs are specified, this is a private hosted zone
-                ...(firstVpc ? { PrivateZone: true } : {}),
-              },
-            }
-          : firstVpc
-            ? { HostedZoneConfig: { PrivateZone: true } }
+      const response = await this.createOrAdoptHostedZone(
+        {
+          Name: name,
+          CallerReference: callerReferenceToken.value,
+          ...(delegationSetId !== undefined ? { DelegationSetId: delegationSetId } : {}),
+          ...(createComment !== ''
+            ? {
+                HostedZoneConfig: {
+                  Comment: createComment,
+                  // When VPCs are specified, this is a private hosted zone
+                  ...(firstVpc ? { PrivateZone: true } : {}),
+                },
+              }
+            : firstVpc
+              ? { HostedZoneConfig: { PrivateZone: true } }
+              : {}),
+          ...(firstVpc
+            ? {
+                VPC: {
+                  VPCId: firstVpc['VPCId'] as string,
+                  VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
+                },
+              }
             : {}),
-        ...(firstVpc
-          ? {
-              VPC: {
-                VPCId: firstVpc['VPCId'] as string,
-                VPCRegion: firstVpc['VPCRegion'] as VPCRegion | undefined,
-              },
-            }
-          : {}),
-      });
+        },
+        mask
+      );
       zoneCreated = true;
 
       const hostedZone = response.HostedZone;
@@ -635,6 +783,8 @@ export class Route53Provider implements ResourceProvider {
       // Extract zone ID without /hostedzone/ prefix
       const zoneId = hostedZone.Id.replace('/hostedzone/', '');
       createdZoneId = zoneId;
+      // go-to-k/cdkd#5511: reported before the VPC associations and later calls.
+      reportCreatedResource(logicalId, resourceType, zoneId);
 
       // Associate additional VPCs (index 1+) after creation
       if (vpcs && vpcs.length > 1) {
@@ -661,20 +811,17 @@ export class Route53Provider implements ResourceProvider {
       // Configure query logging
       await this.applyQueryLoggingConfig(zoneId, properties, logicalId);
 
-      // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
+      // `HostedZoneFeatures.EnableAcceleratedRecovery`: post-create
       // control-plane call. CreateHostedZone does NOT accept this field;
       // it requires a separate UpdateHostedZoneFeatures call AFTER the
       // zone is created. Same pattern as RecursiveLoop on Lambda::Function
-      // (PR #719). AWS default is DISABLED, so we only call AWS when the
-      // template explicitly requests ENABLED (calling with `false` would
+      // (PR #719). AWS default is disabled, so we only call AWS when the
+      // template explicitly enables it (calling with `false` would
       // be a no-op API hit). Failure here triggers `delete-on-post-create-
       // failure` atomicity — delete the just-created hosted zone before
       // bubbling the error, otherwise the next deploy retry sees an orphan
       // zone (live on AWS, not in cdkd state) and CREATE-collides.
-      const desiredAcceleratedRecovery = (
-        properties['HostedZoneFeatures'] as Record<string, unknown> | undefined
-      )?.['AcceleratedRecoveryStatus'] as string | undefined;
-      if (desiredAcceleratedRecovery === 'ENABLED') {
+      if (declaresAcceleratedRecovery(properties)) {
         try {
           await this.getClient().send(
             new UpdateHostedZoneFeaturesCommand({
@@ -691,11 +838,12 @@ export class Route53Provider implements ResourceProvider {
             // create()). AWS rejects DeleteHostedZone with
             // HostedZoneNotEmpty when a logging config is still attached,
             // so a template that sets BOTH `QueryLoggingConfig` and
-            // `HostedZoneFeatures.AcceleratedRecoveryStatus: ENABLED`
+            // `HostedZoneFeatures.EnableAcceleratedRecovery: true`
             // would leak the zone if the UHF rollback skipped this step.
             await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
             await this.getClient().send(new DeleteHostedZoneCommand({ Id: zoneId }));
             zoneRolledBack = true;
+            retractCreatedResource(logicalId, resourceType, zoneId);
             // Released only after the delete SUCCEEDED, and the ORDER is what
             // matters here rather than the release itself. Route 53 does not
             // retain a DELETED zone's caller reference, so reusing one whose
@@ -708,13 +856,19 @@ export class Route53Provider implements ResourceProvider {
             // orphan cdkd state never names, where keeping it adopts the zone.
             callerReferenceToken.release();
           } catch (deleteError) {
+            const head = `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: `;
+            const m = maskerOrIdentity(mask);
             this.logger.warn(
-              `Best-effort rollback DeleteHostedZone for ${zoneId} also failed: ${
-                describeAwsFailure(deleteError).detail
-              } — operator may need to clean up the orphan zone`
+              m(
+                `${head}${this.warnFailureText(head, deleteError, mask)} The operator may need to clean up the orphan zone.`
+              )
             );
           }
           const cause = uhfError instanceof Error ? uhfError : undefined;
+          // The zone itself was created: an "already exists" from the feature
+          // call is not this zone's collision, so the wrap does not restate it
+          // (#3826). The outer catch marks the wrap again, a no-op.
+          markAuxiliaryFailure(uhfError, logicalId);
           throw this.wrapCaughtError(
             mask,
             uhfError,
@@ -728,6 +882,19 @@ export class Route53Provider implements ResourceProvider {
               )
           );
         }
+        // As CloudFormation does, return only once the zone reports ENABLED
+        // (measured ~4 min, us-east-1, 2026-10-28): until then Route 53 refuses
+        // every record mutation on the zone, which a record set created in the
+        // same deploy would otherwise hit. Outside the rollback above: a zone
+        // whose enable is in flight is locked against DeleteHostedZone too, so
+        // a failure here leaves the zone to the created-before-failure record.
+        await this.waitForAcceleratedRecoveryFeatureSettled(
+          zoneId,
+          logicalId,
+          resourceType,
+          true,
+          true
+        );
       }
 
       // Collect name servers
@@ -794,7 +961,8 @@ export class Route53Provider implements ResourceProvider {
    * taken but that names no zone we can see is not something to paper over.
    */
   private async createOrAdoptHostedZone(
-    input: CreateHostedZoneCommandInput
+    input: CreateHostedZoneCommandInput,
+    mask?: (text: string) => string
   ): Promise<Partial<Pick<CreateHostedZoneCommandOutput, 'HostedZone' | 'DelegationSet'>>> {
     try {
       return await this.getClient().send(new CreateHostedZoneCommand(input));
@@ -817,8 +985,11 @@ export class Route53Provider implements ResourceProvider {
       try {
         adopted = await this.findHostedZoneByCallerReference(input.Name!, input.CallerReference!);
       } catch (lookupError) {
+        const head = `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: `;
         this.logger.warn(
-          `CreateHostedZone for ${input.Name} was refused as already-existing, and the lookup that would have adopted the existing zone failed: ${describeAwsFailure(lookupError).detail}. Reporting the original error.`
+          maskerOrIdentity(mask)(
+            `${head}${this.warnFailureText(head, lookupError, mask)} Reporting the original error.`
+          )
         );
         throw error;
       }
@@ -835,8 +1006,11 @@ export class Route53Provider implements ResourceProvider {
           ...(described.DelegationSet ? { DelegationSet: described.DelegationSet } : {}),
         };
       } catch (describeError) {
+        const head = `Adopted hosted zone ${adopted.Id} but could not read it back: `;
         this.logger.warn(
-          `Adopted hosted zone ${adopted.Id} but could not read it back: ${describeAwsFailure(describeError).detail}. Reporting the original error rather than returning a zone with no NameServers.`
+          maskerOrIdentity(mask)(
+            `${head}${this.warnFailureText(head, describeError, mask)} Reporting the original error rather than returning a zone with no NameServers.`
+          )
         );
         throw error;
       }
@@ -887,7 +1061,8 @@ export class Route53Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating Route 53 hosted zone ${logicalId}: ${physicalId}`);
 
@@ -918,33 +1093,42 @@ export class Route53Provider implements ResourceProvider {
       // absent desired block from "nothing to do" into a REMOVAL.
       await this.applyQueryLoggingConfig(physicalId, properties, logicalId, previousProperties);
 
-      // Note: VPC associations on update are complex (need to diff current vs desired).
-      // For now, we handle VPCs that need to be added. Full diff requires GetHostedZone
-      // to compare current VPCs, which we'll do here.
+      // Associates added VPCs and disassociates dropped ones. A `VPCs` removed
+      // whole (or emptied) changes nothing, as in CloudFormation, and is named
+      // by the warning below (VPCS_KEPT_ON_REMOVAL_NOTE).
       await this.syncVPCAssociations(physicalId, properties, logicalId);
 
-      // `HostedZoneFeatures.AcceleratedRecoveryStatus`: post-create
+      // `HostedZoneFeatures.EnableAcceleratedRecovery`: post-create
       // control-plane call, gated on the BOOLEAN-effective diff (i.e.
       // "is this zone supposed to have AcceleratedRecovery enabled").
-      // Comparing the raw strings would fire an unnecessary AWS call for
-      // `prev: undefined, next: 'DISABLED'` (both map to disabled — AWS
-      // default; no transition needed). Removal of the property is
-      // treated as DISABLED so a user dropping the template field
-      // implicitly turns the feature off on the next deploy.
-      const prevEnabled =
-        ((previousProperties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
-          'AcceleratedRecoveryStatus'
-        ] as string | undefined) === 'ENABLED';
-      const nextEnabled =
-        ((properties['HostedZoneFeatures'] as Record<string, unknown> | undefined)?.[
-          'AcceleratedRecoveryStatus'
-        ] as string | undefined) === 'ENABLED';
+      // Comparing the raw values would fire an unnecessary AWS call for
+      // `prev: undefined, next: false` (both mean disabled — AWS default;
+      // no transition needed). Removal of the property is treated as
+      // disabled so a user dropping the template field turns the feature
+      // off on the next deploy.
+      // The previous side accepts the read-side key too: a template that used
+      // it as an override was ENABLED by the pre-#5465 provider, so dropping
+      // it must disable, and moving to `EnableAcceleratedRecovery: true` is
+      // no change.
+      const prevEnabled = declaresAcceleratedRecovery(previousProperties, true);
+      const nextEnabled = declaresAcceleratedRecovery(
+        properties,
+        context?.desiredFromAwsReadback === true
+      );
       if (prevEnabled !== nextEnabled) {
         await this.getClient().send(
           new UpdateHostedZoneFeaturesCommand({
             HostedZoneId: physicalId,
             EnableAcceleratedRecovery: nextEnabled,
           })
+        );
+        // As CloudFormation does, return only once the transition settles
+        // (measured: minutes either way); only a toggle pays this wait.
+        await this.waitForAcceleratedRecoveryFeatureSettled(
+          physicalId,
+          logicalId,
+          resourceType,
+          nextEnabled
         );
       }
 
@@ -953,6 +1137,22 @@ export class Route53Provider implements ResourceProvider {
       const nameServers = getResponse.DelegationSet?.NameServers ?? [];
 
       this.logger.debug(`Successfully updated hosted zone ${logicalId}`);
+
+      // Issue #1160: named only after the update SUCCEEDED. Not on
+      // `drift --revert`: its previous side is an AWS readback, so a VPCs
+      // missing from the desired side was never removed from a template.
+      if (
+        context?.desiredFromAwsReadback !== true &&
+        declaresNoVpcs(properties['VPCs']) &&
+        Array.isArray(previousProperties['VPCs']) &&
+        previousProperties['VPCs'].length > 0
+      ) {
+        this.logger.warn(
+          context?.replayingState
+            ? safeMsg`${logicalId} (AWS::Route53::HostedZone): VPCs is absent from the state being restored, so the rollback leaves the zone's VPC associations in place. ${VPCS_KEPT_ON_REMOVAL_NOTE}`
+            : safeMsg`${logicalId} (AWS::Route53::HostedZone): VPCs was removed from the template, and the zone keeps its current VPC associations, as CloudFormation leaves them. ${VPCS_KEPT_ON_REMOVAL_NOTE}`
+        );
+      }
 
       return {
         physicalId,
@@ -1037,7 +1237,7 @@ export class Route53Provider implements ResourceProvider {
       const failure =
         error instanceof ProvisioningError
           ? error
-          : this.wrapCaughtError(
+          : this.wrapDeleteError(
               context?.maskSecrets,
               error,
               (text) =>
@@ -1630,7 +1830,7 @@ export class Route53Provider implements ResourceProvider {
       // in `deleteHostedZone`.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      throw this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1643,6 +1843,28 @@ export class Route53Provider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * The settle wait after this zone's own UpdateHostedZoneFeatures (issue
+   * #5465): polls until the status is the one the call asked for.
+   * `freshZone`: the zone was created by this call, so no earlier `*_FAILED`
+   * can be read back and the first one is final.
+   */
+  private async waitForAcceleratedRecoveryFeatureSettled(
+    zoneId: string,
+    logicalId: string,
+    resourceType: string,
+    enabled: boolean,
+    freshZone = false
+  ): Promise<void> {
+    const verb = enabled ? 'enable' : 'disable';
+    await this.waitForAcceleratedRecoveryMutable(zoneId, logicalId, resourceType, {
+      blocked: `the hosted zone ${logicalId} can be deployed`,
+      retry: `after the ${verb} of Accelerated Recovery (hosted zone ${logicalId}); re-run the deploy once the transition settles`,
+      settledAt: enabled ? 'ENABLED' : 'DISABLED',
+      freshZone,
+    });
   }
 
   /**
@@ -1659,11 +1881,29 @@ export class Route53Provider implements ResourceProvider {
    * terminal-stable (ENABLED / DISABLED / zone gone), throwing on the
    * `*_FAILED` operator-recovery states and on timeout. Same env-overridable
    * poll knobs as the zone guard.
+   *
+   * Also the settle wait after a hosted zone's own UpdateHostedZoneFeatures
+   * on create and update (issue #5465): CloudFormation returns only once the
+   * status settles, and a dependent record-set change in the same deploy
+   * would otherwise hit the transition's lock. `blocked` names what the
+   * transition holds up and `retry` the next step, for the two errors;
+   * `settledAt` narrows "settled" to the status the call asked for, so a read
+   * that still shows the PRE-call status (DISABLED right after an enable) is
+   * not taken as done.
    */
   private async waitForAcceleratedRecoveryMutable(
     zoneId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    purpose: {
+      blocked: string;
+      retry: string;
+      settledAt?: 'ENABLED' | 'DISABLED';
+      freshZone?: boolean;
+    } = {
+      blocked: `the record set ${logicalId} can be deleted`,
+      retry: `(record set ${logicalId}); re-run the destroy once the transition settles`,
+    }
   ): Promise<void> {
     const client = this.getClient();
     // Number.isFinite guards: a garbage env value would otherwise make the
@@ -1681,8 +1921,24 @@ export class Route53Provider implements ResourceProvider {
     );
     const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 600000;
     const deadline = Date.now() + timeoutMs;
-    const TERMINAL_FAILED = new Set<string>(['ENABLE_FAILED', 'DISABLE_FAILED']);
-    const MUTABLE = new Set<string>(['ENABLED', 'DISABLED']);
+    // A settle wait fails only on its OWN direction's failure: the other
+    // direction's `*_FAILED` is the pre-call status still being read (a
+    // disable sent to recover an ENABLE_FAILED zone first reads ENABLE_FAILED).
+    // Its own direction's counts only once a transition was read since the
+    // call: a re-sent enable on an ENABLE_FAILED zone first reads the old
+    // failure too, and an unbroken failure is left to the deadline.
+    const TERMINAL_FAILED = new Set<string>(
+      purpose.settledAt === 'ENABLED'
+        ? ['ENABLE_FAILED']
+        : purpose.settledAt === 'DISABLED'
+          ? ['DISABLE_FAILED']
+          : ['ENABLE_FAILED', 'DISABLE_FAILED']
+    );
+    const MUTABLE = new Set<string>(
+      purpose.settledAt !== undefined ? [purpose.settledAt] : ['ENABLED', 'DISABLED']
+    );
+    let sawTransition = purpose.settledAt === undefined || purpose.freshZone === true;
+    let lastStatus: string | undefined;
 
     while (Date.now() < deadline) {
       let status: string | undefined;
@@ -1690,13 +1946,29 @@ export class Route53Provider implements ResourceProvider {
         const resp = await client.send(new GetHostedZoneCommand({ Id: zoneId }));
         status = resp.HostedZone?.Features?.AcceleratedRecoveryStatus;
       } catch (err) {
-        if (err instanceof Error && err.name === 'NoSuchHostedZone') return;
+        // Gone is "nothing left to wait for" on a record delete, but a settle
+        // wait is for a zone this deploy is creating or updating.
+        if (
+          err instanceof Error &&
+          err.name === 'NoSuchHostedZone' &&
+          purpose.settledAt === undefined
+        ) {
+          return;
+        }
         throw err;
       }
-      if (status === undefined || MUTABLE.has(status)) return;
-      if (TERMINAL_FAILED.has(status)) {
+      // An absent status is the never-enabled zone: settled, unless the call
+      // being waited on was the enable itself.
+      if (status === undefined) {
+        if (purpose.settledAt !== 'ENABLED') return;
+      } else if (MUTABLE.has(status)) {
+        return;
+      }
+      lastStatus = status;
+      if (status?.includes('ING') === true) sawTransition = true;
+      if (status !== undefined && sawTransition && TERMINAL_FAILED.has(status)) {
         throw new ProvisioningError(
-          `Cannot mutate hosted zone ${zoneId}: AcceleratedRecoveryStatus is '${status}' — operator must resolve before the record set ${logicalId} can be deleted`,
+          `Cannot mutate hosted zone ${zoneId}: AcceleratedRecoveryStatus is '${status}' — operator must resolve before ${purpose.blocked}`,
           resourceType,
           logicalId,
           zoneId
@@ -1715,7 +1987,7 @@ export class Route53Provider implements ResourceProvider {
       }
     }
     throw new ProvisioningError(
-      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach a mutable state on hosted zone ${zoneId} (record set ${logicalId}); re-run the destroy once the transition settles`,
+      `Timed out after ${timeoutMs}ms waiting for AcceleratedRecoveryStatus to reach a mutable state on hosted zone ${zoneId} ${purpose.retry}${purpose.settledAt !== undefined ? ` (last status: ${lastStatus ?? 'none'})` : ''}`,
       resourceType,
       logicalId,
       zoneId
@@ -2233,6 +2505,8 @@ export class Route53Provider implements ResourceProvider {
   /**
    * Sync VPC associations for a private hosted zone during update.
    * Compares current VPC associations with desired ones and adds/removes as needed.
+   * An absent or empty desired `VPCs` returns early, keeping every association,
+   * as CloudFormation does (see {@link VPCS_KEPT_ON_REMOVAL_NOTE}).
    */
   private async syncVPCAssociations(
     zoneId: string,
@@ -2450,10 +2724,13 @@ export class Route53Provider implements ResourceProvider {
         lookupErrorMessage = failure.detail;
         lookupErrorCause = error instanceof Error ? error : undefined;
         lookupErrorRedacted = error instanceof Error && failure.redacted;
-        lookupErrorShown = lookupErrorRedacted ? failure.summary : failure.detail;
-        this.logger.warn(
-          `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: ${lookupErrorMessage}`
-        );
+        // `failure.redacted`, not `lookupErrorRedacted`: a non-`Error` throw
+        // is withheld too (its `String()` is the whole payload), unstamped.
+        lookupErrorShown = failure.redacted ? failure.summary : failure.detail;
+        // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a denied
+        // listing names the caller's assumed-role ARN.
+        const lookupHead = `Failed to resolve HostedZoneName "${hostedZoneName}" for ${logicalId}: `;
+        this.logger.warn(`${lookupHead}${this.warnFailureText(lookupHead, error, undefined)}`);
       }
 
       if (matched.length > 1 && options?.requireUnambiguousZoneName) {
@@ -2625,7 +2902,7 @@ export class Route53Provider implements ResourceProvider {
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     switch (resourceType) {
       case 'AWS::Route53::HostedZone':
-        return this.readHostedZone(physicalId);
+        return this.readHostedZone(physicalId, properties);
       case 'AWS::Route53::RecordSet':
         return this.readRecordSet(physicalId, properties);
       default:
@@ -2634,7 +2911,8 @@ export class Route53Provider implements ResourceProvider {
   }
 
   private async readHostedZone(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
@@ -2656,17 +2934,33 @@ export class Route53Provider implements ResourceProvider {
       }
       result['HostedZoneConfig'] = cfg;
     }
-    // `HostedZoneFeatures.AcceleratedRecoveryStatus`: emit-when-present
+    // go-to-k/cdkd#2762: `DelegationSet.Id` is present only for a zone on a
+    // reusable delegation set, and always as `/delegationset/<id>` whichever
+    // form created it (measured us-east-1, 2026-10-27). Emitted bare, as Cloud
+    // Control reports it, unless the declaration spells this same id in the
+    // prefixed form: CreateHostedZone accepts both, and a record in the other
+    // spelling would never match the readback. Immutable on create, so no
+    // placeholder.
+    if (resp.DelegationSet?.Id !== undefined) {
+      const bare = resp.DelegationSet.Id.replace(/^\/delegationset\//, '');
+      result['DelegationSetId'] =
+        properties?.['DelegationSetId'] === `/delegationset/${bare}`
+          ? `/delegationset/${bare}`
+          : bare;
+    }
+    // `HostedZoneFeatures.EnableAcceleratedRecovery`: emit-when-present
     // (gated on `!== undefined`, NOT a default-when-absent placeholder).
     // GetHostedZone returns `HostedZone.Features?.AcceleratedRecoveryStatus`
     // only when the feature was explicitly toggled (zones older than the
     // 2025 feature launch may return undefined indefinitely); emitting a
-    // phantom `{ AcceleratedRecoveryStatus: 'DISABLED' }` placeholder
-    // would force guaranteed drift on every clean run for the typical
-    // zone that never opted in.
-    if (resp.HostedZone.Features?.AcceleratedRecoveryStatus !== undefined) {
+    // phantom `{ EnableAcceleratedRecovery: false }` placeholder would force
+    // guaranteed drift on every clean run for the typical zone that never
+    // opted in. The read-side status maps onto the template's boolean
+    // (issue #5465): an enabling transition is the declared `true`.
+    const acceleratedRecoveryStatus = resp.HostedZone.Features?.AcceleratedRecoveryStatus;
+    if (acceleratedRecoveryStatus !== undefined) {
       result['HostedZoneFeatures'] = {
-        AcceleratedRecoveryStatus: resp.HostedZone.Features.AcceleratedRecoveryStatus,
+        EnableAcceleratedRecovery: ACCELERATED_RECOVERY_ON_STATUSES.has(acceleratedRecoveryStatus),
       };
     }
 
@@ -3113,7 +3407,11 @@ export class Route53Provider implements ResourceProvider {
     try {
       observed = await this.readRecordSetAt(identity);
     } catch (err) {
-      return adoptVerbatim(`verification failed: ${describeAwsFailure(err).detail}`);
+      // The class at warn, AWS's text at debug (go-to-k/cdkd#2319).
+      const head = `Record set ${input.logicalId}: verification of '${known}' failed: `;
+      return adoptVerbatim(
+        `verification failed: ${this.warnFailureText(head, err, undefined).replace(/\.$/, '')}`
+      );
     }
     if (!observed || observed === RESOURCE_NOT_FOUND) {
       return adoptVerbatim('the record was not found under the resolved hosted zone');
@@ -3176,9 +3474,10 @@ export class Route53Provider implements ResourceProvider {
       // gated all the same, as every other value on a command line is.
       const zoneShown = isPlainImportValue(zoneId) ? zoneId : VALUE_NOT_SHOWN;
       const zoneArg = isPasteableIdent(zoneId) ? zoneId : commandHole('hostedZoneId');
+      const head = `Imported hosted zone ${zoneShown} but could not read its NameServers: `;
       this.logger.warn(
-        `Imported hosted zone ${zoneShown} but could not read its NameServers: ` +
-          `${describeAwsFailure(error).detail}.\n` +
+        head +
+          `${this.warnFailureText(head, error, undefined)}\n` +
           `The zone is adopted without them (any attributes already in state for this ` +
           `zone are kept). Re-run ` +
           `\`cdkd import --resource ${remedyLogicalId(logicalId)}=${zoneArg} --force\` once the permission ` +

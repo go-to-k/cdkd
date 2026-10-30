@@ -79,6 +79,9 @@ describe('runDestroyForStack binds the stack records around each delete (#4492)'
       stateBackend: {
         saveState: vi.fn().mockResolvedValue('"etag"'),
         deleteState: vi.fn().mockResolvedValue(undefined),
+        // Under-lock re-read (#5220): the same record, so it must not
+        // pre-empt the stack-records binding this case is actually about.
+        getState: vi.fn(async () => ({ state, etag: 'e' })),
         listStacks: vi.fn().mockResolvedValue([]),
       } as unknown as S3StateBackend,
       lockManager: {

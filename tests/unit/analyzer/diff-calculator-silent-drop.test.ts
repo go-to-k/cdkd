@@ -47,44 +47,68 @@ vi.mock('../../../src/utils/logger.js', () => ({
  *   drop auto-routes the resource to Cloud Control, which forwards the full map
  *   and does write the property.
  *
- * `AWS::CloudWatch::Alarm` / `EvaluationWindow` is the pair
- * `tests/integration/sdk-to-cc-autoroute/` measured against real AWS.
+ * `AWS::Logs::LogGroup` / `ResourcePolicyDocument` is the pair
+ * `tests/integration/sdk-to-cc-autoroute/` measures against real AWS (issue
+ * #5524 moved it off the alarm once `EvaluationWindow` was wired).
  */
 describe('DiffCalculator silent-drop narrowing (#2750)', () => {
-  const RESOURCE_TYPE = 'AWS::CloudWatch::Alarm';
-  const DROPPED = 'EvaluationWindow';
-  const SECOND_DROP = 'EvaluationInterval';
+  const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
+  const DROPPED = 'ResourcePolicyDocument';
   const ALLOW_KEY = `${RESOURCE_TYPE}:${DROPPED}`;
 
-  const WRITTEN: Record<string, unknown> = {
-    AlarmName: 'alarm-1',
-    ComparisonOperator: 'GreaterThanThreshold',
-    EvaluationPeriods: 1,
-    MetricName: 'Errors',
-    Namespace: 'AWS/Lambda',
-    Threshold: 1,
-  };
-  const WINDOW = { WallClockWindow: { Timezone: 'UTC' } };
+  // The mixed-bag case needs a type with TWO silent drops (LogGroup has one),
+  // so it runs on an AutoScalingGroup: `NotificationConfiguration` is the
+  // allow-listed drop and `LaunchConfigurationName` the un-allowed sibling.
+  const ASG_TYPE = 'AWS::AutoScaling::AutoScalingGroup';
+  const ASG_DROPPED = 'NotificationConfiguration';
+  const ASG_SIBLING = 'LaunchConfigurationName';
 
-  it('PREMISE: both fixture keys are silent drops for this type', () => {
+  const WRITTEN: Record<string, unknown> = {
+    LogGroupName: 'log-group-1',
+    LogGroupClass: 'STANDARD',
+    RetentionInDays: 1,
+  };
+  const ASG_WRITTEN: Record<string, unknown> = { MinSize: '0', MaxSize: '1' };
+  const POLICY = {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Principal: { Service: 'delivery.logs.amazonaws.com' },
+        Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        Resource: '*',
+      },
+    ],
+  };
+
+  it('PREMISE: the fixture key is a silent drop for this type', () => {
     const coverage = getPropertyCoverage(RESOURCE_TYPE);
     if (!coverage) throw new Error(`${RESOURCE_TYPE} lost its property-coverage record`);
     expect(coverage.silentDrop.has(DROPPED)).toBe(true);
-    expect(coverage.silentDrop.has(SECOND_DROP)).toBe(true);
+  });
+
+  it('PREMISE: the mixed-bag type has both keys as non-create-only silent drops', () => {
+    const coverage = getPropertyCoverage(ASG_TYPE);
+    if (!coverage) throw new Error(`${ASG_TYPE} lost its property-coverage record`);
+    expect(coverage.silentDrop.has(ASG_DROPPED)).toBe(true);
+    expect(coverage.silentDrop.has(ASG_SIBLING)).toBe(true);
+    expect(coverage.createOnlyDrops.has(ASG_DROPPED)).toBe(false);
+    expect(coverage.createOnlyDrops.has(ASG_SIBLING)).toBe(false);
   });
 
   function stateWith(
     properties: Record<string, unknown>,
-    provisionedBy: 'sdk' | 'cc-api'
+    provisionedBy: 'sdk' | 'cc-api',
+    resourceType: string = RESOURCE_TYPE
   ): StackState {
     return {
       version: 7,
       region: 'us-east-1',
-      stackName: 'alarm-stack',
+      stackName: 'log-group-stack',
       resources: {
-        MyAlarm: {
-          physicalId: 'alarm-1',
-          resourceType: RESOURCE_TYPE,
+        MyLogGroup: {
+          physicalId: 'log-group-1',
+          resourceType,
           properties,
           attributes: {},
           provisionedBy,
@@ -95,8 +119,11 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     } as unknown as StackState;
   }
 
-  function templateWith(properties: Record<string, unknown>): CloudFormationTemplate {
-    return { Resources: { MyAlarm: { Type: RESOURCE_TYPE, Properties: properties } } };
+  function templateWith(
+    properties: Record<string, unknown>,
+    resourceType: string = RESOURCE_TYPE
+  ): CloudFormationTemplate {
+    return { Resources: { MyLogGroup: { Type: resourceType, Properties: properties } } };
   }
 
   async function diff(
@@ -112,7 +139,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
       canonicalize,
       allowed
     );
-    return changes.get('MyAlarm')!;
+    return changes.get('MyLogGroup')!;
   }
 
   it('reports NO_CHANGE for a record the fix already narrowed, under the flag', async () => {
@@ -120,7 +147,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     // the template still declares the opted-into property.
     const change = await diff(
       stateWith({ ...WRITTEN }, 'sdk'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+      templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
       new Set([ALLOW_KEY])
     );
     expect(change.changeType).toBe('NO_CHANGE');
@@ -131,8 +158,8 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     // what keeps this quiet; narrowing only the desired side would report it as
     // a REMOVE.
     const change = await diff(
-      stateWith({ ...WRITTEN, [DROPPED]: WINDOW }, 'sdk'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+      stateWith({ ...WRITTEN, [DROPPED]: POLICY }, 'sdk'),
+      templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
       new Set([ALLOW_KEY])
     );
     expect(change.changeType).toBe('NO_CHANGE');
@@ -146,8 +173,8 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
    */
   it('reports the property as ADDED once the flag is gone — even from a poisoned record', async () => {
     const change = await diff(
-      stateWith({ ...WRITTEN, [DROPPED]: WINDOW }, 'sdk'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+      stateWith({ ...WRITTEN, [DROPPED]: POLICY }, 'sdk'),
+      templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
       new Set()
     );
     expect(change.changeType).toBe('UPDATE');
@@ -159,8 +186,8 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     // nothing — and its preview is of a FLAG-LESS deploy, which is exactly the
     // one that auto-routes and writes the property.
     const change = await diff(
-      stateWith({ ...WRITTEN, [DROPPED]: WINDOW }, 'sdk'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW })
+      stateWith({ ...WRITTEN, [DROPPED]: POLICY }, 'sdk'),
+      templateWith({ ...WRITTEN, [DROPPED]: POLICY })
     );
     expect(change.changeType).toBe('UPDATE');
     expect(change.propertyChanges?.map((c) => c.path)).toContain(DROPPED);
@@ -174,8 +201,8 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
    */
   it('leaves a cc-api record alone — NO_CHANGE with no flag and the key on both sides', async () => {
     const change = await diff(
-      stateWith({ ...WRITTEN, [DROPPED]: WINDOW }, 'cc-api'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+      stateWith({ ...WRITTEN, [DROPPED]: POLICY }, 'cc-api'),
+      templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
       new Set()
     );
     expect(change.changeType).toBe('NO_CHANGE');
@@ -192,7 +219,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
   it('does not narrow the DESIRED side for a cc-api record, even under the flag', async () => {
     const change = await diff(
       stateWith({ ...WRITTEN }, 'cc-api'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+      templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
       new Set([ALLOW_KEY])
     );
     expect(change.changeType).toBe('UPDATE');
@@ -201,20 +228,30 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
 
   /**
    * The MIXED bag, which a per-property reading of the allow set gets wrong:
-   * the un-allowed `EvaluationInterval` auto-routes the whole RESOURCE to Cloud
-   * Control, which forwards the full map — so the allow-listed
-   * `EvaluationWindow` reaches AWS too and must still be compared.
+   * the un-allowed `LaunchConfigurationName` auto-routes the whole RESOURCE to
+   * Cloud Control, which forwards the full map — so the allow-listed
+   * `NotificationConfiguration` reaches AWS too and must still be compared.
    */
   it('does not narrow the desired side when a SIBLING drop is un-allowed', async () => {
     const change = await diff(
-      stateWith({ ...WRITTEN }, 'sdk'),
-      templateWith({ ...WRITTEN, [DROPPED]: WINDOW, [SECOND_DROP]: 'PT5M' }),
-      new Set([ALLOW_KEY])
+      stateWith({ ...ASG_WRITTEN }, 'sdk', ASG_TYPE),
+      templateWith(
+        {
+          ...ASG_WRITTEN,
+          [ASG_DROPPED]: {
+            TopicARN: 'arn:aws:sns:us-east-1:123456789012:t',
+            NotificationTypes: ['autoscaling:EC2_INSTANCE_LAUNCH'],
+          },
+          [ASG_SIBLING]: 'lc-1',
+        },
+        ASG_TYPE
+      ),
+      new Set([`${ASG_TYPE}:${ASG_DROPPED}`])
     );
     expect(change.changeType).toBe('UPDATE');
     const paths = change.propertyChanges?.map((c) => c.path) ?? [];
-    expect(paths).toContain(DROPPED);
-    expect(paths).toContain(SECOND_DROP);
+    expect(paths).toContain(ASG_DROPPED);
+    expect(paths).toContain(ASG_SIBLING);
   });
 
   it('a change to a WRITTEN property is still reported under the flag', async () => {
@@ -222,11 +259,11 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     // is compared exactly as before.
     const change = await diff(
       stateWith({ ...WRITTEN }, 'sdk'),
-      templateWith({ ...WRITTEN, Threshold: 9, [DROPPED]: WINDOW }),
+      templateWith({ ...WRITTEN, RetentionInDays: 14, [DROPPED]: POLICY }),
       new Set([ALLOW_KEY])
     );
     expect(change.changeType).toBe('UPDATE');
-    expect(change.propertyChanges?.map((c) => c.path)).toEqual(['Threshold']);
+    expect(change.propertyChanges?.map((c) => c.path)).toEqual(['RetentionInDays']);
   });
 
   describe('the provider-narrowing WARN keeps its own population', () => {
@@ -243,7 +280,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
       warn.mockClear();
       await diff(
         stateWith({ ...WRITTEN }, 'sdk'),
-        templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+        templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
         new Set([ALLOW_KEY]),
         identity
       );
@@ -257,11 +294,11 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
       warn.mockClear();
       await diff(
         stateWith({ ...WRITTEN }, 'sdk'),
-        templateWith({ ...WRITTEN, [DROPPED]: WINDOW }),
+        templateWith({ ...WRITTEN, [DROPPED]: POLICY }),
         new Set([ALLOW_KEY]),
         (_t, p) => {
           const narrowed = { ...p };
-          delete narrowed['Namespace'];
+          delete narrowed['LogGroupClass'];
           return narrowed;
         }
       );
@@ -269,7 +306,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
       const hits = messages.filter((m) => m.includes(NARROWING_WARN));
       expect(hits).toHaveLength(1);
       // It names the PROVIDER's key and not the opted-into drop.
-      expect(hits[0]).toContain('Namespace');
+      expect(hits[0]).toContain('LogGroupClass');
       expect(hits[0]).not.toContain(DROPPED);
     });
   });
@@ -284,7 +321,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     it('keeps the allow-listed narrowing: NO_CHANGE', async () => {
       const change = await diff(
         stateWith({ ...WRITTEN, [UNKNOWN]: 'same' }, 'sdk'),
-        templateWith({ ...WRITTEN, [UNKNOWN]: 'same', [DROPPED]: WINDOW }),
+        templateWith({ ...WRITTEN, [UNKNOWN]: 'same', [DROPPED]: POLICY }),
         new Set([ALLOW_KEY])
       );
       expect(change.changeType).toBe('NO_CHANGE');
@@ -293,7 +330,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     it('a CHANGED unknown key routes, so the drop is not narrowed: UPDATE', async () => {
       const change = await diff(
         stateWith({ ...WRITTEN, [UNKNOWN]: 'same' }, 'sdk'),
-        templateWith({ ...WRITTEN, [UNKNOWN]: 'changed', [DROPPED]: WINDOW }),
+        templateWith({ ...WRITTEN, [UNKNOWN]: 'changed', [DROPPED]: POLICY }),
         new Set([ALLOW_KEY])
       );
       expect(change.changeType).toBe('UPDATE');

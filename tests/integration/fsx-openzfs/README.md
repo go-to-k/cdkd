@@ -33,8 +33,39 @@ Windows-managed-AD / multi-AZ-ONTAP integ is an optional cost-gated follow-up.
    provider (`provisionedBy=sdk`).
 2. **Update** (`CDKD_TEST_UPDATE=true`): `ThroughputCapacity` `64 -> 128`
    (`UpdateFileSystem` — a mutable `OpenZFSConfiguration` sub-property), tag
-   value change AND tag removal (`TagResource` / `UntagResource`). Asserts the
-   FileSystemId is unchanged (in-place, no replacement).
+   value change AND tag removal (`TagResource` / `UntagResource`), and
+   `OpenZFSConfiguration.Options` `DELETE_CHILD_VOLUMES_AND_SNAPSHOTS` added
+   (issue #5431: a `DeleteFileSystem` option, accepted with nothing sent to
+   AWS). Asserts the FileSystemId is unchanged (in-place, no replacement).
+2b. **Removal** (`CDKD_TEST_REMOVAL=true`, issue #1160): `StorageCapacity`
+   (64), `StorageType` (`SSD`) and `NetworkType` (`IPV4`) are dropped from the
+   template. CloudFormation keeps each of them (CFn A/B on #1160), and cdkd
+   sends no reset either. The phase asserts that the deploy succeeds, the same
+   file system is kept, the three values are unchanged, and ONE warning names
+   all three with the "as CloudFormation leaves them" wording.
+   `WeeklyMaintenanceStartTime` is added in the same deploy, so
+   `UpdateFileSystem` demonstrably fires beside the removals. `SSD` and `IPV4`
+   are AWS's defaults here: the VPC has no IPv6, and the fixture's
+   `SINGLE_AZ_1` file system is `SSD`. So the phase proves the warning and that
+   nothing is reset. It does not prove that a non-default value survives: the
+   unit suite asserts cdkd sends no field for an `HDD` or `DUAL` removal, and
+   the CFn A/B on #1160 measured those values staying.
+2c. **ThroughputCapacity removal** (`CDKD_TEST_TP_REMOVAL=true`, issue #1160):
+   `ThroughputCapacity` (128) is dropped from phase 2b's template. The CFn A/B
+   on #1160 measured CloudFormation keeping it on `MULTI_AZ_1` only, never on
+   this fixture's `SINGLE_AZ_1`. So the phase asserts that the deploy
+   succeeds, the same file system keeps 128, and the warning names the removal
+   WITHOUT claiming what CloudFormation does. It does not exercise the
+   `MULTI_AZ_1` claim, nor `ReadCacheConfiguration` (`INTELLIGENT_TIERING`
+   only) or `EndpointIpv6AddressRange` (Multi-AZ dual-stack only): those are
+   unit-tested, since this fixture is the cheapest `SINGLE_AZ_1` shape.
+2d. **Child volume** (issue #5431): create an OpenZFS volume under the root
+   volume with the CLI, outside the stack. FSx refuses to delete a file system
+   with child volumes unless `DeleteFileSystem` carries the `Options` above, so
+   the destroy below succeeds only when cdkd sends it, and the child volume
+   must be gone afterwards. The destroy's final backup (the `DeleteFileSystem`
+   default) is billed, so the run deletes every backup of the file system and
+   asserts none remains; the cleanup trap sweeps them too.
 3. **Destroy** and assert the file system + VPC are gone from AWS and the
    cdkd state file is removed. A leftover FSx file system is never acceptable
    (per-hour billing) — the cleanup trap force-deletes any file system

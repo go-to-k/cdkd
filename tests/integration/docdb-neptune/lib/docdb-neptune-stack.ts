@@ -37,14 +37,18 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * change. A real CloudFormation A/B (#5004) showed CloudFormation KEEPS the
  * live value of every one of these on removal, so verify.sh asserts the
  * baseline values are still live after the removal redeploy (cdkd must not
- * reset them to false / 1 / false / true).
+ * reset them to false / 1 / false / true). Each cluster also starts on a
+ * non-default port (DocDB 27018, Neptune 8183) that the removal drops: a real
+ * CloudFormation A/B (#1160) resets the DocDB one to 27017 and keeps the
+ * Neptune one, and verify.sh asserts both.
  *
- * Every L1 resource has `RemovalPolicy: DESTROY`. verify.sh then turns
- * DeletionProtection back ON out of band for its issue #2204 arm (a
- * `--remove-protection` destroy that fails terminally must restore it),
- * so the final destroy passes `--remove-protection`.
- * SkipFinalSnapshot on cluster delete is unconditional (set inside the
- * providers).
+ * Both clusters have `RemovalPolicy: SNAPSHOT` and every other L1 resource
+ * `RemovalPolicy: DESTROY`. verify.sh turns DeletionProtection back ON out
+ * of band for its issue #2204 arm (a `--remove-protection` destroy that fails
+ * terminally must restore it), so the final destroy passes
+ * `--remove-protection`. That destroy turns the guard off and then deletes
+ * each cluster with a final snapshot, which needs the cluster `available`
+ * again (issue #5184); verify.sh asserts both snapshots and deletes them.
  *
  * AZ + subnet layout uses `maxAzs: 2` (deterministic — DocDB / Neptune
  * subnet groups need at least 2 AZs and CDK's lookup picks the lowest
@@ -87,9 +91,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
     }).subnetIds;
 
     // ── DocDB ─────────────────────────────────────────────────────────
-    // Use L1 Cfn* directly so we can pin DeletionProtection: false and
-    // applyRemovalPolicy DESTROY explicitly without relying on CDK L2
-    // defaults. The L2 docdb.DatabaseCluster is opinionated and creates
+    // Use L1 Cfn* directly so each removal policy is explicit rather than a
+    // CDK L2 default. The L2 docdb.DatabaseCluster is opinionated and creates
     // additional resources (a SecretsManager secret, parameter groups);
     // staying at L1 keeps the integ surface focused on the provider.
     const docdbSubnetGroup = new docdb.CfnDBSubnetGroup(
@@ -114,7 +117,10 @@ export class DocdbNeptuneStack extends cdk.Stack {
       masterUsername: 'cdkdadmin',
       masterUserPassword: 'TempPass1234!',
       dbSubnetGroupName: docdbSubnetGroup.ref,
-      vpcSecurityGroupIds: [sg.securityGroupId],
+      // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
+      // KEEPS a DocDB cluster's groups on removal (real A/B), so verify.sh
+      // asserts the cluster is still on `Sg`.
+      vpcSecurityGroupIds: isRemoval ? undefined : [sg.securityGroupId],
       // #1160 / #5004 removable fields: non-default in the baseline deploy,
       // DROPPED in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts the
       // baseline values are RETAINED (CloudFormation keeps them).
@@ -125,10 +131,19 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // deploy, so verify.sh can prove the Modify call FIRED before it
       // trusts the KEEP assertions (otherwise they pass vacuously).
       preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
+      // Issue #1160: a non-default port, DROPPED in the CDKD_TEST_REMOVAL
+      // redeploy. CloudFormation resets a removed DocDB cluster Port to 27017
+      // (real A/B), so verify.sh asserts 27017 after the removal.
+      port: isRemoval ? undefined : 27018,
       storageEncrypted: true,
     });
-    docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // Issue #5184: the final destroy takes a final snapshot after the
+    // --remove-protection flip (see the file header).
+    docdbCluster.applyRemovalPolicy(cdk.RemovalPolicy.SNAPSHOT);
     docdbCluster.addDependency(docdbSubnetGroup);
+    // Issue #1160: once the removal drops the Ref, this keeps `Sg` deleted
+    // AFTER the cluster that may still hold it (DependencyViolation otherwise).
+    docdbCluster.node.addDependency(sg);
     // Issue #3866 refusal phase (verify.sh step 1b): `CopyTagsToSnapshot` is a
     // property the SDK provider does not handle, on a type Cloud Control has
     // no handlers for, so cdkd must refuse the deploy pre-flight rather than
@@ -158,7 +173,10 @@ export class DocdbNeptuneStack extends cdk.Stack {
 
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
-      vpcSecurityGroupIds: [sg.securityGroupId],
+      // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
+      // moves a Neptune cluster to the VPC's `default` security group on
+      // removal (real A/B), so verify.sh asserts exactly that.
+      vpcSecurityGroupIds: isRemoval ? undefined : [sg.securityGroupId],
       // #1160 / #5004 removable fields: non-default in the baseline deploy,
       // DROPPED in the CDKD_TEST_REMOVAL redeploy. verify.sh asserts the
       // baseline values are RETAINED (CloudFormation keeps them).
@@ -169,10 +187,18 @@ export class DocdbNeptuneStack extends cdk.Stack {
       iamAuthEnabled: isRemoval ? undefined : true,
       // Companion change (#5004): proves ModifyDBCluster fired (see DocDB).
       preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
+      // Issue #1160: a non-default port, DROPPED in the CDKD_TEST_REMOVAL
+      // redeploy. CloudFormation KEEPS a removed Neptune DBPort (real A/B), so
+      // verify.sh asserts 8183 is still live after the removal.
+      dbPort: isRemoval ? undefined : 8183,
       storageEncrypted: true,
     });
-    neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    // Issue #5184: the final destroy takes a final snapshot after the
+    // --remove-protection flip (see the file header).
+    neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.SNAPSHOT);
     neptuneCluster.addDependency(neptuneSubnetGroup);
+    // Issue #1160: see the DocDB cluster's dependency on `Sg`.
+    neptuneCluster.node.addDependency(sg);
 
     const neptuneInstance = new neptune.CfnDBInstance(this, 'NeptuneInstance', {
       dbClusterIdentifier: neptuneCluster.ref,

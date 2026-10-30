@@ -8,6 +8,7 @@ import {
   SetUserPoolMfaConfigCommand,
   GetUserPoolMfaConfigCommand,
   AddCustomAttributesCommand,
+  UntagResourceCommand,
   ResourceNotFoundException,
   type VerifiedAttributeType,
   type UsernameAttributeType,
@@ -41,15 +42,24 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
-import { describeAwsFailure, isAwsAuthoredFailure } from '../../utils/aws-failure-text.js';
+import {
+  describeAwsFailure,
+  isAwsAuthoredFailure,
+  safeStringify,
+} from '../../utils/aws-failure-text.js';
+import { markNotGone } from '../not-gone.js';
+import { planTagDiff, readTagList, tagMapAsList } from '../tag-list.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import {
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -62,7 +72,13 @@ import {
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { replayWarn, requireConfigString, type ConfigStringOptions } from '../config-shape.js';
-import { createMaskedLogSinks, maskDeep, type MaskedLogSinks } from '../masked-retry-logger.js';
+import {
+  createMaskedLogSinks,
+  maskDeep,
+  maskerOrIdentity,
+  type MaskedLogSinks,
+  type MaskerFn,
+} from '../masked-retry-logger.js';
 import {
   protectedReplacementAdvice,
   pasteableAwsCommand,
@@ -81,7 +97,12 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -322,10 +343,12 @@ function isAmbiguousWriteFailure(error: unknown): boolean {
 }
 
 export function isRefusedEcho(error: unknown): boolean {
+  // `safeStringify`: a thrown value's `name` is as arbitrary as the value, and
+  // this gates a catch's bare-write fallback (go-to-k/cdkd#3361).
   return (
     typeof error === 'object' &&
     error !== null &&
-    REFUSED_ECHO_ERRORS.has(String((error as { name?: unknown }).name))
+    REFUSED_ECHO_ERRORS.has(safeStringify((error as { name?: unknown }).name))
   );
 }
 
@@ -366,18 +389,113 @@ const STANDARD_USER_POOL_ATTRIBUTES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Which of `UsernameAttributes`, `AliasAttributes` and `UsernameConfiguration`
+ * the desired bag changes against the previous one (issue #5358).
+ * `UpdateUserPool` has no member for any of them, so a change to one can never
+ * be applied in place.
+ *
+ * The CloudFormation registry schema lists NO create-only paths for
+ * `AWS::Cognito::UserPool`, so a change to one of these is not routed to
+ * replacement; it reaches the update path. CloudFormation's own handler then
+ * REFUSES it — measured 2026-10-26 on throwaway stacks, each a change set
+ * `Modify` / `Replacement: False` ending in `UPDATE_FAILED` with
+ * "Invalid request provided: Updates are not allowed for property - <name>."
+ * for a changed `UsernameAttributes` (`[email]` -> `[phone_number]`), a
+ * changed `UsernameConfiguration.CaseSensitive`, a changed `AliasAttributes`,
+ * and the REMOVAL of `UsernameAttributes` or of `UsernameConfiguration`. cdkd
+ * refuses the same changes rather than leaving them out of the request, which
+ * deployed them "successfully" while AWS kept the create-time value.
+ */
+export function createTimeOnlyChanges(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): string[] {
+  // Literal keys, one per property, in the order the refusal names them.
+  const pairs: Array<[string, unknown, unknown, 'list' | 'object']> = [
+    [
+      'UsernameAttributes',
+      properties['UsernameAttributes'],
+      previousProperties['UsernameAttributes'],
+      'list',
+    ],
+    [
+      'AliasAttributes',
+      properties['AliasAttributes'],
+      previousProperties['AliasAttributes'],
+      'list',
+    ],
+    [
+      'UsernameConfiguration',
+      properties['UsernameConfiguration'],
+      previousProperties['UsernameConfiguration'],
+      'object',
+    ],
+  ];
+  return pairs
+    .filter(
+      ([, desired, previous, shape]) =>
+        canonicalCreateTimeOnlyValue(shape, desired) !==
+        canonicalCreateTimeOnlyValue(shape, previous)
+    )
+    .map(([name]) => name);
+}
+
+/**
+ * `bag` with each of `kept` put back to its PREVIOUS value — absent when the
+ * previous side has none — for the state-borne update arm that warns rather
+ * than refuses (issue #5358): nothing was sent for those properties, so the
+ * record must say what the pool still holds. Returns `bag` itself when
+ * nothing is kept, so `update()`'s identity check still omits
+ * `effectiveProperties` on an ordinary update.
+ */
+function withPreviousCreateTimeOnly(
+  bag: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  kept: readonly string[]
+): Record<string, unknown> {
+  if (kept.length === 0) return bag;
+  const out: Record<string, unknown> = { ...bag };
+  for (const key of kept) {
+    if (previousProperties[key] === undefined) delete out[key];
+    else out[key] = previousProperties[key];
+  }
+  return out;
+}
+
+/**
+ * Comparable form of one {@link createTimeOnlyChanges} value.
+ * Absent equals empty (`readCurrentState` emits `[]` / `{}` placeholders for
+ * an unset value, and a removal of an empty value changes nothing at AWS), the
+ * two attribute lists compare as sets, and `CaseSensitive` compares by its
+ * string spelling so a template boolean and its `"true"` / `"false"` string
+ * form are the same value.
+ */
+function canonicalCreateTimeOnlyValue(shape: 'list' | 'object', declared: unknown): string {
+  const value = declared ?? (shape === 'object' ? {} : []);
+  if (Array.isArray(value)) {
+    return JSON.stringify(value.map((v) => JSON.stringify(v)).sort());
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]): [string, unknown] => [k, typeof v === 'boolean' ? String(v) : v])
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return JSON.stringify(entries);
+  }
+  return JSON.stringify(value);
+}
+
+/**
  * Class 2 sanitize: empty `{}` placeholders that `readCurrentState` emits
  * for sub-objects whose AWS schema requires a sub-field would be rejected
  * by `UpdateUserPool` if shipped as-is. The known-rejected shapes:
  *
  * - `SmsConfiguration: {}`         — `SnsCallerArn` is required
- * - `UsernameConfiguration: {}`    — `CaseSensitive` is required (also
- *                                    immutable on update; AWS rejects any
- *                                    UsernameConfiguration on UpdateUserPool
- *                                    that differs from create-time, but a
- *                                    no-drift round-trip should never reach
- *                                    here in the first place)
  * - `UserPoolAddOns: {}`           — `AdvancedSecurityMode` is required
+ *
+ * (`UsernameConfiguration` is not on this list because `UpdateUserPool` has
+ * no such member at all: a change to it is refused before any call — see
+ * {@link createTimeOnlyChanges}.)
  *
  * The other sub-objects emitted as `{}` placeholders (LambdaConfig,
  * AdminCreateUserConfig, AccountRecoverySetting, UserAttributeUpdateSettings,
@@ -394,6 +512,57 @@ function isEmptyObjectPlaceholder(value: unknown): boolean {
     !Array.isArray(value) &&
     Object.keys(value as Record<string, unknown>).length === 0
   );
+}
+
+/**
+ * The members whose REMOVAL both `UpdateUserPool` and CloudFormation leave as
+ * a no-op (issue #1160; the measurement is at `warnOnKeptRemovedMembers`),
+ * each mapped to the value AWS reports for it when unset (`undefined` when
+ * that is an empty object, which {@link declaresMember} already skips).
+ */
+const KEPT_ON_REMOVAL_MEMBERS: Readonly<Record<string, string | undefined>> = {
+  AccountRecoverySetting: undefined,
+  SmsConfiguration: undefined,
+  UserPoolTier: 'ESSENTIALS',
+  DeletionProtection: 'INACTIVE',
+};
+
+/**
+ * Does `value` declare something for a {@link KEPT_ON_REMOVAL_MEMBERS} entry?
+ * Absent, `null`, `''`, `{}` and the member's `unset` value do not.
+ */
+function declaresMember(value: unknown, unset: string | undefined): boolean {
+  if (value === undefined || value === null || value === '') return false;
+  if (isEmptyObjectPlaceholder(value)) return false;
+  return unset === undefined || value !== unset;
+}
+
+/**
+ * Does `update()` put this {@link KEPT_ON_REMOVAL_MEMBERS} entry on the wire?
+ * The same truthiness gates the update builds `UpdateUserPool` with, so a
+ * desired `{}` that IS sent (`AccountRecoverySetting`) is not called a removal,
+ * while the `SmsConfiguration` placeholder that is skipped is.
+ */
+function sendsKeptMember(member: string, value: unknown): boolean {
+  if (!value) return false;
+  return member !== 'SmsConfiguration' || !isEmptyObjectPlaceholder(value);
+}
+
+/**
+ * The `MfaConfiguration` a previous property bag left the pool at, or `''`
+ * when it was OFF or unknown. An `EnabledMfas` factor without a declared
+ * value resolved to `OPTIONAL` (`buildMfaConfigRequest`).
+ */
+function previousMfaOn(previous: Record<string, unknown>): string {
+  const declared = previous['MfaConfiguration'];
+  if (declared === 'ON' || declared === 'OPTIONAL') return declared;
+  if (
+    (declared === undefined || declared === null || declared === '') &&
+    readEnabledMfas(previous).declaresFactor
+  ) {
+    return 'OPTIONAL';
+  }
+  return '';
 }
 
 /**
@@ -1546,11 +1715,8 @@ function narrowMfaConfiguration(properties: Record<string, unknown>): Record<str
   const sent = resolveSentMfaConfiguration(properties, declared);
   if (sent === raw) return properties;
   if (sent === undefined) {
-    // Copy-and-`delete` rather than a rest-destructure: the
-    // handled-property-wiring walk recognizes a `{ X, ...rest }` destructure as
-    // a property READ, and the repo pins that recognizer at zero real-tree
-    // instances so it can never become the only evidence for a property (see
-    // `gen-handled-property-wiring.test.ts`). Same result, no new instance.
+    // Copy-and-`delete`: drops `MfaConfiguration` from a shallow copy, leaving
+    // the caller's bag untouched.
     const withoutMfaConfiguration = { ...properties };
     delete withoutMfaConfiguration['MfaConfiguration'];
     return withoutMfaConfiguration;
@@ -1606,6 +1772,42 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     ProtectionFlipRecord,
     'definite' | 'ambiguous'
   >();
+
+  /**
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from an auxiliary call's failure
+   * ({@link markAuxiliaryFailure}), where "it" would read as the pool. A
+   * non-`Error` throw is withheld the same way, unstamped: it has no chain to
+   * read. A cdkd-authored or transport error
+   * keeps its text, masked and stamped when the mask changed it
+   * (`wrapMaskedAwsError`), as the ASG wrap does. The delete checks
+   * `ResourceNotFoundException` by type before it wraps, so no "already gone"
+   * reading depends on AWS's wording.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    const m = maskerOrIdentity(mask);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${m(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -1868,7 +2070,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
     const poolName =
       (properties['UserPoolName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 128 });
+      generatedNameFor('AWS::Cognito::UserPool', logicalId);
 
     // The shape guard for `MfaConfiguration` (issue #1925 item 2). A declared
     // `null` / `[]` / `{Ref: ...}` used to slip past the `as UserPoolMfaType`
@@ -2062,6 +2264,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
 
       const userPoolId = userPool.Id;
       createdUserPoolId = userPoolId;
+      // go-to-k/cdkd#5511: report before the replay lookup and MFA wiring.
+      reportCreatedResource(logicalId, resourceType, userPoolId);
       // Issue #4687: the SDK replayed this CreateUserPool inside its `send`, so
       // an earlier attempt may have made a pool too. Detection only, and before
       // the follow-up calls below, so a failure in one of them cannot skip it;
@@ -2130,21 +2334,39 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteUserPoolCommand({ UserPoolId: createdUserPoolId }));
+          retractCreatedResource(logicalId, resourceType, createdUserPoolId);
           this.logger.debug(`Rolled back partially-created Cognito User Pool ${createdUserPoolId}`);
         } catch (rollbackError) {
           poolLeftBehind = true;
+          // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
+          // denied DeleteUserPool names the caller's assumed-role ARN.
+          const rollbackFailure = describeAwsFailure(rollbackError);
+          if (rollbackFailure.redacted) {
+            this.logger.debug(
+              maskerOrIdentity(context?.maskSecrets)(
+                `Rollback of partially-created Cognito User Pool ${createdUserPoolId} failed: ${rollbackFailure.detail}`
+              )
+            );
+          }
           this.logger.warn(
-            `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${describeAwsFailure(rollbackError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Failed to roll back partially-created Cognito User Pool ${createdUserPoolId}: ${rollbackFailure.summary}`
+            )
           );
         }
       }
       const cause = error instanceof Error ? error : undefined;
-      const thrown = new ProvisioningError(
-        `Failed to create Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        poolName,
-        cause
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Cognito User Pool ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            poolName,
+            cause
+          )
       );
       // go-to-k/cdkd#4583: the rollback delete failed, so this pool has no state
       // record; name it for the failed-CREATE journal.
@@ -2484,6 +2706,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   `toSdkUserPoolPolicies`), so the update path ANNOUNCES the removal via
    *   `warnOnUnremovablePoliciesSubKeys` instead of resetting.
    *
+   * What CloudFormation does when the TEMPLATE removes a member (2026-10-27,
+   * issue #1160, one throwaway stack): `AccountRecoverySetting`,
+   * `SmsConfiguration`, `UserPoolTier` and `DeletionProtection` are kept
+   * (`warnOnKeptRemovedMembers`); `MfaConfiguration` with its factors goes
+   * OFF (`turnOffRemovedMfa`); a removed `UserPoolTags` key is untagged
+   * (`untagRemovedUserPoolTags`, from the type schema's tagging contract).
+   *
    * `SetUserPoolMfaConfig` — a DIFFERENT API with a DIFFERENT rule, kept in
    * its own section so neither list is read as evidence for the other:
    *
@@ -2537,11 +2766,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // reads `User: arn:aws:sts::<account>:assumed-role/<role>/<session> is
       // not authorized to perform: cognito-idp:GetUserPoolMfaConfig ...` -- so
       // a default-verbosity line would print the account id, the role name and
-      // the session name, into a warning that is persisted to the events store.
+      // the session name to the terminal (a warning is not persisted).
       // Same split as the `dynamodb-index-busy-delete` DescribeTable arm.
       this.logger.debug(
         `GetUserPoolMfaConfig failed for UserPool ${physicalId} ` +
-          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `(${error instanceof Error ? safeStringify(error.name) : typeof error}): ` +
           `${describeAwsFailure(error).detail}`
       );
       return { failed: true };
@@ -2579,7 +2808,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // nothing the deploy needs.
       this.logger.debug(
         `DescribeUserPool failed for UserPool ${physicalId} before the MFA pre-flight ` +
-          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `(${error instanceof Error ? safeStringify(error.name) : typeof error}): ` +
           `${describeAwsFailure(error).detail}`
       );
       return undefined;
@@ -2617,7 +2846,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // loses nothing the deploy needs.
       this.logger.debug(
         `GetUserPoolMfaConfig failed for UserPool ${physicalId} while choosing the call order ` +
-          `(${error instanceof Error ? error.name : typeof error}): ` +
+          `(${error instanceof Error ? safeStringify(error.name) : typeof error}): ` +
           `${describeAwsFailure(error).detail}`
       );
       return undefined;
@@ -2672,7 +2901,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.warn(
         `UserPool ${physicalId}: UpdateUserPool failed after SetUserPoolMfaConfig had already ` +
           `applied the new MFA configuration, and restoring the previous one also failed ` +
-          `(${restoreError instanceof Error ? restoreError.name : typeof restoreError}). The pool ` +
+          `(${restoreError instanceof Error ? safeStringify(restoreError.name) : typeof restoreError}). The pool ` +
           `may now carry the NEW MFA configuration with its OLD sign-in policy; re-run the deploy, ` +
           `or check it with ${aws`aws cognito-idp get-user-pool-mfa-config --user-pool-id ${physicalId}${region}`.render()}.`
       );
@@ -2804,10 +3033,82 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   }
 
   /**
+   * Announce a removed {@link KEPT_ON_REMOVAL_MEMBERS} property (issue #1160).
+   * `UpdateUserPool` keeps each one when the call omits it (issue #4066's
+   * ledger at `readLiveMfaConfiguration`), and CloudFormation keeps each one
+   * on the same template edit: MEASURED us-east-1 2026-10-27 on a throwaway
+   * stack (PLUS tier) whose update removed all four at once, beside a
+   * removed `AutoVerifiedAttributes` that DID reset (the control). Every
+   * value was unchanged right after `UPDATE_COMPLETE` and three minutes later.
+   * So cdkd sends no reset, as with `Policies`; only the silence was wrong.
+   *
+   * A previous value equal to what AWS reports for an unset member (the
+   * `readCurrentState` placeholders: `{}`, `INACTIVE`, `ESSENTIALS`) is not
+   * announced, since keeping it changes nothing.
+   */
+  private warnOnKeptRemovedMembers(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>
+  ): void {
+    for (const [member, unset] of Object.entries(KEPT_ON_REMOVAL_MEMBERS)) {
+      if (!declaresMember(previousProperties[member], unset)) continue;
+      if (sendsKeptMember(member, properties[member])) continue;
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+          safeMsg`${member}, and UpdateUserPool keeps a member it omits, so the pool keeps its ` +
+          safeMsg`current ${member}. CloudFormation keeps it on the same edit too, so cdkd sends ` +
+          safeMsg`no reset. To change it, declare ${member} with the value you want.`
+      );
+    }
+  }
+
+  /**
+   * Turn MFA off when the template stops declaring it (issue #1160).
+   *
+   * A template that drops `MfaConfiguration` and every MFA factor property
+   * sends no MFA member at all, and `UpdateUserPool` keeps `MfaConfiguration`
+   * when omitted, so the pool stayed `OPTIONAL` / `ON`. CloudFormation turns
+   * it OFF: MEASURED us-east-1 2026-10-27 on a throwaway stack whose pool went
+   * from `MfaConfiguration: OPTIONAL` + `EnabledMfas: [SMS_MFA,
+   * SOFTWARE_TOKEN_MFA]` to neither, the update read `MfaConfiguration: OFF`
+   * and no `SoftwareTokenMfaConfiguration` from `GetUserPoolMfaConfig`.
+   *
+   * Sent as `SetUserPoolMfaConfig` with `MfaConfiguration: OFF` and no factor
+   * block: the shape measured to be accepted and to leave the pool
+   * MFA-disabled (issue #1968, at `buildMfaConfigRequest`), where a factor
+   * block beside OFF is refused.
+   */
+  private async turnOffRemovedMfa(
+    logicalId: string,
+    physicalId: string,
+    previousMfaConfiguration: string
+  ): Promise<void> {
+    await this.retryOnTransientControlPlane(
+      () =>
+        this.getClient().send(
+          new SetUserPoolMfaConfigCommand({ UserPoolId: physicalId, MfaConfiguration: 'OFF' })
+        ),
+      `SetUserPoolMfaConfig(${physicalId})`
+    );
+    this.logger.warn(
+      safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+        safeMsg`MfaConfiguration or an MFA factor, so cdkd turned MFA OFF (it was ` +
+        safeMsg`${previousMfaConfiguration}), as CloudFormation does on the same edit. Declare ` +
+        safeMsg`MfaConfiguration and EnabledMfas to keep MFA on.`
+    );
+  }
+
+  /**
    * Update a Cognito User Pool
    *
-   * Note: PoolName (UserPoolName) is immutable and cannot be changed after
-   * creation. The Schema (custom attributes) is partly mutable: AWS supports
+   * `UserPoolName` is renamed in place: `UpdateUserPool` carries `PoolName`
+   * and the pool keeps its id (issue #5358, measured against CloudFormation,
+   * which renames the same way). `UsernameAttributes`, `AliasAttributes` and
+   * `UsernameConfiguration` have no `UpdateUserPool` member, so a change to
+   * one is refused before any call — see {@link createTimeOnlyChanges}.
+   * The Schema (custom attributes) is partly mutable: AWS supports
    * ADDING new custom attributes in place via AddCustomAttributes, but cannot
    * modify or remove an existing attribute — those changes require replacement
    * and are rejected with ResourceUpdateNotSupportedError.
@@ -2874,6 +3175,47 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     }
     this.warnOnBlankMfaConfiguration(properties['MfaConfiguration']);
 
+    // The create-time-only properties (issue #5358): `UpdateUserPool` has no
+    // member for them, so leaving a change out of the request deployed it
+    // "successfully" while AWS kept the create-time value. CloudFormation
+    // refuses the same change ("Updates are not allowed for property"), so
+    // cdkd refuses it too, before any call, with the typed error the deploy
+    // engine's `--replace` fallback catches. Nothing has been applied yet, so
+    // the pool AWS holds still carries the RECORDED `DeletionProtection`.
+    //
+    // The two state-borne callers WARN instead, for the same reason the MFA
+    // guard above does: the rollback executor's revert arms and `cdkd drift
+    // --revert` hand over a bag the template cannot fix, and a refusal there
+    // leaves the pool un-rollbackable. Nothing is sent for these properties
+    // either way, so the pool keeps the value the PREVIOUS side describes (on
+    // `drift --revert` that side IS the live readback), and that value is what
+    // `effectiveProperties` records below — recording the desired one would
+    // make it the next deploy's previous side, a change AWS never applied.
+    const createTimeOnly = createTimeOnlyChanges(properties, previousProperties);
+    const keptCreateTimeOnly = stateBorneDesired ? createTimeOnly : [];
+    if (createTimeOnly.length > 0) {
+      const changed = createTimeOnly.join(', ');
+      if (stateBorneDesired) {
+        this.logger.warn(
+          safeMsg`Cognito User Pool ${logicalId} (${physicalId}): ${changed} cannot be changed in place ` +
+            safeMsg`(UpdateUserPool has no such member), so the pool keeps its current value and cdkd ` +
+            safeMsg`records that value.`
+        );
+      } else {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `${changed} cannot be changed on an existing user pool — UpdateUserPool has no such ` +
+            `member, and CloudFormation refuses the same change ("Updates are not allowed for ` +
+            `property"). Nothing was applied to user pool ${physicalId}. ` +
+            this.replacementRemedy(
+              physicalId,
+              previousProperties['DeletionProtection'] === 'ACTIVE'
+            )
+        );
+      }
+    }
+
     // The pre-flight (issues #1975 / #1977), and THIS is the path it exists
     // for. Placed ahead of `readLiveMfaConfiguration` below -- a READ, not a
     // mutation, but the requirement is "before the first API call", and a
@@ -2926,6 +3268,16 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // announcement cannot be lost to an unrelated update failure, and so it is
     // adjacent to the other pre-call announcements above.
     this.warnOnUnremovablePoliciesSubKeys(physicalId, properties, previousProperties);
+    this.warnOnKeptRemovedMembers(logicalId, physicalId, properties, previousProperties);
+
+    // A template that drops `MfaConfiguration` and every factor property sends
+    // no MFA member, which leaves MFA on; CloudFormation turns it OFF (issue
+    // #1160, measured at `turnOffRemovedMfa`).
+    const removedMfa =
+      classifyDeclaredMfaConfiguration(properties['MfaConfiguration']) === 'absent' &&
+      !hasMfaConfigProps(properties)
+        ? previousMfaOn(previousProperties)
+        : '';
 
     // The call ORDER (issue #3562): `SetUserPoolMfaConfig` goes first only for
     // the one measured shape that needs it -- see
@@ -2939,6 +3291,15 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       const updateParams: UpdateUserPoolCommandInput = {
         UserPoolId: physicalId,
       };
+
+      // Issue #5358: the rename was never sent, so a changed `UserPoolName`
+      // deployed "successfully" while AWS kept the old name. A template that
+      // DROPS the property sends nothing and the pool keeps its live name —
+      // what CloudFormation does on the same edit (measured 2026-10-26: the
+      // change set reads `Modify`, the update completes, the name stays).
+      if (typeof properties['UserPoolName'] === 'string' && properties['UserPoolName'] !== '') {
+        updateParams.PoolName = properties['UserPoolName'];
+      }
 
       if (properties['Policies']) {
         const sdkPolicies = this.toSdkUserPoolPolicies(
@@ -2981,6 +3342,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           'AccountRecoverySetting'
         ] as AccountRecoverySettingType;
       }
+      // Omitting `UserPoolTags` KEEPS the pool's tags, so a removed key is
+      // untagged after the call (`untagRemovedUserPoolTags`, issue #1160).
       if (properties['UserPoolTags']) {
         updateParams.UserPoolTags = properties['UserPoolTags'] as Record<string, string>;
       }
@@ -3117,15 +3480,28 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (!mfaFirstPrior) {
         await this.applyMfaConfig(physicalId, properties, mfaConfiguration, mfaOptions);
       }
-
-      this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
-
       // Describe the user pool to get updated attributes
       const describeResponse = await this.getClient().send(
         new DescribeUserPoolCommand({ UserPoolId: physicalId })
       );
 
       const userPool = describeResponse.UserPool;
+      await this.untagRemovedUserPoolTags(
+        logicalId,
+        physicalId,
+        resourceType,
+        userPool?.Arn,
+        properties['UserPoolTags'],
+        previousProperties['UserPoolTags']
+      );
+      // LAST, after the untag: a failed untag (a role without
+      // cognito-idp:UntagResource) then fails the update with MFA still on,
+      // rather than leaving a recorded MFA the pool no longer has.
+      if (removedMfa !== '') {
+        await this.turnOffRemovedMfa(logicalId, physicalId, removedMfa);
+      }
+
+      this.logger.debug(`Successfully updated Cognito User Pool ${logicalId}`);
       const region = await this.getClient().config.region();
       // Same derivation as the create path (issue #1745) — the two must agree or
       // an update would rewrite a correct suffix into a commercial-only one.
@@ -3139,7 +3515,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // `cdkd drift --revert` and the rollback executor's revert arms, so
       // without it a `--revert` re-issued the same substitution forever while
       // the record kept describing a value AWS does not hold.
-      const effectiveProperties = narrowMfaConfiguration(properties);
+      const effectiveProperties = withPreviousCreateTimeOnly(
+        narrowMfaConfiguration(properties),
+        previousProperties,
+        keptCreateTimeOnly
+      );
 
       return {
         physicalId,
@@ -3162,14 +3542,83 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Cognito User Pool ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * Untag the `UserPoolTags` keys the previous side names and the desired side
+   * no longer does (go-to-k/cdkd#1160).
+   *
+   * `UpdateUserPool` KEEPS a pool's tags when the call omits `UserPoolTags`
+   * (measured, issue #4066; see {@link USER_POOL_KEPT_ON_OMISSION}), so a
+   * template that drops the property, or one key of it, left the tag on the
+   * pool while the deploy reported success. CloudFormation removes it: the
+   * type's schema marks `UserPoolTags` as its `tagUpdatable` tag property and
+   * grants its update handler `cognito-idp:UntagResource`. The untag is sent
+   * whether or not the update also carried `UserPoolTags`, since a key
+   * `UntagResource` does not hold is no error, and that keeps the removal
+   * independent of how `UpdateUserPool` treats a smaller map.
+   *
+   * `aws:` keys are never untagged (AWS reserves them, and the readback drops
+   * them). A desired side that is not a readable key -> value map untags
+   * nothing: `UpdateUserPool` above already sent it as declared. A previous
+   * side cdkd cannot read untags nothing and says so, and so does a recorded key cdkd cannot name.
+   */
+  private async untagRemovedUserPoolTags(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    poolArn: string | undefined,
+    desiredTags: unknown,
+    previousTags: unknown
+  ): Promise<void> {
+    if (previousTags === undefined || previousTags === null) return;
+    const desired = tagMapAsList(desiredTags ?? {});
+    if (readTagList(desired, 'desired').kind !== 'tags') return;
+    const plan = planTagDiff(tagMapAsList(previousTags), desired);
+    if (plan.recordedUnreadable) {
+      // Not the generic tag-list.ts text: UpdateUserPool applied the desired tags
+      // above, and this path only removes.
+      this.logger.warn(
+        safeMsg`The recorded UserPoolTags of ${resourceType} ${logicalId} is not a map cdkd can ` +
+          safeMsg`read, so cdkd removed no tag. Untag any key the template no longer names yourself.`
+      );
+      return;
+    }
+    if (plan.recordedHidden > 0) {
+      this.logger.warn(
+        safeMsg`The recorded UserPoolTags of ${resourceType} ${logicalId} holds ` +
+          safeMsg`${plan.recordedHidden} key(s) derived from a dynamic reference or its mask, which ` +
+          safeMsg`cdkd cannot name, so it removed none of them. Untag any such key the template no ` +
+          safeMsg`longer names yourself.`
+      );
+    }
+    const removed = plan.remove.filter((key) => !key.startsWith('aws:'));
+    if (removed.length === 0) return;
+    if (poolArn === undefined || poolArn === '') {
+      this.logger.warn(
+        safeMsg`Cognito User Pool ${logicalId} (${physicalId}): the template no longer declares ` +
+          safeMsg`${removed.length} UserPoolTags key(s), but DescribeUserPool returned no ARN to ` +
+          safeMsg`untag them with, so they stay on the pool. Remove them with ` +
+          safeMsg`aws cognito-idp untag-resource.`
+      );
+      return;
+    }
+    await this.getClient().send(
+      new UntagResourceCommand({ ResourceArn: poolArn, TagKeys: removed })
+    );
   }
 
   /**
@@ -3250,41 +3699,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       ...addedStandard.map((n) => `added standard attribute '${n}'`),
     ];
     if (immutableChanges.length > 0) {
-      const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
-      const remedy = deletionProtected
-        ? protectedReplacementAdvice({
-            evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",
-            replaceFlags,
-            disable: {
-              before: 'aws cognito-idp update-user-pool --user-pool-id',
-              identifier: physicalId,
-              after: '--deletion-protection INACTIVE',
-              // The one-liner above is not safe to paste unqualified, so the
-              // qualification rides `caveat`, which the builder renders OUTSIDE
-              // the backticks: prose inside a pasteable span is itself the
-              // defect this issue is about.
-              //
-              // What `readLiveMfaConfiguration`'s ledger supports, and no more:
-              // omission behaviour is per FIELD. `DeletionProtection` itself is
-              // measured NOT to reset (issue [#2675]), but the command below
-              // omits every other member, and `AutoVerifiedAttributes` is
-              // measured to RESET on omission -- which is why the advice to
-              // send the complete configuration stands.
-              // ONE literal, not a concatenation: `'a' + 'b'` widens to
-              // `string` in TypeScript, and `CdkdAuthoredLiteral` rejects the
-              // widened type by design. That is the cost of moving this fence
-              // from a grep to the compiler, and it is worth paying.
-              caveat:
-                'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
-            },
-          })
-        : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
       throw new ResourceUpdateNotSupportedError(
         resourceType,
         logicalId,
         `the Schema change (${immutableChanges.join('; ')}) is immutable on AWS — AWS can only ADD ` +
           `custom attributes in place, so removing or modifying an attribute requires recreating the ` +
-          `pool. ${remedy}`
+          `pool. ${this.replacementRemedy(physicalId, deletionProtected)}`
       );
     }
 
@@ -3303,6 +3723,44 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         CustomAttributes: addedCustom,
       })
     );
+  }
+
+  /**
+   * The "recreate the pool" remedy a refused in-place change carries: the
+   * replace flags, plus how to lift `DeletionProtection` first when the pool
+   * holds it ACTIVE (`deletionProtected`, decided by the caller from whichever
+   * bag describes the pool AWS holds at the moment of the refusal).
+   */
+  private replacementRemedy(physicalId: string, deletionProtected: boolean): string {
+    const replaceFlags = 'cdkd deploy --replace --force-stateful-recreation';
+    return deletionProtected
+      ? protectedReplacementAdvice({
+          evidence: "cdkd's properties for this user pool carry DeletionProtection: ACTIVE",
+          replaceFlags,
+          disable: {
+            before: 'aws cognito-idp update-user-pool --user-pool-id',
+            identifier: physicalId,
+            after: '--deletion-protection INACTIVE',
+            // The one-liner above is not safe to paste unqualified, so the
+            // qualification rides `caveat`, which the builder renders OUTSIDE
+            // the backticks: prose inside a pasteable span is itself the
+            // defect this issue is about.
+            //
+            // What `readLiveMfaConfiguration`'s ledger supports, and no more:
+            // omission behaviour is per FIELD. `DeletionProtection` itself is
+            // measured NOT to reset (issue [#2675]), but the command below
+            // omits every other member, and `AutoVerifiedAttributes` is
+            // measured to RESET on omission -- which is why the advice to
+            // send the complete configuration stands.
+            // ONE literal, not a concatenation: `'a' + 'b'` widens to
+            // `string` in TypeScript, and `CdkdAuthoredLiteral` rejects the
+            // widened type by design. That is the cost of moving this fence
+            // from a grep to the compiler, and it is worth paying.
+            caveat:
+              'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
+          },
+        })
+      : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
   }
 
   /**
@@ -3346,6 +3804,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: userPoolProtectionSite(physicalId, context?.expectedRegion),
         // A FRESH read, echoed back (#4066). The echo is ALWAYS written, even
         // when the read already says ACTIVE: a read can lag a write that
@@ -3413,6 +3872,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
               flipRecord !== undefined && this.emailOmittedFlips.get(flipRecord) === 'definite';
             await this.sendEchoedDeletionProtection(physicalId, pool, 'ACTIVE', {
               emailFallback: !readOn || emailAlreadyReset,
+              mask: maskerOrIdentity(context?.maskSecrets),
             });
           } catch (echoError) {
             let failure: unknown = echoError;
@@ -3433,8 +3893,11 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             // and the "still off" ERROR (with a bare restore command to paste)
             // would be false and harmful. Say what is known instead.
             if (readOn && !(failure instanceof ResourceNotFoundException)) {
+              const mask = maskerOrIdentity(context?.maskSecrets);
               this.logger.debug(
-                safeMsg`Writing DeletionProtection back on ${physicalId} failed: ${describeAwsFailure(failure).detail}`
+                mask(
+                  safeMsg`Writing DeletionProtection back on ${mask(physicalId)} failed: ${mask(describeAwsFailure(failure).detail)}`
+                )
               );
               return 'read-on-write-failed';
             }
@@ -3546,6 +4009,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             flip,
             logger: this.logger,
             physicalId,
+            mask: context?.maskSecrets,
             guardName: 'DeletionProtection',
             observe: async () => {
               const describeResponse = await this.getClient()
@@ -3578,7 +4042,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
                 const reason =
                   observeError === undefined
                     ? 'DescribeUserPool returned no pool'
-                    : describeAwsFailure(observeError).summary;
+                    : maskerOrIdentity(context?.maskSecrets)(
+                        describeAwsFailure(observeError).summary
+                      );
                 this.logger.warn(
                   safeMsg`Cognito User Pool ${physicalId}: DeletionProtection was left on, because ` +
                     safeMsg`the pool could not be read first (${reason}) and turning it off without ` +
@@ -3591,7 +4057,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
               this.logger.debug(
                 `Disabling DeletionProtection on Cognito User Pool ${physicalId} before deletion (--remove-protection)`
               );
-              await this.disableUserPoolDeletionProtection(physicalId, observedPool, flip);
+              await this.disableUserPoolDeletionProtection(
+                physicalId,
+                observedPool,
+                flip,
+                maskerOrIdentity(context?.maskSecrets)
+              );
             },
           });
         } catch (flipError) {
@@ -3601,8 +4072,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           // Non-fatal — log and proceed. The actual delete below will
           // surface any real authorization / state error, a missing pool
           // included (its NotFound arm below runs the region check).
+          // Masked (#5180): AWS's validation text can quote an echoed,
+          // template-authored member (USER_POOL_ECHO_MEMBERS).
           this.logger.debug(
-            `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            maskerOrIdentity(context?.maskSecrets)(
+              `Could not disable DeletionProtection for ${physicalId}: ${describeAwsFailure(flipError).detail}`
+            )
           );
         }
         if (transientReadError !== undefined) throw transientReadError;
@@ -3626,13 +4101,24 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Cognito User Pool ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Cognito User Pool ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this pool is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3649,8 +4135,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     physicalId: string,
     pool: UserPoolType,
     value: DeletionProtectionType,
-    opts: { readonly emailFallback?: boolean } = {}
+    opts: { readonly emailFallback?: boolean; readonly mask?: MaskerFn } = {}
   ): Promise<'echoed' | 'without-email'> {
+    // The class is AWS-authored text too, so the warns below mask it.
+    const mask = maskerOrIdentity(opts.mask);
     try {
       await this.getClient().send(
         new UpdateUserPoolCommand(userPoolDeletionProtectionUpdate(physicalId, pool, value))
@@ -3664,7 +4152,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Kept at debug: if the re-send fails too, the caller's warn names only
       // that second failure.
       this.logger.debug(
-        safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${describeAwsFailure(echoError).summary}`
+        safeMsg`UpdateUserPool refused the SES EmailConfiguration of ${physicalId}: ${mask(describeAwsFailure(echoError).summary)}`
       );
       try {
         await this.getClient().send(
@@ -3689,8 +4177,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         ) {
           this.logger.warn(
             safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write carrying the ` +
-              safeMsg`pool's SES EmailConfiguration (${describeAwsFailure(echoError).summary}), and the ` +
-              safeMsg`write re-sent without it answered ${describeAwsFailure(resendError).summary}. If ` +
+              safeMsg`pool's SES EmailConfiguration (${mask(describeAwsFailure(echoError).summary)}), and the ` +
+              safeMsg`write re-sent without it answered ${mask(describeAwsFailure(resendError).summary)}. If ` +
               safeMsg`that write landed, the pool's email configuration was ${resetClause}`
           );
         }
@@ -3698,7 +4186,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the write (possibly the ` +
-          safeMsg`pool's SES EmailConfiguration, ${describeAwsFailure(echoError).summary}), so ` +
+          safeMsg`pool's SES EmailConfiguration, ${mask(describeAwsFailure(echoError).summary)}), so ` +
           safeMsg`DeletionProtection was set to ${value} with the pool's other settings but without ` +
           safeMsg`that EmailConfiguration. The pool's email configuration was ${resetClause}`
       );
@@ -3725,7 +4213,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
   private async disableUserPoolDeletionProtection(
     physicalId: string,
     pool: UserPoolType,
-    flip: ProtectionFlipRecord
+    flip: ProtectionFlipRecord,
+    mask: MaskerFn
   ): Promise<void> {
     // The guard reads ACTIVE again, so an earlier attempt's bare write that
     // got no clear answer did NOT land: forget it, or a later INACTIVE read
@@ -3737,7 +4226,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // but nothing is owed back.
     const observedOn = pool.DeletionProtection === 'ACTIVE';
     try {
-      const sent = await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE');
+      const sent = await this.sendEchoedDeletionProtection(physicalId, pool, 'INACTIVE', { mask });
       if (sent === 'without-email') this.emailOmittedFlips.set(flip, 'definite');
       // An echo that CARRIED the DEVELOPER sender landed: it holds it again.
       else if (echoesDeveloperEmail(pool)) this.emailOmittedFlips.delete(flip);
@@ -3770,7 +4259,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Retried by the caller before any DeleteUserPool; no warn here.
       if (isTransientCognitoFailure(echoError)) throw echoError;
       if (!isRefusedEcho(echoError)) {
-        this.warnGuardLeftOn(physicalId, echoError);
+        this.warnGuardLeftOn(physicalId, mask, echoError);
         throw echoError;
       }
       try {
@@ -3792,14 +4281,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           if (isAmbiguousWriteFailure(bareError)) {
             this.logger.warn(
               safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool with DeletionProtection alone ` +
-                safeMsg`(the pool's own configuration was refused) answered ${describeAwsFailure(bareError).summary}; ` +
+                safeMsg`(the pool's own configuration was refused) answered ${mask(describeAwsFailure(bareError).summary)}; ` +
                 safeMsg`if that write landed, the pool's self sign-up, Lambda triggers and advanced ` +
                 safeMsg`security were reset. Retrying the delete.`
             );
           }
           throw bareError;
         }
-        this.warnGuardLeftOn(physicalId, bareError, echoError);
+        this.warnGuardLeftOn(physicalId, mask, bareError, echoError);
         throw bareError;
       }
       const kept = this.preFlipPools.get(flip);
@@ -3811,11 +4300,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         kept.echoedSince = false;
       }
       this.logger.debug(
-        safeMsg`UpdateUserPool refused the echoed configuration of ${physicalId}: ${describeAwsFailure(echoError).detail}`
+        mask(
+          safeMsg`UpdateUserPool refused the echoed configuration of ${mask(physicalId)}: ${mask(describeAwsFailure(echoError).detail)}`
+        )
       );
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the pool's own configuration ` +
-          safeMsg`echoed back (${describeAwsFailure(echoError).summary}), so DeletionProtection was ` +
+          safeMsg`echoed back (${mask(describeAwsFailure(echoError).summary)}), so DeletionProtection was ` +
           safeMsg`turned off alone. That write resets the settings it omits -- self sign-up, Lambda ` +
           safeMsg`triggers and advanced security among them -- which stays that way if the delete fails.`
       );
@@ -3832,28 +4323,40 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * guard may be OFF with the pool's settings intact; the line says so rather
    * than claiming the guard is on.
    */
-  private warnGuardLeftOn(physicalId: string, error: unknown, echoError?: unknown): void {
+  private warnGuardLeftOn(
+    physicalId: string,
+    mask: MaskerFn,
+    error: unknown,
+    echoError?: unknown
+  ): void {
     const name =
-      typeof error === 'object' && error !== null ? String((error as { name?: unknown }).name) : '';
+      typeof error === 'object' && error !== null
+        ? safeStringify((error as { name?: unknown }).name)
+        : '';
     const accessHint = /AccessDenied|NotAuthorized|Unauthorized/.test(name)
       ? ' The caller needs cognito-idp:UpdateUserPool.'
       : '';
     const echoClause =
       echoError === undefined
         ? ''
-        : safeMsg`; the pool's own settings sent back were refused first (${describeAwsFailure(echoError).summary})`;
+        : safeMsg`; the pool's own settings sent back were refused first (${mask(describeAwsFailure(echoError).summary)})`;
+    // Masked (#5180): AWS's text can quote an echoed template-authored member.
     this.logger.debug(
-      safeMsg`UpdateUserPool did not turn DeletionProtection off on ${physicalId}: ${describeAwsFailure(error).detail}`
+      mask(
+        safeMsg`UpdateUserPool did not turn DeletionProtection off on ${mask(physicalId)}: ${mask(describeAwsFailure(error).detail)}`
+      )
     );
     const refused = error instanceof Error && isAwsAuthoredFailure(error);
     this.logger.warn(
       refused
         ? safeMsg`Cognito User Pool ${physicalId}: DeletionProtection was left on, because UpdateUserPool ` +
-            safeMsg`refused to turn it off (${describeAwsFailure(error).summary})` +
+            safeMsg`refused to turn it off (${mask(describeAwsFailure(error).summary)})` +
             echoClause +
             safeMsg`. The delete will be refused while it is on.${accessHint}`
         : safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool failed without an answer from AWS ` +
-            safeMsg`(${describeAwsFailure(error).summary})` +
+            // Masked: for a failure AWS did not author, the summary IS its raw
+            // message, which can quote a resolved value.
+            safeMsg`(${mask(describeAwsFailure(error).summary)})` +
             echoClause +
             (echoError === undefined
               ? typeof error === 'object' && error !== null && sentWithoutEmail.has(error)
@@ -3904,9 +4407,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     const pool = resp.UserPool;
     if (!pool) return undefined;
 
-    // Cognito UserPool is mutated via UpdateUserPool which accepts every
-    // field below (except UserPoolName, Schema which are immutable on
-    // create). Always emit user-controllable top-level keys with
+    // Cognito UserPool is mutated via UpdateUserPool, which accepts most
+    // fields below; Schema only grows (AddCustomAttributes), and
+    // UsernameAttributes / AliasAttributes / UsernameConfiguration have no
+    // UpdateUserPool member (see `createTimeOnlyChanges`). Always emit user-controllable top-level keys with
     // placeholders so a console-side ADD on a property the pool wasn't
     // templated with at deploy time surfaces as drift.
     const result: Record<string, unknown> = {};

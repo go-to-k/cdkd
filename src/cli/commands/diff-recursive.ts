@@ -1,3 +1,15 @@
+import { hasPendingMovesOut, pendingMovesRefusalMessage } from '../../state/pending-moves.js';
+import {
+  hintSidesOf,
+  movedToHint,
+  rollbackOrphanIds,
+  type MovedTo,
+  type RefactorSides,
+} from '../../analyzer/refactor-hints.js';
+import {
+  readRefactorMarkerOnce,
+  refactorMarkerRefusalMessage,
+} from '../../state/refactor-marker.js';
 import { stripControlChars, stripForDisplay } from '../../utils/regexp.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { displayIdent, displayStackName, safeMsg } from '../../utils/display-safe.js';
@@ -311,6 +323,18 @@ export interface DiffTreeNode {
    * template inspection).
    */
   ccApiRoutes: Map<string, string[]>;
+  /**
+   * DELETE rows a `cdkd refactor` would keep, and where each reappears
+   * (go-to-k/cdkd#5203). Set by `cdkd diff` on the stacks it selected, once
+   * every tree is built; absent elsewhere.
+   */
+  refactorHints?: ReadonlyMap<string, MovedTo>;
+  /**
+   * This stack's rows a `cdkd refactor` could pair (go-to-k/cdkd#5203), set
+   * only where that command would plan the stack: a top-level stack with a
+   * cdkd record and nothing `blocking`, rollback-orphan ids left out.
+   */
+  refactorSides?: RefactorSides;
   /**
    * Per-key changes to this node's persisted `Outputs` bag (issue #1921).
    *
@@ -663,8 +687,19 @@ async function loadStateOrEmpty(
   unreadable: string[];
   unreadableContainers: UnreadableContainer[];
   deployRefusals: string[];
+  /** Whether a record was read (false: the stack has no cdkd state yet). */
+  found: boolean;
 }> {
+  const refactorMarker = readRefactorMarkerOnce(stateBackend);
   const result = await stateBackend.getState(stackName, region);
+  // The refactor marker (go-to-k/cdkd#5212) refuses a deploy of a stack an
+  // unfinished move involves, record or not, so the preview says so too.
+  const markerRefusal = refactorMarkerRefusalMessage(
+    await refactorMarker,
+    stackName,
+    region,
+    'cdkd deploy'
+  );
   if (result) {
     // What the repairs below take OUT of the record, returned beside it so the
     // node can report it (see `DiffTreeNode.unreadable`): the dropped entries'
@@ -781,6 +816,14 @@ async function loadStateOrEmpty(
       // `refuseMalformedOrphans` refuses the deploy over it (go-to-k/cdkd#3512).
       deployRefusals.push(DEPLOY_REFUSES_ORPHANS_CONTAINER_REASON);
     }
+    // An unfinished `cdkd refactor` move out of this stack (go-to-k/cdkd#5212):
+    // `refusePendingMovesOut` refuses the deploy, so the preview says so.
+    if (hasPendingMovesOut(result.state)) {
+      deployRefusals.push(
+        pendingMovesRefusalMessage(result.state, stackName, region, 'cdkd deploy')
+      );
+    }
+    if (markerRefusal !== undefined) deployRefusals.push(markerRefusal);
     // The `exportNames` FIELD, said out loud (go-to-k/cdkd#3192 review). The
     // predicate fails closed wherever it is read, which is right — it serves
     // five commands and holds no stack identity — but a LOUD wrong answer
@@ -804,9 +847,16 @@ async function loadStateOrEmpty(
     if (isReadableBag(result.state.outputs) && !hasReadableExportSet(result.state)) {
       logger.warn(malformedExportNamesWarning(stackName, region, refusalRecovery));
     }
-    return { state: result.state, unreadable, unreadableContainers, deployRefusals };
+    return {
+      state: result.state,
+      unreadable,
+      unreadableContainers,
+      deployRefusals,
+      found: true,
+    };
   }
   return {
+    found: false,
     state: {
       stackName,
       region,
@@ -817,7 +867,7 @@ async function loadStateOrEmpty(
     },
     unreadable: [],
     unreadableContainers: [],
-    deployRefusals: [],
+    deployRefusals: markerRefusal === undefined ? [] : [markerRefusal],
   };
 }
 
@@ -3606,7 +3656,7 @@ export async function buildDiffTree(args: {
   } = args;
   const unboundHealer = attributeHealerFor?.(stackName, region);
 
-  const { state, unreadable, unreadableContainers, deployRefusals } = await loadStateOrEmpty(
+  const { state, unreadable, unreadableContainers, deployRefusals, found } = await loadStateOrEmpty(
     stackName,
     region,
     stateBackend,
@@ -3739,6 +3789,9 @@ export async function buildDiffTree(args: {
     ),
     children: [],
   };
+  if (found && !isNestedChild && node.blocking.length === 0) {
+    node.refactorSides = hintSidesOf(changes.values(), rollbackOrphanIds(state.orphans));
+  }
   if (!recursive) return node;
 
   // Template-present children, in template order (CREATE / UPDATE / present).
@@ -4347,6 +4400,8 @@ export interface DiffChangeJson {
    * `[via CC API: <prop list>]` annotation).
    */
   ccApi?: string[];
+  /** A DELETE a `cdkd refactor` would keep: where the resource reappears (go-to-k/cdkd#5203). */
+  movedTo?: MovedTo;
 }
 
 /** Serializable Outputs change record for `--json` (issue #1921). */
@@ -4464,6 +4519,7 @@ export interface DestructiveChangeJson {
   resourceType: string;
   constructPath?: string;
   impact: DestructiveImpact;
+  movedTo?: MovedTo;
 }
 
 /**
@@ -4477,6 +4533,8 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
   for (const change of node.changes.values()) {
     if (change.changeType === 'NO_CHANGE') continue;
     const ccApi = node.ccApiRoutes.get(change.logicalId);
+    const movedTo =
+      change.changeType === 'DELETE' ? node.refactorHints?.get(change.logicalId) : undefined;
     changes.push({
       logicalId: change.logicalId,
       changeType: change.changeType,
@@ -4488,6 +4546,7 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
         ? { attributeChanges: change.attributeChanges }
         : {}),
       ...(ccApi && ccApi.length > 0 ? { ccApi } : {}),
+      ...(movedTo !== undefined && { movedTo }),
     });
   }
   return {
@@ -4520,11 +4579,12 @@ export function diffTreeToJson(node: DiffTreeNode): DiffNodeJson {
     unreadableContainers: node.unreadableContainers,
     unreadableOrphans: node.unreadableOrphans,
     destructiveChanges: node.destructiveChanges.map(
-      ({ logicalId, resourceType, constructPath, impact }) => ({
+      ({ logicalId, resourceType, constructPath, impact, movedTo }) => ({
         logicalId,
         resourceType,
         ...(constructPath !== undefined && { constructPath }),
         impact,
+        ...(movedTo !== undefined && { movedTo }),
       })
     ),
     children: node.children.map(diffTreeToJson),
@@ -4675,7 +4735,8 @@ export function renderChangeLines(
   changes: Map<string, ResourceChange>,
   logFn: (msg: string) => void,
   ccApiRoutes?: Map<string, string[]>,
-  adoptedOrphans?: readonly string[]
+  adoptedOrphans?: readonly string[],
+  refactorHints?: ReadonlyMap<string, MovedTo>
 ): { create: number; update: number; delete: number } {
   let createCount = 0;
   let updateCount = 0;
@@ -4756,7 +4817,9 @@ export function renderChangeLines(
                   ? ' [attribute propagated]'
                   : propChange.maskedExpressionChanged === true
                     ? ' [masked input or expression changed]'
-                    : '';
+                    : propChange.unsettled === true
+                      ? ' [unsettled after a failed update; sent again]'
+                      : '';
             const indent = '              ';
             const [oldFiltered, newFiltered] = stripUnchangedValuePair(
               propChange.oldValue,
@@ -4780,7 +4843,13 @@ export function renderChangeLines(
       }
       case 'DELETE':
         deleteCount++;
-        logFn(`  [-] ${logicalId} (${change.resourceType})`);
+        {
+          const movedTo = refactorHints?.get(logicalId);
+          logFn(
+            `  [-] ${logicalId} (${change.resourceType})` +
+              (movedTo !== undefined ? movedToHint(movedTo) : '')
+          );
+        }
         break;
     }
   }
@@ -4955,7 +5024,13 @@ export function renderDiffTree(
       create,
       update,
       delete: del,
-    } = renderChangeLines(node.changes, logFn, node.ccApiRoutes, node.adoptedOrphans);
+    } = renderChangeLines(
+      node.changes,
+      logFn,
+      node.ccApiRoutes,
+      node.adoptedOrphans,
+      node.refactorHints
+    );
     const outputs = renderOutputChangeLines(node.outputChanges, logFn);
     logFn(`\n${create} to create, ${update} to update, ${del} to delete`);
     // A SECOND summary line rather than extra terms on the first: the resource

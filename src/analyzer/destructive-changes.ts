@@ -1,6 +1,7 @@
 import type { CloudFormationTemplate } from '../types/resource.js';
 import { shouldRetainResource, type ResourceChange, type ResourceState } from '../types/state.js';
 import { displayIdent, displaySafe } from '../utils/display-safe.js';
+import { movedToHint, type MovedTo } from './refactor-hints.js';
 
 /**
  * What a destructive change does to the existing physical resource. The same
@@ -20,6 +21,8 @@ export interface DestructiveChange {
   /** The template's `aws:cdk:path` metadata, when the template still declares the resource. */
   constructPath?: string;
   impact: DestructiveImpact;
+  /** A removal a `cdkd refactor` would keep: where the resource reappears (go-to-k/cdkd#5203). */
+  movedTo?: MovedTo;
 }
 
 /** Not a physical resource, so removing or replacing it destroys nothing. */
@@ -149,7 +152,8 @@ export function formatDestructiveChange(change: DestructiveChange): string {
     change.constructPath !== undefined ? `${displaySafe(displayPath(change.constructPath))} ` : '';
   return (
     `${displayIdent(change.stackName)}: ${displaySafe(change.resourceType)} ${path}` +
-    `${displayIdent(change.logicalId)} ${describeDestructiveImpact(change.impact)}`
+    `${displayIdent(change.logicalId)} ${describeDestructiveImpact(change.impact)}` +
+    (change.movedTo !== undefined ? movedToHint(change.movedTo) : '')
   );
 }
 

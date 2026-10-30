@@ -435,7 +435,7 @@ describe('CognitoUserPoolProvider', () => {
       ).rejects.toThrow(/Schema attribute with no Name/);
     });
 
-    it('should not pass PoolName in update params (PoolName is immutable)', async () => {
+    it('should send a renamed UserPoolName as PoolName (issue #5358)', async () => {
       // UpdateUserPool
       mockSend.mockResolvedValueOnce({});
       // DescribeUserPool
@@ -460,8 +460,8 @@ describe('CognitoUserPoolProvider', () => {
       );
 
       const updateCall = mockSend.mock.calls[0][0];
-      // PoolName should NOT be in the update params since it's immutable
-      expect(updateCall.input.PoolName).toBeUndefined();
+      // UpdateUserPool renames in place (CloudFormation does the same).
+      expect(updateCall.input.PoolName).toBe('new-pool-name');
     });
   });
 
@@ -1937,6 +1937,32 @@ describe('CognitoUserPoolProvider', () => {
         expect(warned).not.toContain('live value was');
       });
 
+      // go-to-k/cdkd#3361: the read's debug line put the failure's `name` in a
+      // bare template, so an unconvertible one threw past the fail-open
+      // `{ failed: true }` this arm reports.
+      it('still reports the OFF when the unreadable live value failed with a name that cannot be converted', async () => {
+        const denied = new Error('not authorized to perform: cognito-idp:GetUserPoolMfaConfig');
+        void denied.stack; // V8 formats the stack lazily from `name`.
+        Object.defineProperty(denied, 'name', { value: Object.create(null) });
+        mockSend.mockRejectedValueOnce(denied); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:quiet-path' } }); // Describe
+
+        await provider.update(
+          'MyUserPool',
+          'us-east-1_abc123',
+          'AWS::Cognito::UserPool',
+          { MfaConfiguration: [], WebAuthnRelyingPartyID: 'auth.example.com' },
+          {},
+          { desiredFromAwsReadback: true }
+        );
+
+        expect(mockSend.mock.calls[2][0].input.MfaConfiguration).toBe('OFF');
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain('could not be read');
+      });
+
       // The same arm for a genuinely ABSENT declaration: still reported, since
       // the OFF is real either way, but it must not claim a value was declared.
       it('reports the OFF for an absent declaration with an unreadable live value', async () => {
@@ -2832,6 +2858,23 @@ describe('CognitoUserPoolProvider', () => {
         ]);
       });
 
+      // go-to-k/cdkd#3361: the same bare `name` template on the call-order read.
+      it('keeps the usual order when the order read fails with a name that cannot be converted', async () => {
+        const denied = new Error('not authorized');
+        void denied.stack; // V8 formats the stack lazily from `name`.
+        Object.defineProperty(denied, 'name', { value: Object.create(null) });
+        mockSend.mockRejectedValueOnce(denied);
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:read-failed' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {});
+
+        expect(names().slice(1, 3)).toEqual(['UpdateUserPoolCommand', 'SetUserPoolMfaConfigCommand']);
+        const debugged = childLogger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(debugged).toContain('while choosing the call order (a value that could not be converted to text)');
+      });
+
       it('keeps the usual order when the order read fails, saying so at debug only', async () => {
         mockSend.mockRejectedValueOnce(
           Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized'), {
@@ -2910,6 +2953,30 @@ describe('CognitoUserPoolProvider', () => {
         expect(warned).toContain('restoring the previous one also failed (AccessDeniedException)');
         expect(warned).toContain('may now carry the NEW MFA configuration with its OLD sign-in policy');
         expect(warned).not.toContain('123456789012');
+      });
+
+      // go-to-k/cdkd#3361: the warn put the restore failure's `name` in a bare
+      // template, so a `name` `String()` cannot convert threw a TypeError that
+      // replaced both this warn and the UpdateUserPool failure it reports.
+      it('still warns, and surfaces the original error, when the restore failure name cannot be converted', async () => {
+        mockSend.mockResolvedValueOnce(liveOnSingle); // GetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig (first)
+        mockSend.mockRejectedValueOnce(
+          Object.assign(new Error('bad EmailVerificationSubject'), { name: 'InvalidParameterException' })
+        ); // UpdateUserPool
+        const restoreError = new Error('restore refused');
+        Object.defineProperty(restoreError, 'name', { value: Object.create(null) });
+        mockSend.mockRejectedValueOnce(restoreError); // SetUserPoolMfaConfig (restore)
+
+        const error = await rejectionOf(
+          provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', addWebAuthnMulti, {})
+        );
+
+        expect(error.message).toContain('bad EmailVerificationSubject');
+        const warned = childLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain(
+          'restoring the previous one also failed (a value that could not be converted to text)'
+        );
       });
 
       // Issue #3136: the pool id is the `state.json`-borne physical id, so the
@@ -3156,6 +3223,23 @@ describe('CognitoUserPoolProvider', () => {
       // FAILS OPEN: an unreadable pool is judged on the template alone (the
       // pre-#2051 behavior), reported at debug without the AWS message's
       // account / role text reaching a warning.
+      // go-to-k/cdkd#3361: the same bare `name` template on the pre-flight read.
+      it('proceeds when the live read fails with a name that cannot be converted', async () => {
+        const denied = new Error('not authorized');
+        void denied.stack; // V8 formats the stack lazily from `name`.
+        Object.defineProperty(denied, 'name', { value: Object.create(null) });
+        mockSend.mockRejectedValueOnce(denied); // pre-flight read
+        mockSend.mockResolvedValueOnce({}); // UpdateUserPool
+        mockSend.mockResolvedValueOnce({}); // SetUserPoolMfaConfig
+        mockSend.mockResolvedValueOnce({ UserPool: { Arn: 'arn:read-failed' } }); // DescribeUserPool
+
+        await provider.update('MyUserPool', 'us-east-1_abc123', 'AWS::Cognito::UserPool', onWithFactor, {});
+
+        expect(mockSend.mock.calls[1][0].constructor.name).toBe('UpdateUserPoolCommand');
+        const debugged = childLogger.debug.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(debugged).toContain('before the MFA pre-flight (a value that could not be converted to text)');
+      });
+
       it('proceeds when the live read fails, saying so at debug only', async () => {
         const denied = Object.assign(new Error('User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized'), {
           name: 'AccessDeniedException',

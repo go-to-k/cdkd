@@ -146,7 +146,9 @@ async function publishAssetsCommand(
   if (options.all) {
     targetStacks = allStacks;
   } else if (stackPatterns.length > 0) {
-    targetStacks = matchStacks(allStacks, stackPatterns);
+    // Every selected stack: two sharing a physical name in two regions each
+    // need their assets in their own region (#5176).
+    targetStacks = matchStacks(allStacks, stackPatterns, { dedupe: 'identity' });
   } else if (allStacks.length === 1) {
     targetStacks = allStacks;
   } else {

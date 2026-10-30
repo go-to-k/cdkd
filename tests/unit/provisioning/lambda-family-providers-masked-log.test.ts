@@ -162,6 +162,9 @@ function expectRedactedFailure(error: Error, raw: Error, secret: string, masked 
   expect(debugged).not.toContain(secret);
 }
 
+/** Every debug line the provider wrote, joined. */
+const debugText = (): string => debugSpy.mock.calls.map((args) => String(args[0])).join('\n');
+
 /** A pass-through masker that records every text it is handed. */
 function spyMasker(): { mask: (text: string) => string; seen: () => string[] } {
   const calls: string[] = [];
@@ -429,7 +432,7 @@ describe('LambdaLayerVersionProvider masked log sinks (issue #2177)', () => {
         { maskSecrets: createSecretMasker(bagOf(layerArn)) }
       )
     );
-    expectMaskedFailure(error, raw, 'secret-layer-name');
+    expectRedactedFailure(error, raw, 'secret-layer-name');
   });
 
   it('routes the create path lines through the masker', async () => {
@@ -460,7 +463,7 @@ describe('LambdaLayerVersionProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, LONG);
+    expectRedactedFailure(error, raw, LONG);
   });
 });
 
@@ -483,7 +486,10 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
       new LambdaPermissionProvider().create('Perm', type, props(TINY), { maskSecrets })
     );
     expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
+    // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+    expect(error.message).toContain(VERBOSE_POINTER);
+    expect(debugText()).toContain('function:***');
+    expect(debugText()).not.toContain(`function:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -497,7 +503,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     const error = await thrown(
       new LambdaPermissionProvider().create('Perm', type, props(ARN_SECRET), { maskSecrets })
     );
-    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+    expectRedactedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks a rotated recorded function on update and forwards the masker to the re-add', async () => {
@@ -522,7 +528,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
     expect(transcript()).not.toContain(ROTATED);
     expect(transcript()).toContain('***');
     // The re-adding create() masks with the forwarded masker.
-    expectMaskedFailure(error, raw, LONG);
+    expectRedactedFailure(error, raw, LONG);
   });
 
   it('masks a short secret desired FunctionName the remove falls back to when none was recorded', async () => {
@@ -538,7 +544,10 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
       })
     );
     expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
+    // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+    expect(error.message).toContain(VERBOSE_POINTER);
+    expect(debugText()).toContain('function:***');
+    expect(debugText()).not.toContain(`function:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -559,7 +568,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 
   it('routes the create and update path lines through the masker', async () => {
@@ -601,7 +610,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 
   it('masks a short secret PREVIOUS FunctionName the remove targets under an SDK-written id', async () => {
@@ -617,7 +626,10 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
       })
     );
     expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
+    // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+    expect(error.message).toContain(VERBOSE_POINTER);
+    expect(debugText()).toContain('function:***');
+    expect(debugText()).not.toContain(`function:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -638,7 +650,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+    expectRedactedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks a rotated recorded function AWS quotes back when the remove fails', async () => {
@@ -660,7 +672,7 @@ describe('LambdaPermissionProvider masked log sinks (issue #2177)', () => {
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 });
 
@@ -695,7 +707,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, LONG);
+    expectRedactedFailure(error, raw, LONG);
   });
 
   it('masks the bare name of a whole-ARN secret AWS quotes back on a create failure', async () => {
@@ -713,7 +725,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ARN_SECRET_NAME);
+    expectRedactedFailure(error, raw, ARN_SECRET_NAME);
   });
 
   it('masks the function ARNs the re-spelling refusal quotes, and keeps it non-retryable', async () => {
@@ -764,7 +776,10 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     );
     expect(error.message).toContain('could not resolve its FunctionName');
     expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('***');
+    // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+    expect(error.message).toContain(VERBOSE_POINTER);
+    expect(debugText()).toContain('***');
+    expect(debugText()).not.toContain(`function:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
     expect((error as { cause?: unknown }).cause).toBe(raw);
   });
@@ -802,7 +817,10 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
       )
     );
     expect(error.message).not.toContain(`function:${TINY}`);
-    expect(error.message).toContain('function:***');
+    // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+    expect(error.message).toContain(VERBOSE_POINTER);
+    expect(debugText()).toContain('function:***');
+    expect(debugText()).not.toContain(`function:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -837,7 +855,10 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
       )
     );
     expect(error.message).not.toContain(`:${TINY}`);
-    expect(error.message).toContain(':***');
+    // go-to-k/cdkd#2319: the message names the class; AWS's text reaches debug, masked.
+    expect(error.message).toContain(VERBOSE_POINTER);
+    expect(debugText()).toContain(':***');
+    expect(debugText()).not.toContain(`:${TINY}`);
     expect(hasRedactedCause(error)).toBe(true);
   });
 
@@ -858,7 +879,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 
   it('routes the create path lines and warnings through the masker', async () => {
@@ -954,7 +975,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
         { maskSecrets }
       )
     );
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
 
     const createRaw = awsAuthored('ResourceNotFoundException', `Function not found: ${ARN_SECRET_NAME}`);
     fakeLambda({
@@ -970,7 +991,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
         { maskSecrets: qualifiedMask }
       )
     );
-    expectMaskedFailure(createError, createRaw, ARN_SECRET_NAME);
+    expectRedactedFailure(createError, createRaw, ARN_SECRET_NAME);
   });
 
   it('masks a rotated recorded function on the update line and failure', async () => {
@@ -994,7 +1015,7 @@ describe('LambdaEventInvokeConfigProvider masked log sinks (issue #2177)', () =>
     expect(transcript()).toContain('Updating Lambda EventInvokeConfig Eic');
     expect(transcript()).not.toContain(ROTATED);
     expect(transcript()).toContain('***');
-    expectMaskedFailure(error, raw, ROTATED);
+    expectRedactedFailure(error, raw, ROTATED);
   });
 });
 

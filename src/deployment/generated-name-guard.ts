@@ -56,7 +56,11 @@ import {
   probeFoundSameId,
   replacementCreateAdoptsName,
 } from './replacement-name-holder.js';
-import { explicitNamePropertyFor, withSkipPrefix } from '../provisioning/resource-name.js';
+import {
+  explicitNamePropertyFor,
+  withNameGeneration,
+  withSkipPrefix,
+} from '../provisioning/resource-name.js';
 import { isAccessDeniedError, lookupEachName } from '../provisioning/name-lookup.js';
 import {
   ledgerAbandonedAt,
@@ -165,6 +169,22 @@ export interface GeneratedNameGuardInput {
   timing?: Partial<GuardTiming>;
   /** Where a non-fatal note goes (the deploy's logger). */
   warn?(message: string): void;
+  /**
+   * go-to-k/cdkd#5064: the stack has a `stackInstanceId`. What left the stack
+   * (a rollback's orphans, `retained.json`, what history shows it kept) is
+   * then never taken back implicitly, so none of it licenses a holder; only
+   * this stack's live records, its journal and its ledger do.
+   */
+  newScheme?: boolean;
+  /**
+   * go-to-k/cdkd#5064 phase 2: for a planned UPDATE that replaces its
+   * resource on a stack with an instance id, the name generation the new
+   * resource is created at (`nextNameGeneration`); `undefined` for any other
+   * change. Such a replacement creates under a NEW generated name, so it is
+   * checked like a create: looked up now, its intent recorded, and a crash
+   * re-run's own resource licensed by the ledger.
+   */
+  replacementGeneration?(change: ResourceChange): number | undefined;
 }
 
 /** The guard's clocks and waits. */
@@ -308,7 +328,9 @@ export class GeneratedNameGuard {
   static start(input: GeneratedNameGuardInput): GeneratedNameGuard | undefined {
     const candidates: Candidate[] = [];
     for (const change of input.changes) {
-      if (change.changeType !== 'CREATE') continue;
+      const generation =
+        change.changeType === 'UPDATE' ? input.replacementGeneration?.(change) : undefined;
+      if (change.changeType !== 'CREATE' && generation === undefined) continue;
       const properties = (change.desiredProperties ?? {}) as Record<string, unknown>;
       let decision: { provider: ResourceProvider; provisionedBy: ProvisionedBy };
       let name: string | undefined;
@@ -318,11 +340,16 @@ export class GeneratedNameGuard {
         if (!replacementCreateAdoptsName(change.resourceType, decision.provisionedBy)) continue;
         // A malformed or unresolved name property is the create's problem to
         // report, never a crash of the whole deploy here.
-        name = decision.provider.generatedCreateName?.(
-          change.resourceType,
-          change.logicalId,
-          properties
-        );
+        const derive = (): string | undefined =>
+          decision.provider.generatedCreateName?.(
+            change.resourceType,
+            change.logicalId,
+            properties
+          );
+        name =
+          generation === undefined
+            ? derive()
+            : withNameGeneration({ logicalId: change.logicalId, generation }, derive);
         deferred =
           decision.provider.lookupNeedsResolvedProperties?.(change.resourceType, properties) ===
           true;
@@ -775,6 +802,7 @@ export class GeneratedNameGuard {
     // one included), and only for the names nothing else licenses.
     if (
       unlicensed.length > 0 &&
+      input.newScheme !== true &&
       input.loadKeptInHistory !== undefined &&
       evidence !== undefined &&
       !('error' in evidence) &&
@@ -1025,13 +1053,19 @@ interface Evidence {
 }
 
 async function loadEvidence(input: GeneratedNameGuardInput): Promise<Evidence> {
-  const [journal, retained] = await Promise.all([input.loadJournal(), input.loadRetained()]);
+  // go-to-k/cdkd#5064: on a stack with an instance id what left the stack
+  // licenses nothing, so `retained.json` is not read for it.
+  const kept = input.newScheme !== true;
+  const [journal, retained] = await Promise.all([
+    input.loadJournal(),
+    kept ? input.loadRetained() : Promise.resolve([]),
+  ]);
   const sources: Array<{ via: LicenseSource; type: string; id: string; keptAt?: number }> = [];
   for (const record of Object.values(input.records)) {
     if (typeof record?.physicalId === 'string')
       sources.push({ via: 'record', type: record.resourceType, id: record.physicalId });
   }
-  for (const orphan of input.orphans ?? []) {
+  for (const orphan of kept ? (input.orphans ?? []) : []) {
     const s = orphan.state;
     if (typeof s?.physicalId === 'string')
       sources.push({ via: 'orphan', type: s.resourceType, id: s.physicalId });

@@ -38,6 +38,8 @@ import { describeTypeWithThrottleRetry, hasNoRegistrySchema } from './describe-t
 import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
+import { parseJsonNamingNoBody } from '../utils/json-parse-failure.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * Per-type cache of SUCCESSFUL lookups only. The value is the in-flight (or
@@ -170,7 +172,7 @@ async function fetchTopLevelWriteOnlyProperties(
   // carries no writeOnlyProperties to extract; treat it as "none" without a
   // warning — it is a successful, cacheable lookup, not a failure.
   if (response.Schema) {
-    const parsed = JSON.parse(response.Schema) as {
+    const parsed = parseRegistrySchema(resourceType, response.Schema) as {
       writeOnlyProperties?: unknown;
       createOnlyProperties?: unknown;
     };
@@ -269,4 +271,17 @@ function pathCovers(prefix: readonly string[], path: readonly string[]): boolean
  */
 function unescapeJsonPointerSegment(segment: string): string {
   return segment.replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+/**
+ * `JSON.parse` of a DescribeType `Schema`, whose failure names only its offset
+ * and size (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)): the
+ * caller's warning interpolates the thrown message.
+ */
+function parseRegistrySchema(resourceType: string, schema: string): unknown {
+  return parseJsonNamingNoBody(schema, 'the DescribeType schema', (line) =>
+    getLogger()
+      .child('WriteOnlyProperties')
+      .debug(safeMsg`${resourceType}: ${line}`)
+  );
 }

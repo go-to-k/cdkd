@@ -109,17 +109,80 @@ export async function loadKeptInHistory(
   stackName: string,
   region: string
 ): Promise<KeptInHistory[]> {
-  const runsOf = stackName.split('~')[0]!;
   const [records, runs] = await Promise.all([
     sources.earlierStateResources(stackName, region).catch(() => []),
-    (async () => {
-      const listed = (await sources.listRuns(runsOf, region)).slice(0, 20);
-      const read = await Promise.all(
-        listed.map((r) => sources.readRunEvents(runsOf, region, r.runId).catch(() => null))
-      );
-      // `listRuns` is newest first.
-      return read.filter((e): e is DeploymentEvent[] => e !== null).reverse();
-    })().catch(() => [] as DeploymentEvent[][]),
+    readRecentRuns(sources, stackName, region),
   ]);
   return [...keptInEarlierRecords(records), ...keptInEventHistory(runs, stackName)];
+}
+
+/**
+ * The 20 runs the history keeps, oldest first, each best-effort -- for a
+ * nested child, its top-level stack's runs.
+ */
+async function readRecentRuns(
+  sources: Pick<KeptInHistorySources, 'listRuns' | 'readRunEvents'>,
+  stackName: string,
+  region: string
+): Promise<DeploymentEvent[][]> {
+  const runsOf = stackName.split('~')[0]!;
+  return (async () => {
+    const listed = (await sources.listRuns(runsOf, region)).slice(0, 20);
+    const read = await Promise.all(
+      listed.map((r) => sources.readRunEvents(runsOf, region, r.runId).catch(() => null))
+    );
+    // `listRuns` is newest first.
+    return read.filter((e): e is DeploymentEvent[] => e !== null).reverse();
+  })().catch(() => [] as DeploymentEvent[][]);
+}
+
+/**
+ * How a rollback's event reason opens when `UpdateReplacePolicy: Retain` kept
+ * a replacement's NEW copy (`retainedSurvivorMessages`, which builds it from
+ * this). Shared, so the reader below cannot drift from the writer.
+ */
+export const RETAINED_SURVIVOR_REASON_PREFIX =
+  "UpdateReplacePolicy: Retain kept the replacement's new";
+
+/** A replacement's new copy a rollback kept, untracked (go-to-k/cdkd#5143). */
+export interface RollbackRetainedCopy {
+  logicalId: string;
+  resourceType: string;
+  /** As the event recorded it: masked where it spelled a secret. */
+  physicalId: string;
+}
+
+/**
+ * The copies `stackName`'s rollbacks kept under `UpdateReplacePolicy: Retain`,
+ * from the runs' `ROLLBACK_RESOURCE_SUCCEEDED` events that name the survivor.
+ */
+export function rollbackRetainedInEventHistory(
+  runs: ReadonlyArray<readonly DeploymentEvent[]>,
+  stackName: string
+): RollbackRetainedCopy[] {
+  const out: RollbackRetainedCopy[] = [];
+  for (const events of runs) {
+    for (const e of events) {
+      if (e.stackName !== stackName || e.eventType !== 'ROLLBACK_RESOURCE_SUCCEEDED') continue;
+      if (typeof e.logicalId !== 'string' || typeof e.resourceType !== 'string') continue;
+      if (typeof e.physicalId !== 'string' || e.physicalId === '') continue;
+      if (typeof e.reason !== 'string' || !e.reason.startsWith(RETAINED_SURVIVOR_REASON_PREFIX)) {
+        continue;
+      }
+      out.push({ logicalId: e.logicalId, resourceType: e.resourceType, physicalId: e.physicalId });
+    }
+  }
+  return out;
+}
+
+/** {@link rollbackRetainedInEventHistory} over the runs the history keeps. */
+export async function loadRollbackRetainedCopies(
+  sources: Pick<KeptInHistorySources, 'listRuns' | 'readRunEvents'>,
+  stackName: string,
+  region: string
+): Promise<RollbackRetainedCopy[]> {
+  return rollbackRetainedInEventHistory(
+    await readRecentRuns(sources, stackName, region),
+    stackName
+  );
 }

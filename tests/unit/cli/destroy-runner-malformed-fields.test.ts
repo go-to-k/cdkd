@@ -129,6 +129,22 @@ const refusal = async (state: StackState, h = makeCtx()): Promise<CdkdError> => 
   return thrown as CdkdError;
 };
 
+/**
+ * The success direction: the under-lock re-read (go-to-k/cdkd#5220) must see
+ * the same record this run started with -- nothing changed -- so it must not
+ * block the delete/skip/retain path these cases are actually about.
+ */
+const destroy = (
+  state: StackState,
+  h: ReturnType<typeof makeCtx> = makeCtx()
+): ReturnType<typeof runDestroyForStack> => {
+  (h.ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+    state,
+    etag: 'e',
+  });
+  return runDestroyForStack(STACK, state, h.ctx);
+};
+
 describe('runDestroyForStack refuses a torn `properties` map (go-to-k/cdkd#3211)', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -224,10 +240,9 @@ describe('runDestroyForStack refuses a torn `properties` map (go-to-k/cdkd#3211)
   it('hands a readable map, an empty one included, to the provider unchanged', async () => {
     const h = makeCtx();
     const properties = { Name: 'n' };
-    await runDestroyForStack(
-      STACK,
+    await destroy(
       stateWith({ Good: HEALTHY, Named: { physicalId: 'p-named', resourceType: TYPE, properties } }),
-      h.ctx
+      h
     );
     expect(h.providerDelete).toHaveBeenCalledWith(
       'Named',
@@ -257,7 +272,7 @@ describe('runDestroyForStack skips a row with no usable `physicalId` (go-to-k/cd
   for (const [label, row] of UNADDRESSABLE) {
     it(`skips a row whose physicalId is ${label}: no provider call, record kept, state preserved`, async () => {
       const h = makeCtx();
-      const result = await runDestroyForStack(STACK, stateWith({ Good: HEALTHY, Bad: row }), h.ctx);
+      const result = await destroy(stateWith({ Good: HEALTHY, Bad: row }), h);
 
       expect(result.skippedCount).toBe(1);
       expect(result.deletedCount).toBe(1);
@@ -294,10 +309,9 @@ describe('runDestroyForStack skips a row with no usable `physicalId` (go-to-k/cd
     // Skipping the row would leave every child resource standing and point the
     // remedy at the child's record, while the torn field is the parent's.
     const h = makeCtx();
-    const result = await runDestroyForStack(
-      STACK,
+    const result = await destroy(
       stateWith({ Child: { resourceType: 'AWS::CloudFormation::Stack', properties: {} } }),
-      h.ctx
+      h
     );
     expect(result.skippedCount).toBe(0);
     expect(h.providerDelete).toHaveBeenCalledWith(
@@ -312,10 +326,9 @@ describe('runDestroyForStack skips a row with no usable `physicalId` (go-to-k/cd
 
   it('retains a RETAINED row with no physicalId rather than skipping it — retention addresses nothing', async () => {
     const h = makeCtx();
-    const result = await runDestroyForStack(
-      STACK,
+    const result = await destroy(
       stateWith({ Kept: { resourceType: TYPE, properties: {}, deletionPolicy: 'Retain' } }),
-      h.ctx
+      h
     );
     expect(result.retainedCount).toBe(1);
     expect(result.skippedCount).toBe(0);

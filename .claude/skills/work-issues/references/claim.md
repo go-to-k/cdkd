@@ -6,9 +6,15 @@ With SUBAGENT lanes (stages 5-8's default) the PARENT posts every claim;
 its `<ref>` names the branch or worktree the lane agent will create.
 
 **IN-PLACE runs name the tree they are STANDING IN**: the `<ref>` is the branch
-§5 will create plus the opening report's `LANE_TREE`, never
+§5 will create plus the BASENAME of the opening report's `LANE_TREE`, never
 `git rev-parse --show-toplevel` (its cwd may have reset to the main checkout);
 a concurrent lane's claim names its sibling tree instead (launch-mode.md row 1).
+
+**Nothing posted to GitHub carries a local ABSOLUTE path** — not a claim, a
+comment, a PR body or a commit message: `/Users/<name>/...` or
+`/private/tmp/...` discloses the maintainer's username and machine layout.
+Name a sibling worktree `.claude/worktrees/<branch>` and the launch tree by its
+basename; a lane brief that hands over absolute paths says so too.
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
 Post now (the IN-PLACE `<ref>` above) — a claim that waits for the branch
@@ -17,7 +23,7 @@ claim the top one or the whole set, every lane after the first QUEUED.
 
 ```bash
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
-<LANE_TREE> — this session starts it only after that lane merges. Not \
+<LANE_TREE's basename> — this session starts it only after that lane merges. Not \
 started: no branch exists yet and no file is held. If you want this issue, take \
 it and say so here; I will stand down."
 ```

@@ -1,0 +1,9 @@
+{
+  "scenarios": [
+    "state-schema-migration",
+    "update-replace-breadth",
+    "rollback-failure-injection",
+    "deletion-policy-retain",
+    "elbv2-listener-tg-lb-deletion-order"
+  ]
+}

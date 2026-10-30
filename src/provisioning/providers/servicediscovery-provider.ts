@@ -37,7 +37,7 @@ import {
   type ServiceTypeOption,
 } from '@aws-sdk/client-servicediscovery';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { getLogger } from '../../utils/logger.js';
 import { withRetry, type RetryLogger } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
@@ -45,6 +45,8 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import { withRemovalDefaults } from '../update-removal.js';
@@ -53,7 +55,11 @@ import {
   maskerOrIdentity,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 import type {
   ResourceProvider,
@@ -72,7 +78,12 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 
 /**
  * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
@@ -135,13 +146,15 @@ const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
  * (one secret reference swapped for another), and sending the declared value
  * again is harmless. Every other leaf is compared deep and strict.
  *
- * Known divergence from CloudFormation, which compares TEMPLATES: an
- * unchanged `Description` recorded as any dynamic reference
- * (`{{resolve:...}}`) or a NoEcho `***`, with a
- * `HealthCheckConfig` removed beside it sends the declared model and clears
- * the health check (a removed `DnsConfig` beside it is refused), where
- * CloudFormation keeps it. go-to-k/cdkd#5112 tracks passing the as-written
- * changed keys to providers, which removes it.
+ * Only the FALLBACK when the deploy engine passes no
+ * `UpdateContext.changedProperties` (go-to-k/cdkd#5112): a rollback revert,
+ * `cdkd drift --revert`, or a direct call. A deploy's in-place update passes
+ * the keys that changed template to template, as CloudFormation compares, so
+ * an unchanged `Description` recorded as a dynamic reference with a
+ * `HealthCheckConfig` removed beside it keeps the health check there. One
+ * recorded as a `NoEcho` `***` is left out of those keys only when the engine
+ * read the service back and AWS holds its value; otherwise it is named, and
+ * sent.
  */
 function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
   if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return false;
@@ -169,6 +182,39 @@ function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
   return isDeepStrictEqual(desired, recorded);
 }
 
+/**
+ * The `DnsConfig` members of a Cloud Map service that changed but cannot be
+ * applied in place (go-to-k/cdkd#5373): `UpdateService`'s `DnsConfigChange`
+ * carries `DnsRecords` only, so a `NamespaceId` or `RoutingPolicy` change has
+ * no member to send. CloudFormation behaves the same way. Measured in
+ * us-east-1 on 2026-10-26: moving `DnsConfig.NamespaceId` to another namespace
+ * and changing `RoutingPolicy` from MULTIVALUE to WEIGHTED, each on its own and
+ * beside a `Description` change, planned `Modify` with `Replacement: False`,
+ * ended `UPDATE_COMPLETE` and left the service id, namespace and routing
+ * policy as they were. cdkd matches that outcome and names the members in a
+ * warning instead of staying silent.
+ *
+ * Only a `DnsConfig` the template still declares is compared: a removed
+ * `DnsConfig` is the #1160 removal path in {@link planServiceChange}.
+ */
+function unappliedDnsConfigMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  changedProperties: ReadonlySet<string> | undefined
+): string[] {
+  if (changedProperties !== undefined && !changedProperties.has('DnsConfig')) return [];
+  const desired = properties['DnsConfig'];
+  const previous = previousProperties['DnsConfig'];
+  if (!isPlainObject(desired) || !isPlainObject(previous)) return [];
+  return ['NamespaceId', 'RoutingPolicy'].filter(
+    (member) => !sameAsRecorded(desired[member], previous[member])
+  );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** A recorded string standing in for a resolved secret: a dynamic reference, or the mask. */
 function isRecordedStandIn(value: string): boolean {
   return dynamicReferenceTokens(value).length > 0 || value.includes(SECRET_MASK);
@@ -177,6 +223,20 @@ function isRecordedStandIn(value: string): boolean {
 /** The id forms Cloud Map generates: `ns-` / `srv-` and 16 lowercase alphanumerics. */
 const NAMESPACE_ID_PATTERN = /^ns-[a-z0-9]{16}$/;
 const SERVICE_ID_PATTERN = /^srv-[a-z0-9]{16}$/;
+
+/**
+ * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
+ * not gone (go-to-k/cdkd#2319, #5228). The wrap names the class, and the
+ * deploy and destroy delete classifiers (`deploy-engine/delete.ts`,
+ * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
+ * in a message as "already deleted" unless the error is marked. This
+ * resource's own not-found returned before the wrap, so a `NotFound` class
+ * reaching it is another object's (an operation, a key, a namespace) and the
+ * resource may still exist. Retryability stays the retry classifiers'.
+ */
+function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
+}
 
 /**
  * AWS Service Discovery Provider
@@ -294,8 +354,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * hand-rolled per file, and for why `warn` is threaded rather than omitted.
    *
    * NOT applied to `deleteNamespace`'s retry: that one sends a
-   * `DeleteNamespaceCommand` carrying a physical id only, and `delete()` has no
-   * `maskSecrets` to thread anyway (`DeleteContext` deliberately carries none).
+   * `DeleteNamespaceCommand` carrying a physical id only. The delete's
+   * `maskSecrets` reaches its failure wrap instead.
    */
   private maskedRetryLogger(maskSecrets: SecretMasker | undefined): RetryLogger {
     return createMaskedRetryLogger(this.logger, maskSecrets);
@@ -304,7 +364,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   /**
    * Mask a caught AWS error's message before it is interpolated into a line
    * this provider logs (issue #2050, review round 2). A thrown failure goes
-   * through {@link wrapMaskedError} instead, which masks the same text and
+   * through {@link wrapCaughtError} instead, which masks the same text and
    * also stamps the wrap.
    *
    * Masks `error.message` rather than the assembled sentence so the masker can
@@ -313,24 +373,46 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    */
   private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
     const mask = maskerOrIdentity(maskSecrets);
-    return mask(error instanceof Error ? error.message : String(error));
+    // `.detail`: the same text, without out-throwing the cleanup catch it runs
+    // in on a value `String()` cannot convert (go-to-k/cdkd#3361).
+    return mask(describeAwsFailure(error).detail);
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked (issue #2050): `withRetry` rethrows the RAW error and the deploy
-   * engine prints the wrap at ERROR, the ONLY surface for a NON-RETRYABLE
-   * rejection. The text is masked RAW, the `cause` stays unmasked, and a
-   * message the mask changed is stamped so the retry classifiers read that
-   * chain (`wrapMaskedAwsError`, issue #4259). A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   * The failure wrap every create / update / delete catch throws.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
+   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
+   * the withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from the Service create's
+   * attributes wiring ({@link markAuxiliaryFailure}), where "it" would read as
+   * the service. A non-`Error` throw is withheld the same way, unstamped: it
+   * has no chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text, masked RAW (an AWS SDK
+   * error can echo a request value off the RESOLVED `properties` bag, issue
+   * #2050), stamped exactly when the mask changed it (`wrapMaskedAwsError`,
+   * issue #4259). The deletes check `NamespaceNotFound` / `ServiceNotFound` by
+   * type before they wrap. A method, so `gen-update-wrap-coverage` sees the
+   * catch that throws it as a wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -436,7 +518,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
           resourceType,
           properties,
           previousProperties,
-          context?.maskSecrets
+          context?.maskSecrets,
+          context?.changedProperties
         );
       default:
         throw new ProvisioningError(
@@ -565,7 +648,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : this.wrapMaskedError(
+          : this.wrapCaughtError(
               maskerOrIdentity(maskSecrets),
               error,
               (text) =>
@@ -669,7 +752,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -754,13 +837,23 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Cloud Map namespace ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // `OperationNotFound` from the poll's GetOperation names the class.
+      const refused = markNotGoneOnNotFoundClass(
+        error,
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete Cloud Map namespace ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
+      throw refused;
     }
   }
 
@@ -830,7 +923,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : this.wrapMaskedError(
+          : this.wrapCaughtError(
               maskerOrIdentity(maskSecrets),
               error,
               (text) =>
@@ -916,7 +1009,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1028,7 +1121,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       const thrown =
         error instanceof ProvisioningError
           ? error
-          : this.wrapMaskedError(
+          : this.wrapCaughtError(
               maskerOrIdentity(maskSecrets),
               error,
               (text) =>
@@ -1122,7 +1215,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1150,7 +1243,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const client = this.getClient();
 
-    const name = properties['Name'] as string;
+    // go-to-k/cdkd#5348: the name is optional, as in CloudFormation, which
+    // generates one; so does cdkd, through the shared rule.
+    const name =
+      (properties['Name'] as string | undefined) ||
+      generatedNameFor('AWS::ServiceDiscovery::Service', logicalId);
     const namespaceId = properties['NamespaceId'] as string | undefined;
     const description = properties['Description'] as string | undefined;
     const dnsConfig = properties['DnsConfig'] as DnsConfig | undefined;
@@ -1159,14 +1256,6 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       | undefined;
     const healthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig | undefined;
     const type = properties['Type'] as ServiceTypeOption | undefined;
-
-    if (!name) {
-      throw new ProvisioningError(
-        `Name is required for ServiceDiscovery Service ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
 
     let leftBehindServiceId: string | undefined;
     try {
@@ -1227,6 +1316,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       const serviceId = service.Id;
       // go-to-k/cdkd#4583: AWS holds this service; cleared once the cleanup deletes it.
       leftBehindServiceId = serviceId;
+      reportCreatedResource(logicalId, resourceType, serviceId);
 
       this.logger.debug(
         `Successfully created service discovery service ${logicalId}: ${serviceId}`
@@ -1303,19 +1393,31 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         try {
           await client.send(new DeleteServiceCommand({ Id: serviceId }));
           leftBehindServiceId = undefined;
+          retractCreatedResource(logicalId, resourceType, serviceId);
           this.logger.debug(
             `Cleaned up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure`
           );
         } catch (cleanupError) {
+          // An AWS failure is named by its class at warn, AWS's text at debug
+          // under the same head (go-to-k/cdkd#2319): a denied `DeleteService`
+          // names the caller. A cdkd-authored error keeps its text at warn.
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead =
+            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
+            `(${serviceId}) after ServiceAttributes wiring failure: `;
+          if (cleanupFailure.redacted) {
+            this.logger.debug(
+              maskerOrIdentity(maskSecrets)(`${cleanupHead}${cleanupFailure.detail}`)
+            );
+          }
           this.logger.warn(
             // Masked for uniformity with the sibling lines in this same `try`
             // (issue #2050). The cleanup call carries only a physical id, so a
             // resolved property value reaching here would be surprising — but
             // "surprising" is not "impossible", and an unmasked line sitting
             // beside masked ones is what a later author copies.
-            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
-              `(${serviceId}) after ServiceAttributes wiring failure: ` +
-              `${this.maskErrorMessage(cleanupError, maskSecrets)}. Outside a rollback's re-create, the failed deploy's rollback ` +
+            `${cleanupHead}` +
+              `${cleanupFailure.redacted ? `${maskerOrIdentity(maskSecrets)(cleanupFailure.summary)} ` : `${this.maskErrorMessage(cleanupError, maskSecrets)}. `}Outside a rollback's re-create, the failed deploy's rollback ` +
               `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
               `before the next deploy: ` +
               `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
@@ -1347,12 +1449,12 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         error instanceof NamespaceNotFound
           ? ` (Cloud Map still rejected the namespace after ${CREATE_SERVICE_NAMESPACE_LAG_BACKOFF_SECONDS}s of retries)`
           : '';
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to create service discovery service ${logicalId}: ${text}${retriedNote}`,
+            `Failed to create service discovery service ${logicalId}${retriedNote}: ${text}`,
             resourceType,
             logicalId,
             undefined,
@@ -1370,9 +1472,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Update a service discovery service.
    *
    * Per AWS docs, `UpdateService` accepts a `ServiceChange` body with
-   * `Description`, `DnsConfig.DnsRecords` (TTLs etc. — `NamespaceId` /
-   * `RoutingPolicy` are not part of the change shape and are immutable
-   * here), and `HealthCheckConfig`. `Name` / `NamespaceId` /
+   * `Description`, `DnsConfig.DnsRecords` (TTLs etc. — `DnsConfig.NamespaceId`
+   * / `RoutingPolicy` are not part of the change shape: a change to either is
+   * not applied, as in CloudFormation, and is named in a warning; see
+   * {@link unappliedDnsConfigMembers}), and `HealthCheckConfig`. `Name` /
+   * `NamespaceId` /
    * `HealthCheckCustomConfig` are immutable on UpdateService — the
    * replacement-detection layer routes those through DELETE+CREATE.
    *
@@ -1390,7 +1494,8 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
+    maskSecrets?: SecretMasker,
+    changedProperties?: ReadonlySet<string>
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: `Tags` used to be ignored on update; a malformed
@@ -1398,7 +1503,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
     const client = this.getClient();
 
-    const servicePlan = this.planServiceChange(properties, previousProperties);
+    const servicePlan = this.planServiceChange(properties, previousProperties, changedProperties);
     const serviceChange = servicePlan?.change ?? {};
 
     // ServiceAttributes is NOT part of the `ServiceChange` body — it is
@@ -1429,10 +1534,15 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
 
+    // go-to-k/cdkd#5373: named once the update has succeeded (or had nothing
+    // to send), never before a call that could still fail.
+    const unapplied = unappliedDnsConfigMembers(properties, previousProperties, changedProperties);
+
     if (!hasServiceChange && !hasAttrUpsert && !hasAttrRemove && !hasTagChange) {
       this.logger.debug(
         `No mutable diff for ServiceDiscovery Service ${logicalId}, skipping update`
       );
+      await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
       return { physicalId, wasReplaced: false };
     }
 
@@ -1550,6 +1660,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       this.logger.debug(`Successfully updated service discovery service ${logicalId}`);
+      await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -1557,7 +1668,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
       // create path above.
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         maskerOrIdentity(maskSecrets),
         error,
         (text) =>
@@ -1596,10 +1707,17 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    */
   private planServiceChange(
     properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>
+    previousProperties: Record<string, unknown>,
+    changedProperties: ReadonlySet<string> | undefined
   ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
-    const declaredDiffers = (key: string): boolean =>
-      properties[key] !== undefined && !sameAsRecorded(properties[key], previousProperties[key]);
+    // go-to-k/cdkd#5112: the engine's template-to-template answer when it gave
+    // one; otherwise (a rollback revert, `drift --revert`, a direct call) the
+    // two bags compared here, a recorded stand-in counting as changed.
+    const changed = (key: string): boolean =>
+      changedProperties !== undefined
+        ? changedProperties.has(key)
+        : !sameAsRecorded(properties[key], previousProperties[key]);
+    const declaredDiffers = (key: string): boolean => properties[key] !== undefined && changed(key);
 
     const change: ServiceChange = {};
     if (properties['Description'] !== undefined) {
@@ -1618,10 +1736,62 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
       return { change, keepRemovedFromLive: false };
     }
-    if (desiredRecords !== undefined && !sameAsRecorded(desiredRecords, previousRecords)) {
+    // `DnsConfig` unchanged as written leaves its records unchanged; changed,
+    // the records themselves are compared (its other members cannot be
+    // updated; go-to-k/cdkd#5373).
+    if (
+      desiredRecords !== undefined &&
+      (changedProperties === undefined || changedProperties.has('DnsConfig')) &&
+      !sameAsRecorded(desiredRecords, previousRecords)
+    ) {
       return { change, keepRemovedFromLive: true };
     }
     return undefined;
+  }
+
+  /**
+   * Name each `DnsConfig` member {@link unappliedDnsConfigMembers} found, in
+   * one warning (go-to-k/cdkd#5373), once the live service confirms it still
+   * differs. The state records the declared value, never applied, so a
+   * template-to-state difference alone also fires on a rollback revert, on a
+   * template reverted to what AWS holds, and on a member added at the value
+   * AWS already has. A failed read keeps the warning: it cannot be confirmed
+   * either way, and the update itself has already succeeded.
+   */
+  private async warnUnappliedDnsConfigMembers(
+    logicalId: string,
+    physicalId: string,
+    properties: Record<string, unknown>,
+    candidates: readonly string[]
+  ): Promise<void> {
+    if (candidates.length === 0) return;
+    let members = candidates;
+    try {
+      const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
+      const dns = properties['DnsConfig'] as DnsConfig;
+      const desired: Record<string, unknown> = {
+        NamespaceId: dns.NamespaceId ?? properties['NamespaceId'],
+        RoutingPolicy: dns.RoutingPolicy,
+      };
+      const held: Record<string, unknown> = {
+        NamespaceId: live?.NamespaceId ?? live?.DnsConfig?.NamespaceId,
+        RoutingPolicy: live?.DnsConfig?.RoutingPolicy,
+      };
+      members = candidates.filter((m) => desired[m] === undefined || desired[m] !== held[m]);
+    } catch {
+      this.logger.debug(
+        safeMsg`Could not read service discovery service ${logicalId} back to confirm its DnsConfig; warning unconfirmed`
+      );
+    }
+    if (members.length === 0) return;
+    const paths = members.map((m) => `DnsConfig.${m}`).join(' and ');
+    const [it, value] = members.length > 1 ? ['them', 'values'] : ['it', 'value'];
+    const remedy = members.includes('NamespaceId')
+      ? 'To move the service, declare the namespace in the top-level NamespaceId: a change there replaces the service.'
+      : 'To change it, replace the service, for example by giving it a new Name.';
+    this.logger.warn(
+      safeMsg`${logicalId} (AWS::ServiceDiscovery::Service): ${paths} changed, but Cloud Map cannot change ${it} on an existing service, so the service keeps its current ${value}, as CloudFormation does. ${remedy}`
+    );
   }
 
   /**
@@ -1674,13 +1844,22 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete service discovery service ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const refused = markNotGoneOnNotFoundClass(
+        error,
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete service discovery service ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
+      throw refused;
     }
   }
 
@@ -1802,6 +1981,42 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
   }
 
   /**
+   * The error a FAILED Cloud Map operation throws (go-to-k/cdkd#2319). AWS's
+   * `ErrorMessage` is a status reason a SUCCESSFUL GetOperation reports, and a
+   * Route 53 refusal behind it names the caller's assumed-role ARN, so the
+   * message carries its `ErrorCode` plus the `--verbose` pointer
+   * ({@link describeAwsStatusReason}) and the text goes to `debug`, masked. It
+   * rides as the unmasked `cause`, and the wrap is stamped, so the retry
+   * classifiers read it as they read the message before (issue #4299). No
+   * reason keeps cdkd's fallback text, unstamped.
+   */
+  private wrapOperationFailedError(
+    mask: MaskerFn,
+    logicalId: string,
+    resourceType: string,
+    operation: { ErrorCode?: string | undefined; ErrorMessage?: string | undefined } | undefined
+  ): ProvisioningError {
+    const reason = describeAwsStatusReason(
+      { code: operation?.ErrorCode, message: operation?.ErrorMessage },
+      'Unknown error'
+    );
+    const raw = new Error(reason.detail);
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Operation failed for ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        undefined,
+        raw
+      );
+    if (!reason.redacted) return build(reason.detail);
+    this.logger.debug(mask(build(mask(reason.detail)).message));
+    return markRedactedCause(
+      build(`${mask(reason.summary)}${relayedNameCollision(reason.detail)}`)
+    );
+  }
+
+  /**
    * Poll a Service Discovery operation until it completes.
    * Returns the target resource ID from the operation result.
    *
@@ -1816,7 +2031,7 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * Why not leave it to the arms' own catch: every namespace arm and
    * `updateService` open with `if (error instanceof ProvisioningError) throw
    * error;`, so a `ProvisioningError` raised here is re-thrown VERBATIM and
-   * never reaches their `wrapMaskedError`. `deploy-engine.ts` then prints it
+   * never reaches their `wrapCaughtError`. `deploy-engine.ts` then prints it
    * at ERROR — DEFAULT verbosity. That passthrough is correct (it preserves
    * the resource/logical-id context this frame added), which is exactly why
    * the mask has to be applied at the point of construction.
@@ -1861,22 +2076,11 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
       }
 
       if (status === 'FAIL') {
-        // The raw `ErrorMessage` rides as the unmasked `cause`, so a message
-        // the mask changed keeps the classification the unmasked text gets
-        // (issue #4299). Without a cause there is no chain for the stamp to
-        // point the classifiers at.
-        const raw = new Error(result.Operation?.ErrorMessage || 'Unknown error');
-        throw this.wrapMaskedError(
+        throw this.wrapOperationFailedError(
           maskerOrIdentity(maskSecrets),
-          raw,
-          (errorMessage) =>
-            new ProvisioningError(
-              `Operation failed for ${logicalId}: ${errorMessage}`,
-              resourceType,
-              logicalId,
-              undefined,
-              raw
-            )
+          logicalId,
+          resourceType,
+          result.Operation
         );
       }
 

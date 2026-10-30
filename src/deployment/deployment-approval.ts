@@ -1,9 +1,15 @@
 import { findDestructiveChanges } from '../analyzer/destructive-changes.js';
+import {
+  findRefactorHints,
+  hintSidesOf,
+  rollbackOrphanIds,
+  withMovedTo,
+} from '../analyzer/refactor-hints.js';
 import { diffSecurity } from '../analyzer/security-diff.js';
 import type { CloudFormationTemplate } from '../types/resource.js';
-import type { ResourceChange, ResourceState } from '../types/state.js';
+import type { ResourceChange, ResourceState, StackState } from '../types/state.js';
 import { safeMsg } from '../utils/display-safe.js';
-import { CdkdError } from '../utils/error-handler.js';
+import { CdkdError, DeploymentNotApprovedError } from '../utils/error-handler.js';
 import type { DeployEngineOptions } from './deploy-engine/options.js';
 import { enclosingDeadlineExpired, whileEnclosingDeadlinesPaused } from './resource-deadline.js';
 import { markNonRetryable } from './retryable-errors.js';
@@ -46,6 +52,8 @@ export async function requireDeploymentApproval(args: {
   stackName: string;
   changes: Iterable<ResourceChange>;
   records: Readonly<Record<string, ResourceState>>;
+  /** The record's rollback-orphan entries: their ids get no refactor hint (go-to-k/cdkd#5203). */
+  orphans?: StackState['orphans'];
   template: CloudFormationTemplate;
   recreateTargetIds?: Iterable<string> | undefined;
   /** Hides secrets in the `broadening` table (`diffSecurity`); built only at that level. */
@@ -93,6 +101,26 @@ export async function requireDeploymentApproval(args: {
         : changes.length > 0 && !onlyNestedUpdates;
   if (!ask) return false;
 
+  // go-to-k/cdkd#5203: a removal `cdkd refactor` would keep as a rename in
+  // this stack names where it reappears. Only this stack's rows are in hand
+  // here, so a move to ANOTHER stack is shown by `cdkd diff`, not this prompt;
+  // and `cdkd refactor` plans top-level stacks only, so a nested child
+  // (`Parent~Child`) gets none.
+  const shownChanges =
+    !args.stackName.includes('~') && destructiveChanges.some((c) => c.impact === 'WILL_DESTROY')
+      ? withMovedTo(
+          destructiveChanges,
+          findRefactorHints([
+            {
+              id: 'self',
+              stackName: args.stackName,
+              env: '',
+              ...hintSidesOf(changes, rollbackOrphanIds(args.orphans)),
+            },
+          ]).get('self')
+        )
+      : destructiveChanges;
+
   const count = (type: ResourceChange['changeType']): number =>
     changes.filter((c) => c.changeType === type).length;
   // Already timed out: a "yes" could not take effect, so do not ask.
@@ -104,7 +132,7 @@ export async function requireDeploymentApproval(args: {
         stackName: args.stackName,
         level,
         counts: { create: count('CREATE'), update: count('UPDATE'), delete: count('DELETE') },
-        destructiveChanges,
+        destructiveChanges: shownChanges,
         ...(security !== undefined && { securityChanges: security.rendered }),
       })
     );
@@ -116,9 +144,8 @@ export async function requireDeploymentApproval(args: {
   // messages carry a template-chosen stack name.
   if (!approved) {
     throw markNonRetryable(
-      new CdkdError(
-        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=${level}). Nothing was changed.`,
-        'DEPLOY_NOT_APPROVED'
+      new DeploymentNotApprovedError(
+        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=${level}). Nothing was changed.`
       )
     );
   }
@@ -264,9 +291,8 @@ export async function requireOutputsOnlyApproval(args: {
   }
   if (!approved) {
     throw markNonRetryable(
-      new CdkdError(
-        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=any-change). Nothing was changed.`,
-        'DEPLOY_NOT_APPROVED'
+      new DeploymentNotApprovedError(
+        safeMsg`Deployment of stack ${args.stackName} was not approved (--require-approval=any-change). Nothing was changed.`
       )
     );
   }

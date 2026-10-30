@@ -13,6 +13,7 @@ import {
   type ParameterDefinition,
   refStateLookupFromResource,
   cfnRefValueFromPhysicalId,
+  lacksRecordedTableArn,
   stringifyParameterForLog,
   isStructured,
 } from './support.js';
@@ -20,8 +21,10 @@ import {
   pushRedactedAttributeRead,
   recordSecretNamedRead,
   reresolveRecordedReferences,
+  resolveGetAtt,
 } from './getatt.js';
 import { resolvePseudoParameter } from './functions.js';
+import { COMPOSITE_ID_SEPARATOR } from '../../provisioning/composite-id.js';
 import { recordPhysicalNameCopy } from '../secret-redaction.js';
 import { declaresNoEcho } from '../noecho-declared.js';
 
@@ -166,6 +169,34 @@ export async function resolveRef(
   // any other unknown one and reaches the ordinary refusal below.
   const resource = lookupResourceRecord(resolver, logicalId, 'Ref', context);
   if (resource) {
+    // go-to-k/cdkd#5316: an SDK-routed S3 Tables table's `Ref` is its
+    // `TableARN` attribute, which a table created before cdkd recorded it
+    // (go-to-k/cdkd#739) lacks. CloudFormation's `Ref` and `Fn::GetAtt
+    // TableARN` are the same value, so read it the way `Fn::GetAtt` does: the
+    // deploy's healer re-reads the record from AWS and records it. What
+    // comes back without a usable ARN (no healer, a failed read) is refused:
+    // `Fn::GetAtt`'s fallback serves the composite id, which starts with
+    // `arn:` and so passes its ARN-shape guard, but is never the TableARN.
+    if (lacksRecordedTableArn(resource)) {
+      const tableArn = await resolveGetAtt(resolver, [logicalId, 'TableARN'], context);
+      if (
+        typeof tableArn === 'string' &&
+        tableArn.startsWith('arn:') &&
+        !tableArn.includes(COMPOSITE_ID_SEPARATOR)
+      ) {
+        return tableArn;
+      }
+      throw markNonRetryable(
+        new IntrinsicResolutionRefusalError(
+          `Cannot resolve Ref ${displayMasked(resolver, logicalId, context)}: the state records no ` +
+            `usable TableARN for this S3 Tables table (a cdkd older than v0.201.0 recorded none), ` +
+            `and CloudFormation's Ref of a table is its TableARN, which its physical id does not ` +
+            `contain. No usable one could be read from AWS either. If the state records none, ` +
+            `run 'cdkd deploy' with permission to call s3tables:GetTable so cdkd records it; if ` +
+            `it records a value that is not the table's ARN, re-import the table with 'cdkd import'.`
+        )
+      );
+    }
     const refValue = resolveRefValue(resolver, logicalId, resource, context);
     // Before the line (go-to-k/cdkd#3869): a resource named from a secret
     // serves a name no masker knows.
@@ -354,8 +385,8 @@ export async function resolveRef(
  * segment. Most are compound because Cloud Control provisions them (either
  * they have no SDK provider, or the #614 silent-drop routing sent an
  * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
- * — `AWS::S3Tables::Namespace` / `::Table` — are compound because their own
- * SDK provider packs the segments. (`AWS::Glue::Table` builds one too, but
+ * — `AWS::S3Tables::Namespace` — are compound because their own SDK provider
+ * packs the segments. (`AWS::Glue::Table` builds one too, but
  * takes {@link glueTableRefFromPhysicalId}: either of its segments may
  * contain `|`.) The Set's header records the split per type; examples:
  *   - `AWS::ApiGateway::Model` → Ref is the model NAME; physical id is
@@ -388,12 +419,12 @@ export async function resolveRef(
  * would otherwise get the full ARN) and `AWS::CloudTrail::Trail` (`Ref` is
  * the trail name). The name is extracted from the stored ARN.
  *
- * `AWS::S3Tables::Table` is a hybrid: on the SDK path its compound physical
- * id yields the table name via the after-pipe extraction, but a #614-routed
- * (Cloud Control) Table stores only the bare TableARN (which ends in a UUID,
- * not the name), so the resolver passes the resource's stored `properties` /
- * `attributes` as a `stateLookup` and `cfnRefValueFromPhysicalId` recovers
- * the name from the `TableName` property (issue #974).
+ * `AWS::S3Tables::Table`'s `Ref` is its TableARN (issue #5316): a #614-routed
+ * (Cloud Control) Table's physical id IS that ARN, and on the SDK path, whose
+ * composite `<tableBucketARN>|<namespace>|<tableName>` holds no segment of it,
+ * the resolver passes the resource's stored `properties` / `attributes` as a
+ * `stateLookup` and `cfnRefValueFromPhysicalId` recovers the recorded
+ * `TableARN` attribute.
  *
  * Two further mechanisms cover compounds neither Set can express (issue
  * #1681): {@link REF_RETURNS_SEGMENT_AT_INDEX} for an INTERIOR segment
@@ -480,7 +511,7 @@ export function resolveRefValue(
  *
  * `key` is never masked before interpolation because it is not template text:
  * it comes from the fixed key lists `cfnRefValueFromPhysicalId` passes
- * (`TableName` / `Name` / `DatabaseName` / `SelectionId` / `RepositoryId` /
+ * (`TableARN` / `DatabaseName` / `SelectionId` / `RepositoryId` /
  * the AppSync ARN attributes), all cdkd literals.
  */
 export function noteRefStateMask(

@@ -118,6 +118,9 @@ describe('the automatic rollback asks who else holds a created resource (go-to-k
             };
       }),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       listStacks: vi.fn(async () => [
         { stackName: STACK, region: 'us-east-1' },
         ...Object.keys(others).map((stackName) => ({ stackName, region: 'us-east-1' })),

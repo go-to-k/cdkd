@@ -1,3 +1,4 @@
+import type { RolledBackCreate } from '../../state/name-generation.js';
 import type { ForeignHolding } from './journaled-orphans.js';
 import type { DeploymentEvent } from '../../types/deployment-events.js';
 import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
@@ -137,6 +138,15 @@ export interface CompletedOperation {
    * create-first reversal.
    */
   oldDeletedBeforeCreate?: boolean | undefined;
+  /**
+   * go-to-k/cdkd#5064 phase 2: on a completed replacement of a stack with an
+   * instance id, the name generation its new resource was created at. A
+   * rollback that restores the old record raises its high-water mark to it,
+   * so the next replacement asks for a name the rolled-back copy never held.
+   * ADDITIVE, no `journalVersion` bump: absent (a legacy stack, an older
+   * binary's journal) raises nothing.
+   */
+  nameGeneration?: number | undefined;
 }
 
 /**
@@ -250,6 +260,15 @@ export interface FailedOperation {
    * took away. Absent on an older binary's journal; ADDITIVE, no bump.
    */
   oldDeletedBeforeCreate?: boolean | undefined;
+  /**
+   * go-to-k/cdkd#5064 phase 2, on a stack with an instance id: the name
+   * generation the failed op's create asked for. On a replacement UPDATE a
+   * `--revert-failed` raises the record's high-water mark to it, since the
+   * create may have made a resource under that name; on a CREATE the settle
+   * of an abandoned Cloud Control create recognizes the name by it
+   * (`ccIdentifierIsUnique`). ADDITIVE, no bump.
+   */
+  nameGeneration?: number | undefined;
   /**
    * The intrinsic-RESOLVED desired properties the failed op attempted to
    * apply, if resolution got that far. Load-bearing for the revert: a
@@ -565,6 +584,14 @@ export interface RollbackReplayResult {
    * persist by reading a missing field as "nothing to do".
    */
   orphaned: StackOrphanRecord[];
+  /**
+   * go-to-k/cdkd#5064: the CREATEs this replay took back, each reported the
+   * moment its record left `stateResources` (before `afterOp` saves, through
+   * the replay's `onRolledBackCreate`). The caller retires each logical id's
+   * generation (`retiredAfterRollback`), so the next create asks for a new
+   * name. Always an array, as {@link orphaned}.
+   */
+  rolledBackCreates: RolledBackCreate[];
 }
 
 /** Spelled locally: importing the CLI's copy would invert the layer direction. */

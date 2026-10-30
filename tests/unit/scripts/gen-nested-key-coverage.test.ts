@@ -1,6 +1,7 @@
 import { afterAll, describe, it, expect, vi } from 'vite-plus/test';
 import {
   cpSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -11,40 +12,35 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
-  MIN_WRITTEN_MEMBERS_PER_PROVIDER,
   NESTED_KEY_ALLOW_LIST,
   NESTED_KEY_TARGETS,
   REVERSE_MAP_FUNCTION_PREFIXES,
   allowKey,
   buildReport,
-  classifyTarget,
   classifyTargetShapes,
   collectSdkInterfaces,
   collectSdkMemberNames,
   collectStringLiterals,
   collectWriteEvidence,
-  collectWrittenMemberNames,
   countExpandingHandoffPoints,
   expandLiteralSegments,
   findDivergences,
   findStaleAllowListEntries,
   findStaleSegmentRenames,
-  findStaleTerminalRenames,
   isHandoffCovered,
   loadReport,
   lowerFirst,
-  lookupAllowEntry,
   nestedKeyPathsForTarget,
   reachableSdkMemberNames,
   inputReachableInterfaces,
   resolveDefinitionInterface,
+  wholeDeliveredPathsFor,
   wrapperInterfaceNames,
-  type AllowListEntry,
-  type NestedKeyClassification,
   type NestedKeyPath,
   type NestedKeyTarget,
   type ProviderWriteEvidence,
   type SdkMemberType,
+  type TargetReport,
 } from '../../../scripts/gen-nested-key-coverage.ts';
 import {
   extractDefinitionRequired,
@@ -52,7 +48,6 @@ import {
   extractNestedPropertyNames,
   extractNestedPropertyPaths,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
-import { parseProviderSource } from '../../../scripts/gen-property-coverage.ts';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 
 // Vitest's 5s default does not fit this file. Many of its tests parse the WHOLE
@@ -109,6 +104,12 @@ import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 // (120s reported ~3.6x). That is the same trade the paragraph
 // made at 60s, re-priced on measured contention — a cap tight enough to catch
 // 4x fires on a busy machine, which is what this issue recorded.
+//
+// go-to-k/cdkd#3723 retired the KEY and WRITE passes (the sdk-wire unit harness
+// catches those classes now), and with them the cases the measurements above
+// name — the opt-in-table, S3 reason-(C) and walk-dependent probes. The heavy
+// cases left are the real-repo `loadReport()` describes and the walk-floor
+// hygiene probe. The cap is unchanged; re-measure before lowering it.
 vi.setConfig({ testTimeout: CONTENDED_CASE_TIMEOUT_MS });
 
 const repoRoot = process.cwd();
@@ -121,8 +122,6 @@ const exactTarget: NestedKeyTarget = {
   keyStyle: 'exact',
   minNestedKeys: 0,
 };
-
-const freshTarget: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
 
 /**
  * Build the PATH-shaped audited units the classifier takes since #1448, at the
@@ -146,7 +145,6 @@ const writeEvidence = (
   scopes: Record<string, readonly string[]>,
   handoffScopes: readonly string[] = []
 ): ProviderWriteEvidence => ({
-  written: new Set(Object.values(scopes).flat()),
   scopes: new Map(Object.entries(scopes).map(([k, v]) => [k, new Set(v)])),
   handoffScopes: new Set(handoffScopes),
 });
@@ -168,191 +166,42 @@ const resolveCaseConvert = (specifier: string): string | undefined =>
 const allHandoffPoints = (evidence: ProviderWriteEvidence): Set<string> =>
   new Set([...evidence.handoffScopes].map((p) => p.slice(p.lastIndexOf('.') + 1)));
 
-/** Every classification whose TERMINAL key is `key` (a key can span paths). */
-const entriesFor = (
-  entries: readonly NestedKeyClassification[],
-  key: string
-): NestedKeyClassification[] => entries.filter((e) => e.terminalKey === key);
+/**
+ * Every member NAME the collector recorded a write of, at any depth: the
+ * terminal segment of each scope key. A write at a path always opens that
+ * path's scope (even when its value resolves to no literal), so this is the
+ * name-level view of the scope index, for probes that ask "was this member
+ * written at all" rather than "under which parent".
+ */
+const writtenNames = (evidence: ProviderWriteEvidence): Set<string> =>
+  new Set([...evidence.scopes.keys()].map((p) => p.slice(p.lastIndexOf('.') + 1)));
 
-/** The single bucket every path of `key` landed in (fails loudly if they differ). */
-const bucketOf = (
-  entries: readonly NestedKeyClassification[],
-  key: string
-): string | undefined => {
-  const buckets = [...new Set(entriesFor(entries, key).map((e) => e.bucket))];
-  return buckets.length === 1 ? buckets[0] : buckets.length === 0 ? undefined : buckets.join('+');
-};
-
-describe('collectWrittenMemberNames (synthetic)', () => {
-  it('counts object-literal, shorthand and assignment writes', () => {
-    const written = collectWrittenMemberNames(`
-      const batchReportMode = 1;
-      const sdk = { serviceRole: p['ServiceRole'], batchReportMode };
-      sdk.timeoutInMins = 5;
-      sdk['combineArtifacts'] = true;
-    `);
-    expect([...written].sort()).toEqual([
-      'batchReportMode',
-      'combineArtifacts',
-      'serviceRole',
-      'timeoutInMins',
-    ]);
-  });
-
-  it('does NOT credit a VARIABLE key in an element-access write', () => {
-    // `sdk[k] = v` names a variable, not a member. Crediting it would let a
-    // local called `type` / `name` clear a CI-blocking bucket for the SDK
-    // member of that name.
-    const written = collectWrittenMemberNames(`
-      const type = 'x';
-      sdk[type] = 1;
-      sdk['batchReportMode'] = 2;
-    `);
-    expect(written.has('type')).toBe(false);
-    expect(written.has('batchReportMode')).toBe(true);
-  });
-
-  it('does NOT credit a computed object-literal property name', () => {
-    const written = collectWrittenMemberNames(`const o = { [k]: 1, literal: 2 };`);
-    expect(written.has('k')).toBe(false);
-    expect(written.has('literal')).toBe(true);
-  });
-
-  it('does NOT credit a DESTRUCTURING-ASSIGNMENT target (it is a read)', () => {
-    // `({ x } = src)` parses as an object literal on the LEFT of an `=`, so its
-    // members look like property assignments while being reads off `src`.
-    const written = collectWrittenMemberNames(`
-      ({ batchReportMode } = desc);
-      ({ timeoutInMins: t } = desc);
-      const real = { combineArtifacts: 1 };
-    `);
-    expect(written.has('batchReportMode')).toBe(false);
-    expect(written.has('timeoutInMins')).toBe(false);
-    expect(written.has('combineArtifacts')).toBe(true);
-  });
-
-  it('does NOT credit a NESTED / ARRAY / for-of destructuring target', () => {
-    // A depth-1 parent check misses all three of these — the inner literal's
-    // parent is a PropertyAssignment / ArrayLiteralExpression / ForOfStatement
-    // rather than the assignment itself.
-    const written = collectWrittenMemberNames(`
-      ({ outer: { batchReportMode } } = desc);
-      [{ combineArtifacts }] = arr;
-      for ({ timeoutInMins } of list) { use(timeoutInMins); }
-      ({ serviceRole = 'x' } = desc);
-      const real = { queuedTimeoutInMinutes: 1 };
-    `);
-    expect(written.has('batchReportMode')).toBe(false);
-    expect(written.has('combineArtifacts')).toBe(false);
-    expect(written.has('timeoutInMins')).toBe(false);
-    expect(written.has('serviceRole')).toBe(false);
-    expect(written.has('queuedTimeoutInMinutes')).toBe(true);
-  });
-
-  it('excludes an arrow-function PROPERTY reverse map, not just a method', () => {
-    // A regression here fails in the DANGEROUS direction: reverse-map writes
-    // would be silently re-credited, false-clearing a CI-blocking bucket.
-    const source = `
-      class P {
-        readCurrentState = async () => { const r = {}; r['CorsConfiguration'] = 1; return r; };
-        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
-      }
-    `;
-    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
-    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
-  });
-
-  it('the exclusion matchers respect word boundaries (#1520 widened set)', () => {
-    // `read` must sit at a camelCase boundary — `readonly…` is a different
-    // word and must NOT be swallowed — and the `*ToCfn` suffix must sit at
-    // the END of the name on a non-empty stem.
-    const written = collectWrittenMemberNames(`
-      function readonlyHelper() { return { stillCounted: 1 }; }
-      function readCurrentStateService() { return { notCounted: 1 }; }
-      function readLifecycle() { return { alsoNotCounted: 1 }; }
-      function volumesToCfn() { return { suffixNotCounted: 1 }; }
-      function toCfnFirst() { return { midNameCounted: 1 }; }
-    `);
-    expect(written.has('stillCounted')).toBe(true);
-    expect(written.has('notCounted')).toBe(false);
-    expect(written.has('alsoNotCounted')).toBe(false);
-    expect(written.has('suffixNotCounted')).toBe(false);
-    expect(written.has('midNameCounted')).toBe(true);
-  });
-
-  it('excludes writes in a nested function inside an excluded body', () => {
-    const source = `
-      class P {
-        readCurrentState() {
-          const build = () => ({ corsConfiguration: 1 });
-          return build();
-        }
-      }
-    `;
-    expect(collectWrittenMemberNames(source).has('corsConfiguration')).toBe(false);
-  });
-
-  it('counts a string-literal property name and a template element-access key', () => {
-    const written = collectWrittenMemberNames(
-      "const o = { 'batchReportMode': 1 }; sdk[`combineArtifacts`] = 2;"
-    );
-    expect(written.has('batchReportMode')).toBe(true);
-    expect(written.has('combineArtifacts')).toBe(true);
-  });
-
-  it('excludes reverse-map functions by PREFIX, not exact name', () => {
-    // Real shape: `apigateway-provider.ts` splits the reverse map into
-    // `readCurrentStateAuthorizer` / `...Resource` / `...Stage` / etc.
-    const source = `
-      class P {
-        readCurrentStateAuthorizer() { const r = {}; r['CorsConfiguration'] = 1; return r; }
-        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
-      }
-    `;
-    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
-    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
-  });
-
-  it('does NOT count a read (the reverse-map direction)', () => {
-    const written = collectWrittenMemberNames(`
-      const out = {};
-      out['BatchReportMode'] = desc.batchReportMode;
-    `);
-    expect(written.has('BatchReportMode')).toBe(true);
-    expect(written.has('batchReportMode')).toBe(false);
-  });
-
-  it('skips the body of an excluded function (issue #1393 item 2)', () => {
-    const source = `
-      class P {
-        map(p) { return { forwardOnly: p['ForwardOnly'] }; }
-        async readCurrentState() {
-          const r = {};
-          r['CorsConfiguration'] = 1;
-          return r;
-        }
-      }
-    `;
-    expect(collectWrittenMemberNames(source).has('CorsConfiguration')).toBe(false);
-    expect(collectWrittenMemberNames(source).has('forwardOnly')).toBe(true);
-    // With no exclusion set the same write IS collected — proving the
-    // exclusion, not an unrelated parse miss, is what withdraws it.
-    expect(collectWrittenMemberNames(source, 'p.ts', []).has('CorsConfiguration')).toBe(
-      true
-    );
-  });
+/** A synthetic TargetReport with every list empty, for the report-plumbing probes. */
+const targetReport = (overrides: Partial<TargetReport> = {}): TargetReport => ({
+  resourceType: exactTarget.resourceType,
+  providerFile: exactTarget.providerFile,
+  sdkClientPackage: exactTarget.sdkClientPackage,
+  keyStyle: exactTarget.keyStyle,
+  nestedKeyCount: 0,
+  wholeDeliveredPaths: [],
+  shapeEntries: [],
+  shapeCleanCount: 0,
+  unmatchedDefinitions: [],
+  usedSegmentRenames: [],
+  ...overrides,
 });
 
 describe('collectWriteEvidence (synthetic)', () => {
   it('scopes a write to the members beneath the value it is written with (#1448)', () => {
-    const { written, scopes } = collectWriteEvidence(`
+    const evidence = collectWriteEvidence(`
       const sdk = {
         serviceRole: p['ServiceRole'],
         buildBatchConfig: { serviceRole: p['Inner'], batchReportMode: 1 },
       };
     `);
-    // The name-global set cannot tell the two `serviceRole` writes apart...
-    expect(written.has('serviceRole')).toBe(true);
+    const { scopes } = evidence;
+    // A name-level view cannot tell the two `serviceRole` writes apart...
+    expect(writtenNames(evidence).has('serviceRole')).toBe(true);
     // ...the scope index can.
     expect([...(scopes.get('buildBatchConfig') ?? [])].sort()).toEqual([
       'batchReportMode',
@@ -445,10 +294,9 @@ describe('collectWriteEvidence (synthetic)', () => {
   });
 
   it('peels `await` off a resolved value', () => {
-    // FALSE-POSITIVE direction: un-peeled, `await this.build()` resolves to no
-    // literals and every path under `source` flags with the misleading "the
-    // provider never writes it". No opted-in provider awaits a mapper today, so
-    // this synthetic case IS the fence.
+    // Un-peeled, `await this.build()` resolves to no literals and the `source`
+    // scope comes out empty. No audited provider awaits a mapper today, so this
+    // synthetic case IS the fence.
     const { scopes } = collectWriteEvidence(`
       class P {
         async build() { return { type: 1, location: 2 }; }
@@ -513,12 +361,12 @@ describe('collectWriteEvidence (synthetic)', () => {
   it('counts compound assignment operators as writes (#1448 comment item 1)', () => {
     // `??=` / `||=` / `+=` are writes. Treating them as non-writes would fail CI
     // with the MISLEADING "the provider never writes it" after a refactor.
-    const written = collectWriteEvidence(`
+    const written = writtenNames(collectWriteEvidence(`
       sdk.batchReportMode ??= 'REPORT_AGGREGATED_BATCH';
       sdk.timeoutInMins ||= 60;
       sdk['combineArtifacts'] &&= true;
       sdk.queuedTimeoutInMinutes += 1;
-    `).written;
+    `));
     expect([...written].sort()).toEqual([
       'batchReportMode',
       'combineArtifacts',
@@ -530,13 +378,15 @@ describe('collectWriteEvidence (synthetic)', () => {
   it('recognizes Object.defineProperty WITHOUT crediting the descriptor keys', () => {
     // The descriptor literal would otherwise put `value` / `get` / `writable`
     // into the set — and `value` IS a real CodeBuild member (`Value`).
-    const { written, scopes } = collectWriteEvidence(`
+    const evidence = collectWriteEvidence(`
       Object.defineProperty(sdk, 'batchReportMode', {
         value: { serviceRole: 1 },
         writable: true,
         enumerable: true,
       });
     `);
+    const written = writtenNames(evidence);
+    const { scopes } = evidence;
     expect(written.has('batchReportMode')).toBe(true);
     expect(written.has('value')).toBe(false);
     expect(written.has('writable')).toBe(false);
@@ -546,22 +396,22 @@ describe('collectWriteEvidence (synthetic)', () => {
   });
 
   it('a computed / variable defineProperty name is not credited', () => {
-    const written = collectWriteEvidence(
+    const written = writtenNames(collectWriteEvidence(
       `Object.defineProperty(sdk, key, { value: 1 });`
-    ).written;
+    ));
     expect(written.has('key')).toBe(false);
   });
 
   it('a COMPARISON-ONLY literal is not delivery (#1448 diff-is-not-delivery)', () => {
     // The change-detection idiom of a diff-heavy `update()`: the literal names
     // the member but nothing is ever sent.
-    const written = collectWriteEvidence(`
+    const written = writtenNames(collectWriteEvidence(`
       const changed =
         JSON.stringify({ batchReportMode: next }) !== JSON.stringify({ batchReportMode: prev });
       const empty = Object.keys({ combineArtifacts: next }).length === 0;
       const delivered = { timeoutInMins: 5 };
       send(delivered);
-    `).written;
+    `));
     expect(written.has('batchReportMode')).toBe(false);
     expect(written.has('combineArtifacts')).toBe(false);
     expect(written.has('timeoutInMins')).toBe(true);
@@ -570,20 +420,20 @@ describe('collectWriteEvidence (synthetic)', () => {
   it('the NESTED half of a comparison-only literal is not delivery either', () => {
     // `inner`'s own parent chain stops at a PropertyAssignment, so the check has
     // to climb to the OUTERMOST literal before asking what consumes it.
-    const written = collectWriteEvidence(`
+    const written = writtenNames(collectWriteEvidence(`
       const changed =
         JSON.stringify({ buildBatchConfig: { batchReportMode: next } }) !==
         JSON.stringify({ buildBatchConfig: { batchReportMode: prev } });
-    `).written;
+    `));
     expect(written.has('buildBatchConfig')).toBe(false);
     expect(written.has('batchReportMode')).toBe(false);
   });
 
   it('a literal serialized into a REQUEST is still delivery', () => {
     // The other side of the same rule: `body: JSON.stringify(x)` sends the value.
-    const written = collectWriteEvidence(
+    const written = writtenNames(collectWriteEvidence(
       `const req = { body: JSON.stringify({ batchReportMode: 1 }) };`
-    ).written;
+    ));
     expect(written.has('batchReportMode')).toBe(true);
   });
 });
@@ -997,7 +847,7 @@ describe('the BUILDER idiom (synthetic, issue #1474)', () => {
         put() { return { Configuration: this.build() }; }
       }
     `;
-    expect(collectWriteEvidence(source).written.has('Alpha')).toBe(true);
+    expect(writtenNames(collectWriteEvidence(source)).has('Alpha')).toBe(true);
     expect(scopeAt(source, 'Configuration')).toEqual(['Beta']);
   });
 
@@ -1163,7 +1013,7 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
     // Pinning the bound rather than the behaviour we want: this converter drops
     // every key in `DROP` and still passes, because "names no member" is the
     // whole test. No such shape is a hand-off callee in the tree today, but
-    // `glue-provider.ts`'s `renameRecordKeys` is the same shape one opt-in away.
+    // `glue-provider.ts`'s `renameRecordKeys` is the same shape.
     // If a future change makes this expectation FAIL, that is an improvement —
     // update the module header's known bound (5) with the new measurement.
     const points = pointsOf(`
@@ -1860,23 +1710,22 @@ describe('the SPREAD-AND-PATCH forwarder (synthetic, issue #1475)', () => {
     ]);
   });
 
-  it('classifyTarget lands an excluded same-spelling key in no-write-evidence', () => {
+  it('an excluded key is not delivered whole, while its un-excluded sibling is', () => {
+    // The spread-and-patch exclusion as the shape pass consumes it: a member the
+    // converter `delete`s is re-shaped by hand, so the spread must not count as
+    // delivering it.
     const evidence: ProviderWriteEvidence = {
-      written: new Set(['DistributionConfig']),
       scopes: new Map([['DistributionConfig', new Set<string>()]]),
       handoffScopes: new Set(['DistributionConfig']),
       handoffExclusions: new Map([['DistributionConfig', new Set(['ipv6enabled'])]]),
     };
-    const out = classifyTarget(
-      freshTarget,
+    const whole = wholeDeliveredPathsFor(
+      exactTarget,
       keyPaths('DistributionConfig', 'IPV6Enabled', 'PriceClass'),
       new Set(['IPV6Enabled', 'PriceClass']),
-      new Set<string>(),
-      new Map(),
       evidence
     );
-    expect(bucketOf(out, 'IPV6Enabled')).toBe('no-write-evidence');
-    expect(bucketOf(out, 'PriceClass')).toBe('same-spelling');
+    expect([...whole]).toEqual(['DistributionConfig.PriceClass']);
   });
 });
 
@@ -2007,7 +1856,6 @@ describe('reachableSdkMemberNames + hand-off credit bounding (issues #1445 / #14
     // Why `minHandoffPoints` counts expanding points: a raw count is dominated
     // by scalar forwards that can never clear an audited path.
     const evidence: ProviderWriteEvidence = {
-      written: new Set(['linuxParameters', 'name', 'swappiness']),
       scopes: new Map(),
       handoffScopes: new Set([
         'containerDefinitions.linuxParameters',
@@ -2020,7 +1868,6 @@ describe('reachableSdkMemberNames + hand-off credit bounding (issues #1445 / #14
 
   it('counts zero when the provider hands nothing off', () => {
     const evidence: ProviderWriteEvidence = {
-      written: new Set(['a']),
       scopes: new Map([['a', new Set(['b'])]]),
       handoffScopes: new Set(),
     };
@@ -2028,275 +1875,48 @@ describe('reachableSdkMemberNames + hand-off credit bounding (issues #1445 / #14
   });
 });
 
-describe('classifyTarget (synthetic)', () => {
-  const sdkMembers = new Set(['ACMCertificateArn', 'IsIPV6Enabled', 'Comment', 'items']);
-  const commentPath = keyPaths('Top', 'Comment');
-
-  it('a same-spelling key on a NON-fresh-object target stays silent without any write', () => {
-    // The forwarding case: the serializer carries the key through, so an
-    // absent write proves nothing. Guards the opt-in from becoming default-on.
-    const [e] = classifyTarget(exactTarget, commentPath, sdkMembers, new Set(), new Map());
-    expect(e?.bucket).toBe('same-spelling');
-  });
-
-  it('the audited unit is the PATH, not the bare key (#1448)', () => {
-    const entries = classifyTarget(
-      exactTarget,
-      [...keyPaths('Alpha', 'Comment'), ...keyPaths('Beta', 'Comment')],
-      sdkMembers,
-      new Set(),
-      new Map()
-    );
-    expect(entries.map((e) => e.nestedKey)).toEqual(['Alpha.Comment', 'Beta.Comment']);
-    expect(entries.map((e) => e.terminalKey)).toEqual(['Comment', 'Comment']);
-    expect(entries.map((e) => e.topLevelProperty)).toEqual(['Alpha', 'Beta']);
-  });
-
-  it('flags a same-spelling key with no write evidence on a fresh-object target (#1432)', () => {
-    const [e] = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), new Map());
-    expect(e?.bucket).toBe('no-write-evidence');
-    expect(e?.sdkNearMiss).toBe('Comment');
-  });
-
-  it('clears the same key once the provider writes the SDK member IN THAT SCOPE', () => {
-    const [e] = classifyTarget(
-      freshTarget,
-      commentPath,
-      sdkMembers,
-      new Set(),
-      new Map(),
-      writeEvidence({ Top: ['Comment'] })
-    );
-    expect(e?.bucket).toBe('same-spelling');
-  });
-
-  it('does NOT clear a key written under a DIFFERENT scope (the #1448 fix)', () => {
-    // The name-global model cleared this: `Comment` is written somewhere, so
-    // every `*.Comment` path was vouched for. Scoped evidence sees that the
-    // write is under `Elsewhere`, not under this path's `Top`.
-    const [e] = classifyTarget(
-      freshTarget,
-      commentPath,
-      sdkMembers,
-      new Set(),
-      new Map(),
-      writeEvidence({ Elsewhere: ['Comment'], Top: ['SomethingElse'] })
-    );
-    expect(e?.bucket).toBe('no-write-evidence');
-  });
-
-  it('does NOT clear a key when the top-level scope resolves to nothing at all', () => {
-    const [e] = classifyTarget(
-      freshTarget,
-      commentPath,
-      sdkMembers,
-      new Set(),
-      new Map(),
-      writeEvidence({ Comment: ['Comment'] }) // a scope NAMED like the key, not the parent
-    );
-    expect(e?.bucket).toBe('no-write-evidence');
-  });
-
-  it('does NOT let the loose literal heuristic rescue a missing write', () => {
-    // The CFn spelling named somewhere in the file is exactly the evidence
-    // #1432 says is insufficient for a fresh-object mapper.
-    const [e] = classifyTarget(
-      freshTarget,
-      commentPath,
-      sdkMembers,
-      new Set(['Comment']),
-      new Map()
-    );
-    expect(e?.bucket).toBe('no-write-evidence');
-  });
-
-  it('an allow-list entry silences a no-write-evidence key ONLY with the write pass opted in', () => {
-    const shapeOnly = new Map([
-      [allowKey(freshTarget.resourceType, 'Comment'), { rationale: 'deliberate' }],
-    ]);
-    // Default passes are ['key','shape'] — the #1378 cross-pass sharing, which
-    // predates the write pass and says nothing about delivery (#1448).
-    expect(
-      classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), shapeOnly)[0]?.bucket
-    ).toBe('no-write-evidence');
-
-    const writeOptIn = new Map([
-      [
-        allowKey(freshTarget.resourceType, 'Comment'),
-        { rationale: 'deliberate', passes: ['write'] as const },
-      ],
-    ]);
-    const [e] = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), writeOptIn);
-    expect(e?.bucket).toBe('allow-listed');
-    expect(e?.rationale).toBe('deliberate');
-    expect(e?.allowMatchKey).toBe('AWS::Fake::Thing#Comment');
-  });
-
-  it('a PATH-precise allow-list entry beats the terminal-name fallback', () => {
-    const allow = new Map([
-      [
-        allowKey(freshTarget.resourceType, 'Top.Comment'),
-        { rationale: 'scoped to this path', passes: ['write'] as const },
-      ],
-    ]);
-    const [scoped] = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), allow);
-    expect(scoped?.bucket).toBe('allow-listed');
-    expect(scoped?.allowMatchKey).toBe('AWS::Fake::Thing#Top.Comment');
-    // ...and it does NOT silence the same key under another top-level.
-    const [other] = classifyTarget(
-      freshTarget,
-      keyPaths('Other', 'Comment'),
-      sdkMembers,
-      new Set(),
-      allow
-    );
-    expect(other?.bucket).toBe('no-write-evidence');
-  });
-
-  it('lookupAllowEntry prefers the path, falls back to the terminal name', () => {
-    const allow = new Map([
-      [allowKey('T', 'A.B'), { rationale: 'path' }],
-      [allowKey('T', 'B'), { rationale: 'terminal' }],
-    ]);
-    expect(lookupAllowEntry(allow, 'T', 'A.B', 'B', 'key')?.entry.rationale).toBe('path');
-    expect(lookupAllowEntry(allow, 'T', 'C.B', 'B', 'key')?.entry.rationale).toBe('terminal');
-    expect(lookupAllowEntry(allow, 'T', 'C.B', 'B', 'write')).toBeUndefined();
-  });
-
-  it('lower-first styling applies to the write lookup on BOTH path segments', () => {
-    const camel = new Set(['batchReportMode']);
-    const lowerFirstFresh: NestedKeyTarget = {
-      ...exactTarget,
-      keyStyle: 'lower-first',
-      freshObjectMapper: true,
-    };
-    const path = keyPaths('BuildBatchConfig', 'BatchReportMode');
-    const [missing] = classifyTarget(
-      lowerFirstFresh,
-      path,
-      camel,
-      new Set(),
-      new Map(),
-      // the CFn spellings written. Since #1464 the PARENT is matched
-      // case-insensitively, so `BuildBatchConfig` resolves — the TERMINAL
-      // `BatchReportMode` is what fails, and it is the only one that may.
-      writeEvidence({ BuildBatchConfig: ['BatchReportMode'] })
-    );
-    expect(missing?.bucket).toBe('no-write-evidence');
-    const [ok] = classifyTarget(
-      lowerFirstFresh,
-      path,
-      camel,
-      new Set(),
-      new Map(),
-      writeEvidence({ buildBatchConfig: ['batchReportMode'] })
-    );
-    expect(ok?.bucket).toBe('same-spelling');
-  });
-
-  it('the PARENT chain is case-folded and the TERMINAL is NOT (#1464)', () => {
-    // `normalizeWritePath`'s whole contract, in one probe. The relaxation this
-    // PR adds is on a CI-BLOCKING pass, so both directions are pinned: a parent
-    // whose casing diverges (the real `EFSVolumeConfiguration` ->
-    // `efsVolumeConfiguration` shape) must still clear, and a TERMINAL whose
-    // casing diverges must still flag.
-    const fresh: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
-    const sdk = new Set(['RootDirectory']);
-    const path = keyPaths('Volumes', 'EFSVolumeConfiguration.RootDirectory');
-    const [parentDiverges] = classifyTarget(
-      fresh,
-      path,
-      sdk,
-      new Set(),
-      new Map(),
-      writeEvidence({ volumes: ['efsVolumeConfiguration'], 'volumes.efsVolumeConfiguration': ['RootDirectory'] })
-    );
-    expect(parentDiverges?.bucket, 'divergent PARENT casing clears').toBe('same-spelling');
-    const [terminalDiverges] = classifyTarget(
-      fresh,
-      path,
-      sdk,
-      new Set(),
-      new Map(),
-      writeEvidence({
-        Volumes: ['EFSVolumeConfiguration'],
-        'Volumes.EFSVolumeConfiguration': ['rootdirectory'],
-      })
-    );
-    expect(terminalDiverges?.bucket, 'divergent TERMINAL casing flags').toBe('no-write-evidence');
-  });
-
-  it('the case-fold is per LEVEL, not a global union of the write index (#1464)', () => {
-    // A whole-file lowercase fold merges the MEMBER SETS of every same-spelled
-    // scope — measured at 80 collision groups on `ecs-provider.ts`. Descending
-    // level by level keeps them apart: `a.Name` is matched against `a`'s own
-    // children only, so an unrelated root `name` cannot vouch for it.
-    const fresh: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
-    const [entry] = classifyTarget(
-      fresh,
-      keyPaths('Alpha', 'Name.Value'),
-      new Set(['Value']),
-      new Set(),
-      new Map(),
-      writeEvidence({
-        Alpha: ['Name'],
-        'Alpha.Name': [],
-        // A DIFFERENT `name` scope elsewhere in the file that DOES carry the
-        // member. A global fold would union it in and clear the path.
-        name: ['Value'],
-      })
-    );
-    expect(entry?.bucket).toBe('no-write-evidence');
-  });
-
-  it('segmentRenames resolves an intermediate segment the provider RENAMES (#1464)', () => {
+describe('wholeDeliveredPathsFor: segmentRenames (synthetic)', () => {
+  it('segmentRenames resolves an intermediate segment for the hand-off mapping (#1464)', () => {
     // The real shape: CFn `ProxyConfiguration.ProxyConfigurationProperties` is
     // the SDK's `ProxyConfiguration.properties`. Case-folding cannot bridge a
-    // rename, so without the map the children of a member the provider DOES
-    // write report `no-write-evidence`.
-    const target: NestedKeyTarget = { ...exactTarget, freshObjectMapper: true };
+    // rename, so without the map a hand-off recorded at the SDK spelling never
+    // reaches the CFn path beneath it.
     const paths = keyPaths('ProxyConfiguration', 'ProxyConfigurationProperties.Name');
-    const evidence = writeEvidence({
-      ProxyConfiguration: ['properties'],
-      'ProxyConfiguration.properties': ['Name'],
-    });
-    const [without] = classifyTarget(target, paths, new Set(['Name']), new Set(), new Map(), evidence);
-    expect(without?.bucket).toBe('no-write-evidence');
+    const evidence = writeEvidence(
+      { ProxyConfiguration: ['properties'], 'ProxyConfiguration.properties': [] },
+      ['ProxyConfiguration.properties']
+    );
+    expect([...wholeDeliveredPathsFor(exactTarget, paths, new Set(['Name']), evidence)]).toEqual(
+      []
+    );
     const renamed: NestedKeyTarget = {
-      ...target,
+      ...exactTarget,
       segmentRenames: { ProxyConfigurationProperties: 'properties' },
     };
     const used = new Set<string>();
-    const [with_] = classifyTarget(
-      renamed,
-      paths,
-      new Set(['Name']),
-      new Set(),
-      new Map(),
-      evidence,
-      used
-    );
-    expect(with_?.bucket).toBe('same-spelling');
+    expect([
+      ...wholeDeliveredPathsFor(renamed, paths, new Set(['Name']), evidence, used),
+    ]).toEqual(['ProxyConfiguration.ProxyConfigurationProperties.Name']);
     expect([...used]).toEqual(['ProxyConfigurationProperties']);
   });
 
   it('segmentRenames NEVER applies to the terminal segment (#1464)', () => {
-    // The terminal IS the audited key. Renaming it would let the map answer the
-    // pass's own question, which is the rubber stamp the whole critic avoids.
-    const target: NestedKeyTarget = {
-      ...exactTarget,
-      freshObjectMapper: true,
-      segmentRenames: { Name: 'properties' },
-    };
-    const [entry] = classifyTarget(
-      target,
-      keyPaths('Top', 'Name'),
-      new Set(['Name']),
-      new Set(),
-      new Map(),
-      writeEvidence({ Top: ['properties'] })
-    );
-    expect(entry?.bucket).toBe('no-write-evidence');
+    // The terminal IS the delivered member: renaming it would let the map pick
+    // which SDK member a forward carries. With `Name` absent from the SDK and
+    // only the rename's target present, a terminal rename would credit the
+    // path; it must not, and the entry must not be recorded as used.
+    const target: NestedKeyTarget = { ...exactTarget, segmentRenames: { Name: 'properties' } };
+    const evidence = writeEvidence({ Top: [] }, ['Top']);
+    const used = new Set<string>();
+    expect([
+      ...wholeDeliveredPathsFor(target, keyPaths('Top', 'Name'), new Set(['properties']), evidence, used),
+    ]).toEqual([]);
+    expect([...used]).toEqual([]);
+    // Control: the same hand-off DOES deliver the path when the SDK spells the
+    // terminal as CFn does, so the empty result above is about the rename.
+    expect([
+      ...wholeDeliveredPathsFor(target, keyPaths('Top', 'Name'), new Set(['Name']), evidence),
+    ]).toEqual(['Top.Name']);
   });
 
   it('a segmentRename whose UN-RENAMED chain resolves is reported unused (#1464)', () => {
@@ -2305,68 +1925,45 @@ describe('classifyTarget (synthetic)', () => {
     // is now redundant — so `findStaleSegmentRenames` forces its removal.
     const target: NestedKeyTarget = {
       ...exactTarget,
-      freshObjectMapper: true,
       segmentRenames: { Middle: 'renamedMiddle' },
     };
     const used = new Set<string>();
-    classifyTarget(
+    wholeDeliveredPathsFor(
       target,
       keyPaths('Top', 'Middle.Leaf'),
       new Set(['Leaf']),
-      new Set(),
-      new Map(),
       writeEvidence({ Top: ['Middle'], 'Top.Middle': ['Leaf'] }),
       used
     );
     expect([...used]).toEqual([]);
   });
 
-  it('a segmentRename stays USED when the provider stops writing the member (#1464)', () => {
-    // The fence must not MASK the finding it exists to make reachable. With
-    // neither chain resolving, the entry is still the right bridge and the
-    // divergence is the thing to report — a stale-map error standing in front
-    // of it would hide a real silent drop behind a tooling complaint.
+  it('a segmentRename stays USED when neither chain resolves (#1464)', () => {
+    // With the provider writing only the renamed spelling (or nothing at all),
+    // the entry is still the right bridge — a stale-map error here would stand
+    // in front of whatever the provider actually stopped doing.
     const target: NestedKeyTarget = {
       ...exactTarget,
-      freshObjectMapper: true,
       segmentRenames: { Middle: 'renamedMiddle' },
     };
     const used = new Set<string>();
-    const [entry] = classifyTarget(
+    wholeDeliveredPathsFor(
       target,
       keyPaths('Top', 'Middle.Leaf'),
       new Set(['Leaf']),
-      new Set(),
-      new Map(),
       writeEvidence({ Top: ['renamedMiddle'], 'Top.renamedMiddle': [] }),
       used
     );
-    expect(entry?.bucket).toBe('no-write-evidence');
     expect([...used]).toEqual(['Middle']);
   });
 
-  it('findStaleSegmentRenames reports the entry the classifier never needed', () => {
+  it('findStaleSegmentRenames reports the entry no path needed', () => {
     const target: NestedKeyTarget = {
       ...exactTarget,
       resourceType: 'AWS::Fake::Thing',
       segmentRenames: { Middle: 'renamedMiddle', Gone: 'nope' },
     };
-    const report = buildReport([
-      {
-        resourceType: target.resourceType,
-        providerFile: target.providerFile,
-        sdkClientPackage: target.sdkClientPackage,
-        keyStyle: target.keyStyle,
-        freshObjectMapper: true,
-        nestedKeyCount: 0,
-        entries: [],
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: ['Middle'],
-        usedTerminalRenames: [],
-      },
-    ]);
+    const report = buildReport([targetReport({ usedSegmentRenames: ['Middle'] })]);
     expect(findStaleSegmentRenames(report, [target])).toEqual(['AWS::Fake::Thing#Gone']);
   });
 
@@ -2376,400 +1973,54 @@ describe('classifyTarget (synthetic)', () => {
     // collision class that blocked the notification renames until scoping.
     const target: NestedKeyTarget = {
       ...exactTarget,
-      freshObjectMapper: true,
       segmentRenames: { 'S3Key.Rules': 'FilterRules' },
     };
-    const evidence = writeEvidence({
-      Top: ['S3Key', 'Lifecycle'],
-      'Top.S3Key': ['FilterRules'],
-      'Top.S3Key.FilterRules': ['Name'],
-      'Top.Lifecycle': ['Rules'],
-      'Top.Lifecycle.Rules': ['Name'],
-    });
+    const evidence = writeEvidence(
+      {
+        Top: ['S3Key', 'Lifecycle'],
+        'Top.S3Key': ['FilterRules'],
+        'Top.S3Key.FilterRules': ['Name'],
+        'Top.Lifecycle': ['Rules'],
+        'Top.Lifecycle.Rules': ['Name'],
+      },
+      ['Top.S3Key.FilterRules', 'Top.Lifecycle.Rules']
+    );
     const used = new Set<string>();
-    const [notif] = classifyTarget(
-      target,
-      keyPaths('Top', 'S3Key.Rules.Name'),
-      new Set(['Name']),
-      new Set(),
-      new Map(),
-      evidence,
-      used
-    );
-    expect(notif?.bucket).toBe('same-spelling');
+    expect([
+      ...wholeDeliveredPathsFor(target, keyPaths('Top', 'S3Key.Rules.Name'), new Set(['Name']), evidence, used),
+    ]).toEqual(['Top.S3Key.Rules.Name']);
     expect([...used]).toEqual(['S3Key.Rules']);
-    // The same-named `Rules` under a DIFFERENT parent is untouched: the
-    // scoped key does not match there, so the plain chain resolves and the
-    // used set stays empty.
+    // The same-named `Rules` under a DIFFERENT parent is untouched: the scoped
+    // key does not match there, so the plain chain maps onto its own hand-off
+    // and the used set stays empty.
     const usedElsewhere = new Set<string>();
-    const [lifecycle] = classifyTarget(
-      target,
-      keyPaths('Top', 'Lifecycle.Rules.Name'),
-      new Set(['Name']),
-      new Set(),
-      new Map(),
-      evidence,
-      usedElsewhere
-    );
-    expect(lifecycle?.bucket).toBe('same-spelling');
+    expect([
+      ...wholeDeliveredPathsFor(
+        target,
+        keyPaths('Top', 'Lifecycle.Rules.Name'),
+        new Set(['Name']),
+        evidence,
+        usedElsewhere
+      ),
+    ]).toEqual(['Top.Lifecycle.Rules.Name']);
     expect([...usedElsewhere]).toEqual([]);
   });
 
   it('a SCOPED segmentRenames key WINS over a bare-name entry for the same segment (#1540)', () => {
     const target: NestedKeyTarget = {
       ...exactTarget,
-      freshObjectMapper: true,
       segmentRenames: { Middle: 'bareTarget', 'Top.Middle': 'scopedTarget' },
     };
     const used = new Set<string>();
-    const [entry] = classifyTarget(
+    const whole = wholeDeliveredPathsFor(
       target,
       keyPaths('Top', 'Middle.Leaf'),
       new Set(['Leaf']),
-      new Set(),
-      new Map(),
-      writeEvidence({ Top: ['scopedTarget'], 'Top.scopedTarget': ['Leaf'] }),
+      writeEvidence({ Top: ['scopedTarget'], 'Top.scopedTarget': [] }, ['Top.scopedTarget']),
       used
     );
-    expect(entry?.bucket).toBe('same-spelling');
+    expect([...whole]).toEqual(['Top.Middle.Leaf']);
     expect([...used]).toEqual(['Top.Middle']);
-  });
-
-  it('terminalRenames redirects the terminal judgment to the declared SDK spelling (#1540)', () => {
-    // Pure rename: CFn `Enabled` is the SDK's `IsEnabled`. The check stays
-    // strict — the RENAMED member must be scope-written verbatim.
-    const paths = keyPaths('Top', 'Enabled');
-    const evidence = writeEvidence({ Top: ['IsEnabled'] });
-    const [without] = classifyTarget(
-      { ...exactTarget, freshObjectMapper: true },
-      paths,
-      new Set(['Enabled']),
-      new Set(),
-      new Map(),
-      evidence
-    );
-    expect(without?.bucket).toBe('no-write-evidence');
-    const target: NestedKeyTarget = {
-      ...exactTarget,
-      freshObjectMapper: true,
-      terminalRenames: { 'Top.Enabled': 'IsEnabled' },
-    };
-    const usedTerminals = new Set<string>();
-    const [with_] = classifyTarget(
-      target,
-      paths,
-      new Set(['Enabled']),
-      new Set(),
-      new Map(),
-      evidence,
-      undefined,
-      usedTerminals
-    );
-    expect(with_?.bucket).toBe('same-spelling');
-    expect([...usedTerminals]).toEqual(['Top.Enabled']);
-  });
-
-  it('a DOTTED terminalRenames value relocates the terminal under an inserted scope (#1540)', () => {
-    // Relocation: CFn puts `Prefix` at the config level, the SDK nests it
-    // under `Filter` — the value's non-last parts extend the parent chain.
-    const target: NestedKeyTarget = {
-      ...exactTarget,
-      freshObjectMapper: true,
-      terminalRenames: { 'Top.Prefix': 'Filter.Prefix' },
-    };
-    const [entry] = classifyTarget(
-      target,
-      keyPaths('Top', 'Prefix'),
-      new Set(['Prefix']),
-      new Set(),
-      new Map(),
-      writeEvidence({ Top: ['Filter'], 'Top.Filter': ['Prefix'] })
-    );
-    expect(entry?.bucket).toBe('same-spelling');
-  });
-
-  it('a terminalRenames entry whose PLAIN terminal resolves is reported unused (#1540)', () => {
-    // The staleness fence's input, mirroring segmentRenames: a redundant
-    // entry must be removed, and this is what caught the three hand-authored
-    // `BucketArn` / `BucketAccountId` entries the seed-key hand-off aliases
-    // already covered.
-    const target: NestedKeyTarget = {
-      ...exactTarget,
-      freshObjectMapper: true,
-      terminalRenames: { 'Top.Leaf': 'RenamedLeaf' },
-    };
-    const usedTerminals = new Set<string>();
-    classifyTarget(
-      target,
-      keyPaths('Top', 'Leaf'),
-      new Set(['Leaf']),
-      new Set(),
-      new Map(),
-      writeEvidence({ Top: ['Leaf'] }),
-      undefined,
-      usedTerminals
-    );
-    expect([...usedTerminals]).toEqual([]);
-  });
-
-  it('a terminalRenames entry stays USED when neither spelling resolves (#1540)', () => {
-    // Same negation as segmentRenames: the entry is still the right bridge,
-    // and the divergence — not a stale-map error — is what must surface.
-    const target: NestedKeyTarget = {
-      ...exactTarget,
-      freshObjectMapper: true,
-      terminalRenames: { 'Top.Leaf': 'RenamedLeaf' },
-    };
-    const usedTerminals = new Set<string>();
-    const [entry] = classifyTarget(
-      target,
-      keyPaths('Top', 'Leaf'),
-      new Set(['Leaf']),
-      new Set(),
-      new Map(),
-      writeEvidence({ Top: [] }),
-      undefined,
-      usedTerminals
-    );
-    expect(entry?.bucket).toBe('no-write-evidence');
-    expect([...usedTerminals]).toEqual(['Top.Leaf']);
-  });
-
-  it('findStaleTerminalRenames reports the entry the classifier never needed (#1540)', () => {
-    const target: NestedKeyTarget = {
-      ...exactTarget,
-      resourceType: 'AWS::Fake::Thing',
-      terminalRenames: { 'Top.Used': 'X', 'Top.Gone': 'Y' },
-    };
-    const report = buildReport([
-      {
-        resourceType: target.resourceType,
-        providerFile: target.providerFile,
-        sdkClientPackage: target.sdkClientPackage,
-        keyStyle: target.keyStyle,
-        freshObjectMapper: true,
-        nestedKeyCount: 0,
-        entries: [],
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: ['Top.Used'],
-      },
-    ]);
-    expect(findStaleTerminalRenames(report, [target])).toEqual(['AWS::Fake::Thing#Top.Gone']);
-  });
-
-  it('a no-write-evidence key is a CI-blocking divergence', () => {
-    const entries = classifyTarget(freshTarget, commentPath, sdkMembers, new Set(), new Map());
-    const report = buildReport([
-      {
-        resourceType: freshTarget.resourceType,
-        providerFile: freshTarget.providerFile,
-        sdkClientPackage: freshTarget.sdkClientPackage,
-        keyStyle: freshTarget.keyStyle,
-        freshObjectMapper: true,
-        nestedKeyCount: entries.length,
-        entries,
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: [],
-      },
-    ]);
-    expect(report.summary.noWriteEvidence).toBe(1);
-    expect(report.summary.freshObjectTargets).toBe(1);
-    const [d] = findDivergences(report);
-    expect(d?.bucket).toBe('no-write-evidence');
-    expect(d?.nestedKey).toBe('Top.Comment');
-    expect(d?.detail).toContain('never writes it');
-  });
-
-  it('classifies a same-spelling key as reachable', () => {
-    const [e] = classifyTarget(exactTarget, commentPath, sdkMembers, new Set(), new Map());
-    expect(e?.bucket).toBe('same-spelling');
-  });
-
-  it('classifies a provider-named key as provider-handled', () => {
-    // A target WITHOUT the write-evidence opt-in keeps the file-global
-    // literal rescue — there is no scope index to check against (#1393).
-    const [e] = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(['AcmCertificateArn']),
-      new Map()
-    );
-    expect(e?.bucket).toBe('provider-handled');
-  });
-
-  it('a fresh-object target rejects a file-global literal alone (#1393 item 2)', () => {
-    // The same call as above but on the opted-in target: the literal used to
-    // rescue this to `provider-handled`; without scoped delivery evidence the
-    // masked near-miss now surfaces (#1393 item 1).
-    const [e] = classifyTarget(
-      freshTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(['AcmCertificateArn']),
-      new Map()
-    );
-    expect(e?.bucket).toBe('case-divergence');
-    expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
-  });
-
-  it('a fresh-object target accepts the literal with a ci-matching SDK member written at the resolved scope (#1393 item 2)', () => {
-    const [e] = classifyTarget(
-      freshTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(['AcmCertificateArn']),
-      new Map(),
-      writeEvidence({ Top: ['ACMCertificateArn'] })
-    );
-    expect(e?.bucket).toBe('provider-handled');
-  });
-
-  it('a ci-matching write that is NOT an SDK member does not rescue (#1393 item 2)', () => {
-    // A provider writing a case-mangled non-member at the right scope is the
-    // bug itself, not evidence — the member check is load-bearing.
-    const [e] = classifyTarget(
-      freshTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(['AcmCertificateArn']),
-      new Map(),
-      writeEvidence({ Top: ['acmCERTIFICATEArn'] })
-    );
-    expect(e?.bucket).toBe('case-divergence');
-  });
-
-  it('a whole-blob hand-off does not vouch for a divergent key (#1393 item 2)', () => {
-    // A verbatim forward delivers the CFn spelling, which by this branch's
-    // premise matches no SDK member — the serializer drops it on the wire.
-    const [e] = classifyTarget(
-      freshTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(['AcmCertificateArn']),
-      new Map(),
-      writeEvidence({ Top: [] }, ['Top'])
-    );
-    expect(e?.bucket).toBe('case-divergence');
-  });
-
-  it('a declared terminal rename resolves a divergent key and is recorded as used (#1393 item 2)', () => {
-    const target: NestedKeyTarget = {
-      ...freshTarget,
-      terminalRenames: { 'Top.IPV6Enabled': 'IsIPV6Enabled' },
-    };
-    const usedTerminals = new Set<string>();
-    const [e] = classifyTarget(
-      target,
-      keyPaths('Top', 'IPV6Enabled'),
-      sdkMembers,
-      new Set(['IPV6Enabled']),
-      new Map(),
-      writeEvidence({ Top: ['IsIPV6Enabled'] }),
-      undefined,
-      usedTerminals
-    );
-    expect(e?.bucket).toBe('provider-handled');
-    expect([...usedTerminals]).toEqual(['Top.IPV6Enabled']);
-  });
-
-  it('a declared terminal rename that does not resolve keeps the divergence reported (#1393 item 2)', () => {
-    const target: NestedKeyTarget = {
-      ...freshTarget,
-      terminalRenames: { 'Top.IPV6Enabled': 'IsIPV6Enabled' },
-    };
-    const [e] = classifyTarget(
-      target,
-      keyPaths('Top', 'IPV6Enabled'),
-      sdkMembers,
-      new Set(['IPV6Enabled']),
-      new Map(),
-      writeEvidence({ Top: [] })
-    );
-    expect(e?.bucket).toBe('no-sdk-member');
-  });
-
-  it('flags a case-insensitive near-miss as case-divergence with the SDK member named', () => {
-    const [e] = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(),
-      new Map()
-    );
-    expect(e?.bucket).toBe('case-divergence');
-    expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
-  });
-
-  it('flags a key with no SDK member at all as no-sdk-member', () => {
-    const [e] = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'IPV6Enabled'),
-      sdkMembers,
-      new Set(),
-      new Map()
-    );
-    expect(e?.bucket).toBe('no-sdk-member');
-  });
-
-  it('classifies an allow-listed divergence as allow-listed with its rationale', () => {
-    const allow = new Map([
-      [allowKey('AWS::Fake::Thing', 'IPV6Enabled'), { rationale: 'legacy member' }],
-    ]);
-    const [e] = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'IPV6Enabled'),
-      sdkMembers,
-      new Set(),
-      allow
-    );
-    expect(e?.bucket).toBe('allow-listed');
-    expect(e?.rationale).toBe('legacy member');
-  });
-
-  it('an allow-listed near-miss still records the SDK member it shadows', () => {
-    const allow = new Map([
-      [allowKey('AWS::Fake::Thing', 'AcmCertificateArn'), { rationale: 'deliberate' }],
-    ]);
-    const [e] = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'AcmCertificateArn'),
-      sdkMembers,
-      new Set(),
-      allow
-    );
-    expect(e?.bucket).toBe('allow-listed');
-    expect(e?.sdkNearMiss).toBe('ACMCertificateArn');
-  });
-
-  it('matches lower-first style against camelCase SDK members', () => {
-    const target: NestedKeyTarget = { ...exactTarget, keyStyle: 'lower-first' };
-    const camelMembers = new Set(['maximumPercent', 's3filesVolumeConfiguration']);
-    const [max] = classifyTarget(
-      target,
-      keyPaths('Top', 'MaximumPercent'),
-      camelMembers,
-      new Set(),
-      new Map()
-    );
-    expect(max?.bucket).toBe('same-spelling');
-    // The irregular `s3filesVolumeConfiguration` (all-lowercase prefix) is NOT
-    // a first-letter flip of the CFn key — must flag unless provider-handled.
-    const [s3f] = classifyTarget(
-      target,
-      keyPaths('Top', 'S3FilesVolumeConfiguration'),
-      camelMembers,
-      new Set(),
-      new Map()
-    );
-    expect(s3f?.bucket).toBe('case-divergence');
-    expect(s3f?.sdkNearMiss).toBe('s3filesVolumeConfiguration');
   });
 
   it('lowerFirst flips only the first character', () => {
@@ -3058,113 +2309,34 @@ describe('report plumbing (positive direction)', () => {
   // make `--check` vacuously green while every other test stays passing.
   const sdkMembers = new Set(['ACMCertificateArn', 'Comment']);
 
-  it('findDivergences surfaces both blocking buckets through buildReport', () => {
-    const entries = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'AcmCertificateArn', 'NoSuchMember', 'Comment'),
-      sdkMembers,
-      new Set(),
-      new Map()
-    );
-    const report = buildReport([
-      {
-        resourceType: exactTarget.resourceType,
-        providerFile: exactTarget.providerFile,
-        sdkClientPackage: exactTarget.sdkClientPackage,
-        keyStyle: exactTarget.keyStyle,
-        freshObjectMapper: false,
-        nestedKeyCount: entries.length,
-        entries,
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: [],
-      },
-    ]);
-    const divergences = findDivergences(report);
-    expect(divergences.map((d) => [d.nestedKey, d.bucket])).toEqual([
-      ['Top.AcmCertificateArn', 'case-divergence'],
-      ['Top.NoSuchMember', 'no-sdk-member'],
-    ]);
-    expect(report.summary.caseDivergence).toBe(1);
-    expect(report.summary.noSdkMember).toBe(1);
-    expect(report.summary.sameSpelling).toBe(1);
-  });
-
-  it('findStaleAllowListEntries returns an entry that matches no audited divergence', () => {
+  it('findStaleAllowListEntries returns an entry that matches no allow-listed shape verdict', () => {
     const allow = new Map([
+      [allowKey('AWS::Fake::Thing', 'UsedKey'), { rationale: 'kept' }],
       [allowKey('AWS::Fake::Thing', 'GoneKey'), { rationale: 'obsolete' }],
     ]);
-    const entries = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'Comment'),
-      sdkMembers,
-      new Set(),
-      allow
-    );
     const report = buildReport([
-      {
-        resourceType: exactTarget.resourceType,
-        providerFile: exactTarget.providerFile,
-        sdkClientPackage: exactTarget.sdkClientPackage,
-        keyStyle: exactTarget.keyStyle,
-        freshObjectMapper: false,
-        nestedKeyCount: entries.length,
-        entries,
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: [],
-      },
+      targetReport({
+        shapeEntries: [
+          {
+            resourceType: exactTarget.resourceType,
+            nestedKey: 'UsedKey',
+            definition: 'Config',
+            pass: 'definition',
+            bucket: 'allow-listed',
+            rationale: 'kept',
+            allowMatchKey: allowKey('AWS::Fake::Thing', 'UsedKey'),
+          },
+        ],
+      }),
     ]);
     expect(findStaleAllowListEntries(report, allow)).toEqual(['AWS::Fake::Thing#GoneKey']);
   });
 
-  it('a TERMINAL-name allow entry that matched a PATH is not reported stale (#1448)', () => {
-    // The audited unit is `Top.IPV6Enabled`; the entry is keyed on the bare
-    // name. Re-deriving the allow key from `nestedKey` would call it stale.
-    const allow = new Map([
-      [allowKey('AWS::Fake::Thing', 'IPV6Enabled'), { rationale: 'legacy member' }],
-    ]);
-    const entries = classifyTarget(
-      exactTarget,
-      keyPaths('Top', 'IPV6Enabled'),
-      sdkMembers,
-      new Set(),
-      allow
-    );
-    expect(entries[0]?.bucket).toBe('allow-listed');
-    const report = buildReport([
-      {
-        resourceType: exactTarget.resourceType,
-        providerFile: exactTarget.providerFile,
-        sdkClientPackage: exactTarget.sdkClientPackage,
-        keyStyle: exactTarget.keyStyle,
-        freshObjectMapper: false,
-        nestedKeyCount: entries.length,
-        entries,
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: [],
-      },
-    ]);
-    expect(findStaleAllowListEntries(report, allow)).toEqual([]);
-  });
-
   it('findDivergences surfaces both SHAPE blocking buckets through buildReport (#1378)', () => {
     const report = buildReport([
-      {
-        resourceType: exactTarget.resourceType,
-        providerFile: exactTarget.providerFile,
-        sdkClientPackage: exactTarget.sdkClientPackage,
-        keyStyle: exactTarget.keyStyle,
-        freshObjectMapper: false,
-        nestedKeyCount: 0,
-        entries: [],
+      targetReport({
+        nestedKeyCount: 3,
+        wholeDeliveredPaths: ['Top.A', 'Top.B'],
         shapeEntries: [
           {
             resourceType: exactTarget.resourceType,
@@ -3181,12 +2353,16 @@ describe('report plumbing (positive direction)', () => {
             pass: 'definition',
             bucket: 'definition-member-missing',
           },
+          // Visible but NON-blocking: must not reach findDivergences.
+          {
+            resourceType: exactTarget.resourceType,
+            nestedKey: 'Mixed',
+            definition: 'Config',
+            pass: 'wrapper',
+            bucket: 'ambiguous',
+          },
         ],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: [],
-      },
+      }),
     ]);
     expect(findDivergences(report).map((d) => [d.nestedKey, d.bucket])).toEqual([
       ['WrappedList', 'array-vs-wrapper'],
@@ -3194,6 +2370,9 @@ describe('report plumbing (positive direction)', () => {
     ]);
     expect(report.summary.arrayVsWrapper).toBe(1);
     expect(report.summary.definitionMemberMissing).toBe(1);
+    expect(report.summary.shapeAmbiguous).toBe(1);
+    expect(report.summary.wholeDeliveredPathCount).toBe(2);
+    expect(report.summary.nestedKeyCount).toBe(3);
   });
 });
 
@@ -3287,26 +2466,22 @@ describe('loadReport loud-failure fences', () => {
     }
   });
 
-  it('fires the write-collector NAME floor (red direction, #1432 / #1448)', () => {
-    const cb = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
-    expect(() => loadReport([{ ...cb, minWrittenMembers: 100_000 }])).toThrow(
-      /written-member parse .* collapsed/
+  it('fires the write-SCOPE floor (red direction, #1448)', () => {
+    // Red direction for the floor `findStaleSegmentRenames` leans on. Reaching
+    // it through `--providers-dir=` would need a synthetic provider file, which
+    // proves less than the collector-level scenario test below (`a collapsed
+    // scope index still records every written name`).
+    const td = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::ECS::TaskDefinition')!;
+    expect(td.minWriteScopes, 'the probed target declares the floor').toBeDefined();
+    expect(() => loadReport([{ ...td, minWriteScopes: 100_000 }])).toThrow(
+      /write-scope resolution .* collapsed/
     );
   });
 
-  it('fires the write-SCOPE floor, and it is a SEPARATE fence from the name floor', () => {
-    // Red direction for the second floor. Deliberately named for what it pins
-    // — that the fence is wired and reachable — rather than for a scenario it
-    // does not build: reaching it through `--providers-dir=` would need a
-    // synthetic provider file, which proves less than the collector-level
-    // scenario test below (`the two collector outputs regress independently`).
-    const cb = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
-    expect(() => loadReport([{ ...cb, minWriteScopes: 100_000 }])).toThrow(
-      /write-scope resolution .* collapsed/
-    );
-    // ...and it is NOT the name floor firing under another message.
-    expect(() => loadReport([{ ...cb, minWriteScopes: 100_000 }])).not.toThrow(
-      /written-member parse/
+  it('fires the hand-off floor (red direction, #1445)', () => {
+    const svc = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::ECS::Service')!;
+    expect(() => loadReport([{ ...svc, minHandoffPoints: 100_000 }])).toThrow(
+      /whole-blob hand-off walk .* collapsed/
     );
   });
 
@@ -3374,8 +2549,8 @@ describe('shape pass (synthetic)', () => {
       new Map()
     );
     expect(result.entries[0]?.bucket).toBe('provider-handled');
-    // The KEY pass's strict set would NOT credit this (segment expansion is
-    // shape-pass-only).
+    // Segment expansion is the shape pass's own literal set; the raw set would
+    // NOT credit this.
     expect(expandLiteralSegments(new Set(['SomeParent.Aliases'])).has('Aliases')).toBe(true);
   });
 
@@ -3438,7 +2613,7 @@ describe('shape pass (synthetic)', () => {
     ).toBeUndefined();
   });
 
-  it('skips keys with no same-spelled SDK member anywhere (the KEY pass domain)', () => {
+  it('skips keys with no same-spelled SDK member anywhere (no interface to ask)', () => {
     const result = classifyTargetShapes(
       exactTarget,
       { DistributionConfig: { NoSuchKeyAnywhere: 'array' } },
@@ -3517,7 +2692,7 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
   // through `pascalToCamelCaseKeys` into an SDK interface with no such member.
   const iface = (members: Record<string, SdkMemberType>): Map<string, SdkMemberType> =>
     new Map(Object.entries(members));
-  const lowerFresh: NestedKeyTarget = { ...freshTarget, keyStyle: 'lower-first' };
+  const lowerFirstTarget: NestedKeyTarget = { ...exactTarget, keyStyle: 'lower-first' };
   const sdk = new Map<string, Map<string, SdkMemberType>>([
     [
       'CreateServiceRequest',
@@ -3558,7 +2733,7 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
     paths: readonly string[] | undefined
   ): string | undefined =>
     classifyTargetShapes(
-      lowerFresh,
+      lowerFirstTarget,
       defs,
       sdk,
       new Set(['AdvancedConfiguration']),
@@ -3590,21 +2765,19 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
     ).toBe('provider-handled');
   });
 
-  it('the key pass reports a path whose parent is handed off, never a per-member hand-off', () => {
-    const whole = new Set<string>();
-    classifyTarget(
-      lowerFresh,
+  it('the hand-off rule reports a path whose parent is handed off, never a per-member hand-off', () => {
+    // `loadBalancers.advancedConfiguration` is a SELF hand-off (the member
+    // itself is the forwarded value): it delivers the member's interior, not
+    // the member as an instance of its parent definition, so
+    // `LoadBalancers.AdvancedConfiguration` must stay out.
+    const whole = wholeDeliveredPathsFor(
+      lowerFirstTarget,
       nestedKeys,
       new Set(['advancedConfiguration', 'roleArn', 'targetGroupArn']),
-      new Set<string>(),
-      new Map(),
       writeEvidence({ loadBalancers: ['targetGroupArn'] }, [
         'vpcLatticeConfigurations',
         'loadBalancers.advancedConfiguration',
-      ]),
-      undefined,
-      undefined,
-      whole
+      ])
     );
     expect([...whole].sort()).toEqual([
       'VpcLatticeConfigurations.AdvancedConfiguration',
@@ -3613,21 +2786,15 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
     ]);
   });
 
-  it('the key pass reports a spread-and-patch parent for every member it does not delete', () => {
-    const whole = new Set<string>();
-    classifyTarget(
-      lowerFresh,
+  it('the hand-off rule reports a spread-and-patch parent for every member it does not delete', () => {
+    const whole = wholeDeliveredPathsFor(
+      lowerFirstTarget,
       nestedKeys,
       new Set(['advancedConfiguration', 'roleArn', 'targetGroupArn']),
-      new Set<string>(),
-      new Map(),
       {
         ...writeEvidence({ vpcLatticeConfigurations: ['roleArn'] }, ['vpcLatticeConfigurations']),
         handoffExclusions: new Map([['vpcLatticeConfigurations', new Set(['rolearn'])]]),
-      },
-      undefined,
-      undefined,
-      whole
+      }
     );
     expect([...whole].sort()).toEqual([
       'VpcLatticeConfigurations.AdvancedConfiguration',
@@ -3643,7 +2810,7 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
       Pair: { AdvancedConfiguration: 'object', RoleArn: 'scalar' },
     };
     const pairBucket = classifyTargetShapes(
-      lowerFresh,
+      lowerFirstTarget,
       withPair,
       sdk,
       new Set(['AdvancedConfiguration']),
@@ -3654,6 +2821,79 @@ describe('shape pass: a literal does not vouch for a member a generic converter 
     expect(
       latticeBucket(withPair, ['VpcLatticeConfigurations.AdvancedConfiguration'])
     ).toBe('definition-member-missing');
+  });
+
+  // End to end through `loadReport`, so the PLUMBING is pinned too: the real
+  // tree withdraws no rescue today, so a `loadReport` that stopped handing the
+  // whole-delivered paths to the shape pass would otherwise stay green.
+  describe('through loadReport (synthetic provider, fixture and SDK model)', () => {
+    const fakeTarget: NestedKeyTarget = {
+      resourceType: 'AWS::Fake::Thing',
+      providerFile: 'fake-provider.ts',
+      sdkClientPackage: '@aws-sdk/client-fake',
+      keyStyle: 'exact',
+      minNestedKeys: 3,
+    };
+    const filler = Array.from({ length: 60 }, (_, i) => `M${i}?: string;`).join(' ');
+    const providerSource = (outerWrite: string): string => `
+export class FakeProvider {
+  handledProperties = new Map<string, ReadonlySet<string>>([
+    ['AWS::Fake::Thing', new Set(['Outer', 'Other'])],
+  ]);
+  async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+    const outer = properties['Outer'] as Record<string, unknown>;
+    const other = properties['Other'] as Record<string, unknown>;
+    await this.client.send(new CreateThingCommand({ Outer: ${outerWrite}, Other: { Extra: other['Extra'] } }));
+  }
+}
+`;
+    const run = (outerWrite: string) => {
+      const root = mkdtempSync(join(tmpdir(), 'cdkd-nkc-4324-'));
+      try {
+        const models = join(root, 'models');
+        const fixtures = join(root, 'fixtures');
+        const providers = join(root, 'providers');
+        for (const d of [models, fixtures, providers]) mkdirSync(d, { recursive: true });
+        writeFileSync(
+          join(models, 'models_0.d.ts'),
+          'export interface CreateThingRequest { Outer?: Outer; Other?: Other; }\n' +
+            'export interface Outer { Name?: string; }\n' +
+            'export interface Other { Extra?: string; }\n' +
+            `export interface Filler { ${filler} }\n`
+        );
+        writeFileSync(
+          join(fixtures, 'AWS-Fake-Thing.json'),
+          JSON.stringify({
+            nestedPropertyPaths: { Outer: ['Name', 'Extra'], Other: ['Extra'] },
+            definitionShapes: {
+              Outer: { Name: 'scalar', Extra: 'scalar' },
+              Other: { Extra: 'scalar' },
+            },
+          })
+        );
+        writeFileSync(join(providers, 'fake-provider.ts'), providerSource(outerWrite));
+        const target = loadReport([fakeTarget], () => models, providers, fixtures).targets[0]!;
+        return {
+          whole: target.wholeDeliveredPaths,
+          bucket: target.shapeEntries.find((e) => e.definition === 'Outer' && e.nestedKey === 'Extra')
+            ?.bucket,
+        };
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+
+    it('a verbatim forward of the definition withdraws the literal rescue', () => {
+      const { whole, bucket } = run("properties['Outer']");
+      expect(whole).toContain('Outer.Extra');
+      expect(bucket).toBe('definition-member-missing');
+    });
+
+    it('a per-member write keeps the rescue (control)', () => {
+      const { whole, bucket } = run("{ Name: outer['Name'], Extra: outer['Extra'] }");
+      expect(whole).not.toContain('Outer.Extra');
+      expect(bucket).toBe('provider-handled');
+    });
   });
 });
 
@@ -3852,59 +3092,10 @@ describe('real-repo audit (regression floors)', () => {
     expect(cf!.nestedKeyCount).toBeGreaterThanOrEqual(100);
   });
 
-  it('fences the #1370/#1373-fixed CloudFront keys as provider-handled', () => {
-    const cf = report.targets.find((t) => t.resourceType === 'AWS::CloudFront::Distribution')!;
-    for (const key of [
-      'AcmCertificateArn',
-      'SslSupportMethod',
-      'IamCertificateId',
-      'IPV6Enabled',
-      'OriginCustomHeaders',
-    ]) {
-      expect(bucketOf(cf.entries, key), key).toBe('provider-handled');
-    }
-    // `OriginSSLProtocols` exists at TWO paths since the scoped literal rule
-    // (#1393 item 2) split their verdicts: the MODERN path resolves through
-    // its declared terminal rename, the legacy pre-2012 CustomOrigin path is
-    // a path-scoped allow-list entry.
-    const byPath = new Map(cf.entries.map((e) => [e.nestedKey, e.bucket]));
-    expect(byPath.get('DistributionConfig.Origins.CustomOriginConfig.OriginSSLProtocols')).toBe(
-      'provider-handled'
-    );
-    expect(byPath.get('DistributionConfig.CustomOrigin.OriginSSLProtocols')).toBe('allow-listed');
-  });
-
-  it('fences the #1373-fixed ECS S3FilesVolumeConfiguration as provider-handled', () => {
-    const td = report.targets.find((t) => t.resourceType === 'AWS::ECS::TaskDefinition')!;
-    expect(bucketOf(td.entries, 'S3FilesVolumeConfiguration')).toBe('provider-handled');
-  });
-
   it('audits the S3 Bucket target with a healthy nested-key count (#1430)', () => {
     const s3 = report.targets.find((t) => t.resourceType === 'AWS::S3::Bucket');
     expect(s3).toBeDefined();
     expect(s3!.nestedKeyCount).toBeGreaterThanOrEqual(100);
-  });
-
-  it('fences the S3 keys the critic can actually discriminate as provider-handled (#1430)', () => {
-    // The legacy-singular lifecycle keys' buckets depend on the provider
-    // still converting them (literal + resolving terminal rename). Since the
-    // scoped literal rule (#1393 item 2) the discrimination goes FURTHER than
-    // the literal: `TagFilters` / `TransitionInDays` — which the old
-    // file-global heuristic could never discriminate (named by the reverse
-    // map too) — are now write-verified per family through their terminal
-    // renames, and the strip probes below prove the write-side direction.
-    const s3 = report.targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
-    for (const key of [
-      'Transition',
-      'NoncurrentVersionTransition',
-      'NoncurrentVersionExpirationInDays',
-    ]) {
-      expect(bucketOf(s3.entries, key), key).toBe('provider-handled');
-    }
-    // EventBridgeEnabled is presence-encoded (the SDK block is an empty
-    // struct), so no write evidence can exist — it carries a reviewed
-    // allow-list entry since #1393 item 2.
-    expect(bucketOf(s3.entries, 'EventBridgeEnabled')).toBe('allow-listed');
   });
 
   it('audits the Lambda EventSourceMapping target with a healthy nested-key count (#1393 item 3)', () => {
@@ -3923,50 +3114,6 @@ describe('real-repo audit (regression floors)', () => {
       (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
     )!;
     expect(esm!.nestedKeyCount).toBeGreaterThan(declared.minNestedKeys);
-    // The eight verbatim-forwarded blobs the opt-in exists to fence are all
-    // actually reached — a `handledProperties` parse that lost them would
-    // leave this target vacuously clean rather than failing.
-    const tops = new Set(esm!.entries.map((e) => e.topLevelProperty));
-    for (const blob of [
-      'SelfManagedKafkaEventSourceConfig',
-      'AmazonManagedKafkaEventSourceConfig',
-      'DocumentDBEventSourceConfig',
-      'ScalingConfig',
-      'DestinationConfig',
-      'LoggingConfig',
-      'MetricsConfig',
-      'ProvisionedPollerConfig',
-    ]) {
-      expect(tops.has(blob), blob).toBe(true);
-    }
-  });
-
-  it('keeps the EventSourceMapping target OUT of the write-evidence pass (verbatim forwards)', () => {
-    // The decision the target comment records: the blobs are cast
-    // pass-throughs, so the key pass IS the audit. If a future change makes
-    // the provider hand-build SDK objects, this expectation is the prompt to
-    // re-measure and opt in rather than leave the write pass silently unused.
-    const esm = NESTED_KEY_TARGETS.find(
-      (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
-    )!;
-    expect(esm.freshObjectMapper).toBeUndefined();
-    expect(esm.minWrittenMembers).toBeUndefined();
-  });
-
-  it('allow-lists only the two EventSourceMapping Tags paths, for the list-to-map fold', () => {
-    const esm = report.targets.find(
-      (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
-    )!;
-    expect(
-      esm.entries.filter((e) => e.bucket === 'allow-listed').map((e) => e.nestedKey).sort()
-    ).toEqual(['Tags.Key', 'Tags.Value']);
-    // The #1384 key stays visible as provider-handled: the provider names the
-    // literal, which is the only evidence available for a map keyed by an
-    // enum value (the class this target deliberately does NOT close).
-    const byPath = new Map(esm.entries.map((e) => [e.nestedKey, e.bucket]));
-    expect(byPath.get('SelfManagedEventSource.Endpoints.KafkaBootstrapServers')).toBe(
-      'provider-handled'
-    );
   });
 
   it('audits the mixed-case-island targets with healthy nested-key counts (#1393 item 3)', () => {
@@ -3993,41 +3140,14 @@ describe('real-repo audit (regression floors)', () => {
       const audited = report.targets.find((t) => t.resourceType === type);
       expect(audited, type).toBeDefined();
       expect(audited!.nestedKeyCount, type).toBeGreaterThan(declared.get(type)!.minNestedKeys);
-      // Zero blocking findings at opt-in — every audited path is either
-      // same-spelling or demonstrably provider-handled, none allow-listed.
-      // Stated per type so a regression names the type rather than the summary.
-      for (const bucket of ['case-divergence', 'no-sdk-member', 'no-write-evidence']) {
-        expect(audited!.entries.filter((e) => e.bucket === bucket).map((e) => e.nestedKey), type)
-          .toEqual([]);
-      }
-      expect(audited!.entries.filter((e) => e.bucket === 'allow-listed'), type).toEqual([]);
     }
-    // The blobs the opt-in exists to fence are actually REACHED. Without this a
-    // `handledProperties` parse that lost them would leave the targets
-    // vacuously clean rather than failing.
-    const topsOf = (type: string): Set<string> =>
-      new Set(report.targets.find((t) => t.resourceType === type)!.entries.map(
-        (e) => e.topLevelProperty
-      ));
-    expect(topsOf('AWS::Events::Rule').has('Targets')).toBe(true);
-    expect(topsOf('AWS::Scheduler::Schedule').has('Target')).toBe(true);
-    expect(topsOf('AWS::Glue::Crawler').has('Targets')).toBe(true);
-    expect(topsOf('AWS::Glue::Table').has('TableInput')).toBe(true);
-    expect(topsOf('AWS::Glue::Table').has('OpenTableFormatInput')).toBe(true);
-    expect(topsOf('AWS::Glue::SecurityConfiguration').has('EncryptionConfiguration')).toBe(true);
   });
 
-  it('keeps the mixed-case-island targets OUT of the write-evidence pass (blob forwards)', () => {
-    // The decision each target comment records: these providers forward whole
-    // CFn blobs and patch only the divergent keys, so "does the provider write
-    // this SDK member" has no answer for the members it never names. If one of
-    // them is ever rewritten to hand-build its SDK object, this expectation is
-    // the prompt to re-measure and opt in rather than leave the pass unused.
-    //
-    // `AWS::Glue::Database` is deliberately NOT in this list: it is the one
-    // member of the slice whose forced-on measurement was a REAL drop, and
-    // issue #1807 fixed the provider and opted it in — so it is asserted the
-    // other way, in the write-evidence fence further down this file.
+  it('declares every mixed-case-island target `exact` (#1393 item 1)', () => {
+    // `exact` is the load-bearing half of the item-1 fix: declaring
+    // `lower-first` because a handful of members are camelCase would lowercase
+    // every PascalCase member before the whole-delivery lookup and re-hide the
+    // very islands this slice exists to surface.
     for (const type of [
       'AWS::Events::Rule',
       'AWS::Scheduler::Schedule',
@@ -4035,77 +3155,24 @@ describe('real-repo audit (regression floors)', () => {
       'AWS::Glue::Table',
       'AWS::Glue::Connection',
       'AWS::Glue::Trigger',
+      'AWS::Glue::Database',
       'AWS::Glue::SecurityConfiguration',
       'AWS::Glue::Job',
     ]) {
-      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type)!;
-      expect(target.freshObjectMapper, type).toBeUndefined();
-      expect(target.minWrittenMembers, type).toBeUndefined();
-      // `exact` is the load-bearing half of the item-1 fix: declaring
-      // `lower-first` because a handful of members are camelCase would
-      // lowercase every PascalCase member past the test and re-hide the very
-      // islands this slice exists to surface.
-      expect(target.keyStyle, type).toBe('exact');
+      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type);
+      expect(target, type).toBeDefined();
+      expect(target!.keyStyle, type).toBe('exact');
     }
   });
 
-  it('credits each mixed-case island to the provider conversion that handles it (#1393 item 1)', () => {
-    // The exact islands the #1393 sweep named, asserted as `provider-handled`
-    // per path. Each was verified against the provider's own conversion when
-    // the target was registered (`toSdkEcsParameters` / `toSdkTarget` /
-    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS` / `buildEncryptionConfiguration`), so a
-    // provider that DROPS one of those conversions re-surfaces the key as
-    // `case-divergence` or `no-sdk-member` and fails here by name — which is
-    // the whole point of registering the types.
-    const bucketsOf = (type: string): Map<string, string> =>
-      new Map(
-        report.targets
-          .find((t) => t.resourceType === type)!
-          .entries.map((e) => [e.nestedKey, e.bucket])
-      );
-    const rule = bucketsOf('AWS::Events::Rule');
-    for (const path of [
-      'Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration',
-      'Targets.EcsParameters.CapacityProviderStrategy.CapacityProvider',
-      'Targets.EcsParameters.CapacityProviderStrategy.Weight',
-      'Targets.EcsParameters.CapacityProviderStrategy.Base',
-      'Targets.EcsParameters.PlacementConstraints.Expression',
-      'Targets.EcsParameters.PlacementStrategies',
-      'Targets.EcsParameters.PlacementStrategies.Field',
-      'Targets.EcsParameters.TagList',
-    ]) {
-      expect(rule.get(path), path).toBe('provider-handled');
-    }
-    const schedule = bucketsOf('AWS::Scheduler::Schedule');
-    for (const path of [
-      // Scheduler's CFn spelling is `Awsvpc…`, EventBridge's is `AwsVpc…` — the
-      // reason both types are registered rather than one standing in for the
-      // other.
-      'Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration',
-      'Target.EcsParameters.CapacityProviderStrategy.CapacityProvider',
-      'Target.EcsParameters.PlacementConstraints.Type',
-      'Target.EcsParameters.PlacementStrategy.Field',
-    ]) {
-      expect(schedule.get(path), path).toBe('provider-handled');
-    }
-    expect(bucketsOf('AWS::Glue::Crawler').get('Targets.DynamoDBTargets.ScanRate')).toBe(
-      'provider-handled'
-    );
-    expect(
-      bucketsOf('AWS::Glue::SecurityConfiguration').get('EncryptionConfiguration.S3Encryptions')
-    ).toBe('provider-handled');
-    // `ScanAll` is the recorded SPLIT between the two passes, not an omission:
-    // the flat member index matches the PascalCase `ScanAll` of the sibling
-    // `MongoDBTarget` — the ONE crawler-target shape that spells it that way
-    // (`@aws-sdk/client-glue` `models_0.d.ts`, and the provider's own note on
-    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS` says the same) — so the key pass says
-    // `same-spelling` and only the shape pass sees that `DynamoDBTarget` has no
-    // such member. Pinned so a reader checking "is ScanAll fenced?" against one
-    // pass alone cannot be misled, and so a shape-pass regression shows up here.
-    expect(bucketsOf('AWS::Glue::Crawler').get('Targets.DynamoDBTargets.ScanAll')).toBe(
-      'same-spelling'
-    );
-    const crawlerShapes = report.targets.find((t) => t.resourceType === 'AWS::Glue::Crawler')!
+  it('credits Glue DynamoDBTarget.ScanAll to the provider conversion in the shape pass (#1393 item 1)', () => {
+    // `DynamoDBTarget` has no PascalCase `ScanAll` member — only the sibling
+    // `MongoDBTarget` spells it that way (`@aws-sdk/client-glue`
+    // `models_0.d.ts`) — so the definition sub-pass reports the divergence, and
+    // `CFN_TO_SDK_DYNAMODB_TARGET_KEYS` naming the CFn spelling is what rescues
+    // it. A provider that drops that conversion fails here by name.
+    const crawlerShapes = report.targets
+      .find((t) => t.resourceType === 'AWS::Glue::Crawler')!
       .shapeEntries.filter((e) => e.nestedKey === 'ScanAll');
     expect(crawlerShapes.map((e) => e.bucket)).toEqual(['provider-handled']);
   });
@@ -4188,234 +3255,11 @@ describe('real-repo audit (regression floors)', () => {
     expect(control.definitionRequired).toBeDefined();
   });
 
-  it('pins a per-BLOB path floor for every mixed-case-island target (#1393 item 3)', () => {
-    // `minNestedKeys` is an AGGREGATE, and the repo's checker rule is explicit
-    // that aggregate floors alone are insufficient because one dead shape hides
-    // under them. Measured here, the headroom is wide enough for that to be
-    // real rather than theoretical: `AWS::Glue::Crawler` could lose ALL FOUR of
-    // its non-`Targets` blobs (46 -> 40) and still clear its floor of 36;
-    // `AWS::Scheduler::Schedule` could lose `FlexibleTimeWindow` whole,
-    // `AWS::Events::Rule` its `Tags`, and `AWS::Glue::Job` three of its four
-    // blobs. So every registered blob gets its OWN floor, and a blob that
-    // disappears fails BY NAME. The table declares all 21 blobs of the nine new
-    // targets — complete for them, and NOT the 115 blobs of all 24 registered
-    // targets, which this test does not claim to cover.
-    //
-    // WHICH LEVEL THIS FENCE REACHES: TOP-LEVEL blobs only. The floors below
-    // still carry 8-14 paths of slack on the three big blobs, and a whole
-    // SECOND-LEVEL family fits inside that slack — `Rule.Targets` 74/60 hides
-    // `RedshiftDataParameters` (8), `Crawler.Targets` 40/32 hides `S3Targets`
-    // (7), `Table.TableInput` 58/46 hides `ViewDefinition` (10). The test
-    // immediately below is what closes that level; neither is sufficient alone.
-    //
-    // Floors are the measurement rounded down (or the measurement itself where
-    // the blob is 1-2 paths and there is no room to round), matching how
-    // `minNestedKeys` is set.
-    const PER_BLOB_FLOORS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
-      'AWS::Events::Rule': { Targets: 60, Tags: 2 },
-      'AWS::Scheduler::Schedule': { Target: 36, FlexibleTimeWindow: 2 },
-      'AWS::Glue::Crawler': {
-        Targets: 32,
-        SchemaChangePolicy: 2,
-        LakeFormationConfiguration: 2,
-        RecrawlPolicy: 1,
-        Schedule: 1,
-      },
-      'AWS::Glue::Table': { TableInput: 46, OpenTableFormatInput: 24 },
-      'AWS::Glue::Connection': { ConnectionInput: 29 },
-      'AWS::Glue::Trigger': { Actions: 5, Predicate: 5, EventBatchingCondition: 2 },
-      'AWS::Glue::Database': { DatabaseInput: 12 },
-      'AWS::Glue::SecurityConfiguration': { EncryptionConfiguration: 7 },
-      'AWS::Glue::Job': {
-        Command: 3,
-        Connections: 1,
-        ExecutionProperty: 1,
-        NotificationProperty: 1,
-      },
-    };
-    // Every declared blob must still be REACHED, with at least its floor. A
-    // blob that vanishes counts 0 and fails BY NAME, so no separate presence
-    // loop is needed — every floor here is >= 1, which is why the `counts.has`
-    // loop this test used to carry was dead code and has been removed.
-    for (const [type, floors] of Object.entries(PER_BLOB_FLOORS)) {
-      const target = report.targets.find((t) => t.resourceType === type)!;
-      const counts = new Map<string, number>();
-      for (const e of target.entries) {
-        counts.set(e.topLevelProperty, (counts.get(e.topLevelProperty) ?? 0) + 1);
-      }
-      for (const [blob, floor] of Object.entries(floors)) {
-        expect(floor, `${type} ${blob} floor must be >= 1 to imply presence`)
-          .toBeGreaterThanOrEqual(1);
-        expect(counts.get(blob) ?? 0, `${type} ${blob}`).toBeGreaterThanOrEqual(floor);
-      }
-    }
-  });
-
-  it('pins a SECOND-LEVEL family floor so no sub-shape hides in the blob slack (#1393 item 3)', () => {
-    // The per-blob floors above stop a whole BLOB vanishing; they do not stop a
-    // whole second-level FAMILY vanishing inside a big blob's slack, and the
-    // measured slack is wide enough for that to be real: `Events::Rule.Targets`
-    // is 74 against a floor of 60, `Scheduler.Target` 45/36, `Crawler.Targets`
-    // 40/32. Within 8-14 paths of slack an entire family disappears silently —
-    // including ALL EIGHT crawler-target families, of which
-    // `Targets.DynamoDBTargets` is 4 paths and is the `scanRate` island's own
-    // home, i.e. the exact shape this whole registration exists to fence.
-    //
-    // Scope: every second-level family that is a COMPOSITE shape (>= 2 paths).
-    // A 1-path second level is a scalar leaf of the blob (`Targets.Arn`) and is
-    // already covered by the blob floor. `AWS::Glue::Job` has no composite
-    // family at all — all four of its blobs are flat — so it is absent here by
-    // measurement, not by omission.
-    //
-    // Floors: measured * 0.8 floored for families above 4 paths, the
-    // measurement itself at or below 4 (no room to round without the floor
-    // ceasing to fence). Same convention as PER_BLOB_FLOORS.
-    const SECOND_LEVEL_FAMILY_FLOORS: Readonly<
-      Record<string, Readonly<Record<string, number>>>
-    > = {
-      'AWS::Events::Rule': {
-        'Targets.AppSyncParameters': 2,
-        'Targets.BatchParameters': 5,
-        'Targets.DeadLetterConfig': 2,
-        'Targets.EcsParameters': 22,
-        'Targets.HttpParameters': 4,
-        'Targets.InputTransformer': 3,
-        'Targets.KinesisParameters': 2,
-        'Targets.RedshiftDataParameters': 6,
-        'Targets.RetryPolicy': 3,
-        'Targets.RunCommandParameters': 4,
-        'Targets.SageMakerPipelineParameters': 4,
-        'Targets.SqsParameters': 2,
-      },
-      'AWS::Scheduler::Schedule': {
-        'Target.DeadLetterConfig': 2,
-        'Target.EcsParameters': 20,
-        'Target.EventBridgeParameters': 3,
-        'Target.KinesisParameters': 2,
-        'Target.RetryPolicy': 3,
-        'Target.SageMakerPipelineParameters': 4,
-        'Target.SqsParameters': 2,
-      },
-      // All eight crawler-target families, the reviewer's named case.
-      'AWS::Glue::Crawler': {
-        'Targets.CatalogTargets': 4,
-        'Targets.DeltaTargets': 4,
-        'Targets.DynamoDBTargets': 4,
-        'Targets.HudiTargets': 4,
-        'Targets.IcebergTargets': 4,
-        'Targets.JdbcTargets': 4,
-        'Targets.MongoDBTargets': 3,
-        'Targets.S3Targets': 5,
-      },
-      'AWS::Glue::Table': {
-        'OpenTableFormatInput.IcebergInput': 24,
-        'TableInput.PartitionKeys': 4,
-        'TableInput.StorageDescriptor': 24,
-        'TableInput.TargetTable': 4,
-        'TableInput.ViewDefinition': 8,
-      },
-      'AWS::Glue::Connection': {
-        'ConnectionInput.AuthenticationConfiguration': 18,
-        'ConnectionInput.PhysicalConnectionRequirements': 4,
-      },
-      'AWS::Glue::Trigger': {
-        'Actions.NotificationProperty': 2,
-        'Predicate.Conditions': 4,
-      },
-      'AWS::Glue::Database': {
-        'DatabaseInput.CreateTableDefaultPermissions': 4,
-        'DatabaseInput.FederatedDatabase': 3,
-        'DatabaseInput.TargetDatabase': 4,
-      },
-      'AWS::Glue::SecurityConfiguration': {
-        'EncryptionConfiguration.CloudWatchEncryption': 3,
-        'EncryptionConfiguration.JobBookmarksEncryption': 3,
-        'EncryptionConfiguration.S3Encryptions': 3,
-      },
-    };
-    for (const [type, floors] of Object.entries(SECOND_LEVEL_FAMILY_FLOORS)) {
-      const target = report.targets.find((t) => t.resourceType === type)!;
-      const counts = new Map<string, number>();
-      for (const e of target.entries) {
-        const segments = e.nestedKey.split('.');
-        if (segments.length < 2) continue;
-        const family = `${segments[0]}.${segments[1]}`;
-        counts.set(family, (counts.get(family) ?? 0) + 1);
-      }
-      for (const [family, floor] of Object.entries(floors)) {
-        expect(counts.get(family) ?? 0, `${type} ${family}`).toBeGreaterThanOrEqual(floor);
-      }
-    }
-    // The island the registration exists for, stated on its own so a failure
-    // reads as what it is rather than as one row of a table.
-    const crawler = report.targets.find((t) => t.resourceType === 'AWS::Glue::Crawler')!;
-    expect(
-      crawler.entries
-        .filter((e) => e.nestedKey.startsWith('Targets.DynamoDBTargets.'))
-        .map((e) => e.nestedKey)
-        .sort()
-    ).toEqual([
-      'Targets.DynamoDBTargets.Path',
-      'Targets.DynamoDBTargets.ScanAll',
-      'Targets.DynamoDBTargets.ScanRate',
-    ]);
-  });
-
-  it('fences the ELEVEN Glue Database paths that used to reach no AWS call (#1393 item 3 / #1807)', () => {
-    // The INVERSE of the pin this test used to carry, kept for the same reason
-    // the S3 never-written pin was inverted after #1495: the drop is fixed, so
-    // an empty finding set IS the assertion and a re-drop fails BY NAME rather
-    // than as a bare count.
-    //
-    // `GlueProvider.buildDatabaseInput` was a fresh-object builder naming only
-    // `Name` / `Description` / `LocationUri` / `Parameters` while CFn and the
-    // SDK's `DatabaseInput` both also declare `TargetDatabase`,
-    // `FederatedDatabase` and `CreateTableDefaultPermissions` — same spelling
-    // on both sides, so every path is `same-spelling` and the key pass audits
-    // the type clean; only the write-evidence pass could ever see it, which is
-    // why the opt-in and the provider fix had to land together (#1807).
-    //
-    // If this fails, the provider stopped WRITING a member it declares — do not
-    // allow-list it, and do not drop `freshObjectMapper` to make it green.
-    const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::Glue::Database')!;
-    expect(target.freshObjectMapper, 'the write pass is what fences this type').toBe(true);
-    const glue = report.targets.find((t) => t.resourceType === 'AWS::Glue::Database')!;
-    expect(
-      glue.entries.filter((e) => e.bucket === 'no-write-evidence').map((e) => e.nestedKey)
-    ).toEqual([]);
-    // The eleven formerly-dropped paths, named so a regression reads as the
-    // members it lost rather than as a bucket count.
-    expect(
-      glue.entries
-        .filter((e) =>
-          /^DatabaseInput\.(TargetDatabase|FederatedDatabase|CreateTableDefaultPermissions)\b/.test(
-            e.nestedKey
-          )
-        )
-        .map((e) => `${e.nestedKey}:${e.bucket}`)
-        .sort()
-    ).toEqual([
-      'DatabaseInput.CreateTableDefaultPermissions.Permissions:same-spelling',
-      'DatabaseInput.CreateTableDefaultPermissions.Principal.DataLakePrincipalIdentifier:same-spelling',
-      'DatabaseInput.CreateTableDefaultPermissions.Principal:same-spelling',
-      'DatabaseInput.CreateTableDefaultPermissions:same-spelling',
-      'DatabaseInput.FederatedDatabase.ConnectionName:same-spelling',
-      'DatabaseInput.FederatedDatabase.Identifier:same-spelling',
-      'DatabaseInput.FederatedDatabase:same-spelling',
-      'DatabaseInput.TargetDatabase.CatalogId:same-spelling',
-      'DatabaseInput.TargetDatabase.DatabaseName:same-spelling',
-      'DatabaseInput.TargetDatabase.Region:same-spelling',
-      'DatabaseInput.TargetDatabase:same-spelling',
-    ]);
-  });
-
   it('pins the shape pass BLIND SPOT on these targets — unmatchedDefinitions (#1393 item 5)', () => {
-    // Bound (iii) in the script header. The shape pass is the backstop for the
-    // key pass's flat member index, but it only reaches a CFn definition that
-    // has a SAME-NAMED SDK interface. One that does not lands in
-    // `unmatchedDefinitions` and is audited by NEITHER a sound key check nor
-    // the shape pass — non-blocking by design, counted in the generated matrix,
-    // and until now pinned by nothing.
+    // Bound (iii) in the script header. The shape pass only reaches a CFn
+    // definition that has a SAME-NAMED SDK interface. One that does not lands in
+    // `unmatchedDefinitions` and is not shape-audited — non-blocking by design,
+    // counted in the generated matrix, and until now pinned by nothing.
     //
     // Pinned EXACTLY (not as a count) so the set cannot grow silently: a new
     // unmatched definition is a new hole and must be a deliberate edit here.
@@ -4440,11 +3284,6 @@ describe('real-repo audit (regression floors)', () => {
       'AWS::Glue::Job': ['DefaultArguments', 'NonOverridableArguments'],
       'AWS::Glue::Table': ['IcebergTableInput', 'SerdeInfo'],
     });
-  });
-
-  it('fences the #1304-fixed AnomalyDetector MetricTimeZone as provider-handled', () => {
-    const ad = report.targets.find((t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector')!;
-    expect(bucketOf(ad.entries, 'MetricTimeZone')).toBe('provider-handled');
   });
 
   it('shape pass reports zero blocking divergences with healthy floors (#1378)', () => {
@@ -4473,13 +3312,10 @@ describe('real-repo audit (regression floors)', () => {
     expect(cachedMethods?.bucket).toBe('provider-handled');
   });
 
-  it('fences the legacy S3Origin as shape-allow-listed (invisible to the key pass)', () => {
+  it('fences the legacy S3Origin as shape-allow-listed', () => {
     const cf = report.targets.find((t) => t.resourceType === 'AWS::CloudFront::Distribution')!;
     const s3Origin = cf.shapeEntries.find((e) => e.nestedKey === 'S3Origin');
     expect(s3Origin?.bucket).toBe('allow-listed');
-    // The key pass must NOT list S3Origin at all — the StreamingDistribution
-    // API's same-spelled member makes it same-spelling there.
-    expect(bucketOf(cf.entries, 'S3Origin')).toBe('same-spelling');
   });
 });
 
@@ -4493,20 +3329,20 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
   );
 
   it('reports VpcLatticeConfigurations as delivered whole, which the shape pass relies on (PR #4324)', () => {
+    // Pinned on the SHIPPED report field, so a regression anywhere between the
+    // walk and `TargetReport.wholeDeliveredPaths` (the shape pass's input)
+    // fails here rather than only in a unit of the walk.
     const ecsService = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::ECS::Service')!;
-    const whole = new Set<string>();
-    classifyTarget(
-      ecsService,
-      keyPaths('VpcLatticeConfigurations', 'PortName', 'RoleArn', 'TargetGroupArn'),
-      new Set(['portName', 'roleArn', 'targetGroupArn']),
-      new Set<string>(),
-      new Map(),
-      evidenceFor('ecs-provider.ts'),
-      undefined,
-      undefined,
-      whole
-    );
-    expect([...whole].sort()).toEqual([
+    const [svc] = loadReport([ecsService]).targets;
+    expect(
+      svc!.wholeDeliveredPaths.filter((p) => p.startsWith('VpcLatticeConfigurations.'))
+    ).toEqual([
+      // The PR #4324 path itself: `AdvancedConfiguration` is a real SDK member
+      // (of `LoadBalancer`), forwarded here whole into an interface without it.
+      'VpcLatticeConfigurations.AdvancedConfiguration',
+      'VpcLatticeConfigurations.AdvancedConfiguration.AlternateTargetGroupArn',
+      'VpcLatticeConfigurations.AdvancedConfiguration.ProductionListenerRule',
+      'VpcLatticeConfigurations.AdvancedConfiguration.TestListenerRule',
       'VpcLatticeConfigurations.PortName',
       'VpcLatticeConfigurations.RoleArn',
       'VpcLatticeConfigurations.TargetGroupArn',
@@ -4617,15 +3453,12 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     ]);
   });
 
-  it('holds the API Gateway v2 opt-in floors it declares', () => {
-    // Read the floors off the target table rather than restating them, so a
-    // recalibration cannot leave this assertion pinning the old numbers.
+  it('holds the API Gateway v2 hand-off floor it declares', () => {
+    // Read the floor off the target table rather than restating it, so a
+    // recalibration cannot leave this assertion pinning the old number.
     const apigw = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::ApiGatewayV2::Api')!;
+    expect(apigw.minHandoffPoints, 'the probed target declares the floor').toBeDefined();
     const evidence = evidenceFor('apigatewayv2-provider.ts');
-    expect(evidence.written.size).toBeGreaterThanOrEqual(apigw.minWrittenMembers!);
-    expect([...evidence.scopes.values()].filter((s) => s.size > 0).length).toBeGreaterThanOrEqual(
-      apigw.minWriteScopes!
-    );
     expect(
       countExpandingHandoffPoints(
         evidence,
@@ -4639,180 +3472,11 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     expect(allHandoffPoints(evidence).size).toBeGreaterThan(20);
   });
 
-  it('keeps CodeBuild independent of the walk (its opt-in predates it)', () => {
-    const codebuild = NESTED_KEY_TARGETS.find(
-      (t) => t.resourceType === 'AWS::CodeBuild::Project'
-    )!;
-    expect(codebuild.minHandoffPoints).toBeUndefined();
-  });
-
-  it('reproduces the measured opt-in table in the script header', () => {
-    // The header's before/after table is a CLAIM about the real tree; this is
-    // the fence that keeps it true. Every non-zero entry is a RECORDED reason a
-    // target stays out, so a provider fix (or a walk improvement) has to update
-    // the header rather than silently drift from it.
-    const forced = NESTED_KEY_TARGETS.map((t) => ({ ...t, freshObjectMapper: true }));
-    const report = loadReport(forced);
-    const counts = new Map(
-      report.targets.map((t) => [
-        t.resourceType,
-        t.entries.filter((e) => e.bucket === 'no-write-evidence').length,
-      ])
-    );
-    expect(Object.fromEntries(counts)).toEqual({
-      // 0 at opt-in (the issue #609 GraphQLApi backfill): every nested member
-      // of the five config blobs is named on the forward path, and the two
-      // `Tags.*` paths are allow-listed for the list-to-map fold.
-      'AWS::AppSync::GraphQLApi': 0,
-      // 0 at opt-in (issue #1597), but only after the fix: the opt-in run
-      // itself reported 10 — `HttpConfig.AuthorizationConfig` (the drop the
-      // issue named) and the `DynamoDBConfig.DeltaSyncConfig` / `.Versioned`
-      // family the critic found on its own — all of which are now forwarded.
-      'AWS::AppSync::DataSource': 0,
-      // 0 on the FIRST run: the #609 Resolver backfill had already wired every
-      // member of `CachingConfig` / `PipelineConfig` / `Runtime` / `SyncConfig`.
-      'AWS::AppSync::Resolver': 0,
-      'AWS::ApiGatewayV2::Api': 0,
-      'AWS::ApiGatewayV2::Authorizer': 0,
-      'AWS::ApiGatewayV2::Integration': 0,
-      'AWS::ApiGatewayV2::Route': 0,
-      'AWS::ApiGatewayV2::Stage': 0,
-      'AWS::CodeBuild::Project': 0,
-      'AWS::CloudFront::Distribution': 0,
-      'AWS::CloudWatch::AnomalyDetector': 0,
-      'AWS::ECS::Service': 0,
-      'AWS::ECS::TaskDefinition': 0,
-      // 0 at opt-in (issue #1393 item 3) even under the FORCED fresh-object
-      // pass, which is the measurement that says the real target does not
-      // need it: the provider forwards each blob verbatim
-      // (`params.X = properties['X'] as <SdkType>`), so the top-level member
-      // write vouches for every path beneath it and the write pass has
-      // nothing left to find.
-      'AWS::Lambda::EventSourceMapping': 0,
-      // 0 at opt-in (go-to-k/cdkd#4926): both providers hand-build every member.
-      'AWS::Lambda::NetworkConnector': 0,
-      'AWS::Lambda::WebFunctionRevision': 0,
-      'AWS::Lambda::WebFunctionEndpoint': 0,
-      // The mixed-case-island slice of issue #1393 item 3, measured under the
-      // FORCED pass at opt-in. FOUR of the nine are non-zero, and they do NOT
-      // all mean the same thing — the reviewer of the opt-in PR checked them
-      // one by one, and lumping them together as "members the provider
-      // legitimately never names" was wrong for one of the four:
-      //   - `Table` 36, `Trigger` 9, `SecurityConfiguration` 2 are FALSE
-      //     positives. Those builders name their full member set; the
-      //     residuals are shapes the write-SCOPE index cannot resolve, so
-      //     opting in would flag values that do reach AWS.
-      //   - `Database` was 11, a REAL SILENT DROP (`buildDatabaseInput` named
-      //     neither `TargetDatabase` nor `FederatedDatabase` nor
-      //     `CreateTableDefaultPermissions`). It was never a reason the pass
-      //     stays off — it was the reason the type had to opt IN, which issue
-      //     #1807 did after wiring all three blocks member-by-member, so the
-      //     count here is now 0 and the fence below asserts the empty set.
-      // The five zeros are the types whose blobs the recognizers already credit
-      // in full (the ECS-target and crawler-target families) or that carry no
-      // divergent key at all — for those the pass is merely redundant rather
-      // than wrong, which is why the decision is stated per type here.
-      'AWS::Events::Rule': 0,
-      'AWS::Scheduler::Schedule': 0,
-      'AWS::Glue::Crawler': 0,
-      'AWS::Glue::Connection': 0,
-      'AWS::Glue::Job': 0,
-      'AWS::Glue::Table': 36,
-      'AWS::Glue::Database': 0,
-      'AWS::Glue::Trigger': 9,
-      'AWS::Glue::SecurityConfiguration': 2,
-      // Key pass only (issue #4423): FALSE positives. Every Pipes blob reaches
-      // the SDK whole through a small converter that names a member or two,
-      // which the walk does not credit as a generic hand-off.
-      'AWS::Pipes::Pipe': 196,
-      // 81 before issue #1520 (segment renames + widened reverse-map
-      // exclusion, -> 50), 0 since issue #1540 (builder-behind-binding hop,
-      // for-of taint hop, scoped + terminal renames) opted the target in —
-      // the trajectory is recorded in header reason (C).
-      'AWS::S3::Bucket': 0,
-    });
-  });
-
-  // The two tests below used to carry a MEASURED LIMITATION: with the
-  // exclusion prefix-only (`readCurrentState`), the CFn-spelled writes #1495
-  // added inside `readEncryption` / `readLifecycle` / `readLogging` /
-  // `readReplication` landed in `evidence.written` and vouched for the forward
-  // mapper — a variant with the entire WRITE half reverted still reported all
-  // 17 members "written", so both tests passed on it and only the opaque count
-  // pin above failed. Issue #1520 widened the exclusion to the `read*` /
-  // `*ToCfn` reverse families, which makes the empty-never-written assertion a
-  // REAL by-name re-drop fence; the RED-direction probe further below proves
-  // that direction against the real provider source.
-  it('keeps S3 reason (C) CLOSED: the opted-in target audits at ZERO, with the once-never-written spellings covered by their declared bridges (#1495/#1520/#1540)', () => {
-    // Reason (C) in the header, RESOLVED in three steps this test's history
-    // mirrors: #1495 wired the 20 confirmed silent drops (the original pin),
-    // #1520 made the never-written set a real by-name fence (widened
-    // reverse-map exclusion), and #1540 closed the structural residual and
-    // opted the target in. The fence is now the OPT-IN itself — any provider
-    // re-drop or bridge regression surfaces as a `no-write-evidence` entry,
-    // which this asserts is empty on the REAL tree (and which `--check`
-    // blocks CI with, by member name).
-    const s3 = loadReport().targets.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
-    expect(s3.freshObjectMapper).toBe(true);
-    const flagged = s3.entries
-      .filter((e) => e.bucket === 'no-write-evidence')
-      .map((e) => e.nestedKey)
-      .sort();
-    expect(flagged).toEqual([]);
-    // The three CFn spellings the #1520-era fence pinned as "never written by
-    // design" are now COVERED, each through its declared bridge rather than a
-    // loose literal: `Enabled` via the `IsEnabled` terminal rename, the two
-    // `BucketArn`s via the hand-off seed-key alias of the bag-derived
-    // `Bucket: (s3Dest['BucketArn'] ?? …)` forwards. Asserted as
-    // `same-spelling` (the covered verdict) so a bridge regression re-flags
-    // them by name here as well as in `--check`.
-    for (const path of [
-      'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn',
-      'InventoryConfigurations.Destination.BucketArn',
-      'InventoryConfigurations.Enabled',
-    ]) {
-      const entry = s3.entries.find((e) => e.nestedKey === path);
-      expect(entry?.bucket, `${path} must be covered`).toBe('same-spelling');
-    }
-  });
-
-  it('pins the #1495 members as present in the write-evidence name set', () => {
-    // Companion to the fence above. Since #1520 widened the reverse-map
-    // exclusion, the read-side helpers no longer contribute these CFn
-    // spellings, so this now pins the FORWARD writes themselves: a provider
-    // re-drop (or a walk regression) makes a name vanish and fails here by
-    // member name.
-    const evidence = collectWriteEvidence(
-      readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8'),
-      's3-bucket-provider.ts'
-    );
-    for (const member of [
-      'TargetObjectKeyFormat',
-      'SimplePrefix',
-      'PartitionedPrefix',
-      'PartitionDateSource',
-      'AccessControlTranslation',
-      'Owner',
-      'EncryptionConfiguration',
-      'ReplicaKmsKeyID',
-      'Metrics',
-      'EventThreshold',
-      'ReplicationTime',
-      'SourceSelectionCriteria',
-      'ReplicaModifications',
-      'SseKmsEncryptedObjects',
-      'TransitionDefaultMinimumObjectSize',
-      'BlockedEncryptionTypes',
-      'EncryptionType',
-    ]) {
-      expect(evidence.written.has(member), `${member} must be WRITTEN (#1495)`).toBe(true);
-    }
-  });
-
-  it('RED probe (#1520): dropping a #1495 forward write is caught BY NAME, which the old prefix-only exclusion missed', () => {
-    // Real-code proof of what the #1520 widening closes. Renaming every quoted
-    // occurrence of `SseKmsEncryptedObjects` simulates the provider dropping
-    // the member's handling entirely — the exact #1495 regression shape.
+  it('RED probe (#1520): the widened reverse-map exclusion withdraws a read-back write the old prefix-only exclusion kept', () => {
+    // Real-code proof of what the #1520 widening closes: with only the FORWARD
+    // write of `SseKmsEncryptedObjects` stripped, a reverse read-back must not
+    // stand in for it in the write index (whose scopes the hand-off mapping and
+    // the `segmentRenames` staleness fence read).
     const source = readFileSync(
       join(PROVIDERS_DIR, 's3-bucket-provider.ts'),
       'utf8'
@@ -4828,23 +3492,21 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
 
     // Under the OLD prefix-only exclusion the regression is INVISIBLE: the
     // reverse write inside `readReplication` still contributes the CFn
-    // spelling, so `written` keeps the member — the documented limitation the
-    // two tests above used to carry.
+    // spelling, so the member keeps a recorded write.
     const oldExclusion = collectWriteEvidence(regressed, 's3-bucket-provider.ts', [
       'readCurrentState',
     ]);
-    expect(oldExclusion.written.has('SseKmsEncryptedObjects')).toBe(true);
+    expect(writtenNames(oldExclusion).has('SseKmsEncryptedObjects')).toBe(true);
 
-    // Under the widened DEFAULT exclusion the reverse body no longer vouches,
-    // so the member vanishes from `written` and the never-written fence above
-    // fails by name on exactly this variant.
+    // Under the widened DEFAULT exclusion the reverse body no longer
+    // contributes, so the member's write vanishes on exactly this variant.
     const widened = collectWriteEvidence(regressed, 's3-bucket-provider.ts');
-    expect(widened.written.has('SseKmsEncryptedObjects')).toBe(false);
+    expect(writtenNames(widened).has('SseKmsEncryptedObjects')).toBe(false);
 
     // ...and the unregressed source keeps the member under the SAME defaults,
     // so this probe cannot pass vacuously.
     const clean = collectWriteEvidence(source, 's3-bucket-provider.ts');
-    expect(clean.written.has('SseKmsEncryptedObjects')).toBe(true);
+    expect(writtenNames(clean).has('SseKmsEncryptedObjects')).toBe(true);
   });
 
   it('RED probe (#1540): dropping a lifecycle BUILDER mutation is caught at its scope', () => {
@@ -4852,8 +3514,8 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     // are built by mutating `sdkRule` inside a `.map()` callback held in a
     // plain binding — the exact shape the hop credits. Stripping the
     // `AbortIncompleteMultipartUpload` mutation must remove the member from
-    // the `LifecycleConfiguration.Rules` scope (which the opted-in write pass
-    // then flags by name), and the unregressed source must carry it — the
+    // the `LifecycleConfiguration.Rules` scope, and the unregressed source must
+    // carry it — the
     // credit comes from the real mutation write, not from anywhere looser.
     const source = readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8');
     const regressed = source.replace(
@@ -4900,400 +3562,11 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     // scoped `TagFilters` rename resolves against on the real tree.
     expect(ev.handoffScopes.has('MetricsConfiguration.Filter.And.TagFilters')).toBe(true);
   });
-
-  it('keeps the six #1472/#1473 ECS silent drops CLOSED (fixed, both targets opted in)', () => {
-    // Reason (A) in the header, RESOLVED: the six paths this test used to pin
-    // as no-write-evidence are now written by the provider (the port range
-    // explicitly, the blue/green block via the pascalToCamelCaseKeys
-    // hand-off), which is exactly what unblocked the ECS opt-in. Pinning the
-    // shipped targets at ZERO findings — by the same flagged() extraction the
-    // pre-fix pin used — is what turns each of the six from "known bug" into
-    // "non-regressing": dropping any one write re-fails this test by name.
-    const report = loadReport(
-      NESTED_KEY_TARGETS.filter((t) => t.providerFile === 'ecs-provider.ts')
-    );
-    const flagged = (type: string): string[] =>
-      report
-        .targets.find((t) => t.resourceType === type)!
-        .entries.filter((e) => e.bucket === 'no-write-evidence')
-        .map((e) => e.nestedKey)
-        .sort();
-    expect(flagged('AWS::ECS::TaskDefinition')).toEqual([]);
-    expect(flagged('AWS::ECS::Service')).toEqual([]);
-    // The shipped table entries carry the opt-in (not a forced override).
-    for (const t of NESTED_KEY_TARGETS.filter((x) => x.providerFile === 'ecs-provider.ts')) {
-      expect(t.freshObjectMapper, t.resourceType).toBe(true);
-    }
-  });
-
-  describe('re-flags the #1472/#1473 drops when their writes are deleted (real-code probes)', () => {
-    // Checker rules: a fence must be proven to FAIL. Strip each fix from a
-    // scratch COPY of the REAL providers tree (loadReport's providersDir
-    // seam) and the shipped opted-in targets must re-surface the exact
-    // pre-fix findings by name.
-    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-ecs-'));
-    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
-
-    const regressedProviders = (name: string, edit: (source: string) => string): string => {
-      const dir = join(scratch, name);
-      cpSync(PROVIDERS_DIR, dir, { recursive: true });
-      const path = join(dir, 'ecs-provider.ts');
-      const before = readFileSync(path, 'utf8');
-      const after = edit(before);
-      expect(after, `the ${name} probe changed nothing — anchor drifted?`).not.toBe(before);
-      writeFileSync(path, after);
-      return dir;
-    };
-
-    const flaggedFrom = (dir: string, type: string): string[] => {
-      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type)!;
-      return loadReport([target], undefined, dir)
-        .targets[0]!.entries.filter((e) => e.bucket === 'no-write-evidence')
-        .map((e) => e.nestedKey)
-        .sort();
-    };
-
-    it('ContainerDefinitions.PortMappings.ContainerPortRange (#1472)', () => {
-      const dir = regressedProviders('portrange', (source) =>
-        source.replace(/^\s*containerPortRange: m\['ContainerPortRange'\] as string \| undefined,\n/m, '')
-      );
-      expect(flaggedFrom(dir, 'AWS::ECS::TaskDefinition')).toEqual([
-        'ContainerDefinitions.PortMappings.ContainerPortRange',
-      ]);
-    });
-
-    it('the LoadBalancers blue/green block (#1473)', () => {
-      const dir = regressedProviders('bluegreen', (source) =>
-        source.replace(
-          /^\s*advancedConfiguration: lb\['AdvancedConfiguration'\]\n\s*\? \(pascalToCamelCaseKeys\(lb\['AdvancedConfiguration'\]\) as AdvancedConfiguration\)\n\s*: undefined,\n/m,
-          ''
-        )
-      );
-      expect(flaggedFrom(dir, 'AWS::ECS::Service')).toEqual([
-        'LoadBalancers.AdvancedConfiguration',
-        'LoadBalancers.AdvancedConfiguration.AlternateTargetGroupArn',
-        'LoadBalancers.AdvancedConfiguration.ProductionListenerRule',
-        'LoadBalancers.AdvancedConfiguration.RoleArn',
-        'LoadBalancers.AdvancedConfiguration.TestListenerRule',
-      ]);
-    });
-  });
-
-  it('keeps the CloudFront Distribution opt-in at ZERO findings (#1475)', () => {
-    // The positive half of the spread recognizer against REAL code: the 162
-    // paths reason (D) recorded as unmeasurable are delivered by the spread
-    // (bounded by the delete exclusions), except the two Tags entries that are
-    // genuinely written one SDK wrapper level below the CFn chain — those must
-    // stay VISIBLE as write-pass allow-list verdicts, never as silence.
-    const target = NESTED_KEY_TARGETS.find(
-      (t) => t.resourceType === 'AWS::CloudFront::Distribution'
-    )!;
-    expect(target.freshObjectMapper).toBe(true);
-    const entries = loadReport([target]).targets[0]!.entries;
-    expect(entries.filter((e) => e.bucket === 'no-write-evidence')).toEqual([]);
-    const writeAllowed = entries
-      .filter((e) => e.bucket === 'allow-listed' && e.sdkNearMiss === e.terminalKey)
-      .map((e) => e.nestedKey)
-      .sort();
-    expect(writeAllowed).toEqual(['Tags.Key', 'Tags.Value']);
-  });
-
-  it('keeps the CloudWatch AnomalyDetector opt-in at ZERO findings (#1474)', () => {
-    // The positive half of the builder recognizer against REAL code: the three
-    // paths reason (B) recorded as unmeasurable were never drops, and the
-    // shipped target now carries the opt-in rather than a forced override.
-    const target = NESTED_KEY_TARGETS.find(
-      (t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector'
-    )!;
-    expect(target.freshObjectMapper).toBe(true);
-    expect(
-      loadReport([target]).targets[0]!.entries.filter((e) => e.bucket === 'no-write-evidence')
-    ).toEqual([]);
-  });
-
-  describe('re-flags the builder-delivered writes when they are deleted (real-code probes)', () => {
-    // Checker rules again, now for the BUILDER recognizer: a fence that only
-    // ever CLEARS is a rubber stamp, so both directions are exercised against a
-    // scratch COPY of the REAL providers tree — the assignment ONTO the builder,
-    // and a hand-named member inside the value that assignment carries.
-    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-builder-'));
-    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
-
-    const regressed = (name: string, edit: (source: string) => string): string[] => {
-      const dir = join(scratch, name);
-      cpSync(PROVIDERS_DIR, dir, { recursive: true });
-      const path = join(dir, 'cloudwatch-anomaly-detector-provider.ts');
-      const before = readFileSync(path, 'utf8');
-      const after = edit(before);
-      expect(after, `the ${name} probe changed nothing — anchor drifted?`).not.toBe(before);
-      writeFileSync(path, after);
-      const target = NESTED_KEY_TARGETS.find(
-        (t) => t.resourceType === 'AWS::CloudWatch::AnomalyDetector'
-      )!;
-      return loadReport([target], undefined, dir)
-        .targets[0]!.entries.filter((e) => e.bucket === 'no-write-evidence')
-        .map((e) => e.nestedKey)
-        .sort();
-    };
-
-    it('deleting the `mapped.ExcludedTimeRanges = …` assignment re-flags all three', () => {
-      expect(
-        regressed('excludedranges', (source) =>
-          source.replace(
-            /^\s*if \(ranges !== undefined\) \{\n\s*mapped\.ExcludedTimeRanges = ranges\.map\(\(r\) => \(\{\n(?:.*\n)*?\s*\}\)\);\n\s*\}\n/m,
-            ''
-          )
-        )
-      ).toEqual([
-        'Configuration.ExcludedTimeRanges',
-        'Configuration.ExcludedTimeRanges.EndTime',
-        'Configuration.ExcludedTimeRanges.StartTime',
-      ]);
-    });
-
-    it('deleting one HAND-NAMED member inside the builder value re-flags only it', () => {
-      // The precision half: the builder credit must not blanket the value it
-      // carries. `StartTime` stays clean while `EndTime` flags.
-      expect(
-        regressed('endtime', (source) =>
-          source.replace("        EndTime: toDate(r['EndTime'], mask),\n", '')
-        )
-      ).toEqual(['Configuration.ExcludedTimeRanges.EndTime']);
-    });
-  });
-
-  describe('the EventSourceMapping opt-in fires on a real divergence (#1393 item 3)', () => {
-    // The target measures 0 findings today, which is exactly the state in
-    // which a fence can be vacuous — so prove the RED direction. The realistic
-    // regression for a VERBATIM forwarder is CFn-side: AWS publishes a nested
-    // member under one of the forwarded blobs whose SDK spelling differs (or
-    // does not exist), and the cast carries it to AWS as an unknown key with
-    // no code change to notice. Injected into a scratch COPY of the fixture
-    // tree via loadReport's fixtureDir seam, with the committed fixture
-    // untouched.
-    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-esm-'));
-    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
-
-    const withInjectedPath = (name: string, blob: string, path: string): string[] => {
-      const dir = join(scratch, name);
-      cpSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'), dir, { recursive: true });
-      const file = join(dir, 'AWS-Lambda-EventSourceMapping.json');
-      const fixture = JSON.parse(readFileSync(file, 'utf8')) as {
-        nestedPropertyPaths: Record<string, string[]>;
-      };
-      const before = fixture.nestedPropertyPaths[blob];
-      expect(before, `${blob} missing from the capture — anchor drifted?`).toBeDefined();
-      fixture.nestedPropertyPaths[blob] = [...before!, path];
-      writeFileSync(file, JSON.stringify(fixture, null, 2));
-      const target = NESTED_KEY_TARGETS.find(
-        (t) => t.resourceType === 'AWS::Lambda::EventSourceMapping'
-      )!;
-      return loadReport([target], undefined, undefined, dir)
-        .targets[0]!.entries.filter(
-          (e) => e.bucket === 'case-divergence' || e.bucket === 'no-sdk-member'
-        )
-        .map((e) => `${e.bucket}:${e.nestedKey}`)
-        .sort();
-    };
-
-    it('flags a nested member with NO SDK counterpart under a forwarded blob', () => {
-      expect(withInjectedPath('nomember', 'ScalingConfig', 'MaximumConcurrencyLimit')).toEqual([
-        'no-sdk-member:ScalingConfig.MaximumConcurrencyLimit',
-      ]);
-    });
-
-    it('flags a nested member the SDK spells with different CASE', () => {
-      // `MaximumPollers` exists on the SDK's ProvisionedPollerConfig; a
-      // CFn-side `Maximumpollers` would ride the cast unrecognized.
-      expect(
-        withInjectedPath('casediverge', 'ProvisionedPollerConfig', 'Maximumpollers')
-      ).toEqual(['case-divergence:ProvisionedPollerConfig.Maximumpollers']);
-    });
-  });
-
-  describe('the mixed-case-island opt-ins fire on a real divergence (#1393 item 3)', () => {
-    // All nine new targets measure 0 findings today, which is exactly the state
-    // in which a fence can be vacuous — so prove the RED direction, for each of
-    // the three clients and in BOTH blocking buckets. The realistic regression
-    // for a blob forwarder is CFn-side: AWS publishes a nested member under a
-    // forwarded blob whose SDK spelling differs (or does not exist), and the
-    // forward carries it to AWS as an unknown key with no code change to notice.
-    // Injected into a scratch COPY of the fixture tree through `loadReport`'s
-    // `fixtureDir` seam, with the committed fixtures untouched.
-    const scratch = mkdtempSync(join(tmpdir(), 'cdkd-nkc-island-'));
-    afterAll(() => rmSync(scratch, { recursive: true, force: true }));
-
-    const withInjectedPath = (
-      name: string,
-      type: string,
-      blob: string,
-      path: string
-    ): string[] => {
-      const dir = join(scratch, name);
-      cpSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas'), dir, { recursive: true });
-      const file = join(dir, `${type.replace(/::/g, '-')}.json`);
-      const fixture = JSON.parse(readFileSync(file, 'utf8')) as {
-        nestedPropertyPaths: Record<string, string[]>;
-      };
-      const before = fixture.nestedPropertyPaths[blob];
-      expect(before, `${blob} missing from the capture — anchor drifted?`).toBeDefined();
-      fixture.nestedPropertyPaths[blob] = [...before!, path];
-      writeFileSync(file, JSON.stringify(fixture, null, 2));
-      const target = NESTED_KEY_TARGETS.find((t) => t.resourceType === type)!;
-      return loadReport([target], undefined, undefined, dir)
-        .targets[0]!.entries.filter(
-          (e) => e.bucket === 'case-divergence' || e.bucket === 'no-sdk-member'
-        )
-        .map((e) => `${e.bucket}:${e.nestedKey}`)
-        .sort();
-    };
-
-    it('flags a camelCase-island near-miss under the EventBridge ECS target', () => {
-      // The island class item 1 named, in its most literal form: the SDK's
-      // `AwsVpcConfiguration.AssignPublicIp` against a CFn-side
-      // `AssignPublicIP`. Under `keyStyle: 'exact'` it reaches the near-miss
-      // bucket and is reported; under `lower-first` it would have been
-      // lowercased past the test, which is why the target declares `exact`.
-      expect(
-        withInjectedPath(
-          'rule-case',
-          'AWS::Events::Rule',
-          'Targets',
-          'EcsParameters.NetworkConfiguration.AwsVpcConfiguration.AssignPublicIP'
-        )
-      ).toEqual([
-        'case-divergence:Targets.EcsParameters.NetworkConfiguration.AwsVpcConfiguration.AssignPublicIP',
-      ]);
-    });
-
-    it('flags a nested member with NO SDK counterpart under the EventBridge ECS target', () => {
-      expect(
-        withInjectedPath(
-          'rule-missing',
-          'AWS::Events::Rule',
-          'Targets',
-          'EcsParameters.CapacityProviderStrategy.WeightPercent'
-        )
-      ).toEqual(['no-sdk-member:Targets.EcsParameters.CapacityProviderStrategy.WeightPercent']);
-    });
-
-    it('flags a nested member with NO SDK counterpart under the Scheduler ECS target', () => {
-      expect(
-        withInjectedPath(
-          'schedule-missing',
-          'AWS::Scheduler::Schedule',
-          'Target',
-          'EcsParameters.PlacementStrategy.Ordering'
-        )
-      ).toEqual(['no-sdk-member:Target.EcsParameters.PlacementStrategy.Ordering']);
-    });
-
-    it('flags a camelCase-island near-miss under the Scheduler ECS target', () => {
-      // The bucket this client was MISSING, and the one it can least afford to
-      // be missing: `AWS::Scheduler::Schedule` is registered precisely because
-      // its CFn spelling is `AwsvpcConfiguration` where EventBridge's is
-      // `AwsVpcConfiguration`, so the `keyStyle: 'exact'` behavior that routes
-      // an island to the near-miss bucket has to be proven RED for
-      // `@aws-sdk/client-scheduler` specifically — the EventBridge probe above
-      // proves it for a DIFFERENT client and a different spelling, and cannot
-      // stand in for it.
-      expect(
-        withInjectedPath(
-          'schedule-case',
-          'AWS::Scheduler::Schedule',
-          'Target',
-          'EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIP'
-        )
-      ).toEqual([
-        'case-divergence:Target.EcsParameters.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIP',
-      ]);
-    });
-
-    it('MEASURES the cross-type literal bleed across the seven shared-file Glue targets', () => {
-      // Not a fence — a pinned BOUND (header bound (i)). The seven Glue targets
-      // share ONE provider file, so the file-global literal pool the loose
-      // rescue draws on spans SEVEN resource types across eight classes, where
-      // the EventBridge and Scheduler files serve one class each.
-      //
-      // The pool sizes are ASSERTED rather than written in prose, because a
-      // prose count drifts silently the first time the file grows. These are
-      // order-of-magnitude floors/ceilings, not exact pins: what has to stay
-      // true is that the Glue pool is far larger than the single-class ones.
-      const poolSize = (file: string): number =>
-        collectStringLiterals(
-          readFileSync(join(PROVIDERS_DIR, file), 'utf8'),
-          file
-        ).size;
-      const gluePool = poolSize('glue-provider.ts');
-      expect(gluePool).toBeGreaterThan(200);
-      for (const single of ['eventbridge-rule-provider.ts', 'scheduler-schedule-provider.ts']) {
-        expect(poolSize(single), single).toBeLessThan(gluePool / 2);
-      }
-      //
-      // The consequence is demonstrated rather than argued: a key belonging to
-      // one Glue type is cleared by ANOTHER Glue type class's literal.
-      //
-      // `ScanRate` is the CRAWLER class's rename-map key; injected under
-      // `AWS::Glue::Job`'s `Command` blob it is still cleared.
-      expect(
-        withInjectedPath('bleed-job', 'AWS::Glue::Job', 'Command', 'ScanRate')
-      ).toEqual([]);
-      // `IcebergTableInput` is the TABLE class's refusal key; injected under
-      // the CRAWLER's `Targets` blob it is still cleared.
-      expect(
-        withInjectedPath('bleed-crawler', 'AWS::Glue::Crawler', 'Targets', 'IcebergTableInput')
-      ).toEqual([]);
-      // The CONTROL that makes the two above mean something: a name no class in
-      // the file mentions is correctly reported. Without it, both assertions
-      // would also pass if the target had simply stopped auditing.
-      expect(
-        withInjectedPath('bleed-control', 'AWS::Glue::Job', 'Command', 'ScanBudgetCeiling')
-      ).toEqual(['no-sdk-member:Command.ScanBudgetCeiling']);
-    });
-
-    it("flags a near-miss of Glue's scanRate island under the crawler DynamoDB target", () => {
-      // `Scanrate` vs the SDK's `scanRate`: the exact camelCase island whose
-      // sibling `ScanRate` the provider already renames. The rename map covers
-      // the spelling it knows; this proves the fence still catches the next one.
-      expect(
-        withInjectedPath(
-          'crawler-case',
-          'AWS::Glue::Crawler',
-          'Targets',
-          'DynamoDBTargets.Scanrate'
-        )
-      ).toEqual(['case-divergence:Targets.DynamoDBTargets.Scanrate']);
-    });
-
-    it('flags a near-miss under the Glue security-configuration encryption blob', () => {
-      // A different Glue provider class in the same file, so the fence is shown
-      // to reach past the one type whose islands motivated it.
-      expect(
-        withInjectedPath(
-          'seccfg-case',
-          'AWS::Glue::SecurityConfiguration',
-          'EncryptionConfiguration',
-          'S3Encryptions.KmsKeyARN'
-        )
-      ).toEqual(['case-divergence:EncryptionConfiguration.S3Encryptions.KmsKeyARN']);
-    });
-
-    it('flags a nested member with NO SDK counterpart under the Glue TableInput blob', () => {
-      expect(
-        withInjectedPath(
-          'table-missing',
-          'AWS::Glue::Table',
-          'TableInput',
-          'StorageDescriptor.CompressionCodec'
-        )
-      ).toEqual(['no-sdk-member:TableInput.StorageDescriptor.CompressionCodec']);
-    });
-  });
 });
 
 describe('real-code regression probes (per the repo checker rules)', () => {
-  // Prove each CI-blocking verdict against REAL code: strip the real
-  // provider's handling of a real key and assert the classifier flags it —
+  // Prove each CI-blocking shape verdict against REAL code: strip the real
+  // provider's handling of a real key and assert the shape pass flags it —
   // a synthetic fixture would share the checker's own blind spots.
   const cfTarget = NESTED_KEY_TARGETS.find(
     (t) => t.resourceType === 'AWS::CloudFront::Distribution'
@@ -5311,45 +3584,6 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     resolve(repoRoot, 'src/provisioning/providers/cloudfront-distribution-provider.ts'),
     'utf8'
   );
-  const cfNestedKeys = nestedKeyPathsForTarget(cfFixture, new Set(['DistributionConfig', 'Tags']));
-
-  // The scoped literal rule (#1393 item 2) judges these keys through the
-  // write index + declared terminal renames, so every probe classifies with
-  // the evidence collected from the SAME source it classifies (regressed
-  // probes collect from the regressed source — differing from the unregressed
-  // run ONLY by the strip).
-  const cfClassify = (source: string) =>
-    classifyTarget(
-      cfTarget,
-      cfNestedKeys,
-      cfSdkMembers,
-      collectStringLiterals(source),
-      undefined,
-      collectWriteEvidence(source, cfTarget.providerFile, REVERSE_MAP_FUNCTION_PREFIXES)
-    );
-
-  it('flags the real provider with the AcmCertificateArn conversion removed (the #1370 rename)', () => {
-    const regressed = cfSource.replaceAll('AcmCertificateArn', 'XcmCertificateArn');
-    const entries = cfClassify(regressed);
-    const [hit] = entriesFor(entries, 'AcmCertificateArn');
-    expect(hit?.bucket).toBe('case-divergence');
-    // The FULL chain since #1464 — the member lives under `ViewerCertificate`,
-    // which the flattened capture could not say.
-    expect(hit?.nestedKey).toBe('DistributionConfig.ViewerCertificate.AcmCertificateArn');
-    expect(hit?.sdkNearMiss).toBe('ACMCertificateArn');
-  });
-
-  it('flags the real provider with the OriginCustomHeaders rename removed (the #1373 catch)', () => {
-    const regressed = cfSource.replaceAll('OriginCustomHeaders', 'RemovedCustomHeaders');
-    expect(bucketOf(cfClassify(regressed), 'OriginCustomHeaders')).toBe('no-sdk-member');
-  });
-
-  it('the unregressed real provider classifies both keys as provider-handled', () => {
-    const entries = cfClassify(cfSource);
-    expect(bucketOf(entries, 'AcmCertificateArn')).toBe('provider-handled');
-    expect(bucketOf(entries, 'OriginCustomHeaders')).toBe('provider-handled');
-  });
-
   it('SDK member parse floor holds (parser-regression fence)', () => {
     expect(cfSdkMembers.size).toBeGreaterThanOrEqual(50);
     expect(cfSdkMembers.has('ACMCertificateArn')).toBe(true);
@@ -5407,403 +3641,16 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     ).toBe('provider-handled');
   });
 
-  // AWS::S3::Bucket (issue #1430). The target was added BECAUSE the #1388 /
-  // #1424 lifecycle defects were fixed by hand in PR #1426 with no mechanical
-  // backstop; these probes prove the critic would now reject each of those
-  // conversions being removed from the REAL provider, so the fixes cannot
-  // silently regress. A synthetic fixture would only encode our own model of
-  // the defect (see the checker rules in .claude/rules/testing.md).
-  //
-  // The probed keys are chosen by MEASUREMENT: running the critic against the
-  // real pre-#1426 provider flags `Transition`, `NoncurrentVersionTransition`
-  // and `NoncurrentVersionExpirationInDays`, and each has exactly ONE literal
-  // occurrence today, so stripping it is a regression that can really happen.
-  // `TagFilters` (17 occurrences) and `TransitionInDays` (4) are excluded: the
-  // extra sites are `readCurrentState`'s reverse map, so a strip-EVERY-
-  // occurrence probe on them would pass while testing a shape no real
-  // regression produces (#1393 item 2). An earlier draft of this file probed
-  // exactly those two and was green for that reason.
-  const s3Target = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::S3::Bucket')!;
-  const s3Fixture = JSON.parse(
-    readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-S3-Bucket.json'), 'utf8')
-  ) as { nestedPropertyPaths: Record<string, string[]> };
-  const s3SdkMembers = collectSdkMemberNames(
-    resolve(repoRoot, 'node_modules/@aws-sdk/client-s3/dist-types/models')
-  );
+  // Real-code anchors for the write COLLECTOR — the scope index the hand-off
+  // mapping and the `segmentRenames` staleness fence read.
   const s3Source = readFileSync(
     resolve(repoRoot, 'src/provisioning/providers/s3-bucket-provider.ts'),
     'utf8'
-  );
-  const s3HandledTopLevels = new Set([
-    'VersioningConfiguration',
-    'Tags',
-    'OwnershipControls',
-    'NotificationConfiguration',
-    'CorsConfiguration',
-    'LifecycleConfiguration',
-    'PublicAccessBlockConfiguration',
-    'BucketEncryption',
-    'LoggingConfiguration',
-    'WebsiteConfiguration',
-    'AccelerateConfiguration',
-    'MetricsConfigurations',
-    'AnalyticsConfigurations',
-    'IntelligentTieringConfigurations',
-    'InventoryConfigurations',
-    'ReplicationConfiguration',
-    'ObjectLockConfiguration',
-  ]);
-  const s3NestedKeys = nestedKeyPathsForTarget(s3Fixture, s3HandledTopLevels);
-
-  it('SDK member parse floor holds for the real S3 model (parser-regression fence)', () => {
-    expect(s3SdkMembers.size).toBeGreaterThanOrEqual(50);
-    // The lifecycle members the #1426 conversions map ONTO — if these vanish
-    // the probes below would pass vacuously.
-    expect(s3SdkMembers.has('NoncurrentDays')).toBe(true);
-    expect(s3SdkMembers.has('Tags')).toBe(true);
-  });
-
-  // Each of these has exactly ONE literal site in the real provider, so
-  // removing it is the regression a careless refactor actually produces.
-  // `EventBridgeEnabled` left this list with #1393 item 2: it is
-  // presence-encoded (no write to verify), so it is allow-list-gated now and
-  // probed separately below.
-  const S3_DISCRIMINATING_KEYS = [
-    'Transition',
-    'NoncurrentVersionTransition',
-    'NoncurrentVersionExpirationInDays',
-  ];
-
-  // Classify with the evidence collected from the SAME source (see the
-  // CloudFront probes above for why).
-  const s3Classify = (source: string, allowList?: Map<string, AllowListEntry>) =>
-    classifyTarget(
-      s3Target,
-      s3NestedKeys,
-      s3SdkMembers,
-      collectStringLiterals(source),
-      allowList,
-      collectWriteEvidence(source, s3Target.providerFile, REVERSE_MAP_FUNCTION_PREFIXES)
-    );
-
-  /**
-   * Strip every EVIDENCE-bearing spelling of a key from the source. The
-   * critic's evidence set is `collectStringLiterals`, which counts quoted
-   * literals AND object-literal property names — so a probe that rewrites
-   * only `'Key'` leaves a bare `Key:` behind and silently tests nothing. That
-   * is not hypothetical: `EventBridgeEnabled` is quoted on the write side and
-   * an object-literal key on the read side, and the first version of this
-   * probe passed for exactly that reason.
-   */
-  const stripKeyEvidence = (source: string, key: string): string =>
-    source
-      .replaceAll(`'${key}'`, `'Removed${key}'`)
-      // Anchored on a non-identifier boundary so probing `Transition` does not
-      // also rewrite `NoncurrentVersionTransition:`. Collateral stripping could
-      // only ever REMOVE evidence (each probe asserts its own key, so no false
-      // pass is reachable either way), but an unanchored probe does not mean
-      // what it says, and the next reader would have to re-derive that.
-      .replace(new RegExp(`(^|[^A-Za-z0-9_$])${key}:`, 'g'), `$1Removed${key}:`);
-
-  it('the probes below actually remove the key from the evidence set (probe-validity fence)', () => {
-    // Self-validation, and the reason it exists: without it a future refactor
-    // that introduces a THIRD evidence spelling would turn every strip-probe
-    // vacuous while leaving them green.
-    for (const key of S3_DISCRIMINATING_KEYS) {
-      expect(collectStringLiterals(s3Source).has(key), `${key} present before`).toBe(true);
-      expect(
-        collectStringLiterals(stripKeyEvidence(s3Source, key)).has(key),
-        `${key} still in evidence after strip`
-      ).toBe(false);
-    }
-    // The control: TagFilters CANNOT be stripped down to zero evidence by a
-    // realistic single-site regression, which is why it is not probed.
-    expect(s3Source.split(`'TagFilters'`).length - 1).toBeGreaterThan(1);
-  });
-
-  for (const key of S3_DISCRIMINATING_KEYS) {
-    it(`flags the real S3 provider with the ${key} conversion removed`, () => {
-      const entries = s3Classify(stripKeyEvidence(s3Source, key));
-      expect(bucketOf(entries, key), key).toBe('no-sdk-member');
-    });
-  }
-
-  it('flags AnalyticsConfigurations.TagFilters when its write-side conversion is removed (#1393 item 2)', () => {
-    // The expectation this test carried before #1393 item 2 was the honest
-    // statement of the OLD limit: `readCurrentState` still names the key and
-    // the evidence set was FILE-GLOBAL, so a broken write path kept the bucket
-    // `provider-handled`. The scoped rule closes exactly that: the analytics
-    // family's `TagFilters` is judged by its OWN terminal rename
-    // (`Filter.And.Tags`) resolving against the write index, so stripping the
-    // analytics And-branch write flips the path to `no-sdk-member` even though
-    // every `TagFilters` literal in the file survives the strip untouched.
-    const writeSite = 'analyticsConfig.Filter = { And: { Prefix: prefix, Tags: tagFilters } };';
-    expect(s3Source, 'write-site anchor still present').toContain(writeSite);
-    const regressed = s3Source.replace(
-      writeSite,
-      'analyticsConfig.Filter = { And: { Prefix: prefix } };'
-    );
-    const byPath = new Map(s3Classify(regressed).map((e) => [e.nestedKey, e.bucket]));
-    expect(byPath.get('AnalyticsConfigurations.TagFilters')).toBe('no-sdk-member');
-    // The sibling families are untouched by the strip — path-scoped renames
-    // cannot leak a neighbour's regression onto them.
-    expect(byPath.get('MetricsConfigurations.TagFilters')).toBe('provider-handled');
-    expect(byPath.get('IntelligentTieringConfigurations.TagFilters')).toBe('provider-handled');
-  });
-
-  it('lifecycle TagFilters stays allow-list-gated (the destructured-scope-gatherer residue)', () => {
-    // The one TagFilters family the write walk still cannot see: the array
-    // reaches the write as a destructured member of `lifecycleRuleScope`'s returned
-    // literal (same class as its `.Key` / `.Value` write-pass entries). The
-    // allow entry is load-bearing: without it the UNREGRESSED provider flags,
-    // proving the key is reviewed rather than silently green.
-    const byPath = new Map(s3Classify(s3Source).map((e) => [e.nestedKey, e.bucket]));
-    expect(byPath.get('LifecycleConfiguration.Rules.TagFilters')).toBe('allow-listed');
-    const withoutEntry = new Map(NESTED_KEY_ALLOW_LIST);
-    withoutEntry.delete(allowKey('AWS::S3::Bucket', 'LifecycleConfiguration.Rules.TagFilters'));
-    const stripped = new Map(s3Classify(s3Source, withoutEntry).map((e) => [e.nestedKey, e.bucket]));
-    expect(stripped.get('LifecycleConfiguration.Rules.TagFilters')).toBe('no-sdk-member');
-  });
-
-  it('EventBridgeEnabled is allow-list-gated (presence-encoded, no write to verify)', () => {
-    // Same load-bearing proof for the presence-encoded boolean: the SDK
-    // EventBridgeConfiguration is an EMPTY struct, so no write evidence can
-    // exist and the scoped rule cannot rescue it — the reviewed allow entry
-    // is the fence, and removing it flags the key rather than passing green.
-    const byPath = new Map(s3Classify(s3Source).map((e) => [e.nestedKey, e.bucket]));
-    const path = 'NotificationConfiguration.EventBridgeConfiguration.EventBridgeEnabled';
-    expect(byPath.get(path)).toBe('allow-listed');
-    const withoutEntry = new Map(NESTED_KEY_ALLOW_LIST);
-    withoutEntry.delete(allowKey('AWS::S3::Bucket', path));
-    const stripped = new Map(s3Classify(s3Source, withoutEntry).map((e) => [e.nestedKey, e.bucket]));
-    expect(stripped.get(path)).toBe('no-sdk-member');
-  });
-
-  it('the unregressed real S3 provider classifies every probed key as provider-handled', () => {
-    const entries = s3Classify(s3Source);
-    for (const key of S3_DISCRIMINATING_KEYS) {
-      expect(bucketOf(entries, key), key).toBe('provider-handled');
-    }
-  });
-
-  // WRITE-EVIDENCE pass (issue #1432). Same real-code discipline: the bucket is
-  // CI-blocking, so it has to be shown rejecting a REAL regression. The probed
-  // defect is the one #1386 shipped and #1432 filed — `mapProperties` rebuilding
-  // `buildBatchConfig` without naming `batchReportMode`.
-  const cbTarget = NESTED_KEY_TARGETS.find((t) => t.resourceType === 'AWS::CodeBuild::Project')!;
-  const cbFixture = JSON.parse(
-    readFileSync(resolve(repoRoot, 'tests/fixtures/cfn-schemas/AWS-CodeBuild-Project.json'), 'utf8')
-  ) as { nestedPropertyPaths: Record<string, string[]> };
-  const cbSdkMembers = collectSdkMemberNames(
-    resolve(repoRoot, 'node_modules/@aws-sdk/client-codebuild/dist-types/models')
   );
   const cbSource = readFileSync(
     resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts'),
     'utf8'
   );
-  // The provider's OWN handled top-levels, exactly as `loadReport` scopes them
-  // — an unhandled top-level is pre-flight-rejected by `property-coverage`, so
-  // auditing its interior here would probe keys the critic never sees.
-  const cbHandledTopLevel = parseProviderSource(
-    cbSource,
-    resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts')
-  ).handled.get('AWS::CodeBuild::Project')!;
-  const cbNestedKeys = nestedKeyPathsForTarget(cbFixture, cbHandledTopLevel);
-  // The FORWARD mapper's single write site. Deleting just this line reproduces
-  // the #1386 defect exactly, and deliberately leaves `readCurrentState`'s
-  // reverse map (`bbc['BatchReportMode'] = project.buildBatchConfig.batchReportMode`)
-  // intact — the check must still fail with that vouching evidence present.
-  const CB_FORWARD_WRITE =
-    "batchReportMode: cfnBuildBatchConfig['BatchReportMode'] as BatchReportModeType | undefined,";
-
-  it('CodeBuild is opted into the write-evidence pass', () => {
-    expect(cbTarget.freshObjectMapper).toBe(true);
-  });
-
-  it('the forward-write anchor is still present (probe-validity fence)', () => {
-    expect(cbSource).toContain(CB_FORWARD_WRITE);
-  });
-
-  it('flags the real provider with the forward batchReportMode write deleted (#1386 / #1432)', () => {
-    const regressed = cbSource.replace(CB_FORWARD_WRITE, '');
-    const entries = classifyTarget(
-      cbTarget,
-      cbNestedKeys,
-      cbSdkMembers,
-      collectStringLiterals(regressed),
-      NESTED_KEY_ALLOW_LIST,
-      collectWriteEvidence(regressed)
-    );
-    const [hit] = entriesFor(entries, 'BatchReportMode');
-    expect(hit?.bucket).toBe('no-write-evidence');
-    expect(hit?.nestedKey).toBe('BuildBatchConfig.BatchReportMode');
-    expect(hit?.sdkNearMiss).toBe('batchReportMode');
-    // The reverse map still writes the CFn spelling and reads the SDK one —
-    // proving neither rescues the forward mapper.
-    expect(regressed).toContain("bbc['BatchReportMode'] = project.buildBatchConfig.batchReportMode");
-  });
-
-  it('the SAME regression is invisible without the pass (the gap #1432 filed)', () => {
-    const regressed = cbSource.replace(CB_FORWARD_WRITE, '');
-    const entries = classifyTarget(
-      { ...cbTarget, freshObjectMapper: false },
-      cbNestedKeys,
-      cbSdkMembers,
-      collectStringLiterals(regressed),
-      NESTED_KEY_ALLOW_LIST,
-      collectWriteEvidence(regressed)
-    );
-    expect(bucketOf(entries, 'BatchReportMode')).toBe('same-spelling');
-    expect(findDivergences(buildReport([
-      {
-        resourceType: cbTarget.resourceType,
-        providerFile: cbTarget.providerFile,
-        sdkClientPackage: cbTarget.sdkClientPackage,
-        keyStyle: cbTarget.keyStyle,
-        freshObjectMapper: false,
-        nestedKeyCount: entries.length,
-        entries,
-        shapeEntries: [],
-        shapeCleanCount: 0,
-        unmatchedDefinitions: [],
-        usedSegmentRenames: [],
-        usedTerminalRenames: [],
-      },
-    ]))).toHaveLength(0);
-  });
-
-  it('the unregressed real CodeBuild provider has zero no-write-evidence keys', () => {
-    const entries = classifyTarget(
-      cbTarget,
-      cbNestedKeys,
-      cbSdkMembers,
-      collectStringLiterals(cbSource),
-      NESTED_KEY_ALLOW_LIST,
-      collectWriteEvidence(cbSource)
-    );
-    expect(entries.filter((e) => e.bucket === 'no-write-evidence')).toHaveLength(0);
-    // Coverage floor: the pass must be auditing a real number of key PATHS, not
-    // vacuously green on an empty same-spelling set.
-    expect(entries.filter((e) => e.bucket === 'same-spelling').length).toBeGreaterThanOrEqual(80);
-  });
-
-  it('FENCES a MULTIPLY-written member once evidence is path-scoped (#1448)', () => {
-    // `BuildBatchConfig.ServiceRole` is the SIBLING of the member that motivated
-    // #1432 and the sharpest case of the name-global bound: deleting its forward
-    // write used to stay silent because the unrelated top-level `serviceRole:`
-    // write carried the same spelling. Scoped evidence looks only under
-    // `buildBatchConfig`, so the deletion is now a divergence.
-    const anchor = "serviceRole: cfnBuildBatchConfig['ServiceRole'] as string | undefined,";
-    expect(cbSource, 'anchor still present').toContain(anchor);
-    const regressed = cbSource.replace(anchor, '');
-    const evidence = collectWriteEvidence(regressed);
-    const entries = classifyTarget(
-      cbTarget,
-      cbNestedKeys,
-      cbSdkMembers,
-      collectStringLiterals(regressed),
-      NESTED_KEY_ALLOW_LIST,
-      evidence
-    );
-    const [hit] = entriesFor(entries, 'ServiceRole');
-    expect(hit?.nestedKey).toBe('BuildBatchConfig.ServiceRole');
-    expect(hit?.bucket).toBe('no-write-evidence');
-    // ...and the OLD name-global evidence still contains the spelling, which is
-    // what proves the scoping (not an unrelated parse change) is doing the work.
-    expect(evidence.written.has('serviceRole')).toBe(true);
-    expect(evidence.scopes.get('buildBatchConfig')?.has('serviceRole')).toBe(false);
-  });
-
-  it('FENCES a duplicate name INSIDE the same top-level (#1464 — the #1448 bound, inverted)', () => {
-    // The INVERSION of #1448's recorded bound. The fixture then flattened
-    // `Environment.Type` and `Environment.EnvironmentVariables.Type` into one
-    // audited path, so deleting either write left the other vouching for it and
-    // both genuine silent drops stayed silent. The per-PATH capture separates
-    // them, so each deletion now names ITS OWN path — and, just as importantly,
-    // leaves the cousin clean.
-    const cases = [
-      {
-        path: 'Environment.Type',
-        cousin: 'Environment.EnvironmentVariables.Type',
-        anchor:
-          "        type: readConfigString(\n" +
-          "          environment,\n" +
-          "          'Type',\n" +
-          "          'LINUX_CONTAINER',\n" +
-          "          'AWS::CodeBuild::Project Environment'\n" +
-          "        ) as EnvironmentType,\n",
-      },
-      {
-        path: 'Environment.EnvironmentVariables.Type',
-        cousin: 'Environment.Type',
-        anchor: "              type: (v.Type ?? 'PLAINTEXT') as EnvironmentVariableType,\n",
-      },
-    ];
-    for (const { path, cousin, anchor } of cases) {
-      expect(cbSource, `${path} anchor still present`).toContain(anchor);
-      const regressed = cbSource.replace(anchor, '');
-      const entries = classifyTarget(
-        cbTarget,
-        cbNestedKeys,
-        cbSdkMembers,
-        collectStringLiterals(regressed),
-        NESTED_KEY_ALLOW_LIST,
-        collectWriteEvidence(regressed)
-      );
-      expect(entries.find((e) => e.nestedKey === path)?.bucket, path).toBe('no-write-evidence');
-      expect(entries.find((e) => e.nestedKey === cousin)?.bucket, cousin).toBe('same-spelling');
-    }
-    // The UNREGRESSED provider keeps both clean — so the assertions above are
-    // about the deletion, not about a target that flags either way.
-    const clean = classifyTarget(
-      cbTarget,
-      cbNestedKeys,
-      cbSdkMembers,
-      collectStringLiterals(cbSource),
-      NESTED_KEY_ALLOW_LIST,
-      collectWriteEvidence(cbSource)
-    );
-    for (const path of ['Environment.Type', 'Environment.EnvironmentVariables.Type']) {
-      expect(clean.find((e) => e.nestedKey === path)?.bucket, path).toBe('same-spelling');
-    }
-  });
-
-  it('a SECOND REAL WRITE of the same path still clears it — Source.Type (#1464)', () => {
-    // #1448 also listed `source: { type: … }` as a cousin-vouching case. Under
-    // per-PATH scoping the exit code is unchanged (0), and the REASON is not:
-    // `mapSource`'s guard arm `return { type: 'NO_SOURCE' }` is a genuine second
-    // write of `type` under `source`. Deleting BOTH arms flags. Pinned so the
-    // distinction between "a real second write" and "a cousin one level down"
-    // stays visible.
-    const forward =
-      "      type: readConfigString(source, 'Type', 'NO_SOURCE', containerPath) as SourceType,\n";
-    const guard = "      return { type: 'NO_SOURCE' as SourceType };\n";
-    expect(cbSource).toContain(forward);
-    expect(cbSource).toContain(guard);
-    const classify = (source: string): NestedKeyClassification[] =>
-      classifyTarget(
-        cbTarget,
-        cbNestedKeys,
-        cbSdkMembers,
-        collectStringLiterals(source),
-        NESTED_KEY_ALLOW_LIST,
-        collectWriteEvidence(source)
-      );
-    const forwardGone = classify(cbSource.replace(forward, ''));
-    expect(forwardGone.find((e) => e.nestedKey === 'Source.Type')?.bucket).toBe('same-spelling');
-    // ...and it is THE GUARD ARM that supplies the evidence, not some other
-    // clearing path: `source` scopes to a `type` even with the forward gone,
-    // and no wildcard covers the path. Without this half a future hand-off (or
-    // a looser fold) could satisfy the assertion above for the wrong reason.
-    const guardOnly = collectWriteEvidence(cbSource.replace(forward, ''));
-    expect(guardOnly.scopes.get('source')?.has('type')).toBe(true);
-    expect(isHandoffCovered(guardOnly.handoffScopes, 'source', 'type')).toBe(false);
-    const bothGone = classify(
-      cbSource.replace(forward, '').replace(guard, '      return {};\n')
-    );
-    expect(bothGone.find((e) => e.nestedKey === 'Source.Type')?.bucket).toBe('no-write-evidence');
-  });
-
   it('a purely NESTED write opens no root scope (#1464 — the #1448 bound, inverted)', () => {
     // The INVERSION of "scopes are keyed by NAME and unioned across write
     // sites". Two halves of that bound: (a) unrelated write SITES of one name
@@ -5825,11 +3672,12 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     expect([...(scopes.get('logsConfig.cloudWatchLogs') ?? [])]).toEqual(['groupName']);
   });
 
-  it('the two collector outputs regress independently (why there are two floors)', () => {
+  it('a collapsed scope index still records every written name (why the scope floor exists)', () => {
     // The real scenario behind `minWriteScopes`: when no write VALUE resolves to
-    // a literal, every NAME is still collected and every scope is empty. The
-    // name floor cannot see this; the scope floor is the only thing that can.
-    const { written, scopes } = collectWriteEvidence(`
+    // a literal, every write still opens its (empty) scope, so a name-level view
+    // looks healthy while the index carries no member at all. Only a count of
+    // NON-EMPTY scopes — what the floor counts — sees it.
+    const evidence = collectWriteEvidence(`
       const sdk = {
         source: external(a),
         environment: external(b),
@@ -5837,8 +3685,13 @@ describe('real-code regression probes (per the repo checker rules)', () => {
         artifacts: external(d),
       };
     `);
-    expect([...written].sort()).toEqual(['artifacts', 'cache', 'environment', 'source']);
-    expect([...scopes.values()].filter((v) => v.size > 0)).toHaveLength(0);
+    expect([...writtenNames(evidence)].sort()).toEqual([
+      'artifacts',
+      'cache',
+      'environment',
+      'source',
+    ]);
+    expect([...evidence.scopes.values()].filter((v) => v.size > 0)).toHaveLength(0);
   });
 
   it('the unregressed BuildBatchConfig scope resolves through a let-bound literal', () => {
@@ -5883,25 +3736,15 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     expect([...(scope ?? [])].sort()).toEqual(['key', 'value']);
   });
 
-  it('the write collector sees a real provider (parser-regression floors)', () => {
-    const evidence = collectWriteEvidence(cbSource);
-    expect(evidence.written.size).toBeGreaterThanOrEqual(MIN_WRITTEN_MEMBERS_PER_PROVIDER);
-    expect(evidence.written.size).toBeGreaterThanOrEqual(cbTarget.minWrittenMembers ?? 0);
-    expect(evidence.written.has('batchReportMode')).toBe(true);
-    const populated = [...evidence.scopes.values()].filter((v) => v.size > 0).length;
-    expect(populated).toBeGreaterThanOrEqual(cbTarget.minWriteScopes ?? 0);
-  });
-
   it('every write SHAPE the collector claims is anchored on REAL provider code', () => {
-    // Per-SHAPE real-code floors (issue #1448 comment item 4): the aggregate
-    // `written.size` floor cannot see a PARTIAL collapse — one dead shape hides
-    // under it. Each assertion below names a real site in a real provider.
+    // Per-SHAPE real-code floors (issue #1448 comment item 4): an aggregate
+    // count cannot see a PARTIAL collapse — one dead shape hides under it. Each assertion below names a real site in a real provider.
     const evidence = collectWriteEvidence(cbSource);
     // object-literal property: `batchReportMode: cfnBuildBatchConfig['BatchReportMode']`
-    expect(evidence.written.has('batchReportMode'), 'property assignment').toBe(true);
+    expect(writtenNames(evidence).has('batchReportMode'), 'property assignment').toBe(true);
     // shorthand property: `buildBatchConfig,` in mapProperties\' return literal
     expect(cbSource).toMatch(/^\s{6}buildBatchConfig,$/m);
-    expect(evidence.written.has('buildBatchConfig'), 'shorthand property').toBe(true);
+    expect(writtenNames(evidence).has('buildBatchConfig'), 'shorthand property').toBe(true);
     // element-access assignment with a literal key, on a genuine FORWARD path:
     // `CloudFrontDistributionProvider.completeRequiredUpdateFields` fills the
     // members UpdateDistribution requires. The name has to be reachable through
@@ -5912,85 +3755,45 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // `c['OriginKeepaliveTimeout'] = 5` is the only write of this name.
     const cfEvidence = collectWriteEvidence(cfSource, 'cloudfront-distribution-provider.ts');
     expect(cfSource).toContain("c['OriginKeepaliveTimeout'] = 5");
-    expect(cfEvidence.written.has('OriginKeepaliveTimeout'), 'element access').toBe(true);
+    expect(writtenNames(cfEvidence).has('OriginKeepaliveTimeout'), 'element access').toBe(true);
     // property-access assignment: `this.client = new CodeBuildClient(…)` is the
     // only write of `client` in the file, and it is a property access. The
     // earlier revision only regex-matched the SOURCE here and asserted nothing
     // about the collector at all.
     expect(cbSource).toContain('this.client = new CodeBuildClient(');
-    expect(evidence.written.has('client'), 'property access').toBe(true);
+    expect(writtenNames(evidence).has('client'), 'property access').toBe(true);
   });
 
   it('the readCurrentState exclusion withdraws real reverse-map writes (#1393 item 2)', () => {
     // Measured on the real tree: `s3-bucket-provider.ts` is an `exact`-style
     // target, so its reverse map writes CFn spellings that ARE SDK member
-    // spellings. Those are the names that would falsely vouch for a forward
-    // mapper if the exclusion were dropped.
-    const scoped = collectWrittenMemberNames(s3Source);
-    const unscoped = collectWrittenMemberNames(s3Source, 's3-bucket-provider.ts', []);
+    // spellings. Without the exclusion those read-back writes would open scopes
+    // in the write index — where a hand-off or an un-renamed chain could
+    // resolve against them.
+    const scoped = writtenNames(collectWriteEvidence(s3Source));
+    const unscoped = writtenNames(collectWriteEvidence(s3Source, 's3-bucket-provider.ts', []));
     // The ECS number is the one that proves the PREFIX match earns its keep:
     // `ecs-provider.ts` splits its reverse map into `readCurrentStateService` /
     // `readCurrentStateTaskDefinition`, which an EXACT-name match reached not
-    // at all (it withdrew 0). Pinned so the file header's measured numbers
-    // cannot drift away from the code again.
+    // at all (it withdrew 0).
     const ecsSource = readFileSync(
       resolve(repoRoot, 'src/provisioning/providers/ecs-provider.ts'),
       'utf8'
     );
     const ecsWithdrawn =
-      collectWrittenMemberNames(ecsSource, 'ecs-provider.ts', []).size -
-      collectWrittenMemberNames(ecsSource).size;
+      writtenNames(collectWriteEvidence(ecsSource, 'ecs-provider.ts', [])).size -
+      writtenNames(collectWriteEvidence(ecsSource)).size;
     expect(ecsWithdrawn).toBeGreaterThanOrEqual(40);
 
     const withdrawn = [...unscoped].filter((n) => !scoped.has(n)).sort();
-    // Re-measured for #1520: the widened `read*` / `*ToCfn` exclusion
-    // withdraws the whole reverse-map surface (30 names), not just the 8 the
-    // original `readCurrentState`-only prefix reached — the added 22 are the
-    // CFn spellings the `read<Block>` builder helpers and the `*SdkToCfn`
-    // converters write on the read-back path.
-    //
-    // Re-measured again for #1707 / #1717 / #1718, which took the list 30 -> 27:
-    // `Enabled`, `ScheduleFrequency` and `BucketArn` left it because the
-    // effective-item folds (`effectiveInventoryItem` /
-    // `effectiveS3BucketDestination`) now write those CFn spellings OUTSIDE any
-    // reverse-map function, so they are no longer withdrawn-because-only-a-
-    // reverse-map-writes-them.
-    //
-    // No VERDICT moved — the committed matrix does not drift a byte — and the
-    // hazard that WOULD matter (a RECORDING write vouching for a forward mapper
-    // that stopped writing the SDK member) was measured away rather than
-    // reasoned away, on each of the two names the write pass audits. Deleting
-    // the wire write from a scratch copy of the REAL provider still fails:
-    //   - `IsEnabled: config['Enabled'] ?? …`
-    //     -> `InventoryConfigurations.Enabled [no-write-evidence]`
-    //   - `Bucket: (s3Dest['BucketArn'] ?? s3Dest['Bucket'])`
-    //     -> `InventoryConfigurations.Destination.BucketArn [no-write-evidence]`
-    // (`ScheduleFrequency` is `provider-handled` via the key pass, so the write
-    // pass never audits it.)
-    //
-    // Re-measured again for #1754 / #1755 / #1759, which took the list 27 -> 26:
-    // `TagFilters` left it because `foldLifecycleScope` writes that CFn spelling
-    // OUTSIDE any reverse-map function, the same mechanism that retired the
-    // three names above. `EventBridgeEnabled` did NOT leave, and the reason is
-    // worth recording because the first cut of that fold DID retire it: writing
-    // the block under a COMPUTED key (`{ ...config, [EVENTBRIDGE_CONFIG_KEY]:
-    // { EventBridgeEnabled } }`) — done for the #1475 hand-off reason the
-    // provider states in-code — also keeps the nested member out of the
-    // unscoped name set. Measured both ways.
-    //
-    // MEASURED, not reasoned: `--check` reports byte-identical totals before and
-    // after the change (874 paths / 801 same-spelling / 51 provider-handled /
-    // 22 allow-listed / 0 divergences in all three passes, run against a scratch
-    // copy of the pre-change provider through the `--providers-dir=` seam), so no
-    // verdict moved and the committed matrix does not drift. The hazard that
-    // WOULD matter — a fold's write vouching for a forward mapper that stopped
-    // writing the SDK member — is probed for real through the `--providers-dir=`
-    // seam rather than asserted here in prose: see "exits 1 naming
-    // LifecycleConfiguration.Rules.Prefix although a DIFF-side fold writes it"
-    // in gen-nested-key-coverage-cli.test.ts. (It was a comment in the first cut,
-    // which is a measurement that decays silently.) The EventBridge, transition-
-    // date and rule-status folds additionally write their member under a COMPUTED
-    // key for the #1475 reason the provider states in-code.
+    // The measurement history: #1520 widened the exclusion from the
+    // `readCurrentState` prefix (8 names) to the `read*` / `*ToCfn` reverse
+    // families (30); #1707 / #1717 / #1718 took it to 27 (`Enabled`,
+    // `ScheduleFrequency` and `BucketArn` are now ALSO written by the
+    // effective-item folds, outside any reverse-map function); #1754 / #1755 /
+    // #1759 took it to 26 (`TagFilters`, via `foldLifecycleScope`).
+    // `EventBridgeEnabled` stays because the fold writes it under a COMPUTED
+    // key, for the #1475 hand-off reason the provider states in-code.
     expect(withdrawn).toEqual([
       'AnalyticsConfigurations',
       'BucketEncryption',
@@ -6022,18 +3825,18 @@ describe('real-code regression probes (per the repo checker rules)', () => {
   });
 
   it('the reverse map no longer supplies LITERAL evidence either (#1448 comment item 2)', () => {
-    // The key pass used to accept a CFn key mentioned only by `readCurrentState`
-    // as proof the FORWARD mapper converts it — the write pass excluded the
-    // reverse map and the key pass did not. Measured on the real tree, applying
-    // the exclusion moves no key into a blocking bucket, so this is a free
-    // tightening; the assertion pins that the exclusion is actually applied.
+    // The literal pool (the shape pass's `provider-handled` evidence) applies the
+    // same reverse-map exclusion the write walk does, so a CFn key mentioned
+    // only by `readCurrentState` is not proof the FORWARD mapper re-shapes it.
+    // The assertion pins that the exclusion is actually applied.
     const scoped = collectStringLiterals(cbSource, 'codebuild-provider.ts');
     const unscoped = collectStringLiterals(cbSource, 'codebuild-provider.ts', []);
     const withdrawn = [...unscoped].filter((n) => !scoped.has(n));
     // Measured on `codebuild-provider.ts`: these CFn spellings appear ONLY in
     // `readCurrentState`, so before the exclusion each was "provider names this
     // key" evidence produced entirely by the read path.
-    for (const key of ['BucketOwnerAccess', 'ResourceAccessRole', 'Value']) {
+    // (`ResourceAccessRole` left the list once go-to-k/cdkd#2762 wired it.)
+    for (const key of ['BucketOwnerAccess', 'Value']) {
       expect(withdrawn, key).toContain(key);
     }
   });
@@ -6077,118 +3880,94 @@ describe('refresh-cfn-schemas CLI guard (#1378 rider)', () => {
 });
 
 describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
-  it('every freshObjectMapper target declares BOTH write floors (#1448)', () => {
-    // `minWrittenMembers` falls back to MIN_WRITTEN_MEMBERS_PER_PROVIDER, but
-    // `minWriteScopes` is skipped entirely when undefined — deliberately, since
-    // real-tree scope counts span 51 down to 1 and no shared default is a real
-    // fence. That decline is only defensible if opting in FORCES the target to
-    // declare its own, which is what this test makes true.
-    for (const t of NESTED_KEY_TARGETS.filter((x) => x.freshObjectMapper === true)) {
-      expect(t.minWrittenMembers, `${t.resourceType} minWrittenMembers`).toBeGreaterThan(0);
-      expect(t.minWriteScopes, `${t.resourceType} minWriteScopes`).toBeGreaterThan(0);
-    }
-  });
-
-  // Explicit timeouts on the three hygiene probes below: each re-classifies
-  // EVERY opted-in target from source, so their cost grows with the audited
-  // path set rather than with the change under test. This one measured 7.3s
-  // locally and 31.8s on CI right after the #609 API Gateway v2 backfill added
-  // its nested paths — i.e. it blew the 30s default without anything being
-  // wrong. The values were set at ~4x that CI time (120s) so the next target to
-  // opt in would not re-break them.
-  // Now the shared contended bound (go-to-k/cdkd#3607), ~9x that CI time: the
-  // slowest of these took 33.5s alone, so 120s left under 4x for contention.
-  const HYGIENE_PROBE_TIMEOUT_MS = CONTENDED_CASE_TIMEOUT_MS;
-
-  it('a WALK-DEPENDENT opt-in must declare minHandoffPoints (#1445)', () => {
-    // "Walk-dependent" is derived, not judged: re-classify the target with its
-    // hand-off points stripped and see whether anything flips to
-    // `no-write-evidence`. A target that only reaches 0 findings BECAUSE of the
-    // walk has to carry the walk's own floor; CodeBuild, which reaches 0 on
-    // per-member writes alone, must NOT (its provider hands nothing off, so a
-    // floor would fail on correct code).
-    for (const target of NESTED_KEY_TARGETS.filter((t) => t.freshObjectMapper === true)) {
-      const withoutWalk = loadReport([{ ...target, minHandoffPoints: undefined }]).targets[0]!;
-      const source = readFileSync(join(PROVIDERS_DIR, target.providerFile), 'utf8');
-      const evidence = collectWriteEvidence(source, target.providerFile, ['readCurrentState'], (s) =>
-        s === './agentcore-case-convert.js' ? CASE_CONVERT_SOURCE : undefined
-      );
-      const stripped = classifyTarget(
-        target,
-        nestedKeyPathsForTarget(
-          JSON.parse(
-            readFileSync(
-              resolve(
-                repoRoot,
-                `tests/fixtures/cfn-schemas/${target.resourceType.replace(/::/g, '-')}.json`
-              ),
-              'utf8'
-            )
-          ) as { nestedPropertyPaths?: Record<string, string[]> },
-          parseProviderSource(source, join(PROVIDERS_DIR, target.providerFile)).handled.get(
-            target.resourceType
-          )!
-        ),
-        collectSdkMemberNames(
-          resolve(repoRoot, `node_modules/${target.sdkClientPackage}/dist-types/models`)
-        ),
-        collectStringLiterals(source, target.providerFile),
-        NESTED_KEY_ALLOW_LIST,
-        { ...evidence, handoffScopes: new Set<string>() }
-      );
-      const walkDependent = stripped.some((e) => e.bucket === 'no-write-evidence');
-      expect(withoutWalk.entries.filter((e) => e.bucket === 'no-write-evidence')).toEqual([]);
-      if (walkDependent) {
+  it('every target with segmentRenames declares minWriteScopes, and only those do (#1448)', () => {
+    // The scope floor exists for `findStaleSegmentRenames`: a collapsed scope
+    // index resolves no un-renamed chain, so every rename would look used and
+    // the staleness fence would go quiet. A target WITHOUT renames has nothing
+    // that floor protects (the hand-off credit reads `handoffScopes`, which
+    // `minHandoffPoints` fences), so a declaration there would fence nothing.
+    for (const t of NESTED_KEY_TARGETS) {
+      if (Object.keys(t.segmentRenames ?? {}).length > 0) {
+        expect(t.minWriteScopes, `${t.resourceType} minWriteScopes`).toBeGreaterThan(0);
+      } else {
         expect(
-          target.minHandoffPoints,
-          `${target.resourceType} clears only via the hand-off walk, so it must declare minHandoffPoints`
-        ).toBeGreaterThan(0);
-      } else if (stripped.length > 0) {
-        // A target with audited paths that clears WITHOUT the walk must not
-        // declare the floor — its provider hands nothing off, so the floor
-        // would fail on correct code. (`ApiGatewayV2::Integration` / `::Route`
-        // audit ZERO paths, so they are neither dependent nor independent; they
-        // inherit the file's shared floors and are skipped here.)
-        expect(
-          target.minHandoffPoints,
-          `${target.resourceType} does not depend on the walk, so minHandoffPoints would fence nothing`
+          t.minWriteScopes,
+          `${t.resourceType} declares minWriteScopes without segmentRenames`
         ).toBeUndefined();
       }
     }
-  }, HYGIENE_PROBE_TIMEOUT_MS);
+    // Non-vacuity: the table does carry renaming targets for the loop to check.
+    expect(
+      NESTED_KEY_TARGETS.filter((t) => t.segmentRenames !== undefined)
+        .map((t) => t.resourceType)
+        .sort()
+    ).toEqual(['AWS::ECS::TaskDefinition', 'AWS::S3::Bucket']);
+  });
 
-  it('the write floors are calibrated to their measured yields (#1445)', () => {
-    // The `minNestedKeys` band below has kept that floor honest; the WRITE
-    // floors had no equivalent, so `minHandoffPoints: 20` sat above a
-    // meaningful count of 3 and fenced nothing. Every floor must be at or below
-    // what the provider actually yields, and `minWrittenMembers` must stay
-    // within a band of it.
-    for (const target of NESTED_KEY_TARGETS.filter((t) => t.freshObjectMapper === true)) {
+  it('every target the hand-off walk delivers a path for declares minHandoffPoints (#1445 / PR #4324)', () => {
+    // The shape successor of the retired "WALK-DEPENDENT opt-in" check. A
+    // target with a non-empty whole delivery has shape verdicts the walk can
+    // change; without the floor, a walk that collapsed to zero hand-offs would
+    // silently restore every literal rescue PR #4324 withdraws. Derived from
+    // the real tree, so a provider that starts handing a blob off is pulled in.
+    const report = loadReport();
+    const dependent = report.targets.filter((t) => t.wholeDeliveredPaths.length > 0);
+    for (const t of dependent) {
+      const declared = NESTED_KEY_TARGETS.find((d) => d.resourceType === t.resourceType);
+      expect(declared?.minHandoffPoints, `${t.resourceType} minHandoffPoints`).toBeGreaterThanOrEqual(
+        1
+      );
+    }
+    // Non-vacuity: targets fenced before this check and targets it added a
+    // floor to are both in the measured set.
+    expect(dependent.map((t) => t.resourceType)).toEqual(
+      expect.arrayContaining([
+        'AWS::CloudWatch::AnomalyDetector',
+        'AWS::ECS::Service',
+        'AWS::ECS::TaskDefinition',
+        'AWS::S3::Bucket',
+        'AWS::CloudFront::Distribution',
+        'AWS::ApiGatewayV2::Api',
+        'AWS::Events::Rule',
+        'AWS::Glue::Job',
+        'AWS::Lambda::EventSourceMapping',
+      ])
+    );
+  });
+
+  // The two probes below re-walk every provider file a floor is declared on,
+  // so their cost grows with the provider tree rather than with the change
+  // under test; they carry the shared contended bound (go-to-k/cdkd#3607).
+  const HYGIENE_PROBE_TIMEOUT_MS = CONTENDED_CASE_TIMEOUT_MS;
+
+  it('the write-walk floors are calibrated to their measured yields (#1445)', () => {
+    // The `minNestedKeys` band below keeps that floor honest; the walk floors
+    // need the same, or a floor drifts above a meaningful count (the
+    // `minHandoffPoints: 20` that sat above a real 3) and fences nothing.
+    const declared = NESTED_KEY_TARGETS.filter(
+      (t) => t.minWriteScopes !== undefined || t.minHandoffPoints !== undefined
+    );
+    expect(declared.length, 'no target declares a walk floor').toBeGreaterThan(0);
+    for (const target of declared) {
       const source = readFileSync(join(PROVIDERS_DIR, target.providerFile), 'utf8');
-      const evidence = collectWriteEvidence(source, target.providerFile, ['readCurrentState'], (s) =>
-        s === './agentcore-case-convert.js' ? CASE_CONVERT_SOURCE : undefined
+      const evidence = collectWriteEvidence(
+        source,
+        target.providerFile,
+        REVERSE_MAP_FUNCTION_PREFIXES,
+        resolveCaseConvert
       );
       const label = target.resourceType;
-      expect(target.minWrittenMembers!, `${label} minWrittenMembers above yield`).toBeLessThanOrEqual(
-        evidence.written.size
-      );
-      expect(target.minWrittenMembers!, `${label} minWrittenMembers too slack`).toBeGreaterThanOrEqual(
-        Math.floor(evidence.written.size * 0.5)
-      );
-      const scopes = [...evidence.scopes.values()].filter((s) => s.size > 0).length;
-      expect(target.minWriteScopes!, `${label} minWriteScopes above yield`).toBeLessThanOrEqual(
-        scopes
-      );
-      // ...and banded from BELOW like `minWrittenMembers`, which it was not
-      // until the #1464 review pointed out the asymmetry: an upper bound alone
-      // lets a floor drift arbitrarily far under the yield and fence nothing.
-      // The band is looser (0.25 vs 0.5) because this count is the one that
-      // legitimately collapses toward 1 on a blob-forwarding provider — API
-      // Gateway v2 measures exactly 1, which is why the floor there is 1 and is
-      // recorded as fencing nothing.
-      expect(target.minWriteScopes!, `${label} minWriteScopes too slack`).toBeGreaterThanOrEqual(
-        Math.floor(scopes * 0.25)
-      );
+      if (target.minWriteScopes !== undefined) {
+        const scopes = [...evidence.scopes.values()].filter((s) => s.size > 0).length;
+        expect(target.minWriteScopes, `${label} minWriteScopes above yield`).toBeLessThanOrEqual(
+          scopes
+        );
+        // Banded from BELOW too (the #1464 review): an upper bound alone lets a
+        // floor drift arbitrarily far under the yield and fence nothing.
+        expect(target.minWriteScopes, `${label} minWriteScopes too slack`).toBeGreaterThanOrEqual(
+          Math.floor(scopes * 0.25)
+        );
+      }
       if (target.minHandoffPoints !== undefined) {
         const expanding = countExpandingHandoffPoints(
           evidence,
@@ -6196,20 +3975,16 @@ describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
             resolve(repoRoot, `node_modules/${target.sdkClientPackage}/dist-types/models`)
           )
         );
-        // Redundant-by-construction rather than vacuous, and worth saying so:
-        // a floor ABOVE the yield makes the SHIPPED floor throw at load time,
-        // so `loadReport()` in this file's other describes aborts the whole
-        // suite before this assertion runs (measured by setting it to 5 against
-        // a yield of 3). It stays as the assertion that NAMES the miscalibration
-        // if the runtime floor is ever relaxed.
-        expect(
-          target.minHandoffPoints,
-          `${label} minHandoffPoints above yield`
-        ).toBeLessThanOrEqual(expanding);
-        // …and deliberately NOT banded from below the way minWrittenMembers is.
-        // A floor AT the measurement turns every provider-side change into
-        // "parser regression?" instead of the divergences it really causes; the
-        // collapse mode this floor exists for yields 0, so >= 1 is the fence.
+        // Redundant-by-construction rather than vacuous: a floor ABOVE the
+        // yield makes the SHIPPED floor throw at load time, so `loadReport()`
+        // elsewhere in this file aborts first. It stays as the assertion that
+        // NAMES the miscalibration if the runtime floor is ever relaxed.
+        expect(target.minHandoffPoints, `${label} minHandoffPoints above yield`).toBeLessThanOrEqual(
+          expanding
+        );
+        // Deliberately NOT banded from below: a floor AT the measurement turns
+        // every provider-side change into "parser regression?", while the
+        // collapse this floor exists for yields 0, so >= 1 is the fence.
         expect(target.minHandoffPoints, `${label} minHandoffPoints`).toBeGreaterThanOrEqual(1);
       }
     }

@@ -15,6 +15,11 @@ export interface ReplacementNameChange {
   heldProperty: string | undefined;
   /** The old resource's physical id. */
   physicalId: string;
+  /**
+   * go-to-k/cdkd#5064 phase 2: the name is the one cdkd GENERATES at the
+   * replacement's next name generation (`replacementGeneratedNameMoves`).
+   */
+  generated?: true;
 }
 
 export function nameValue(

@@ -20,13 +20,18 @@ import { MacroExpansionError } from '../utils/error-handler.js';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../utils/json-parse-failure.js';
+import {
   isListParameterType,
   SSM_PARAMETER_VALUE_PREFIX,
   ssmResolvedValueType,
 } from '../utils/parameter-types.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
-import { displayAwsMessage, displayIdent, displaySafe } from '../utils/display-safe.js';
+import { displayAwsMessage, displayIdent, displaySafe, safeMsg } from '../utils/display-safe.js';
 import { withPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { SHELL_ACTIVE, shellQuote } from '../utils/pasteable-command.js';
 
@@ -454,7 +459,7 @@ async function expandMacrosAttempt(
       // content, the same class as the `StatusReason` below. `displayAwsMessage`
       // sanitizes AND bounds it; the retry verdict is taken from the RAW text,
       // because a hook rejection can surface here too.
-      const rawMessage = err instanceof Error ? err.message : String(err);
+      const rawMessage = describeAwsFailure(err).detail;
       throw withEarlyValidationVerdict(
         new MacroExpansionError(
           `CloudFormation rejected the macro-expansion changeset: ` +
@@ -795,23 +800,25 @@ function parseTemplateBody(body: unknown): CloudFormationTemplate {
       // non-JSON return is unexpected; surface as MacroExpansionError so
       // the caller sees the wire shape.
       //
-      // `displayAwsMessage` on the cause, because a `JSON.parse` failure embeds
-      // the OFFENDING INPUT verbatim (measured: `Unexpected token 'o',
-      // "notjson <ESC>[2K forged" is not valid JSON`), and that input is the
-      // round-tripped template. `assembly-reader.ts` avoids quoting a
-      // `JSON.parse` snippet for exactly this reason.
-      //
-      // It is the SANITIZATION this site needs, not the cap: V8 truncates its
-      // own quoted snippet, so the message is a fixed ~56 characters however
-      // large the body was (measured at 20, 100, 5,000 and 20,000). The capping
-      // helper is used anyway so that every render of AWS-or-parser text in this
-      // module is one spelling — but do not cite this site as a flood.
+      // A `JSON.parse` failure embeds a window of the OFFENDING INPUT
+      // verbatim (measured: `Unexpected token 'o', "notjson <ESC>[2K forged"
+      // is not valid JSON`), and that input is the round-tripped template,
+      // which can hold a plaintext value. So the message names only the
+      // failure's offset and size, and NO cause is attached, since
+      // `formatError` prints one on its `Caused by:` line (issue #5254). No
+      // reader keys on this cause: the retry loop reads the
+      // `EARLY_VALIDATION` verdict, which only `withEarlyValidationVerdict`
+      // sets from AWS's text. V8's text goes to `debug` only.
+      getLogger()
+        .child('MacroExpander')
+        .debug(
+          safeMsg`Processed-stage template body failed to parse: ${parseFailureDebugDetail(err)}`
+        );
       throw new MacroExpansionError(
         `CloudFormation returned a non-JSON Processed-stage template body. ` +
           `cdkd's macro-expansion path only supports JSON-shaped synth ` +
           `templates (CDK apps emit JSON by default). Cause: ` +
-          `${displayAwsMessage(err instanceof Error ? err.message : String(err))}`,
-        err instanceof Error ? err : undefined
+          `${describeJsonParseFailure(err, utf8ByteLength(body))}`
       );
     }
   } else if (body && typeof body === 'object' && !Array.isArray(body)) {

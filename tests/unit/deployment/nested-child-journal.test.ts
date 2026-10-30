@@ -23,12 +23,15 @@ const replay = vi.hoisted(() => ({
     nestedTemplates: unknown;
     run: unknown;
     stackScope: string | undefined;
+    stackInstanceIdScope: string | undefined;
     skipPrefixScope: boolean;
     ctx: Record<string, unknown>;
   }>,
   failuresFor: new Set<string>(),
   warningsFor: new Set<string>(),
   orphanFor: new Set<string>(),
+  /** go-to-k/cdkd#5064: CREATEs the replay deletes, reported with this generation. */
+  deletedCreateFor: new Map<string, number>(),
   /** Runs inside the replay, with the scope the replay was bound in. */
   duringReplay: undefined as
     | ((inner: NestedRevertRun, ctx: Record<string, unknown>) => void)
@@ -38,6 +41,7 @@ const replay = vi.hoisted(() => ({
     | undefined,
   readRun: (() => undefined) as () => unknown,
   readStackName: (() => undefined) as () => string | undefined,
+  readStackInstanceId: (() => undefined) as () => string | undefined,
   readSkipPrefix: (() => false) as () => boolean,
 }));
 
@@ -51,7 +55,11 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
       stateResources: Record<string, unknown>,
       stackName: string,
       ctx: Record<string, unknown>,
-      options: { afterOp?: () => Promise<void>; onOrphan?: (record: unknown) => void }
+      options: {
+        afterOp?: () => Promise<void>;
+        onOrphan?: (record: unknown) => void;
+        onRolledBackCreate?: (create: unknown) => void;
+      }
     ) => {
       replay.duringReplay?.(replay.readRun() as NestedRevertRun, ctx);
       const nested = replay.readNested();
@@ -62,6 +70,7 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
         nestedTemplates: nested?.nestedTemplates,
         run: replay.readRun(),
         stackScope: replay.readStackName(),
+        stackInstanceIdScope: replay.readStackInstanceId(),
         skipPrefixScope: replay.readSkipPrefix(),
         ctx,
       });
@@ -71,6 +80,13 @@ vi.mock('../../../src/deployment/rollback-executor.js', () => ({
           // drop the resource from state and mint an orphan record.
           delete stateResources[op.logicalId];
           options.onOrphan?.({ logicalId: op.logicalId, state: { physicalId: 'kept' } });
+        } else if (replay.deletedCreateFor.has(op.logicalId)) {
+          // What the real executor does for a deleted rolled-back CREATE.
+          delete stateResources[op.logicalId];
+          options.onRolledBackCreate?.({
+            logicalId: op.logicalId,
+            record: { nameGeneration: replay.deletedCreateFor.get(op.logicalId) },
+          });
         } else {
           stateResources[op.logicalId] = { reverted: true };
         }
@@ -103,8 +119,10 @@ import { replayRollback } from '../../../src/deployment/rollback-executor.js';
 import { RollbackInlinePolicyWriters } from '../../../src/deployment/inline-policy-claims.js';
 import {
   getCurrentSkipPrefix,
+  getCurrentStackInstanceId,
   getCurrentStackName,
   withSkipPrefix,
+  withStackScope,
 } from '../../../src/provisioning/resource-name.js';
 import { reserveStackCreateToken } from '../../../src/provisioning/providers/create-token-ledger.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
@@ -112,12 +130,16 @@ import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
 replay.readNested = getCurrentNestedStackContext;
 replay.readRun = getNestedRevertRun;
 replay.readStackName = getCurrentStackName;
+replay.readStackInstanceId = getCurrentStackInstanceId;
 replay.readSkipPrefix = getCurrentSkipPrefix;
 
 const REGION = 'us-east-1';
 const CHILD = 'Parent~Child';
 
-function childState(resources: Record<string, unknown> = { Q: { resourceType: 'AWS::SQS::Queue' } }): StackState {
+function childState(
+  resources: Record<string, unknown> = { Q: { resourceType: 'AWS::SQS::Queue' } },
+  stackInstanceId?: string
+): StackState {
   return {
     version: 10,
     stackName: CHILD,
@@ -126,6 +148,7 @@ function childState(resources: Record<string, unknown> = { Q: { resourceType: 'A
     outputs: { QueueUrl: 'new-url' },
     exportNames: ['NewExport'],
     lastModified: 0,
+    ...(stackInstanceId !== undefined && { stackInstanceId }),
   } as StackState;
 }
 
@@ -207,6 +230,7 @@ beforeEach(() => {
   replay.failuresFor.clear();
   replay.warningsFor.clear();
   replay.orphanFor.clear();
+  replay.deletedCreateFor.clear();
   replay.duringReplay = undefined;
 });
 
@@ -355,6 +379,23 @@ describe('revertNestedChildFromJournal (#3754)', () => {
     // No `cdkd rollback --orphan` reaches this replay, so its refusals must not
     // print one (go-to-k/cdkd#3845).
     expect(replay.calls[0]!.ctx['nestedChildRevert']).toBe(true);
+  });
+
+  // go-to-k/cdkd#5064: `childNamingScope` derives from the CHILD's OWN record
+  // (`stackInstanceIdOf(base, ...)`), not the enclosing parent replay's scope
+  // — a recreated child gets a fresh id independent of its parent's lifetime.
+  it("replays under the CHILD's own stack instance id, not the enclosing parent scope", async () => {
+    const CHILD_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const PARENT_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const h = harness({
+      segments: [seg('run-1', ['Q'])],
+      state: childState(undefined, CHILD_ID),
+    });
+
+    await withStackScope({ stackName: 'Parent', stackInstanceId: PARENT_ID, nameGenerations: new Map() }, () => h.run('run-1'));
+
+    expect(replay.calls).toHaveLength(1);
+    expect(replay.calls[0]!.stackInstanceIdScope).toBe(CHILD_ID);
   });
 
   // Issue #4018: a re-create derives a user-supplied name under the prefix
@@ -598,6 +639,42 @@ describe('revertNestedChildFromJournal — review round (#3754)', () => {
 
     const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
     expect(saved.orphans?.map((o) => o.logicalId)).toEqual(['Kept']);
+  });
+
+  // go-to-k/cdkd#5064 phase 2: on a child with an instance id the orphan's
+  // logical id retires, so a re-add asks for a new name; a legacy child retires nothing.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', { Kept: 0 }],
+    [undefined, undefined],
+  ])('retires the minted orphan on a child with id %s: %j', async (stackInstanceId, retired) => {
+    replay.orphanFor.add('Kept');
+    const h = harness({
+      segments: [seg('r', ['Kept'])],
+      state: childState(undefined, stackInstanceId),
+    });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.retiredNameGenerations).toEqual(retired);
+  });
+
+  // go-to-k/cdkd#5064: a CREATE the child's replay deletes retires its
+  // generation, so a re-create asks for a new name; a legacy child retires nothing.
+  it.each([
+    ['3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', { Made: 2 }],
+    [undefined, undefined],
+  ])('retires a deleted CREATE on a child with id %s: %j', async (stackInstanceId, retired) => {
+    replay.deletedCreateFor.set('Made', 2);
+    const h = harness({
+      segments: [seg('r', ['Made'])],
+      state: childState(undefined, stackInstanceId),
+    });
+
+    await h.run('r');
+
+    const saved = h.stateBackend.saveState.mock.calls.at(-1)![2] as StackState;
+    expect(saved.retiredNameGenerations).toEqual(retired);
   });
 
   it('REFUSES a child record whose region field disagrees with its key, before any replay', async () => {

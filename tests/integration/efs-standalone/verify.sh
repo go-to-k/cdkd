@@ -7,7 +7,12 @@
 #   - BackupPolicy         → PutBackupPolicy             (DescribeBackupPolicy)
 #   - FileSystemPolicy     → PutFileSystemPolicy         (DescribeFileSystemPolicy)
 #   - FileSystemProtection → UpdateFileSystemProtection  (DescribeFileSystems)
-# Each was a silent-drop before the backfill. Also asserts the destroy path
+# Each was a silent-drop before the backfill. Also asserts the MountTarget's
+# IpAddressType / IpAddress stay on the SDK route and reach AWS, with its
+# Fn::GetAtt IpAddress output (issue #2762), and that a FileSystemTags /
+# AccessPointTags change is applied in place on redeploy (issue #5464), and that
+# removing BackupPolicy / FileSystemPolicy / FileSystemProtection resets each as
+# CloudFormation does (issue #1160). Also asserts the destroy path
 # cleans up the file system, mount target, access point, and state file.
 #
 # Required env vars:
@@ -142,16 +147,19 @@ if [ "${LIFECYCLE_TIA}" != "AFTER_30_DAYS" ]; then
 fi
 echo "    OK: LifecyclePolicies TransitionToIA == AFTER_30_DAYS (PutLifecycleConfiguration wired)"
 
-# --- Assertion 3: FileSystemProtection ENABLED ------------------------
+# --- Assertion 3: FileSystemProtection DISABLED -----------------------
+# The baseline declares DISABLED, the non-default value (a fresh file system
+# reads ENABLED), so this proves the call landed and gives Phase 1b's removal
+# reset something to observe (issue #1160).
 PROTECTION=$(aws efs describe-file-systems \
   --file-system-id "${FS_ID}" --region "${REGION}" \
   --query 'FileSystems[0].FileSystemProtection.ReplicationOverwriteProtection' \
   --output text)
-if [ "${PROTECTION}" != "ENABLED" ]; then
-  echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION}', expected 'ENABLED' (UpdateFileSystemProtection silent-drop NOT closed)" >&2
+if [ "${PROTECTION}" != "DISABLED" ]; then
+  echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION}', expected 'DISABLED' (UpdateFileSystemProtection silent-drop NOT closed)" >&2
   exit 1
 fi
-echo "    OK: ReplicationOverwriteProtection == ENABLED (UpdateFileSystemProtection wired)"
+echo "    OK: ReplicationOverwriteProtection == DISABLED (UpdateFileSystemProtection wired)"
 
 # --- Assertion 4: FileSystemPolicy attached ---------------------------
 # DescribeFileSystemPolicy returns the policy as a JSON string. Assert it
@@ -183,6 +191,87 @@ if [ "${TM_P1}" != "provisioned" ]; then
   exit 1
 fi
 echo "    OK: baseline ThroughputMode == provisioned"
+
+# --- Assertion 6: MountTarget addressing on the SDK route (issue #2762) ----
+# The stack declares IpAddressType DUAL_STACK + IpAddress 10.0.0.100. Before
+# the fix the SDK provider did not handle either, so declaring them routed the
+# mount target through Cloud Control instead.
+EXPECTED_MT_IP="10.0.0.100"
+MT_ID=$(echo "${STATE}" | jq -r '.outputs.MountTargetId // empty')
+if [ -z "${MT_ID}" ]; then
+  echo "FAIL: MountTargetId output missing from deploy state" >&2
+  exit 1
+fi
+MT_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::EFS::MountTarget")
+  | .provisionedBy // "<absent>"] | join(" ")')
+if [ "${MT_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: AWS::EFS::MountTarget routing layer is '${MT_PROVISIONED_BY}', expected 'sdk' (IpAddress / IpAddressType still route it to Cloud Control, #2762)" >&2
+  exit 1
+fi
+echo "    OK: mount target provisioned by the SDK provider (#2762)"
+MT_JSON=$(aws efs describe-mount-targets --mount-target-id "${MT_ID}" --region "${REGION}" \
+  --query 'MountTargets[0]' --output json)
+MT_IP=$(echo "${MT_JSON}" | jq -r '.IpAddress // empty')
+MT_IPV6=$(echo "${MT_JSON}" | jq -r '.Ipv6Address // empty')
+if [ "${MT_IP}" != "${EXPECTED_MT_IP}" ] || [ -z "${MT_IPV6}" ]; then
+  echo "FAIL: mount target ${MT_ID} has IpAddress '${MT_IP}' / Ipv6Address '${MT_IPV6}', expected '${EXPECTED_MT_IP}' and an IPv6 address (DUAL_STACK) (#2762)" >&2
+  echo "${MT_JSON}" >&2
+  exit 1
+fi
+echo "    OK: mount target is DUAL_STACK at ${MT_IP} / ${MT_IPV6} (#2762)"
+
+# Fn::GetAtt [MountTarget, IpAddress]: the SDK provider records the attribute
+# (without it the resolver fell back to the mount target id).
+MT_IP_OUTPUT=$(echo "${STATE}" | jq -r '.outputs.MountTargetIpAddress // empty')
+if [ "${MT_IP_OUTPUT}" != "${EXPECTED_MT_IP}" ]; then
+  echo "FAIL: MountTargetIpAddress output is '${MT_IP_OUTPUT}', expected '${EXPECTED_MT_IP}' (Fn::GetAtt IpAddress, #2762)" >&2
+  exit 1
+fi
+echo "    OK: Fn::GetAtt [MountTarget, IpAddress] == ${MT_IP_OUTPUT} (#2762)"
+
+# The readback (IpAddress / Ipv6Address, and IpAddressType derived from them)
+# must agree with the baseline the deploy captured: cdkd drift reports the
+# mount target clean.
+MT_LOGICAL_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[]
+  | select(.value.resourceType == "AWS::EFS::MountTarget") | .key] | if length == 1 then .[0] else empty end')
+set +e
+DRIFT_JSON_OUT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null)
+DRIFT_RC=$?
+set -e
+MT_DRIFT_BUCKET=$(printf '%s' "${DRIFT_JSON_OUT}" | jq -r --arg id "${MT_LOGICAL_ID}" '[.. | objects | to_entries[]
+  | select((.value | type) == "array") | .key as $bucket
+  | .value[]? | objects | select(.logicalId == $id) | $bucket] | join(",")' 2>/dev/null || true)
+if [ -z "${MT_LOGICAL_ID}" ] || [ "${MT_DRIFT_BUCKET}" != "clean" ]; then
+  echo "FAIL: cdkd drift did not report mount target '${MT_LOGICAL_ID}' clean (bucket '${MT_DRIFT_BUCKET}', rc=${DRIFT_RC}) (#2762):" >&2
+  printf '%s\n' "${DRIFT_JSON_OUT}" >&2
+  exit 1
+fi
+echo "    OK: cdkd drift reported mount target ${MT_LOGICAL_ID} clean (#2762)"
+
+# --- Assertion 7: baseline tags (issue #5464) ---------------------------
+# fs_tag / ap_tag print a key's live value, or <absent>.
+AP_ID=$(echo "${STATE}" | jq -r '.outputs.AccessPointId // empty')
+if [ -z "${AP_ID}" ]; then
+  echo "FAIL: AccessPointId output missing from deploy state" >&2
+  exit 1
+fi
+fs_tag() {
+  aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" --output json \
+    | jq -r --arg k "$1" '[.FileSystems[0].Tags[]? | select(.Key == $k) | .Value] | .[0] // "<absent>"'
+}
+ap_tag() {
+  aws efs describe-access-points --access-point-id "${AP_ID}" --region "${REGION}" --output json \
+    | jq -r --arg k "$1" '[.AccessPoints[0].Tags[]? | select(.Key == $k) | .Value] | .[0] // "<absent>"'
+}
+FS_RETAG_P1=$(fs_tag cdkd-retag); FS_DROP_P1=$(fs_tag cdkd-drop)
+AP_RETAG_P1=$(ap_tag cdkd-ap-retag); AP_DROP_P1=$(ap_tag cdkd-ap-drop)
+if [ "${FS_RETAG_P1}" != "v1" ] || [ "${FS_DROP_P1}" != "x" ] \
+  || [ "${AP_RETAG_P1}" != "v1" ] || [ "${AP_DROP_P1}" != "x" ]; then
+  echo "FAIL: baseline tags wrong: file system cdkd-retag='${FS_RETAG_P1}' cdkd-drop='${FS_DROP_P1}', access point cdkd-ap-retag='${AP_RETAG_P1}' cdkd-ap-drop='${AP_DROP_P1}' (expected v1 / x / v1 / x)" >&2
+  exit 1
+fi
+echo "    OK: baseline file system and access point tags applied on create"
 
 # --- Phase 1b: throughput removal redeploy (issue #1160 efs batch) ----
 # The removal template drops ThroughputMode + ProvisionedThroughputInMibps.
@@ -219,6 +308,83 @@ if [ "${FS_ID_P2}" != "${FS_ID}" ]; then
   exit 1
 fi
 echo "    OK: ThroughputMode reset to bursting in place (removal silent-drop closed)"
+# Issue #2762: the mount target's addressing is unchanged, so the redeploy
+# must not replace it.
+MT_ID_P2=$(echo "${STATE_P2}" | jq -r '.outputs.MountTargetId // empty')
+if [ "${MT_ID_P2}" != "${MT_ID}" ]; then
+  echo "FAIL: MountTarget was REPLACED by the removal redeploy (${MT_ID} -> ${MT_ID_P2})" >&2
+  exit 1
+fi
+echo "    OK: mount target ${MT_ID} kept across the redeploy"
+
+# Issue #5464: the same redeploy retags the file system (cdkd-retag v1 -> v2,
+# cdkd-drop removed). Pre-fix a FileSystemTags change sent nothing: AWS kept
+# v1 and cdkd-drop while state recorded the new tags.
+FS_RETAG_P2=$(fs_tag cdkd-retag); FS_DROP_P2=$(fs_tag cdkd-drop)
+if [ "${FS_RETAG_P2}" != "v2" ] || [ "${FS_DROP_P2}" != "<absent>" ]; then
+  echo "FAIL: file system tags not updated in place: cdkd-retag='${FS_RETAG_P2}' (expected v2), cdkd-drop='${FS_DROP_P2}' (expected <absent>) (FileSystemTags update silent-drop NOT closed, #5464)" >&2
+  exit 1
+fi
+echo "    OK: file system retagged in place (#5464)"
+
+# Issue #1160 (efs-provider.ts row): the same redeploy drops BackupPolicy,
+# FileSystemPolicy and FileSystemProtection. CloudFormation resets all three
+# (live CFn A/B 2026-10-28: PutBackupPolicy DISABLED, DeleteFileSystemPolicy,
+# UpdateFileSystemProtection ENABLED); pre-fix cdkd sent nothing, so backups
+# stayed ENABLED, the policy stayed attached and protection stayed DISABLED.
+# PutBackupPolicy answers DISABLING first, so poll for the settled value.
+BACKUP_P2=""
+for _i in 1 2 3 4 5 6; do
+  BACKUP_P2=$(aws efs describe-backup-policy --file-system-id "${FS_ID}" --region "${REGION}" \
+    --query 'BackupPolicy.Status' --output text)
+  [ "${BACKUP_P2}" = "DISABLED" ] && break
+  if [ "${_i}" -lt 6 ]; then sleep 10; fi
+done
+if [ "${BACKUP_P2}" != "DISABLED" ]; then
+  echo "FAIL: BackupPolicy.Status is '${BACKUP_P2}' after the removal redeploy (waited 60s), expected 'DISABLED' as CloudFormation resets it (removed BackupPolicy silent-drop NOT closed, #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed BackupPolicy reset to DISABLED (#1160)"
+if ! gone_probe aws efs describe-file-system-policy --file-system-id "${FS_ID}" --region "${REGION}"; then
+  echo "FAIL: FileSystemPolicy still attached after the removal redeploy; CloudFormation deletes it (removed FileSystemPolicy silent-drop NOT closed, #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed FileSystemPolicy deleted (#1160)"
+PROTECTION_P2=$(aws efs describe-file-systems --file-system-id "${FS_ID}" --region "${REGION}" \
+  --query 'FileSystems[0].FileSystemProtection.ReplicationOverwriteProtection' --output text)
+if [ "${PROTECTION_P2}" != "ENABLED" ]; then
+  echo "FAIL: ReplicationOverwriteProtection is '${PROTECTION_P2}' after the removal redeploy, expected 'ENABLED' as CloudFormation resets it (removed FileSystemProtection silent-drop NOT closed, #1160)" >&2
+  exit 1
+fi
+echo "    OK: removed FileSystemProtection reset to ENABLED (#1160)"
+
+# --- Phase 1c: access point retag redeploy (issue #5464) -------------
+# Only AccessPointTags changes (cdkd-ap-retag v1 -> v2, cdkd-ap-drop removed).
+# Pre-fix the provider refused every AccessPoint update, so this deploy failed.
+echo "==> Phase 1c: re-deploy retagging the access point"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_AP_RETAG=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+AP_DEPLOY_RC=$?
+set -e
+if [ "${AP_DEPLOY_RC}" -ne 0 ]; then
+  echo "FAIL: the access-point retag deploy failed (rc=${AP_DEPLOY_RC}); an AccessPointTags-only change must apply in place (#5464)" >&2
+  exit 1
+fi
+AP_RETAG_P3=$(ap_tag cdkd-ap-retag); AP_DROP_P3=$(ap_tag cdkd-ap-drop)
+if [ "${AP_RETAG_P3}" != "v2" ] || [ "${AP_DROP_P3}" != "<absent>" ]; then
+  echo "FAIL: access point tags not updated in place: cdkd-ap-retag='${AP_RETAG_P3}' (expected v2), cdkd-ap-drop='${AP_DROP_P3}' (expected <absent>) (#5464)" >&2
+  exit 1
+fi
+STATE_P3=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+AP_ID_P3=$(echo "${STATE_P3}" | jq -r '.outputs.AccessPointId // empty')
+if [ "${AP_ID_P3}" != "${AP_ID}" ]; then
+  echo "FAIL: AccessPoint was REPLACED by the retag redeploy (${AP_ID} -> ${AP_ID_P3}) (#5464)" >&2
+  exit 1
+fi
+echo "    OK: access point ${AP_ID} retagged in place (#5464)"
 
 # --- Phase 2: destroy -------------------------------------------------
 echo "==> Phase 2: destroy"
@@ -234,4 +400,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + clean destroy)"
+echo "==> efs-standalone test passed (EFS::FileSystem #609 backfill closed + #1160 removal resets + #2762 MountTarget addressing + #5464 retag in place + clean destroy)"

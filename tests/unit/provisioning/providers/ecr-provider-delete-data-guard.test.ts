@@ -105,6 +105,23 @@ describe('ECRProvider delete data guard (issue #1340)', () => {
     expect(deleteForceArg()).toBe(true);
   });
 
+  // The declared-false arm: a check on the key's PRESENCE rather than its value
+  // passes every case above and force-deletes this one (go-to-k/cdkd#3723: the
+  // wire suite exempts EmptyOnDelete, since no create or update carries it).
+  it.each([false, 'false'])('deletes WITHOUT force when EmptyOnDelete is %j', async (value) => {
+    mockSend.mockResolvedValue({});
+
+    await provider.delete(
+      'Repo',
+      REPO,
+      RESOURCE_TYPE,
+      { RepositoryName: REPO, EmptyOnDelete: value },
+      undefined
+    );
+
+    expect(deleteForceArg()).toBe(false);
+  });
+
   it('force-deletes when the CDK auto-delete-images tag is present', async () => {
     mockSend.mockResolvedValue({});
 

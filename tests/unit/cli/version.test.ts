@@ -106,8 +106,7 @@ function versionMismatchHint(distMtimeMs: number, pkgMtimeMs: number): string {
 }
 
 // Spawning the built CLI can exceed vitest's default 5s timeout on slower
-// machines under load — same class as gen-handled-property-wiring's
-// SPAWN_TIMEOUT_MS, though this spawn is lighter so the budget is half.
+// machines under load; this spawn is light, so the budget is modest.
 //
 // Since issue #2002 the spawn is lighter again: `--version` is answered by the
 // fast path in src/cli/index.ts without importing the command tree, measured

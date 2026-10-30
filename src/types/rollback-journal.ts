@@ -24,7 +24,10 @@
 
 import type { CompletedOperation, FailedOperation } from '../deployment/rollback-executor.js';
 import type { StackState } from './state.js';
-import { displaySafe, UNRENDERABLE } from '../utils/display-safe.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { displaySafe, safeMsg, UNRENDERABLE } from '../utils/display-safe.js';
+import { describeJsonParseFailure, utf8ByteLength } from '../utils/json-parse-failure.js';
+import { getLogger } from '../utils/logger.js';
 
 /**
  * Journal format version, INDEPENDENT of the state schema. An unknown value
@@ -429,6 +432,19 @@ function refuseMalformedOperation(shownStack: string, where: string, op: unknown
   if (o['wasReplaced'] !== undefined && typeof o['wasReplaced'] !== 'boolean') {
     fail('wasReplaced', o['wasReplaced'], 'a boolean when present');
   }
+  // go-to-k/cdkd#5064 phase 2: COMPUTED by the engine on a replacement; a
+  // rollback raises the restored record's high-water mark to it, so anything
+  // but a non-negative integer would be written into state.
+  if (
+    o['nameGeneration'] !== undefined &&
+    !(
+      typeof o['nameGeneration'] === 'number' &&
+      Number.isSafeInteger(o['nameGeneration']) &&
+      o['nameGeneration'] >= 0
+    )
+  ) {
+    fail('nameGeneration', o['nameGeneration'], 'a non-negative integer when present');
+  }
   // go-to-k/cdkd#4690: COMPUTED by the engine; a truthy non-boolean would
   // delete the live new resource before the re-create.
   if (
@@ -636,20 +652,20 @@ export function parseRollbackJournal(bodyString: string, stackName: string): Rol
   try {
     parsed = JSON.parse(bodyString);
   } catch (err) {
-    // V8's `SyntaxError` QUOTES the offending input, so this detail carries
-    // bytes of the journal body itself. cdkd's output is line-oriented, so an
-    // unsanitized newline here invents a line that reads like a real one --
-    // and `formatError` prints a non-`CdkdError`'s `message` RAW, so nothing
-    // downstream would have caught it.
-    //
-    // No empty-detail fallback, and that is measured rather than assumed: the
-    // only thing that reaches here is a V8 `SyntaxError`, whose wording is
-    // ASCII prose (`Unexpected token ...`, `Expected property name ...`) that
-    // survives the allowlist even when the quoted input sanitises away
-    // entirely. A `detail ? ... : ...` ternary here had a dead arm and a test
-    // that could not reach it.
-    const detail = safeJournalText(err instanceof Error ? err.message : String(err));
-    throw new Error(`Rollback journal for '${shownStack}' is not valid JSON: ${detail}`);
+    // V8's `SyntaxError` quotes a window of the offending input, and the
+    // journal's `previousState` / `attemptedProperties` carry resource
+    // properties, so the message names only the failure's offset and size
+    // (issue #5247; `describeJsonParseFailure` owns the rule). V8's full text
+    // goes to `debug` only, through the same ASCII allowlist as every other
+    // body-derived value here (issue #3003: an unsanitized newline forges a
+    // line). No `cause` is attached, so no `Caused by:` line can print it.
+    getLogger().debug(
+      safeMsg`Rollback journal for '${shownStack}' failed to parse: ${safeJournalText(describeAwsFailure(err).detail)}`
+    );
+    throw new Error(
+      `Rollback journal for '${shownStack}' is not valid JSON: ` +
+        `${describeJsonParseFailure(err, utf8ByteLength(bodyString))}`
+    );
   }
   if (typeof parsed !== 'object' || parsed === null) {
     throw new Error(`Rollback journal for '${shownStack}' is malformed (not an object).`);

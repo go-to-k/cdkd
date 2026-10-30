@@ -10,7 +10,8 @@
  * files. Four are GOVERNED by
  * `tests/unit/provisioning/wait-abandoned-guard-population.test.ts`:
  *
- *  - `cloud-control-provider.ts`'s own `delete()` catch,
+ *  - `cloud-control-provider.ts`'s `markNotGoneOnNeedle`, which marks a kept
+ *    delete failure so the three below do not read it as gone (#5225),
  *  - `deploy-engine/update-in-place.ts`'s delete-then-CREATE fallback,
  *  - `deploy-engine/delete.ts`'s template-removal delete arm,
  *  - `destroy-runner.ts`'s per-resource delete loop.
@@ -22,8 +23,10 @@
  * needs the guard for a sharper reason than the other four — that regex is
  * case-INSENSITIVE, so `getaddrinfo ENOTFOUND ...` matches `/not\s*found/i`.
  *
- * Each decides "the resource is already gone" by SUBSTRING-matching the error
- * message, and each then DROPS the state row. An abandoned wait says the
+ * The three decide "the resource is already gone" by SUBSTRING-matching the
+ * error message, and each then DROPS the state row. The marker helper matches
+ * the same phrases and leaves an abandoned wait to its own marker.
+ * An abandoned wait says the
  * opposite — the delete may still be running — and its message interpolates
  * the LOGICAL ID and the last-seen IDENTIFIER, both user- or template-chosen,
  * so a resource named `PageNotFound` satisfies those needles. Round 1 of

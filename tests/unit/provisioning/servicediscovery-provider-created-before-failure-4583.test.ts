@@ -47,6 +47,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 const PRIVATE = 'AWS::ServiceDiscovery::PrivateDnsNamespace';
 const HTTP = 'AWS::ServiceDiscovery::HttpNamespace';
@@ -122,7 +126,9 @@ describe('ServiceDiscoveryProvider createdBeforeFailure mark (go-to-k/cdkd#4583)
     it('does not mark when the create operation FAILED', async () => {
       primeOperation('FAIL');
       const error = await failure(provider, HTTP, { Name: 'ns' });
-      expect(String(error)).toContain('operation boom');
+      // go-to-k/cdkd#2319: the operation's ErrorMessage rides on the cause.
+      expect(String(error)).toContain('Operation failed for Res');
+      expect(String((error as Error).cause)).toContain('operation boom');
       expect(createdBeforeFailure(error, 'Res', HTTP)).toBeUndefined();
     });
 
@@ -143,12 +149,15 @@ describe('ServiceDiscoveryProvider createdBeforeFailure mark (go-to-k/cdkd#4583)
   describe('service', () => {
     const props = { Name: 'svc', ServiceAttributes: { team: 'cdkd' } };
 
-    function prime(cleanup: 'ok' | 'fail'): void {
+    function prime(cleanup: 'ok' | 'fail', onAttributes?: () => void): void {
       mockSend.mockImplementation(async (command: unknown) => {
         if (command instanceof CreateServiceCommand) {
           return { Service: { Id: 'srv-1', Arn: 'arn:aws:servicediscovery:us-east-1:1:service/srv-1' } };
         }
-        if (command instanceof UpdateServiceAttributesCommand) throw new Error('attributes boom');
+        if (command instanceof UpdateServiceAttributesCommand) {
+          onAttributes?.();
+          throw new Error('attributes boom');
+        }
         if (command instanceof DeleteServiceCommand) {
           if (cleanup === 'fail') throw new Error('DeleteService boom');
           return {};
@@ -176,6 +185,31 @@ describe('ServiceDiscoveryProvider createdBeforeFailure mark (go-to-k/cdkd#4583)
       expect(
         createdBeforeFailure(await failure(provider, SERVICE, props), 'Res', SERVICE)
       ).toBeUndefined();
+    });
+
+    it('reports the service id to the sink before the attributes call (#5511)', async () => {
+      const sink = new CreatedResourceSink('Res', SERVICE);
+      let reportAtAttributes: unknown = 'not-called';
+      prime('fail', () => {
+        reportAtAttributes = sink.report;
+      });
+      await collectCreatedResources(sink, () => failure(provider, SERVICE, props));
+      expect(reportAtAttributes).toEqual({ physicalId: 'srv-1' });
+      expect(sink.report).toEqual({ physicalId: 'srv-1' });
+    });
+
+    it('retracts the report when the cleanup delete succeeded (#5511)', async () => {
+      const sink = new CreatedResourceSink('Res', SERVICE);
+      prime('ok');
+      await collectCreatedResources(sink, () => failure(provider, SERVICE, props));
+      expect(sink.report).toBeUndefined();
+    });
+
+    it('reports nothing when CreateService itself fails (#5511)', async () => {
+      const sink = new CreatedResourceSink('Res', SERVICE);
+      mockSend.mockRejectedValueOnce(new Error('CreateService boom'));
+      await collectCreatedResources(sink, () => failure(provider, SERVICE, props));
+      expect(sink.report).toBeUndefined();
     });
   });
 });

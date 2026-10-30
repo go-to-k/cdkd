@@ -147,9 +147,18 @@ describe('ServiceDiscoveryProvider deleteNamespace ResourceInUse retry (#609)', 
   it('surfaces the in-use error after the bounded budget is exhausted', async () => {
     mockSend.mockRejectedValue(resourceInUse());
 
-    await expect(
-      provider.delete('Namespace', 'ns-test', 'AWS::ServiceDiscovery::PrivateDnsNamespace')
-    ).rejects.toThrow(/has associated services/);
+    const error = await provider
+      .delete('Namespace', 'ns-test', 'AWS::ServiceDiscovery::PrivateDnsNamespace')
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    // go-to-k/cdkd#2319: the class is named, AWS's text rides on the cause.
+    expect(error).toBeInstanceOf(ProvisioningError);
+    expect((error as Error).message).toMatch(
+      /^Failed to delete Cloud Map namespace Namespace: ResourceInUse\. Re-run with --verbose/
+    );
+    expect(String((error as Error).cause)).toMatch(/has associated services/);
 
     const deleteCalls = mockSend.mock.calls.filter(
       ([cmd]) => cmd instanceof DeleteNamespaceCommand

@@ -346,7 +346,9 @@ The outcome depends on whether the replacement deletes first or creates first.
   the deploy. That clears a refusal from a dependent that still used the old
   resource, but not protection. This order is used by a property-driven replacement.
   The delete-first cases above also use it when the template renames the
-  resource. The old resource and its data stay in AWS, no longer tracked by
+  resource, and, on a stack with a `stackInstanceId`, for a resource the
+  template does not name, whose replacement gets a new generated name. The
+  old resource and its data stay in AWS, no longer tracked by
   cdkd. Delete it yourself once protection is off.
 
 #### Turning protection off in the template takes two deploys
@@ -386,23 +388,23 @@ Deleting one of these loses all data in it, whatever its state.
 
 | Category | Types |
 | --- | --- |
-| Database | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::RDS::DBSnapshot`, `AWS::RDS::ClusterSnapshot`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::DocDBElastic::Cluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::NeptuneGraph::Graph`, `AWS::NeptuneGraph::GraphSnapshot`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable`, `AWS::DynamoDB::Backup`, `AWS::Cassandra::Table`, `AWS::Lightsail::Database`, `AWS::Timestream::Database`, `AWS::Timestream::Table`, `AWS::Timestream::InfluxDBCluster`, `AWS::Timestream::InfluxDBInstance`, `AWS::ODB::CloudVmCluster`, `AWS::ODB::CloudAutonomousVmCluster` |
-| Data warehouse | `AWS::Redshift::Cluster`, `AWS::RedshiftServerless::Namespace`, `AWS::RedshiftServerless::Snapshot` |
-| In-memory data store | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::ReplicationGroup`, `AWS::ElastiCache::ServerlessCache`, `AWS::MemoryDB::Cluster`, `AWS::MemoryDB::MultiRegionCluster` |
-| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::FSx::Volume`, `AWS::ECR::Repository`, `AWS::ECR::PublicRepository`, `AWS::EC2::Volume`, `AWS::WorkspacesInstances::Volume`, `AWS::S3Express::DirectoryBucket`, `AWS::Lightsail::Bucket`, `AWS::S3Outposts::Bucket`, `AWS::HealthImaging::Datastore`, `AWS::HealthLake::FHIRDatastore` |
+| Database | `AWS::RDS::DBInstance`, `AWS::RDS::DBCluster`, `AWS::RDS::DBSnapshot`, `AWS::RDS::ClusterSnapshot`, `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`, `AWS::DocDBElastic::Cluster`, `AWS::Neptune::DBInstance`, `AWS::Neptune::DBCluster`, `AWS::NeptuneGraph::Graph`, `AWS::NeptuneGraph::GraphSnapshot`, `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable`, `AWS::DynamoDB::Backup`, `AWS::Cassandra::Table`, `AWS::Lightsail::Database`, `AWS::Timestream::Database`, `AWS::Timestream::Table`, `AWS::Timestream::InfluxDBCluster`, `AWS::Timestream::InfluxDBInstance`, `AWS::ODB::CloudVmCluster`, `AWS::ODB::CloudAutonomousVmCluster`, `AWS::DocDBElastic::ClusterSnapshot`, `AWS::Timestream::InfluxDBBackup` |
+| Data warehouse | `AWS::Redshift::Cluster`, `AWS::RedshiftServerless::Namespace`, `AWS::RedshiftServerless::Snapshot`, `AWS::Redshift::Snapshot` |
+| In-memory data store | `AWS::ElastiCache::CacheCluster`, `AWS::ElastiCache::ReplicationGroup`, `AWS::ElastiCache::ServerlessCache`, `AWS::MemoryDB::Cluster`, `AWS::MemoryDB::MultiRegionCluster`, `AWS::ElastiCache::Snapshot`, `AWS::MemoryDB::Snapshot` |
+| Filesystem / blob | `AWS::EFS::FileSystem`, `AWS::FSx::FileSystem`, `AWS::FSx::Volume`, `AWS::ECR::Repository`, `AWS::ECR::PublicRepository`, `AWS::EC2::Volume`, `AWS::EC2::Snapshot`, `AWS::WorkspacesInstances::Volume`, `AWS::S3Express::DirectoryBucket`, `AWS::Lightsail::Bucket`, `AWS::S3Outposts::Bucket`, `AWS::HealthImaging::Datastore`, `AWS::HealthLake::FHIRDatastore`, `AWS::FSx::Backup`, `AWS::FSx::FileCache`, `AWS::StorageGateway::Volume`, `AWS::FSx::Snapshot` |
 | Table / vector storage | `AWS::S3Tables::TableBucket`, `AWS::S3Tables::Table`, `AWS::S3Vectors::VectorBucket`, `AWS::S3Vectors::Index` |
-| Managed compute with local storage | `AWS::EMR::Cluster`, `AWS::EKS::Cluster`, `AWS::SageMaker::Cluster` |
-| Streaming / messaging | `AWS::Kinesis::Stream`, `AWS::KinesisVideo::Stream`, `AWS::MSK::Cluster`, `AWS::MSK::ServerlessCluster`, `AWS::MSK::Channel`, `AWS::AmazonMQ::Broker`, `AWS::OSIS::Pipeline`, `AWS::Events::Archive` |
+| Managed compute with local storage | `AWS::EMR::Cluster`, `AWS::EKS::Cluster`, `AWS::SageMaker::Cluster`, `AWS::SageMaker::NotebookInstance`, `AWS::Cloud9::EnvironmentEC2` |
+| Streaming / messaging | `AWS::Kinesis::Stream`, `AWS::KinesisVideo::Stream`, `AWS::MSK::Cluster`, `AWS::MSK::ServerlessCluster`, `AWS::MSK::Channel`, `AWS::AmazonMQ::Broker`, `AWS::OSIS::Pipeline`, `AWS::Events::Archive`, `AWS::Kinesis::Channel`, `AWS::EventsV2::EventBus` |
 | Search / index / collection | `AWS::Elasticsearch::Domain`, `AWS::OpenSearchService::Domain`, `AWS::OpenSearchServerless::Collection`, `AWS::OpenSearchServerless::Index`, `AWS::OpenSearchServerless::CollectionIndex`, `AWS::Kendra::Index`, `AWS::QBusiness::Index`, `AWS::QBusiness::Application`, `AWS::Rekognition::Collection`, `AWS::Location::GeofenceCollection`, `AWS::Bedrock::KnowledgeBase`, `AWS::Bedrock::DataAutomationLibrary` |
 | Analytics pipelines | `AWS::IoTAnalytics::Channel`, `AWS::IoTAnalytics::Datastore`, `AWS::IoTAnalytics::Dataset`, `AWS::CleanRooms::IdMappingTable`, `AWS::CleanRooms::IntermediateTable` |
-| Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter`, `AWS::AppConfig::ConfigurationProfile` |
+| Identity / config | `AWS::Cognito::UserPool`, `AWS::SecretsManager::Secret`, `AWS::SSM::Parameter`, `AWS::AppConfig::ConfigurationProfile`, `AWS::DirectoryService::MicrosoftAD` |
 | Runtime-written stores | `AWS::CloudFront::KeyValueStore`, `AWS::Connect::DataTable` |
 | Backup vaults | `AWS::Backup::BackupVault`, `AWS::Backup::LogicallyAirGappedBackupVault` |
-| Service domains holding records | `AWS::Cases::Domain`, `AWS::CustomerProfiles::Domain`, `AWS::DataZone::Domain`, `AWS::SageMaker::Domain` |
-| Encryption keys | `AWS::CloudHSM::Cluster`, `AWS::KMS::Key`, `AWS::KMS::ReplicaKey` |
+| Service domains holding records | `AWS::Cases::Domain`, `AWS::CustomerProfiles::Domain`, `AWS::DataZone::Domain`, `AWS::SageMaker::Domain`, `AWS::AgentRegistry::Registry`, `AWS::HealthAgent::Domain`, `AWS::SMSVOICE::NotifyConfiguration`, `AWS::WellArchitected::AgentProfile` |
+| Encryption keys | `AWS::CloudHSM::Cluster`, `AWS::KMS::Key`, `AWS::KMS::ReplicaKey`, `AWS::Transfer::HostKey` |
 | Source control / artifacts | `AWS::CodeCommit::Repository`, `AWS::CodeArtifact::Repository`, `AWS::CodeArtifact::Domain` |
 | Metadata catalog | `AWS::Glue::Database`, `AWS::Glue::Table` |
-| Retained records | `AWS::IoTSiteWise::Workspace`, `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive`, `AWS::Rbin::Rule` |
+| Retained records | `AWS::IoTSiteWise::Workspace`, `AWS::CloudWatch::Space`, `AWS::AIOps::InvestigationGroup`, `AWS::SES::MailManagerArchive`, `AWS::Rbin::Rule` |
 | Nested stacks | `AWS::CloudFormation::Stack` |
 | Edge / identifier immutability | `AWS::CloudFront::Distribution`, `AWS::SMSVOICE::PhoneNumber`, `AWS::SMSVOICE::SenderId` |
 

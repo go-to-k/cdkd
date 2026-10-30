@@ -39,6 +39,16 @@ On this page:
                         └─────────────┘ └───────────────┘ └──────────────┘
 ```
 
+The resource whose update failed is not reverted by the automatic rollback.
+When its update had already sent a change that AWS applies on its own time
+(today, a Firehose delivery stream's encryption Start or Stop), cdkd records
+the property as unsettled on that resource, because AWS may finish the change
+or keep the old setting. `cdkd drift` lists such properties. The next
+`cdkd deploy` sends them again, whichever template it deploys, and the
+provider reads AWS and changes only what differs. A successful
+`cdkd drift --accept` or `--revert` of the resource clears the mark too,
+unless AWS is still making the change (run it again once the change ends).
+
 A failed deploy can also leave an orphaned resource, which is one that exists
 in AWS but is in no cdkd state file. cdkd saves state after every completed
 resource, so orphans are rare. They have three sources:
@@ -162,9 +172,11 @@ If a resource exists in AWS without a state record, adopt it with
 :::
 
 Copy a resource's exact name from AWS and do not construct it yourself. A
-name cdkd generates is `<StackName>-<LogicalId>` only when that fits the
-type's length limit. Otherwise cdkd truncates the name and appends `-` plus 8
-hex characters.
+name cdkd generates is `<StackName>-<LogicalId>-` plus 12 hex characters that
+come from the stack's lifetime, with the first part cut to fit the type's
+length limit. A stack first deployed before that suffix existed keeps
+`<StackName>-<LogicalId>`, truncated with `-` plus 8 hex characters when too
+long.
 
 A `--resource` import adds to the existing state. It needs no `--force` as
 long as the resource is not in state yet.
@@ -181,8 +193,8 @@ cdkd deploy MyStack
 When a deploy rolls back, a resource with `DeletionPolicy: Retain` stays in
 AWS and its state record is dropped. CloudFormation does the same. With cdkd,
 the next deploy then fails with an already-exists error. The names cdkd
-generates have no random part, so the next deploy asks for exactly the name
-the retained resource still holds. Re-running does not clear the error.
+generates do not change during a stack's lifetime, so the next deploy asks for
+exactly the name the retained resource still holds. Re-running does not clear the error.
 
 When the colliding name is one cdkd generated, the failure is followed by a
 message that ends with the adoption command on its own line:

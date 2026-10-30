@@ -751,6 +751,21 @@ export function scrubResourceRecord<
           )
         : redactForState(attributes, { provenance: 'value-scan', secrets });
   }
+  // go-to-k/cdkd#5498: the attempted item names (an index name, a tag key)
+  // can be secret-derived, so they take the value scan, as `attributes` do. A
+  // name rewritten to its expression or `***` never matches a live item
+  // (`isUsableAttemptedName`), so it is kept, never removed.
+  const attemptedItems = (record as { unsettledItems?: unknown }).unsettledItems;
+  if (
+    typeof attemptedItems === 'object' &&
+    attemptedItems !== null &&
+    !Array.isArray(attemptedItems)
+  ) {
+    (next as { unsettledItems?: unknown }).unsettledItems = redactForState(
+      attemptedItems as Record<string, unknown>,
+      { provenance: 'value-scan', secrets }
+    );
+  }
   if (record.observedProperties) {
     // `observedProperties` is a live AWS readback, so its OWN source of truth is
     // the record's (already redacted) `properties` — a member whose stored value

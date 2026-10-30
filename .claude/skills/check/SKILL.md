@@ -29,7 +29,7 @@ Say out loud what you found, then fix it before running the checks.
 
 Run these sequentially and report results.
 
-0. **Worktree pre-flight**: `[ -d node_modules ] || pnpm install --frozen-lockfile`.
+0. **Worktree pre-flight**: `[ -d node_modules ] || vp install --frozen-lockfile`.
    `git worktree add` does not copy `node_modules`, and without it `vp check`
    fails with an unnamed `typescript(tsconfig-error): Invalid tsconfig — Cannot
    find type definition file for 'node'`, reading like a broken fixture
@@ -54,7 +54,7 @@ Run these sequentially and report results.
    `vp run gen:all-matrices && vp run audit:coverage:check && vp run format`.
    The suite carries a byte-for-byte guard per generated matrix, and the trigger
    set is wider than any condition you would write — renaming a private provider
-   method stales `handled-property-wiring.json`, and a `verify.sh` edit with no
+   method stales `update-wrap-coverage.json`, and a `verify.sh` edit with no
    src change stales `cli-flag-coverage`.
 
 4. `vp test run` — the whole unit suite. Prefer this over `vp run test`: nothing

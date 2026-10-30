@@ -3,6 +3,7 @@ import {
   CreateProjectCommand,
   DeleteProjectCommand,
   UpdateProjectCommand,
+  UpdateProjectVisibilityCommand,
   BatchGetProjectsCommand,
   ResourceNotFoundException,
   type SourceType,
@@ -20,6 +21,7 @@ import {
   type ProjectSource,
   type CreateProjectCommandInput,
   type BatchReportModeType,
+  type ProjectVisibilityType,
 } from '@aws-sdk/client-codebuild';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
@@ -31,6 +33,7 @@ import type {
   ResourceCreateResult,
   ResourceUpdateResult,
   UpdateContext,
+  CreateContext,
   ResourceImportInput,
   ResourceImportResult,
   ResourceNotFound,
@@ -40,6 +43,68 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { generatedNameFor } from '../resource-name.js';
+
+/**
+ * A project's visibility when `UpdateProjectVisibility` has never been called:
+ * `CreateProject` has no visibility member and a new project reads back
+ * `PRIVATE`.
+ */
+const DEFAULT_PROJECT_VISIBILITY = 'PRIVATE';
+
+/**
+ * CodeBuild's default artifact encryption key, and what CloudFormation resets a
+ * removed `EncryptionKey` to (go-to-k/cdkd#1160, CFn A/B): the AWS managed S3
+ * key. `UpdateProject` refuses `''`, and omitting the member keeps the old key.
+ */
+const DEFAULT_ENCRYPTION_KEY = 'alias/aws/s3';
+
+/**
+ * `Visibility` + `ResourceAccessRole` as `UpdateProjectVisibility` sends them
+ * (go-to-k/cdkd#2762). Both ride that one call, `CreateProject` /
+ * `UpdateProject` carry neither, and `projectVisibility` is REQUIRED there, so
+ * an absent `Visibility` is the default `PRIVATE`.
+ *
+ * `''` is ABSENT for `ResourceAccessRole`: `readCurrentState` emits it as the
+ * placeholder for "no role", which a `drift --revert` hands back.
+ */
+type VisibilityRead =
+  | { kind: 'usable'; visibility: ProjectVisibilityType; resourceAccessRole?: string }
+  | { kind: 'unusable'; reason: string };
+
+function readVisibility(properties: Record<string, unknown>, mask: MaskerFn): VisibilityRead {
+  const visibility = properties['Visibility'];
+  const role = properties['ResourceAccessRole'];
+  const refuse = (key: string, value: unknown): VisibilityRead => ({
+    kind: 'unusable',
+    reason:
+      `AWS::CodeBuild::Project ${key} must be a non-empty string, got ` +
+      `${JSON.stringify(maskDeep(value, mask))}`,
+  });
+  if (visibility != null && (typeof visibility !== 'string' || visibility.trim() === '')) {
+    return refuse('Visibility', visibility);
+  }
+  // `''` is the readback's "no role" placeholder; whitespace names no role and
+  // would only be refused by AWS after `CreateProject`.
+  if (role != null && (typeof role !== 'string' || (role !== '' && role.trim() === ''))) {
+    return refuse('ResourceAccessRole', role);
+  }
+  return {
+    kind: 'usable',
+    visibility: ((visibility as string | undefined) ??
+      DEFAULT_PROJECT_VISIBILITY) as ProjectVisibilityType,
+    ...(typeof role === 'string' && role !== '' && { resourceAccessRole: role }),
+  };
+}
 
 /**
  * SDK Provider for AWS CodeBuild resources
@@ -60,7 +125,7 @@ export class CodeBuildProvider implements ResourceProvider {
    * `AWS::CodeBuild::Project` is `ProvisioningType: NON_PROVISIONABLE` — Cloud
    * Control has no handlers for it — so the #614 silent-drop auto-route must
    * not send a template using an unhandled property (`Triggers`, which CDK's
-   * `webhook: true` emits, `Visibility`, `ResourceAccessRole`) to CC, where it
+   * `webhook: true` emits) to CC, where it
    * fails mid-deploy with an opaque UnsupportedActionException. With this
    * opt-out the registry refuses such a template pre-flight (issue #3866).
    */
@@ -92,6 +157,11 @@ export class CodeBuildProvider implements ResourceProvider {
         'BadgeEnabled',
         'SourceVersion',
         'AutoRetryLimit',
+        // go-to-k/cdkd#2762: through `UpdateProjectVisibility`, see
+        // `applyVisibility`. `Triggers` (a webhook) stays unhandled, so a
+        // template declaring it is still refused pre-flight.
+        'Visibility',
+        'ResourceAccessRole',
       ]),
     ],
   ]);
@@ -217,12 +287,15 @@ export class CodeBuildProvider implements ResourceProvider {
     };
   }
 
-  /** Declared return type for the same excess-property reason as {@link mapSource}. */
+  /**
+   * Declared return type for the same excess-property reason as {@link mapSource}.
+   * `undeclaredName` names a project the template does not name; called only then.
+   */
   private mapProperties(
-    logicalId: string,
+    undeclaredName: () => string,
     properties: Record<string, unknown>
   ): CreateProjectCommandInput {
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    const name = (properties['Name'] as string | undefined) ?? undeclaredName();
     const source = properties['Source'] as Record<string, unknown> | undefined;
     const environment = properties['Environment'] as Record<string, unknown> | undefined;
     // Class 2 sanitize (docs/provider-rules.md#readcurrentstate-for-drift-detection): readCurrentState
@@ -253,9 +326,10 @@ export class CodeBuildProvider implements ResourceProvider {
     // `Environment.HostKernel` IS mapped now. It was not, for the whole time
     // the installed `@aws-sdk/client-codebuild` had no member to map it onto
     // (issue #1386) — naming it then would have been a false claim of support.
-    // The SDK grew `ProjectEnvironment.hostKernel`, which the allow-list entry
-    // had named as its own expiry condition, and the nested-key checker's
-    // staleness pass is what surfaced that the condition had been met.
+    // The SDK grew `ProjectEnvironment.hostKernel`, which the (since retired)
+    // nested-key KEY-pass allow-list entry had named as its own expiry
+    // condition, and that checker's staleness pass is what surfaced that the
+    // condition had been met.
     const cfnFleet = environment?.['Fleet'] as Record<string, unknown> | undefined;
     const cfnDockerServer = environment?.['DockerServer'] as Record<string, unknown> | undefined;
 
@@ -414,8 +488,7 @@ export class CodeBuildProvider implements ResourceProvider {
         // registry declared the key while `ProjectEnvironment` had nothing to
         // put it on, so naming it here would have been a false claim of
         // support. `@aws-sdk/client-codebuild` 3.1126.0 declares
-        // `ProjectEnvironment.hostKernel`, which is exactly the condition the
-        // `NESTED_KEY_ALLOW_LIST` entry named as its own expiry.
+        // `ProjectEnvironment.hostKernel`.
         hostKernel: environment?.['HostKernel'] as HostKernel | undefined,
         fleet: cfnFleet ? { fleetArn: cfnFleet['FleetArn'] as string | undefined } : undefined,
         dockerServer: cfnDockerServer
@@ -463,17 +536,59 @@ export class CodeBuildProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CodeBuild Project ${logicalId}`);
+    const mask = maskerOrIdentity(context?.maskSecrets);
 
+    // go-to-k/cdkd#2762: the visibility call runs AFTER `CreateProject`, so an
+    // unusable value is refused before it, where nothing exists yet. A state
+    // replay leaves the project at the default (PRIVATE, no role) with a
+    // warning instead of refusing the restore: the narrower exposure.
+    const visibilityRead = readVisibility(properties, mask);
+    if (visibilityRead.kind === 'unusable') {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(visibilityRead.reason, resourceType, logicalId);
+      }
+      this.logger.warn(
+        mask(
+          `${visibilityRead.reason}. Replaying a state record, so CodeBuild Project ${logicalId} ` +
+            `is left ${DEFAULT_PROJECT_VISIBILITY} with no resource access role rather than ` +
+            `refusing the restore`
+        )
+      );
+    }
+
+    // Set once CreateProject returns: a later failure is the visibility
+    // call's, against a project no state record will hold.
+    let createdName: string | undefined;
     try {
-      const input = this.mapProperties(logicalId, properties);
+      // go-to-k/cdkd#5095: an un-named project gets the generated name a
+      // stack with an instance id gives every type; a legacy stack keeps the
+      // bare logical id it always sent.
+      const input = this.mapProperties(
+        () => generatedNameFor('AWS::CodeBuild::Project', logicalId),
+        properties
+      );
 
       const result = await this.getCreateClient().send(new CreateProjectCommand(input));
 
       const projectName = result.project!.name!;
       const projectArn = result.project!.arn!;
+      createdName = projectName;
+      // go-to-k/cdkd#5511: report before the visibility call.
+      reportCreatedResource(logicalId, resourceType, createdName);
+
+      // Only a declaration other than the default needs the call: a new
+      // project is already PRIVATE with no role.
+      if (
+        visibilityRead.kind === 'usable' &&
+        (visibilityRead.visibility !== DEFAULT_PROJECT_VISIBILITY ||
+          visibilityRead.resourceAccessRole !== undefined)
+      ) {
+        await this.applyVisibility(projectArn, visibilityRead);
+      }
 
       this.logger.debug(`Successfully created CodeBuild Project ${logicalId}: ${projectName}`);
 
@@ -484,15 +599,48 @@ export class CodeBuildProvider implements ResourceProvider {
         },
       };
     } catch (error) {
+      if (createdName !== undefined) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      const thrown = this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CodeBuild Project ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
+      // The project exists and no state record will hold it, so name it for
+      // the failed-CREATE journal — only once CreateProject returned.
+      if (createdName !== undefined) {
+        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdName);
+      }
+      throw thrown;
     }
+  }
+
+  /**
+   * `UpdateProjectVisibility` (go-to-k/cdkd#2762). Omitting
+   * `resourceAccessRole` CLEARS a role the project held: a CFn A/B (us-east-1)
+   * moving `PUBLIC_READ` + role to `PRIVATE` with no role read back
+   * `resourceAccessRole: null`.
+   */
+  private async applyVisibility(
+    projectArn: string,
+    read: Extract<VisibilityRead, { kind: 'usable' }>
+  ): Promise<void> {
+    await this.getClient().send(
+      new UpdateProjectVisibilityCommand({
+        projectArn,
+        projectVisibility: read.visibility,
+        ...(read.resourceAccessRole !== undefined && {
+          resourceAccessRole: read.resourceAccessRole,
+        }),
+      })
+    );
   }
 
   async update(
@@ -504,6 +652,7 @@ export class CodeBuildProvider implements ResourceProvider {
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating CodeBuild Project ${logicalId}: ${physicalId}`);
+    const mask = maskerOrIdentity(context?.maskSecrets);
     // go-to-k/cdkd#2613: the physical id is a NAME, so a client in another
     // region than the state record would act on a same-named resource cdkd
     // does not manage. Refuse before any call; the client's region is
@@ -518,8 +667,9 @@ export class CodeBuildProvider implements ResourceProvider {
     );
 
     try {
-      const input = this.mapProperties(logicalId, properties);
-      // Ensure the update targets the existing project
+      // The update addresses the recorded project, never a derived name: a
+      // project keeps the name it was created under, whichever scheme that was.
+      const input = this.mapProperties(() => physicalId, properties);
       input.name = physicalId;
 
       // Removal semantics (issue #1160, live CFn A/B 2026-08-10 on a
@@ -545,8 +695,7 @@ export class CodeBuildProvider implements ResourceProvider {
       // clear value on the side it is given, and here the CFn side has no
       // spelling for "cleared" — the empty object is an SDK-shape value. It
       // is applied to the mapped input (instead of an adjusted property bag)
-      // so the whole-bag forward into `mapProperties` stays intact for the
-      // handled-property-wiring critic's taint walk.
+      // so the whole-bag forward into `mapProperties` stays intact.
       // Sub-key granularity, per docs/provider-rules.md#update-removal-semantics-clear-on-removal's
       // "test both shapes": a key dropped from a still-present
       // `BuildBatchConfig` needs no separate handling, because the block is
@@ -560,21 +709,124 @@ export class CodeBuildProvider implements ResourceProvider {
         input.buildBatchConfig = {};
       }
 
-      await this.getClient().send(new UpdateProjectCommand(input));
+      // go-to-k/cdkd#1160, CFn A/B (us-east-1, a CODECOMMIT-source project):
+      // CloudFormation's UpdateProject carried `encryptionKey` and `tags` after
+      // both were removed, and the project read back the AWS managed key
+      // (`alias/aws/s3`, CodeBuild's documented default) and no user tag. A
+      // direct probe showed the clear shapes: `encryptionKey: 'alias/aws/s3'`
+      // reads back exactly as CFn's reset did (`''` is refused, min length
+      // 1), and `tags: []` removes every tag (UpdateProject replaces the
+      // list). `SourceVersion` is the opposite: CFn omitted it and the live
+      // value was KEPT, so the merge pass-through is parity and it is not
+      // reset. A `''` on either side is the `readCurrentState` placeholder for
+      // "no key", never a declared one, so it counts as absent.
+      const declaredKey = (value: unknown): boolean => value != null && value !== '';
+      if (
+        !declaredKey(properties['EncryptionKey']) &&
+        declaredKey(previousProperties['EncryptionKey'])
+      ) {
+        input.encryptionKey = DEFAULT_ENCRYPTION_KEY;
+      }
+      if (properties['Tags'] == null && previousProperties['Tags'] != null) {
+        input.tags = [];
+      }
+
+      // go-to-k/cdkd#5492, CFn A/B (us-east-1, a CODECOMMIT-source project in
+      // a VPC with an EFS mount, a secondary source, version and artifact, and
+      // a badge): each of `VpcConfig` / `FileSystemLocations` /
+      // `SecondarySources` / `SecondaryArtifacts` / `SecondarySourceVersions`
+      // / `BadgeEnabled` was removed once alone and once beside a
+      // `Description` change. CloudFormation's UpdateProject (CloudTrail)
+      // omitted the removed member every time and the live value was KEPT, so
+      // the merge pass-through is parity and none of the six is reset.
+      const updated = await this.getClient().send(new UpdateProjectCommand(input));
+
+      // go-to-k/cdkd#2762: `Visibility` / `ResourceAccessRole`, sent as a pair
+      // whenever either differs from the record. A removal is the default
+      // pair (PRIVATE, no role), which CloudFormation also applies (CFn A/B).
+      // An unusable desired value is warned about and the live pair left
+      // alone: this path is state-replay reachable, so it cannot refuse.
+      //
+      // Removing `ResourceAccessRole` while `PUBLIC_READ` stays sends
+      // `PUBLIC_READ` with no role; CloudFormation clears the role in this
+      // case and keeps the public alias (CFn A/B on go-to-k/cdkd#2762).
+      const desiredVisibility = readVisibility(properties, mask);
+      const recorded = readVisibility(previousProperties, mask);
+      if (desiredVisibility.kind === 'unusable') {
+        // Name what stays live: a project recorded PUBLIC_READ stays public.
+        const kept = recorded.kind === 'usable' ? ` (recorded ${recorded.visibility})` : '';
+        this.logger.warn(
+          mask(
+            `${desiredVisibility.reason}. Leaving the visibility of CodeBuild Project ` +
+              `${physicalId} unchanged${kept}; the same value is REFUSED on a template-path create`
+          )
+        );
+      } else {
+        // The record is read leniently (it is state, not the template): an
+        // unreadable one counts as changed, so the desired pair is sent.
+        const changed =
+          recorded.kind !== 'usable' ||
+          recorded.visibility !== desiredVisibility.visibility ||
+          recorded.resourceAccessRole !== desiredVisibility.resourceAccessRole;
+        if (changed) {
+          const projectArn = updated.project?.arn;
+          if (projectArn === undefined) {
+            throw new Error('UpdateProject returned no project ARN for the visibility update');
+          }
+          await this.applyVisibility(projectArn, desiredVisibility);
+        }
+      }
 
       this.logger.debug(`Successfully updated CodeBuild Project ${logicalId}`);
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CodeBuild Project ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * The failure wrap the create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}) so a create-first replacement still
+   * recognises the collision. A non-`Error` throw is withheld the same way,
+   * unstamped: it has no chain.
+   *
+   * A cdkd-authored or transport error keeps its text, masked, stamped exactly
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244). The delete
+   * tests its typed not-found before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   async delete(
@@ -603,13 +855,24 @@ export class CodeBuildProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CodeBuild Project ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CodeBuild Project ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -647,11 +910,8 @@ export class CodeBuildProvider implements ResourceProvider {
    *    placeholder.
    *  - `Cache` (Type / Location / Modes): always-emit placeholder.
    *
-   * Still v1-omitted (known gaps, follow-up): `SecondarySources` /
-   * `SecondaryArtifacts` / `SecondarySourceVersions` / `FileSystemLocations` /
-   * `Triggers` / `BuildBatchConfig` / `ResourceAccessRole`. These are
-   * rarely set in practice and surfacing them with partial shape would
-   * fire false drift on every project that uses them.
+   * Not read back: `Triggers`, which is write-only in the CloudFormation
+   * schema and not handled by this provider.
    *
    * Tags are surfaced from the same `BatchGetProjects` response (CodeBuild
    * uses lower-case `key`/`value` shape; `normalizeAwsTagsToCfn` re-shapes
@@ -979,6 +1239,10 @@ export class CodeBuildProvider implements ResourceProvider {
 
     // ResourceAccessRole — simple string. Always-emit '' for ADD detection.
     result['ResourceAccessRole'] = project.resourceAccessRole ?? '';
+    // Visibility (go-to-k/cdkd#2762): AWS reports it on every project.
+    if (project.projectVisibility !== undefined) {
+      result['Visibility'] = project.projectVisibility;
+    }
 
     // Tags from the same BatchGetProjects response (CodeBuild uses lower-case
     // {key, value} shape).

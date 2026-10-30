@@ -61,12 +61,18 @@ import { isAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 const LOGICAL_ID = 'Stream';
 const TYPE = 'AWS::Kinesis::Stream';
 const PROPERTIES = { Name: 'stream', ShardCount: 1 };
 /** Kinesis's own wording for a stream name that is taken. */
 const COLLISION = 'Stream stream under account 123456789012 already exists.';
+/**
+ * What the Kinesis wrap relays of {@link COLLISION} (go-to-k/cdkd#2319): the
+ * class, the --verbose pointer and the restated collision, never AWS's text.
+ */
+const RELAYED = `ResourceInUseException. ${VERBOSE_POINTER} AWS reports that it already exists.`;
 
 /**
  * A smithy `ServiceException` as `decorateServiceException` builds one for a
@@ -191,7 +197,7 @@ describe('a create replayed after an ambiguous 5xx colliding with itself (#3978)
     expect(error).toBeInstanceOf(Error);
     // The thrown error is the replay's and still RELAYS AWS's "already
     // exists": only the carried mark can keep the verdict false.
-    expect((error as Error).message).toContain(COLLISION);
+    expect((error as Error).message).toContain(RELAYED);
     expect(isNameCollisionError((error as Error).message)).toBe(true);
     expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(false);
   });
@@ -551,7 +557,7 @@ describe('the rollback reverse-replacement arm after an ambiguous 5xx (#3978)', 
       .mock.calls.map((c) => String(c[0]))
       .filter((l) => l.includes('Rollback failed for'));
     expect(failed).toHaveLength(1);
-    expect(failed[0]).toContain(COLLISION);
+    expect(failed[0]).toContain(RELAYED);
     // Failed on the replayed collision itself, not on the #3979 holder guard,
     // which refuses this op too (`stream` vs `stream-new`) and would keep the
     // case green with the #3978 latch removed.

@@ -30,7 +30,11 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
@@ -40,7 +44,8 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { markNotGone } from '../not-gone.js';
+import { generatedNameFor } from '../resource-name.js';
 import { chunks, isAccessDeniedError, lookupEachName, withApiLimit } from '../name-lookup.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, refuseMalformedDesiredTags, tagPlanWarning } from '../tag-list.js';
@@ -69,7 +74,12 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 
 const LOG_GROUP_TYPE = 'AWS::Logs::LogGroup';
 
@@ -270,20 +280,30 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * {@link handledProperties} purely to keep the log group off the Cloud
    * Control fallback path — but nothing ever wired it, so a template setting
    * it deployed "successfully" with the policy silently discarded (the
-   * #1392 silent-drop class the `handled-property-wiring` critic exists to
-   * catch).
+   * #1392 silent-drop class, which the sdk-wire harness now catches).
    *
-   * It cannot be honestly wired from here. The value maps to the SEPARATE
-   * `AWS::Logs::ResourcePolicy` resource type, whose CloudWatch Logs API
-   * counterpart (`PutResourcePolicy` / `DeleteResourcePolicy`) is
-   * **account-wide**, not per-log-group: the policy is keyed by a policy NAME
-   * in the account, not by the log group. Owning it from the log group's
-   * lifecycle would mean inventing an ownership/lifecycle answer cdkd has no
-   * basis for — which policy name to claim, what to do on delete when the
-   * account-wide policy may be shared, and how to resolve two log groups
-   * declaring conflicting documents. Managing the sibling
-   * `AWS::Logs::ResourcePolicy` resource is a separate feature (option 1 in
-   * issue #1412), deliberately not attempted here.
+   * It is not wired from here, by decision (issue #1412), not for lack of an
+   * API. When #1412 was decided, the only CloudWatch Logs counterpart was the
+   * ACCOUNT-scoped `PutResourcePolicy` behind the separate
+   * `AWS::Logs::ResourcePolicy` type, keyed by a policy NAME rather than by the
+   * log group. Owning it from the log group's lifecycle would have meant
+   * inventing which name to claim, what to do on delete when the policy may be
+   * shared, and how to resolve two log groups declaring conflicting documents.
+   *
+   * The API has since gained a log-group-scoped form: `PutResourcePolicy` /
+   * `DescribeResourcePolicies` / `DeleteResourcePolicy` take `resourceArn` and
+   * `policyScope: 'RESOURCE'` (present in `@aws-sdk/client-cloudwatch-logs`
+   * 3.1156.0), with an `expectedRevisionId` handshake on writes. That removes
+   * the account-wide objection, but adopting it is a separate decision: this
+   * provider would then own a second resource's create / update / delete and
+   * revision handling. It is not taken here. (That #1412 predates the
+   * resource-scoped form is an inference from its wording, not a recorded
+   * fact.) Managing the sibling `AWS::Logs::ResourcePolicy` resource stays
+   * option 1 in issue #1412, deliberately not attempted.
+   *
+   * `tests/integration/sdk-to-cc-autoroute/` rests on this drop (issue
+   * #5524): wiring the property ends that fixture's premise, which its step 0
+   * reports by name.
    *
    * Declaring the drop instead makes the omission visible: the #614 routing
    * pass sends any log group whose template sets `ResourcePolicyDocument`
@@ -297,7 +317,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       new Map<string, string>([
         [
           'ResourcePolicyDocument',
-          'covered by the separate account-wide AWS::Logs::ResourcePolicy resource type; logs:PutResourcePolicy is account-scoped, not per-log-group, so it has no CreateLogGroup / PutRetentionPolicy counterpart — routed via Cloud Control instead',
+          'not driven by this provider by decision (issue #1412): no CreateLogGroup / PutRetentionPolicy member carries it, and both policy lifecycles — the account-scoped AWS::Logs::ResourcePolicy type and the log-group-scoped logs:PutResourcePolicy (resourceArn + policyScope RESOURCE) — are ones this provider does not take on — routed via Cloud Control, whose handler applies it',
         ],
       ]),
     ],
@@ -310,20 +330,40 @@ export class LogsLogGroupProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * through the operation's masker: an AWS error can echo a request value (a
-   * resolved tag value). The text is masked RAW, the `cause` stays unmasked,
-   * and a message the mask changed is stamped so the retry classifiers read
-   * that chain rather than the masked message (`wrapMaskedAwsError`, issue
-   * #4259). A method, so `gen-update-wrap-coverage` sees the catch that
-   * throws it as a wrap.
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
+   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
+   * the withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from a create-time wiring call's
+   * failure ({@link markAuxiliaryFailure}), where "it" would read as the log
+   * group. A non-`Error` throw is withheld the same way, unstamped: it has no
+   * chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text, masked RAW (an AWS SDK
+   * error can echo a request value such as a resolved tag value), stamped
+   * exactly when the mask changed it (`wrapMaskedAwsError`, issue #4259). The
+   * delete checks `ResourceNotFoundException` by type before it wraps. A
+   * method, so `gen-update-wrap-coverage` sees the catch that throws it as a
+   * wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
@@ -333,7 +373,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['LogGroupName']) return undefined;
-    return `/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`;
+    return generatedNameFor('AWS::Logs::LogGroup', logicalId);
   }
 
   /**
@@ -454,6 +494,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
         await this.logsClient.send(new CreateLogGroupCommand(createParams));
         createdNewLogGroup = true;
         leftBehind = true;
+        reportCreatedResource(logicalId, resourceType, logGroupName);
       } catch (createError) {
         if (createError instanceof ResourceAlreadyExistsException) {
           this.logger.debug(`Log group ${logGroupName} already exists, using existing`);
@@ -619,6 +660,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
           try {
             await this.logsClient.send(new DeleteLogGroupCommand({ logGroupName }));
             leftBehind = false;
+            retractCreatedResource(logicalId, resourceType, logGroupName);
             this.logger.debug(
               `Cleaned up partially-created log group ${displaySafe(logicalId)} (${displaySafe(logGroupName)}) after wiring failure`
             );
@@ -646,9 +688,17 @@ export class LogsLogGroupProvider implements ResourceProvider {
               ? `Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${deleteCommand}`
               : "Outside a rollback's re-create, the failed deploy's rollback journal records it for `cdkd rollback --revert-failed`; otherwise delete it yourself before the next deploy, via the console: the log " +
                 'group name cannot be reproduced safely on a command line.';
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteLogGroup` names the caller) goes to `debug`
+            // under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created log group ${displaySafe(logicalId)} (${displaySafe(mask(logGroupName))}): `;
+            if (cleanupFailure.redacted) {
+              this.logger.debug(mask(`${cleanupHead}${cleanupFailure.detail}`));
+            }
             this.logger.warn(
               mask(
-                `Failed to clean up partially-created log group ${displaySafe(logicalId)} (${displaySafe(mask(logGroupName))}): ${describeAwsFailure(cleanupError).detail}. ${manualStep}`
+                `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}${manualStep}`
               )
             );
           }
@@ -674,7 +724,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // CreateLogGroup sends the resolved tag values, which an AWS error can
       // echo: the message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      const thrown = this.wrapMaskedError(
+      const thrown = this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -756,7 +806,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
       // An AWS error can echo a request value (a resolved tag value), so the
       // message goes through the operation's masker.
       const mask = maskerOrIdentity(context?.maskSecrets);
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         mask,
         error,
         (text) =>
@@ -1386,6 +1436,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'DeletionProtectionEnabled',
           observe: async () => {
             const resp = await this.logsClient.send(
@@ -1409,7 +1460,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
         );
       } catch (flipError) {
         this.logger.debug(
-          `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          maskerOrIdentity(context?.maskSecrets)(
+            `Could not disable DeletionProtectionEnabled on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          )
         );
       }
     }
@@ -1435,13 +1488,24 @@ export class LogsLogGroupProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete log group ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete log group ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1658,10 +1722,9 @@ export class LogsLogGroupProvider implements ResourceProvider {
    * and `FieldIndexPolicies` (via `DescribeIndexPolicies`, filtered to
    * log-group-level policies and JSON-parsed). Still out of scope:
    * `ResourcePolicyDocument`, which is declared in
-   * {@link unhandledByDesign} (issue #1412) — it is managed by the separate
-   * account-wide `AWS::Logs::ResourcePolicy` resource type, so a log group
-   * whose template sets it routes via Cloud Control rather than through this
-   * provider at all.
+   * {@link unhandledByDesign} (issue #1412) — this provider does not own a
+   * resource policy, so a log group whose template sets it routes via Cloud
+   * Control rather than through this provider at all.
    *
    * Write-side coverage: `FieldIndexPolicies` is applied via
    * `PutIndexPolicy` (CloudWatch Logs allows at most one log-group-level

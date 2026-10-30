@@ -27,7 +27,7 @@ const ESC = '\x1b[';
 interface Task {
   label: string;
   startedAt: number;
-  /** Stack the task belongs to (from `withStackName` AsyncLocalStorage),
+  /** Stack the task belongs to (from `withStackScope` AsyncLocalStorage),
    *  or `undefined` when addTask was called outside any stack scope.
    *  Captured at addTask time because the spinner re-draw runs on a
    *  setInterval timer with no inherited async context. */

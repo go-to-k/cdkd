@@ -27,6 +27,9 @@ cdkd state list --tree
 # one record: outputs and every resource
 cdkd state show MyStack
 
+# pick a stack with the keyboard and look at it
+cdkd state browse
+
 # delete named stacks and their resources
 cdkd state destroy StackA StackB
 ```
@@ -62,6 +65,20 @@ takes it from the record, and `cdkd destroy` takes it from a fresh synth.
 Without an app, you identify a stack by its physical CloudFormation name.
 `cdkd destroy` also accepts CDK display paths and wildcards, but cdkd needs
 the app to resolve those, so `cdkd state` commands do not accept them.
+
+## Looking around without remembering names
+
+`cdkd state browse` lists the stacks in the bucket and lets you pick one with
+the arrow keys, typing to filter. A picked stack shows its resources, its
+resources with their dependencies, or its whole record, each exactly as
+`cdkd state resources` and `cdkd state show` print them, without copying the
+stack's name between commands.
+
+![cdkd state browse: the stack list, typing "data" to filter it, picking DataStack, and its Resources view printed above the menu.](https://raw.githubusercontent.com/go-to-k/cdkd/main/assets/state-browse.gif)
+
+It needs an interactive terminal; in a script or CI job, use `cdkd state list`,
+`cdkd state resources` and `cdkd state show`.
+[`cdkd state browse`](cli-state.md#cdkd-state-browse) lists its keys.
 
 ## Acting on more than one stack
 
@@ -102,9 +119,10 @@ A stack name identifies one deployment in an account and region, as it does
 in CloudFormation. Deploying the same stack name a second time there, under
 another `--state-prefix` or another `--state-bucket`, is unsupported.
 
-The reason is resource names. When your template leaves a resource unnamed,
-cdkd builds the name from the stack name and the logical ID alone. Two
-deployments of one stack name therefore ask AWS for the same names. For some
+The reason is resource names. A name your template declares is the same in
+both deployments, and so is a generated one in a stack first deployed before
+generated names carried a per-stack suffix: cdkd built it from the stack name
+and the logical ID alone. Two such deployments ask AWS for the same names. For some
 resource types, such as an SQS queue or a log group, a create call under a
 taken name hands back the existing resource. Both records then list that one
 resource, and a destroy or a rollback of either deployment deletes it for

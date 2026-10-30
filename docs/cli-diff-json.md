@@ -68,7 +68,7 @@ The sections below describe each one.
 `changes` has one entry for each resource the deploy would create, update or
 delete. Resources that would not change are left out.
 
-Every entry has `logicalId`, `changeType` and `resourceType`. Three more
+Every entry has `logicalId`, `changeType` and `resourceType`. Four more
 fields appear only when they apply:
 
 | Field | Present when |
@@ -76,6 +76,7 @@ fields appear only when they apply:
 | `propertyChanges` | At least one property changes. |
 | `attributeChanges` | At least one attribute changes. |
 | `ccApi` | The resource would go through the Cloud Control API. |
+| `movedTo` | A `DELETE` that [`cdkd refactor`](cli-refactor.md) would keep: `{ "stackName", "logicalId" }` of where the resource reappears. |
 
 `ccApi` is a list of strings. It is the JSON form of the `[via CC API: ...]`
 note in the [text output](cli-diff.md#via-cc-api-routing).
@@ -137,8 +138,9 @@ withheld rows can then have the same `name`. The reasons are under
 ## `destructiveChanges`
 
 Each entry is one change that `--fail-on=destructive` fails on. It has
-`logicalId`, `resourceType`, `impact`, and `constructPath` when state records
-one.
+`logicalId`, `resourceType`, `impact`, `constructPath` when state records
+one, and `movedTo` on a `WILL_DESTROY` removal [`cdkd refactor`](cli-refactor.md)
+would keep.
 
 | `impact` | Text output |
 | --- | --- |

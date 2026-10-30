@@ -26,7 +26,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceNameWithFallback } from '../resource-name.js';
+import { markNotGone } from '../not-gone.js';
+import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import {
@@ -51,9 +52,19 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import {
   onlySecretDerived,
@@ -138,18 +149,34 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
   private logger = getLogger().child('IAMManagedPolicyProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * unmasked `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text masked (issue #2177,
+   * `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    // Not from a post-create step (`markAuxiliaryFailure`), where "it" would
+    // read as the resource just created.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -270,6 +297,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       }
       leftBehindArn = policyArn;
       createdPolicyIdentity = policyIdentityToken(response.Policy?.PolicyId);
+      reportCreatedResource(logicalId, resourceType, policyArn, createdPolicyIdentity); // go-to-k/cdkd#5511
       log.debug(`Created IAM managed policy: ${v(policyArn)}`);
 
       // CreatePolicy has succeeded — AWS has committed the policy. Wire up
@@ -289,6 +317,7 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           await this.detachAllPrincipals(policyArn);
           await this.deleteAllNonDefaultVersions(policyArn);
           await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
+          retractCreatedResource(logicalId, resourceType, policyArn);
           leftBehindArn = undefined;
           log.debug(
             `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`
@@ -300,8 +329,14 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           // The masker is handed over too (issue #2177), so a secret-bearing
           // name withholds the command rather than printing it.
           const aws = pasteableAwsCommand(log.mask);
+          // An AWS-authored failure is named by its class at warn, and AWS's
+          // text (a denied `DeletePolicy` names the caller) goes to `debug`
+          // under the same head (go-to-k/cdkd#2319).
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
           log.warn(
-            `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -405,7 +440,22 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           `deploy renames the policy.`
       );
     }
-    const newPolicyName = revertKeepsName ? oldPolicyName : derivedPolicyName;
+    // go-to-k/cdkd#5064: an un-named policy whose recorded name differs from
+    // the derivation only by the naming scheme keeps it, never a replacement.
+    const generatedNameKept = recordedGeneratedNameKept({
+      recorded: oldPolicyName,
+      derived: derivedPolicyName,
+      declaredName: properties['ManagedPolicyName'],
+      previousDeclaredName: previousProperties['ManagedPolicyName'],
+      logicalId,
+      options: { maxLength: 128 },
+    });
+    if (generatedNameKept) {
+      log.debug(
+        `IAM managed policy ${logicalId}: keeping its generated name ${v(oldPolicyName)} (the template names no policy)`
+      );
+    }
+    const newPolicyName = revertKeepsName || generatedNameKept ? oldPolicyName : derivedPolicyName;
     // BOTH sides before any call (go-to-k/cdkd#3906). The previous side is the
     // state record, and a rollback revert or `drift --revert` replays this
     // method with a recorded bag as the DESIRED side: a string there was
@@ -539,6 +589,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       } catch (error) {
         // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
         // detaches the policy before `DeletePolicy` refuses, so it is not whole.
+        // `error` is `delete()`'s wrap, which names an AWS failure by its class
+        // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
         orphanReason = log.mask(
           `old managed policy ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
         );
@@ -733,7 +785,13 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
             cause
           )
       );
-      throw progress.stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319). IAM's own
+      // `NoSuchEntity` is not such a class.
+      const marked =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw progress.stripped ? markDeleteStarted(marked) : marked;
     }
   }
 

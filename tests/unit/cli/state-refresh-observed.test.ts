@@ -180,6 +180,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { getCurrentStackInstanceId } from '../../../src/provisioning/resource-name.js';
 
 function captureStdout(): { output: string[]; restore: () => void } {
   const output: string[] = [];
@@ -269,7 +270,8 @@ function makeResource(overrides: Partial<ResourceState> = {}): ResourceState {
 }
 
 function makeState(
-  resources: Record<string, ResourceState>
+  resources: Record<string, ResourceState>,
+  stackInstanceId?: string
 ): { state: StackState; etag: string; migrationPending?: boolean } {
   return {
     state: {
@@ -279,6 +281,7 @@ function makeState(
       resources,
       outputs: {},
       lastModified: 0,
+      ...(stackInstanceId !== undefined && { stackInstanceId }),
     },
     etag: '"etag-1"',
   };
@@ -2228,6 +2231,34 @@ describe('cdkd state refresh-observed — import-refused baselines (issue #2944)
       );
       expect(mockAcquireLock).not.toHaveBeenCalled();
       expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#5064: the refresh runs under `withStackScope({ stackName,
+    // stackInstanceId })`, so a provider's `readCurrentState` call made inside
+    // the refresh sees the RECORD's id.
+    it('#5064: readCurrentState runs inside the record stack instance scope', async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const seenIds: Array<string | undefined> = [];
+      mockListStacks.mockResolvedValueOnce([{ stackName: 'TestStack', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValueOnce(
+        makeState(
+          {
+            Bucket1: makeResource({ physicalId: 'b', properties: { BucketName: 'b' } }),
+          },
+          STACK_INSTANCE_ID
+        )
+      );
+      mockRegistryGetProvider.mockReturnValue({
+        readCurrentState: async () => {
+          seenIds.push(getCurrentStackInstanceId());
+          return { BucketName: 'b', Tags: [] };
+        },
+      });
+
+      const { error } = await runRefresh(['TestStack']);
+
+      expect(error).toBeUndefined();
+      expect(seenIds).toEqual([STACK_INSTANCE_ID]);
     });
   });
 });

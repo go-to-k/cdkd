@@ -1,3 +1,7 @@
+import { refusePendingMovesOut } from '../../state/pending-moves.js';
+import { readRefactorMarker, refuseRefactorMarker } from '../../state/refactor-marker.js';
+import { retryCarriedSupersededResources } from './superseded-retry.js';
+import { supersededResourcesOf } from '../superseded-resources.js';
 import {
   freshNoEchoParametersWithDeclared,
   noEchoDiffComparison,
@@ -14,7 +18,10 @@ import {
 } from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
-import { GeneratedNameGuard } from '../generated-name-guard.js';
+import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../generated-name-guard.js';
+import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
+import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
+import { nameGenerationsOf, nextNameGeneration } from '../../state/name-generation.js';
 import { flushKeptForReadoption } from './delete.js';
 import {
   adoptRollbackOrphans,
@@ -22,6 +29,7 @@ import {
   settleJournalAfterSuccess,
 } from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
+import { PhaseClock, phaseScopeForStack } from '../../utils/phase-timings.js';
 import { loadKeptInHistory } from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
@@ -42,6 +50,7 @@ import {
   STATE_SCHEMA_VERSION_CURRENT,
   type StackState,
   exportNamesCarriedFrom,
+  stackInstanceIdCarriedFrom,
   importableOutputKeys,
   importableOutputs,
   orphansCarriedFrom,
@@ -129,6 +138,8 @@ export async function doDeployWithPrefetch(
   createOnlyPrefetch: CreateOnlyPrefetch
 ): Promise<DeployResult> {
   const startTime = Date.now();
+  // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1.
+  const clock = new PhaseClock(phaseScopeForStack(stackName, engine.stackRegion));
   engine.logger.debug(safeMsg`Starting deployment for stack: ${displayStackName(stackName)}`);
 
   // Live progress renderer: shows in-flight resources as a multi-line area
@@ -149,6 +160,7 @@ export async function doDeployWithPrefetch(
   // lock through the normal path.
   engine.interrupted = false;
   engine.interruptCause = null;
+  engine.userInterrupted = false;
   const sigintHandler = () => {
     // Route the interrupt notice through the live renderer so it does not
     // collide with the in-flight task display.
@@ -159,6 +171,8 @@ export async function doDeployWithPrefetch(
     });
     engine.interrupted = true;
     engine.interruptCause ??= 'user';
+    // Unconditional: a sibling's failure may already hold the cause.
+    engine.userInterrupted = true;
   };
   process.on('SIGINT', sigintHandler);
 
@@ -176,6 +190,7 @@ export async function doDeployWithPrefetch(
     process.removeListener('SIGINT', sigintHandler);
     throw error;
   }
+  clock.lap('lock acquire');
 
   // go-to-k/cdkd#4705 review P4 / G-6: a first deploy's state gate runs
   // overlapped with the work before the plan is acted on. When that work
@@ -185,6 +200,10 @@ export async function doDeployWithPrefetch(
   // The exports index read step 1b starts (#4837); awaited before the lock
   // goes, like the journal purge. Never rejects.
   let exportsPrefetch: Promise<void> | undefined;
+  // The final save's background cleanup (go-to-k/cdkd#5200): on a first
+  // deploy, the write-ahead instance id's sibling. Awaited beside the
+  // post-save writes and again before the lock goes. Never rejects.
+  let finalSaveCleanup: Promise<void> | undefined;
   // go-to-k/cdkd#4705: this run found no record (a first deploy), and it
   // failed -- the `finally` then checks whether it left one.
   let firstDeploy = false;
@@ -197,8 +216,22 @@ export async function doDeployWithPrefetch(
     // commands had the identical shape and only one of them was fixed.
     renderer.start();
 
-    // 1. Load current state
-    const currentStateData = await engine.stateBackend.getState(stackName, engine.stackRegion);
+    // 1. Load current state. The rollback journal step 1b reads is read
+    // beside it (go-to-k/cdkd#5200): both are reads under the lock, and
+    // nothing between the two writes the journal. Its failure is 1b's to
+    // handle, so it is caught here and rethrown there.
+    const journalRead = Promise.resolve().then(() =>
+      engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion)
+    );
+    journalRead.catch(() => undefined);
+    // The refactor marker (go-to-k/cdkd#5212) is read beside the state too,
+    // under this stack's lock, so it adds no wait and cannot be older than the
+    // lock: a refactor that started after this run did is seen.
+    const [currentStateData, refactorMarker] = await Promise.all([
+      engine.stateBackend.getState(stackName, engine.stackRegion),
+      readRefactorMarker(engine.stateBackend),
+    ]);
+    clock.lap('state load');
     // The create-token ledger replaces one that outlived its state record
     // (go-to-k/cdkd#4438).
     noteDeployStateRecord(currentStateData?.state !== undefined);
@@ -215,6 +248,61 @@ export async function doDeployWithPrefetch(
       lastModified: Date.now(),
     };
     const currentEtag = currentStateData?.etag;
+    // go-to-k/cdkd#5238: the record says what the DEPLOYED stack's
+    // `terminationProtection` is, so `cdkd state destroy` (no CDK app) can
+    // honor it. Set from this synth on the in-memory record, so every save
+    // below writes it (the carrier copies it) and a no-change deploy that
+    // only toggles it still saves. A nested child takes none: the setting is
+    // the root stack's.
+    const loadedTerminationProtection = currentState.terminationProtection === true;
+    if (!engine.options.parentStackInfo) {
+      if (engine.options.terminationProtection === true) currentState.terminationProtection = true;
+      else delete currentState.terminationProtection;
+    }
+    const terminationProtectionChanged =
+      (currentState.terminationProtection === true) !== loadedTerminationProtection;
+    // go-to-k/cdkd#5064: the scope every generated name of this deploy is
+    // derived in -- the record's stack instance id (`undefined` for a legacy
+    // record, and for a first deploy until `resolveStackInstanceId` below
+    // sets it; a `--dry-run` first deploy never has one). A malformed
+    // recorded id is refused here, before anything acts.
+    stackInstanceIdOf(currentState, displayStackName(stackName));
+    // Phase 2: each logical id's name generation as the record holds it at
+    // the load (a replacement binds the next one around its create). A
+    // malformed generation is refused here too. A first deploy's record is
+    // empty, so every create takes generation 0.
+    const loadedNameGenerations = nameGenerationsOf(currentState);
+    const nameScope = (): StackScope => {
+      const stackInstanceId = stackInstanceIdOf(currentState, displayStackName(stackName));
+      return {
+        stackName,
+        stackInstanceId,
+        nameGenerations: stackInstanceId === undefined ? undefined : loadedNameGenerations,
+      };
+    };
+    // A first deploy: its id is resolved once it is going ahead.
+    const idArrivesLater =
+      (currentStateData === null || currentStateData === undefined) &&
+      currentState.stackInstanceId === undefined;
+    // go-to-k/cdkd#5064: what an earlier lifetime of this stack kept here
+    // (`retained.json`). The new lifetime's names differ, so none of it is
+    // taken back; the deploy says so once, below. Read at once, beside the
+    // diff, and shared with the generated-name guard.
+    const retainedAtFirstDeploy =
+      idArrivesLater && !engine.options.dryRun
+        ? Promise.resolve().then(() =>
+            engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion)
+          )
+        : undefined;
+    // Its failure is the guard's to report (it refuses on unreadable
+    // evidence); the warning below only reads a successful answer.
+    const retainedForWarning = retainedAtFirstDeploy?.catch(() => null);
+    // go-to-k/cdkd#5200: the read `resolveStackInstanceId` opens with, started
+    // now so it overlaps the diff; the write-ahead itself still waits for the
+    // approval. Optional for the test doubles.
+    if (idArrivesLater && !engine.options.dryRun) {
+      engine.stateBackend.prefetchStackInstanceSibling?.(stackName, engine.stackRegion);
+    }
     engine.rebaseline(currentState.resources ?? {});
     engine.runProducerRegionEvidence = () =>
       producerRegionEvidence(engine.rollbackDeps(), currentState);
@@ -311,6 +399,14 @@ export async function doDeployWithPrefetch(
       engine.stackRegion,
       engine.options.refusalRecovery
     );
+    // An unfinished `cdkd refactor` moving resources out of this stack
+    // (go-to-k/cdkd#5212): the destination may already hold them, and this
+    // deploy would DELETE each one the template no longer declares. One field
+    // test on the record already loaded; no extra call.
+    refusePendingMovesOut(currentState, stackName, engine.stackRegion, 'cdkd deploy');
+    // And a move whose DESTINATION is this stack: its record knows nothing of
+    // the move, and this deploy would create the resource a second time.
+    refuseRefactorMarker(refactorMarker, stackName, engine.stackRegion, 'cdkd deploy');
     // State schema v12: the loaded outputs bag and its provenance, for a save
     // that carries that bag forward. After the refusals, which own the first
     // read of the bag.
@@ -347,6 +443,7 @@ export async function doDeployWithPrefetch(
         await gate;
       }
     }
+    clock.lap('state checks + loaded-state gate');
 
     // go-to-k/cdkd#4837: reads and a purge the success path would otherwise
     // make after the last resource, started here beside the deploy instead
@@ -383,7 +480,7 @@ export async function doDeployWithPrefetch(
     let journalAtStart: Awaited<ReturnType<typeof engine.stateBackend.loadRollbackJournal>> = null;
     let journalReadError: unknown;
     try {
-      journalAtStart = await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion);
+      journalAtStart = await journalRead;
     } catch (error) {
       journalReadError = error ?? new Error('unreadable rollback journal');
     }
@@ -398,6 +495,14 @@ export async function doDeployWithPrefetch(
         command: 'deploy',
         logger: engine.logger,
         stateResources: currentState.resources,
+        // Before a first deploy's record exists, a re-run after a crash has
+        // its id only in the write-ahead sibling: read there (never minted),
+        // and only when a request is pending, so the earlier attempt's
+        // generated name reads as a name. An ordinary deploy reads nothing.
+        stackInstanceId:
+          currentStateData?.state === undefined
+            ? () => engine.stateBackend.readStackInstanceSibling(stackName, engine.stackRegion)
+            : nameScope().stackInstanceId,
         // A CREATE that completed is RESUMED when the template still declares
         // its logical id with the type and the journal holds the bag it sent
         // (no secret mask: the create path compares that bag with what it
@@ -862,6 +967,7 @@ export async function doDeployWithPrefetch(
       sources: maskedInputSourcesForDiff,
       rebaselined: new Map<string, Record<string, string>>(),
     };
+    clock.lap('journal, parameters, conditions, DAG build');
     const changes = await engine.diffCalculator.calculateDiff(
       currentState,
       effectiveTemplate,
@@ -959,6 +1065,7 @@ export async function doDeployWithPrefetch(
         ),
       }
     );
+    clock.lap('diff');
     // The diff was the prefetch's only consumer: withdraw what it did not
     // need, so it stops spending the account's DescribeType quota that the
     // deploy's own (write-only) lookups draw on.
@@ -1096,6 +1203,25 @@ export async function doDeployWithPrefetch(
       firstDeployStateGate = undefined;
       await gate;
     }
+    // State schema v13 (go-to-k/cdkd#5064): a stack with no record gets its
+    // stack instance id at its first state write -- the one an earlier,
+    // interrupted run wrote ahead, or a fresh one written ahead -- under the
+    // lock, before the first save and the first create, and only once the
+    // deploy is going ahead (past the gate, the destructive-plan check and
+    // `--require-approval`), so a refused or declined deploy writes nothing.
+    // It rides `currentState`, so every save of this deploy (the partial save
+    // of a failure included) carries it through `stackInstanceIdCarriedFrom`.
+    // A stack WITH a record never reaches here: an ordinary deploy pays
+    // nothing, and a legacy record stays legacy. `--dry-run` writes nothing.
+    const resolveStackInstanceId = async (): Promise<void> => {
+      if (currentStateData !== null && currentStateData !== undefined) return;
+      if (engine.options.dryRun || currentState.stackInstanceId !== undefined) return;
+      currentState.stackInstanceId = await engine.stateBackend.stackInstanceIdForFirstWrite(
+        stackName,
+        engine.stackRegion,
+        { writeAhead: true }
+      );
+    };
     // State schema v12 (go-to-k/cdkd#4847 / #4852): the one-time migration
     // capture of each unchanged record that holds a token and no provenance,
     // OFF the critical path (drained with the observed captures before a
@@ -1118,9 +1244,20 @@ export async function doDeployWithPrefetch(
     };
     const hasChanges = engine.diffCalculator.hasChanges(changes);
 
+    clock.lap('post-diff checks');
     if (!hasChanges) {
       engine.logger.info('No changes detected. Stack is up to date.');
       startProvenanceCapture();
+      // go-to-k/cdkd#5111: an earlier deploy's superseded resources are
+      // retried by every deploy, an unchanged one included.
+      const supersededChanged = engine.options.dryRun
+        ? false
+        : await retryCarriedSupersededResources(
+            engine,
+            currentState,
+            supersededResourcesOf(currentState),
+            currentState.resources
+          );
 
       // The diff only inspects Resources, so an Outputs-only change (a new
       // Export added because a downstream stack now references this one — its
@@ -1358,8 +1495,12 @@ export async function doDeployWithPrefetch(
           exportSetChanged ||
           skippedOutputsChanged ||
           orphansChanged ||
+          supersededChanged ||
+          terminationProtectionChanged ||
           healedAttributesPending
         ) {
+          // A first deploy with nothing to create still writes its record here.
+          await resolveStackInstanceId();
           try {
             const refreshedState: StackState = {
               version: STATE_SCHEMA_VERSION_CURRENT,
@@ -1367,6 +1508,7 @@ export async function doDeployWithPrefetch(
               stackName: currentState.stackName,
               resources: currentState.resources,
               ...orphansCarriedFrom(currentState),
+              ...stackInstanceIdCarriedFrom(currentState),
               outputs: (outputsChanged ? outputsToPersist : persistedOutputs) as Record<
                 string,
                 string
@@ -1495,6 +1637,7 @@ export async function doDeployWithPrefetch(
             currentState.resources,
             currentEtag === undefined
           );
+      clock.lap('no-change path');
 
       return {
         stackName,
@@ -1565,7 +1708,7 @@ export async function doDeployWithPrefetch(
       engine.lockManager as { abandonedRunEndedBy?: (s: string, r: string) => number | undefined }
     ).abandonedRunEndedBy?.(stackName, engine.stackRegion);
     if (abandonedRunAt !== undefined) await noteAbandonedRun(abandonedRunAt);
-    engine.generatedNameGuard = GeneratedNameGuard.start({
+    const generatedNameGuardInput: GeneratedNameGuardInput = {
       stackName,
       region: engine.stackRegion,
       changes: changes.values(),
@@ -1573,7 +1716,9 @@ export async function doDeployWithPrefetch(
       records: currentState.resources,
       orphans: currentState.orphans,
       loadJournal: () => engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
-      loadRetained: () => engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
+      loadRetained: () =>
+        retainedAtFirstDeploy ??
+        engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
       loadKeptInHistory: () => {
         const reader = new DeploymentEventsReader(engine.stateBackend);
         return loadKeptInHistory(
@@ -1590,12 +1735,48 @@ export async function doDeployWithPrefetch(
       warn: (message) => engine.logger.warn(message),
       // G-1: this deploy took over the lock an abandoned run left.
       ...(abandonedRunAt !== undefined && { abandonedRunAt }),
-    });
-    if (engine.generatedNameGuard !== undefined) {
-      engine.logger.debug(
-        safeMsg`Generated-name check: looking up ${String(engine.generatedNameGuard.size)} planned create(s)`
+    };
+    // go-to-k/cdkd#5064: the planned names are derived in the stack's naming
+    // scope. A first deploy has no instance id until it is going ahead (past
+    // the prompt below), so its lookups start then, before the first create;
+    // a stack with a record looks up now, overlapping the checks and prompt.
+    const startGeneratedNameGuard = (): void => {
+      const scope = nameScope();
+      const lifetimeId = scope.stackInstanceId;
+      engine.generatedNameGuard = withStackScope(scope, () =>
+        GeneratedNameGuard.start({
+          ...generatedNameGuardInput,
+          ...(lifetimeId !== undefined && {
+            newScheme: true,
+            // Phase 2: a planned replacement of the same type creates under
+            // its next generation's name, checked like a create.
+            replacementGeneration: (change) => {
+              const record = currentState.resources[change.logicalId];
+              if (
+                record === undefined ||
+                record.resourceType !== change.resourceType ||
+                !(
+                  (change.propertyChanges ?? []).some((pc) => pc.requiresReplacement) ||
+                  // A `--recreate-via-*` target is a replacement too.
+                  recreateTargetIdsFor(engine.options.recreateTargets, stackName)?.has(
+                    change.logicalId
+                  ) === true
+                )
+              ) {
+                return undefined;
+              }
+              return nextNameGeneration(record, change.logicalId, lifetimeId);
+            },
+          }),
+        })
       );
-    }
+      if (engine.generatedNameGuard !== undefined) {
+        engine.logger.debug(
+          safeMsg`Generated-name check: looking up ${String(engine.generatedNameGuard.size)} planned create(s)`
+        );
+      }
+    };
+    if (!idArrivesLater) startGeneratedNameGuard();
 
     // go-to-k/cdkd#4705: a plan that destroys (or touches a nested-stack row)
     // is checked against the bucket's other state prefixes BEFORE the approval
@@ -1616,6 +1797,7 @@ export async function doDeployWithPrefetch(
       stackName,
       changes: changes.values(),
       records: currentState.resources,
+      orphans: currentState.orphans,
       template: effectiveTemplate,
       recreateTargetIds: recreateTargetIdsFor(engine.options.recreateTargets, stackName),
       // go-to-k/cdkd#4601: the `broadening` table prints resolved values;
@@ -1632,11 +1814,9 @@ export async function doDeployWithPrefetch(
     });
     // go-to-k/cdkd#4705: the prompt may have waited; the lookups made before
     // it are read again at each create.
+    // A first deploy's guard starts after the prompt (below): nothing to re-read.
     if (prompted) engine.generatedNameGuard?.noteApprovalPrompted();
     startProvenanceCapture();
-    // The one intent write (review P1): past the prompt and the destructive
-    // check, under the lock, before the first create (each awaits it).
-    engine.generatedNameGuard?.recordPlannedIntents();
 
     // Issue #1111 item 3 (review fix): the diff phase above resolves
     // intrinsics through the SAME counted resolver, so a warn-path
@@ -1651,10 +1831,29 @@ export async function doDeployWithPrefetch(
     // ({@link IntrinsicFunctionResolver.getPhysicalIdFallbackCount}).
     engine.resolver.resetPhysicalIdFallbackCount();
 
+    clock.lap('plan checks, approval');
+    await resolveStackInstanceId();
+    if (idArrivesLater) {
+      startGeneratedNameGuard();
+      const kept = (await retainedForWarning) ?? [];
+      if (kept.length > 0) {
+        engine.logger.warn(
+          safeMsg`An earlier deployment of ${displayStackName(stackName)} kept ${String(kept.length)} ` +
+            'resource(s) here (DeletionPolicy: Retain). This deploy does not take ' +
+            'them back: it creates new resources under new names, as CloudFormation does. To manage a ' +
+            "kept resource again, adopt it with 'cdkd import'."
+        );
+      }
+    }
+    // The one intent write (review P1): past the prompt and the destructive
+    // check, under the lock, before the first create (each awaits it).
+    engine.generatedNameGuard?.recordPlannedIntents();
+
     // Progress counter for tracking overall deployment progress
     const totalOperations = createChanges.length + updateChanges.length + deleteChanges.length;
     const progress = { current: 0, total: totalOperations };
 
+    clock.lap('first-deploy instance id, name guard');
     // 6. Execute deployment (event-driven DAG dispatch with partial state saves)
     const {
       state: newState,
@@ -1664,22 +1863,25 @@ export async function doDeployWithPrefetch(
       // go-to-k/cdkd#4174: for the child engine a nested-stack row builds.
       () => producerRegionEvidence(engine.rollbackDeps(), currentState),
       () =>
-        executeDeployment(
-          engine,
-          effectiveTemplate,
-          currentState,
-          changes,
-          dag,
-          executionLevels,
-          stackName,
-          outputsDigestSource,
-          parameterValues,
-          conditions,
-          currentEtag,
-          progress,
-          migrationPending
+        withStackScope(nameScope(), () =>
+          executeDeployment(
+            engine,
+            effectiveTemplate,
+            currentState,
+            changes,
+            dag,
+            executionLevels,
+            stackName,
+            outputsDigestSource,
+            parameterValues,
+            conditions,
+            currentEtag,
+            progress,
+            migrationPending
+          )
         )
     );
+    clock.lap('resource DAG');
 
     // 7a. Drain in-flight readCurrentState promises so each resource's
     // observedProperties lands in newState before we persist it. By
@@ -1699,6 +1901,7 @@ export async function doDeployWithPrefetch(
       // Best-effort: never in the way of the save it serves.
     }
     await engine.observedCapture.drainObservedCaptures(newState.resources);
+    clock.lap('observed-state drain');
 
     // A part the drain cap stopped waiting for can record its secret after
     // the outputs pass redacted `newState.outputs`, and the drain above is
@@ -1726,11 +1929,17 @@ export async function doDeployWithPrefetch(
         // The record joins here, on the save that ends a successful deploy
         // (go-to-k/cdkd#4479): `executeDeployment` builds its states field by
         // field, so none of its saves carries it.
-        engine.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState)
+        engine.withParentInfo(conditionVerdicts ? { ...newState, conditionVerdicts } : newState),
+        {
+          deferCleanup: (cleanup) => {
+            finalSaveCleanup = cleanup;
+          },
+        }
       ),
       flushKeptForReadoption(engine),
     ]);
     engine.logger.debug(safeMsg`State saved (ETag: ${newEtag})`);
+    clock.lap('final state save');
     // go-to-k/cdkd#4438: the record now names every resource this deploy
     // created, so their create-token `sent` entries have done their job.
     // go-to-k/cdkd#4705: likewise a kept resource this deploy took back: its
@@ -1814,7 +2023,9 @@ export async function doDeployWithPrefetch(
           )
         : Promise.resolve(),
       ledgerAndKeptCleanup,
+      finalSaveCleanup,
     ]);
+    clock.lap('journal settle, exports index');
 
     const durationMs = Date.now() - startTime;
     const unchangedCount =
@@ -1896,7 +2107,7 @@ export async function doDeployWithPrefetch(
     // finishes before the lock goes and before the caller destroys the
     // client, on every path, not only the success settle that awaits the
     // purge. Neither rejects.
-    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch]);
+    await Promise.all([engine.absentJournalVersionPurge, exportsPrefetch, finalSaveCleanup]);
 
     // go-to-k/cdkd#4705: a first deploy that failed and left nothing that can
     // own a resource -- no record, and no rollback journal holding a completed
@@ -1937,5 +2148,6 @@ export async function doDeployWithPrefetch(
         safeMsg`Failed to release lock: ${asIsMessage(describeAwsFailure(lockError).detail)}`
       );
     }
+    clock.lap('teardown + lock release');
   }
 }

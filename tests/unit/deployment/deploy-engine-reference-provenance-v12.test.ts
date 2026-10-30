@@ -102,6 +102,7 @@ import { buildResolverContext } from '../../../src/deployment/deploy-engine/reso
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { dynamicReferenceRetryDelays } from '../../../src/deployment/intrinsic-resolver/account-drain.js';
 import type { StackState } from '../../../src/types/state.js';
+import { STATE_SCHEMA_VERSION_CURRENT } from '../../../src/types/state.js';
 
 const REF = '{{resolve:secretsmanager:sdin:SecretString:queue::}}';
 /** A token of a service cdkd does not resolve: left as written. */
@@ -286,6 +287,9 @@ async function deploy(opts: {
       {
         getState,
         saveState,
+        stackInstanceIdForFirstWrite: vi
+          .fn()
+          .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
         loadRollbackJournal: vi.fn().mockResolvedValue(null),
         purgeRollbackJournalVersions: vi.fn().mockResolvedValue(undefined),
         rollbackJournalReadAbsent: vi.fn().mockReturnValue(false),
@@ -385,7 +389,7 @@ describe('the recording seam and the persist writer (written records)', () => {
   it('a first deploy records region, the response VersionId, and the read route', async () => {
     const run = await deploy({ state: undefined });
     expect(run.thrown).toBeUndefined();
-    expect(run.last?.version).toBe(12);
+    expect(run.last?.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
     expect(provenance(run, 'SecretQueue')).toEqual({
       [REF]: { region: 'us-east-1', versions: [V1] },
     });
@@ -613,7 +617,7 @@ describe('the one-time migration capture (v11 -> v12)', () => {
     const run = await deploy({ state });
     expect(run.thrown).toBeUndefined();
     expect(run.calls).toEqual([]);
-    expect(run.last?.version).toBe(12);
+    expect(run.last?.version).toBe(STATE_SCHEMA_VERSION_CURRENT);
     // The queue's physical id holds the plaintext, so its version is proven.
     expect(provenance(run, 'SecretQueue')).toEqual({
       [REF]: { region: 'us-east-1', versions: [V1] },

@@ -65,6 +65,7 @@ import {
 } from '@aws-sdk/client-appsync';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { safeMsg } from '../../utils/display-safe.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -102,7 +103,13 @@ import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { injectiveKey } from '../../state/record-keys.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { markNotGone } from '../not-gone.js';
 import {
   AmbiguousCreateLatch,
   RecentIdSet,
@@ -118,7 +125,6 @@ import {
 } from './orphan-report.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { isSecretDerivedValue } from '../masked-retry-logger.js';
 import {
   markNonRetryable,
   markRedactedCause,
@@ -175,6 +181,69 @@ const APPSYNC_APIKEY_ID_FORMAT: CompositeIdFormat = {
   label: 'AppSync ApiKey',
   segments: ['apiId', 'apiKeyId'],
 };
+
+/**
+ * The resource path of an AppSync ARN as CloudFormation records it for each
+ * type (measured with `DescribeStackResources`, go-to-k/cdkd#5364), mapped to
+ * the segments of cdkd's physical id. No segment may hold `/` or `|`, so an ARN
+ * whose segment would break cdkd's `|`-joined id matches nothing.
+ */
+const CFN_APPSYNC_ARN_RESOURCE_PATHS: Readonly<Record<string, RegExp>> = {
+  'AWS::AppSync::GraphQLApi': /^apis\/([^/|]+)$/,
+  'AWS::AppSync::DataSource': /^apis\/([^/|]+)\/datasources\/([^/|]+)$/,
+  'AWS::AppSync::Resolver': /^apis\/([^/|]+)\/types\/([^/|]+)\/resolvers\/([^/|]+)$/,
+  // CloudFormation writes `apikeys/`; the ARN AppSync documents (and cdkd
+  // builds) says `apikey/`.
+  'AWS::AppSync::ApiKey': /^apis\/([^/|]+)\/apikeys?\/([^/|]+)$/,
+};
+
+/**
+ * The API id a GraphQLSchema physical id names: cdkd records the bare API id,
+ * CloudFormation `<apiId>GraphQLSchema` — which a record migrated before
+ * go-to-k/cdkd#5364 still holds. AppSync API ids are lowercase alphanumeric,
+ * so the suffix is unambiguous.
+ */
+function graphQLSchemaApiId(physicalId: string): string {
+  const schema = /^([a-z0-9]+)GraphQLSchema$/.exec(physicalId);
+  return schema ? schema[1]! : physicalId;
+}
+
+/**
+ * cdkd's physical id for an AppSync resource CloudFormation identifies
+ * differently (go-to-k/cdkd#5364). `cdkd import --migrate-from-cloudformation`
+ * hands `import()` the id `DescribeStackResources` reports: the ARN for the
+ * API and the three ARN-identified children, and `<apiId>GraphQLSchema` for a
+ * schema. cdkd's own records hold the bare API id and the `|`-joined child ids,
+ * and every reader addresses AppSync with those, so a verbatim CloudFormation
+ * id sends `GetGraphqlApi` / `GetIntrospectionSchema` an API that does not
+ * exist. Any other shape is returned unchanged.
+ *
+ * An ARN in another region is REFUSED: the provider's client is the import
+ * region's, so the bare id would address an API of the same id there, or none.
+ */
+export function appSyncPhysicalIdFromCfn(
+  resourceType: string,
+  logicalId: string,
+  physicalId: string,
+  region: string
+): string {
+  if (resourceType === 'AWS::AppSync::GraphQLSchema') return graphQLSchemaApiId(physicalId);
+  const pathPattern = CFN_APPSYNC_ARN_RESOURCE_PATHS[resourceType];
+  const arn = /^arn:[^:]+:appsync:([^:]*):[^:]*:(.+)$/.exec(physicalId);
+  const segments = pathPattern && arn ? pathPattern.exec(arn[2]!) : null;
+  if (!arn || !segments) return physicalId;
+  if (canonicalizeRegion(arn[1]!) !== canonicalizeRegion(region)) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${physicalId} is in region ${arn[1]}, not the import region ${region}`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  return segments.slice(1).join('|');
+}
 
 /**
  * What state records for `GraphQLApi.EnvironmentVariables` when the env-var arm
@@ -685,15 +754,15 @@ export class AppSyncProvider implements ResourceProvider {
    * Update an AppSync resource in-place via the SDK's `Update*` calls.
    *
    * Per-type API path:
-   *   - `GraphQLApi`   → `UpdateGraphqlApiCommand` (`AuthenticationType` /
-   *     `XrayEnabled` / `LogConfig`) + `TagResource` / `UntagResource`
-   *     for `Tags` diff. `Name` is immutable on AWS.
-   *   - `DataSource`   → `UpdateDataSourceCommand` (`Description` /
+   *   - `GraphQLApi`   → `UpdateGraphqlApiCommand` (`Name` /
+   *     `AuthenticationType` / `XrayEnabled` / `LogConfig` / the other
+   *     config members) + `TagResource` / `UntagResource` for `Tags` diff.
+   *   - `DataSource`   → `UpdateDataSourceCommand` (`Type` / `Description` /
    *     `ServiceRoleArn` / the per-type configs — `DynamoDBConfig` /
    *     `LambdaConfig` / `HttpConfig` / `ElasticsearchConfig` /
    *     `OpenSearchServiceConfig` / `EventBridgeConfig` /
    *     `RelationalDatabaseConfig` — / `MetricsConfig`).
-   *     `ApiId` / `Name` / `Type` are immutable identity fields.
+   *     `ApiId` / `Name` are immutable identity fields.
    *   - `Resolver`     → `UpdateResolverCommand` (`DataSourceName` /
    *     `RequestMappingTemplate` / `ResponseMappingTemplate` / `Kind` /
    *     `PipelineConfig` / `Runtime` / `Code` / `CachingConfig` /
@@ -703,7 +772,8 @@ export class AppSyncProvider implements ResourceProvider {
    *   - `ApiKey`       → `UpdateApiKeyCommand` (`Description` / `Expires`).
    *     `ApiId` is immutable; the AWS-generated key id is immutable.
    *   - `GraphQLSchema` → `StartSchemaCreationCommand` (re-upload the
-   *     SDL; this is the canonical AppSync schema-update path).
+   *     SDL; this is the canonical AppSync schema-update path). `ApiId`
+   *     cannot move a schema to another API in place.
    *
    * Every Update* call uses `!== undefined` field gates per
    * memory rule `feedback_update_optional_field_undefined_check.md` so
@@ -869,86 +939,38 @@ export class AppSyncProvider implements ResourceProvider {
   }
 
   /**
-   * Is a GraphqlApi `Name` "change" only a secret reference the record keeps
-   * and the desired side resolved (go-to-k/cdkd#4275)? The physical id is the
-   * API id, so nothing recorded carries the name; AWS is asked for it, and the
-   * resolved value must be exactly the API's live name. That also keeps a
-   * secret ROTATED under an unchanged reference refused, as a rename is. Only
-   * a recorded `{{resolve:...}}` reference (or its mask) is asked about: an
-   * ordinary recorded name keeps the plain comparison, with no call.
-   *
-   * A lookup FAILURE (or an answer with no name) is no evidence either way, so
-   * it refuses as a
-   * `ProvisioningError` (not `ResourceUpdateNotSupportedError`, which
-   * `--replace` turns into a replacement) naming the failure's class, with
-   * the AWS failure as a stamped cause so a throttle stays retryable.
+   * The `name` an `UpdateGraphqlApi` that is NOT a rename must carry (the SDK
+   * requires it on every call): the recorded name when it is the desired one,
+   * or the desired bag carries none. Otherwise the record holds a secret
+   * reference or mask whose resolved value may have rotated since, and sending
+   * that value would rename the API although its template did not change, so
+   * the API's live name is read instead (go-to-k/cdkd#5359).
    */
-  private async graphQLApiNameUnchangedBehindSecret(
-    logicalId: string,
-    physicalId: string,
+  private async unchangedGraphqlApiName(
+    apiId: string,
     resourceType: string,
+    logicalId: string,
     desired: unknown,
-    previous: unknown,
+    recorded: unknown,
     mask: MaskerFn
-  ): Promise<boolean> {
-    if (!isSecretDerivedValue(previous, maskerOrIdentity(undefined))) return false;
+  ): Promise<string> {
+    if (desired === undefined || desired === recorded) return recorded as string;
     let liveName: string | undefined;
     try {
-      const response = await this.getClient().send(new GetGraphqlApiCommand({ apiId: physicalId }));
-      liveName = response.graphqlApi?.name;
+      const resp = await this.getClient().send(new GetGraphqlApiCommand({ apiId }));
+      liveName = resp.graphqlApi?.name;
     } catch (error) {
-      throw this.wrapGraphQLApiNameLookupError(error, logicalId, physicalId, resourceType, mask);
+      throw this.wrapUpdateError(error, resourceType, logicalId, apiId, 'GraphqlApi', mask);
     }
-    // An answer with no name is no evidence either, refused the same way.
-    if (liveName === undefined) {
-      throw this.wrapGraphQLApiNameLookupError(
-        undefined,
-        logicalId,
-        physicalId,
+    if (liveName === undefined || liveName === '') {
+      throw new ProvisioningError(
+        `Could not read the current name of AppSync GraphqlApi ${apiId} to update it without renaming it`,
         resourceType,
-        mask
+        logicalId,
+        apiId
       );
     }
-    return unchangedBehindSecretReference({
-      resourceType,
-      key: 'Name',
-      desired,
-      previous,
-      physicalName: liveName,
-    });
-  }
-
-  /** The refusal for a failed live-name lookup (see the method above). */
-  private wrapGraphQLApiNameLookupError(
-    error: unknown,
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    mask: MaskerFn
-  ): ProvisioningError {
-    // `undefined`: AWS answered, with no name.
-    const failureClass =
-      error === undefined
-        ? 'an answer with no name'
-        : error instanceof Error && error.name !== ''
-          ? error.name
-          : 'an unreadable failure';
-    // A NotFound answer will not change on a re-run: the API is gone.
-    const next =
-      failureClass === 'NotFoundException'
-        ? `the API ${physicalId} no longer exists; check it with 'cdkd drift' before deploying again`
-        : 're-run once the lookup can succeed';
-    return markRedactedCause(
-      new ProvisioningError(
-        `Name of AWS::AppSync::GraphQLApi ${logicalId} is secret-derived, and whether the value ` +
-          `its secret resolves to is still the API's name could not be confirmed ` +
-          `(${mask(failureClass)}) — ${next}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        error instanceof Error ? error : undefined
-      )
-    );
+    return liveName;
   }
 
   private async updateGraphQLApi(
@@ -965,30 +987,6 @@ export class AppSyncProvider implements ResourceProvider {
   ): Promise<ResourceUpdateResult> {
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-
-    // `Name` is immutable on AWS — UpdateGraphqlApi REQUIRES `name` in the
-    // input shape but rejects any value other than the existing one.
-    // Replacement-detection should have routed the diff through
-    // CREATE+DELETE; defense-in-depth here.
-    if (
-      properties['Name'] !== undefined &&
-      previousProperties['Name'] !== undefined &&
-      properties['Name'] !== previousProperties['Name'] &&
-      !(await this.graphQLApiNameUnchangedBehindSecret(
-        logicalId,
-        physicalId,
-        resourceType,
-        properties['Name'],
-        previousProperties['Name'],
-        maskerOrIdentity(context?.maskSecrets)
-      ))
-    ) {
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        'AWS AppSync GraphqlApi.Name is immutable — destroy + redeploy to rename'
-      );
-    }
 
     // `ApiType` / `Visibility` have NO member on `UpdateGraphqlApi` — AWS
     // fixes both at creation. `src/analyzer/replacement-rules.ts` classifies
@@ -1028,8 +1026,8 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     // Build UpdateGraphqlApi input only when a mutable field diffs. `Name`
-    // is REQUIRED by the SDK input shape even on no-op updates, so we
-    // include it whenever we issue the call.
+    // is REQUIRED by the SDK input shape on every call, so it is sent
+    // whenever the call is issued.
     //
     // Diff helpers below use explicit "is the field present on either
     // side AND do the resolved values differ?" semantics so that:
@@ -1063,14 +1061,45 @@ export class AppSyncProvider implements ResourceProvider {
         (key in properties || key in previousProperties) &&
         !this.deepEqual(properties[key], previousProperties[key])
     );
-    const wantUpdate = hasAuthDiff || hasXrayDiff || hasLogDiff || hasConfigDiff;
+    // A rename is an in-place `UpdateGraphqlApi`: the API id and every child
+    // keyed by it stay, as CloudFormation renames it (go-to-k/cdkd#5359,
+    // measured: same API id, new name). Name is required, so a desired bag
+    // without one keeps the recorded name rather than diffing.
+    //
+    // A secret-derived name is recorded as its `{{resolve:...}}` reference (or
+    // `***`) and handed here resolved, so the two bags always differ. The
+    // deploy's `changedProperties` compares the templates as written, so a
+    // secret rotated under an unchanged reference is no rename there, as in
+    // CloudFormation, which re-resolves only when the reference changes. The
+    // one exception is an update the engine forces with nothing changed (a
+    // `reput`), which names every key: the call then carries the resolved name,
+    // the one the template asks for. Other callers (a rollback revert,
+    // `drift --revert`) hand comparable bags. This type stays out of
+    // `CHANGED_PROPERTIES_CONSUMER_TYPES` on purpose: an unconfirmed `NoEcho`
+    // name then stays in the set and is re-sent as the same name, a harmless
+    // no-op, rather than costing a readback on every deploy.
+    const hasNameDiff =
+      properties['Name'] !== undefined &&
+      (context?.changedProperties !== undefined
+        ? context.changedProperties.has('Name')
+        : properties['Name'] !== previousProperties['Name']);
+    const wantUpdate = hasNameDiff || hasAuthDiff || hasXrayDiff || hasLogDiff || hasConfigDiff;
 
     if (wantUpdate) {
       const input: UpdateGraphqlApiCommandInput = {
         apiId: physicalId,
-        // Name is required by the SDK input; use the existing value
-        // (state-recorded name) since Name is immutable above.
-        name: (properties['Name'] ?? previousProperties['Name']) as string,
+        // Name is required by the SDK input: the desired name on a rename,
+        // otherwise the name the API already has.
+        name: hasNameDiff
+          ? (properties['Name'] as string)
+          : await this.unchangedGraphqlApiName(
+              physicalId,
+              resourceType,
+              logicalId,
+              properties['Name'],
+              previousProperties['Name'],
+              maskerOrIdentity(context?.maskSecrets)
+            ),
         // authenticationType is required by the SDK input shape; carry the
         // existing value through when the diff didn't include it so the
         // call shape is always valid.
@@ -1193,6 +1222,36 @@ export class AppSyncProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     mask: MaskerFn = maskerOrIdentity(undefined)
   ): Promise<ResourceUpdateResult> {
+    // An `ApiId` change is refused BEFORE the definition comparison: the
+    // schema would otherwise be left on the old API whenever the SDL is
+    // unchanged, a silent success (go-to-k/cdkd#5359). CloudFormation fails
+    // this update too (measured: the change set says no replacement, and the
+    // update ends `Internal Failure` and rolls back, with or without a
+    // definition change), so cdkd does not move it in place. The physical id
+    // names the API id, so it decides a secret-derived `ApiId` (go-to-k/cdkd#4275).
+    const recordedApiId = graphQLSchemaApiId(physicalId);
+    if (
+      properties['ApiId'] !== undefined &&
+      previousProperties['ApiId'] !== undefined &&
+      properties['ApiId'] !== previousProperties['ApiId'] &&
+      !(await unchangedBehindSecretReference({
+        resourceType,
+        key: 'ApiId',
+        desired: properties['ApiId'],
+        previous: previousProperties['ApiId'],
+        physicalName: recordedApiId,
+        maskSecrets: mask,
+      }))
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        'AWS AppSync GraphQLSchema.ApiId cannot move a schema to another API in place ' +
+          '(CloudFormation fails a template change of it too) — deploy with --replace, or give the ' +
+          'schema a new logical ID, to create it on the new API'
+      );
+    }
+
     // ApiId is immutable identity — physicalId tracks it. The mutable
     // surface is `Definition` (the SDL body) or its S3-sourced sibling
     // `DefinitionS3Location`. `StartSchemaCreation` re-uploads the SDL;
@@ -1236,7 +1295,7 @@ export class AppSyncProvider implements ResourceProvider {
       return { physicalId, wasReplaced: false };
     }
 
-    const apiId = (properties['ApiId'] ?? physicalId) as string;
+    const apiId = (properties['ApiId'] ?? recordedApiId) as string;
     try {
       await this.getClient().send(
         new StartSchemaCreationCommand({
@@ -1258,13 +1317,13 @@ export class AppSyncProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     mask: MaskerFn
   ): Promise<ResourceUpdateResult> {
-    // Identity fields are immutable: ApiId / Name / Type. Reject diffs in
+    // Identity fields are immutable: ApiId / Name. Reject diffs in
     // defense-in-depth against a missing replacement-rule entry. A
     // secret-derived value is recorded as its `{{resolve:...}}` reference and
     // handed here resolved, which is no change: the `<apiId>|<name>` physical
     // id decides ApiId and Name instead (go-to-k/cdkd#4275).
     const [idApiId, idName] = physicalId.split('|');
-    for (const field of ['ApiId', 'Name', 'Type'] as const) {
+    for (const field of ['ApiId', 'Name'] as const) {
       const next = properties[field];
       const prev = previousProperties[field];
       if (
@@ -1276,7 +1335,7 @@ export class AppSyncProvider implements ResourceProvider {
           key: field,
           desired: next,
           previous: prev,
-          physicalName: field === 'ApiId' ? idApiId : field === 'Name' ? idName : undefined,
+          physicalName: field === 'ApiId' ? idApiId : idName,
           maskSecrets: mask,
         }))
       ) {
@@ -1299,7 +1358,10 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     // `UpdateDataSource` REQUIRES `apiId`, `name`, and `type` on every call.
-    // Type is immutable; use the state-recorded value.
+    // `Type` is mutable in place: CloudFormation changes it with
+    // `UpdateDataSource` and keeps the data source (go-to-k/cdkd#5359,
+    // measured: NONE to HTTP, same ARN). The recorded value fills a desired
+    // bag that carries none.
     const type = (properties['Type'] ?? previousProperties['Type']) as DataSourceType;
 
     // Present-on-either-side AND differs, so a REMOVAL (defined -> undefined)
@@ -1308,6 +1370,7 @@ export class AppSyncProvider implements ResourceProvider {
     // template dropped is simply omitted — AppSync clears it server-side, so
     // no reset sentinel is needed (see `applyDataSourceConfig`).
     const mutableKeys = [
+      'Type',
       'Description',
       'ServiceRoleArn',
       'DynamoDBConfig',
@@ -1612,7 +1675,10 @@ export class AppSyncProvider implements ResourceProvider {
     subType: string,
     // AWS can quote a child's secret-derived name back (go-to-k/cdkd#4275);
     // absent means unmasked.
-    mask: MaskerFn = maskerOrIdentity(undefined)
+    mask: MaskerFn = maskerOrIdentity(undefined),
+    // A post-create step's failure (go-to-k/cdkd#2319): no "already exists"
+    // restatement, which would read as this resource's collision.
+    auxiliary = false
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
     const build = (text: string): ProvisioningError =>
@@ -1625,7 +1691,7 @@ export class AppSyncProvider implements ResourceProvider {
       );
     const failure = describeAwsFailure(error);
     if (error instanceof Error && failure.redacted) {
-      return this.withheldAwsFailure(mask, failure.detail, failure.summary, build);
+      return this.withheldAwsFailure(mask, failure.detail, failure.summary, build, auxiliary);
     }
     // A cdkd-authored or transport error, or a non-`Error` throw, keeps its
     // text masked, stamped exactly when the mask changed it, so the retry
@@ -1641,8 +1707,9 @@ export class AppSyncProvider implements ResourceProvider {
    * pointer (go-to-k/cdkd#2319), as in {@link withheldAwsFailure}. A
    * cdkd-authored or transport error, or a non-`Error` throw, keeps its text
    * unchanged, as before; the thrown message is masked by the deploy engine.
-   * Every delete checks {@link isNotFoundError} before it wraps, so no
-   * "already deleted" reading depends on AWS's wording.
+   * Every delete checks {@link isNotFoundError} before it wraps, and stamps a
+   * wrap naming another `NotFound` class `markNotGone`: the class itself would
+   * otherwise read as "already deleted".
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
@@ -1654,7 +1721,13 @@ export class AppSyncProvider implements ResourceProvider {
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
     if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    return this.withheldAwsFailure(mask, failure.detail, failure.summary, build);
+    return this.withheldAwsFailure(
+      mask,
+      failure.detail,
+      failure.summary,
+      build,
+      isAuxiliaryFailure(error)
+    );
   }
 
   /**
@@ -1666,16 +1739,20 @@ export class AppSyncProvider implements ResourceProvider {
    * `markRedactedCause`, so the retry classifiers read the withheld text on
    * the `cause` chain. An "already exists" is restated
    * ({@link relayedNameCollision}) so a create-first replacement still
-   * recognises a name collision.
+   * recognises a name collision, except from a post-create step's failure
+   * (`auxiliary`, {@link markAuxiliaryFailure}), where "it" would read as this
+   * resource.
    */
   private withheldAwsFailure(
     mask: MaskerFn,
     detail: string,
     summary: string,
-    build: (text: string) => ProvisioningError
+    build: (text: string) => ProvisioningError,
+    auxiliary = false
   ): ProvisioningError {
     this.logger.debug(mask(build(mask(detail)).message));
-    return markRedactedCause(build(`${mask(summary)}${relayedNameCollision(detail)}`));
+    const relay = auxiliary ? '' : relayedNameCollision(detail);
+    return markRedactedCause(build(`${mask(summary)}${relay}`));
   }
 
   async delete(
@@ -2304,7 +2381,10 @@ export class AppSyncProvider implements ResourceProvider {
         logicalId,
         apiId,
         isUpdate ? 'GraphqlApi (env vars)' : 'GraphqlApi (env vars, post-create)',
-        mask
+        mask,
+        // The API itself was just created: an "already exists" from this call
+        // is not its name collision (#3826), so it is not restated.
+        !isUpdate
       );
     }
     return narrowed;
@@ -2608,8 +2688,8 @@ export class AppSyncProvider implements ResourceProvider {
     // The three inline-or-S3 pairs. CFn's behavior for the *S3Location
     // variants is to fetch the S3 object and pass its BODY as the inline
     // member — there is no SDK member for the URL itself. The bag reads stay
-    // DIRECT at this call site (the helper takes values, not keys) so the
-    // handled-property-wiring critic can see each `properties['X']` read.
+    // DIRECT at this call site (the helper takes values, not keys) so each
+    // `properties['X']` read stays visible (and greppable) here.
     const requestTemplate = await this.resolveInlineOrS3Template(
       properties['RequestMappingTemplate'],
       properties['RequestMappingTemplateS3Location'],
@@ -2988,6 +3068,8 @@ export class AppSyncProvider implements ResourceProvider {
       // malformed the API may still exist, and the rollback below is the only
       // thing that keeps it from orphaning.
       createdApiId = response.graphqlApi?.apiId;
+      // go-to-k/cdkd#5511: report before the follow-up calls.
+      if (createdApiId) reportCreatedResource(logicalId, resourceType, createdApiId);
 
       const apiId = response.graphqlApi!.apiId!;
       // Issue #4687: the SDK replayed this CreateGraphqlApi inside its `send`,
@@ -3044,13 +3126,23 @@ export class AppSyncProvider implements ResourceProvider {
         markAuxiliaryFailure(error, logicalId);
         try {
           await this.getClient().send(new DeleteGraphqlApiCommand({ apiId: createdApiId }));
+          retractCreatedResource(logicalId, resourceType, createdApiId);
           this.logger.debug(`Rolled back partially-created GraphQL API ${createdApiId}`);
         } catch (rollbackError) {
           apiLeftBehind = true;
+          // The class at warn, AWS's text at debug under the same head
+          // (go-to-k/cdkd#2319): a denied `DeleteGraphqlApi` names the caller.
+          // A cdkd-authored error keeps its text at warn.
+          const rollbackFailure = describeAwsFailure(rollbackError);
+          const cleanupHead = `Failed to roll back partially-created GraphQL API ${createdApiId}: `;
+          const mask = maskerOrIdentity(context?.maskSecrets);
+          if (rollbackFailure.redacted) {
+            this.logger.debug(mask(`${cleanupHead}${rollbackFailure.detail}`));
+          }
           this.logger.warn(
-            `Failed to roll back partially-created GraphQL API ${createdApiId}: ${
-              describeAwsFailure(rollbackError).detail
-            }`
+            mask(
+              `${cleanupHead}${rollbackFailure.redacted ? rollbackFailure.summary : rollbackFailure.detail}`
+            )
           );
         }
       }
@@ -3222,7 +3314,7 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -3234,6 +3326,12 @@ export class AppSyncProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3473,7 +3571,7 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -3485,6 +3583,12 @@ export class AppSyncProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3639,7 +3743,7 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -3651,6 +3755,12 @@ export class AppSyncProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3884,7 +3994,7 @@ export class AppSyncProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         maskerOrIdentity(context?.maskSecrets),
         error,
         (text) =>
@@ -3896,6 +4006,12 @@ export class AppSyncProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -4004,10 +4120,11 @@ export class AppSyncProvider implements ResourceProvider {
     physicalId: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const apiId = graphQLSchemaApiId(physicalId);
     let resp;
     try {
       resp = await this.getClient().send(
-        new GetIntrospectionSchemaCommand({ apiId: physicalId, format: 'SDL' })
+        new GetIntrospectionSchemaCommand({ apiId, format: 'SDL' })
       );
     } catch (err) {
       if (err instanceof AppSyncNotFoundException) return RESOURCE_NOT_FOUND;
@@ -4049,7 +4166,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
 
     return {
-      ApiId: physicalId,
+      ApiId: apiId,
       Definition: definitionToReturn,
     };
   }
@@ -4516,21 +4633,30 @@ export class AppSyncProvider implements ResourceProvider {
    * first update (issue #1728) — see {@link childImportAttributes}.
    */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    // A CloudFormation-shaped id (a migration's `DescribeStackResources`, or
+    // one pasted into `--resource`) is recorded in cdkd's shape (#5364).
+    const known =
+      input.knownPhysicalId &&
+      appSyncPhysicalIdFromCfn(
+        input.resourceType,
+        input.logicalId,
+        input.knownPhysicalId,
+        input.region
+      );
     if (input.resourceType !== 'AWS::AppSync::GraphQLApi') {
-      if (input.knownPhysicalId) {
+      if (known) {
         return {
-          physicalId: input.knownPhysicalId,
-          attributes: await this.childImportAttributes(
-            input.resourceType,
-            input.knownPhysicalId,
-            input.region
-          ),
+          physicalId: known,
+          attributes: await this.childImportAttributes(input.resourceType, known, input.region),
         };
       }
       return null;
     }
 
-    const explicit = resolveExplicitPhysicalId(input, null);
+    const explicit = resolveExplicitPhysicalId(
+      known ? { ...input, knownPhysicalId: known } : input,
+      null
+    );
     if (explicit) {
       try {
         const response = await this.getClient().send(new GetGraphqlApiCommand({ apiId: explicit }));

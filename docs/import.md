@@ -393,6 +393,41 @@ between AWS and the template shows as a change the next `cdkd deploy` applies,
 and a resource you did not import shows as `to create`.
 [After an import](import-after.md) covers the less common cases.
 
+An import that adopts the physical id the record already holds keeps the
+record's name generation. One that adopts a different resource for the
+logical ID records no generation of its own, and remembers the highest one the
+replaced record reached, so the next replacement still generates a name
+neither resource holds.
+
+## A replacement refused on its new name
+
+On a stack with a `stackInstanceId`, cdkd gives a resource your template does
+not name a generated name that ends in a suffix built from the stack's id, the
+logical ID and the resource's name generation. A replacement creates the new
+resource at the next generation, so the new name differs from the old one,
+the new resource is created first and the old one is deleted after it, as
+CloudFormation does. No `--replace` is needed.
+
+If a resource already holds the next-generation name, the deploy refuses with
+`NAMED_REPLACEMENT_COLLISION` and deletes nothing. The holder is most likely
+the new resource an earlier attempt of the same replacement created before it
+was interrupted. The message prints the command that adopts it:
+
+```bash
+cdkd import MyStack --resource MyQueue=<physicalId>   # adopt the new copy
+```
+
+Then delete the old resource by hand, or delete the holder instead, and run
+the deploy again. `--replace` does not help here: cdkd cannot show that the
+old resource holds the new name, so it deletes nothing.
+
+For an SQS queue, an SNS topic, a log group, an S3 bucket, an EventBridge
+rule, a CloudWatch alarm, an ECS cluster, an ELBv2 load balancer or target
+group, and a Step Functions state machine, the deploy usually never gets
+there: the [name check](state-store-name-check.md) looks the new name up before
+the deploy starts and records it, so a re-run after a crash takes back the
+resource the killed run made.
+
 ## A value your template never references is recorded as AWS holds it
 
 An import copies each adopted resource's current AWS properties into

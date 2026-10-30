@@ -75,7 +75,14 @@ vi.mock('../../../src/provisioning/read-only-properties.js', async (importOrigin
     Promise.resolve(SCHEMA[type] && new Set(SCHEMA[type].readOnly)),
 }));
 
+vi.mock('../../../src/deployment/cc-pending-requests.js', async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import('../../../src/deployment/cc-pending-requests.js')>();
+  return { ...real, resolvePendingCloudControlRequests: vi.fn(real.resolvePendingCloudControlRequests) };
+});
+
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
+import { resolvePendingCloudControlRequests } from '../../../src/deployment/cc-pending-requests.js';
 
 const REGION = 'us-east-1';
 
@@ -89,7 +96,7 @@ const pendingOp = {
   pendingCloudControlRequest: { requestToken: 'tok', abandonedAt: 1 },
 };
 
-function state(): StackState {
+function state(stackInstanceId?: string): StackState {
   return {
     version: 8,
     stackName: 'TestStack',
@@ -97,6 +104,7 @@ function state(): StackState {
     resources: {},
     outputs: {},
     lastModified: 1,
+    ...(stackInstanceId !== undefined && { stackInstanceId }),
   };
 }
 
@@ -238,6 +246,13 @@ describe('runDestroyForStack: a journaled abandoned Cloud Control CREATE (#3252)
         },
       },
     };
+    // Under-lock re-read (#5220): the same record (plus its resource), so it
+    // must not pre-empt the journal-gained-an-entry refusal this case is
+    // actually about.
+    (ctx.stateBackend.getState as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: withResource,
+      etag: 'e',
+    });
     await expect(runDestroyForStack('TestStack', withResource, ctx)).rejects.toThrow(
       /now records a Cloud Control CREATE a failed deploy stopped waiting for/
     );
@@ -267,5 +282,25 @@ describe('runDestroyForStack: a journaled abandoned Cloud Control CREATE (#3252)
     await runDestroyForStack('TestStack', state(), makeCtx());
     expect(mockProviderDelete).not.toHaveBeenCalled();
     expect(mockDeleteState).toHaveBeenCalledOnce();
+  });
+
+  // go-to-k/cdkd#5064: the record's `stackInstanceId` reaches
+  // `resolvePendingCloudControlRequests`, which decides (via
+  // `ccIdentifierIsUnique`) whether a created name is cdkd's own generated
+  // one or an AWS-minted id.
+  it('#5064: forwards the record stack instance id to resolvePendingCloudControlRequests', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    resumeSpy.mockResolvedValue({ status: 'failed' });
+    const ctx = makeCtx();
+    (ctx.stateBackend.getState as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      state: state(STACK_INSTANCE_ID),
+      etag: 'e',
+    });
+
+    await runDestroyForStack('TestStack', state(STACK_INSTANCE_ID), ctx);
+
+    expect(resolvePendingCloudControlRequests).toHaveBeenCalledWith(
+      expect.objectContaining({ stackInstanceId: STACK_INSTANCE_ID })
+    );
   });
 });

@@ -20,7 +20,14 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
 import type {
@@ -73,6 +80,13 @@ function shownId(id: string): string {
  * `{ Quantity, Items }`, firing phantom drift.
  */
 const QUANTITY_ITEM_FIELDS = ['Origins', 'CacheBehaviors', 'CustomErrorResponses', 'Aliases'];
+
+/**
+ * A CloudFront exception class that says a referenced entity is missing
+ * (`EntityNotFound`, `NoSuch*`, `TrustedKeyGroupDoesNotExist`, ...), checked
+ * against `UpdateDistributionCommand`'s `@throws` (go-to-k/cdkd#5222).
+ */
+const DEPENDENCY_MISSING_CLASS = /NotFound|^NoSuch|DoesNotExist/;
 
 /**
  * `ViewerCertificate` members whose ACRONYM CASING differs between the CFn
@@ -148,6 +162,12 @@ const CACHE_BEHAVIOR_QUANTITY_FIELDS = [
 ];
 
 /**
+ * The cache-behavior wrappers whose SDK shape carries a derived `Enabled`
+ * beside `{ Quantity, Items }` (issue #5393).
+ */
+const TRUSTED_SIGNER_FIELDS = ['TrustedSigners', 'TrustedKeyGroups'] as const;
+
+/**
  * SDK Provider for AWS::CloudFront::Distribution
  *
  * Uses the CloudFront SDK directly for reliable CRUD operations.
@@ -157,6 +177,41 @@ const CACHE_BEHAVIOR_QUANTITY_FIELDS = [
 export class CloudFrontDistributionProvider implements ResourceProvider {
   private cloudFrontClient: CloudFrontClient;
   private logger = getLogger().child('CloudFrontDistributionProvider');
+
+  /**
+   * The failure wrap the create / update / delete catches and the update's
+   * tag-diff catch build.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * `maskSecrets` (`mask`), and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), exactly when the old
+   * message carried it, so the collision classifiers answer as before. A
+   * cdkd-authored or transport error keeps its text, masked, stamped only when
+   * the mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error`
+   * throw is withheld like an AWS one, unstamped (it has no chain). The
+   * `DistributionAlreadyExists`
+   * orphan refusal and the delete's `NoSuchDistribution` check run on the
+   * error's type before this wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: SecretMasker | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     ['AWS::CloudFront::Distribution', new Set(['DistributionConfig', 'Tags'])],
@@ -342,12 +397,17 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         );
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CloudFront Distribution ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -504,7 +564,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         properties['Tags'],
         physicalId,
         logicalId,
-        resourceType
+        resourceType,
+        context?.maskSecrets
       );
 
       // UpdateDistribution is fire-and-forget by default for the same reason
@@ -528,12 +589,17 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       // ProvisioningError replaces its precise message with this outer one.
       if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CloudFront Distribution ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -665,13 +731,30 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete CloudFront Distribution ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CloudFront Distribution ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // A missing-entity class here names a DEPENDENCY, never this distribution
+      // (its own `NoSuchDistribution` returned above): the disable step's
+      // `UpdateDistribution` answers `EntityNotFound`, `NoSuchCachePolicy`,
+      // `NoSuchOrigin`, `TrustedKeyGroupDoesNotExist` and their siblings when a
+      // referenced policy, function or key group is gone. The wrap carries the
+      // class (or, unredacted, AWS's "does not exist" text), which satisfies the
+      // "already deleted" classifiers' needles and would drop the record of a
+      // live distribution, so mark it not gone: they check the marker first
+      // (go-to-k/cdkd#5222, #5228). Retryability stays the retry classifiers'.
+      if (error instanceof Error && DEPENDENCY_MISSING_CLASS.test(error.name)) {
+        markNotGone(failure);
+      }
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
@@ -1370,6 +1453,25 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     }
 
     for (const fieldPath of CACHE_BEHAVIOR_QUANTITY_FIELDS) {
+      // A TrustedSigners / TrustedKeyGroups wrapper whose `Enabled` disagrees
+      // with its list (e.g. a signer restriction switched off out of band
+      // while the key groups stay listed) has no CFn spelling: keep the raw
+      // wrapper so drift reports it instead of reading back the bare list
+      // the template declares (issue #5393).
+      if ((TRUSTED_SIGNER_FIELDS as readonly string[]).includes(fieldPath)) {
+        const w = result[fieldPath];
+        if (w && typeof w === 'object' && !Array.isArray(w)) {
+          const obj = w as Record<string, unknown>;
+          const items = obj['Items'];
+          if (
+            Array.isArray(items) &&
+            typeof obj['Enabled'] === 'boolean' &&
+            obj['Enabled'] !== items.length > 0
+          ) {
+            continue;
+          }
+        }
+      }
       const parts = fieldPath.split('.');
       this.unwrapQuantityAtPath(result, parts);
     }
@@ -1465,6 +1567,32 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     for (const fieldPath of CACHE_BEHAVIOR_QUANTITY_FIELDS) {
       const parts = fieldPath.split('.');
       this.applyQuantityAtPath(result, parts);
+    }
+
+    // CFn declares `TrustedSigners` / `TrustedKeyGroups` as bare string lists,
+    // but the API's wrappers also REQUIRE `Enabled`: a `{ Quantity, Items }`
+    // without it is refused as MalformedXML ("Value null at
+    // '...trustedKeyGroups.enabled' ... must not be null"), measured against
+    // CreateDistribution 2026-10-27 (issue #5393). CFn derives it from the
+    // list: a non-empty list restricts viewer access (Enabled: true), an empty
+    // one does not (`Enabled: true` with an empty list is refused as
+    // InvalidArgument). The CFn schema has no `Enabled` member, so it is
+    // ALWAYS derived: a value smuggled in through a non-CFn object shape can
+    // neither lift a declared restriction nor enable an empty one.
+    for (const key of TRUSTED_SIGNER_FIELDS) {
+      const wrapper = result[key];
+      if (wrapper && typeof wrapper === 'object' && !Array.isArray(wrapper)) {
+        const w = wrapper as Record<string, unknown>;
+        // The listed entries decide, not a `Quantity` an object shape carried
+        // in (wrapWithQuantity keeps one already present) — and they set
+        // `Quantity` too, so the wrapper is never self-inconsistent.
+        const items = w['Items'];
+        if (Array.isArray(items)) {
+          result[key] = { ...w, Quantity: items.length, Enabled: items.length > 0 };
+        } else if (typeof w['Quantity'] === 'number') {
+          result[key] = { ...w, Enabled: w['Quantity'] > 0 };
+        }
+      }
     }
 
     // The CFn shape carries `AllowedMethods` and `CachedMethods` as SIBLING
@@ -1648,7 +1776,8 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
     newTags: unknown,
     physicalId: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    mask?: SecretMasker
   ): Promise<void> {
     const { removed, upserts } = this.computeTagDiff(
       previousTags,
@@ -1692,14 +1821,20 @@ export class CloudFrontDistributionProvider implements ResourceProvider {
       }
     } catch (err) {
       const cause = err instanceof Error ? err : undefined;
-      throw new ProvisioningError(
-        `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
-          `upserts=${upserts.length}): ${describeAwsFailure(err).detail}. ` +
-          `UpdateDistribution succeeded but TagResource/UntagResource did not — state has NOT been updated so the next deploy will retry the tag-diff.`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // A redacted summary already ends its sentence (the `--verbose` pointer).
+      throw this.wrapCaughtError(
+        mask,
+        err,
+        (text) =>
+          new ProvisioningError(
+            `CloudFront Distribution ${physicalId}: tag diff failed (removed=${removed.length}, ` +
+              `upserts=${upserts.length}): ${text}${text.endsWith('.') ? '' : '.'} ` +
+              `UpdateDistribution succeeded but TagResource/UntagResource did not — state has NOT been updated so the next deploy will retry the tag-diff.`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

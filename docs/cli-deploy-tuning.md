@@ -112,7 +112,7 @@ the two.
 | Types | Built-in minimum |
 | --- | --- |
 | `AWS::CloudFormation::CustomResource` | 1 hour |
-| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | 30 minutes |
+| `AWS::DynamoDB::Table`, `AWS::DynamoDB::GlobalTable` | 30 minutes; 75 minutes for an update |
 | Slow types such as `AWS::OpenSearchService::Domain`, and Redshift, ElastiCache and RDS clusters | 60 minutes |
 
 The minimums exist for these reasons:
@@ -120,8 +120,14 @@ The minimums exist for these reasons:
 - cdkd polls an asynchronous custom-resource handler (the `isCompleteHandler`
   pattern) for up to an hour.
 - A DynamoDB table delete stacks several polling waits that share one
-  allowance.
+  allowance. A table update can wait out DynamoDB's TimeToLive rate limit:
+  AWS refuses a second TTL change for up to an hour after the previous one,
+  and cdkd, like CloudFormation, retries the change every minute until AWS
+  accepts it. A rollback or `cdkd drift --revert`, which run without a
+  resource timeout, wait until AWS accepts.
 - Deleting one of the slow types routinely takes 15 to 30 minutes.
+- Changing an ElastiCache cache cluster's node type is an in-place update
+  that cdkd waits out, and a large node can scale for longer than 30 minutes.
 
 The default is `30m` and not `1h` so that one stuck resource of an ordinary
 type does not hold the stack for an hour.
@@ -136,8 +142,8 @@ type does not hold the stack for an hour.
   ```
 
 - **A minimum applies to the type, whatever the operation.** The DynamoDB
-  minimum exists for deletes, but `--resource-timeout 5m` does not shorten a
-  table's create or update limit either. Use
+  30-minute minimum exists for deletes, but `--resource-timeout 5m` does not
+  shorten a table's create or update limit either. Use
   `--resource-timeout AWS::DynamoDB::Table=5m` for that.
 - **The 60-minute minimum also covers resources routed through Cloud
   Control.** Cloud Control is the AWS API cdkd uses for resource types it has

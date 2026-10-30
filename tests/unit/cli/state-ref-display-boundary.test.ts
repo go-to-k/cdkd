@@ -124,7 +124,7 @@ vi.mock('node:readline/promises', () => ({
   })),
 }));
 
-import { createStateCommand } from '../../../src/cli/commands/state.js';
+import { createStateCommand, stateBrowseDeps } from '../../../src/cli/commands/state.js';
 import { IDENT_MAX_CODE_POINTS, STACK_REF_MAX_CODE_POINTS, UNRENDERABLE, cutMarker } from '../../../src/utils/display-safe.js';
 
 interface Ref {
@@ -193,6 +193,13 @@ const SITES: Array<{
   regionOnly?: boolean;
   render: (ref: Ref) => Promise<string>;
 }> = [
+  {
+    // `cdkd state browse` labels each picker entry with the helper itself
+    // (go-to-k/cdkd#5199); the label needs no backend.
+    name: 'state browse (picker label)',
+    render: async (ref) =>
+      stateBrowseDeps({} as never, {} as never, {} as never).label(ref as never),
+  },
   {
     name: 'state list (plain listing)',
     render: async (ref) => {
@@ -285,7 +292,7 @@ const SITES: Array<{
  * happened twice. `formatStackRefSafe callers` below closes that direction by
  * counting the call sites in the source.
  */
-const EXPECTED_SITE_COUNT = 7;
+const EXPECTED_SITE_COUNT = 8;
 
 /**
  * Where the source population is read from. A literal path, not a glob: this

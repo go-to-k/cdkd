@@ -44,8 +44,8 @@ export const REDACTED_DELETE_ADDRESS_SKIP_REASON =
 /**
  * The names of `fields` whose recorded value {@link isRedactedRecordedValue},
  * in the caller's order. Pass the caller's OWN literal reads of the bag
- * (`{ RestApiId: properties['RestApiId'] }`) so the wiring walk still sees
- * which property feeds the call.
+ * (`{ RestApiId: properties['RestApiId'] }`) so the call site shows (and a
+ * grep finds) which property feeds the call.
  */
 export function redactedDeleteAddressFields(fields: Record<string, unknown>): string[] {
   return Object.keys(fields).filter((key) => isRedactedRecordedValue(fields[key]));

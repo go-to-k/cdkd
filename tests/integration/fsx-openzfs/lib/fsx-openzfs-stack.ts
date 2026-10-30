@@ -25,13 +25,41 @@ import type { Construct } from 'constructs';
  *   - ThroughputCapacity 64 -> 128 MB/s (UpdateFileSystem — a mutable
  *     OpenZFSConfiguration sub-property)
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource)
- * Both must keep the FileSystemId unchanged (no replacement).
+ *   - OpenZFSConfiguration.Options DELETE_CHILD_VOLUMES_AND_SNAPSHOTS is
+ *     ADDED (go-to-k/cdkd#5431). It is a DeleteFileSystem option (CFn "Update
+ *     requires: No interruption"), so the deploy must accept it with nothing
+ *     sent to AWS, and the destroy must send it: verify.sh adds a child volume
+ *     outside the stack before the destroy, which FSx refuses to delete
+ *     without the option.
+ * All must keep the FileSystemId unchanged (no replacement).
+ *
+ * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
+ *   - StorageCapacity (64), StorageType (SSD) and NetworkType (IPV4), declared
+ *     until now, are DROPPED from the template. UpdateFileSystem keeps a field
+ *     it is not sent and cdkd sends no reset, as CloudFormation leaves them
+ *     (CFn A/B on issue #1160), so the values must stay and the deploy must
+ *     name the three removals in one warning saying CloudFormation keeps them.
+ *     SSD and IPV4 are AWS's defaults here: this VPC has no IPv6, and
+ *     the SINGLE_AZ_1 file system is SSD, so the arm proves the warning and that
+ *     nothing is reset, not a non-default value surviving.
+ *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
+ *     change proving UpdateFileSystem fired with the removals beside it.
+ *
+ * THROUGHPUT REMOVAL phase (the REMOVAL phase's env plus
+ * CDKD_TEST_TP_REMOVAL=true, issue #1160):
+ *   - ThroughputCapacity (128) is DROPPED. The CFn A/B on issue #1160 measured
+ *     CloudFormation keeping it on MULTI_AZ_1 only, never on this SINGLE_AZ_1
+ *     shape, so cdkd must leave the value in place and warn WITHOUT claiming
+ *     what CloudFormation does.
  */
 export class FsxOpenZfsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
+    const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    const isMaintAlt = process.env.CDKD_TEST_MAINT_ALT === 'true';
+    const isTpRemoval = process.env.CDKD_TEST_TP_REMOVAL === 'true';
 
     // VPC with 1 AZ, public subnet only, no NAT (cheapest legal shape).
     const vpc = new ec2.Vpc(this, 'Vpc', {
@@ -48,13 +76,21 @@ export class FsxOpenZfsStack extends cdk.Stack {
 
     const fileSystem = new fsx.CfnFileSystem(this, 'Fs', {
       fileSystemType: 'OPENZFS',
-      // Smallest legal OpenZFS SINGLE_AZ_1 capacity.
-      storageCapacity: 64,
+      // Smallest legal OpenZFS SINGLE_AZ_1 capacity. The three top-level
+      // settings are dropped in the REMOVAL phase (issue #1160).
+      ...(isRemoval ? {} : { storageCapacity: 64, storageType: 'SSD', networkType: 'IPV4' }),
       subnetIds: [vpc.publicSubnets[0].subnetId],
       openZfsConfiguration: {
         deploymentType: 'SINGLE_AZ_1',
-        // 64 MB/s baseline; the UPDATE phase scales it to 128.
-        throughputCapacity: isUpdate ? 128 : 64,
+        // 64 MB/s baseline; the UPDATE phase scales it to 128, and the
+        // THROUGHPUT REMOVAL phase drops it (issue #1160).
+        ...(!isTpRemoval && { throughputCapacity: isUpdate ? 128 : 64 }),
+        // go-to-k/cdkd#5431: declared from the UPDATE phase on, so the
+        // destroy deletes the child volume verify.sh adds.
+        ...(isUpdate && { options: ['DELETE_CHILD_VOLUMES_AND_SNAPSHOTS'] }),
+        // Sunday 03:30 UTC, or Monday 04:45 under CDKD_TEST_MAINT_ALT=true,
+        // which verify.sh picks when AWS already holds the first.
+        ...(isRemoval && { weeklyMaintenanceStartTime: isMaintAlt ? '1:04:45' : '7:03:30' }),
         // Default root volume — exercises the RootVolumeConfiguration create
         // mapping (record size + compression).
         rootVolumeConfiguration: {

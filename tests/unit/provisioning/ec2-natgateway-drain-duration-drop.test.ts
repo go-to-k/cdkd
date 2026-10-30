@@ -11,8 +11,9 @@
  * `@aws-sdk/client-ec2`: `CreateNatGatewayRequest` has no such member, EC2 ships
  * no `ModifyNatGateway*` operation, and the only two inputs carrying the field
  * (`DisassociateNatGatewayAddressRequest` /
- * `UnassignPrivateNatGatewayAddressRequest`) belong to calls cdkd never issues
- * because `EC2Provider.update` rejects every NatGateway property change. The
+ * `UnassignPrivateNatGatewayAddressRequest`) belong to address-release calls
+ * `EC2Provider.update` issues only for a regional gateway's zone addresses
+ * (go-to-k/cdkd#2762), never for a zonal gateway's secondary addresses. The
  * CFn registry schema agrees it is unreadable — it is listed under
  * `writeOnlyProperties`.
  *

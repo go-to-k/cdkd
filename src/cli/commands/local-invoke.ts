@@ -14,6 +14,12 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeLocalAwsFailureForWarn } from '../../utils/local-aws-failure.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import {
+  describeJsonParseFailure,
+  parseFailureDebugDetail,
+  utf8ByteLength,
+} from '../../utils/json-parse-failure.js';
 import {
   displayIdent,
   ROLE_ARN_MAX_CODE_POINTS,
@@ -99,6 +105,8 @@ import { createLocalInvokeAgentCoreCommand } from './local-invoke-agentcore.js';
 import { createLocalStartAgentCoreCommand } from './local-start-agentcore.js';
 import { createLocalStartAlbCommand } from './local-start-alb.js';
 import { createLocalStartCloudFrontCommand } from './local-start-cloudfront.js';
+import { createLocalStartWebFunctionCommand } from './local-start-web-function.js';
+import { createLocalStartMicrovmCommand } from './local-start-microvm.js';
 import { setEmbedConfig, type EmbedHostLogger } from 'cdk-local';
 import {
   type DynamicReferenceResolver,
@@ -424,9 +432,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       await killAndDrainContainerLogs(containerId, logStream);
     },
     (err) => {
-      getLogger().debug(
-        safeMsg`container log drain failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      getLogger().debug(safeMsg`container log drain failed: ${describeAwsFailure(err).detail}`);
     }
   );
 
@@ -451,7 +457,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
           await removeContainer(containerId);
         } catch (err) {
           getLogger().debug(
-            `removeContainer(${containerId}) failed: ${err instanceof Error ? err.message : String(err)}`
+            `removeContainer(${containerId}) failed: ${describeAwsFailure(err).detail}`
           );
         }
       }
@@ -461,7 +467,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         } catch (err) {
           getLogger().debug(
             `Failed to remove inline-code tmpdir ${imagePlan.inlineTmpDir}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -472,7 +478,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         } catch (err) {
           getLogger().debug(
             `Failed to remove merged-layers tmpdir ${imagePlan.layersTmpDir}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -483,9 +489,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
             rmSync(dir, { recursive: true, force: true });
           } catch (err) {
             getLogger().debug(
-              `Failed to remove ARN-layer tmpdir ${dir}: ${
-                err instanceof Error ? err.message : String(err)
-              }`
+              `Failed to remove ARN-layer tmpdir ${dir}: ${describeAwsFailure(err).detail}`
             );
           }
         }
@@ -496,7 +500,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
         } catch (err) {
           getLogger().debug(
             `Failed to remove profile credentials tmpdir ${profileCredsFile.hostPath}: ${
-              err instanceof Error ? err.message : String(err)
+              describeAwsFailure(err).detail
             }`
           );
         }
@@ -507,7 +511,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       await flushStdio();
     },
     (err) => {
-      getLogger().debug(`cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      getLogger().debug(`cleanup failed: ${describeAwsFailure(err).detail}`);
     }
   );
 
@@ -1576,26 +1580,26 @@ function getTemplateEnv(resource: {
  * file. SAM's accepted shape is loose; we only require it to be an
  * object at the top level.
  */
-function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
+export function readEnvOverridesFile(filePath: string | undefined): EnvOverrideFile | undefined {
   if (!filePath) return undefined;
   let raw: string;
   try {
     raw = readFileSync(filePath, 'utf-8');
   } catch (err) {
     throw new Error(
-      `Failed to read --env-vars file '${filePath}': ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to read --env-vars file '${filePath}': ${describeAwsFailure(err).detail}`
     );
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the file, which holds env values
+    // (often secrets), so the message names only the failure's offset and
+    // size; V8's text goes to `debug` only (issue #5254).
+    getLogger().debug(safeMsg`--env-vars file failed to parse: ${parseFailureDebugDetail(err)}`);
     throw new Error(
-      `Failed to parse --env-vars file '${filePath}' as JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to parse --env-vars file '${filePath}' as JSON: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -1624,14 +1628,16 @@ async function readEvent(options: LocalInvokeOptions): Promise<unknown> {
   return {};
 }
 
-function parseEvent(raw: string, source: string): unknown {
+export function parseEvent(raw: string, source: string): unknown {
   try {
     return JSON.parse(raw);
   } catch (err) {
+    // V8's `SyntaxError` quotes a window of the payload, so the message names
+    // only the failure's offset and size; V8's text goes to `debug` only
+    // (issue #5254).
+    getLogger().debug(safeMsg`Event payload failed to parse: ${parseFailureDebugDetail(err)}`);
     throw new Error(
-      `Failed to parse event payload from ${source} as JSON: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      `Failed to parse event payload from ${source} as JSON: ${describeJsonParseFailure(err, utf8ByteLength(raw))}`
     );
   }
 }
@@ -2327,5 +2333,7 @@ export function createLocalCommand(): Command {
   local.addCommand(createLocalStartAgentCoreCommand());
   local.addCommand(createLocalStartAlbCommand());
   local.addCommand(createLocalStartCloudFrontCommand());
+  local.addCommand(createLocalStartWebFunctionCommand());
+  local.addCommand(createLocalStartMicrovmCommand());
   return local;
 }

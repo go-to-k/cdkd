@@ -26,9 +26,16 @@ import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { definedAttributes } from '../attribute-map.js';
-import { generateResourceName } from '../resource-name.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
+import { generatedNameFor } from '../resource-name.js';
+import {
+  planTagDiff,
+  tagPlanWarning,
+  refuseMalformedDesiredTags,
+  DBPROXY_TAG_OPTIONS,
+  DBPROXY_TAGS_WHAT,
+} from '../tag-list.js';
 import type {
   CreateContext,
   ResourceProvider,
@@ -42,7 +49,12 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { isPlainRecord, sleep } from './lambda-web-function-arns.js';
 import { acquireIdempotencyToken } from './idempotency-token.js';
-import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+} from '../../deployment/retryable-errors.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 
 /** One poll a second: the connector settles in minutes, and a quick read costs nothing. */
 const POLL_INTERVAL_MS = 1000;
@@ -117,11 +129,21 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(safeMsg`Creating Lambda network connector ${logicalId}`);
-    const tagList = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    // The CFn schema makes a tag's Value optional (nestedRequired.Tags is
+    // ["Key"]); an omitted Value is sent as '' like the RDS DBProxy providers.
+    const tagList = refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      undefined,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
     const name =
       typeof properties['Name'] === 'string' && properties['Name'] !== ''
         ? properties['Name']
-        : generateResourceName(logicalId, { maxLength: 64 });
+        : generatedNameFor('AWS::Lambda::NetworkConnector', logicalId);
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, undefined);
     // Memoised per logical id for the deploy, so the engine's own retry of a
     // create whose response was lost resends the SAME token and gets the same
@@ -160,6 +182,8 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
           logicalId
         );
       }
+      // go-to-k/cdkd#5511: reported before the settle wait.
+      reportCreatedResource(logicalId, resourceType, createdArn);
       const settled = await this.waitForSettled(createdArn, logicalId, 'create');
       createToken.release();
       return { physicalId: createdArn, attributes: buildAttributes(settled) };
@@ -199,7 +223,15 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
       physicalId,
       'pre-update'
     );
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    refuseMalformedDesiredTags(
+      properties['Tags'],
+      resourceType,
+      logicalId,
+      physicalId,
+      'Tags',
+      DBPROXY_TAGS_WHAT,
+      DBPROXY_TAG_OPTIONS
+    );
     // Refused before any write: the block is the whole connector.
     const vpc = this.readVpcEgress(properties, logicalId, resourceType, physicalId);
     const updateRole = this.readOperatorRole(
@@ -471,7 +503,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     newTags: unknown,
     oldTags: unknown
   ): Promise<void> {
-    const plan = planTagDiff(oldTags, newTags);
+    const plan = planTagDiff(oldTags, newTags, DBPROXY_TAG_OPTIONS);
     const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
     if (tagWarning !== undefined) this.logger.warn(tagWarning);
     if (plan.remove.length > 0) {
@@ -505,15 +537,17 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
         resp.State === 'DELETE_FAILED' ||
         resp.State === 'INACTIVE'
       ) {
-        throw new TerminalConnectorStateError(
-          `Lambda network connector ${logicalIdShown(logicalId)} entered ${resp.State}: ` +
-            `${resp.StateReason ?? resp.StateReasonCode ?? 'no reason given'}`
+        throw this.wrapStatusReasonError(
+          `Lambda network connector ${logicalIdShown(logicalId)} entered ${resp.State}`,
+          { code: resp.StateReasonCode, message: resp.StateReason },
+          (message, options) => new TerminalConnectorStateError(message, options)
         );
       }
       if (operation === 'update' && resp.LastUpdateStatus === 'Failed') {
-        throw new Error(
-          `Lambda network connector ${logicalIdShown(logicalId)} update failed: ` +
-            `${resp.LastUpdateStatusReason ?? resp.LastUpdateStatusReasonCode ?? 'no reason given'}`
+        throw this.wrapStatusReasonError(
+          `Lambda network connector ${logicalIdShown(logicalId)} update failed`,
+          { code: resp.LastUpdateStatusReasonCode, message: resp.LastUpdateStatusReason },
+          (message, options) => new Error(message, options)
         );
       }
       if (resp.State === 'ACTIVE' && resp.LastUpdateStatus !== 'InProgress') return resp;
@@ -535,9 +569,10 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
         throw error;
       }
       if (resp.State === 'DELETE_FAILED') {
-        throw new Error(
-          `Lambda network connector ${logicalIdShown(logicalId)} entered DELETE_FAILED: ` +
-            `${resp.StateReason ?? resp.StateReasonCode ?? 'no reason given'}`
+        throw this.wrapStatusReasonError(
+          `Lambda network connector ${logicalIdShown(logicalId)} entered DELETE_FAILED`,
+          { code: resp.StateReasonCode, message: resp.StateReason },
+          (message, options) => new Error(message, options)
         );
       }
       await sleep(POLL_INTERVAL_MS);
@@ -548,6 +583,38 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
     );
   }
 
+  /**
+   * A wait's terminal-state error naming AWS's status reason (issue #2319).
+   * The reason is AWS-worded and the thrown text is persisted to
+   * `deployments/{runId}.jsonl`, so the message carries the reason's machine
+   * code plus the `--verbose` pointer; AWS's text goes to `debug` and rides on
+   * a `cause` stamped `markRedactedCause`, so the retry classifiers still read
+   * it. With no reason text, the code (or `no reason given`) is the whole
+   * message, unredacted, as before.
+   */
+  private wrapStatusReasonError(
+    prefix: string,
+    reason: { code?: string | undefined; message?: string | undefined },
+    build: (message: string, options?: ErrorOptions) => Error
+  ): Error {
+    const text = describeAwsStatusReason(reason, reason.code || 'no reason given');
+    if (!text.redacted) return build(`${prefix}: ${text.detail}`);
+    this.logger.debug(safeMsg`${prefix}: ${text.detail}`);
+    return markRedactedCause(
+      build(`${prefix}: ${text.summary}`, { cause: new Error(text.detail) })
+    );
+  }
+
+  /**
+   * The `ProvisioningError` a failed operation throws (issue #2319). Its
+   * message is persisted to `deployments/{runId}.jsonl`, and an AWS
+   * `AccessDeniedException` names the caller's assumed-role ARN, so an
+   * AWS-authored failure is named by its class plus the `--verbose` pointer:
+   * AWS's own text goes to `debug`, the original error stays the `cause`, and
+   * the wrap is stamped `markRedactedCause` so the retry classifiers read the
+   * withheld text on that chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). cdkd-authored text passes through.
+   */
   private wrapError(
     operation: string,
     logicalId: string,
@@ -557,13 +624,18 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
   ): ProvisioningError {
     if (error instanceof ProvisioningError) return error;
     const cause = error instanceof Error ? error : undefined;
-    return new ProvisioningError(
-      `Failed to ${operation} Lambda network connector ${logicalIdShown(logicalId)}: ${error instanceof Error ? error.message : String(error)}`,
-      resourceType,
-      logicalId,
-      physicalId,
-      cause
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `Failed to ${operation} Lambda network connector ${logicalIdShown(logicalId)}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+    this.logger.debug(build(failure.detail).message);
+    return markRedactedCause(build(`${failure.summary}${relayedNameCollision(failure.detail)}`));
   }
 }
 

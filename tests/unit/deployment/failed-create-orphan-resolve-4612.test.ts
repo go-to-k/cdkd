@@ -92,6 +92,7 @@ describe('the success settle counts kept and part-left entries together (go-to-k
     });
     const ctx = ctxWith(del);
     const out = await settleJournaledOrphansOnSuccess({
+      stackInstanceId: undefined,
       stateBackend: {
         loadRollbackJournal: vi.fn(async () => ({
           journalVersion: 1,

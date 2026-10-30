@@ -218,7 +218,9 @@ describe('a masked failure still classifies as retryable (issue #4244)', () => {
   });
 
   it.each(SITES)('$site: a failure the mask left unchanged is not stamped', async ({ run }) => {
-    mockSend.mockRejectedValue(failing('Bad request parameter'));
+    // A transport (non-AWS-authored) error: an AWS-authored one is named by its
+    // class and always stamped (go-to-k/cdkd#2319).
+    mockSend.mockRejectedValue(new Error('Bad request parameter'));
     const failure = await failureOf(() => run(retryMasker));
     expect(failure.message).toContain('Bad request parameter');
     expect(hasRedactedCause(failure)).toBe(false);

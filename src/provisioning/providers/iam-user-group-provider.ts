@@ -33,6 +33,8 @@ import {
   UntagUserCommand,
   PutUserPermissionsBoundaryCommand,
   DeleteUserPermissionsBoundaryCommand,
+  UpdateUserCommand,
+  UpdateGroupCommand,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -40,7 +42,11 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
 import { generateResourceNameWithFallback } from '../resource-name.js';
@@ -54,7 +60,12 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   onlySecretDerived,
@@ -286,6 +297,14 @@ const USER_NAME_MAX_LENGTH = 64;
 const GROUP_NAME_MAX_LENGTH = 128;
 
 /**
+ * The IAM path a user or group bag declares, read as `createUser` /
+ * `createGroup` send it: an unset or empty `Path` is IAM's default `/`.
+ */
+function iamPathOf(value: unknown): string {
+  return (value as string | undefined) || '/';
+}
+
+/**
  * `[template value, physical name derived from it]` for the types whose name
  * `generateResourceNameWithFallback` rewrites (issue #2177), with the SAME
  * options `createUser` / `createGroup` use (the constants above).
@@ -328,18 +347,52 @@ export class IAMUserGroupProvider implements ResourceProvider {
   private logger = getLogger().child('IAMUserGroupProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177), stamped when the mask changed it so the retry
-   * classifiers read the unmasked `cause` chain (`wrapMaskedAwsError`, issue
-   * #4244). A method, so `gen-update-wrap-coverage` sees the catch that throws
-   * it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * unmasked `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from a post-create wiring step's
+   * failure ({@link markAuxiliaryFailure}), where "it" would read as this user
+   * or group (#3826). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text masked (issue #2177,
+   * `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
+  }
+
+  /**
+   * The cleanup-failure text a partial-create `warn` quotes after `head`, with
+   * its closing period (go-to-k/cdkd#2319). An AWS-authored failure is named by
+   * its CLASS at warn, since a denied `Delete*` names the caller's assumed-role
+   * ARN; AWS's own text goes to `debug` under the same `head`, through `log`'s
+   * masker. A cdkd-authored or transport error keeps its text, masked.
+   */
+  private cleanupFailureText(
+    head: string,
+    cleanupError: unknown,
+    log: { mask: MaskerFn; debug: (message: string) => void }
+  ): string {
+    const failure = describeAwsFailure(cleanupError);
+    if (!failure.redacted) return `${log.mask(failure.detail)}.`;
+    log.debug(`${head}${log.mask(failure.detail)}`);
+    return log.mask(failure.summary);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -550,6 +603,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const response = await createClient.send(new CreateUserCommand(createParams));
       leftBehind = true;
       createdUserIdentity = userOrGroupIdentityToken(response.User?.UserId);
+      reportCreatedResource(logicalId, resourceType, userName, createdUserIdentity); // go-to-k/cdkd#5511
 
       // CreateUserCommand has succeeded — AWS has now committed the User
       // (and the inline `Tags` from `createParams` if any). Every
@@ -657,6 +711,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
             if (!(err instanceof NoSuchEntityException)) throw err;
           }
           await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
+          retractCreatedResource(logicalId, resourceType, userName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM user ${logicalId} (${v(userName)}) after wiring failure`
@@ -670,8 +725,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
           // as `***`, which would act on a different principal. Pinned by this
           // type's partial-create cleanup test.
           const aws = pasteableAwsCommand(log.mask);
+          const cleanupHead = `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): `;
           log.warn(
-            `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
+            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -760,6 +816,16 @@ export class IAMUserGroupProvider implements ResourceProvider {
     }
 
     try {
+      // `Path` is mutable in place, as CloudFormation applies it (#3723); an
+      // absent one is IAM's default `/`, so a removed Path moves the user back.
+      const newPath = iamPathOf(properties['Path']);
+      if (newPath !== iamPathOf(previousProperties['Path'])) {
+        await this.iamClient.send(
+          new UpdateUserCommand({ UserName: physicalId, NewPath: newPath })
+        );
+        log.debug(`Moved user ${v(physicalId)} to path ${v(newPath)}`);
+      }
+
       // Apply tag diff. IAM User uses TagUser/UntagUser keyed by UserName.
       await this.applyUserTagDiff(
         physicalId,
@@ -979,12 +1045,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
       log.debug(`Successfully deleted IAM user ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        log.mask(`Failed to delete IAM user ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
+      const failure = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            log.mask(`Failed to delete IAM user ${logicalId}: ${text}`),
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -1364,6 +1436,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       const response = await createClient.send(new CreateGroupCommand(createParams));
       leftBehind = true;
       createdGroupIdentity = userOrGroupIdentityToken(response.Group?.GroupId);
+      reportCreatedResource(logicalId, resourceType, groupName, createdGroupIdentity); // go-to-k/cdkd#5511
 
       // CreateGroupCommand has succeeded — AWS has now committed the
       // Group. Every subsequent call wires sub-resources onto it
@@ -1417,6 +1490,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
           await this.detachAllGroupPolicies(groupName, log);
           await this.deleteAllGroupInlinePolicies(groupName, log);
           await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
+          retractCreatedResource(logicalId, resourceType, groupName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM group ${logicalId} (${v(groupName)}) after wiring failure`
@@ -1430,8 +1504,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
           // as `***`, which would act on a different principal. Pinned by this
           // type's partial-create cleanup test.
           const aws = pasteableAwsCommand(log.mask);
+          const cleanupHead = `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): `;
           log.warn(
-            `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
+            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -1482,6 +1557,15 @@ export class IAMUserGroupProvider implements ResourceProvider {
     log.debug(`Updating IAM group ${logicalId}: ${v(physicalId)}`);
 
     try {
+      // `Path` in place, as for a user (#3723).
+      const newPath = iamPathOf(properties['Path']);
+      if (newPath !== iamPathOf(previousProperties['Path'])) {
+        await this.iamClient.send(
+          new UpdateGroupCommand({ GroupName: physicalId, NewPath: newPath })
+        );
+        log.debug(`Moved group ${v(physicalId)} to path ${v(newPath)}`);
+      }
+
       // Update managed policies
       await this.updateGroupManagedPolicies(
         physicalId,
@@ -1582,12 +1666,18 @@ export class IAMUserGroupProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        log.mask(`Failed to delete IAM group ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // Named by its class when AWS-authored (`wrapMaskedError`, issue #2319).
+      const failure = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            log.mask(`Failed to delete IAM group ${logicalId}: ${text}`),
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw progress.stripped ? markDeleteStarted(failure) : failure;
     }
@@ -2197,13 +2287,21 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // clone keeps each link's prototype, `$metadata` and markers, so the
       // retry classifiers read it as before.
       const cause = error instanceof Error ? error : undefined;
-      // The mark survives `maskError`'s clone of the chain.
-      const failure = new ProvisioningError(
-        `Failed to delete IAM UserToGroupAddition ${logicalId}: ${mask(describeAwsFailure(error).detail)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // The marks survive `maskError`'s clone of the chain. An AWS-authored
+      // failure is named by its class (`wrapMaskedError`, issue #2319), its text
+      // logged at debug through the operation's masker as well as `mask`.
+      const opMask = createMaskedLogSinks(this.logger, context?.maskSecrets).mask;
+      const failure = this.wrapMaskedError(
+        (text) => mask(opMask(text)),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete IAM UserToGroupAddition ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
       throw maskError(removedAny ? markDeleteStarted(failure) : failure);
     }

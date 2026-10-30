@@ -56,7 +56,7 @@ describe('ElastiCacheProvider removal semantics (issues #1160, #5004)', () => {
       // result, so applyTagDiff is skipped.
       mockSend.mockResolvedValueOnce({});
       mockSend.mockResolvedValue({
-        CacheClusters: [{ CacheClusterStatus: 'available' }],
+        CacheClusters: [{ CacheClusterStatus: 'available', CacheNodeType: 'cache.t3.micro' }],
       });
     };
 

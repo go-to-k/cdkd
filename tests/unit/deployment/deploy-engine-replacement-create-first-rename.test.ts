@@ -23,11 +23,14 @@ import {
 } from '../../../src/deployment/deploy-engine/replacement.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import {
+  hasRedactedCause,
+  isMarkedNonRetryable,
+} from '../../../src/deployment/retryable-errors.js';
 import { ccUpdateUnsupportedRejection } from '../_cc-unsupported-action.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 
 // go-to-k/cdkd#4438: a Retain that leaves the old resource alive rotates the
 // stack's create-token nonce; the type filter lives in the ledger module.
@@ -319,6 +322,35 @@ describe('DeployEngine — create-first when a replacement moves its name (#3931
       // The feared shape: update -> delete -> create.
       expect(h.callOrder).toEqual(['update', 'create']);
       expect(h.provider.delete).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#2319: the refusal is persisted, and an SDK error a
+    // provider let escape can carry the caller's ARN. cdkd's own "the create
+    // collided" sentence stays; only AWS's text moves to debug.
+    it('quotes an AWS-authored collision by its class, its text in debug', async () => {
+      logger.debug.mockClear();
+      const raw = awsSdkError(
+        'Function already exist: taken-name (arn:aws:sts::123456789012:assumed-role/Deployer/s)'
+      );
+      h.createFailures = [raw];
+
+      const err = await provision(makeEngine(h), {
+        recorded: 'my-fn',
+        desired: 'taken-name',
+        replacement: false,
+      });
+
+      expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+      expect(err!.message).toContain(
+        "but the create collided: ResourceConflictException. Re-run with --verbose for AWS's own message. If the collision is on the requested name"
+      );
+      expect(err!.message).not.toContain('123456789012');
+      expect(err!.message).not.toContain('Deployer');
+      expect(err!.cause).toBe(raw);
+      expect(isMarkedNonRetryable(err)).toBe(true);
+      expect(debugLines().find((l) => l.includes('Deployer'))).toContain(
+        'the create-first attempt collided: Function already exist: taken-name'
+      );
     });
 
     it('creates the renamed resource BEFORE deleting the old one', async () => {
@@ -768,6 +800,81 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     ).toBeUndefined();
   });
 
+  // go-to-k/cdkd#5143: the holder is this resource's own copy an earlier
+  // rolled-back deploy kept under UpdateReplacePolicy: Retain.
+  const withRetainedCopies = (
+    engine: ReturnType<typeof makeEngine>,
+    copies: Array<{ logicalId: string; resourceType: string; physicalId: string }>
+  ): { engine: ReturnType<typeof makeEngine>; asked: string[] } => {
+    const asked: string[] = [];
+    const original = engine.replacementDeps.bind(engine);
+    vi.spyOn(engine, 'replacementDeps').mockImplementation(() => ({
+      ...original(),
+      rollbackRetainedCopies: async (stackName: string) => {
+        asked.push(stackName);
+        return copies;
+      },
+    }));
+    return { engine, asked };
+  };
+
+  it("names the holder as this resource's own rollback-retained copy when the history shows it", async () => {
+    h.importResult = { physicalId: THEIRS };
+    const { engine, asked } = withRetainedCopies(makeEngine(h), [
+      { logicalId: 'Fn', resourceType: QUEUE, physicalId: THEIRS },
+    ]);
+
+    const err = await provision(engine, queue('their-queue'));
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(asked).toEqual(['MyStack']);
+    expect(err!.message).toContain(
+      "This stack's event history records that a rolled-back deploy kept Fn's replacement under this name because of UpdateReplacePolicy: Retain"
+    );
+    // Conditional advice: the live holder may no longer be that copy.
+    expect(err!.message).toContain('If the holder is that copy and you no longer need it, delete it');
+    expect(err!.message).not.toContain('delete the resource holding it if it is yours');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it.each([
+    ['another logical id', { logicalId: 'Other', resourceType: QUEUE, physicalId: THEIRS }],
+    ['another physical id', { logicalId: 'Fn', resourceType: QUEUE, physicalId: OLD_URL }],
+    ['another type', { logicalId: 'Fn', resourceType: 'AWS::SNS::Topic', physicalId: THEIRS }],
+  ])('keeps the generic remedy for a retained copy with %s', async (_n, copy) => {
+    h.importResult = { physicalId: THEIRS };
+    const { engine } = withRetainedCopies(makeEngine(h), [copy]);
+
+    const err = await provision(engine, queue('their-queue'));
+
+    expect(err!.message).toContain('delete the resource holding it if it is yours');
+    expect(err!.message).not.toContain('rolled-back deploy');
+  });
+
+  it('keeps the generic remedy when the history cannot be read', async () => {
+    h.importResult = { physicalId: THEIRS };
+    const engine = makeEngine(h);
+    const original = engine.replacementDeps.bind(engine);
+    vi.spyOn(engine, 'replacementDeps').mockImplementation(() => ({
+      ...original(),
+      rollbackRetainedCopies: () => Promise.reject(new Error('AccessDenied')),
+    }));
+
+    const err = await provision(engine, queue('their-queue'));
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain('delete the resource holding it if it is yours');
+  });
+
+  it('reads no history when no resource holds the new name', async () => {
+    h.importResult = null;
+    h.createIds = [THEIRS.replace('their-queue', 'free-queue')];
+    const { engine, asked } = withRetainedCopies(makeEngine(h), []);
+
+    expect(await provision(engine, queue('free-queue'))).toBeNull();
+    expect(asked).toEqual([]);
+  });
+
   it('proceeds when no resource holds the new name (negative control)', async () => {
     h.importResult = null;
     h.createIds = [THEIRS.replace('their-queue', 'free-queue')];
@@ -815,6 +922,44 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     expect(err!.message).toContain('AccessDenied');
     expect(err!.message).toContain('Nothing was created or deleted');
     expect(h.callOrder).toEqual(['import']);
+  });
+
+  // go-to-k/cdkd#2319: the refusal is persisted, and AWS words a denial with
+  // the caller's ARN. (Worded without "not authorized to perform", which the
+  // probe's retry would wait out on the IAM-propagation schedule.)
+  it('names an AWS-authored probe failure by its class, with its text in debug', async () => {
+    logger.debug.mockClear();
+    const denial = awsSdkError(
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied sqs:GetQueueUrl',
+      'AccessDenied'
+    );
+    h.importResult = denial;
+
+    const err = await provision(makeEngine(h), queue('their-queue'));
+
+    expect(err!.code).toBe('NAMED_REPLACEMENT_COLLISION');
+    expect(err!.message).toContain(
+      "already holds it: AccessDenied. Re-run with --verbose for AWS's own message. " +
+        'Nothing was created or deleted.'
+    );
+    expect(err!.message).not.toContain('123456789012');
+    expect(err!.message).not.toContain('Deployer');
+    expect(err!.cause).toBe(denial);
+    expect(hasRedactedCause(err)).toBe(true);
+    expect(isMarkedNonRetryable(err)).toBe(true);
+    const debugLine = debugLines().find((l) => l.includes('Deployer'));
+    expect(debugLine).toContain('could not check whether another resource already holds it');
+    expect(h.callOrder).toEqual(['import']);
+  });
+
+  it('keeps a transport probe failure text, unstamped', async () => {
+    h.importResult = new Error('connect ECONNREFUSED 127.0.0.1:443');
+
+    const err = await provision(makeEngine(h), queue('their-queue'));
+
+    expect(err!.message).toContain('already holds it: connect ECONNREFUSED 127.0.0.1:443.');
+    expect(err!.message).not.toContain('--verbose');
+    expect(hasRedactedCause(err)).toBe(false);
   });
 
   it('refuses a Step Functions rename whose old id is not a state machine ARN', async () => {
@@ -1101,7 +1246,7 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
   // The deploy's own scope (stack name, prefix flag) decides the sent name,
   // so each case runs inside one, as `cdkd deploy` does.
   const inDeployScope = <T>(skipPrefix: boolean, fn: () => Promise<T>): Promise<T> =>
-    withSkipPrefix(skipPrefix, () => withStackName('MyStack', fn));
+    withSkipPrefix(skipPrefix, () => withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, fn));
   const lbArn = (name: string): string =>
     `arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/${name}/0123456789abcdef`;
 
@@ -1202,6 +1347,29 @@ describe('DeployEngine — a rename onto a name a name-adopting create would tak
     expect(err!.message).toContain('not authorized to describe ***');
     expect(err!.message).not.toContain('SECRETVALUE');
     expect(h.callOrder).toEqual(['import']);
+  });
+
+  // go-to-k/cdkd#2319: an AWS-authored failure's text moves to `debug`, still
+  // through the rewritten-spelling mask.
+  it('masks the sent spelling of a secret-derived ELBv2 name in the probe failure debug line', async () => {
+    logger.debug.mockClear();
+    const type = 'AWS::ElasticLoadBalancingV2::TargetGroup';
+    h = makeHarness(type);
+    h.importResult = awsSdkError('Denied describing team-SECRETVALUE-x', 'AccessDenied');
+
+    const err = await provision(makeEngine(h), {
+      type,
+      nameProperty: 'Name',
+      recorded: 'mine',
+      desired: 'team_SECRETVALUE.x',
+      physicalId:
+        'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/mine/0123456789abcdef',
+    });
+
+    expect(err!.message).toContain('already holds it: AccessDenied. Re-run with --verbose');
+    expect(err!.message).not.toContain('SECRETVALUE');
+    expect(debugLines().some((l) => l.includes('Denied describing ***'))).toBe(true);
+    expect(debugLines().some((l) => l.includes('SECRETVALUE'))).toBe(false);
   });
 
   it('masks the other prefix spelling of a secret-derived ELBv2 name in the idempotent-create refusal', async () => {

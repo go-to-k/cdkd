@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as fsx from 'aws-cdk-lib/aws-fsx';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import type { Construct } from 'constructs';
 
 /**
@@ -12,6 +13,7 @@ import type { Construct } from 'constructs';
  * covers: AWS::FSx::FileSystem
  * covers: AWS::EC2::VPC
  * covers: AWS::EC2::SecurityGroup
+ * covers: AWS::Logs::LogGroup
  *
  * Smallest legal Lustre config: SCRATCH_2 at 1200 GiB (1.2 TiB), single
  * AZ, no NAT — keeps the hourly cost and the create wall-clock bounded.
@@ -20,15 +22,23 @@ import type { Construct } from 'constructs';
  *   - DataCompressionType NONE -> LZ4 (UpdateFileSystem — mutable Lustre
  *     sub-property)
  *   - Tag value change + tag REMOVAL (TagResource / UntagResource)
- * Both must keep the FileSystemId unchanged (no replacement).
+ *   - LustreConfiguration.LogConfiguration Level WARN_ERROR -> ERROR_ONLY
+ *     (go-to-k/cdkd#5430: UpdateFileSystem, CFn "No interruption")
+ * All must keep the FileSystemId unchanged (no replacement).
  *
  * REMOVAL phase (CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true, issue #1160):
  *   - DataCompressionType is DROPPED from the template (live value LZ4,
  *     AWS's non-default). UpdateFileSystem keeps a field it is not sent and
- *     cdkd sends no reset, so the value must stay LZ4 and the deploy must
- *     name the removal in a warning instead of dropping it silently.
+ *     cdkd sends no reset, as CloudFormation leaves it (CFn A/B on issue
+ *     #1160), so the value must stay LZ4 and the deploy must name the removal
+ *     in a warning saying CloudFormation keeps it too.
  *   - WeeklyMaintenanceStartTime is ADDED in the same deploy, a companion
  *     change proving UpdateFileSystem fired with the removal beside it.
+ *   - `PersistentFs` (PERSISTENT_2 SSD, declared from Phase 1) drops
+ *     DailyAutomaticBackupStartTime, AutomaticBackupRetentionDays,
+ *     PerUnitStorageThroughput and MetadataConfiguration. CloudFormation keeps
+ *     each (CFn A/B on issue #1160, 2026-10-25), so every value must stay and
+ *     the warning must say CloudFormation keeps them too.
  *
  * FIX-FORWARD phase (INJECT_FS_ORPHAN=true, issue #4606): an `OrphanFs`
  * whose first CREATE fails after FSx made it; see the block below.
@@ -80,6 +90,28 @@ export class FsxLustreStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // go-to-k/cdkd#5430: Lustre logging to a log group this stack owns. FSx
+    // requires the name to begin with /aws/fsx. The ARN is built without the
+    // `:*` suffix the log group's Arn attribute carries, so verify.sh can
+    // compare it with the Destination FSx reports. Phase 1 sends WARN_ERROR on
+    // CreateFileSystem; the UPDATE phase (and every later one) changes it to
+    // ERROR_ONLY in place.
+    const logGroup = new logs.LogGroup(this, 'LustreLogs', {
+      logGroupName: `/aws/fsx/${this.stackName}`,
+      retention: logs.RetentionDays.ONE_DAY,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const logGroupArn = this.formatArn({
+      service: 'logs',
+      resource: 'log-group',
+      resourceName: logGroup.logGroupName,
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    });
+    (fileSystem.node.defaultChild as fsx.CfnFileSystem).addPropertyOverride(
+      'LustreConfiguration.LogConfiguration',
+      { Level: isUpdate ? 'ERROR_ONLY' : 'WARN_ERROR', Destination: logGroupArn }
+    );
+
     // Constant tag used by verify.sh cleanup to find leftover file systems.
     cdk.Tags.of(fileSystem).add('cdkd-integ', 'fsx-lustre');
     cdk.Tags.of(fileSystem).add('env', isUpdate ? 'changed' : 'test');
@@ -87,6 +119,28 @@ export class FsxLustreStack extends cdk.Stack {
       // Removed in the UPDATE phase — exercises UntagResource.
       cdk.Tags.of(fileSystem).add('dropme', 'yes');
     }
+
+    // Issue #1160: the persistent-only sub-properties, each set to a value the
+    // REMOVAL phase drops. Created beside `Fs` in Phase 1 (cdkd provisions the
+    // two in parallel), in the security group the L2 opened for Lustre.
+    const persistentFs = new fsx.CfnFileSystem(this, 'PersistentFs', {
+      fileSystemType: 'LUSTRE',
+      fileSystemTypeVersion: '2.15',
+      storageType: 'SSD',
+      storageCapacity: 1200,
+      subnetIds: [vpc.publicSubnets[0]!.subnetId],
+      securityGroupIds: [fileSystem.connections.securityGroups[0]!.securityGroupId],
+      lustreConfiguration: {
+        deploymentType: 'PERSISTENT_2',
+        ...(!isRemoval && {
+          dailyAutomaticBackupStartTime: '05:00',
+          automaticBackupRetentionDays: 3,
+          perUnitStorageThroughput: 125,
+          metadataConfiguration: { mode: 'USER_PROVISIONED', iops: 3000 },
+        }),
+      },
+    });
+    cdk.Tags.of(persistentFs).add('cdkd-integ', 'fsx-lustre');
 
     // go-to-k/cdkd#4606: the fix-forward arm (Phase 2c of `verify.sh`). The
     // injection deploy runs under a role denied DescribeFileSystems and
@@ -118,6 +172,8 @@ export class FsxLustreStack extends cdk.Stack {
     }
 
     new cdk.CfnOutput(this, 'FileSystemId', { value: fileSystem.fileSystemId });
+    new cdk.CfnOutput(this, 'LogDestinationArn', { value: logGroupArn });
+    new cdk.CfnOutput(this, 'PersistentFileSystemId', { value: persistentFs.ref });
     // Fn::GetAtt DNSName / LustreMountName — proves the provider's
     // attribute wiring end to end.
     new cdk.CfnOutput(this, 'DnsName', { value: fileSystem.dnsName });

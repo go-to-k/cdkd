@@ -60,6 +60,7 @@ import {
 } from '@aws-sdk/client-servicediscovery';
 import { ServiceDiscoveryProvider } from '../../../../src/provisioning/providers/servicediscovery-provider.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../../src/utils/aws-failure-text.js';
 
 const HTTP_NS = 'AWS::ServiceDiscovery::HttpNamespace';
 const PUBLIC_DNS_NS = 'AWS::ServiceDiscovery::PublicDnsNamespace';
@@ -130,7 +131,10 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
       await expect(
         provider.create('MyHttpNs', HTTP_NS, { Name: 'dup-ns' })
-      ).rejects.toThrow(/namespace already exists/);
+      ).rejects.toThrow(
+        // go-to-k/cdkd#2319: the ErrorMessage is withheld; a collision is restated.
+        `Operation failed for MyHttpNs: ${VERBOSE_POINTER} AWS reports that it already exists.`
+      );
     });
 
     it('rejects when Name is missing', async () => {
@@ -243,12 +247,18 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
       mockSend
         .mockResolvedValueOnce({ OperationId: 'op-1' })
         .mockResolvedValueOnce({
-          Operation: { Status: 'FAIL', ErrorMessage: 'hosted zone limit exceeded' },
+          Operation: {
+            Status: 'FAIL',
+            ErrorCode: 'CANNOT_CREATE_HOSTED_ZONE',
+            ErrorMessage: 'hosted zone limit exceeded',
+          },
         });
 
       await expect(
         provider.create('MyPubNs', PUBLIC_DNS_NS, { Name: 'example.com' })
-      ).rejects.toThrow(/hosted zone limit exceeded/);
+      ).rejects.toThrow(
+        `Operation failed for MyPubNs: CANNOT_CREATE_HOSTED_ZONE. ${VERBOSE_POINTER}`
+      );
     });
   });
 
@@ -342,7 +352,7 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
 
       await expect(
         provider.update('MyHttpNs', 'ns-http-1', HTTP_NS, { Description: 'x' }, {})
-      ).rejects.toThrow(/update rejected/);
+      ).rejects.toThrow(`Operation failed for MyHttpNs: ${VERBOSE_POINTER}`);
     });
 
     it('makes no AWS call for a shape-only tag diff (Tags: [] vs absent)', async () => {
@@ -521,7 +531,7 @@ describe('ServiceDiscoveryProvider — HttpNamespace / PublicDnsNamespace', () =
         });
 
       await expect(provider.delete('MyNs', 'ns-1', HTTP_NS)).rejects.toThrow(
-        /namespace contains services/
+        `Operation failed for MyNs: ${VERBOSE_POINTER}`
       );
     });
   });

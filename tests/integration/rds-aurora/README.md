@@ -12,8 +12,9 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
 - **Secrets Manager Secret** - Auto-generated database credentials (created by CDK)
 - **RDS Proxy** (`AuroraProxy`) - sets `DebugLogging` in phase 1 and DROPS it in
   the `CDKD_TEST_UPDATE=true` phase; verify.sh asserts the live value stays
-  true (ModifyDBProxy and CloudFormation's handler both keep an omitted
-  setting) and that the deploy warned about it (issue #1160)
+  true (ModifyDBProxy keeps an omitted setting, and a CFn A/B showed
+  CloudFormation keeps it too) and that the deploy warned about it, saying
+  CloudFormation leaves it (issue #1160)
 
 - **SecurityCluster** (L1 `CfnDBCluster`, aurora-postgresql, no instance) - the
   issue #609 DBCluster security-property silent-drop assertions
@@ -23,10 +24,20 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   `EnableIAMDatabaseAuthentication` are set in phase 1 and DROPPED in the
   `CDKD_TEST_UPDATE=true` phase; verify.sh asserts both are KEPT, as
   CloudFormation does; the same phase drops `BackupRetentionPeriod` (7 in
-  phase 1) and asserts the reset to 1, proving `ModifyDBCluster` fired. Phase 2b
-  proves a failed `--remove-protection` destroy restores it (issue #2204). It
+  phase 1) and asserts the reset to 1, proving `ModifyDBCluster` fired. The
+  same phase drops `VpcSecurityGroupIds` and asserts the cluster moved to the
+  VPC's `default` security group, as CloudFormation does (issue #1160). Phase 2b
+  proves a failed `--remove-protection` destroy restores it (issue #2204); it
+  runs with `--verbose` to read AWS's member refusal, which the thrown error
+  names only by its class (issue #2319). It
   declares no `DeletionPolicy`, so its destroy takes CloudFormation's default
-  final snapshot, which verify.sh asserts and then deletes (issue #4030).
+  final snapshot, which verify.sh asserts and then deletes (issue #4030). Its
+  `SecondsUntilAutoPause` is 600 in phase 1 and 1800 in phase 2, each asserted
+  live (issue #5466).
+- **EngineCluster** (L1 `CfnDBCluster`, no instance, `DeletionPolicy: Delete`) -
+  phase 2c swaps its `Engine` from aurora-mysql to aurora-postgresql, which
+  CloudFormation replaces: verify.sh asserts the deploy is refused without
+  `--force-stateful-recreation` and replaces the cluster with it (issue #5467).
 
 ## Outputs
 

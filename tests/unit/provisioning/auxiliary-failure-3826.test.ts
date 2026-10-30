@@ -30,10 +30,12 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { APIGatewayClient } from '@aws-sdk/client-api-gateway';
+import { BedrockAgentCoreControlClient } from '@aws-sdk/client-bedrock-agentcore-control';
 import { AppSyncClient } from '@aws-sdk/client-appsync';
 import { AutoScalingClient } from '@aws-sdk/client-auto-scaling';
 import { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
+import { CodeBuildClient } from '@aws-sdk/client-codebuild';
 import { CodeCommitClient } from '@aws-sdk/client-codecommit';
 import { CognitoIdentityProviderClient } from '@aws-sdk/client-cognito-identity-provider';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -62,10 +64,12 @@ import {
   auxiliaryLogicalId,
   markAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
+import { AgentCoreRuntimeProvider } from '../../../src/provisioning/providers/agentcore-runtime-provider.js';
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
 import { AppSyncProvider } from '../../../src/provisioning/providers/appsync-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { CloudTrailProvider } from '../../../src/provisioning/providers/cloudtrail-provider.js';
+import { CodeBuildProvider } from '../../../src/provisioning/providers/codebuild-provider.js';
 import { CodeCommitRepositoryProvider } from '../../../src/provisioning/providers/codecommit-repository-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { CustomResourceProvider } from '../../../src/provisioning/providers/custom-resource-provider.js';
@@ -98,7 +102,7 @@ import { codeLines } from '../_code-lines.js';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
 import { allowUnscopedCreateTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);
@@ -180,6 +184,30 @@ const LOGICAL_ID = 'Subject';
 const COLLISION_TEXT = 'The object with that name already exists';
 
 const CASES: Case[] = [
+  {
+    // go-to-k/cdkd#2762: the tags a new runtime did not keep are set after
+    // CreateAgentRuntime returned.
+    name: 'agentcore-runtime AWS::BedrockAgentCore::Runtime',
+    provider: () => new AgentCoreRuntimeProvider(),
+    resourceType: 'AWS::BedrockAgentCore::Runtime',
+    properties: {
+      AgentRuntimeName: 'runtime',
+      RoleArn: 'arn:aws:iam::123456789012:role/runtime',
+      AgentRuntimeArtifact: { ContainerConfiguration: { ContainerUri: 'uri' } },
+      Tags: { Env: 'dev' },
+    },
+    clients: [BedrockAgentCoreControlClient],
+    main: 'CreateAgentRuntimeCommand',
+    aux: 'TagResourceCommand',
+    responses: {
+      CreateAgentRuntimeCommand: {
+        agentRuntimeId: 'runtime-1',
+        agentRuntimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/runtime-1',
+      },
+      // The new runtime holds none of the tags it was sent.
+      ListTagsForResourceCommand: { tags: {} },
+    },
+  },
   {
     name: 'lambda-function AWS::Lambda::Function',
     provider: () => new LambdaFunctionProvider(),
@@ -263,6 +291,32 @@ const CASES: Case[] = [
     mainAwsError: { name: 'TrailAlreadyExistsException', message: 'Trail trail already exists for customer: 123456789012' },
     aux: 'StartLoggingCommand',
     responses: { CreateTrailCommand: { TrailARN: 'arn:aws:cloudtrail:us-east-1:123456789012:trail/trail' } },
+  },
+  {
+    // go-to-k/cdkd#2762: Visibility rides UpdateProjectVisibility after CreateProject.
+    name: 'codebuild AWS::CodeBuild::Project',
+    provider: () => new CodeBuildProvider(),
+    resourceType: 'AWS::CodeBuild::Project',
+    properties: {
+      Name: 'proj',
+      Source: { Type: 'NO_SOURCE', BuildSpec: 'version: 0.2' },
+      Artifacts: { Type: 'NO_ARTIFACTS' },
+      Environment: { Type: 'LINUX_CONTAINER', ComputeType: 'BUILD_GENERAL1_SMALL', Image: 'img' },
+      ServiceRole: 'arn:aws:iam::123456789012:role/svc',
+      Visibility: 'PUBLIC_READ',
+    },
+    clients: [CodeBuildClient],
+    main: 'CreateProjectCommand',
+    mainAwsError: {
+      name: 'ResourceAlreadyExistsException',
+      message: 'Project already exists: proj',
+    },
+    aux: 'UpdateProjectVisibilityCommand',
+    responses: {
+      CreateProjectCommand: {
+        project: { name: 'proj', arn: 'arn:aws:codebuild:us-east-1:123456789012:project/proj' },
+      },
+    },
   },
   {
     name: 'codecommit-repository AWS::CodeCommit::Repository',
@@ -729,15 +783,12 @@ const CASES: Case[] = [
         { VPCId: 'vpc-1', VPCRegion: 'us-east-1' },
         { VPCId: 'vpc-2', VPCRegion: 'us-east-1' },
       ],
-      HostedZoneFeatures: { AcceleratedRecoveryStatus: 'ENABLED' },
+      HostedZoneFeatures: { EnableAcceleratedRecovery: true },
     },
     clients: [Route53Client],
     main: 'CreateHostedZoneCommand',
     aux: 'AssociateVPCWithHostedZoneCommand',
-    // The Accelerated Recovery arm throws its OWN ProvisioningError, which the
-    // outer catch rethrows as-is: the mark must sit before that rethrow.
     alsoAux: [
-      'UpdateHostedZoneFeaturesCommand',
       {
         // A replayed create ADOPTS the zone the lost first attempt made (#2039);
         // the auxiliary failing after that is still not this zone's collision.
@@ -764,6 +815,28 @@ const CASES: Case[] = [
         mustSend: ['ListHostedZonesByNameCommand', 'GetHostedZoneCommand'],
       },
     ],
+    responses: {
+      CreateHostedZoneCommand: {
+        HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
+        DelegationSet: { NameServers: ['ns-1.awsdns-01.org'] },
+      },
+    },
+  },
+  {
+    // The Accelerated Recovery arm's own site: it throws its OWN
+    // ProvisioningError, which the outer catch rethrows as-is, so the mark sits
+    // on the raw error before that wrap (go-to-k/cdkd#2319: the wrap then does
+    // not restate the collision).
+    name: 'route53 AWS::Route53::HostedZone (Accelerated Recovery)',
+    provider: () => new Route53Provider(),
+    resourceType: 'AWS::Route53::HostedZone',
+    properties: {
+      Name: 'example.com',
+      HostedZoneFeatures: { EnableAcceleratedRecovery: true },
+    },
+    clients: [Route53Client],
+    main: 'CreateHostedZoneCommand',
+    aux: 'UpdateHostedZoneFeaturesCommand',
     responses: {
       CreateHostedZoneCommand: {
         HostedZone: { Id: '/hostedzone/Z1', Name: 'example.com.' },
@@ -1029,10 +1102,17 @@ describe('auxiliary create failures do not classify as a name collision (#3826)'
         else expect(sent).toContain(c.main);
       }
       expect(error).toBeInstanceOf(Error);
-      // The top-level message still RELAYS a collision signature and the chain
-      // still holds an AWS-authored "already exists": nothing was reworded, so
-      // the mark alone is what keeps the verdict false.
-      expect(isNameCollisionError((error as Error).message)).toBe(true);
+      // The generic stand-in is not AWS-authored, so the top-level message
+      // still RELAYS its collision signature: nothing was reworded, and the
+      // mark alone is what keeps the verdict false. An AWS-authored
+      // `auxAwsError` is named by its class (go-to-k/cdkd#2319), and the wrap
+      // does not restate its "already exists" for an auxiliary failure, so the
+      // message carries no signature; the chain still holds AWS's text.
+      const awsAuthored = c.auxAwsError !== undefined && arm.command === c.aux;
+      expect(isNameCollisionError((error as Error).message)).toBe(!awsAuthored);
+      if (awsAuthored) {
+        expect(isNameCollisionError(((error as Error).cause as Error).message)).toBe(true);
+      }
       expect(isNameCollisionErrorFrom(error, LOGICAL_ID)).toBe(false);
     });
 

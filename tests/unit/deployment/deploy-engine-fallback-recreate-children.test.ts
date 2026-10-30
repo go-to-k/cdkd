@@ -431,4 +431,48 @@ describe('DeployEngine - children of a fallback same-id re-create (go-to-k/cdkd#
     const warned = (getLogger().warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     expect(warned.some((line) => line.includes('Perm') && line.includes('record is dropped'))).toBe(false);
   });
+
+  // go-to-k/cdkd#5118 (review S2): the fallback deleted the function first, so
+  // only the user's interrupt stops its re-create -- a sibling's failure, which
+  // claims the engine's interrupt flag, must not leave neither copy.
+  it("the fallback's delete-first re-create is not aborted by a sibling's failure", async () => {
+    const engine = makeEngine();
+    const fields = engine as unknown as { interrupted: boolean; interruptCause: string | null };
+    let attempts = 0;
+    sdk.create.mockImplementation((logicalId: string) => {
+      if (logicalId !== 'Fn') return Promise.resolve({ physicalId: `${logicalId}-new`, attributes: {} });
+      attempts++;
+      if (attempts === 1) {
+        fields.interrupted = true;
+        fields.interruptCause ??= 'sibling-failure';
+        return Promise.reject(Object.assign(new Error('Rate exceeded'), { name: 'ThrottlingException' }));
+      }
+      return Promise.resolve({ physicalId: 'my-fn', attributes: {} });
+    });
+    await engine.deploy(STACK, changedTemplate()).catch(() => undefined);
+    expect(callsFor(sdk.delete, 'Fn')).toHaveLength(1);
+    expect(attempts).toBe(2);
+  }, 30_000);
+
+  // go-to-k/cdkd#5131: the old copy's delete returns while AWS may still hold
+  // its name; its provider's name-release wait runs before the re-create.
+  it('waits for the deleted function to release its name before the re-create (#5131)', async () => {
+    const order: string[] = [];
+    const del = sdk.delete.getMockImplementation() as ((...a: unknown[]) => unknown) | undefined;
+    sdk.delete.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('delete');
+      return del?.(...args);
+    });
+    const create = sdk.create.getMockImplementation() as (...a: unknown[]) => unknown;
+    sdk.create.mockImplementation(async (...args: unknown[]) => {
+      if (args[0] === 'Fn') order.push('create');
+      return create(...args);
+    });
+    (sdk as Record<string, unknown>)['waitForNameReleased'] = vi.fn(async (id: string) => {
+      order.push(`wait ${id}`);
+    });
+    await makeEngine().deploy(STACK, changedTemplate());
+    expect(order).toEqual(['delete', 'wait Fn', 'create']);
+  });
 });
+

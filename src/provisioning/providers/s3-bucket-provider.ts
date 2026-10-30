@@ -76,7 +76,9 @@ import {
   markNameCollision,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
@@ -95,7 +97,7 @@ import {
   requireConfigString,
   type ConfigStringOptions,
 } from '../config-shape.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import {
   createMaskedLogSinks,
   maskDeep,
@@ -105,7 +107,12 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand, renderDisableCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
   AMBIGUOUS_LATCH_TTL_MS,
   AmbiguousCreateLatch,
@@ -115,6 +122,7 @@ import {
   type AmbiguousCreateWindow,
 } from './ambiguous-create.js';
 import { clientDefaultsFor, type CredentialConfig } from '../../utils/ambient-client-defaults.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 import {
   planTagDiff,
   readTagList,
@@ -230,6 +238,23 @@ function configItemId(item: unknown): string | undefined {
  */
 function declaresBucketObjectLock(properties: Record<string, unknown>): boolean {
   return properties['ObjectLockEnabled'] === true || properties['ObjectLockEnabled'] === 'true';
+}
+
+/**
+ * Whether the bag declares Object Lock through the NESTED
+ * `ObjectLockConfiguration.ObjectLockEnabled: Enabled`, which, unlike the
+ * top-level flag, is sent to an existing bucket (go-to-k/cdkd#5395). A
+ * `readObjectLock` snapshot spells a locked bucket this way too.
+ */
+function declaresNestedObjectLock(properties: Record<string, unknown>): boolean {
+  const cfg = properties['ObjectLockConfiguration'] as Record<string, unknown> | undefined;
+  return cfg?.['ObjectLockEnabled'] === 'Enabled';
+}
+
+/** The class name of a caught error, for a debug line; never its message. */
+function caughtErrorName(error: unknown): string {
+  const name = (error as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name !== '' ? name : 'unknown error';
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -645,14 +670,14 @@ const EVENTBRIDGE_CONFIG_PATH =
  * The block's own key, held in a CONST so the fold below writes it as a
  * COMPUTED key.
  *
- * Load-bearing, not style: `gen-nested-key-coverage`'s write-evidence walk reads
+ * Load-bearing, not style: `gen-nested-key-coverage`'s write-side walk reads
  * a bag-derived spread-and-patch literal that NAMES a member
  * (`{ ...config, EventBridgeConfiguration: … }`) as the #1475 whole-blob
- * HAND-OFF and wildcard-credits everything beneath that path as DELIVERED — so
- * a DIFF-side fold spelled that way would switch the write pass off for the
- * whole notification subtree, and the critic's only visible complaint would be
- * that some allow-list entries went "stale". Same reason
- * {@link canonicalizeBlock} exists.
+ * HAND-OFF and records everything beneath that path as DELIVERED WHOLE — so a
+ * DIFF-side fold spelled that way would mark the whole notification subtree as
+ * delivered whole, which can withdraw a literal's rescue of a shape-pass
+ * `definition-member-missing` verdict. Same reason {@link canonicalizeBlock}
+ * exists.
  */
 const EVENTBRIDGE_CONFIG_KEY = 'EventBridgeConfiguration';
 
@@ -973,23 +998,23 @@ function deepSameValue(a: unknown, b: unknown): boolean {
 
 /**
  * The ISO string `readLifecycle` emits for a date the applier sends as
- * `new Date(value)`.
+ * `parseCfnTimestamp(value)` (a string) or `new Date(value)` (a number).
  *
  * DETERMINISM IS A PRECONDITION, not a nicety (PR review). `new Date(str)`
- * resolves an offset-less string in the HOST's local zone — `new Date('0')` is
- * `1999-12-31T15:00:00Z` under JST and `2000-01-01T00:00:00Z` under UTC, and
- * `'2030-01-01T00:00:00'` (ISO, no offset) is local by spec. The APPLIER shares
- * that dependence, so the wire and the readback still agree on any one machine —
- * but this feeds `canonicalizeDesiredProperties`, a DIFF-side pure function that
- * runs wherever the CLI runs. A CI runner in UTC and a laptop in JST would
+ * resolves some strings in the HOST's local zone — `new Date('0')` is
+ * `1999-12-31T15:00:00Z` under JST and `2000-01-01T00:00:00Z` under UTC. This
+ * feeds `canonicalizeDesiredProperties`, a DIFF-side pure function that runs
+ * wherever the CLI runs: a CI runner in UTC and a laptop in JST would
  * canonicalize the SAME template to different ISO strings and manufacture a diff
  * neither machine can clear, which is strictly worse than the phantom drift the
- * fold exists to remove. So only the forms whose meaning is fixed by the ISO
- * 8601 spec are folded: a bare `YYYY-MM-DD` (spec-UTC), a date-time carrying
- * `Z` or a `±HH:MM` offset, and an epoch NUMBER. Everything else — `'Jan 1
- * 2030'`, `'0'`, an offset-less date-time — is left ALONE, which keeps the
- * record machine-independent at the cost of not normalizing a shape almost no
- * template uses.
+ * fold exists to remove. So only the forms with ONE meaning on every host are
+ * folded: a bare `YYYY-MM-DD` (spec-UTC), a date-time carrying `Z` or a
+ * `±HH:MM` offset, an offset-less `YYYY-MM-DDTHH:mm[:ss[.sss]]` (which
+ * `parseCfnTimestamp` reads as UTC, as CFn does — issue #5311; the `t` / space
+ * separators it also takes are folded alike), and an epoch
+ * NUMBER. Everything else — `'Jan 1 2030'`, `'0'` — is left ALONE, which keeps
+ * the record machine-independent at the cost of not normalizing a shape almost
+ * no template uses.
  *
  * @returns `undefined` for a value that cannot become a valid `Date`, or whose
  *   `Date` would depend on the host timezone — in both cases there is no
@@ -997,12 +1022,18 @@ function deepSameValue(a: unknown, b: unknown): boolean {
  *   alone.
  */
 const TIMEZONE_INDEPENDENT_DATE =
-  /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
+  /^\d{4}-\d{2}-\d{2}([Tt ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 function cfnDateToIso(value: unknown): string | undefined {
-  if (typeof value === 'string' && !TIMEZONE_INDEPENDENT_DATE.test(value)) return undefined;
-  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
-  const parsed = new Date(value);
+  let parsed: Date;
+  if (typeof value === 'string') {
+    if (!TIMEZONE_INDEPENDENT_DATE.test(value)) return undefined;
+    parsed = parseCfnTimestamp(value);
+  } else if (typeof value === 'number') {
+    parsed = new Date(value);
+  } else {
+    return undefined;
+  }
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
@@ -1082,7 +1113,7 @@ function foldLegacySingularTransitions(rule: Record<string, unknown>): Record<st
  * (PR review of issues #1754 / #1755).
  *
  * The alias fold above only RENAMES `Date` -> `TransitionDate`, but the applier
- * sends `new Date(t['TransitionDate'] ?? t['Date'])` and `readLifecycle` emits
+ * sends `parseCfnTimestamp(t['TransitionDate'] ?? t['Date'])` and `readLifecycle` emits
  * `t.Date.toISOString()` — so a hand-written / imported `TransitionDate:
  * '2030-01-01'` recorded a value the readback can never match, with no warning
  * and nothing malformed. Exactly the class {@link foldLifecycleExpiration}
@@ -1100,8 +1131,8 @@ function foldTransitionDate(item: Record<string, unknown>): Record<string, unkno
   const declared = item[TRANSITION_DATE_KEY];
   // TRUTHINESS, not presence — the same defect this fold's own commit fixed one
   // member over for the nested `Expiration.Date`, and missed on the member it
-  // was adding. The applier reads `(t['TransitionDate'] ?? t['Date']) ? new
-  // Date(...) : undefined`, so a declared `0` sends NO date at all while
+  // was adding. The applier reads `(t['TransitionDate'] ?? t['Date']) ?
+  // parseCfnTimestamp(...) : undefined`, so a declared `0` sends NO date at all while
   // `cfnDateToIso(0)` happily answers `1970-01-01T00:00:00.000Z` — recording it
   // would MANUFACTURE the permanent phantom drift this fold exists to remove.
   if (!declared) return item;
@@ -1109,9 +1140,9 @@ function foldTransitionDate(item: Record<string, unknown>): Record<string, unkno
   if (iso === undefined || iso === declared) return item;
   // COMPUTED key, for the same #1475 reason {@link EVENTBRIDGE_CONFIG_KEY}
   // records: a DIFF-side literal naming the member reads as a whole-blob
-  // hand-off to `gen-nested-key-coverage`'s write-evidence walk, AND it
+  // hand-off to `gen-nested-key-coverage`'s write-side walk, AND it
   // withdraws the name from the reverse-map exclusion that keeps `readLifecycle`
-  // from vouching for the forward mapper. Measured both ways.
+  // from vouching for the forward mapper.
   const out = { ...item };
   out[TRANSITION_DATE_KEY] = iso;
   return out;
@@ -1194,7 +1225,7 @@ function foldLifecycleExpiration(rule: Record<string, unknown>): Record<string, 
     date = iso;
   } else if (isPlainObject(expiration)) {
     if (expiration['Days'] !== undefined) days = expiration['Days'];
-    // TRUTHINESS, not presence: the applier reads `exp['Date'] ? new Date(...) :
+    // TRUTHINESS, not presence: the applier reads `exp['Date'] ? parseCfnTimestamp(...) :
     // undefined`, so a falsy `Date` (`0`, `false`, `''`) sends NO date at all
     // and recording one would describe a value AWS does not hold (PR review).
     if (expiration['Date']) {
@@ -1462,16 +1493,15 @@ function effectiveLifecycleRule(
  *
  * The COMPUTED `[key]:` write is load-bearing and must not be "tidied" into a
  * named-member spread (`{ ...out, LifecycleConfiguration: folded }`), which is
- * how this was first written. `gen-nested-key-coverage`'s write-evidence walk
+ * how this was first written. `gen-nested-key-coverage`'s write-side walk
  * recognizes a bag-derived spread-and-patch literal as a whole-blob HAND-OFF
- * (its #1475 recognizer) and credits everything beneath the named path as
- * delivered — so naming the member here made a DIFF-side pure function vouch for
- * the forward mapper and retired three reviewed `AWS::S3::Bucket` allow-list
- * entries (`LifecycleConfiguration.TransitionDefaultMinimumObjectSize`,
- * `…Rules.TagFilters.Key` / `.Value`), i.e. it silently switched the write pass
- * off for that whole subtree. Measured both ways via the critic's
- * `--providers-dir=` seam. A computed key names no member, which is exactly why
- * the pre-existing folds in this file are spelled that way.
+ * (its #1475 recognizer) and records everything beneath the named path as
+ * delivered whole — so naming the member here makes a DIFF-side pure function
+ * mark that subtree as delivered whole, which can withdraw a literal's rescue
+ * of a shape-pass `definition-member-missing` verdict (when the critic still
+ * had a write pass, it also switched that pass off for the subtree). A computed
+ * key names no member, which is exactly why the pre-existing folds in this file
+ * are spelled that way.
  */
 function canonicalizeBlock(
   properties: Record<string, unknown>,
@@ -2944,12 +2974,12 @@ export class S3BucketProvider implements ResourceProvider {
       if (typeof expiration === 'number') {
         sdkRule.Expiration = { Days: expiration };
       } else if (typeof expiration === 'string') {
-        sdkRule.Expiration = { Date: new Date(expiration) };
+        sdkRule.Expiration = { Date: parseCfnTimestamp(expiration) };
       } else if (expiration && typeof expiration === 'object') {
         const exp = expiration as Record<string, unknown>;
         sdkRule.Expiration = {
           Days: exp['Days'] as number | undefined,
-          Date: exp['Date'] ? new Date(exp['Date'] as string) : undefined,
+          Date: exp['Date'] ? parseCfnTimestamp(exp['Date'] as string) : undefined,
           ExpiredObjectDeleteMarker: exp['ExpiredObjectDeleteMarker'] as boolean | undefined,
         };
       }
@@ -3044,7 +3074,7 @@ export class S3BucketProvider implements ResourceProvider {
         Days: (t['TransitionInDays'] ?? t['Days']) as number | undefined,
         Date:
           (t['TransitionDate'] ?? t['Date'])
-            ? new Date((t['TransitionDate'] ?? t['Date']) as string)
+            ? parseCfnTimestamp((t['TransitionDate'] ?? t['Date']) as string)
             : undefined,
         StorageClass: t['StorageClass'] as string | undefined,
       });
@@ -3646,12 +3676,9 @@ export class S3BucketProvider implements ResourceProvider {
     // behavior change on the replay path (skip instead of surface).
     const skipped: number[] = [];
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -3671,10 +3698,9 @@ export class S3BucketProvider implements ResourceProvider {
       // item, since applying it WITHOUT its tag predicate would widen the
       // monitored scope, the very misbehavior being refused.
       // `tagFilters` stays bound to the bag read directly (not to the guard's
-      // return value): the nested-key critic's write-evidence walk follows the
-      // bag-read binding into the `And.Tags` write, and routing the value
-      // through the helper call would sever that hand-off and false-flag
-      // `TagFilters.Key` / `.Value` as never written.
+      // return value): the nested-key critic's write pass (retired by issue
+      // #3723) followed the bag-read binding into the `And.Tags` write, and
+      // routing the value through the helper call severed it.
       const tagFilters = config['TagFilters'] as Array<{ Key: string; Value: string }> | undefined;
       if (
         tagFilters != null &&
@@ -3824,12 +3850,9 @@ export class S3BucketProvider implements ResourceProvider {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -4057,12 +4080,9 @@ export class S3BucketProvider implements ResourceProvider {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -4173,12 +4193,9 @@ export class S3BucketProvider implements ResourceProvider {
     const skipped: number[] = [];
     const substituted = new Map<number, Record<string, unknown>>();
     // A plain `for…of` over `configs` with a hand-kept index, NOT
-    // `configs.entries()`: the nested-key critic's write-evidence walk resolves
-    // `config` as a value read off the desired property BAG, and an
-    // array-destructuring pattern is not a binding shape it can follow — so the
-    // tidier spelling silently reports every member of this item's nested
-    // blocks as `no-write-evidence` (measured: 9 divergences across the four
-    // per-item appliers).
+    // `configs.entries()`: the nested-key critic's write pass (retired by issue
+    // #3723) could not follow an array-destructuring binding back to the
+    // desired property bag.
     let index = -1;
     for (const config of configs) {
       index += 1;
@@ -4490,11 +4507,8 @@ export class S3BucketProvider implements ResourceProvider {
     // does not become `{Owner: undefined}` on the wire (AWS rejects that, where
     // the pre-fix code sent nothing at all).
     // Each block is written as a NAMED assignment rather than through a helper
-    // taking a string-literal key: `gen-nested-key-coverage`'s write-evidence
-    // pass recognises `sdkDest['X'] = { … }`, and routing these through a
-    // generic attach() made all 12 members invisible to it (measured: the S3
-    // residual went 93 instead of 81). The empty-block guard is therefore
-    // inlined per block.
+    // taking a string-literal key (a shape the nested-key critic's retired
+    // write pass needed), so the empty-block guard is inlined per block.
     const acl = dest['AccessControlTranslation'] as Record<string, unknown> | undefined;
     if (acl != null && acl['Owner'] !== undefined) {
       sdkDest['AccessControlTranslation'] = { Owner: acl['Owner'] as string };
@@ -5074,7 +5088,10 @@ export class S3BucketProvider implements ResourceProvider {
    * (issue #4639; no applier reaches it, but it is stubbed all the same) are
    * the ONLY clients this class holds and no applier reads a response field
    * back; a new client, or an applier that consumes a response, must be
-   * stubbed here too. A fresh object
+   * stubbed here too. One read does run on it: the versioning-suspend guard's
+   * `readObjectLock` (go-to-k/cdkd#5395), which sees `{}`, takes the bucket as
+   * unlocked and sends its suspend to this stub, which is harmless because the
+   * probe's outcome is discarded. A fresh object
    * per call (its prototype is `this`), so concurrent resources on this
    * singleton never see each other's stub.
    */
@@ -5105,8 +5122,7 @@ export class S3BucketProvider implements ResourceProvider {
    * logs through the view's `this.logger` and a line added later is masked by
    * construction. Re-entering, rather than calling the appliers on a `view`
    * local, keeps every call spelled `this.<method>(...)`, which is what the
-   * repo's AST critics (`gen:update-wrap-coverage`, `handled-property-wiring`)
-   * follow. Meanwhile
+   * repo's AST critic (`gen:update-wrap-coverage`) follows. Meanwhile
    * {@link shown} masks each interpolated value RAW, the only arm a secret
    * shorter than `MIN_NEEDLE_LENGTH` reaches. A fresh object per call (its
    * prototype is `this`), like {@link noWriteProbe}, so concurrent resources on
@@ -5351,21 +5367,9 @@ export class S3BucketProvider implements ResourceProvider {
    * through `update()`) keeps working.
    *
    * `collectionPath` is the WHOLE dotted path as ONE literal
-   * (`'CorsConfiguration.CorsRules'`), never the bare terminal segment, and
-   * that is load-bearing rather than stylistic. `gen-nested-key-coverage`'s key
-   * pass takes the provider's bare string literals as evidence of explicit
-   * per-key handling and keeps the STRICT literal set (only the shape pass
-   * dot-expands), so the two spellings are not interchangeable here. Measured
-   * against the shipped critic: a bare `'CorsRules'` literal anywhere in this
-   * file turns the reviewed `AWS::S3::Bucket#CorsConfiguration.CorsRules`
-   * allow-list entry STALE, while the joined path leaves the audit unchanged.
-   * That entry's whole rationale is that the key is delivered by TYPED PROPERTY
-   * ACCESS in `applyCorsConfiguration` and that its only literal mention is
-   * `readCors`, excluded as a reverse map — so satisfying the critic by
-   * deleting the entry would leave the key classified as handled on nothing but
-   * a warning string, and a later real drop of `CorsRules` would pass in
-   * silence. That is the decoy-literal shape `.claude/rules/providers.md`
-   * forbids.
+   * (`'CorsConfiguration.CorsRules'`), never the bare terminal segment — a
+   * spelling chosen for `gen-nested-key-coverage`'s key pass (retired by issue
+   * #3723), which took a bare literal as evidence of per-key handling.
    */
   private emptyCollectionSkip(
     key: string,
@@ -6187,12 +6191,32 @@ export class S3BucketProvider implements ResourceProvider {
       // (`!== undefined`) is true for EVERY bucket on the revert path and
       // would suppress every legitimate suspend, leaving the drift
       // unfixable and warning about object lock the bucket does not have.
-      const hasObjectLock = (p: Record<string, unknown>): boolean => {
-        if (p['ObjectLockEnabled'] === true || p['ObjectLockEnabled'] === 'true') return true;
-        const cfg = p['ObjectLockConfiguration'] as Record<string, unknown> | undefined;
-        return cfg?.['ObjectLockEnabled'] === 'Enabled';
-      };
-      if (hasObjectLock(properties) || hasObjectLock(previousProperties)) {
+      //
+      // The NESTED `ObjectLockEnabled: Enabled` is sent to the bucket, so either
+      // side declaring it means the bucket is locked. The TOP-LEVEL flag alone
+      // is not proof: it reaches S3 only through `CreateBucket`, so a flag added
+      // to an existing bucket was never applied (go-to-k/cdkd#5395, as in
+      // CloudFormation). That case reads the bucket back; a failed read keeps
+      // the conservative skip, since suspending a locked bucket is refused.
+      let hasObjectLock =
+        declaresNestedObjectLock(properties) || declaresNestedObjectLock(previousProperties);
+      let lockUnconfirmed = false;
+      if (
+        !hasObjectLock &&
+        (declaresBucketObjectLock(properties) || declaresBucketObjectLock(previousProperties))
+      ) {
+        const live = await this.isLiveObjectLocked(bucketName, '; treating it as locked');
+        hasObjectLock = live ?? true;
+        lockUnconfirmed = live === undefined;
+      }
+      if (hasObjectLock && lockUnconfirmed) {
+        this.logger.warn(
+          safeMsg`Bucket ${this.shown(bucketName)}: versioning would be suspended (VersioningConfiguration removed or set to Suspended), but ObjectLockEnabled is declared and the bucket's Object Lock configuration could not be read back to confirm it. ` +
+            'S3 does not allow suspending versioning on an Object Lock bucket, so versioning is ' +
+            'left enabled.'
+        );
+        retainPrevious('VersioningConfiguration');
+      } else if (hasObjectLock) {
         this.logger.warn(
           `Bucket ${this.shown(bucketName)}: versioning would be suspended (VersioningConfiguration removed ` +
             `or set to Suspended), but the bucket has Object Lock enabled and S3 does not allow ` +
@@ -7351,6 +7375,8 @@ export class S3BucketProvider implements ResourceProvider {
         }
         createdNewBucket = adoptedOwnLeftover || preflight.kind === 'absent';
         bucketLeftBehind = createdNewBucket;
+        // go-to-k/cdkd#5511: reported before the configuration calls.
+        if (createdNewBucket) reportCreatedResource(logicalId, resourceType, bucketName);
         // A fresh create answers the question: the earlier attempt made nothing.
         if (createdNewBucket) windowSpent = true;
         if (preflight.kind === 'region' && preflight.region !== 'us-east-1') {
@@ -7506,6 +7532,7 @@ export class S3BucketProvider implements ResourceProvider {
           try {
             await this.s3Client.send(new DeleteBucketCommand({ Bucket: bucketName }));
             bucketLeftBehind = false;
+            retractCreatedResource(logicalId, resourceType, bucketName);
             this.logger.debug(
               `Cleaned up partially-created S3 bucket ${displaySafe(logicalId)} (${this.shown(bucketName)}) after wiring failure`
             );
@@ -7781,6 +7808,15 @@ export class S3BucketProvider implements ResourceProvider {
         properties['Tags']
       );
 
+      // go-to-k/cdkd#5395: named once every write above has succeeded.
+      await this.warnUnappliedBucketObjectLock(
+        logicalId,
+        physicalId,
+        properties,
+        previousProperties,
+        context
+      );
+
       const attributes = await this.buildAttributes(physicalId);
 
       this.logger.debug(`Successfully updated S3 bucket ${displaySafe(logicalId)}`);
@@ -7808,6 +7844,78 @@ export class S3BucketProvider implements ResourceProvider {
       };
     } catch (error) {
       throw this.wrapOperationError('update', logicalId, resourceType, physicalId, error);
+    }
+  }
+
+  /**
+   * Warn when the top-level `ObjectLockEnabled` changed on an existing bucket
+   * and S3 still holds the opposite (go-to-k/cdkd#5395). Nothing is written:
+   * the flag reaches S3 only through `CreateBucket`, and a CloudFormation A/B
+   * in us-east-1 on 2026-10-27 showed CloudFormation sends nothing either.
+   * Turning it on for an existing bucket (versioned or not) ends
+   * `UPDATE_COMPLETE` with the same bucket and no Object Lock; removing it from
+   * a locked bucket ends `UPDATE_COMPLETE` with Object Lock still on. Only the
+   * nested `ObjectLockConfiguration.ObjectLockEnabled: Enabled` enables it in
+   * place, which `applySubConfigDiffs` already sends. State records the
+   * declared value, as CloudFormation's stored template does.
+   *
+   * One `GetObjectLockConfiguration` confirms the live bucket before warning:
+   * a template-to-state difference alone also appears on a rollback revert, on
+   * `cdkd drift --revert`, or when the nested block enabled Object Lock in this
+   * same update. A failed read on a template-path update still warns, because
+   * the template changed the flag, but says the state could not be confirmed
+   * rather than asserting either one. On the state-borne callers
+   * (`replayingState`, `desiredFromAwsReadback`) the template did not change
+   * anything, so an unconfirmed difference is not reported.
+   */
+  private async warnUnappliedBucketObjectLock(
+    logicalId: string,
+    bucketName: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): Promise<void> {
+    // A nested `Enabled` in the desired bag was SENT by `applySubConfigDiffs`
+    // (or the update threw before here), so it is not a flag left unapplied.
+    const enabling =
+      declaresBucketObjectLock(properties) &&
+      !declaresBucketObjectLock(previousProperties) &&
+      !declaresNestedObjectLock(properties);
+    const disabling =
+      !declaresBucketObjectLock(properties) &&
+      !declaresNestedObjectLock(properties) &&
+      declaresBucketObjectLock(previousProperties);
+    if (!enabling && !disabling) return;
+
+    const liveEnabled = await this.isLiveObjectLocked(bucketName, '');
+    if (
+      liveEnabled === undefined &&
+      (context?.replayingState === true || context?.desiredFromAwsReadback === true)
+    ) {
+      return;
+    }
+
+    const bucket = this.shown(bucketName);
+    if (enabling && liveEnabled !== true) {
+      this.logger.warn(
+        safeMsg`${logicalId} (AWS::S3::Bucket): ObjectLockEnabled is now true, but the top-level ObjectLockEnabled is applied only when a bucket is created, so ` +
+          (liveEnabled === false
+            ? safeMsg`Object Lock was NOT enabled on the existing bucket ${bucket}, as in CloudFormation. `
+            : safeMsg`nothing was sent to enable Object Lock on the existing bucket ${bucket}, as in CloudFormation. ` +
+              'Its Object Lock configuration could not be read back, so this is not confirmed. ') +
+          'To enable it on this bucket, declare ObjectLockConfiguration.ObjectLockEnabled: ' +
+          'Enabled (the bucket must have versioning enabled). Object Lock cannot be disabled ' +
+          'once it is enabled.'
+      );
+    } else if (disabling && liveEnabled !== false) {
+      this.logger.warn(
+        liveEnabled === true
+          ? safeMsg`${logicalId} (AWS::S3::Bucket): ObjectLockEnabled is no longer true, but S3 cannot disable Object Lock on a bucket, so it stays enabled on bucket ${bucket}, as in CloudFormation. ` +
+              'Versioning cannot be suspended on it, and object versions stay protected by any ' +
+              'retention or legal hold already set.'
+          : safeMsg`${logicalId} (AWS::S3::Bucket): ObjectLockEnabled is no longer true. S3 cannot disable Object Lock on a bucket, so if bucket ${bucket} has it, it stays enabled, as in CloudFormation. ` +
+              'Its Object Lock configuration could not be read back, so this is not confirmed.'
+      );
     }
   }
 
@@ -7896,7 +8004,20 @@ export class S3BucketProvider implements ResourceProvider {
         this.logger.debug(`Bucket ${displaySafe(physicalId)} does not exist, skipping deletion`);
         return;
       }
-      throw this.wrapOperationError('delete', logicalId, resourceType, physicalId, error);
+      const thrown = this.wrapOperationError(
+        'delete',
+        logicalId,
+        resourceType,
+        physicalId,
+        error,
+        context?.maskSecrets
+      );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFound` in a message as "already deleted": only the typed
+      // `NoSuchBucket` above means this bucket is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -7937,18 +8058,26 @@ export class S3BucketProvider implements ResourceProvider {
    * reads only the TOP-level `message` off it (plus `awsErrorCode` /
    * `requestId` from the chain), so keeping it costs nothing in that store
    * while retaining the retry classifiers' and `formatError`'s access to it.
+   *
+   * `deleteMask` is the delete's own masker (`DeleteContext.maskSecrets`):
+   * `delete()` runs on no masked view, so `maskRaw` alone is identity there,
+   * and the class is AWS-authored text a secret can spell (go-to-k/cdkd#2319).
    */
   private wrapOperationError(
     operation: 'create' | 'update' | 'delete',
     logicalId: string,
     resourceType: string,
     physicalId: string,
-    error: unknown
+    error: unknown,
+    deleteMask?: MaskerFn
   ): ProvisioningError {
+    const mask = (text: string): string => maskerOrIdentity(deleteMask)(this.maskRaw(text));
     const failure = describeAwsFailure(error);
     if (failure.redacted) {
       this.logger.debug(
-        `Failed to ${operation} S3 bucket ${displaySafe(logicalId)} (${this.shown(physicalId)}): ${this.maskRaw(failure.detail)}`
+        mask(
+          `Failed to ${operation} S3 bucket ${displaySafe(logicalId)} (${this.shown(physicalId)}): ${mask(failure.detail)}`
+        )
       );
     }
     // Both halves masked RAW as well (issue #2177): the engine masks the thrown
@@ -7973,8 +8102,14 @@ export class S3BucketProvider implements ResourceProvider {
       untaggedDenyKind !== undefined
         ? ` The untagged retry was refused by an explicit deny${untaggedDenyKind !== null ? ` (${untaggedDenyKind})` : ''}, which retrying cannot clear.`
         : '';
+    // go-to-k/cdkd#2319: an "already exists" the class does not carry is
+    // restated, so a create-first replacement still recognises the collision,
+    // except from a post-create wiring step's failure (`markAuxiliaryFailure`),
+    // where "it" would read as this bucket.
+    const relay =
+      failure.redacted && !isAuxiliaryFailure(error) ? relayedNameCollision(failure.detail) : '';
     const wrapped = new ProvisioningError(
-      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${this.maskRaw(failure.summary)}${denyNote}${tagResourceNote}${untaggedDenyNote}`,
+      `Failed to ${operation} S3 bucket ${displaySafe(logicalId)}: ${mask(failure.summary)}${relay}${denyNote}${tagResourceNote}${untaggedDenyNote}`,
       resourceType,
       logicalId,
       physicalId,
@@ -8026,8 +8161,8 @@ export class S3BucketProvider implements ResourceProvider {
    * and warned that each piece is inert alone so only the combination trips it.
    * With the fold implemented as a MODULE-level pure function over an item
    * parameter, the shipped critic is green end to end — `vp run
-   * audit:nested-key-coverage:check` reports 0 divergences in all three passes,
-   * the committed matrix does not drift by a byte, and
+   * audit:nested-key-coverage:check` reported 0 divergences (then across all
+   * three passes; the shape pass is the only one left), the committed matrix does not drift by a byte, and
    * `InventoryConfigurations` is still listed in the target's
    * `usedSegmentRenames`, i.e. the entry is doing work and the fence is not
    * masking anything. So no `segmentRenames` entry was removed and no staleness
@@ -8755,6 +8890,26 @@ export class S3BucketProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * Whether S3 reports Object Lock `Enabled` on the bucket: `true` / `false`,
+   * or `undefined` when the read fails (logged at debug with the error class,
+   * never its message). Each caller keeps its own failure policy
+   * (go-to-k/cdkd#5395).
+   */
+  private async isLiveObjectLocked(
+    bucketName: string,
+    unreadNote: '' | '; treating it as locked'
+  ): Promise<boolean | undefined> {
+    try {
+      return (await this.readObjectLock(bucketName))['ObjectLockEnabled'] === 'Enabled';
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`Could not read the Object Lock configuration of bucket ${this.shown(bucketName)} back (${caughtErrorName(error)})${unreadNote}`
+      );
+      return undefined;
+    }
+  }
+
   private async readObjectLock(bucket: string): Promise<Record<string, unknown>> {
     try {
       const resp = await this.s3Client.send(
@@ -9119,11 +9274,7 @@ export class S3BucketProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['BucketName']) return undefined;
-    return generateResourceName(logicalId, {
-      maxLength: 63,
-      lowercase: true,
-      allowedPattern: /[^a-z0-9.-]/g,
-    });
+    return generatedNameFor('AWS::S3::Bucket', logicalId);
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {

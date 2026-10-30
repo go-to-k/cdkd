@@ -6,10 +6,19 @@
 # success with the resource already holding the name, and EventBridge PutRule
 # overwrites it. When a later step of the same create failed, the provider's
 # cleanup deleted whatever the create returned: someone else's resource. The
-# stack names nothing, so cdkd sends its generated `CdkdPcHandback-<id>`, and
-# each mode declares a wiring step AWS rejects.
+# stack names nothing, so cdkd sends its generated `CdkdPcHandback-<id>-<suffix>`,
+# and each mode declares a wiring step AWS rejects.
 #
-# Per MODE (tg, topic, rule):
+# go-to-k/cdkd#5064: the suffix derives from the stack's instance id, minted at
+# its first deploy, so a generated name cannot be known before the stack has a
+# record. Phase L0 therefore runs FIRST and SUCCEEDS (the VPC and subnet every
+# mode keeps), and each mode's generated name is computed from the id in that
+# record (`generated_name`), as cdkd derives it; the H arms below aim their
+# holders at it. A wrong computation cannot pass silently: the H arm's refusal
+# must name the holder.
+#
+# L0 deploys MODE=lbvpc (a VPC and a subnet, MUST succeed). Then per MODE
+# (tg, topic, rule), each adding its resource on top:
 #   H. HOLDER ARM. Create the generated name out of band, then deploy. Since
 #      go-to-k/cdkd#4705 the deploy looks the generated name up first and
 #      REFUSES the create (GENERATED_NAME_HELD: nothing this stack records
@@ -24,17 +33,16 @@
 #      provider's own "Cleaned up partially-created" line is printed (proof
 #      that the create AND the failing wiring step ran), the name is free
 #      afterwards, and no "existed before" warning is printed.
-# Then the load balancer, in two phases, since its holder needs the stack's
-# subnet: L0 deploys MODE=lbvpc (a VPC and a subnet, MUST succeed); H/lb
-# creates the holder load balancer in that subnet and deploys MODE=lb, which
-# adds the stack's own; C/lb is the control. Each deleted load balancer's
+# Then the load balancer, whose holder needs the stack's subnet: H/lb creates
+# the holder load balancer in that subnet and deploys MODE=lb, which adds the
+# stack's own; C/lb is the control. Each deleted load balancer's
 # network interfaces must leave the subnet before the state destroy deletes
 # it.
 # Then the stack's state is destroyed; its file, VPC and subnet asserted gone.
 #
 # After a run killed with SIGKILL (no trap runs), delete by hand the target
-# group, topic, rule and load balancer named `CdkdPcHandback-Tg` / `-Topic` /
-# `-Rule` / `-Lb`, then the VPC with CIDR 10.89.0.0/24.
+# group, topic, rule and load balancer named `CdkdPcHandback-Tg-*` / `-Topic-*`
+# / `-Rule-*` / `-Lb-*`, then the VPC with CIDR 10.89.0.0/24.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -83,10 +91,14 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
 # The stack registry marker the first deploy claims (go-to-k/cdkd#4705).
 MARKER_KEY="_cdkd-registry/${REGION}/${STACK}.json"
-TG_NAME="${STACK}-Tg"
-TOPIC_NAME="${STACK}-Topic"
-RULE_NAME="${STACK}-Rule"
-LB_NAME="${STACK}-Lb"
+# The generated names, computed from the stack's instance id after phase L0
+# (go-to-k/cdkd#5064); empty until then, and every reader below skips an empty
+# one (an empty `--names ""` can hang rather than fail).
+TG_NAME=""
+TOPIC_NAME=""
+RULE_NAME=""
+LB_NAME=""
+TOPIC_ARN=""
 # The lb phases' VPC and subnet, read from state after phase L0.
 VPC_ID=""
 SUBNET_ID=""
@@ -107,7 +119,6 @@ if [ -z "${ACCOUNT_ID}" ] || [ -z "${PARTITION}" ]; then
   rm -rf "${LOG_DIR}"
   exit 1
 fi
-TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 
 if [ -z "${STATE_BUCKET:-}" ]; then
   echo "[verify] FAIL: STATE_BUCKET env var is required" >&2
@@ -130,6 +141,22 @@ lb_arn() { # usage: lb_arn — the load balancer's ARN, or a hard failure
 }
 state_field() { # usage: state_field <jq path>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r "$1"
+}
+# The name cdkd generates for the un-named <logical id> of this stack, from the
+# stack instance id its record carries (go-to-k/cdkd#5064): `{stack}-{logicalId}`
+# cut to maxLength - 13, then `-` and the first 12 hex of sha256(id NUL logicalId).
+# The id is read from the raw record and never printed.
+generated_name() { # usage: generated_name <logical id> <maxLength>
+  local id
+  id="$(state_field '.stackInstanceId // ""')"
+  [ -n "${id}" ] || { echo "[verify] FAIL: the stack's record carries no stackInstanceId" >&2; return 1; }
+  ID="${id}" node -e '
+    const [stack, logical, max] = process.argv.slice(1);
+    const suffix = require("crypto").createHash("sha256")
+      .update(process.env.ID).update("\u0000").update(logical).digest("hex").slice(0, 12);
+    const base = `${stack}-${logical}`.slice(0, Number(max) - 13).replace(/-+$/, "");
+    process.stdout.write(`${base}-${suffix}`);
+  ' "${STACK}" "$1" "$2"
 }
 recorded_id() { # usage: recorded_id <logical id> — its recorded physical id, or "absent" (no record either)
   if ( gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" ); then
@@ -163,7 +190,7 @@ wait_lb_enis_released() { # usage: wait_lb_enis_released <timeout seconds>
   deadline=$(( $(date +%s) + $1 ))
   while :; do
     ids="$(aws ec2 describe-network-interfaces --region "${REGION}" \
-      --filters "Name=description,Values=ELB net/${LB_NAME}/*" \
+      --filters "Name=description,Values=ELB net/${STACK}-Lb*" \
       --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)" || return 1
     [ -z "${ids}" ] && return 0
     [ "$(date +%s)" -ge "${deadline}" ] && return 1
@@ -195,6 +222,8 @@ assert_mode_gone() { # usage: assert_mode_gone <mode> <description>
   done
 }
 delete_holders_best_effort() {
+  # Before phase L0 no name is known, and no holder can exist yet.
+  [ -n "${TG_NAME}" ] || return 0
   (
   set +eu
   arn="$(aws elbv2 describe-target-groups --names "${TG_NAME}" --region "${REGION}" \
@@ -261,15 +290,9 @@ cleanup() {
 
 # A leftover (an interrupted run, or a CONCURRENT one) would turn a control
 # into a holder arm. Checked BEFORE the trap is armed, so a refusal here never
-# sweeps what it refused to touch.
-for m in tg topic rule lb; do
-  # shellcheck disable=SC2046
-  if ! gone_probe $(probe_for "${m}"); then
-    echo "[verify] FAIL: the ${m} name already exists before the run — nothing was touched; remove it if it is a leftover (or wait for a concurrent run to finish)" >&2
-    rm -rf "${LOG_DIR}"
-    exit 1
-  fi
-done
+# sweeps what it refused to touch. A leftover RESOURCE of an earlier run cannot
+# collide (go-to-k/cdkd#5064: its name carries that run's suffix); a concurrent
+# run holds the state file.
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"; then
   echo "[verify] FAIL: s3://${STATE_BUCKET}/${STATE_KEY} already exists before the run — nothing was touched" >&2
   rm -rf "${LOG_DIR}"
@@ -295,6 +318,32 @@ deploy_expect_failure() { # usage: deploy_expect_failure <mode> <log> [extra fla
     exit 1
   fi
 }
+
+# ---------------------------------------------------------------------------
+# PHASE L0: the VPC and subnet every mode keeps (MODE=lbvpc, MUST SUCCEED)
+# ---------------------------------------------------------------------------
+echo "[verify] phase L0: deploy the VPC and subnet the load balancer phases share"
+env MODE=lbvpc node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --yes > "${LOG_DIR}/l0.log" 2>&1 \
+  || { sed 's/^/  /' "${LOG_DIR}/l0.log"; echo "[verify] FAIL: phase L0 deploy failed" >&2; exit 1; }
+VPC_ID="$(state_field '.resources.Vpc.physicalId')"
+SUBNET_ID="$(state_field '.resources.Subnet.physicalId')"
+case "${VPC_ID}:${SUBNET_ID}" in
+  vpc-?*:subnet-?*) ;;
+  *) echo "[verify] FAIL: state records no VPC / subnet id after phase L0 (got '${VPC_ID}' / '${SUBNET_ID}')" >&2; exit 1 ;;
+esac
+TG_NAME="$(generated_name Tg 32)"
+TOPIC_NAME="$(generated_name Topic 256)"
+RULE_NAME="$(generated_name Rule 64)"
+LB_NAME="$(generated_name Lb 32)"
+TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
+for name in "${TG_NAME}" "${TOPIC_NAME}" "${RULE_NAME}" "${LB_NAME}"; do
+  if ! printf '%s' "${name}" | grep -qE "^${STACK}-(Tg|Topic|Rule|Lb)-[0-9a-f]{12}\$"; then
+    echo "[verify] FAIL: computed generated name '${name}' is not ${STACK}-<logicalId>-<12 hex>" >&2
+    exit 1
+  fi
+done
+echo "[verify] phase L0 ok: ${VPC_ID} / ${SUBNET_ID}; generated names ${TG_NAME} / ${TOPIC_NAME} / ${RULE_NAME} / ${LB_NAME}"
 
 for m in tg topic rule; do
   case "${m}" in
@@ -363,21 +412,6 @@ for m in tg topic rule; do
   assert_mode_gone "${m}" "phase C/${m}: the partially-created resource survived the cleanup"
   echo "[verify] phase C/${m} ok: the cleanup deleted the partially-created resource"
 done
-
-# ---------------------------------------------------------------------------
-# PHASE L0: the load balancer's VPC and subnet (MODE=lbvpc, MUST SUCCEED)
-# ---------------------------------------------------------------------------
-echo "[verify] phase L0: deploy the VPC and subnet the load balancer phases share"
-env MODE=lbvpc node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" \
-  --region "${REGION}" --yes > "${LOG_DIR}/l0.log" 2>&1 \
-  || { sed 's/^/  /' "${LOG_DIR}/l0.log"; echo "[verify] FAIL: phase L0 deploy failed" >&2; exit 1; }
-VPC_ID="$(state_field '.resources.Vpc.physicalId')"
-SUBNET_ID="$(state_field '.resources.Subnet.physicalId')"
-case "${VPC_ID}:${SUBNET_ID}" in
-  vpc-?*:subnet-?*) ;;
-  *) echo "[verify] FAIL: state records no VPC / subnet id after phase L0 (got '${VPC_ID}' / '${SUBNET_ID}')" >&2; exit 1 ;;
-esac
-echo "[verify] phase L0 ok: ${VPC_ID} / ${SUBNET_ID}"
 
 # ---------------------------------------------------------------------------
 # PHASE H/lb: the generated load balancer name is held in the stack's subnet

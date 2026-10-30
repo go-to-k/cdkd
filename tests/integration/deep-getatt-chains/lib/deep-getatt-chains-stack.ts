@@ -54,6 +54,7 @@ export class DeepGetAttChainsStack extends cdk.Stack {
     // Fixed names so verify.sh can locate the AWS resources deterministically.
     const TOPIC_NAME = 'cdkd-getatt-chain-topic';
     const ALARM_NAME = 'cdkd-getatt-chain-alarm';
+    const MATH_ALARM_NAME = 'cdkd-getatt-chain-math-alarm';
     const COMPOSITE_ALARM_NAME = 'cdkd-getatt-chain-composite';
     const PARAM_NAME = '/cdkd/getatt-chain/composite-and-alarm-arns';
     const FUNCTION_NAME = 'cdkd-getatt-chain-fn';
@@ -86,6 +87,38 @@ export class DeepGetAttChainsStack extends cdk.Stack {
       ],
       // Fn::GetAtt(A, 'TopicArn') -> AlarmActions[0] (A.attr -> B prop).
       alarmActions: [topic.ref],
+    });
+
+    // --- B2: a metric-math alarm whose metric names its account
+    // (go-to-k/cdkd#3723). CDK emits `Metrics[].AccountId` for a metric in
+    // another account; cdkd's SDK provider used to drop it, so the alarm
+    // watched its own account. The account here is the stack's own (the
+    // only one a fixture can name), which CloudWatch accepts and reads back.
+    // A.TopicName feeds the dimension, keeping it on the GetAtt chain.
+    new cloudwatch.CfnAlarm(this, 'ChainMathAlarm', {
+      alarmName: MATH_ALARM_NAME,
+      alarmDescription: 'Metrics[].AccountId reaches PutMetricAlarm (go-to-k/cdkd#3723)',
+      comparisonOperator: 'GreaterThanThreshold',
+      evaluationPeriods: 1,
+      threshold: 1,
+      treatMissingData: 'notBreaching',
+      metrics: [
+        {
+          id: 'm1',
+          accountId: cdk.Aws.ACCOUNT_ID,
+          metricStat: {
+            metric: {
+              namespace: 'AWS/SNS',
+              metricName: 'NumberOfMessagesPublished',
+              dimensions: [{ name: 'TopicName', value: topic.attrTopicName }],
+            },
+            period: 300,
+            stat: 'Sum',
+          },
+          returnData: false,
+        },
+        { id: 'e1', expression: 'm1 * 2', label: 'doubled', returnData: true },
+      ],
     });
 
     // --- C: CloudWatch CompositeAlarm (CC-API; unregistered SDK type).

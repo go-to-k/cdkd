@@ -138,14 +138,17 @@ import { withoutServerErrorRetries } from './ambiguous-create.js';
 import {
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
+import { generatedNameFor } from '../resource-name.js';
 
 /** Shape of an `AWS::Glue::Table` physicalId, for every decode site (issue #1657). */
 const GLUE_TABLE_ID_FORMAT: CompositeIdFormat = {
@@ -1043,8 +1046,11 @@ function newGlueClients(region: string | undefined): {
  * `build` must thread `error` as the wrap's `cause`: the redaction is stamped
  * so the retry classifiers read that chain, where the withheld `not authorized
  * to perform` still is. A non-`Error` throw has no chain, so it is not stamped.
- * No Glue caller reads the message for "already deleted": every delete checks
- * `EntityNotFoundException` by type before it wraps.
+ * An "already exists" is restated ({@link relayedNameCollision}), so a
+ * create-first replacement still recognises the collision. Every delete checks
+ * `EntityNotFoundException` by type before it wraps, and stamps a wrap naming
+ * any other `NotFound` class `markNotGone`, which the destroy loop's "already
+ * deleted" match refuses.
  */
 function wrapGlueError(
   mask: MaskerFn,
@@ -1057,7 +1063,7 @@ function wrapGlueError(
   // `build` runs twice here (debug text, then the throw), so it must stay a
   // side-effect-free constructor call.
   debug(mask(build(failure.detail).message));
-  const wrapped = build(mask(failure.summary));
+  const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
   return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
 }
 
@@ -1511,7 +1517,7 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -1523,6 +1529,12 @@ export class GlueProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1986,7 +1998,7 @@ export class GlueProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -1998,6 +2010,12 @@ export class GlueProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -2465,14 +2483,10 @@ export class GlueProvider implements ResourceProvider {
     // database — no error, no warning, and nothing for `cdkd drift` to report
     // because `readDatabase` did not surface them either.
     //
-    // Every member is named INDIVIDUALLY rather than cast through verbatim:
-    // both spellings agree, so a cast would typecheck, but the write-evidence
-    // pass of the nested-key critic (`freshObjectMapper: true` on this type,
-    // added in the same change) can only see per-member writes — a verbatim
-    // forward would leave all 8 child paths reporting `no-write-evidence`,
-    // which is precisely the "membership does not guarantee delivery" class
-    // this drop belonged to. Naming them also makes the next member AWS adds
-    // fail the critic instead of silently vanishing.
+    // Every member is named INDIVIDUALLY rather than cast through verbatim
+    // (both spellings agree, so a cast would typecheck). The shape was chosen
+    // for the nested-key critic's write pass, which could only see per-member
+    // writes; that pass was retired by issue #3723.
     if (databaseInput['TargetDatabase'] !== undefined) {
       const target = pickBlockSource(
         databaseInput['TargetDatabase'],
@@ -3517,7 +3531,7 @@ export class GlueWorkflowProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -3529,6 +3543,12 @@ export class GlueWorkflowProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -3861,7 +3881,7 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -3873,6 +3893,12 @@ export class GlueSecurityConfigurationProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -4319,7 +4345,10 @@ async function fetchGlueTags(
     const resp = await client.send(new GetTagsCommand({ ResourceArn: arn }));
     return normalizeAwsTagsToCfn(resp.Tags);
   } catch (err) {
-    logger.debug(`GetTags failed for ${resource}/${name}: ${describeAwsFailure(err).detail}`);
+    // Neither the NAME nor AWS's own text: a Connection's name can be
+    // secret-derived (go-to-k/cdkd#2007), and an AccessDenied message quotes
+    // the resource ARN, which carries it. The summary is the error code.
+    logger.debug(`GetTags failed for a Glue ${resource}: ${describeAwsFailure(err).summary}`);
     return [];
   }
 }
@@ -4427,7 +4456,10 @@ export class GlueJobProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Creating Glue Job ${logicalId}`);
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095: a stack with an instance id generates the name; a
+    // legacy stack keeps the bare logical id.
+    const name =
+      (properties['Name'] as string | undefined) ?? generatedNameFor('AWS::Glue::Job', logicalId);
     const role = properties['Role'] as string | undefined;
     const command = properties['Command'] as Record<string, unknown> | undefined;
     if (!role) {
@@ -4569,7 +4601,7 @@ export class GlueJobProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -4581,6 +4613,12 @@ export class GlueJobProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -4948,16 +4986,25 @@ async function applyGlueTagDiff(
   desired: unknown,
   resourceType: string,
   logicalId: string,
-  warn: (message: string) => void
+  warn: (message: string) => void,
+  unsettled: { forceUpsert: boolean; beforeWrite: () => void } = {
+    forceUpsert: false,
+    beforeWrite: () => undefined,
+  }
 ): Promise<void> {
   const plan = planTagDiff(tagMapAsList(recorded), tagMapAsList(desired));
   const warning = tagPlanWarning(plan, resourceType, logicalId);
   if (warning !== undefined) warn(warning);
-  if (plan.set.size === 0 && plan.remove.length === 0) return;
+  // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may lack
+  // the ones a failed update did not reach) and remove only the recorded ones
+  // the template dropped.
+  const toSet = unsettled.forceUpsert ? planTagDiff([], tagMapAsList(desired)).set : plan.set;
+  if (toSet.size === 0 && plan.remove.length === 0) return;
+  unsettled.beforeWrite();
   const arn = await resourceArn();
-  if (plan.set.size > 0) {
+  if (toSet.size > 0) {
     await client.send(
-      new TagResourceCommand({ ResourceArn: arn, TagsToAdd: Object.fromEntries(plan.set) })
+      new TagResourceCommand({ ResourceArn: arn, TagsToAdd: Object.fromEntries(toSet) })
     );
   }
   if (plan.remove.length > 0) {
@@ -4983,6 +5030,87 @@ function pickDefined(obj: Record<string, unknown>): Record<string, unknown> {
   }
   return out;
 }
+
+/**
+ * Crawler properties whose REMOVAL from the template cdkd leaves in place
+ * (issue #1160). `UpdateCrawler` keeps a field it is not sent, and cdkd sends
+ * no reset, because CloudFormation keeps them too (CFn A/B us-east-1
+ * 2026-10-21: all ten schema properties removed at once, with no other change
+ * and again beside a `Targets` change, left every live value, and the
+ * handler's `UpdateCrawler` carried only Name, Role and Targets).
+ * `LineageConfiguration` is not in the
+ * CloudFormation schema at all (early validation refuses it); `UpdateCrawler`
+ * keeps it the same way.
+ */
+const CRAWLER_LEFT_IN_PLACE_ON_REMOVAL = [
+  'DatabaseName',
+  'Description',
+  'Classifiers',
+  'TablePrefix',
+  'Schedule',
+  'SchemaChangePolicy',
+  'RecrawlPolicy',
+  'LineageConfiguration',
+  'LakeFormationConfiguration',
+  'Configuration',
+  'CrawlerSecurityConfiguration',
+] as const;
+
+/**
+ * The ONE warning line for {@link CRAWLER_LEFT_IN_PLACE_ON_REMOVAL} removals.
+ * Names are template-borne, so they go through `safeMsg`. The deploy line
+ * says CloudFormation keeps the value too (the CFn A/B above), but only when
+ * every name is a CloudFormation property: `LineageConfiguration` is not one.
+ * A rollback revert restores an earlier state record, so there the property
+ * is one the failed deploy ADDED, and the line says that instead.
+ */
+const crawlerLeftInPlaceWarning = (
+  logicalId: string,
+  names: readonly string[],
+  caller: 'deploy' | 'rollback'
+): string => {
+  const one = names.length === 1;
+  const subject = one ? 'property' : 'properties';
+  const cfnKeeps = names.includes('LineageConfiguration')
+    ? ''
+    : `, as CloudFormation leaves ${one ? 'it' : 'them'}`;
+  return caller === 'rollback'
+    ? safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; UpdateCrawler keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`
+    : safeMsg`${logicalId} (AWS::Glue::Crawler): ${subject} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value${cfnKeeps}; UpdateCrawler keeps a setting it is not sent. Declare the intended value explicitly to change it.`;
+};
+
+/**
+ * go-to-k/cdkd#5487: the top-level keys `UpdateCrawler` sends (`Role`,
+ * `Targets` and `buildCrawlerCommonFields`'s), each marked unsettled before
+ * the call when it changes.
+ */
+const CRAWLER_UPDATE_KEYS = [
+  'Role',
+  'Targets',
+  'Classifiers',
+  'Configuration',
+  'CrawlerSecurityConfiguration',
+  'DatabaseName',
+  'Description',
+  'LakeFormationConfiguration',
+  'LineageConfiguration',
+  'RecrawlPolicy',
+  'Schedule',
+  'SchemaChangePolicy',
+  'TablePrefix',
+] as const;
+
+/**
+ * go-to-k/cdkd#5487: the top-level keys `UpdateTrigger`'s `TriggerUpdate`
+ * carries, each marked unsettled before the call when it changes.
+ */
+const TRIGGER_UPDATE_KEYS = [
+  'Description',
+  'Schedule',
+  'Actions',
+  'Predicate',
+  'EventBatchingCondition',
+] as const;
 
 /**
  * SDK Provider for `AWS::Glue::Crawler`.
@@ -5036,6 +5164,29 @@ export class GlueCrawlerProvider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * Issue #1160 (`ResourceProvider.removalHandledInUpdate`): every property,
+   * each removal handled by `update()`, so the shared caller (whose line
+   * claims a CloudFormation reset) warns about none.
+   */
+  removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
+    [
+      'AWS::Glue::Crawler',
+      new Set([
+        // Create-only: a removal replaces.
+        'Name',
+        // Required: a removal is not a valid template.
+        'Role',
+        'Targets',
+        // Diffed by TagResource / UntagResource, removal included.
+        'Tags',
+        // Left in place, as CloudFormation leaves them, and named in
+        // update()'s own warning (no reset).
+        ...CRAWLER_LEFT_IN_PLACE_ON_REMOVAL,
+      ]),
+    ],
+  ]);
+
   private getClient(): GlueClient {
     if (!this.client) {
       ({ client: this.client, createClient: this.createClient } = newGlueClients(
@@ -5075,7 +5226,10 @@ export class GlueCrawlerProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Creating Glue Crawler ${logicalId}`);
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (properties['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Crawler', logicalId);
     const role = properties['Role'] as string | undefined;
     const targets = properties['Targets'] as Record<string, unknown> | undefined;
     if (!role) {
@@ -5141,6 +5295,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
     log.debug(`Updating Glue Crawler ${logicalId}: ${v(physicalId)}`);
     // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call.
     desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     try {
       const updateInput = {
         Name: physicalId,
@@ -5150,6 +5305,11 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }),
         ...buildCrawlerCommonFields(properties),
       };
+      for (const key of CRAWLER_UPDATE_KEYS) {
+        if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+          markUnsettled(key);
+        }
+      }
       try {
         await this.getClient().send(new UpdateCrawlerCommand(updateInput));
       } catch (err) {
@@ -5173,8 +5333,40 @@ export class GlueCrawlerProvider implements ResourceProvider {
         properties['Tags'],
         resourceType,
         logicalId,
-        log.warn
+        log.warn,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
+
+      // Issue #1160: a CRAWLER_LEFT_IN_PLACE_ON_REMOVAL property removed from
+      // the desired side is simply not sent, as CloudFormation does. Named
+      // once, and only after the update SUCCEEDED (the shared caller's warning
+      // has the same timing). Not on `drift --revert`: its previous side is an
+      // AWS readback, so a key the desired side lacks was never removed from a
+      // template.
+      if (!context?.desiredFromAwsReadback) {
+        // A direct call (no caller context) diffs the previous template itself.
+        const removed = context?.removedProperties;
+        const leftInPlace: string[] = [];
+        for (const key of CRAWLER_LEFT_IN_PLACE_ON_REMOVAL) {
+          const gone =
+            removed !== undefined
+              ? removed.has(key)
+              : properties[key] === undefined && previousProperties?.[key] !== undefined;
+          if (gone) leftInPlace.push(key);
+        }
+        if (leftInPlace.length > 0) {
+          log.warn(
+            crawlerLeftInPlaceWarning(
+              logicalId,
+              leftInPlace,
+              context?.replayingState ? 'rollback' : 'deploy'
+            )
+          );
+        }
+      }
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -5256,7 +5448,7 @@ export class GlueCrawlerProvider implements ResourceProvider {
         }
       }
       const cause = failure instanceof Error ? failure : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         failure,
         (text) =>
@@ -5268,6 +5460,12 @@ export class GlueCrawlerProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw failure instanceof Error && failure.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -5584,6 +5782,7 @@ function toCfnCrawlerTargets(targets: Record<string, unknown>): Record<string, u
 export class GlueConnectionProvider implements ResourceProvider {
   private client: GlueClient | undefined;
   private createClient: GlueClient | undefined;
+  private stsClient: STSClient | undefined;
   private readonly providerRegion = ambientRegion();
   private readonly callerAccountId = makeCallerAccountResolver(this.providerRegion);
   private logger = getLogger().child('GlueConnectionProvider');
@@ -5598,8 +5797,37 @@ export class GlueConnectionProvider implements ResourceProvider {
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
-    ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId'])],
+    // `Tags` (go-to-k/cdkd#2762): sent on `CreateConnection` itself, as
+    // CloudFormation does, and diffed by `TagResource` / `UntagResource` on
+    // update, removal included, exactly as the Job / Crawler / Trigger do.
+    ['AWS::Glue::Connection', new Set(['ConnectionInput', 'CatalogId', 'Tags'])],
   ]);
+
+  private getStsClient(): STSClient {
+    if (!this.stsClient) {
+      this.stsClient = new STSClient({
+        ...ambientClientDefaults(),
+        ...(this.providerRegion ? { region: this.providerRegion } : {}),
+      });
+    }
+    return this.stsClient;
+  }
+
+  /**
+   * The connection ARN `TagResource` / `UntagResource` / `GetTags` address. A
+   * connection lives in a Data Catalog, and the ARN's account is the catalog's
+   * owner, so a usable `CatalogId` names it; otherwise the caller's account
+   * (the catalog `CatalogId` omitted means) is resolved through STS.
+   */
+  private resourceArn(name: string, catalogIdValue: unknown): Promise<string> {
+    return buildGlueResourceArn(
+      this.getClient(),
+      this.getStsClient(),
+      'connection',
+      name,
+      catalogIdForApi(catalogIdValue)
+    );
+  }
 
   private getClient(): GlueClient {
     if (!this.client) {
@@ -5638,13 +5866,19 @@ export class GlueConnectionProvider implements ResourceProvider {
         logicalId
       );
     }
-    const name = (connectionInput['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#4073: a malformed Tags is refused before any call.
+    const tags = desiredGlueTags(properties['Tags'], resourceType, logicalId);
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (connectionInput['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Connection', logicalId);
     const catalogId = properties['CatalogId'] as string | undefined;
     try {
       await this.getCreateClient().send(
         new CreateConnectionCommand({
           ...(catalogId && { CatalogId: catalogId }),
           ConnectionInput: buildConnectionInput(connectionInput, name),
+          ...(tags && { Tags: tags }),
         })
       );
       log.debug(`Successfully created Glue Connection ${logicalId}: ${v(name)}`);
@@ -5719,6 +5953,9 @@ export class GlueConnectionProvider implements ResourceProvider {
       debug: log.debug,
       mask: log.mask,
     });
+    // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
+    // so a half-applied update never untags on the strength of it.
+    desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
     const catalogId = updateCatalogId(properties['CatalogId']);
     try {
       await this.getClient().send(
@@ -5730,6 +5967,16 @@ export class GlueConnectionProvider implements ResourceProvider {
           Name: physicalId,
           ConnectionInput: buildConnectionInput(connectionInput, physicalId),
         })
+      );
+      // `UpdateConnection` carries no tags (go-to-k/cdkd#2762).
+      await applyGlueTagDiff(
+        this.getClient(),
+        () => this.resourceArn(physicalId, properties['CatalogId']),
+        previousProperties?.['Tags'],
+        properties['Tags'],
+        resourceType,
+        logicalId,
+        log.warn
       );
       return { physicalId, wasReplaced: false };
     } catch (error) {
@@ -5813,7 +6060,7 @@ export class GlueConnectionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      const thrown = this.wrapMaskedError(
         log.mask,
         error,
         (text) =>
@@ -5825,6 +6072,12 @@ export class GlueConnectionProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -5877,7 +6130,21 @@ export class GlueConnectionProvider implements ResourceProvider {
         ? pickDefined(conn.PhysicalConnectionRequirements as Record<string, unknown>)
         : {},
     };
-    return withRecordedCatalogId({ ConnectionInput: ci }, properties);
+    const name = conn.Name ?? physicalId;
+    return withRecordedCatalogId(
+      {
+        ConnectionInput: ci,
+        Tags: await fetchGlueTags(
+          this.getClient(),
+          this.getStsClient(),
+          'connection',
+          name,
+          catalogId,
+          this.logger
+        ),
+      },
+      properties
+    );
   }
 
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
@@ -6069,7 +6336,10 @@ export class GlueTriggerProvider implements ResourceProvider {
     );
     const { value: v } = log;
     log.debug(`Creating Glue Trigger ${logicalId}`);
-    const name = (properties['Name'] as string | undefined) ?? logicalId;
+    // go-to-k/cdkd#5095, as the Glue job's create.
+    const name =
+      (properties['Name'] as string | undefined) ??
+      generatedNameFor('AWS::Glue::Trigger', logicalId);
     const type = properties['Type'] as string | undefined;
     const actions = properties['Actions'] as TriggerAction[] | undefined;
     if (!type) {
@@ -6153,6 +6423,7 @@ export class GlueTriggerProvider implements ResourceProvider {
     // go-to-k/cdkd#4073: a malformed desired Tags is refused before any call,
     // so a doomed update never deactivates the trigger.
     desiredGlueTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const markUnsettled = (key: string): void => context?.markUnsettled?.(key);
     try {
       // Glue requires the trigger be DEACTIVATED before UpdateTrigger. Read the
       // current state to decide whether we need to stop+restart.
@@ -6208,6 +6479,11 @@ export class GlueTriggerProvider implements ResourceProvider {
       // OTHERWISE-successful update still surfaces (the trigger really is stuck
       // deactivated in that case).
       let updateError: unknown;
+      for (const key of TRIGGER_UPDATE_KEYS) {
+        if (JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key])) {
+          markUnsettled(key);
+        }
+      }
       try {
         await this.getClient().send(
           new UpdateTriggerCommand({ Name: physicalId, TriggerUpdate: update })
@@ -6242,7 +6518,11 @@ export class GlueTriggerProvider implements ResourceProvider {
         properties['Tags'],
         resourceType,
         logicalId,
-        log.warn
+        log.warn,
+        {
+          forceUpsert: context?.unsettledProperties?.has('Tags') === true,
+          beforeWrite: () => markUnsettled('Tags'),
+        }
       );
 
       return { physicalId, wasReplaced: false };
@@ -6260,6 +6540,32 @@ export class GlueTriggerProvider implements ResourceProvider {
             cause
           )
       );
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the trigger reads ACTIVATING, DEACTIVATING,
+   * CREATING or UPDATING, an unsettled key other than `Tags` is still
+   * changing. A failed read keeps every name, which only costs the next deploy
+   * a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const state = (await this.getClient().send(new GetTriggerCommand({ Name: physicalId })))
+        .Trigger?.State;
+      return state === 'ACTIVATING' ||
+        state === 'DEACTIVATING' ||
+        state === 'CREATING' ||
+        state === 'UPDATING'
+        ? new Set([...names].filter((name) => name !== 'Tags'))
+        : new Set();
+    } catch {
+      return names;
     }
   }
 
@@ -6350,7 +6656,7 @@ export class GlueTriggerProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = this.wrapMaskedError(
+      const wrapped = this.wrapMaskedError(
         context?.maskSecrets ?? ((text: string) => text),
         error,
         (text) =>
@@ -6362,6 +6668,11 @@ export class GlueTriggerProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      const failure =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }

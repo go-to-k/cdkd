@@ -23,7 +23,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
-import { displaySafe, safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { applyRoleArnIfSet } from '../../utils/role-arn.js';
 import {
@@ -68,6 +68,7 @@ import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/inter
 import { resolveApp, resolveStateBucketWithDefault } from '../config-loader.js';
 import {
   matchStacks,
+  refuseStackNameRegionCollisions,
   stackMatchesPattern,
   describeStack,
   partitionTopLevel,
@@ -447,6 +448,8 @@ async function destroyCommand(
     // before any lock or per-resource delete fires.
     type AppStack = StackLike & {
       region?: string;
+      // go-to-k/cdkd#5176: two Stages pinned to different accounts never share a record.
+      account?: string;
       terminationProtection?: boolean;
       // go-to-k/cdkd#4682: what a delete re-resolves a NoEcho coordinate from.
       template?: CloudFormationTemplate;
@@ -489,6 +492,7 @@ async function destroyCommand(
           displayName: s.displayName,
           ...(s.stagePath !== undefined && { stagePath: s.stagePath }),
           ...(s.region && { region: s.region }),
+          ...(s.account && { account: s.account }),
           ...(s.terminationProtection !== undefined && {
             terminationProtection: s.terminationProtection,
           }),
@@ -663,7 +667,17 @@ async function destroyCommand(
     // `result.interrupted`, which was false there.
     let stoppedEarly = false;
 
-    let stackNames: string[];
+    // The stacks to destroy, each with the app stack it was selected as (none
+    // on the state-only fallback). Carried as the stack, not its name: two
+    // Stages deployed to different regions share a physical name, and the
+    // region each destroys is its own (#5176).
+    type DestroyTarget = { stackName: string; synth: AppStack | undefined };
+    const appStackSet = new Set<StackLike>(appStacks);
+    const toTarget = (s: StackLike): DestroyTarget => ({
+      stackName: s.stackName,
+      synth: appStackSet.has(s) ? (s as AppStack) : undefined,
+    });
+    let targets: DestroyTarget[];
     // Patterns that name a stack of this app by its CDK path (or exact
     // physical name) whether or not it is deployed. Filled by the pattern arm.
     const namesAppStack = new Set<string>();
@@ -673,7 +687,7 @@ async function destroyCommand(
       // named in one line, so the narrower set is never silent.
       const { topLevel, inStages } = partitionTopLevel(candidateStacks);
       if (inStages.length > 0) logger.warn(renderAllLeftOutStageStacks(inStages));
-      stackNames = topLevel.map((s) => s.stackName);
+      targets = topLevel.map(toTarget);
     } else if (stackPatterns.length > 0) {
       // Explicit stack names or wildcards. Resolved against the WHOLE app
       // and only then narrowed to what is in state: a pattern that is one
@@ -682,14 +696,19 @@ async function destroyCommand(
       // the pattern -- that other stack must not be destroyed instead (#4474).
       const selectFrom = appStacks.length > 0 ? appStacks : candidateStacks;
       const inState = new Set(candidateStacks.map((s) => s.stackName));
-      stackNames = matchStacks(selectFrom, stackPatterns)
-        .map((s) => s.stackName)
-        .filter((n) => inState.has(n));
+      // Every selected stack, two sharing a physical name included (#5176).
+      targets = matchStacks(selectFrom, stackPatterns, { dedupe: 'identity' })
+        .filter((s) => inState.has(s.stackName))
+        .map(toTarget);
       // A deployed stack a pattern used to select by a physical-name wildcard
       // and no longer does is named, not dropped silently (#4474) -- also when
       // the pattern now matches only undeployed stacks and selects nothing.
       if (appStacks.length > 0) {
-        const gone = stacksNoLongerSelected(candidateStacks, stackPatterns, new Set(stackNames));
+        const gone = stacksNoLongerSelected(
+          candidateStacks,
+          stackPatterns,
+          new Set(targets.map((t) => t.stackName))
+        );
         if (gone.stacks.length > 0) {
           logger.warn(renderStacksNoLongerSelected(gone.patterns, gone.stacks));
         }
@@ -720,13 +739,13 @@ async function destroyCommand(
       if (absent.length > 0) {
         logger.warn(renderUnmatchedPatternsWarning(absent, 'in state'));
       }
-      if (stackNames.length > 0 && inStateOnly.length > 0) {
+      if (targets.length > 0 && inStateOnly.length > 0) {
         logger.warn(renderNotInAppWarning(inStateOnly));
       }
     } else if (candidateStacks.length === 1) {
       // Single stack: auto-select (CDK CLI compatible). A Stage that failed
       // to load never gets here: synthesis failed on it above (#3507).
-      stackNames = candidateStacks.map((s) => s.stackName);
+      targets = candidateStacks.map(toTarget);
     } else if (candidateStacks.length === 0) {
       logger.info('No stacks found in state');
       return;
@@ -737,7 +756,7 @@ async function destroyCommand(
       );
     }
 
-    if (stackNames.length === 0) {
+    if (targets.length === 0) {
       // Special-case: when a user explicitly names a stack that doesn't appear
       // in candidateStacks but DOES exist in state with `parentStack` set, we
       // hit "No matching stacks found" — misleading, since the state file
@@ -807,16 +826,63 @@ async function destroyCommand(
     // REVERSE of deploy order). Only edges between stacks both in this destroy
     // set count. When synth was unavailable (state-only fallback) there are no
     // templates to scan, so `inferred` is empty and the original order stands.
-    if (synthScanStacks.length > 0 && stackNames.length > 1) {
-      const inSet = new Set(stackNames);
+    // The edges are by name, so the NAMES are ordered and each name's
+    // targets follow in selection order.
+    const uniqueNames = [...new Set(targets.map((t) => t.stackName))];
+    if (synthScanStacks.length > 0 && uniqueNames.length > 1) {
+      const inSet = new Set(uniqueNames);
       const inferred = inferCrossStackStackDeps(
         synthScanStacks.filter((s) => inSet.has(s.stackName))
       );
-      stackNames = orderConsumersBeforeProducers(stackNames, inferred);
+      const ordered = orderConsumersBeforeProducers(uniqueNames, inferred);
+      targets = ordered.flatMap((name) => targets.filter((t) => t.stackName === name));
     }
 
+    // A name two app stacks share (one Stage per region, #5176) is destroyed
+    // only in the region its selected stack names: its synthesized region, or
+    // the resolved one for an env-agnostic stack. Never the single record's
+    // region whatever it is, as an unshared name may be, since that record
+    // can belong to the OTHER stack of the name.
+    const sharedAppNames = new Set(
+      appStacks.map((s) => s.stackName).filter((name, i, names) => names.indexOf(name) !== i)
+    );
+    const strictRegion = new Map<DestroyTarget, string>();
+    for (const target of targets) {
+      if (!sharedAppNames.has(target.stackName) || target.synth === undefined) continue;
+      strictRegion.set(target, target.synth.region ?? (await regionForStack(target.stackName)));
+    }
+    // A selected stack whose name and region another selected stack shares, or
+    // an unselected one pinned to a possibly-equal account,
+    // maps to that stack's state record too; refused before any lock or delete
+    // rather than destroying it under whichever template comes first. The
+    // env-agnostic case is the one that bites: the #2100 hold resolves it to
+    // us-east-1 when a record of its name is there, which can be a sibling
+    // Stage's pinned stack (#5176). An unselected stack is compared only when
+    // it pins a region; where an unselected env-agnostic one lives depends on
+    // the run that deployed it.
+    const strictBySynth = new Map(
+      targets.flatMap((t) =>
+        t.synth !== undefined && strictRegion.has(t)
+          ? [[t.synth, strictRegion.get(t)!] as const]
+          : []
+      )
+    );
+    const strictNames = new Set([...strictBySynth.keys()].map((s) => s.stackName));
+    refuseStackNameRegionCollisions(
+      appStacks.filter(
+        (s) => strictBySynth.has(s) || (strictNames.has(s.stackName) && s.region !== undefined)
+      ),
+      (s) => strictBySynth.get(s) ?? s.region,
+      new Set(strictBySynth.keys())
+    );
+    // Shown with its CDK path only where a name is shared, so it says which.
+    const describeTarget = (t: DestroyTarget): string =>
+      t.synth !== undefined && strictRegion.has(t)
+        ? `${describeStack(t.synth)} in ${displaySafe(strictRegion.get(t)!)}`
+        : displaySafe(t.stackName);
+
     logger.info(
-      `Found ${stackNames.length} stack(s) to destroy: ${stackNames.map((n) => displaySafe(n)).join(', ')}`
+      `Found ${targets.length} stack(s) to destroy: ${targets.map(describeTarget).join(', ')}`
     );
 
     // accountId is only used to synthesize the parent's fake `Ref` ARN inside
@@ -852,35 +918,76 @@ async function destroyCommand(
     // while the next stack is destroyed, and are all awaited before the
     // command ends (the `finally` below) -- nothing costs a round trip per
     // stack.
-    if (stackNames.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
+    if (targets.length > 1) deferRegistryTail = (released) => deferredTails.push(released);
     // A region-less (legacy) record falls back to a region, reconciled per
     // stack so the old default's record is not missed (go-to-k/cdkd#2100).
     const fallbackRegionByName = new Map<string, string>();
-    for (const name of stackNames) {
+    for (const name of uniqueNames) {
       if ((stateRefsByName.get(name) ?? []).some((r) => !r.region)) {
         fallbackRegionByName.set(name, await regionForStack(name));
       }
     }
-    for (const name of stackNames) {
-      const synth = appStacks.find((s) => s.stackName === name);
-      if (synth?.terminationProtection === true && !options.removeProtection) continue;
-      const planned = plannedDestroyRegion(
-        stateRefsByName.get(name) ?? [],
-        synth?.region,
-        fallbackRegionByName.get(name) ?? region
-      );
-      if (planned !== undefined) void crossPrefixCheck.cache.full(name, planned, 'prestart');
+    // The region a target's destroy acts in, or `undefined` when its records
+    // do not decide one. A shared name takes only its own region's record.
+    // A shared-name stack pinned to an account destroys only under that
+    // account's credentials: two Stages pinned to different accounts in one
+    // region share the name and region, and with the OTHER account's profile
+    // the record found is the other Stage's (#5176). One GetCallerIdentity,
+    // only when such a target exists; an unreadable identity skips them too.
+    const wrongAccount = new Set<DestroyTarget>();
+    let callerAccountUnreadable = false;
+    const accountPinned = [...strictRegion.keys()].filter((t) => t.synth?.account !== undefined);
+    if (accountPinned.length > 0) {
+      let callerAccount: string | undefined;
+      callerAccountUnreadable = true;
+      try {
+        const { GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+        callerAccount = (await awsClients.sts.send(new GetCallerIdentityCommand({}))).Account;
+        callerAccountUnreadable = callerAccount === undefined;
+      } catch (err) {
+        logger.debug(safeMsg`Could not read the caller account: ${describeAwsFailure(err).detail}`);
+      }
+      for (const t of accountPinned) if (t.synth!.account !== callerAccount) wrongAccount.add(t);
     }
-    for (const [stackIndex, stackName] of stackNames.entries()) {
-      logger.info(`\nPreparing to destroy stack: ${displaySafe(stackName)}`);
+    const plannedRegionFor = (target: DestroyTarget): string | undefined => {
+      if (wrongAccount.has(target)) return undefined;
+      const refs = stateRefsByName.get(target.stackName) ?? [];
+      const strict = strictRegion.get(target);
+      if (strict !== undefined) return refs.some((r) => r.region === strict) ? strict : undefined;
+      return plannedDestroyRegion(
+        refs,
+        target.synth?.region,
+        fallbackRegionByName.get(target.stackName) ?? region
+      );
+    };
+    for (const target of targets) {
+      if (target.synth?.terminationProtection === true && !options.removeProtection) continue;
+      const planned = plannedRegionFor(target);
+      if (planned !== undefined) {
+        void crossPrefixCheck.cache.full(target.stackName, planned, 'prestart');
+      }
+    }
+    for (const [stackIndex, target] of targets.entries()) {
+      const stackName = target.stackName;
+      logger.info(`\nPreparing to destroy stack: ${describeTarget(target)}`);
+      if (wrongAccount.has(target)) {
+        // Counted like a termination-protection refusal (exit 2): the user named
+        // a stack and it was not destroyed.
+        logger.error(
+          callerAccountUnreadable
+            ? safeMsg`  ✗ Stack ${describeTarget(target)} is pinned to account ${target.synth!.account!}, and the account this run's credentials resolve to could not be read (STS GetCallerIdentity failed), so it was not destroyed: another stack of the app shares its name, and only that account's credentials address its record. Check the credentials (aws sts get-caller-identity) and re-run destroy.`
+            : safeMsg`  ✗ Stack ${describeTarget(target)} is pinned to account ${target.synth!.account!}, which is not the account this run's credentials resolve to; not destroyed. Run destroy with that account's credentials.`
+        );
+        totalErrors++;
+        continue;
+      }
 
       // Pick the region for this stack. If synth ran, prefer the synth region
       // (so a user changing env.region targets only that region). Otherwise,
       // use the unique state region; refuse with a helpful error when the
       // stack has multiple regions and the user did not pin one.
       const refs = stateRefsByName.get(stackName) ?? [];
-      const synthStack = appStacks.find((s) => s.stackName === stackName);
-      const synthRegion = synthStack?.region;
+      const synthStack = target.synth;
 
       // Stack-level terminationProtection guard. Refuse to destroy BEFORE any
       // lock acquisition or per-resource delete. In multi-stack runs (--all
@@ -906,14 +1013,15 @@ async function destroyCommand(
           continue;
         }
       }
-      const plannedRegion = plannedDestroyRegion(
-        refs,
-        synthRegion,
-        fallbackRegionByName.get(stackName) ?? region
-      );
+      const plannedRegion = plannedRegionFor(target);
+      const strict = strictRegion.get(target);
       let stackTargetRegion: string;
       if (refs.length === 0) {
         logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
+        continue;
+      } else if (strict !== undefined && plannedRegion === undefined) {
+        // The name's record is another stack's, in another region (#5176).
+        logger.warn(safeMsg`No state found for stack ${describeTarget(target)}, skipping`);
         continue;
       } else if (plannedRegion !== undefined) {
         stackTargetRegion = plannedRegion;
@@ -951,6 +1059,35 @@ async function destroyCommand(
       if (!stateResult) {
         logger.warn(`No state found for stack ${displaySafe(stackName)}, skipping`);
         continue;
+      }
+
+      // go-to-k/cdkd#5238: protection the stack was DEPLOYED with counts too,
+      // as in CloudFormation, where the deployed stack's setting is what a
+      // delete meets: code that dropped it but was never redeployed is still
+      // protected. The synth check above already ran for a synth-protected
+      // stack.
+      if (
+        synthStack?.terminationProtection !== true &&
+        stateResult.state.terminationProtection === true
+      ) {
+        if (options.removeProtection) {
+          logger.warn(
+            safeMsg`Stack ${stackName} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+          );
+        } else {
+          const err = new StackTerminationProtectionError(
+            stackName,
+            undefined,
+            {
+              args: stateCommandAccount.args,
+              clause: withheldAccountClause(accountRecovery, 'the command below prints'),
+            },
+            { command: 'cdkd destroy' }
+          );
+          logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
+          totalErrors++;
+          continue;
+        }
       }
 
       // Nested-stack child-only destroy refusal (#555 A2 / design §7). A
@@ -1220,7 +1357,7 @@ async function destroyCommand(
       // already carried by `interrupted`, and one that landed in the tail after
       // it must not turn a finished destroy into exit 2.
       //
-      // `stackIndex < stackNames.length - 1` is the INDEX form, and the
+      // `stackIndex < targets.length - 1` is the INDEX form, and the
       // `state destroy` twin deliberately does NOT use it — see
       // `targetRemainsAfter` there, whose comment says `destroy.ts` needs no
       // counterpart because `candidateStacks` is pre-filtered to names that
@@ -1242,7 +1379,7 @@ async function destroyCommand(
       // the user to re-run. Naming it here so the next reader does not have to
       // re-derive that the twin's rationale is narrower than it reads.
       if (runInterrupted()) {
-        if (stackIndex < stackNames.length - 1) stoppedEarly = true;
+        if (stackIndex < targets.length - 1) stoppedEarly = true;
         break;
       }
     }

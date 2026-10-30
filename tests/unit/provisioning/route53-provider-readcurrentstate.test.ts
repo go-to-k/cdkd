@@ -157,7 +157,7 @@ describe('Route53Provider.readCurrentState', () => {
       expect(result?.HostedZoneTags).toEqual([]);
     });
 
-    it('emits HostedZoneFeatures when GetHostedZone returns Features.AcceleratedRecoveryStatus', async () => {
+    it('emits HostedZoneFeatures.EnableAcceleratedRecovery when GetHostedZone returns Features.AcceleratedRecoveryStatus', async () => {
       mockSend
         .mockResolvedValueOnce({
           HostedZone: {
@@ -170,13 +170,13 @@ describe('Route53Provider.readCurrentState', () => {
         .mockResolvedValueOnce({ QueryLoggingConfigs: [] });
 
       const result = bagOf(await provider.readCurrentState('Z1', 'L', 'AWS::Route53::HostedZone'));
-      expect(result?.HostedZoneFeatures).toEqual({ AcceleratedRecoveryStatus: 'ENABLED' });
+      expect(result?.HostedZoneFeatures).toEqual({ EnableAcceleratedRecovery: true });
     });
 
     it('omits HostedZoneFeatures when GetHostedZone returns no Features (typical zone)', async () => {
       // Emit-when-present: a zone that never opted into AcceleratedRecovery
       // returns no Features from GetHostedZone. A placeholder
-      // `{ AcceleratedRecoveryStatus: 'DISABLED' }` would force guaranteed
+      // `{ EnableAcceleratedRecovery: false }` would force guaranteed
       // drift on every clean run for zones older than the 2025 feature launch.
       mockSend
         .mockResolvedValueOnce({

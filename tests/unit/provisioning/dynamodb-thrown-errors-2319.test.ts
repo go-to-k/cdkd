@@ -20,6 +20,14 @@ const { mockSend, mockAutoScalingSend, debugSpy } = vi.hoisted(() => ({
   debugSpy: vi.fn(),
 }));
 
+// Issue #5451: a rate-limited UpdateTimeToLive is re-sent until the enclosing
+// resource deadline runs out. 0 = already out, so a refusal is final at once.
+const ttlDeadline = vi.hoisted(() => ({ remainingMs: 0 }));
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => ttlDeadline.remainingMs,
+}));
+
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
     dynamoDB: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
@@ -205,53 +213,8 @@ function sites(): Site[] {
       prefix: 'Failed to delete DynamoDB table Res: ',
       run: () => new DynamoDBTableProvider().delete('Res', TABLE_NAME, 'AWS::DynamoDB::Table', {}),
     },
-    {
-      site: 'GlobalTable create (CreateTable)',
-      command: 'CreateTableCommand',
-      action: 'dynamodb:CreateTable',
-      prefix: 'Failed to create DynamoDB GlobalTable Res: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().create('Res', 'AWS::DynamoDB::GlobalTable', GLOBAL_PROPS),
-    },
-    {
-      site: 'GlobalTable create (post-CreateTable wiring)',
-      command: 'DescribeTableCommand',
-      action: 'dynamodb:DescribeTable',
-      prefix: 'Failed to create DynamoDB GlobalTable Res: ',
-      answers: { CreateTableCommand: { TableDescription: { TableName: TABLE_NAME } } },
-      run: () =>
-        new DynamoDBGlobalTableProvider().create('Res', 'AWS::DynamoDB::GlobalTable', GLOBAL_PROPS),
-    },
-    {
-      site: 'GlobalTable update',
-      command: 'UpdateTableCommand',
-      action: 'dynamodb:UpdateTable',
-      prefix: 'Failed to update DynamoDB GlobalTable Res: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().update(
-          'Res',
-          TABLE_NAME,
-          'AWS::DynamoDB::GlobalTable',
-          { ...GLOBAL_PROPS, DeletionProtectionEnabled: true },
-          GLOBAL_PROPS
-        ),
-    },
-    {
-      site: 'GlobalTable describe before delete',
-      command: 'DescribeTableCommand',
-      action: 'dynamodb:DescribeTable',
-      prefix: 'Failed to describe DynamoDB GlobalTable Res before delete: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().delete('Res', TABLE_NAME, 'AWS::DynamoDB::GlobalTable', {}),
-    },
-    {
-      site: 'GlobalTable delete',
-      command: 'DeleteTableCommand',
-      action: 'dynamodb:DeleteTable',
-      prefix: 'Failed to delete DynamoDB GlobalTable Res: ',
-      run: () =>
-        new DynamoDBGlobalTableProvider().delete('Res', TABLE_NAME, 'AWS::DynamoDB::GlobalTable', {}),
-    },
+    // The GlobalTable sites live in `tail-d-thrown-text-2319.test.ts`
+    // (go-to-k/cdkd#2319): their wrap withholds a non-Error throw.
   ];
 }
 
@@ -263,7 +226,7 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
     debugSpy.mockReset();
   });
 
-  describe.each(sites())('$site', ({ command, action, prefix, answers, run }) => {
+  describe.each(sites())('$site', ({ site, command, action, prefix, answers, run }) => {
     it('names an AWS-authored failure by its class, keeps cause, and stays retryable', async () => {
       const original = accessDenied(action);
       failOn(command, original, answers);
@@ -299,11 +262,21 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
       expect(failure.cause).toBe(original);
     });
 
-    it('keeps a non-Error throw as text, unstamped', async () => {
+    it('handles a non-Error throw unstamped', async () => {
       failOn(command, 'socket hang up', answers);
       const failure = await thrown(run());
 
-      expect(failure.message).toBe(`${prefix}socket hang up`);
+      if (site.startsWith('Table ')) {
+        // The Table wrap withholds the value, the whole payload with no class
+        // to fall back to, as the settled #2319 wrap does; it has no chain to
+        // stamp, and the text is on the debug line.
+        expect(failure.message).toBe(
+          `${prefix}a non-Error value of type string. ${VERBOSE_POINTER}`
+        );
+        expect(debugged()).toContain(`${prefix}socket hang up`);
+      } else {
+        expect(failure.message).toBe(`${prefix}socket hang up`);
+      }
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });
@@ -500,8 +473,9 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
       const failure = await thrown(runTtl());
       expect(failure.message).toBe(
         `AWS rejected TimeToLive update on ${TABLE_NAME}: ValidationException. ${VERBOSE_POINTER} ` +
-          'AWS enforces a ~4-hour rate limit on TTL changes per table; wait and redeploy, or ' +
-          'keep the previous TTL state in this deploy.'
+          'AWS rate-limits TTL changes per table, and kept refusing until the resource timeout ' +
+          'ran out; redeploy once the interval has passed (up to about an hour), or raise ' +
+          '--resource-timeout.'
       );
       expect(failure.cause).toBe(original);
       expect(hasRedactedCause(failure)).toBe(true);
@@ -511,7 +485,7 @@ describe('DynamoDB thrown wraps keep the caller identity out (go-to-k/cdkd#2319)
     it('keeps a non-AWS text verbatim, closed as one sentence', async () => {
       failOn('UpdateTimeToLiveCommand', new Error(TTL_LIMIT));
       const failure = await thrown(runTtl());
-      expect(failure.message).toContain(`${TTL_LIMIT}. AWS enforces`);
+      expect(failure.message).toContain(`${TTL_LIMIT}. AWS rate-limits`);
       expect(hasRedactedCause(failure)).toBe(false);
     });
   });

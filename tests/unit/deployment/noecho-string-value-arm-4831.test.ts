@@ -102,6 +102,9 @@ describe('DeployEngine - the value arm for a string-declared NoEcho (go-to-k/cdk
     stateBackend = {
       getState: vi.fn(),
       saveState: vi.fn().mockResolvedValue('etag-new'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       appendRollbackJournalSegment: vi.fn().mockResolvedValue(undefined),
     } as never;
   });

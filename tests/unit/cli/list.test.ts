@@ -141,6 +141,69 @@ describe('cdkd list', () => {
     expect(stdout).toBe('StackB\nStackA\n');
   });
 
+  // Issue #5176: one Stage per region under a shared stackName is two stacks,
+  // and `cdk ls` lists both.
+  function sharedNameStacks(): StackInfo[] {
+    return [
+      makeStack({ stackName: 'Db', displayName: 'UsEast/Db', stagePath: 'UsEast' }),
+      makeStack({
+        stackName: 'Api',
+        displayName: 'UsEast/Api',
+        stagePath: 'UsEast',
+        dependencyNames: ['Db'],
+      }),
+      makeStack({
+        stackName: 'Db',
+        displayName: 'UsWest/Db',
+        stagePath: 'UsWest',
+        region: 'us-west-2',
+      }),
+      makeStack({
+        stackName: 'Api',
+        displayName: 'UsWest/Api',
+        stagePath: 'UsWest',
+        region: 'us-west-2',
+        dependencyNames: ['Db'],
+      }),
+    ];
+  }
+
+  it('lists every stack of a stackName two regions share, with no pattern (#5176)', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: sharedNameStacks(),
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+    const { stdout } = await runList([]);
+    expect(stdout).toBe(
+      'UsEast/Db (Db)\nUsEast/Api (Api)\nUsWest/Db (Db)\nUsWest/Api (Api)\n'
+    );
+  });
+
+  it('lists both stacks a shared physical name or a globstar selects (#5176)', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: sharedNameStacks(),
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+    expect((await runList(['Api'])).stdout).toBe('UsEast/Api (Api)\nUsWest/Api (Api)\n');
+    expect((await runList(['**'])).stdout).toBe(
+      'UsEast/Db (Db)\nUsEast/Api (Api)\nUsWest/Db (Db)\nUsWest/Api (Api)\n'
+    );
+  });
+
+  it("orders a shared-name dependency by the dependent's own Stage (#5176)", async () => {
+    // Declared consumer-first: each Api must follow ITS Stage's Db.
+    const [eastDb, eastApi, westDb, westApi] = sharedNameStacks();
+    mockSynthesize.mockResolvedValue({
+      stacks: [westApi, eastApi, westDb, eastDb],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+    const { stdout } = await runList([]);
+    expect(stdout).toBe('UsWest/Db (Db)\nUsWest/Api (Api)\nUsEast/Db (Db)\nUsEast/Api (Api)\n');
+  });
+
   it('emits YAML records with --long', async () => {
     mockSynthesize.mockResolvedValue({
       stacks: [

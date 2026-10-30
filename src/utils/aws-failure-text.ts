@@ -210,7 +210,16 @@ export const VERBOSE_POINTER = "Re-run with --verbose for AWS's own message.";
  * a re-export is the signal that a second predicate has appeared.
  */
 function redactedAwsFailureSummary(error: Error): string {
-  return `${error.name || 'Error'}. ${VERBOSE_POINTER}`;
+  // `safeStringify`, not the template's own conversion: a failure's `name` is
+  // as arbitrary as the failure, and every `describeAwsFailure` caller -- even
+  // one reading only `.detail` -- runs this inside a catch (go-to-k/cdkd#3361).
+  // Read once. Identical to the old `name || 'Error'` for every string `name`,
+  // and a falsy one still gives `Error`. A truthy `name` that converts to `''`
+  // (an empty array) now gives `Error` too, where the old form printed an empty
+  // clause.
+  const raw: unknown = error.name;
+  const name = raw ? safeStringify(raw) : '';
+  return `${name || 'Error'}. ${VERBOSE_POINTER}`;
 }
 
 /**

@@ -55,7 +55,7 @@ import {
 import { IAMRoleProvider } from '../../../src/provisioning/providers/iam-role-provider.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
@@ -194,7 +194,14 @@ describe('a collision with a resource the new one does not hold refuses delete-n
     expect(failed[0]).toContain('"stream-new"');
     expect(failed[0]).toContain('another resource holds the colliding name');
     expect(failed[0]).toContain('Nothing was deleted');
-    expect(failed[0]).toContain(KINESIS_COLLISION);
+    // go-to-k/cdkd#2319: the provider names AWS's failure by its class, and
+    // this line restates the --verbose pointer without the flag spelling.
+    expect(failed[0]).toContain(
+      `Underlying collision: "Failed to create Kinesis stream Stream: ResourceInUseException. Re-run with verbose logging for AWS's own message. AWS reports that it already exists."`
+    );
+    expect(failed[0]).not.toContain(KINESIS_COLLISION);
+    expect(failed[0]).not.toContain('123456789012');
+    expect(failed[0]).not.toContain('--verbose');
   });
 });
 
@@ -236,8 +243,14 @@ describe('the name-holder collision refusal describes a payload logical id (go-t
       // The prose line (with `re-run cdkd rollback`) and the `--orphan` line
       // carry no copy of the id. The provider's own collision text, which can
       // echo it (`Failed to create Kinesis stream <id>`), is on a line of its
-      // own with no command on it; that raw AWS-text display is a separate
-      // residual this PR does not claim.
+      // own with no command on it: the wrap names AWS's failure by its class
+      // (go-to-k/cdkd#2319), and its `--verbose` pointer is restated there
+      // without the flag spelling.
+      const collision = message.split('\n').find((l) => l.startsWith('Underlying collision: '));
+      expect(collision, id).toContain(
+        "ResourceInUseException. Re-run with verbose logging for AWS's own message. AWS reports that it already exists."
+      );
+      expect(collision, id).not.toContain('--verbose');
       const [prose] = message.split('\n');
       expect(prose, id).not.toContain(id);
       expect(message.split('\n').at(-1), id).toBe("To orphan it: cdkd rollback --orphan '<id>'");
@@ -530,7 +543,7 @@ describe('the unproven-holder refusal (#3979)', () => {
     };
     const state = { Tg: res(TG, { physicalId: newArn, properties: { Port: 81 } }) };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([op], state, 'CdkdX', ctxFor(provider))
     );
 
@@ -615,7 +628,7 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
       }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([roleOp('CdkdX-my-role', 'my-role')], state, 'CdkdX', ctxFor(provider))
     );
 
@@ -653,7 +666,7 @@ describe('a provider that rewrites the name it sends proves a holder only by tha
       }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([roleOp('imported-role', 'CdkdX-my-role')], state, 'CdkdX', ctxFor(provider))
     );
 
@@ -691,7 +704,7 @@ describe('on the Cloud Control route the sent name is the requested one (#3979)'
       }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([roleOp('role-old', 'my-role')], state, 'CdkdX', ctxFor(provider, { provisionedBy: 'cc-api' }))
     );
 
@@ -732,7 +745,7 @@ describe('a Cloud Control re-create proves a generated name through what it sent
       Lg: res(LG, { physicalId: 'CdkdX-Lg', properties: { RetentionInDays: 3 }, provisionedBy: 'cc-api' }),
     };
 
-    const result = await withStackName('CdkdX', () =>
+    const result = await withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       replayRollback([op], state, 'CdkdX', ctxFor(provider, { provisionedBy: 'cc-api' }))
     );
 

@@ -5,9 +5,18 @@ import {
   settleJournalAfterCleanRollback,
 } from '../../../src/deployment/deploy-engine/rollback.js';
 import { getLogger } from '../../../src/utils/logger.js';
-import { withSkipPrefix } from '../../../src/provisioning/resource-name.js';
+import {
+  withSkipPrefix,
+  withStackScope,
+  generateResourceName,
+} from '../../../src/provisioning/resource-name.js';
 import { markRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 import { markCreatedBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  reportCreatedResource,
+  retractCreatedResource,
+} from '../../../src/provisioning/created-resource-sink.js';
+import { classifyFailedOp } from '../../../src/deployment/rollback-executor.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND, type CloudFormationTemplate } from '../../../src/types/resource.js';
@@ -147,6 +156,9 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         opts.currentEtag === undefined ? null : { state: currentState, etag: opts.currentEtag }
       ),
       saveState: vi.fn().mockResolvedValue('etag-1'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
       // go-to-k/cdkd#4600: the bucket-wide ownership scan before an orphan delete.
       listStacks: vi.fn().mockResolvedValue([]),
       ...journal,
@@ -956,6 +968,81 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         physicalId: `${stackName}-B`,
         physicalIdRecoveredFromError: true,
       });
+    });
+
+    // go-to-k/cdkd#5064: the deploy derives the planned name in the RECORD's
+    // own stack instance scope (`deploy-flow.ts`'s `nameScope()`), and must
+    // forward that SAME id to `resolvePendingCloudControlRequests` so the
+    // identifier-uniqueness check recognises a v13-suffixed name as cdkd's
+    // own, exactly as it recognises the legacy `{stackName}-{logicalId}` form
+    // above.
+    it("an identifier that is the v13 record's own suffixed name is not taken over", async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const suffixedIdentifier = withStackScope(
+        { stackName, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
+        () => generateResourceName('B', { maxLength: 63, lowercase: true })
+      );
+      const { engine, provider } = resumingEngine({}, suffixedIdentifier);
+      (
+        engine as unknown as { stateBackend: { getState: ReturnType<typeof vi.fn> } }
+      ).stateBackend.getState.mockResolvedValue({
+        state: {
+          version: 13,
+          stackName,
+          region: 'us-east-1',
+          resources: {},
+          outputs: {},
+          lastModified: Date.now(),
+          stackInstanceId: STACK_INSTANCE_ID,
+        },
+        etag: 'e0',
+      });
+      await engine.deploy(stackName, template);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      expect(provider.create).toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#5064: a first deploy re-run after a crash has no record;
+    // its id is only in the write-ahead sibling, read WITHOUT minting, so the
+    // earlier attempt's suffixed name still reads as a name.
+    it('with no record yet, the write-ahead id makes a suffixed name read as generated', async () => {
+      const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const suffixedIdentifier = withStackScope(
+        { stackName, stackInstanceId: STACK_INSTANCE_ID, nameGenerations: new Map() },
+        () => generateResourceName('B', { maxLength: 63, lowercase: true })
+      );
+      const { engine, provider } = resumingEngine({}, suffixedIdentifier);
+      const backend = (
+        engine as unknown as {
+          stateBackend: {
+            getState: ReturnType<typeof vi.fn>;
+            readStackInstanceSibling?: ReturnType<typeof vi.fn>;
+            stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
+          };
+        }
+      ).stateBackend;
+      backend.getState.mockResolvedValue(null);
+      backend.readStackInstanceSibling = vi.fn().mockResolvedValue(STACK_INSTANCE_ID);
+      backend.stackInstanceIdForFirstWrite.mockResolvedValue(STACK_INSTANCE_ID);
+      await engine.deploy(stackName, template).catch(() => undefined);
+      expect(backend.readStackInstanceSibling).toHaveBeenCalledTimes(1);
+      expect(provider.resumeCreatedResource).not.toHaveBeenCalled();
+      const op = pendingJournal().segments[0]!.failedOperations[0]!;
+      const settled = rewrites()
+        .map((r) => r(op))
+        .find((r) => r !== op) as Record<string, unknown>;
+      expect(settled).toMatchObject({ physicalId: suffixedIdentifier });
+      expect(settled).not.toHaveProperty('createdIdentifierUnique');
+    });
+
+    it('a deploy with a record never reads the write-ahead sibling', async () => {
+      const { engine } = resumingEngine({});
+      const backend = (
+        engine as unknown as { stateBackend: { readStackInstanceSibling?: ReturnType<typeof vi.fn> } }
+      ).stateBackend;
+      backend.readStackInstanceSibling = vi.fn().mockResolvedValue(undefined);
+      await engine.deploy(stackName, template).catch(() => undefined);
+      expect(backend.readStackInstanceSibling).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -2217,6 +2304,404 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
     });
   });
 
+  // go-to-k/cdkd#5511: the per-resource deadline rejects while the provider
+  // keeps running and drops the marked error it throws later, so the proof
+  // must already be on the engine's sink when the deadline fires.
+  describe('a CREATE that outlives its resource deadline (go-to-k/cdkd#5511)', () => {
+    const tmpl: CloudFormationTemplate = { Resources: { B: { Type: 'AWS::S3::Bucket', Properties: {} } } };
+
+    /**
+     * `create` runs `beforeWait`, then waits until the test releases it, then
+     * throws `markCreatedBeforeFailure` of `b-1` (the error the deadline drops).
+     */
+    function racingCreateEngine(beforeWait: () => void) {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({
+        changes,
+        deps: { B: [] },
+        noRollback: true,
+        currentEtag: 'e0',
+        engineOptions: { resourceWarnAfterMs: 10, resourceTimeoutMs: 60 },
+      });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: {
+            getProviderFor: () => {
+              provider: { create: ReturnType<typeof vi.fn>; resourceIdentity: ReturnType<typeof vi.fn> };
+            };
+          };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const lateThrow = vi.fn();
+      provider.create.mockImplementation(async () => {
+        beforeWait();
+        await gate;
+        lateThrow();
+        throw markCreatedBeforeFailure(new Error('wait failed'), 'B', 'AWS::S3::Bucket', 'b-1');
+      });
+      return { engine, provider, release, lateThrow };
+    }
+
+    async function journaledAfterDeadline(beforeWait: () => void) {
+      const { engine, provider, release, lateThrow } = racingCreateEngine(beforeWait);
+      try {
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      } finally {
+        release();
+      }
+      // The deadline won: the provider's marked error had not been thrown.
+      expect(lateThrow).not.toHaveBeenCalled();
+      const seg = journal.appendRollbackJournalSegment.mock.calls[0]![2];
+      return { op: seg.failedOperations.find((o: { logicalId: string }) => o.logicalId === 'B'), provider };
+    }
+
+    it('journals the id the provider reported when its create call returned', async () => {
+      const { op } = await journaledAfterDeadline(() =>
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1')
+      );
+      expect(op.physicalId).toBe('b-1');
+      expect(op.physicalIdRecoveredFromError).toBe(true);
+      expect(op.provisionedBy).toBe('sdk');
+      // `cdkd rollback --revert-failed` deletes it.
+      expect(classifyFailedOp(op, {})).toBe('delete-failed-create');
+    });
+
+    it("journals the report's identity token without a live read", async () => {
+      const { op, provider } = await journaledAfterDeadline(() =>
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1', 'reported-token')
+      );
+      expect(op.createdResourceIdentity).toBe('reported-token');
+      expect(provider.resourceIdentity).not.toHaveBeenCalled();
+    });
+
+    it('journals no id when the create call itself had not returned', async () => {
+      const { op } = await journaledAfterDeadline(() => {});
+      expect(op).toBeDefined();
+      expect(op.physicalId).toBeUndefined();
+      expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      expect(classifyFailedOp(op, {})).not.toBe('delete-failed-create');
+    });
+
+    it('journals no id for a withdrawn report (the provider deleted its own resource)', async () => {
+      const { op } = await journaledAfterDeadline(() => {
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1');
+        retractCreatedResource('B', 'AWS::S3::Bucket', 'b-1');
+      });
+      expect(op.physicalId).toBeUndefined();
+    });
+
+    it.each([
+      ['another logical id', 'Other', 'AWS::S3::Bucket'],
+      ['another type (a nested child sharing the row id)', 'B', 'AWS::Kinesis::Stream'],
+    ])('ignores a report naming %s', async (_label, logicalId, resourceType) => {
+      const { op } = await journaledAfterDeadline(() =>
+        reportCreatedResource(logicalId, resourceType, 'b-1')
+      );
+      expect(op.physicalId).toBeUndefined();
+    });
+
+    // The error's mark wins, and the resource is journaled once.
+    it('journals one entry under the mark when both the mark and a report reach the engine', async () => {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation(() => {
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-reported');
+        return Promise.reject(markCreatedBeforeFailure(new Error('x'), 'B', 'AWS::S3::Bucket', 'b-marked'));
+      });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations;
+      expect(ops).toHaveLength(1);
+      expect(ops[0].physicalId).toBe('b-marked');
+    });
+
+    // Only the deadline drops the provider's error: any other error is the
+    // provider's own, and its lack of a mark is deliberate (a catch that
+    // deleted its resource), so a report it left standing is not journaled.
+    it('journals no id from a report when the provider itself threw unmarked', async () => {
+      const changes = new Map([['B', { ...makeChange('B'), desiredProperties: { p: 'new' } } as ResourceChange]]);
+      const engine = buildEngine({ changes, deps: { B: [] }, noRollback: true, currentEtag: 'e0' });
+      const provider = (
+        engine as unknown as {
+          providerRegistry: { getProviderFor: () => { provider: { create: ReturnType<typeof vi.fn> } } };
+        }
+      ).providerRegistry.getProviderFor().provider;
+      provider.create.mockImplementation(() => {
+        reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1');
+        return Promise.reject(new Error('cleaned up after the wait failed'));
+      });
+      await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+      const op = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations[0];
+      expect(op.physicalId).toBeUndefined();
+      expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+    });
+
+    describe('read when the failure is saved, not when the deadline fired', () => {
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const BUCKET = 'AWS::S3::Bucket';
+      const QUEUE = 'AWS::SQS::Queue';
+
+      /**
+       * `B` (and any other bucket) times out at 60ms. `C`, a queue with the
+       * default budget, keeps the deploy running for 400ms, so the failure is
+       * saved after whatever `B`'s abandoned call does at ~100ms.
+       */
+      function deadlineEngine(
+        ids: string[],
+        create: (logicalId: string) => Promise<unknown>,
+        opts: {
+          slowSibling?: boolean;
+          bucketTimeoutMs?: number;
+          /** `B` is an in-place UPDATE of `b-old` whose `update()` runs this. */
+          updateB?: () => Promise<unknown>;
+        } = {}
+      ) {
+        const changes = new Map<string, ResourceChange>(
+          ids.map((id) => [id, { ...makeChange(id), desiredProperties: { p: 'new' } } as ResourceChange])
+        );
+        if (opts.updateB !== undefined) {
+          changes.set('B', {
+            ...makeChange('B'),
+            changeType: 'UPDATE',
+            desiredProperties: { p: 'new' },
+            propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: false }],
+          } as unknown as ResourceChange);
+        }
+        if (opts.slowSibling === true) {
+          changes.set('C', { ...makeChange('C'), resourceType: QUEUE } as ResourceChange);
+        }
+        const deps = Object.fromEntries([...changes.keys()].map((id) => [id, [] as string[]]));
+        const engine = buildEngine({
+          changes,
+          deps,
+          noRollback: true,
+          currentEtag: 'e0',
+          ...(opts.updateB !== undefined && {
+            currentResources: {
+              B: {
+                physicalId: 'b-old',
+                resourceType: BUCKET,
+                properties: { p: 'old' },
+                attributes: {},
+                dependencies: [],
+              },
+            },
+          }),
+          engineOptions: {
+            resourceWarnAfterMs: 10,
+            resourceTimeoutByType: { [BUCKET]: opts.bucketTimeoutMs ?? 60 },
+          },
+        });
+        const provider = (
+          engine as unknown as {
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+              };
+            };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        if (opts.updateB !== undefined) provider.update.mockImplementation(opts.updateB);
+        provider.create.mockImplementation(async (logicalId: string) => {
+          if (logicalId === 'C') {
+            await sleep(400);
+            return { physicalId: 'phys-C', attributes: {} };
+          }
+          return create(logicalId);
+        });
+        const resources = Object.fromEntries(
+          [...changes.entries()].map(([id, c]) => [id, { Type: c.resourceType, Properties: {} }])
+        );
+        return { engine, tmpl: { Resources: resources } as CloudFormationTemplate };
+      }
+
+      let release: () => void = () => {};
+      const hang = () =>
+        new Promise<never>((_resolve, reject) => {
+          release = () => reject(new Error('released'));
+        });
+
+      async function failedOps(engine: DeployEngine, t: CloudFormationTemplate) {
+        try {
+          await expect(engine.deploy(stackName, t)).rejects.toThrow();
+        } finally {
+          release();
+        }
+        return journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+          Record<string, unknown>
+        >;
+      }
+
+      it('journals a create that returned only after the deadline fired', async () => {
+        const { engine, tmpl: t } = deadlineEngine(
+          ['B'],
+          async () => {
+            await sleep(100);
+            reportCreatedResource('B', BUCKET, 'b-late');
+            return hang();
+          },
+          { slowSibling: true }
+        );
+        const ops = await failedOps(engine, t);
+        expect(ops.find((o) => o.logicalId === 'B')).toMatchObject({
+          physicalId: 'b-late',
+          physicalIdRecoveredFromError: true,
+        });
+      });
+
+      // The abandoned call goes on to write the resource to state before the
+      // failure is saved: state holds it, so the journal must not as well.
+      it('journals no id for a create the engine recorded before the failure was saved', async () => {
+        const { engine, tmpl: t } = deadlineEngine(
+          ['B'],
+          async () => {
+            await sleep(100);
+            reportCreatedResource('B', BUCKET, 'b-late');
+            return { physicalId: 'b-late', attributes: {} };
+          },
+          { slowSibling: true }
+        );
+        const ops = await failedOps(engine, t);
+        const op = ops.find((o) => o.logicalId === 'B')!;
+        expect(op.physicalId).toBeUndefined();
+        expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      });
+
+      // An in-place `update()` that replaces internally (`this.create()`)
+      // reports its new resource like any create.
+      describe('an in-place update that re-creates internally', () => {
+        it('journals no orphan once the engine recorded the update result', async () => {
+          const { engine, tmpl: t } = deadlineEngine([], async () => ({}), {
+            slowSibling: true,
+            updateB: async () => {
+              reportCreatedResource('B', BUCKET, 'b-new');
+              await sleep(100);
+              return { physicalId: 'b-new', wasReplaced: true };
+            },
+          });
+          const ops = await failedOps(engine, t);
+          expect(ops.filter((o) => o.logicalId === 'B').map((o) => o.changeType)).toEqual(['UPDATE']);
+        });
+
+        it('journals the new resource while the update is still running', async () => {
+          const { engine, tmpl: t } = deadlineEngine([], async () => ({}), {
+            slowSibling: true,
+            updateB: async () => {
+              reportCreatedResource('B', BUCKET, 'b-new');
+              return hang();
+            },
+          });
+          const ops = await failedOps(engine, t);
+          expect(ops.filter((o) => o.logicalId === 'B').map((o) => [o.changeType, o.physicalId])).toEqual([
+            ['UPDATE', 'b-old'],
+            ['CREATE', 'b-new'],
+          ]);
+        });
+      });
+
+      it('journals no id for a resource the abandoned call deleted after the deadline', async () => {
+        const { engine, tmpl: t } = deadlineEngine(
+          ['B'],
+          async () => {
+            reportCreatedResource('B', BUCKET, 'b-1');
+            await sleep(100);
+            retractCreatedResource('B', BUCKET, 'b-1');
+            return hang();
+          },
+          { slowSibling: true }
+        );
+        const ops = await failedOps(engine, t);
+        const op = ops.find((o) => o.logicalId === 'B')!;
+        expect(op.physicalId).toBeUndefined();
+        expect(op).not.toHaveProperty('physicalIdRecoveredFromError');
+      });
+
+      it('a retraction falls back to the earlier report', async () => {
+        const { engine, tmpl: t } = deadlineEngine(['B'], async () => {
+          reportCreatedResource('B', BUCKET, 'b-x');
+          reportCreatedResource('B', BUCKET, 'b-y');
+          retractCreatedResource('B', BUCKET, 'b-y');
+          return hang();
+        });
+        const ops = await failedOps(engine, t);
+        expect(ops.find((o) => o.logicalId === 'B')!.physicalId).toBe('b-x');
+      });
+
+      it('two resources timing out together each journal their own id', async () => {
+        const releases: Array<() => void> = [];
+        const { engine, tmpl: t } = deadlineEngine(['B', 'D'], (logicalId) => {
+          reportCreatedResource(logicalId, BUCKET, `${logicalId}-made`);
+          return new Promise<never>((_resolve, reject) => {
+            releases.push(() => reject(new Error('released')));
+          });
+        });
+        let ops: Array<Record<string, unknown>>;
+        try {
+          ops = await failedOps(engine, t);
+        } finally {
+          for (const r of releases) r();
+        }
+        expect(ops.map((o) => [o.logicalId, o.physicalId]).sort()).toEqual([
+          ['B', 'B-made'],
+          ['D', 'D-made'],
+        ]);
+      });
+
+      describe('across a retried create', () => {
+        it('journals no id when the first attempt deleted its resource and the second never returned', async () => {
+          let attempt = 0;
+          const { engine, tmpl: t } = deadlineEngine(
+            ['B'],
+            async () => {
+              attempt++;
+              if (attempt === 1) {
+                reportCreatedResource('B', BUCKET, 'b-a1');
+                retractCreatedResource('B', BUCKET, 'b-a1');
+                throw new Error('Rate exceeded');
+              }
+              return hang();
+            },
+            { bucketTimeoutMs: 4000 }
+          );
+          const ops = await failedOps(engine, t);
+          expect(attempt).toBe(2);
+          expect(ops.find((o) => o.logicalId === 'B')!.physicalId).toBeUndefined();
+        }, 15_000);
+
+        it("journals the first attempt's resource when the second never returned", async () => {
+          let attempt = 0;
+          const { engine, tmpl: t } = deadlineEngine(
+            ['B'],
+            async () => {
+              attempt++;
+              if (attempt === 1) {
+                reportCreatedResource('B', BUCKET, 'b-a1');
+                throw new Error('Rate exceeded');
+              }
+              return hang();
+            },
+            { bucketTimeoutMs: 4000 }
+          );
+          const ops = await failedOps(engine, t);
+          expect(attempt).toBe(2);
+          expect(ops.find((o) => o.logicalId === 'B')!.physicalId).toBe('b-a1');
+        }, 15_000);
+      });
+    });
+
+    it('control: a report outside any deploy operation is a no-op', () => {
+      expect(() => reportCreatedResource('B', 'AWS::S3::Bucket', 'b-1')).not.toThrow();
+    });
+  });
+
   // go-to-k/cdkd#4604: a replacement runs the same `create()`, journaled as an
   // UPDATE naming the OLD resource; the new one its create made is journaled
   // beside it as a proven orphan of the same logical id.
@@ -2240,6 +2725,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         inPlace?: boolean;
         prevType?: string;
         prevPhysicalId?: string;
+        engineOptions?: Record<string, unknown>;
       } = {}
     ) {
       const type = opts.type ?? 'AWS::SQS::Queue';
@@ -2263,6 +2749,7 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
             ...(opts.prevPhysicalId !== undefined && { physicalId: opts.prevPhysicalId }),
           },
         },
+        ...(opts.engineOptions && { engineOptions: opts.engineOptions }),
       });
       const internals = engine as unknown as {
         stateBackend: { saveState: ReturnType<typeof vi.fn> };
@@ -2284,6 +2771,137 @@ describe('DeployEngine — rollback journal (issue #1183)', () => {
         Record<string, unknown>
       >;
     }
+
+    // go-to-k/cdkd#5511: a replacement create that reported its new resource
+    // and then outlived the deadline journals the orphan from the sink.
+    it('journals the replacement orphan from a report when the deadline dropped the marked error', async () => {
+      const { engine, provider } = replacingEngine(new Error('unused'), {
+        engineOptions: { resourceWarnAfterMs: 10, resourceTimeoutMs: 60 },
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      provider.create.mockImplementation(async () => {
+        reportCreatedResource('B', 'AWS::SQS::Queue', 'b-new');
+        await gate;
+        throw markCreatedBeforeFailure(new Error('wait failed'), 'B', 'AWS::SQS::Queue', 'b-new');
+      });
+      try {
+        await expect(engine.deploy(stackName, replaceTemplate())).rejects.toThrow();
+      } finally {
+        release();
+      }
+      const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+        Record<string, unknown>
+      >;
+      expect(ops.map((o) => [o.changeType, o.physicalId])).toEqual([
+        ['UPDATE', 'b-old'],
+        ['CREATE', 'b-new'],
+      ]);
+      expect(ops[1]).toMatchObject({ physicalIdRecoveredFromError: true, replacedPhysicalId: 'b-old' });
+    });
+
+    // go-to-k/cdkd#5511: the replacement's create RETURNED, and the old
+    // resource's delete is what outlives the deadline. The new resource is in
+    // no state record yet, so it is journaled; once the engine records it, it
+    // is not.
+    describe('a replacement whose old-resource delete outlives the deadline (go-to-k/cdkd#5511)', () => {
+      const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+      function replacementPastDeadline(oldDelete: () => Promise<void>) {
+        const change = {
+          logicalId: 'B',
+          changeType: 'UPDATE',
+          resourceType: 'AWS::SQS::Queue',
+          desiredProperties: { p: 'new' },
+          propertyChanges: [{ path: 'p', oldValue: 'old', newValue: 'new', requiresReplacement: true }],
+        } as unknown as ResourceChange;
+        // `C` (a bucket, default budget) keeps the deploy running for 400ms.
+        const changes = new Map([
+          ['B', change],
+          ['C', makeChange('C')],
+        ]);
+        const engine = buildEngine({
+          changes,
+          deps: { B: [], C: [] },
+          noRollback: true,
+          currentEtag: 'e0',
+          currentResources: { B: prevB() },
+          engineOptions: {
+            resourceWarnAfterMs: 10,
+            resourceTimeoutByType: { 'AWS::SQS::Queue': 60 },
+          },
+        });
+        const provider = (
+          engine as unknown as {
+            providerRegistry: {
+              getProviderFor: () => {
+                provider: { create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
+              };
+            };
+          }
+        ).providerRegistry.getProviderFor().provider;
+        provider.create.mockImplementation(async (logicalId: string) => {
+          if (logicalId === 'C') {
+            await sleep(400);
+            return { physicalId: 'phys-C', attributes: {} };
+          }
+          reportCreatedResource('B', 'AWS::SQS::Queue', 'b-new');
+          return { physicalId: 'b-new', attributes: {} };
+        });
+        provider.delete.mockImplementation(oldDelete);
+        const tmpl: CloudFormationTemplate = {
+          Resources: {
+            B: { Type: 'AWS::SQS::Queue', Properties: { p: 'new' } },
+            C: { Type: 'AWS::S3::Bucket', Properties: {} },
+          },
+        };
+        return { engine, tmpl, provider };
+      }
+
+      it('journals the new resource while the old delete is still running', async () => {
+        let release: () => void = () => {};
+        const { engine, tmpl, provider } = replacementPastDeadline(
+          () =>
+            new Promise<void>((_resolve, reject) => {
+              release = () => reject(new Error('released'));
+            })
+        );
+        try {
+          await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        } finally {
+          release();
+        }
+        expect(provider.delete).toHaveBeenCalled();
+        const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+          Record<string, unknown>
+        >;
+        expect(ops.filter((o) => o.logicalId === 'B').map((o) => [o.changeType, o.physicalId])).toEqual([
+          ['UPDATE', 'b-old'],
+          ['CREATE', 'b-new'],
+        ]);
+        expect(ops.find((o) => o.changeType === 'CREATE' && o.logicalId === 'B')).toMatchObject({
+          physicalIdRecoveredFromError: true,
+          replacedPhysicalId: 'b-old',
+        });
+        expect(ops.find((o) => o.changeType === 'UPDATE')).toMatchObject({
+          replacementOrphaned: 'create-first',
+        });
+      });
+
+      it('journals no orphan once the engine has recorded the new resource', async () => {
+        // The delete finishes at ~100ms, past the 60ms deadline: the abandoned
+        // call goes on to record `b-new` before the failure is saved.
+        const { engine, tmpl, provider } = replacementPastDeadline(() => sleep(100));
+        await expect(engine.deploy(stackName, tmpl)).rejects.toThrow();
+        expect(provider.delete).toHaveBeenCalled();
+        const ops = journal.appendRollbackJournalSegment.mock.calls[0]![2].failedOperations as Array<
+          Record<string, unknown>
+        >;
+        expect(ops.filter((o) => o.logicalId === 'B').map((o) => o.changeType)).toEqual(['UPDATE']);
+      });
+    });
 
     // go-to-k/cdkd#4655: the replacement's new resource carries its token too;
     // the UPDATE naming the replaced record does not.

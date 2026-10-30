@@ -37,6 +37,7 @@ import {
 import {
   priorAttemptLookup,
   priorAttemptsInJournal,
+  provenOrphanIdsInJournal,
   withPriorAttempts,
 } from '../prior-attempt-scope.js';
 import { withStackRecords } from '../stack-records-scope.js';
@@ -266,7 +267,7 @@ export async function provisionResource(
   try {
     await withPrintingSecrets(printingRegistry, () =>
       withResourceDeadline(
-        async () => {
+        trackInFlightBody(engine, logicalId, async () => {
           try {
             const { value: bodyResult, unaddressed } = await collectDeleteGuards(deleteGuards, () =>
               collectNestedChildUnaddressed(() =>
@@ -349,7 +350,7 @@ export async function provisionResource(
               });
             }
           }
-        },
+        }),
         {
           warnAfterMs,
           timeoutMs,
@@ -555,6 +556,30 @@ export async function provisionResource(
 }
 
 /**
+ * go-to-k/cdkd#5505: `body`, recorded in `engine.inFlightBodies` until it
+ * settles, so a caller can wait for one the deadline abandoned.
+ */
+function trackInFlightBody<T>(
+  engine: DeployEngine,
+  logicalId: string,
+  body: () => Promise<T>
+): () => Promise<T> {
+  return () => {
+    const running = body();
+    // Resolves whether the body succeeded; never rejects.
+    const entry: Promise<boolean> = running.then(
+      () => true,
+      () => false
+    );
+    engine.inFlightBodies.set(logicalId, entry);
+    void entry.then(() => {
+      if (engine.inFlightBodies.get(logicalId) === entry) engine.inFlightBodies.delete(logicalId);
+    });
+    return running;
+  };
+}
+
+/**
  * Inner body of provisionResource, extracted so the outer wrapper can
  * apply the per-resource deadline (`withResourceDeadline`) without
  * having the timeout / warn timer code dwarf the real provisioning
@@ -575,12 +600,11 @@ export async function provisionResourceBody(
   // go-to-k/cdkd#4355: what this stack's rollback journal recorded for the
   // resource, for a provider that cannot otherwise tell its own leftover from
   // another owner's identical resource. Read only when a provider asks.
-  const priorAttempts = priorAttemptLookup(logicalId, async () =>
-    priorAttemptsInJournal(
-      await engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion),
-      logicalId,
-      change.resourceType
-    )
+  const loadJournal = () => engine.stateBackend.loadRollbackJournal(stackName, engine.stackRegion);
+  const priorAttempts = priorAttemptLookup(
+    logicalId,
+    async () => priorAttemptsInJournal(await loadJournal(), logicalId, change.resourceType),
+    async () => provenOrphanIdsInJournal(await loadJournal(), logicalId, change.resourceType)
   );
   // go-to-k/cdkd#4492: bound for every change type — a DELETE asks which other
   // records of the stack still hold its resource.

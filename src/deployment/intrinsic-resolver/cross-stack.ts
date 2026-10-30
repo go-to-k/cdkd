@@ -532,6 +532,41 @@ export function pinSecretVerdict(
 }
 
 /**
+ * The export `exportName` from `entry.producerStack`'s record in the
+ * CONSUMER's region, when that record exports it: the index entry came from a
+ * same-named stack in another region (two Stages sharing a stackName, #5176),
+ * and the producer in the consumer's own region is the one CloudFormation
+ * would bind. `undefined` when there is no such record or export, or the read
+ * fails; the caller then keeps the cross-region entry.
+ */
+async function sameRegionExportEntry(
+  resolver: IntrinsicFunctionResolver,
+  context: ResolverContext,
+  exportName: string,
+  entry: NonNullable<Awaited<ReturnType<ExportIndexStore['lookup']>>>
+): Promise<typeof entry | undefined> {
+  try {
+    const local = await context.stateBackend!.getState(
+      entry.producerStack,
+      resolver.resolverRegion
+    );
+    if (!local || !importableOutputKeys(local.state).includes(exportName)) return undefined;
+    return {
+      // allow-template-keyed-bag-read: membership was just established by
+      // `importableOutputKeys(local.state).includes(exportName)` above.
+      value: local.state.outputs[exportName],
+      producerStack: entry.producerStack,
+      producerRegion: resolver.resolverRegion,
+    };
+  } catch (err) {
+    resolver.logger.debug(
+      safeMsg`Same-region read for an exports index entry failed: ${displayMasked(resolver, describeAwsFailure(err).detail, context)}`
+    );
+    return undefined;
+  }
+}
+
+/**
  * Resolve Fn::ImportValue (cross-stack references)
  *
  * Searches all other stacks for an exported output with the given name.
@@ -609,6 +644,25 @@ export async function resolveImportValue(
       );
       entry = undefined;
     }
+    // A producer in THIS stack's region wins over one in another (#5176).
+    // The run's one index holds every region's entries keyed by export name,
+    // and two Stages sharing a stackName in two regions publish the SAME
+    // export names, so the later deploy's entry replaces the earlier one's.
+    // A cross-region entry is therefore checked against the same-named
+    // producer's record in this region (one read, only for a cross-region
+    // entry); without one, the cross-region import resolves as before.
+    // Performance gave way to correctness here: a deliberate cross-region
+    // import pays that one GET per resolve, which binding the other region's
+    // value would not; a same-region hit, every single-region app's case,
+    // pays nothing. Per-region index entries would avoid the read but need an
+    // index schema change.
+    if (
+      entry &&
+      !sameRegion(entry.producerRegion, resolver.resolverRegion) &&
+      entry.producerStack !== context.stackName
+    ) {
+      entry = (await sameRegionExportEntry(resolver, context, exportName, entry)) ?? entry;
+    }
     if (entry && (!context.stackName || entry.producerStack !== context.stackName)) {
       recordImport(resolver, context, exportName, entry.producerStack, entry.producerRegion);
       // NAMES the reference, never the VALUE (issue
@@ -666,7 +720,16 @@ export async function resolveImportValue(
     | { value: unknown; refStack: string; lookupRegion: string; state: StackState }
     | undefined;
 
-  for (const ref of allStacks) {
+  // This stack's region first (a region-less legacy record is read in it),
+  // so a producer here wins over a same-named export in another region
+  // (#5176). The same records are read; only the order changes.
+  const inThisRegion = (r: { region?: string | undefined }): boolean =>
+    r.region === undefined || sameRegion(r.region, resolver.resolverRegion);
+  const scanOrder = [
+    ...allStacks.filter(inThisRegion),
+    ...allStacks.filter((r) => !inThisRegion(r)),
+  ];
+  for (const ref of scanOrder) {
     const { stackName: refStack, region: refRegion } = ref;
     if (context.stackName && refStack === context.stackName) {
       resolver.logger.debug(

@@ -28,11 +28,13 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  * IAMRoleProvider.update() still resets Description to ''.
  *
  * The PATH phases (gated on CDKD_TEST_ROLE_PATH, issue #4739) move an UNNAMED
- * role -- cdkd generates its name, `${stackName}-<logicalId>` -- that a named
- * function runs as from the default path `/` to `/cdkd-4739/`. `Path` is
- * createOnly and the role's name stays the same, so a plain deploy is refused
- * with the replacement-collision guidance, and `--replace` deletes the role and
- * re-creates it on the new path, re-pointing the function at the new ARN.
+ * role -- cdkd generates its name, `${stackName}-<logicalId>-<12 hex>` -- that a
+ * named function runs as from the default path `/` to `/cdkd-4739/`. `Path` is
+ * createOnly, so this is a replacement, which on a stack with a stack instance
+ * id creates the new role at the next name generation (go-to-k/cdkd#5064): a
+ * NEW name, created first, then the old role deleted. A plain deploy therefore
+ * succeeds with no `--replace`, re-pointing the function and the policies
+ * attached by name at the new role.
  *
  * covers: AWS::IAM::Role, AWS::Lambda::Function
  */
@@ -77,14 +79,15 @@ export class IamRolePrefixedNameUpdateStack extends cdk.Stack {
           }),
     });
 
-    // No roleName: cdkd generates the name, which a Path change leaves as it is.
+    // No roleName: cdkd generates the name, which a Path change moves to the
+    // next name generation.
     const pathRole = new iam.Role(this, 'PathRole', {
       assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
       ...(rolePath ? { path: '/cdkd-4739/' } : {}),
     });
-    // Two resources attached to the role BY NAME from the outside, so the
-    // --replace delete-first detaches them and the re-created role must get
-    // them back (go-to-k/cdkd#4461): the separate AWS::IAM::Policy
+    // Two resources attached to the role BY NAME from the outside, which the
+    // replacement must move onto the new role (go-to-k/cdkd#4461): the
+    // separate AWS::IAM::Policy
     // (DefaultPolicy) addToPolicy creates, and a customer managed policy whose
     // own `Roles` names the role.
     pathRole.addToPolicy(

@@ -200,7 +200,7 @@ and the rule id as the `Id` attribute. You cannot pass that stored form to
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>` |
 | `AWS::EC2::SubnetRouteTableAssociation` | The `rtbassoc-...` association id. |
 | `AWS::EC2::SubnetNetworkAclAssociation` | The `aclassoc-...` association id. |
-| `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>`, or CloudFormation's `IGW\|<vpcId>`. |
+| `AWS::EC2::VPCGatewayAttachment` | `<gatewayId>\|<vpcId>` (an `igw-...` or `vgw-...` gateway), or CloudFormation's `IGW\|<vpcId>` / `VGW\|<vpcId>`. |
 | `AWS::BedrockAgentCore::Runtime` | The runtime ARN. |
 | `AWS::BedrockAgentCore::Evaluator` | The evaluator ARN or bare id. |
 | `AWS::Lambda::MicrovmImage` | The image ARN. |
@@ -218,10 +218,10 @@ These types take the plain physical id: `AWS::SNS::Subscription`,
   `<functionArn>|<statementId>` form.
 - **`AWS::Lambda::EventInvokeConfig`**: a bare function name means the
   qualifier `$LATEST`.
-- **`AWS::EC2::VPCGatewayAttachment`**: only internet gateway attachments are
-  adopted; a VPN gateway attachment is not. Given `IGW|<vpcId>`, cdkd takes
-  the gateway from the template's `InternetGatewayId`, or else from the one
-  gateway attached to that VPC.
+- **`AWS::EC2::VPCGatewayAttachment`**: given `IGW|<vpcId>` or
+  `VGW|<vpcId>`, cdkd takes the gateway from the template's
+  `InternetGatewayId` / `VpnGatewayId`, or else from the one gateway of that
+  kind attached to that VPC.
 - **`AWS::BedrockAgentCore::Evaluator`**: cdkd turns a bare id into the ARN
   with `GetEvaluator`.
 - **`AWS::Lambda::MicrovmImage`**: a bare name is rejected.

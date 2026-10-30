@@ -123,6 +123,27 @@ function portModel(opts: { deleteError?: Error; createError?: Error } = {}) {
 }
 
 describe('reversing a delete-first replacement (go-to-k/cdkd#4690)', () => {
+  // go-to-k/cdkd#5131: the re-create reuses the name the delete just freed; a
+  // type whose delete returns before AWS releases it waits in between.
+  it("waits for the deleted new resource's name before re-creating the old one", async () => {
+    const m = portModel();
+    const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };
+    let interrupted = false;
+    (m.provider as Record<string, unknown>)['waitForNameReleased'] = vi.fn(
+      async (_id: string, physicalId: string, _t: string, ctx: { isInterrupted: () => boolean }) => {
+        m.calls.push(`wait ${physicalId} interrupted=${ctx.isInterrupted()}`);
+        interrupted = true;
+        expect(ctx.isInterrupted()).toBe(true);
+        interrupted = false;
+      }
+    );
+    const result = await replayRollback([op(true)], state, 'S', m.ctx, {
+      isInterrupted: () => interrupted,
+    });
+    expect(m.calls).toEqual(['delete listener-new', 'wait listener-new interrupted=false', 'create']);
+    expect(result.failures).toBe(0);
+  });
+
   it('deletes the new resource before re-creating the old one', async () => {
     const m = portModel();
     const state: Record<string, ResourceState> = { Listener: rec('listener-new', { provisionedBy: 'sdk' }) };

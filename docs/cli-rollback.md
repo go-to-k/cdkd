@@ -205,8 +205,11 @@ resource's `DeletionPolicy`, as CloudFormation does. A resource you marked
 
 The plan says which of these will happen before you confirm.
 
-- **`Retain`.** cdkd notes the kept resource in the state record, so that a
-  later deploy can adopt it again. The plan labels it `orphan`.
+- **`Retain`.** cdkd notes the kept resource in the state record. A later
+  deploy adopts it again only on a stack first deployed before generated names
+  carried a suffix; on any other stack it warns and creates a new resource
+  under a new name, and [`cdkd import`](import.md) adopts the kept one. The
+  plan labels it `orphan`.
 - **`Snapshot`.** `--skip-final-snapshot` deletes without the snapshot. How
   each type is snapshotted is the same as for a destroy; see
   [final snapshots](cli-destroy-guards.md#deletionpolicy-snapshot-final-snapshots-on-delete-skip-final-snapshot).

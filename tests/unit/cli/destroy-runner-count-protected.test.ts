@@ -418,7 +418,9 @@ describe('countProtectedResources', () => {
       ).toBe(1);
     });
 
-    it("does not count another region's replica flag", () => {
+    it("counts another region's replica flag, which --remove-protection now flips", () => {
+      // go-to-k/cdkd#5355: cdkd sets a cross-region replica's own guard, and
+      // the delete turns it off before dropping the replica.
       expect(
         countProtectedResources(
           table({
@@ -428,7 +430,7 @@ describe('countProtectedResources', () => {
             ],
           })
         )
-      ).toBe(0);
+      ).toBe(1);
     });
 
     it('counts protection enabled out of band over a template that says off', () => {
@@ -530,5 +532,20 @@ describe('countProtectedResources', () => {
       expect(countProtectedResources(lb({ LoadBalancerAttributes: [null, 5, 'x'] }))).toBe(0);
     });
   });
-});
 
+  it('counts a protected superseded copy too (go-to-k/cdkd#5111)', () => {
+    const state = makeState({});
+    state.supersededResources = [
+      {
+        logicalId: 'Lg',
+        supersededAt: 1,
+        state: {
+          physicalId: 'lg-old',
+          resourceType: 'AWS::Logs::LogGroup',
+          properties: { DeletionProtectionEnabled: true },
+        },
+      },
+    ];
+    expect(countProtectedResources(state)).toBe(1);
+  });
+});

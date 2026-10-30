@@ -25,7 +25,7 @@ import {
 } from '../../../src/deployment/replacement-name-holder.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { withSkipPrefix, withStackName } from '../../../src/provisioning/resource-name.js';
+import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resource-name.js';
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
@@ -586,7 +586,7 @@ describe('replacementOldHoldsSentName', () => {
     ];
     for (const [type, property, sent] of cases) {
       const ask = (physicalId: string, createdVia: 'sdk' | 'cc-api' = 'sdk') =>
-        withStackName('MyStack', () =>
+        withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
           holds({
             createType: type,
             holderType: type,
@@ -607,7 +607,7 @@ describe('replacementOldHoldsSentName', () => {
       expect(ask(sent, 'cc-api').holds, type).toBe(false);
     }
     // A scoped type still needs its scope.
-    const schedule = withStackName('MyStack', () =>
+    const schedule = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       holds({
         createType: 'AWS::Scheduler::Schedule',
         holderType: 'AWS::Scheduler::Schedule',
@@ -638,10 +638,10 @@ describe('replacementOldHoldsSentName', () => {
     expect(Object.keys(table).sort()).toEqual(Object.keys(expected).sort());
     const longId = 'L'.repeat(1100);
     for (const [type, length] of Object.entries(expected)) {
-      const name = withStackName('MyStack', () => table[type]!.derive(longId));
+      const name = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => table[type]!.derive(longId));
       expect(name.length, type).toBe(length);
       // ...and that exact name is what proves the holder.
-      const verdict = withStackName('MyStack', () =>
+      const verdict = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         holds({
           createType: type,
           holderType: type,
@@ -681,7 +681,7 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('the derived generated names are the deploy side only: the rollback still refuses them', () => {
-    const verdict = withStackName('CdkdX', () =>
+    const verdict = withStackScope({ stackName: 'CdkdX', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       reverseReplacementNewHoldsName({
         oldResourceType: 'AWS::Logs::LogGroup',
         newResourceType: 'AWS::Logs::LogGroup',
@@ -731,7 +731,7 @@ describe('replacementOldHoldsSentName', () => {
   });
 
   it('an ELBv2 target group keeping its name: the sent (prefixed) name is proven through the ARN', () => {
-    const verdict = withStackName('MyStack', () =>
+    const verdict = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       holds({
         createType: TG,
         holderType: TG,
@@ -744,7 +744,7 @@ describe('replacementOldHoldsSentName', () => {
     expect(verdict.holds).toBe(true);
     // The same records with the old group named WITHOUT the prefix: the create
     // sent `MyStack-tg`, which that group never held.
-    const other = withStackName('MyStack', () =>
+    const other = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       holds({
         createType: TG,
         holderType: TG,
@@ -789,7 +789,7 @@ describe('the parent review round of #3979 (helper)', () => {
 
   it('each derive() applies its provider options: case, charset and wrap', () => {
     const table = replacementDerivedGeneratedNames();
-    const derive = (type: string) => withStackName('MyStack', () => table[type]!.derive('Lg_A.b/C'));
+    const derive = (type: string) => withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => table[type]!.derive('Lg_A.b/C'));
     expect(derive('AWS::S3::Bucket')).toBe('mystack-lg-a.b-c');
     expect(derive('AWS::Logs::LogGroup')).toBe('/cdkd/MyStack-Lg_A-b/C');
     expect(derive('AWS::SSM::Parameter')).toBe('/MyStack-Lg_A-b/C');
@@ -1203,7 +1203,7 @@ describe('replacementSentNameMoves (go-to-k/cdkd#3937 review)', () => {
 
   it('answers the sent name when the prefix flag moved it off the one the old ARN carries', () => {
     // Created under --prefix-user-supplied-names, replaced under the default.
-    const change = withStackName('MyStack', () =>
+    const change = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       withSkipPrefix(true, () => ask(arn('MyStack-lb'), 'lb'))
     );
     expect(change).toEqual({
@@ -1215,7 +1215,7 @@ describe('replacementSentNameMoves (go-to-k/cdkd#3937 review)', () => {
     });
     // ...and the reverse direction.
     expect(
-      withStackName('MyStack', () => withSkipPrefix(false, () => ask(arn('lb'), 'lb')))?.desiredName
+      withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withSkipPrefix(false, () => ask(arn('lb'), 'lb')))?.desiredName
     ).toBe('MyStack-lb');
   });
 
@@ -1226,7 +1226,7 @@ describe('replacementSentNameMoves (go-to-k/cdkd#3937 review)', () => {
       [LB, 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/gwy/MyStack-lb/0123456789abcdef'],
       [tg, 'arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/MyStack-lb/0123456789abcdef'],
     ] as const) {
-      const change = withStackName('MyStack', () =>
+      const change = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () =>
           ask(held, 'lb', { oldResourceType: type, newResourceType: type })
         )
@@ -1237,7 +1237,7 @@ describe('replacementSentNameMoves (go-to-k/cdkd#3937 review)', () => {
 
   it('answers nothing for a Name that is still an unresolved dynamic reference', () => {
     expect(
-      withStackName('MyStack', () =>
+      withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         withSkipPrefix(true, () => ask(arn('MyStack-lb'), '{{resolve:ssm:x}}'))
       )
     ).toBeUndefined();
@@ -1245,16 +1245,16 @@ describe('replacementSentNameMoves (go-to-k/cdkd#3937 review)', () => {
 
   it('answers nothing when the sent name is the one the old ARN carries', () => {
     expect(
-      withStackName('MyStack', () => withSkipPrefix(true, () => ask(arn('lb'), 'lb')))
+      withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withSkipPrefix(true, () => ask(arn('lb'), 'lb')))
     ).toBeUndefined();
     expect(
-      withStackName('MyStack', () => withSkipPrefix(false, () => ask(arn('MyStack-lb'), 'lb')))
+      withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withSkipPrefix(false, () => ask(arn('MyStack-lb'), 'lb')))
     ).toBeUndefined();
   });
 
   it('answers nothing off an unreadable ARN, another type, a Type change, or Cloud Control', () => {
     const inScope = <T>(fn: () => T): T =>
-      withStackName('MyStack', () => withSkipPrefix(true, fn));
+      withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => withSkipPrefix(true, fn));
     expect(inScope(() => ask('not-an-arn', 'lb'))).toBeUndefined();
     expect(inScope(() => ask(arn('MyStack-lb'), 'lb', { createdVia: 'cc-api' }))).toBeUndefined();
     expect(
@@ -1281,7 +1281,7 @@ describe('maskRewrittenSentName (go-to-k/cdkd#3937 review)', () => {
   ])("masks both prefix flags' spellings of a secret-derived %s", (_label, declared) => {
     // The base masker matches only the plaintext the template resolved.
     const base = (text: string): string => text.split(declared).join('***');
-    withStackName('MyStack', () => {
+    withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () => {
       const spellings = rewrittenNameSpellings(TG, declared, 'Tg');
       expect(new Set(spellings).size).toBe(2);
       // Pinned literally for the short name, so a drift in the shared helper
@@ -1303,7 +1303,7 @@ describe('maskRewrittenSentName (go-to-k/cdkd#3937 review)', () => {
   });
 
   it('leaves a name that is not secret-derived alone', () => {
-    const mask = withStackName('MyStack', () =>
+    const mask = withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       withSkipPrefix(true, () =>
         maskRewrittenSentName(TG, { Name: 'plain_name' }, 'Tg', (t) => t)
       )

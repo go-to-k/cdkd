@@ -342,6 +342,19 @@ export function isLookupRoleDenial(error: unknown): boolean {
  * generated reference that advice is wrong, so only AWS's own words are shown.
  */
 export function describeInnermostAwsError(error: unknown): string {
+  const innermost = innermostCause(error);
+  if (!(innermost instanceof Error)) return displayAwsMessage(safeStringify(innermost));
+  const code = (innermost as { Code?: unknown }).Code;
+  const name = typeof code === 'string' && code !== '' ? code : innermost.name;
+  const message = displayAwsMessage(innermost.message);
+  return name && name !== 'Error' ? `${displayIdent(name)}: ${message}` : message;
+}
+
+/**
+ * The deepest `cause` link of `error`, walked at most six links deep: the
+ * error {@link describeInnermostAwsError} quotes.
+ */
+export function innermostCause(error: unknown): unknown {
   let innermost: unknown = error;
   for (let depth = 0; depth < 6; depth++) {
     const cause: unknown =
@@ -351,11 +364,7 @@ export function describeInnermostAwsError(error: unknown): string {
     if (cause === null || typeof cause !== 'object') break;
     innermost = cause;
   }
-  if (!(innermost instanceof Error)) return displayAwsMessage(safeStringify(innermost));
-  const code = (innermost as { Code?: unknown }).Code;
-  const name = typeof code === 'string' && code !== '' ? code : innermost.name;
-  const message = displayAwsMessage(innermost.message);
-  return name && name !== 'Error' ? `${displayIdent(name)}: ${message}` : message;
+  return innermost;
 }
 
 /** One `Fn::GetStackOutput` argument carrying a `RoleArn`, as a template holds it. */

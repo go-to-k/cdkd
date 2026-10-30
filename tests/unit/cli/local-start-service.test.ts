@@ -1,3 +1,4 @@
+import { CommanderError } from 'commander';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   createLocalStartServiceCommand,
@@ -98,20 +99,40 @@ describe('createLocalStartServiceCommand', () => {
     expect(parsed.opts().restartPolicy).toBe('always');
   });
 
-  it('rejects --max-tasks=0 (positive-integer constraint)', () => {
+  /**
+   * cdk-local's option argParsers throw commander's `InvalidArgumentError`
+   * (go-to-k/cdk-local#824), which commander turns into its own
+   * `error: option '<flags>' argument '<value>' is invalid. <message>` report.
+   * Without `exitOverride()` that report goes to stderr and calls
+   * `process.exit(1)`; with it, `parse()` throws a `CommanderError` whose
+   * `code` is `commander.invalidArgument`. Commander keys on that `code`, not
+   * `instanceof`, so cdk-local's own commander copy still reaches cdkd's.
+   */
+  function parseRejection(args: string[]): CommanderError {
     const fresh = createLocalStartServiceCommand();
     fresh.action(() => {});
-    expect(() =>
-      fresh.parse(['Svc', '--max-tasks', '0'], { from: 'user' })
-    ).toThrow(/--max-tasks must be a positive integer/);
+    fresh.exitOverride();
+    fresh.configureOutput({ writeErr: () => {}, writeOut: () => {} });
+    try {
+      fresh.parse(args, { from: 'user' });
+    } catch (err) {
+      expect(err).toBeInstanceOf(CommanderError);
+      expect((err as CommanderError).code).toBe('commander.invalidArgument');
+      return err as CommanderError;
+    }
+    throw new Error(`expected parse(${JSON.stringify(args)}) to reject`);
+  }
+
+  it('rejects --max-tasks=0 (positive-integer constraint)', () => {
+    expect(parseRejection(['Svc', '--max-tasks', '0']).message).toMatch(
+      /option '--max-tasks <n>' argument '0' is invalid\. --max-tasks must be a positive integer/
+    );
   });
 
   it('rejects invalid --restart-policy values', () => {
-    const fresh = createLocalStartServiceCommand();
-    fresh.action(() => {});
-    expect(() =>
-      fresh.parse(['Svc', '--restart-policy', 'forever'], { from: 'user' })
-    ).toThrow(/--restart-policy must be one of/);
+    expect(parseRejection(['Svc', '--restart-policy', 'forever']).message).toMatch(
+      /argument 'forever' is invalid\. --restart-policy must be one of/
+    );
   });
 
   it('parses --no-pull as pull=false (Commander auto-negation)', () => {
@@ -142,19 +163,15 @@ describe('createLocalStartServiceCommand', () => {
     // allocation, causing Docker to reject the duplicate-subnet
     // network creation. Surfacing the cap at parse time gives the
     // user an actionable error before any boot work.
-    const fresh = createLocalStartServiceCommand();
-    fresh.action(() => {});
-    expect(() =>
-      fresh.parse(['Svc', '--max-tasks', '84'], { from: 'user' })
-    ).toThrow(/--max-tasks 84 exceeds the per-replica link-local \/24 subnet allocator's range \(83\)/);
+    expect(parseRejection(['Svc', '--max-tasks', '84']).message).toMatch(
+      /--max-tasks 84 exceeds the per-replica link-local \/24 subnet allocator's range \(83\)/
+    );
   });
 
   it('rejects --max-tasks 100 (PR #504 review canonical case)', () => {
-    const fresh = createLocalStartServiceCommand();
-    fresh.action(() => {});
-    expect(() =>
-      fresh.parse(['Svc', '--max-tasks', '100'], { from: 'user' })
-    ).toThrow(/--max-tasks 100 exceeds.*83/);
+    expect(parseRejection(['Svc', '--max-tasks', '100']).message).toMatch(
+      /--max-tasks 100 exceeds.*83/
+    );
   });
 });
 

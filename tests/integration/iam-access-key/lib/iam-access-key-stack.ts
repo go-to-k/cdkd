@@ -17,6 +17,8 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
  * in-place-mutable property per the registry schema (UserName / Serial are
  * createOnly). The cached SecretAccessKey must SURVIVE the update (the
  * provider omits attributes on update so the create-time secret is not wiped).
+ * The same update moves the user and a group to another `Path`, which is
+ * mutable in place (#3723: cdkd used to drop it on update).
  */
 export class IamAccessKeyStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -24,8 +26,16 @@ export class IamAccessKeyStack extends cdk.Stack {
 
     const isUpdate = process.env.CDKD_TEST_UPDATE === 'true';
 
+    const path = isUpdate ? '/cdkd-moved/' : undefined;
+
     const user = new iam.User(this, 'CiUser', {
       userName: 'cdkd-iam-access-key-user',
+      path,
+    });
+
+    new iam.Group(this, 'CiGroup', {
+      groupName: 'cdkd-iam-access-key-group',
+      path,
     });
 
     const key = new iam.AccessKey(this, 'CiKey', {

@@ -4,6 +4,9 @@ import {
   UpdateBudgetCommand,
   DeleteBudgetCommand,
   DescribeBudgetCommand,
+  DescribeNotificationsForBudgetCommand,
+  DescribeSubscribersForNotificationCommand,
+  ListTagsForResourceCommand,
   CreateNotificationCommand,
   DeleteNotificationCommand,
   CreateSubscriberCommand,
@@ -27,23 +30,31 @@ import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generateResourceName } from '../resource-name.js';
-import type {
-  ResourceProvider,
-  ResourceCreateResult,
-  ResourceUpdateResult,
-  ResourceImportInput,
-  ResourceImportResult,
-  CreateContext,
-  UpdateContext,
+import {
+  RESOURCE_NOT_FOUND,
+  type ResourceNotFound,
+  type ResourceProvider,
+  type ResourceCreateResult,
+  type ResourceUpdateResult,
+  type ResourceImportInput,
+  type ResourceImportResult,
+  type CreateContext,
+  type UpdateContext,
 } from '../../types/resource.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 
 // ─── List reads (go-to-k/cdkd#3989) ─────────────────────────────────
 //
@@ -176,6 +187,150 @@ function removableRecorded(
     );
 }
 
+// ─── Drift read-back (go-to-k/cdkd#5183) ────────────────────────────
+
+/** A finite number from a number or a numeric string; anything else is `undefined`. */
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * A CFn `TimePeriod.Start` / `.End` as an ISO string, by the rules `toSdkDate`
+ * sends it with (a date string, or an epoch in seconds or milliseconds, as a
+ * number or a digit string). `undefined` when it does not parse.
+ */
+function isoDate(value: unknown): string | undefined {
+  let date: Date;
+  if (typeof value === 'number') date = new Date(value < 1e12 ? value * 1000 : value);
+  else if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const n = Number(value);
+    date = new Date(n < 1e12 ? n * 1000 : n);
+  } else if (typeof value === 'string') date = parseCfnTimestamp(value);
+  else if (value instanceof Date) date = value;
+  else return undefined;
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+/** A `Spend` with its `Amount` as a number; the input itself when nothing changes. */
+function canonicalSpend(spend: unknown): unknown {
+  if (!isPlainRecord(spend)) return spend;
+  const amount = finiteNumber(spend['Amount']);
+  return amount === undefined || amount === spend['Amount'] ? spend : { ...spend, Amount: amount };
+}
+
+/**
+ * One side of a budget drift comparison in the canonical form: amounts and
+ * thresholds as numbers, `TimePeriod` dates as ISO strings, and an absent
+ * `ThresholdType` as Budgets' default `PERCENTAGE`. Applied to BOTH sides, so
+ * a template that spelled a value one way and a readback that returns it
+ * another compare equal. Returns the input by identity when nothing applies.
+ *
+ * `side` is a drift comparison bag (the baseline or the readback), never a
+ * desired bag bound for AWS, so it is not named like one.
+ */
+function canonicalizeBudgetDriftBag(side: Record<string, unknown>): Record<string, unknown> {
+  let out = side;
+  const budget = side['Budget'];
+  if (isPlainRecord(budget)) {
+    let nextBudget = budget;
+    const set = (key: string, value: unknown): void => {
+      if (value === nextBudget[key]) return;
+      if (nextBudget === budget) nextBudget = { ...budget };
+      nextBudget[key] = value;
+    };
+    set('BudgetLimit', canonicalSpend(budget['BudgetLimit']));
+    const planned = budget['PlannedBudgetLimits'];
+    if (isPlainRecord(planned)) {
+      // The keys are period start times; `Object.fromEntries` keeps any key,
+      // `__proto__` included, an own property.
+      const entries = Object.entries(planned).map(([key, spend]) => [key, canonicalSpend(spend)]);
+      if (entries.some(([key, spend]) => spend !== planned[key as string])) {
+        set('PlannedBudgetLimits', Object.fromEntries(entries));
+      }
+    }
+    const period = budget['TimePeriod'];
+    if (isPlainRecord(period)) {
+      let nextPeriod = period;
+      for (const key of ['Start', 'End']) {
+        if (period[key] === undefined) continue;
+        const iso = isoDate(period[key]);
+        if (iso === undefined || iso === period[key]) continue;
+        if (nextPeriod === period) nextPeriod = { ...period };
+        nextPeriod[key] = iso;
+      }
+      set('TimePeriod', nextPeriod);
+    }
+    if (nextBudget !== budget) out = { ...out, Budget: nextBudget };
+  }
+  const list = side['NotificationsWithSubscribers'];
+  if (Array.isArray(list)) {
+    let changed = false;
+    const nextList = list.map((entry: unknown) => {
+      if (!isPlainRecord(entry) || !isPlainRecord(entry['Notification'])) return entry;
+      const notification = entry['Notification'];
+      const threshold = finiteNumber(notification['Threshold']);
+      const fillType = notification['ThresholdType'] == null;
+      const fixThreshold = threshold !== undefined && threshold !== notification['Threshold'];
+      if (!fillType && !fixThreshold) return entry;
+      changed = true;
+      return {
+        ...entry,
+        Notification: {
+          ...notification,
+          ...(fixThreshold && { Threshold: threshold }),
+          ...(fillType && { ThresholdType: 'PERCENTAGE' }),
+        },
+      };
+    });
+    if (changed) out = { ...out, NotificationsWithSubscribers: nextList };
+  }
+  return out;
+}
+
+/**
+ * Whether a recorded budget declares the legacy filter shape (`CostFilters` /
+ * `CostTypes`) and none of the current one (`FilterExpression` / `Metrics`).
+ * `DescribeBudget` returns exactly one of the two shapes, chosen by
+ * `ShowFilterExpression`; absent properties read as the current shape.
+ */
+function declaresLegacyFilterShape(properties: Record<string, unknown> | undefined): boolean {
+  const budget = properties?.['Budget'];
+  if (!isPlainRecord(budget)) return false;
+  const legacy = budget['CostFilters'] != null || budget['CostTypes'] != null;
+  const current = budget['FilterExpression'] != null || budget['Metrics'] != null;
+  return legacy && !current;
+}
+
+/**
+ * The baseline minus each `Budget.PlannedBudgetLimits` key that the AWS side
+ * lacks and whose period start (epoch seconds) is before `nowMs`; the input by
+ * identity when nothing is dropped. See `canonicalizeDriftPair`.
+ */
+function dropElapsedPlannedLimits(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>,
+  nowMs: number
+): Record<string, unknown> {
+  const budget = baseline['Budget'];
+  const awsBudget = aws['Budget'];
+  if (!isPlainRecord(budget) || !isPlainRecord(awsBudget)) return baseline;
+  const planned = budget['PlannedBudgetLimits'];
+  if (!isPlainRecord(planned)) return baseline;
+  const awsPlanned = isPlainRecord(awsBudget['PlannedBudgetLimits'])
+    ? awsBudget['PlannedBudgetLimits']
+    : {};
+  const elapsed = (key: string): boolean =>
+    !Object.hasOwn(awsPlanned, key) && /^\d+$/.test(key) && Number(key) * 1000 < nowMs;
+  const kept = Object.entries(planned).filter(([key]) => !elapsed(key));
+  if (kept.length === Object.keys(planned).length) return baseline;
+  return { ...baseline, Budget: { ...budget, PlannedBudgetLimits: Object.fromEntries(kept) } };
+}
+
 /**
  * SDK Provider for AWS::Budgets::Budget (issue #1041).
  *
@@ -260,9 +415,11 @@ export class BudgetsBudgetProvider implements ResourceProvider {
    * (`docs/provider-rules.md`, "Adopt only on EXACT attribution").
    */
   /**
-   * The `ProvisioningError` a failed create / update throws, quoting AWS's
-   * text through the operation's masker (issue #2176): a refusal or a 5xx can
-   * quote a resolved secret-derived value.
+   * The `ProvisioningError` a failed create / update throws, through
+   * {@link wrapMaskedError}: an AWS-authored failure is named by its class
+   * (issue #2319), and any other text is masked through the operation's
+   * masker (issue #2176), since a refusal or a 5xx can quote a resolved
+   * secret-derived value.
    */
   private wrapBudgetError(
     mask: MaskerFn,
@@ -273,7 +430,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
     physicalId: string | undefined
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return wrapMaskedAwsError(
+    return this.wrapMaskedError(
       mask,
       error,
       (text) =>
@@ -284,6 +441,34 @@ export class BudgetsBudgetProvider implements ResourceProvider {
           physicalId,
           cause
         )
+    );
+  }
+
+  /**
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an AWS
+   * `AccessDeniedException` names the caller's assumed-role ARN, so an
+   * AWS-authored failure is named by its class plus the `--verbose` pointer:
+   * AWS's text goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
+   * non-`Error` throw, keeps its text, masked (issue #2176).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapMaskedError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    return markRedactedCause(
+      build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`)
     );
   }
 
@@ -374,7 +559,8 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   /**
    * Convert a CFn `TimePeriod` `Start` / `End` value to a `Date`. CFn accepts
    * a UTC date string (`2026-07-01T00:00:00Z`) or an epoch timestamp in
-   * seconds (possibly as a numeric string).
+   * seconds (possibly as a numeric string). A date string with no offset is
+   * read as UTC, never the deployer's local zone (issue #5311).
    */
   private toSdkDate(
     raw: unknown,
@@ -392,7 +578,7 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       const num = Number(raw);
       date = new Date(num < 1e12 ? num * 1000 : num);
     } else if (typeof raw === 'string') {
-      date = new Date(raw);
+      date = parseCfnTimestamp(raw);
     } else {
       throw new ProvisioningError(
         `Invalid TimePeriod.${field} for budget ${logicalId}: expected a date string or epoch ` +
@@ -692,16 +878,21 @@ export class BudgetsBudgetProvider implements ResourceProvider {
           // Nothing was deleted first, so the budget's existing notifications
           // still count toward its limits (5 notifications, 10 email
           // subscribers each): name what was being added beside them.
-          throw new ProvisioningError(
-            `Failed to update budget ${logicalId}: adding ${newNotifications.length} desired ` +
-              `notification(s) beside every notification the budget already holds (the recorded ` +
-              `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
-              `budget allows at most 5 notifications and 10 email subscribers each): ` +
-              `${describeAwsFailure(error).detail}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            error instanceof Error ? error : undefined
+          const cause = error instanceof Error ? error : undefined;
+          throw this.wrapMaskedError(
+            mask,
+            error,
+            (text) =>
+              new ProvisioningError(
+                `Failed to update budget ${logicalId}: adding ${newNotifications.length} desired ` +
+                  `notification(s) beside every notification the budget already holds (the recorded ` +
+                  `NotificationsWithSubscribers is not a list cdkd can read, so none was deleted; a ` +
+                  `budget allows at most 5 notifications and 10 email subscribers each): ${text}`,
+                resourceType,
+                logicalId,
+                physicalId,
+                cause
+              )
           );
         }
         this.logger.warn(
@@ -748,8 +939,8 @@ export class BudgetsBudgetProvider implements ResourceProvider {
   /**
    * Read the DESIRED lists of a create or update, refusing a malformed one
    * before any call (go-to-k/cdkd#3989). The caller passes its own literal read
-   * of each property so the handled-property wiring walk still sees which
-   * property feeds the calls. `physicalId` is set on the update path.
+   * of each property so the call site shows (and a grep finds) which property
+   * feeds the calls. `physicalId` is set on the update path.
    */
   private readDesiredLists(
     logicalId: string,
@@ -1057,12 +1248,17 @@ export class BudgetsBudgetProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete budget ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete budget ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1095,14 +1291,302 @@ export class BudgetsBudgetProvider implements ResourceProvider {
       return await this.budgetArn(accountId, physicalId);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to resolve Arn for budget ${physicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapMaskedError(
+        maskerOrIdentity(undefined),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to resolve Arn for budget ${physicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
+  }
+
+  /**
+   * Read the budget back in the CFn property shape (go-to-k/cdkd#5183), for
+   * `cdkd drift` and the deploy-time `observedProperties` capture:
+   * `DescribeBudget`, `DescribeNotificationsForBudget`, one
+   * `DescribeSubscribersForNotification` per notification, and
+   * `ListTagsForResource`.
+   *
+   * Only CFn `BudgetData` members are emitted. `CalculatedSpend`,
+   * `LastUpdatedTime`, `HealthStatus`, `AutoAdjustData.LastAutoAdjustTime` and
+   * `HistoricalOptions.LookBackAvailablePeriods` change on their own and
+   * would read as drift. Amounts come back as numbers (AWS returns `"1.0"`,
+   * a CDK template `1`), dates as ISO strings. `ThresholdType` is emitted only
+   * when it is not the default `PERCENTAGE`, the shape a template that omits
+   * it records. Order and the default are left to
+   * {@link getDriftUnorderedPaths} and {@link canonicalizeDriftProperties},
+   * which see both sides.
+   *
+   * `DescribeBudget` answers in one of two filter shapes, never both
+   * (measured live, see PR #5188): with `ShowFilterExpression: true` it
+   * returns `FilterExpression` + `Metrics` and no `CostFilters` / `CostTypes`,
+   * even for a budget created with `CostFilters`; without it, the legacy
+   * `CostFilters` + `CostTypes` and no `FilterExpression`. The read asks for
+   * the shape the recorded properties declare ({@link declaresLegacyFilterShape}),
+   * so an unchanged budget compares clean and `drift --revert`, which sends
+   * the readback for every member that did not drift, sends `UpdateBudget`
+   * the shape the template was deployed with, never an unfiltered budget.
+   */
+  async readCurrentState(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string,
+    properties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::Budgets::Budget') return undefined;
+    const accountId = await this.resolveAccountId();
+    const client = this.getClient();
+
+    // The Budgets namespace is global (see the class doc), so a NotFound is
+    // trustworthy from any region.
+    const describe = async (): Promise<Budget | ResourceNotFound | undefined> => {
+      try {
+        const response = await client.send(
+          new DescribeBudgetCommand({
+            AccountId: accountId,
+            BudgetName: physicalId,
+            ShowFilterExpression: !declaresLegacyFilterShape(properties),
+          })
+        );
+        return response.Budget;
+      } catch (error) {
+        if (error instanceof NotFoundException) return RESOURCE_NOT_FOUND;
+        throw error;
+      }
+    };
+    const budget = await describe();
+    if (budget === RESOURCE_NOT_FOUND || budget === undefined) return budget;
+
+    // A NotFound from a later call is either "none of these" or the budget
+    // going away mid-read: ask again, so a deleted budget reads as deleted
+    // rather than as a budget whose notifications were all removed.
+    const notifications = await this.listNotifications(accountId, physicalId);
+    if (notifications === undefined && (await describe()) === RESOURCE_NOT_FOUND) {
+      return RESOURCE_NOT_FOUND;
+    }
+    const withSubscribers = await Promise.all(
+      (notifications ?? []).map(async (notification) => {
+        const subscribers = await this.listSubscribers(accountId, physicalId, notification);
+        return subscribers === undefined ? undefined : { notification, subscribers };
+      })
+    );
+    const notificationsWithSubscribers = withSubscribers
+      .filter(
+        (e): e is { notification: Notification; subscribers: Subscriber[] } => e !== undefined
+      )
+      .map(({ notification, subscribers }) => ({
+        Notification: {
+          NotificationType: notification.NotificationType,
+          ComparisonOperator: notification.ComparisonOperator,
+          Threshold: notification.Threshold,
+          ...(notification.ThresholdType !== undefined &&
+            notification.ThresholdType !== 'PERCENTAGE' && {
+              ThresholdType: notification.ThresholdType,
+            }),
+        },
+        Subscribers: subscribers.map((s) => ({
+          SubscriptionType: s.SubscriptionType,
+          Address: s.Address,
+        })),
+      }));
+    let tags;
+    try {
+      tags = await client.send(
+        new ListTagsForResourceCommand({
+          ResourceARN: await this.budgetArn(accountId, physicalId),
+        })
+      );
+    } catch (error) {
+      if (error instanceof NotFoundException && (await describe()) === RESOURCE_NOT_FOUND) {
+        return RESOURCE_NOT_FOUND;
+      }
+      throw error;
+    }
+
+    return {
+      Budget: this.budgetFromSdk(budget),
+      NotificationsWithSubscribers: notificationsWithSubscribers,
+      ResourceTags: (tags.ResourceTags ?? []).map((t) => ({ Key: t.Key, Value: t.Value })),
+    };
+  }
+
+  /**
+   * Every notification on the budget, or `undefined` on a `NotFoundException`:
+   * no notification, or the budget went away mid-read (`readCurrentState`
+   * tells the two apart).
+   */
+  private async listNotifications(
+    accountId: string,
+    budgetName: string
+  ): Promise<Notification[] | undefined> {
+    const out: Notification[] = [];
+    let token: string | undefined;
+    try {
+      do {
+        const page = await this.getClient().send(
+          new DescribeNotificationsForBudgetCommand({
+            AccountId: accountId,
+            BudgetName: budgetName,
+            MaxResults: 100,
+            ...(token !== undefined && { NextToken: token }),
+          })
+        );
+        out.push(...(page.Notifications ?? []));
+        token = page.NextToken;
+      } while (token);
+    } catch (error) {
+      if (error instanceof NotFoundException) return undefined;
+      throw error;
+    }
+    return out;
+  }
+
+  /**
+   * Every subscriber of one notification, or `undefined` on a
+   * `NotFoundException`: the notification was removed between the two reads,
+   * so `readCurrentState` leaves it out rather than report it subscriber-less.
+   */
+  private async listSubscribers(
+    accountId: string,
+    budgetName: string,
+    notification: Notification
+  ): Promise<Subscriber[] | undefined> {
+    const out: Subscriber[] = [];
+    let token: string | undefined;
+    try {
+      do {
+        const page = await this.getClient().send(
+          new DescribeSubscribersForNotificationCommand({
+            AccountId: accountId,
+            BudgetName: budgetName,
+            Notification: {
+              NotificationType: notification.NotificationType,
+              ComparisonOperator: notification.ComparisonOperator,
+              Threshold: notification.Threshold,
+              ...(notification.ThresholdType !== undefined && {
+                ThresholdType: notification.ThresholdType,
+              }),
+            },
+            MaxResults: 100,
+            ...(token !== undefined && { NextToken: token }),
+          })
+        );
+        out.push(...(page.Subscribers ?? []));
+        token = page.NextToken;
+      } while (token);
+    } catch (error) {
+      if (error instanceof NotFoundException) return undefined;
+      throw error;
+    }
+    return out;
+  }
+
+  /** The CFn `BudgetData` members of a `DescribeBudget` response (see {@link readCurrentState}). */
+  private budgetFromSdk(budget: Budget): Record<string, unknown> {
+    const raw = budget as Budget & Record<string, unknown>;
+    const spend = (s: Spend | undefined): Record<string, unknown> | undefined =>
+      s === undefined ? undefined : { Amount: finiteNumber(s.Amount) ?? s.Amount, Unit: s.Unit };
+    const out: Record<string, unknown> = {
+      BudgetName: budget.BudgetName,
+      BudgetType: raw['BudgetType'],
+      TimeUnit: budget.TimeUnit,
+    };
+    if (budget.BudgetLimit) out['BudgetLimit'] = spend(budget.BudgetLimit);
+    if (budget.PlannedBudgetLimits && Object.keys(budget.PlannedBudgetLimits).length > 0) {
+      out['PlannedBudgetLimits'] = Object.fromEntries(
+        Object.entries(budget.PlannedBudgetLimits).map(([key, s]) => [key, spend(s)])
+      );
+    }
+    if (budget.TimePeriod) {
+      out['TimePeriod'] = {
+        ...(budget.TimePeriod.Start && { Start: isoDate(budget.TimePeriod.Start) }),
+        ...(budget.TimePeriod.End && { End: isoDate(budget.TimePeriod.End) }),
+      };
+    }
+    if (budget.CostFilters && Object.keys(budget.CostFilters).length > 0) {
+      out['CostFilters'] = budget.CostFilters;
+    }
+    if (budget.CostTypes) out['CostTypes'] = { ...budget.CostTypes };
+    const autoAdjust = raw['AutoAdjustData'];
+    if (isPlainRecord(autoAdjust)) {
+      const historical = autoAdjust['HistoricalOptions'];
+      out['AutoAdjustData'] = {
+        AutoAdjustType: autoAdjust['AutoAdjustType'],
+        ...(isPlainRecord(historical) && {
+          HistoricalOptions: { BudgetAdjustmentPeriod: historical['BudgetAdjustmentPeriod'] },
+        }),
+      };
+    }
+    if (raw['FilterExpression'] !== undefined) out['FilterExpression'] = raw['FilterExpression'];
+    if (Array.isArray(raw['Metrics']) && raw['Metrics'].length > 0) out['Metrics'] = raw['Metrics'];
+    if (raw['BillingViewArn'] !== undefined) out['BillingViewArn'] = raw['BillingViewArn'];
+    return out;
+  }
+
+  /**
+   * Notifications, and each notification's subscribers, are sets: Budgets
+   * addresses them by value and returns them in an order of its own. The
+   * subtree entry also claims every `Subscribers` array inside an element.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::Budgets::Budget' ? ['NotificationsWithSubscribers'] : [];
+  }
+
+  /**
+   * - `Budget.BudgetLimit` is AWS's to set on a budget that declares
+   *   `AutoAdjustData` (recomputed from spend history) or `PlannedBudgetLimits`
+   *   (the current period's planned amount), so a moving value there is not
+   *   drift.
+   * - `Budget.CostTypes` / `Budget.CostFilters` on a budget that also declares
+   *   `FilterExpression` or `Metrics`: AWS accepts that mix, but `DescribeBudget`
+   *   returns neither legacy member in either shape (measured live, PR #5188),
+   *   so they cannot be read back.
+   */
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+    if (resourceType !== 'AWS::Budgets::Budget') return [];
+    const budget = properties?.['Budget'];
+    if (!isPlainRecord(budget)) return [];
+    const paths: string[] = [];
+    if (budget['AutoAdjustData'] != null || budget['PlannedBudgetLimits'] != null) {
+      paths.push('Budget.BudgetLimit');
+    }
+    if (budget['FilterExpression'] != null || budget['Metrics'] != null) {
+      if (budget['CostTypes'] != null) paths.push('Budget.CostTypes');
+      if (budget['CostFilters'] != null) paths.push('Budget.CostFilters');
+    }
+    return paths;
+  }
+
+  /** See {@link canonicalizeBudgetDriftBag}. */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    side: Record<string, unknown>
+  ): Record<string, unknown> {
+    return resourceType === 'AWS::Budgets::Budget' ? canonicalizeBudgetDriftBag(side) : side;
+  }
+
+  /**
+   * `DescribeBudget` returns the current and future `PlannedBudgetLimits`
+   * only, so a period that has ended drops out of the readback while the
+   * baseline keeps it. Drop from the BASELINE each key the readback lacks
+   * whose period start (the key, in epoch seconds) is already past: that
+   * absence is not drift, and `drift --revert`, which sends this baseline,
+   * must not send an elapsed period either. A FUTURE key the readback lacks
+   * stays, and is reported.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (resourceType !== 'AWS::Budgets::Budget') return { baseline, aws };
+    return { baseline: dropElapsedPlannedLimits(baseline, aws, Date.now()), aws };
   }
 
   /**

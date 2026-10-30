@@ -59,6 +59,7 @@ vi.mock('../../../src/deployment/retry.js', async () => {
 
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import { getLogger } from '../../../src/utils/logger.js';
 import { SECRET_MASK, createSecretMasker } from '../../../src/deployment/secret-redaction.js';
 import {
@@ -150,12 +151,17 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
       );
 
     expect(error).toBeInstanceOf(ProvisioningError);
+    // go-to-k/cdkd#2319: AWS's text is withheld, the class named instead.
     expect((error as Error).message).toBe(
-      `Failed to create service discovery service TtlService: ${NAMESPACE_ID} ` +
-        `(Cloud Map still rejected the namespace after 27.5s of retries)`
+      `Failed to create service discovery service TtlService (Cloud Map still rejected the ` +
+        `namespace after 27.5s of retries): NamespaceNotFound. ${VERBOSE_POINTER}`
     );
-    // The note must not hand the substring classifiers a not-found phrase.
-    expect((error as Error).message).not.toMatch(/not\s*found/i);
+    // The note must not hand the substring classifiers a not-found phrase,
+    // and the class name matches none of their (case-sensitive) needles.
+    expect((error as Error).message).not.toContain(NAMESPACE_ID);
+    for (const needle of ['does not exist', 'was not found', 'not found', 'NotFoundException']) {
+      expect((error as Error).message).not.toContain(needle);
+    }
     expect((error as Error).cause).toBeInstanceOf(NamespaceNotFound);
     // 1 initial attempt + 9 retries.
     expect(createServiceCalls()).toHaveLength(10);
@@ -170,7 +176,9 @@ describe('ServiceDiscoveryProvider createService NamespaceNotFound retry (#5113)
 
     await expect(
       provider.create('TtlService', 'AWS::ServiceDiscovery::Service', properties)
-    ).rejects.toThrow(/^Failed to create service discovery service TtlService: Invalid DnsConfig$/);
+    ).rejects.toThrow(
+      `Failed to create service discovery service TtlService: InvalidInput. ${VERBOSE_POINTER}`
+    );
 
     expect(createServiceCalls()).toHaveLength(1);
     expect(slept).toEqual([]);

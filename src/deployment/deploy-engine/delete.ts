@@ -6,6 +6,7 @@ import type { ProvisionCounts, ResourceOutcomeSignal } from '../deploy-engine.js
 import { effectiveDeletionPolicy } from '../../provisioning/final-snapshot.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
 import { isWaitAbandonedError } from '../../provisioning/wait-abandoned.js';
+import { isMarkedNotGone } from '../../provisioning/not-gone.js';
 import type { CloudFormationTemplate, ResourceDeleteResult } from '../../types/resource.js';
 import {
   type ResourceChange,
@@ -27,7 +28,12 @@ import { reportDeleteGuards } from '../delete-guard-scope.js';
 import { isMarkedNonRetryable } from '../retryable-errors.js';
 import { nestedChildStackName } from '../nested-child-journal.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
-import { KeptForReadoption, keptForReadoption } from '../retained-readoption.js';
+import {
+  KeptForReadoption,
+  keptForReadoption,
+  keptForRetainedRecord,
+} from '../retained-readoption.js';
+import { getCurrentStackInstanceId } from '../../provisioning/resource-name.js';
 
 /**
  * What {@link provisionDelete} reads from the engine, built at each call site
@@ -106,8 +112,16 @@ export async function provisionDelete(
     // token, so a later create of the logical id must not send it again.
     await noteRetainedResource(resourceType, logicalId);
     // go-to-k/cdkd#4705: and a later deploy that adds it back takes it back
-    // by its generated name rather than refusing that name.
-    if (keptForReadoption(currentResource)) {
+    // by its generated name rather than refusing that name. go-to-k/cdkd#5064:
+    // on a stack with an instance id, every kept generated-name resource is
+    // recorded, as a destroy records it, so a later lifetime's first deploy
+    // names `cdkd import` for it. A legacy stack keeps the #4705 list: a
+    // record it never wrote would end the guard's history fallback.
+    const recorded =
+      getCurrentStackInstanceId() !== undefined
+        ? keptForRetainedRecord(currentResource)
+        : keptForReadoption(currentResource);
+    if (recorded) {
       let kept = keptByEngine.get(deps.owner);
       if (kept === undefined) {
         kept = new KeptForReadoption(deps.stateBackend, stackName, deps.stackRegion, deps.logger);
@@ -183,7 +197,10 @@ Drop the record with: ${dropCommand}`
     logicalId,
     resourceType,
     currentResource,
-    governingPolicy
+    governingPolicy,
+    // The delete's own masker (below): the snapshot helper's debug line
+    // quotes a withheld AWS failure's text (go-to-k/cdkd#2319).
+    createUnionSecretMasker([secretNameBagFor(deps.secretsRun(), logicalId)])
   );
 
   // Schema v7+: route DELETE through the layer recorded on state
@@ -254,11 +271,15 @@ Drop the record with: ${dropCommand}`
     // riding `isMarkedNonRetryable`: a DELETE abandonment is
     // deliberately left RETRYABLE so the delete can be re-issued, so it
     // carries no non-retryable marker and would fall straight through to
-    // the substring match below.
+    // the substring match below. `isMarkedNotGone` (go-to-k/cdkd#5228) is
+    // a provider's typed verdict that this failure is not its resource's
+    // not-found, kept apart from retryability so the failure keeps its
+    // retries.
     if (
       !isInterruptedWaitError(deleteError) &&
       !isMarkedNonRetryable(deleteError) &&
       !isWaitAbandonedError(deleteError) &&
+      !isMarkedNotGone(deleteError) &&
       (msg.includes('does not exist') ||
         msg.includes('was not found') ||
         msg.includes('not found') ||

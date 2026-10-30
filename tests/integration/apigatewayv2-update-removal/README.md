@@ -21,8 +21,17 @@ re-deploys under `CDKD_TEST_UPDATE=true` with those fields removed:
 | Integration | Description | RETAINED |
 | Integration | RequestParameters | RETAINED |
 | Authorizer | AuthorizerResultTtlInSeconds | RETAINED (`300`) |
+| ClearAuthorizer (REQUEST, TTL `0`) | IdentitySource | RESET: none (CloudFormation clears it, #1160 A/B; `UpdateAuthorizer` gets `[]`) |
 | Route | OperationName | RETAINED |
 | Stage | StageVariables | RETAINED |
+
+**Precondition:** the region's API Gateway account must have a CloudWatch
+Logs role (`aws apigateway get-account --query cloudwatchRoleArn`), because the
+WebSocket stage declares `AccessLogSettings`; without it phase 1 fails with an
+opaque `BadRequestException`. `verify.sh` checks this first and fails fast. The
+fixture never sets the account role itself (it is region-wide); set one, e.g.
+the dedicated `cdkd-integ-apigw-cloudwatch-logs` role, with
+`aws apigateway update-account --patch-operations op=replace,path=/cloudwatchRoleArn,value=<role arn>`.
 
 Run: `/run-integ apigatewayv2-update-removal` (deploy -> UPDATE -> destroy +
 orphan check). The RESET rows without a live arm here (Stage `AutoDeploy`, Route
@@ -41,8 +50,8 @@ belong on a body-carrying route.
 | --- | --- |
 | `Route.ApiKeyRequired` | WS `$connect`; removed in phase 2, must reset to `false` |
 | `Route.RequestParameters` | WS `$connect`; value change in phase 2, REMOVED in phase 2b and RETAINED (CloudFormation keeps it, #5004) |
-| `Route.ModelSelectionExpression` | WS `$default`; value change |
-| `Route.RouteResponseSelectionExpression` | WS `$default` |
+| `Route.ModelSelectionExpression` | WS `$default`; value change in phase 2, REMOVED in phase 2b and RETAINED (CloudFormation keeps it, #1160 A/B) |
+| `Route.RouteResponseSelectionExpression` | WS `$default`; REMOVED in phase 2b and RETAINED (#1160 A/B) |
 | `Stage.AccessLogSettings` | WS stage, against a real log group; format changes in phase 2, REMOVED in phase 2b (needs `DeleteAccessLogSettings`) |
 | `Stage.RouteSettings` | WS stage; throttle values change in phase 2, the `$connect` key is dropped in phase 2b while `$default` is retained |
 
@@ -67,11 +76,18 @@ perfectly green deploy.
 ## Issue #609 coverage (Integration config properties)
 
 The ten `AWS::ApiGatewayV2::Integration` properties are asserted on CREATE
-(phase 1) and on UPDATE (phase 2). They **change value** across the phases
-rather than being removed: the backfill wires delivery, and absent-field
-removal for this group stays with the #1160 umbrella until each field has its
-own live CloudFormation A/B — writing a guessed reset value over a live
-integration would be strictly worse than the silent drop it replaces.
+(phase 1) and on UPDATE (phase 2). A real CloudFormation A/B (#1160) showed
+CloudFormation KEEPS each of them on removal except `IntegrationSubtype`
+(`ConnectionType` was measured on a VPC_LINK integration only), so
+phase 2b removes the four WebSocket `MOCK` fields and asserts their phase 2
+values survive.
+
+`IntegrationSubtype` removal FAILS in CloudFormation unless the same update
+declares an `IntegrationUri`, so phase 2c (`CDKD_TEST_SUBTYPE_REMOVED=true`)
+removes it and asserts the deploy is refused with the subtype still live. Phase
+2b also changes ONLY the service integration's `Description`: AWS re-validates
+the `EventBridge-PutEvents` parameter mapping on every `UpdateIntegration`, so
+cdkd must send the unchanged `RequestParameters` beside the subtype.
 
 Three integrations are needed because the properties are scoped to different
 integration types, which is also why `verify.sh` resolves integration ids by
@@ -80,12 +96,12 @@ integration types, which is also why `verify.sh` resolves integration ids by
 | Property | Where it is exercised |
 | --- | --- |
 | `ResponseParameters` | HTTP API `HTTP_PROXY` integration; **CFn/SDK shape divergence** — see below |
-| `IntegrationSubtype` | HTTP API `AWS_PROXY` service integration (`EventBridge-PutEvents`) |
+| `IntegrationSubtype` | HTTP API `AWS_PROXY` service integration (`EventBridge-PutEvents`); its removal is refused in phase 2c |
 | `CredentialsArn` | same; the integration's invocation role |
-| `RequestTemplates` | WebSocket `MOCK` integration; template body changes in phase 2 |
-| `TemplateSelectionExpression` | same |
-| `PassthroughBehavior` | same; `WHEN_NO_MATCH` -> `NEVER` |
-| `ContentHandlingStrategy` | same; `CONVERT_TO_TEXT` -> `CONVERT_TO_BINARY` |
+| `RequestTemplates` | WebSocket `MOCK` integration; template body changes in phase 2, REMOVED in phase 2b and RETAINED |
+| `TemplateSelectionExpression` | same; REMOVED in phase 2b and RETAINED |
+| `PassthroughBehavior` | same; `WHEN_NO_MATCH` -> `NEVER`, REMOVED in phase 2b and RETAINED |
+| `ContentHandlingStrategy` | same; `CONVERT_TO_TEXT` -> `CONVERT_TO_BINARY`, REMOVED in phase 2b and RETAINED |
 
 The `overwrite:statuscode` `Source` is written **unquoted** (`404` / `403`) on
 purpose: CFn types `ResponseParameters` as free-form `object` and coerces

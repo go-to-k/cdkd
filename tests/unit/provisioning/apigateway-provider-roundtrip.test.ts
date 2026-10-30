@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import {
   GetMethodCommand,
   GetAccountCommand,
@@ -50,7 +51,6 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { ApiGatewayProvider } from '../../../src/provisioning/providers/apigateway-provider.js';
-import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
 /**
  * Read-update round-trip suite for ApiGatewayProvider.
@@ -341,11 +341,10 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     ]);
   });
 
-  it('Method update() AuthorizationScopes diff emits comma-joined replace patch', async () => {
-    // AuthorizationScopes is an array on the cdkd-state side; AWS
-    // accepts a comma-separated string for the
-    // `replace /authorizationScopes` op (same pattern as Authorizer's
-    // ProviderARNs). An empty array clears the list.
+  it('Method update() AuthorizationScopes diff emits per-element add / remove patches', async () => {
+    // API Gateway refuses `replace /authorizationScopes` ("Must be one of:
+    // [add, remove]"); each scope is an add / remove against the list path
+    // with the scope as the value (go-to-k/cdkd#5408).
     mockSend.mockResolvedValueOnce({});
 
     await provider.update(
@@ -361,14 +360,15 @@ describe('ApiGatewayProvider read-update round-trip', () => {
       patchOperations: Array<{ op: string; path: string; value?: string }>;
     };
     expect(input.patchOperations).toEqual([
-      { op: 'replace', path: '/authorizationScopes', value: 'pets:write,pets:admin' },
+      { op: 'add', path: '/authorizationScopes', value: 'pets:write' },
+      { op: 'add', path: '/authorizationScopes', value: 'pets:admin' },
+      { op: 'remove', path: '/authorizationScopes', value: 'pets:read' },
     ]);
   });
 
-  it('Method update() AuthorizationScopes set -> undefined clears via empty string', async () => {
-    // Drift --revert use case: state has scopes, AWS-current dropped them
-    // (console removal). The diff must round-trip as an empty-string
-    // patch value to clear the list AWS-side.
+  it('Method update() AuthorizationScopes set -> undefined removes each scope', async () => {
+    // Drift --revert use case: state has no scopes, AWS-current has one
+    // (console addition). Each scope is removed by value.
     mockSend.mockResolvedValueOnce({});
 
     await provider.update(
@@ -384,8 +384,91 @@ describe('ApiGatewayProvider read-update round-trip', () => {
       patchOperations: Array<{ op: string; path: string; value?: string }>;
     };
     expect(input.patchOperations).toEqual([
-      { op: 'replace', path: '/authorizationScopes', value: '' },
+      { op: 'remove', path: '/authorizationScopes', value: 'pets:read' },
     ]);
+  });
+
+  it('Method update() diffs AuthorizationScopes as a set (go-to-k/cdkd#5408)', async () => {
+    // Measured: an `add` of a scope already present is a no-op on AWS, while a
+    // `remove` takes out one occurrence. Counting occurrences would let a
+    // [r] -> [r, r] -> [r] sequence remove the only `r` AWS holds.
+    const scopeOps = async (next: string[], prev: string[]) => {
+      vi.clearAllMocks();
+      await provider.update(
+        'MethodLogical',
+        'api-1|res-1|POST',
+        'AWS::ApiGateway::Method',
+        { AuthorizationScopes: next },
+        { AuthorizationScopes: prev }
+      );
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+      return (call?.[0].input as { patchOperations: unknown[] } | undefined)?.patchOperations;
+    };
+    expect(await scopeOps(['s/read', 's/read'], ['s/read'])).toBeUndefined();
+    expect(await scopeOps(['s/read'], ['s/read', 's/read'])).toBeUndefined();
+    expect(await scopeOps([], ['s/read', 's/read'])).toEqual([
+      { op: 'remove', path: '/authorizationScopes', value: 's/read' },
+    ]);
+  });
+
+  it('Method update() removes a dropped scope once per LIVE occurrence on a readback revert', async () => {
+    // AWS removes one copy per op; a method created outside cdkd can hold a
+    // repeat, and the revert's previous side is the live readback.
+    const scopeOps = async (desiredFromAwsReadback: boolean) => {
+      vi.clearAllMocks();
+      await provider.update(
+        'MethodLogical',
+        'api-1|res-1|POST',
+        'AWS::ApiGateway::Method',
+        { AuthorizationScopes: ['s/write'] },
+        { AuthorizationScopes: ['s/read', 's/read', 's/write'] },
+        { desiredFromAwsReadback }
+      );
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateMethodCommand);
+      return (call?.[0].input as { patchOperations: unknown[] }).patchOperations;
+    };
+    expect(await scopeOps(true)).toEqual([
+      { op: 'remove', path: '/authorizationScopes', value: 's/read' },
+      { op: 'remove', path: '/authorizationScopes', value: 's/read' },
+    ]);
+    // A template previous side: createMethod sent the scopes deduplicated.
+    expect(await scopeOps(false)).toEqual([
+      { op: 'remove', path: '/authorizationScopes', value: 's/read' },
+    ]);
+  });
+
+  it('a repeated scope in the template is not drift against a live set (go-to-k/cdkd#5408)', () => {
+    const type = 'AWS::ApiGateway::Method';
+    const canon = (b: Record<string, unknown>) => provider.canonicalizeDriftProperties(type, b);
+    const unorderedPaths = provider.getDriftUnorderedPaths(type);
+    expect(
+      calculateResourceDrift(
+        canon({ AuthorizationScopes: ['a', 'a'] }),
+        canon({ AuthorizationScopes: ['a'] }),
+        { unorderedPaths }
+      )
+    ).toEqual([]);
+    expect(
+      calculateResourceDrift(
+        canon({ AuthorizationScopes: ['a', 'a'] }),
+        canon({ AuthorizationScopes: ['b'] }),
+        { unorderedPaths }
+      )
+    ).not.toEqual([]);
+    const untouched = { AuthorizationScopes: ['a'] };
+    expect(canon(untouched)).toBe(untouched);
+  });
+
+  it('Method update() reordered AuthorizationScopes sends no UpdateMethodCommand', async () => {
+    await provider.update(
+      'MethodLogical',
+      'api-1|res-1|POST',
+      'AWS::ApiGateway::Method',
+      { AuthorizationScopes: ['pets:read', 'pets:write'] },
+      { AuthorizationScopes: ['pets:write', 'pets:read'] }
+    );
+
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('Method update() with no diff sends no UpdateMethodCommand', async () => {
@@ -490,41 +573,150 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     ]);
   });
 
-  it('Authorizer update() ProviderARNs diff emits comma-joined replace patch', async () => {
-    // AWS PATCH wire format for /providerARNs is a single comma-joined
-    // string. cdkd state holds the array form; the update() path joins
-    // before emitting the op.
-    mockSend.mockResolvedValueOnce({});
+  // API Gateway refuses `replace /providerARNs` and any per-element path
+  // (`/providerARNs/<arn>`, escaped or not); each pool is an add / remove
+  // against `/providerARNs` with the ARN as the value, applied in order, and a
+  // step that leaves a Cognito authorizer with no pool is refused. Measured in
+  // us-east-1 (go-to-k/cdkd#5408).
+  describe('Authorizer ProviderARNs patches (go-to-k/cdkd#5408)', () => {
+    const POOL_A = 'arn:aws:cognito-idp:us-east-1:123:userpool/us-east-1_A';
+    const POOL_B = 'arn:aws:cognito-idp:us-east-1:123:userpool/us-east-1_B';
+    const POOL_C = 'arn:aws:cognito-idp:us-east-1:123:userpool/us-east-1_C';
+    const URI = 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/fn/invocations';
 
-    await provider.update(
-      'AuthLogical',
-      'auth-1',
-      'AWS::ApiGateway::Authorizer',
-      {
-        RestApiId: 'api-1',
-        ProviderARNs: [
-          'arn:aws:cognito-idp:us-east-1:123:userpool/pool-A',
-          'arn:aws:cognito-idp:us-east-1:123:userpool/pool-B',
-        ],
-      },
-      {
-        RestApiId: 'api-1',
-        ProviderARNs: ['arn:aws:cognito-idp:us-east-1:123:userpool/pool-A'],
+    async function authorizerOps(
+      next: Record<string, unknown>,
+      prev: Record<string, unknown>
+    ): Promise<Array<{ op: string; path: string; value?: string }> | undefined> {
+      // No queued response: a once-value a no-op case never consumes would
+      // leak into the next test (`clearAllMocks` keeps it).
+      await provider.update(
+        'AuthLogical',
+        'auth-1',
+        'AWS::ApiGateway::Authorizer',
+        { RestApiId: 'api-1', ...next },
+        { RestApiId: 'api-1', ...prev }
+      );
+      const call = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
+      return (call?.[0].input as { patchOperations: Array<{ op: string; path: string }> })
+        ?.patchOperations;
+    }
+
+    it('an added pool is an add of that ARN', async () => {
+      expect(
+        await authorizerOps({ ProviderARNs: [POOL_A, POOL_B] }, { ProviderARNs: [POOL_A] })
+      ).toEqual([{ op: 'add', path: '/providerARNs', value: POOL_B }]);
+    });
+
+    it('a dropped pool is a remove of that ARN', async () => {
+      expect(
+        await authorizerOps({ ProviderARNs: [POOL_A] }, { ProviderARNs: [POOL_A, POOL_B] })
+      ).toEqual([{ op: 'remove', path: '/providerARNs', value: POOL_B }]);
+    });
+
+    it('swapping the only pool adds the new one BEFORE removing the old one', async () => {
+      // Remove-first would leave the list empty and AWS refuses that step.
+      expect(await authorizerOps({ ProviderARNs: [POOL_B] }, { ProviderARNs: [POOL_A] })).toEqual(
+        [
+          { op: 'add', path: '/providerARNs', value: POOL_B },
+          { op: 'remove', path: '/providerARNs', value: POOL_A },
+        ]
+      );
+    });
+
+    it('a mixed change adds every new pool, then removes every dropped one', async () => {
+      expect(
+        await authorizerOps(
+          { ProviderARNs: [POOL_B, POOL_C] },
+          { ProviderARNs: [POOL_A, POOL_B] }
+        )
+      ).toEqual([
+        { op: 'add', path: '/providerARNs', value: POOL_C },
+        { op: 'remove', path: '/providerARNs', value: POOL_A },
+      ]);
+    });
+
+    it('a pool AWS holds twice is removed once per occurrence', async () => {
+      // AWS keeps duplicates and a remove takes out one occurrence.
+      expect(
+        await authorizerOps({ ProviderARNs: [POOL_B] }, { ProviderARNs: [POOL_A, POOL_A, POOL_B] })
+      ).toEqual([
+        { op: 'remove', path: '/providerARNs', value: POOL_A },
+        { op: 'remove', path: '/providerARNs', value: POOL_A },
+      ]);
+    });
+
+    it('reordered pools send nothing', async () => {
+      expect(
+        await authorizerOps(
+          { ProviderARNs: [POOL_B, POOL_A] },
+          { ProviderARNs: [POOL_A, POOL_B] }
+        )
+      ).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('TOKEN -> COGNITO_USER_POOLS adds the pool before the /type replace and keeps the removed AuthorizerUri', async () => {
+      // CloudFormation keeps the old authorizerUri on this switch (measured).
+      expect(
+        await authorizerOps(
+          { Type: 'COGNITO_USER_POOLS', ProviderARNs: [POOL_A] },
+          { Type: 'TOKEN', AuthorizerUri: URI }
+        )
+      ).toEqual([
+        { op: 'add', path: '/providerARNs', value: POOL_A },
+        { op: 'replace', path: '/type', value: 'COGNITO_USER_POOLS' },
+      ]);
+    });
+
+    it('COGNITO_USER_POOLS -> TOKEN removes the pools after the /type replace', async () => {
+      // Removing the last pool while the authorizer is still Cognito is
+      // refused; CloudFormation drops the removed ProviderARNs (measured).
+      expect(
+        await authorizerOps(
+          { Type: 'TOKEN', AuthorizerUri: URI },
+          { Type: 'COGNITO_USER_POOLS', ProviderARNs: [POOL_A] }
+        )
+      ).toEqual([
+        { op: 'replace', path: '/type', value: 'TOKEN' },
+        { op: 'replace', path: '/authorizerUri', value: URI },
+        { op: 'remove', path: '/providerARNs', value: POOL_A },
+      ]);
+    });
+
+    it('a removed AuthorizerUri on a TOKEN authorizer sends nothing, as CloudFormation keeps it', async () => {
+      // AWS refuses an empty URI on TOKEN / REQUEST; CFn leaves the URI.
+      expect(
+        await authorizerOps({ Type: 'TOKEN' }, { Type: 'TOKEN', AuthorizerUri: URI })
+      ).toBeUndefined();
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('an explicit empty AuthorizerUri (drift --revert placeholder) still clears it', async () => {
+      expect(
+        await authorizerOps(
+          { Type: 'COGNITO_USER_POOLS', AuthorizerUri: '' },
+          { Type: 'COGNITO_USER_POOLS', AuthorizerUri: URI }
+        )
+      ).toEqual([{ op: 'replace', path: '/authorizerUri', value: '' }]);
+    });
+
+    it('a reordered list compares clean in drift, for both list fields', () => {
+      // The update path sends nothing for a reorder, so drift must not report
+      // one either (it could never be reverted on the template baseline).
+      for (const [type, key, a, b] of [
+        ['AWS::ApiGateway::Authorizer', 'ProviderARNs', POOL_A, POOL_B],
+        ['AWS::ApiGateway::Method', 'AuthorizationScopes', 's/read', 's/write'],
+      ] as const) {
+        const unorderedPaths = provider.getDriftUnorderedPaths(type);
+        expect(
+          calculateResourceDrift({ [key]: [a, b] }, { [key]: [b, a] }, { unorderedPaths })
+        ).toEqual([]);
+        expect(
+          calculateResourceDrift({ [key]: [a, b] }, { [key]: [a] }, { unorderedPaths })
+        ).not.toEqual([]);
       }
-    );
-
-    const updateCall = mockSend.mock.calls.find((c) => c[0] instanceof UpdateAuthorizerCommand);
-    const input = updateCall![0].input as {
-      patchOperations: Array<{ op: string; path: string; value?: string }>;
-    };
-    expect(input.patchOperations).toEqual([
-      {
-        op: 'replace',
-        path: '/providerARNs',
-        value:
-          'arn:aws:cognito-idp:us-east-1:123:userpool/pool-A,arn:aws:cognito-idp:us-east-1:123:userpool/pool-B',
-      },
-    ]);
+    });
   });
 
   it('Authorizer update() with no diff sends no UpdateAuthorizerCommand', async () => {
@@ -701,16 +893,26 @@ describe('ApiGatewayProvider read-update round-trip', () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
-  // ─── Other immutable-update sub-resources (parity with Method) ──────
+  // ─── Other sub-resources ──────
 
-  it('Deployment update() throws ResourceUpdateNotSupportedError', async () => {
-    // Deployment.update is still intentionally
-    // ResourceUpdateNotSupportedError — UpdateDeployment's patch-op
-    // surface is narrow and not yet plumbed.
-    await expect(
-      provider.update('D', 'dep-1', 'AWS::ApiGateway::Deployment', {}, {})
-    ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
+  it('Deployment round-trip: readCurrentState → update() is a no-op', async () => {
+    // go-to-k/cdkd#5391: Deployment.update patches `/description`; the
+    // observed state handed back on both sides sends nothing.
+    mockSend.mockResolvedValueOnce({ id: 'dep-1', description: 'v1' });
+    const observed = await provider.readCurrentState('dep-1', 'D', 'AWS::ApiGateway::Deployment', {
+      RestApiId: 'api-1',
+    });
+    expect(observed).toEqual({ RestApiId: 'api-1', Description: 'v1' });
 
-    expect(mockSend).not.toHaveBeenCalled();
+    await provider.update(
+      'D',
+      'dep-1',
+      'AWS::ApiGateway::Deployment',
+      JSON.parse(JSON.stringify(observed)),
+      JSON.parse(JSON.stringify(observed))
+    );
+
+    // Only the GetDeployment read — no UpdateDeployment mutation.
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 });

@@ -24,7 +24,20 @@
 #      (update() never sent the block before issue #3851) and drift is clean.
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true too: the block leaves the
 #      template. Assert the schema registry is gone from AWS while provisioned
-#      mode and batchSize 20 (the retained siblings) stay.
+#      mode, batchSize 20 and the LoggingConfig (the retained siblings) stay.
+#      The MaximumRetryAttempts / MaximumRecordAgeInSeconds Phase 2 added leave
+#      too: assert AWS keeps 3 / 3600, as CloudFormation does, and cdkd names
+#      them as kept (issue #1160).
+#   2c. Re-deploy with CDKD_TEST_ESM_DEFAULTS=true too: batchSize, the poller
+#      config and the LoggingConfig leave the template. Assert AWS reset them
+#      as CloudFormation does: BatchSize 100, no poller config, no LoggingConfig
+#      (issue #1160).
+#   2d. Re-deploy with CDKD_TEST_ESM_TOPIC=true too: the topic changes, which
+#      UpdateEventSourceMapping cannot carry and CloudFormation refuses. Assert
+#      the deploy FAILS naming Topics, and AWS keeps the mapping and its topic
+#      (issue #5356: cdkd reported success and dropped the change).
+#   Phase 1 also asserts the declared zero batching window and the Value-less
+#   tag reached AWS (issue #5356).
 #   3. Destroy + assert the function, the ESM and the state file are gone.
 #
 # Required env vars:
@@ -136,7 +149,7 @@ esm_brokers() {
 
 # --- Phase 1: deploy ---------------------------------------------------
 echo "==> Phase 1: deploy (self-managed Kafka ESM; create FAILED outright before #1384)"
-env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL -u CDKD_TEST_ESM_DEFAULTS -u CDKD_TEST_ESM_TOPIC node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P1="$(esm_uuid)"
@@ -153,6 +166,27 @@ if [ "${BROKERS_P1}" != "${EXPECTED_BROKERS}" ]; then
   exit 1
 fi
 echo "    OK: KafkaBootstrapServers translated to the SDK enum key and reached AWS"
+
+# Issue #5356: the template declares MaximumBatchingWindowInSeconds 0. Before the
+# fix create() dropped it, and AWS reads an omitted window back as no value
+# (measured on a CloudFormation-created mapping), so "ABSENT" is the symptom.
+MBW_P1="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" --output json \
+  | jq -r '.MaximumBatchingWindowInSeconds // "ABSENT"')"
+if [ "${MBW_P1}" != "0" ]; then
+  echo "FAIL: AWS holds MaximumBatchingWindowInSeconds='${MBW_P1}', expected the declared 0 (issue #5356)" >&2
+  exit 1
+fi
+echo "    OK: the declared zero batching window reached AWS"
+# The Value-less tag (CFn accepts it; cdkd refused the deploy before the fix).
+ESM_ARN_P1="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
+  --query 'EventSourceMappingArn' --output text)"
+NOVALUE_P1="$(aws lambda list-tags --resource "${ESM_ARN_P1}" --region "${REGION}" --output json \
+  | jq -r '.Tags["cdkd-5356-novalue"] // "ABSENT"')"
+if [ "${NOVALUE_P1}" != "" ]; then
+  echo "FAIL: the Value-less tag cdkd-5356-novalue reads '${NOVALUE_P1}', expected an empty value (issue #5356)" >&2
+  exit 1
+fi
+echo "    OK: the Value-less tag was applied with an empty value"
 
 # --- Phase 1.5: read-side inverse ---------------------------------------
 # The persisted observedProperties spelling is the ONLY asymmetric probe for the
@@ -213,7 +247,7 @@ wait_settled() {
 }
 echo "==> Phase 2: wait for the ESM to settle, then re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
-env -u CDKD_TEST_REMOVAL CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_REMOVAL -u CDKD_TEST_ESM_DEFAULTS -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 UUID_P2="$(esm_uuid)"
@@ -247,6 +281,24 @@ if [ "${SR_URI_P2}" != "https://schema-registry.cdkd-integ.example.com" ] || [ "
 fi
 echo "    OK: the added schema registry reached AWS"
 
+# The LoggingConfig this phase ADDED, the baseline Phase 2c removes (#1160).
+LOG_P2="$(esm_json | jq -r '.LoggingConfig.SystemLogLevel // ""')"
+if [ "${LOG_P2}" != "WARN" ]; then
+  echo "FAIL: after update, LoggingConfig.SystemLogLevel='${LOG_P2}', expected 'WARN'" >&2
+  esm_json >&2
+  exit 1
+fi
+echo "    OK: the added LoggingConfig reached AWS"
+
+# The Kafka error-handling numerics this phase ADDED, the baseline Phase 2b
+# removes (#1160).
+RETRY_P2="$(esm_json | jq -r '"\(.MaximumRetryAttempts) \(.MaximumRecordAgeInSeconds)"')"
+if [ "${RETRY_P2}" != "3 3600" ]; then
+  echo "FAIL: after update, MaximumRetryAttempts / MaximumRecordAgeInSeconds read '${RETRY_P2}', expected '3 3600'" >&2
+  exit 1
+fi
+echo "    OK: the added MaximumRetryAttempts / MaximumRecordAgeInSeconds reached AWS"
+
 # Belt-and-braces only, for the reason Phase 1.5 gives: the baseline is the
 # readback captured by this same deploy. The AWS assertions above are the proof.
 DRIFT_RC=0
@@ -263,8 +315,38 @@ echo "    OK: no drift after the update"
 # --- Phase 2b: remove the schema registry -------------------------------
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (the schema registry leaves the template)"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
-CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+REMOVAL_LOG="$(mktemp)"
+REMOVAL_RC=0
+env -u CDKD_TEST_ESM_DEFAULTS -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${REMOVAL_LOG}" 2>&1 || REMOVAL_RC=$?
+cat "${REMOVAL_LOG}"
+if [ "${REMOVAL_RC}" != "0" ]; then
+  echo "FAIL: the Phase 2b deploy failed (exit ${REMOVAL_RC})" >&2
+  rm -f "${REMOVAL_LOG}"
+  exit 1
+fi
+# Issue #1160, third CloudFormation A/B: on a provisioned-mode Kafka mapping a
+# removed MaximumRetryAttempts / MaximumRecordAgeInSeconds is kept (CFn sent
+# neither). cdkd keeps them too, and names them as kept the way CFn keeps them.
+# The sentinel is the pre-fix line, which called CFn's answer unmeasured.
+RETRY_KEPT_LINE='properties MaximumRetryAttempts, MaximumRecordAgeInSeconds were removed from the template; the Kafka mapping keeps its current values, as CloudFormation keeps them.'
+if awk 'index($0, "since what CloudFormation resets there is not measured") && index($0, "MaximumRetryAttempts") { found = 1 } END { exit !found }' "${REMOVAL_LOG}"; then
+  echo "FAIL: cdkd still calls CloudFormation's answer for the removed Kafka retry settings unmeasured (issue #1160)" >&2
+  rm -f "${REMOVAL_LOG}"
+  exit 1
+fi
+if ! grep -qF "${RETRY_KEPT_LINE}" "${REMOVAL_LOG}"; then
+  echo "FAIL: the Phase 2b deploy did not name the kept MaximumRetryAttempts / MaximumRecordAgeInSeconds (issue #1160)" >&2
+  rm -f "${REMOVAL_LOG}"
+  exit 1
+fi
+rm -f "${REMOVAL_LOG}"
+RETRY_P3="$(esm_json | jq -r '"\(.MaximumRetryAttempts) \(.MaximumRecordAgeInSeconds)"')"
+if [ "${RETRY_P3}" != "3 3600" ]; then
+  echo "FAIL: after removing them from the template, MaximumRetryAttempts / MaximumRecordAgeInSeconds read '${RETRY_P3}'; CloudFormation keeps '3 3600' (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: the removed MaximumRetryAttempts / MaximumRecordAgeInSeconds were kept and named, as CloudFormation keeps them"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
 if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
   echo "FAIL: ESM was REPLACED on the schema-registry removal, expected an in-place update" >&2
@@ -277,11 +359,68 @@ if [ "${SR_P3}" != '"ABSENT"' ]; then
   echo "FAIL: after removing it from the template, AWS still holds SchemaRegistryConfig=${SR_P3} (issue #3851)" >&2
   exit 1
 fi
-if [ "${MIN_POLLERS_P3}" != "1" ] || [ "${BATCH_P3}" != "20" ]; then
-  echo "FAIL: the retained siblings changed on the removal (MinimumPollers='${MIN_POLLERS_P3}', BatchSize='${BATCH_P3}')" >&2
+LOG_P3="$(esm_json | jq -r '.LoggingConfig.SystemLogLevel // ""')"
+if [ "${MIN_POLLERS_P3}" != "1" ] || [ "${BATCH_P3}" != "20" ] || [ "${LOG_P3}" != "WARN" ]; then
+  echo "FAIL: the retained siblings changed on the removal (MinimumPollers='${MIN_POLLERS_P3}', BatchSize='${BATCH_P3}', SystemLogLevel='${LOG_P3}')" >&2
   exit 1
 fi
-echo "    OK: the schema registry was removed; provisioned mode and batchSize 20 stayed"
+echo "    OK: the schema registry was removed; provisioned mode, batchSize 20 and the LoggingConfig stayed"
+
+# --- Phase 2c: remove batchSize, the poller config and the LoggingConfig -----
+# The mapping still holds the MaximumRetryAttempts / MaximumRecordAgeInSeconds
+# Phase 2b kept. A direct UpdateEventSourceMapping probe (#1160) showed AWS
+# accepts clearing the poller config with `{}` while they are set.
+echo "==> Phase 2c: re-deploy with CDKD_TEST_ESM_DEFAULTS=true (batchSize, poller config and LoggingConfig leave the template)"
+env -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
+  echo "FAIL: ESM was REPLACED on the Phase 2c removal, expected an in-place update" >&2
+  exit 1
+fi
+ESM_P4="$(esm_json)"
+BATCH_P4="$(printf '%s' "${ESM_P4}" | jq -r '.BatchSize')"
+PPC_P4="$(printf '%s' "${ESM_P4}" | jq -c '.ProvisionedPollerConfig // "ABSENT"')"
+LOG_P4="$(printf '%s' "${ESM_P4}" | jq -c '.LoggingConfig // "ABSENT"')"
+if [ "${BATCH_P4}" != "100" ] || [ "${PPC_P4}" != '"ABSENT"' ] || [ "${LOG_P4}" != '"ABSENT"' ]; then
+  echo "FAIL: after removing them from the template, AWS holds BatchSize='${BATCH_P4}' ProvisionedPollerConfig=${PPC_P4} LoggingConfig=${LOG_P4}; CloudFormation resets them to 100 / absent / absent (issue #1160)" >&2
+  exit 1
+fi
+echo "    OK: BatchSize reset to 100; the poller config and the LoggingConfig were cleared"
+
+# --- Phase 2d: a Topics change is refused (issue #5356) ----------------------
+# UpdateEventSourceMapping takes no Topics and CloudFormation refuses the change
+# ("Parameter 'Topics' can not be updated"). Before the fix cdkd reported
+# success, recorded the new topic and left AWS on the old one.
+echo "==> Phase 2d: re-deploy with CDKD_TEST_ESM_TOPIC=true (the topic changes; the deploy must be refused)"
+TOPIC_LOG="$(mktemp)"
+TOPIC_RC=0
+CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true CDKD_TEST_ESM_TOPIC=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
+  >"${TOPIC_LOG}" 2>&1 || TOPIC_RC=$?
+if [ "${TOPIC_RC}" = "0" ]; then
+  echo "FAIL: the Topics change deployed (exit 0); it must be refused, as CloudFormation refuses it (issue #5356)" >&2
+  tail -n 40 "${TOPIC_LOG}" >&2
+  rm -f "${TOPIC_LOG}"
+  exit 1
+fi
+if ! grep -qF 'Topics cannot be changed on an existing event source mapping' "${TOPIC_LOG}"; then
+  echo "FAIL: the Topics deploy failed (exit ${TOPIC_RC}) without the Topics refusal (issue #5356)" >&2
+  tail -n 40 "${TOPIC_LOG}" >&2
+  rm -f "${TOPIC_LOG}"
+  exit 1
+fi
+rm -f "${TOPIC_LOG}"
+if [ "$(esm_uuid)" != "${UUID_P1}" ]; then
+  echo "FAIL: the refused Topics change replaced the ESM" >&2
+  exit 1
+fi
+TOPICS_P5="$(esm_json | jq -r '(.Topics // []) | join(",")')"
+if [ "${TOPICS_P5}" != "cdkd-integ-topic" ]; then
+  echo "FAIL: after the refused Topics change, AWS holds Topics='${TOPICS_P5}', expected 'cdkd-integ-topic'" >&2
+  exit 1
+fi
+echo "    OK: the Topics change was refused and the mapping kept its topic"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

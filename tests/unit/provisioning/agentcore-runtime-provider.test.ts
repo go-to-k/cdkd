@@ -274,7 +274,8 @@ describe('AgentCoreRuntimeProvider', () => {
         previous
       );
       expect(removal.injected).toEqual([]);
-      // No opt-in: the schema's unsent properties would be misreported.
+      // No opt-in, and none is owed: a removed field is cleared by the full
+      // replace, and a removed tag is untagged (go-to-k/cdkd#2762).
       expect((provider as ResourceProvider).removalHandledInUpdate).toBeUndefined();
       expect(removal.unhandled).toEqual([]);
       expect(removal.properties).toBe(base);

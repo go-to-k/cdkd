@@ -44,6 +44,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { ECSProvider } from '../../../src/provisioning/providers/ecs-provider.js';
 import { replacementNameProbe } from '../../../src/deployment/replacement-name-holder.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 const probe = replacementNameProbe({
   resourceType: 'AWS::ECS::Cluster',
@@ -129,7 +130,8 @@ describe('the #3937 name probe against the real ECS cluster lookup', () => {
     });
 
     await expect(new ECSProvider().import(input)).rejects.toThrow(
-      'DescribeClusters did not answer for cluster theirs: ACCESS_DENIED (not authorized)'
+      // go-to-k/cdkd#2319: AWS's free-text detail goes to debug, not the message.
+      `DescribeClusters did not answer for cluster theirs: ACCESS_DENIED. ${VERBOSE_POINTER}`
     );
   });
 

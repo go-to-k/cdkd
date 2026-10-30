@@ -17,6 +17,7 @@ import {
   ListTagsOfResourceCommand,
   ResourceNotFoundException,
   UpdateTableCommand,
+  UpdateKinesisStreamingDestinationCommand,
 } from '@aws-sdk/client-dynamodb';
 
 const mockSend = vi.hoisted(() => vi.fn());
@@ -55,6 +56,13 @@ import {
   DynamoDBTableProvider,
   mapSSESpecification,
 } from '../../../../src/provisioning/providers/dynamodb-table-provider.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../../src/provisioning/interrupt-watch.js';
+import { withResourceDeadline } from '../../../../src/deployment/resource-deadline.js';
+import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
 
 // Helper: a minimal ACTIVE DescribeTable response.
 const activeTable = (overrides: Record<string, unknown> = {}) => ({
@@ -414,6 +422,483 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
 
       expect(commandSent(EnableKinesisStreamingDestinationCommand)).toBe(false);
       expect(commandSent(DisableKinesisStreamingDestinationCommand)).toBe(false);
+    });
+
+    // go-to-k/cdkd#5385: a same-ARN precision change is sent through
+    // UpdateKinesisStreamingDestination instead of being only warned about.
+    describe('same-ARN ApproximateCreationDateTimePrecision change (#5385)', () => {
+      const ARN = 'arn:aws:kinesis:us-east-1:123456789012:stream/s1';
+      const spec = (precision?: string) => ({
+        StreamArn: ARN,
+        ...(precision ? { ApproximateCreationDateTimePrecision: precision } : {}),
+      });
+      const destination = (status: string, precision: string) => ({
+        KinesisDataStreamDestinations: [
+          // A lingering DISABLED entry for the same stream must not be read.
+          { StreamArn: ARN, DestinationStatus: 'DISABLED', ApproximateCreationDateTimePrecision: 'MICROSECOND' },
+          { StreamArn: ARN, DestinationStatus: status, ApproximateCreationDateTimePrecision: precision },
+        ],
+      });
+      // Route by command: `describes` answers each DescribeKinesisStreamingDestination in turn.
+      const route = (describes: unknown[], update: () => Promise<unknown> = async () => ({})) => {
+        let i = 0;
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof DescribeKinesisStreamingDestinationCommand) {
+            return describes[Math.min(i++, describes.length - 1)];
+          }
+          if (cmd instanceof UpdateKinesisStreamingDestinationCommand) return update();
+          return activeTable();
+        });
+      };
+      const runUpdate = (from: string | undefined, to: string | undefined) =>
+        provider.update(
+          'MyTable',
+          'MyTable',
+          'AWS::DynamoDB::Table',
+          { ...baseCreateProps, KinesisStreamSpecification: spec(to) },
+          { ...baseCreateProps, KinesisStreamSpecification: spec(from) }
+        );
+
+      it('sends the new precision and waits for it to read back ACTIVE', async () => {
+        route([destination('ACTIVE', 'MILLISECOND'), destination('ACTIVE', 'MICROSECOND')]);
+
+        await runUpdate('MILLISECOND', 'MICROSECOND');
+
+        expect(inputOfCommand(UpdateKinesisStreamingDestinationCommand)).toEqual({
+          TableName: 'MyTable',
+          StreamArn: ARN,
+          UpdateKinesisStreamingConfiguration: { ApproximateCreationDateTimePrecision: 'MICROSECOND' },
+        });
+        expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(2);
+        expect(commandSent(EnableKinesisStreamingDestinationCommand)).toBe(false);
+        expect(commandSent(DisableKinesisStreamingDestinationCommand)).toBe(false);
+      });
+
+      it('sends a precision added where the previous template omitted it', async () => {
+        route([destination('ACTIVE', 'MICROSECOND'), destination('ACTIVE', 'MILLISECOND')]);
+
+        await runUpdate(undefined, 'MILLISECOND');
+
+        expect(inputOfCommand(UpdateKinesisStreamingDestinationCommand)).toMatchObject({
+          UpdateKinesisStreamingConfiguration: { ApproximateCreationDateTimePrecision: 'MILLISECOND' },
+        });
+      });
+
+      it('leaves the live precision alone when the member is removed, as CloudFormation does', async () => {
+        route([destination('ACTIVE', 'MILLISECOND')]);
+
+        await runUpdate('MILLISECOND', undefined);
+
+        expect(commandSent(UpdateKinesisStreamingDestinationCommand)).toBe(false);
+        expect(commandSent(DescribeKinesisStreamingDestinationCommand)).toBe(false);
+        expect(commandSent(EnableKinesisStreamingDestinationCommand)).toBe(false);
+        expect(commandSent(DisableKinesisStreamingDestinationCommand)).toBe(false);
+      });
+
+      it('treats "Precision is already set to the desired value" as success', async () => {
+        const already = Object.assign(
+          new Error(
+            'Invalid Request: Precision is already set to the desired value of MICROSECOND for tableId: t, kdsArn: ' +
+              ARN
+          ),
+          { name: 'ValidationException' }
+        );
+        route([destination('ACTIVE', 'MICROSECOND')], async () => {
+          throw already;
+        });
+
+        await expect(runUpdate('MILLISECOND', 'MICROSECOND')).resolves.toBeDefined();
+        expect(countOfCommand(UpdateKinesisStreamingDestinationCommand)).toBe(1);
+      });
+
+      it('verifies instead of failing when a retried update finds the destination already UPDATING', async () => {
+        const notActive = Object.assign(
+          new Error('Kinesis streaming is not in ACTIVE state. Updates are only allowed in ACTIVE state.'),
+          { name: 'ValidationException' }
+        );
+        route([destination('ACTIVE', 'MILLISECOND'), destination('ACTIVE', 'MICROSECOND')], async () => {
+          throw notActive;
+        });
+
+        await expect(runUpdate('MILLISECOND', 'MICROSECOND')).resolves.toBeDefined();
+        expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(2);
+      });
+
+      it('propagates any other ValidationException', async () => {
+        const other = Object.assign(new Error('Streaming destination cannot be updated with given parameters'), {
+          name: 'ValidationException',
+        });
+        route([destination('ACTIVE', 'MILLISECOND')], async () => {
+          throw other;
+        });
+
+        await expect(runUpdate('MILLISECOND', 'MICROSECOND')).rejects.toThrow(
+          /cannot be updated with given parameters/
+        );
+      });
+
+      it('waits out ENABLING before the update and UPDATING after it', async () => {
+        vi.useFakeTimers();
+        try {
+          route([
+            destination('ENABLING', 'MILLISECOND'),
+            destination('ACTIVE', 'MILLISECOND'),
+            destination('UPDATING', 'MILLISECOND'),
+            destination('ACTIVE', 'MICROSECOND'),
+          ]);
+          const order: string[] = [];
+          const inner = mockSend.getMockImplementation()!;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof DescribeKinesisStreamingDestinationCommand) order.push('describe');
+            if (cmd instanceof UpdateKinesisStreamingDestinationCommand) order.push('update');
+            return inner(cmd);
+          });
+
+          const done = runUpdate('MILLISECOND', 'MICROSECOND');
+          await vi.advanceTimersByTimeAsync(10_000);
+          await done;
+
+          expect(order).toEqual(['describe', 'describe', 'update', 'describe', 'describe']);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("keeps AWS's DestinationStatusDescription out of the thrown message", async () => {
+        const failed = destination('ENABLE_FAILED', 'MILLISECOND');
+        (failed.KinesisDataStreamDestinations[1] as Record<string, unknown>)[
+          'DestinationStatusDescription'
+        ] = 'User: arn:aws:iam::999988887777:role/deployer is not authorized';
+        route([destination('ACTIVE', 'MILLISECOND'), failed]);
+
+        const err = await runUpdate('MILLISECOND', 'MICROSECOND').catch((e: unknown) => e);
+        expect((err as Error).message).toMatch(/settled as ENABLE_FAILED/);
+        expect((err as Error).message).toMatch(/--verbose/);
+        expect((err as Error).message).not.toContain('999988887777');
+      });
+
+      it('reads ACTIVE at the old precision as a lagging read for a few polls, then fails', async () => {
+        vi.useFakeTimers();
+        try {
+          route([destination('ACTIVE', 'MILLISECOND')]);
+          const done = runUpdate('MILLISECOND', 'MICROSECOND').catch((e: unknown) => e);
+          await vi.advanceTimersByTimeAsync(60_000);
+          const err = (await done) as Error;
+          expect(err.message).toMatch(
+            /settled as ACTIVE with ApproximateCreationDateTimePrecision MILLISECOND, expected ACTIVE \/ MICROSECOND/
+          );
+          // 1 pre-wait poll + the grace polls + the failing poll.
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(1 + 5 + 1);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('accepts the new precision once a lagging read catches up', async () => {
+        vi.useFakeTimers();
+        try {
+          route([
+            destination('ACTIVE', 'MILLISECOND'),
+            destination('ACTIVE', 'MILLISECOND'),
+            destination('ACTIVE', 'MICROSECOND'),
+          ]);
+          const done = runUpdate('MILLISECOND', 'MICROSECOND');
+          await vi.advanceTimersByTimeAsync(10_000);
+          await done;
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(3);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('gives up on a destination still UPDATING after the bounded wait', async () => {
+        vi.useFakeTimers();
+        try {
+          route([destination('ACTIVE', 'MILLISECOND'), destination('UPDATING', 'MILLISECOND')]);
+          const done = runUpdate('MILLISECOND', 'MICROSECOND').catch((e: unknown) => e);
+          await vi.advanceTimersByTimeAsync(700_000);
+          const err = (await done) as Error;
+          expect(err.message).toMatch(/was still UPDATING after 600 seconds/);
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(1 + 300);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('gives the wait before the update a shorter bound and sends nothing after it', async () => {
+        vi.useFakeTimers();
+        try {
+          route([destination('ENABLING', 'MILLISECOND')]);
+          const done = runUpdate('MILLISECOND', 'MICROSECOND').catch((e: unknown) => e);
+          await vi.advanceTimersByTimeAsync(400_000);
+          const err = (await done) as Error;
+          expect(err.message).toMatch(/was still ENABLING after 300 seconds/);
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(150);
+          expect(commandSent(UpdateKinesisStreamingDestinationCommand)).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('ends the settle wait at the per-resource deadline with its own non-retryable error', async () => {
+        vi.useFakeTimers();
+        try {
+          route([destination('ACTIVE', 'MILLISECOND'), destination('UPDATING', 'MILLISECOND')]);
+          let inner: Promise<unknown> | undefined;
+          const outer = withResourceDeadline(
+            () => {
+              inner = runUpdate('MILLISECOND', 'MICROSECOND').then(
+                () => undefined,
+                (e: unknown) => e
+              );
+              return inner;
+            },
+            { warnAfterMs: 1000, timeoutMs: 21_000, onTimeout: () => new Error('deadline fired') }
+          ).then(
+            (r) => r,
+            (e: unknown) => e
+          );
+          const startedAt = Date.now();
+          await vi.runAllTimersAsync();
+          expect(((await outer) as Error).message).toBe('deadline fired');
+          const err = (await inner) as Error;
+          expect(err.message).toContain(
+            'The resource timeout expired while waiting for Kinesis streaming destination'
+          );
+          expect(err.message).toContain('last status: UPDATING');
+          expect(isMarkedNonRetryable(err)).toBe(true);
+          // The last sleep is cut to the deadline (21 s is off the 2 s cadence).
+          expect(Date.now() - startedAt).toBe(21_000);
+          // pre-wait read + post-update reads at 0, 2, ..., 20 s.
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(1 + 11);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('stops the settle wait on Ctrl-C without sending the update', async () => {
+        disarmInterruptWatchForTests();
+        interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+        try {
+          const baselineListeners = process.listeners('SIGINT');
+          route([destination('ENABLING', 'MILLISECOND')]);
+          const inner = mockSend.getMockImplementation()!;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof DescribeKinesisStreamingDestinationCommand) {
+              const ours = process.listeners('SIGINT').filter((l) => !baselineListeners.includes(l));
+              expect(ours.length).toBeGreaterThan(0);
+              for (const l of ours) (l as unknown as () => void)();
+            }
+            return inner(cmd);
+          });
+
+          const error = await runUpdate('MILLISECOND', 'MICROSECOND').catch((e: unknown) => e);
+          expect(isInterruptedWaitError(error)).toBe(true);
+          expect(commandSent(UpdateKinesisStreamingDestinationCommand)).toBe(false);
+        } finally {
+          interruptWatchTestSeam.commandOwnsInterrupts = undefined;
+          disarmInterruptWatchForTests();
+        }
+      });
+
+      it('fails the update when the destination settles at anything but ACTIVE at the new precision', async () => {
+        route([destination('ACTIVE', 'MILLISECOND'), destination('ENABLE_FAILED', 'MILLISECOND')]);
+
+        await expect(runUpdate('MILLISECOND', 'MICROSECOND')).rejects.toThrow(
+          /settled as ENABLE_FAILED with ApproximateCreationDateTimePrecision MILLISECOND, expected ACTIVE \/ MICROSECOND/
+        );
+      });
+    });
+
+    // go-to-k/cdkd#5423: DescribeKinesisStreamingDestination read ACTIVE for
+    // about a second after the disable answered DISABLING, so the drift
+    // baseline captured right after the update kept the destination.
+    describe('waits for a disabled destination to read DISABLED (#5423)', () => {
+      const OLD = 'arn:aws:kinesis:us-east-1:123456789012:stream/old';
+      const NEW = 'arn:aws:kinesis:us-east-1:123456789012:stream/new';
+      const read = (...live: Array<[string, string]>) => ({
+        KinesisDataStreamDestinations: [
+          // A lingering DISABLED entry for the same stream is not the live one.
+          { StreamArn: OLD, DestinationStatus: 'DISABLED' },
+          ...live.map(([StreamArn, DestinationStatus]) => ({ StreamArn, DestinationStatus })),
+        ],
+      });
+      const warn = (): ReturnType<typeof vi.fn> =>
+        (provider as unknown as { logger: { warn: ReturnType<typeof vi.fn> } }).logger.warn;
+      const order: string[] = [];
+      const route = (describes: unknown[]) => {
+        order.length = 0;
+        let i = 0;
+        mockSend.mockImplementation(async (cmd: unknown) => {
+          if (cmd instanceof DescribeKinesisStreamingDestinationCommand) {
+            order.push('describe');
+            const r = describes[Math.min(i++, describes.length - 1)];
+            if (r instanceof Error) throw r;
+            return r;
+          }
+          if (cmd instanceof DisableKinesisStreamingDestinationCommand) order.push('disable');
+          if (cmd instanceof EnableKinesisStreamingDestinationCommand) order.push('enable');
+          return cmd instanceof DescribeTableCommand ? activeTable() : {};
+        });
+      };
+      const runUpdate = (from: string | undefined, to: string | undefined) =>
+        provider.update(
+          'MyTable',
+          'MyTable',
+          'AWS::DynamoDB::Table',
+          { ...baseCreateProps, ...(to ? { KinesisStreamSpecification: { StreamArn: to } } : {}) },
+          { ...baseCreateProps, ...(from ? { KinesisStreamSpecification: { StreamArn: from } } : {}) }
+        );
+
+      it('re-reads through DISABLING and a stale ACTIVE until the destination reads DISABLED', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'DISABLING']), read([OLD, 'ACTIVE']), read()]);
+          const done = runUpdate(OLD, undefined);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await done;
+
+          expect(order).toEqual(['disable', 'describe', 'describe', 'describe']);
+          expect(warn()).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('does not wait on an ENABLE_FAILED history entry for the same stream', async () => {
+        route([
+          {
+            KinesisDataStreamDestinations: [
+              { StreamArn: OLD, DestinationStatus: 'ENABLE_FAILED' },
+              { StreamArn: OLD, DestinationStatus: 'DISABLED' },
+            ],
+          },
+        ]);
+
+        await runUpdate(OLD, undefined);
+
+        expect(order).toEqual(['disable', 'describe']);
+        expect(warn()).not.toHaveBeenCalled();
+      });
+
+      it('ends the wait when the destination is no longer listed', async () => {
+        route([{ KinesisDataStreamDestinations: [] }]);
+
+        await runUpdate(OLD, undefined);
+
+        expect(order).toEqual(['disable', 'describe']);
+        expect(warn()).not.toHaveBeenCalled();
+      });
+
+      it('waits before enabling the new stream when the ARN changes', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'ACTIVE']), read()]);
+          const done = runUpdate(OLD, NEW);
+          await vi.advanceTimersByTimeAsync(10_000);
+          await done;
+
+          expect(order).toEqual(['disable', 'describe', 'describe', 'enable']);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('goes on with a warning naming cdkd drift when the destination never settles', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'ACTIVE'])]);
+          const done = runUpdate(OLD, undefined);
+          await vi.advanceTimersByTimeAsync(120_000);
+          await expect(done).resolves.toBeDefined();
+
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(120);
+          expect(warn()).toHaveBeenCalledTimes(1);
+          const message = warn().mock.calls[0][0] as string;
+          expect(message).toContain(`${OLD} disabled on DynamoDB table MyTable still read as ACTIVE after 60 seconds`);
+          expect(message).toContain('`cdkd drift` may report it');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('goes on with a warning when the read-back fails', async () => {
+        route([Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' })]);
+
+        await expect(runUpdate(OLD, undefined)).resolves.toBeDefined();
+
+        expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(1);
+        expect(warn().mock.calls[0][0]).toContain('could not be read back');
+        expect(warn().mock.calls[0][0]).not.toContain('not authorized');
+      });
+
+      it('stops at the per-resource deadline with a warning, not an error', async () => {
+        vi.useFakeTimers();
+        try {
+          route([read([OLD, 'ACTIVE'])]);
+          let inner: Promise<unknown> | undefined;
+          const outer = withResourceDeadline(
+            () => {
+              inner = runUpdate(OLD, undefined).then(
+                () => 'resolved',
+                (e: unknown) => e
+              );
+              return inner;
+            },
+            { warnAfterMs: 1000, timeoutMs: 5_250, onTimeout: () => new Error('deadline fired') }
+          ).then(
+            (r) => r,
+            (e: unknown) => e
+          );
+          const startedAt = Date.now();
+          await vi.runAllTimersAsync();
+          expect(((await outer) as Error).message).toBe('deadline fired');
+          expect(await inner).toBe('resolved');
+          // Reads at 0, 0.5, ..., 5 s; the last sleep is cut to the deadline.
+          expect(Date.now() - startedAt).toBe(5_250);
+          expect(countOfCommand(DescribeKinesisStreamingDestinationCommand)).toBe(11);
+          expect(warn().mock.calls[0][0]).toContain(
+            'still read as ACTIVE when the resource timeout expired'
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('stops the wait on Ctrl-C', async () => {
+        disarmInterruptWatchForTests();
+        interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+        try {
+          const baselineListeners = process.listeners('SIGINT');
+          route([read([OLD, 'ACTIVE'])]);
+          const inner = mockSend.getMockImplementation()!;
+          mockSend.mockImplementation(async (cmd: unknown) => {
+            if (cmd instanceof DescribeKinesisStreamingDestinationCommand) {
+              const ours = process.listeners('SIGINT').filter((l) => !baselineListeners.includes(l));
+              expect(ours.length).toBeGreaterThan(0);
+              for (const l of ours) (l as unknown as () => void)();
+            }
+            return inner(cmd);
+          });
+
+          const error = await runUpdate(OLD, NEW).catch((e: unknown) => e);
+          expect(isInterruptedWaitError(error)).toBe(true);
+          expect(order).toEqual(['disable', 'describe']);
+        } finally {
+          interruptWatchTestSeam.commandOwnsInterrupts = undefined;
+          disarmInterruptWatchForTests();
+        }
+      });
+
+      it('reads nothing when nothing was disabled', async () => {
+        route([read([OLD, 'ACTIVE'])]);
+
+        await runUpdate(undefined, NEW);
+        await runUpdate(NEW, NEW);
+
+        expect(order).toEqual(['enable']);
+        expect(commandSent(DescribeKinesisStreamingDestinationCommand)).toBe(false);
+      });
     });
   });
 
@@ -1010,6 +1495,24 @@ describe('DynamoDBTableProvider backfill (#609)', () => {
       expect(state?.['KinesisStreamSpecification']).toEqual({
         StreamArn: 'arn:active',
         ApproximateCreationDateTimePrecision: 'MILLISECOND',
+      });
+    });
+
+    it('surfaces an UPDATING destination (a precision change in flight, #5385)', async () => {
+      wireReadbacks({
+        kinesis: [
+          {
+            StreamArn: 'arn:updating',
+            DestinationStatus: 'UPDATING',
+            ApproximateCreationDateTimePrecision: 'MICROSECOND',
+          },
+        ],
+      });
+
+      const state = bagOf(await provider.readCurrentState('MyTable', 'MyTable', 'AWS::DynamoDB::Table'));
+      expect(state?.['KinesisStreamSpecification']).toEqual({
+        StreamArn: 'arn:updating',
+        ApproximateCreationDateTimePrecision: 'MICROSECOND',
       });
     });
 

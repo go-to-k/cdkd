@@ -10,7 +10,7 @@ import {
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { DeploymentEvent } from '../../../src/types/deployment-events.js';
 import type { ResourceState } from '../../../src/types/state.js';
-import { awsSdkError, ccAlreadyExistsError } from '../_aws-sdk-error.js';
+import { awsSdkError, ccAlreadyExistsError, relayedAwsSdkError } from '../_aws-sdk-error.js';
 import { cutMarker } from '../../../src/utils/display-safe.js';
 
 vi.mock('../../../src/deployment/retry.js', async (importOriginal) => {
@@ -304,7 +304,7 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
       ...blankRows,
       ['long', long] as const,
     ]) {
-      const create = vi.fn().mockRejectedValue(awsSdkError(text));
+      const create = vi.fn().mockRejectedValue(relayedAwsSdkError(text));
       const { ctx, lines } = makeCtx({ create, delete: vi.fn().mockResolvedValue(undefined) });
       await replayRollback(
         [
@@ -1058,18 +1058,20 @@ describe('rollback-executor logs cannot forge a line from a planted journal (#30
     });
     expect(offenders).toEqual([]);
     const wrapped = /\$\{displaySafe\(describeAwsFailure\(\w+\)\.detail\)\}/g;
-    // recreateError, deleteError (warn) -- and the fence proves it read the
-    // file. The two per-op failure lines (rollbackError, revertError) render
+    // deleteError (warn) -- and the fence proves it read the file. The
+    // re-create failure renders through `embeddedFailureText` since
+    // go-to-k/cdkd#2319, its text `displaySafe`d at the throw. The two per-op failure lines (rollbackError, revertError) render
     // through `rollbackFailureText`, whose free-form arm is the same wrapped
     // render and whose other arm renders cdkd's OWN two refusals per LINE, so
     // their labelled `To orphan it:` remedy stays a line of its own on the
     // terminal (M1 of the go-to-k/cdkd#3764 review) while every line of it is
     // still sanitized. Both call sites, and both arms, are pinned by shape.
-    expect((src.match(wrapped) ?? []).length).toBe(2);
+    expect((src.match(wrapped) ?? []).length).toBe(1);
     // Since issue #4037 both call sites reach it through `maskedFailureText`,
-    // and so does the inline-policy put-back's failure line (go-to-k/cdkd#4408).
+    // and so does the inline-policy put-back's failure line (go-to-k/cdkd#4408)
+    // and a deferred new-resource delete's (go-to-k/cdkd#5064).
     expect((src.match(/^\s+(?:rollbackError|revertError),\n\s+mask\n\s+\)/gm) ?? []).length).toBe(2);
-    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(3);
+    expect((src.match(/maskedFailureText\(\n/g) ?? []).length).toBe(4);
     expect(src).toContain('const text = rollbackFailureText(error);');
     expect(src).toContain('return displaySafe(describeAwsFailure(error).detail);');
     expect(src).toContain('.map((line) => displaySafe(line))');

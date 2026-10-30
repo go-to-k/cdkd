@@ -23,11 +23,19 @@
 # via `s3:GetObjectVersion`. A fixture that checked only the current object
 # would report clean over a live disclosure.
 #
-# It measures BOTH paths that write the record:
+# It measures BOTH deploys that write the record:
 #
 #   Phase 3  the ROLLBACK writes it       (the automatic-rollback capture)
-#   Phase 6  the ADOPTION consumes it     (the record is spliced into
-#                                          `resources` and re-persisted)
+#   Phase 6  the REDEPLOY re-persists it  (on a stack with a stack instance id
+#                                          the orphan is NOT adopted,
+#                                          go-to-k/cdkd#5064: the record is
+#                                          carried, and a NEW parameter under
+#                                          the next name generation's name is
+#                                          created beside the orphan, its own
+#                                          record holding the same reference)
+#
+# Both parameters are RETAIN and hold the resolved plaintext in SSM, so the
+# fixture deletes each by name once it has asserted on it.
 #
 # Environment:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -94,7 +102,30 @@ CANARY_ID="cdkd-2934-canary-$$"
 export CDKD_TEST_SECRET_NAME="${CANARY_ID}"
 
 PARAM_NAME=""
+# The parameter phase 5's redeploy creates beside the orphan (RETAIN too).
+PARAM_NAME_2=""
 LOG=""
+
+# The 12-hex suffix cdkd gives a generated name at name generation <g> of
+# <logicalId> (go-to-k/cdkd#5064): sha256(id NUL logicalId)[:12] at 0,
+# sha256(id NUL logicalId NUL g)[:12] above, the id being state.json's
+# stackInstanceId. Read from S3 into node's stdin: the id is never printed.
+state_name_suffix() { # usage: state_name_suffix <logicalId> <generation>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | node -e '
+const { createHash } = require("node:crypto");
+let raw = "";
+process.stdin.on("data", (c) => (raw += c)).on("end", () => {
+  const [logicalId, generation] = process.argv.slice(1);
+  const id = JSON.parse(raw).stackInstanceId;
+  if (typeof id !== "string" || id === "" || !/^(0|[1-9][0-9]*)$/.test(generation ?? "")) {
+    process.stderr.write("state.json carries no stackInstanceId, or the generation is not a number\n");
+    process.exit(1);
+  }
+  const hash = createHash("sha256").update(id).update("\0").update(logicalId);
+  if (generation !== "0") hash.update("\0").update(generation);
+  process.stdout.write(hash.digest("hex").slice(0, 12));
+});' "$1" "$2"
+}
 
 cleanup() {
   echo "==> Cleanup: dropping leftover state + AWS resources"
@@ -109,6 +140,9 @@ cleanup() {
   # This by-name delete is the only thing that stops a leak of one per run.
   if [ -n "${PARAM_NAME}" ]; then
     aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}" >/dev/null 2>&1
+  fi
+  if [ -n "${PARAM_NAME_2}" ]; then
+    aws ssm delete-parameter --name "${PARAM_NAME_2}" --region "${REGION}" >/dev/null 2>&1
   fi
   # Secrets Manager keeps a deleted secret for a recovery window by default, and
   # that retained copy holds the plaintext — so force it, or the canary outlives
@@ -192,6 +226,8 @@ plaintext_survives_in_s3() {
   return "${found}"
 }
 
+command -v jq >/dev/null || { echo "FAIL: jq required" >&2; exit 1; }
+
 echo "==> Phase 0: create the canary out of band"
 aws secretsmanager create-secret --name "${CANARY_ID}" --region "${REGION}" \
   --secret-string "${PLAINTEXT}" >/dev/null
@@ -206,16 +242,16 @@ CDKD_TEST_SECRET_ORPHAN=fail node "${LOCAL_DIST}" deploy "${STACK}" \
 
 echo "==> Phase 2: the rollback must have ORPHANED the parameter and recorded it"
 STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null || echo '{}')"
-read -r ORPHAN_COUNT PARAM_NAME <<EOF
+read -r ORPHAN_COUNT PARAM_NAME PARAM_LOGICAL_ID <<EOF
 $(printf '%s' "${STATE}" | node -e '
 let raw = ""; process.stdin.on("data", (c) => (raw += c)).on("end", () => {
   let parsed = {};
   try { parsed = JSON.parse(raw || "{}"); } catch { parsed = {}; }
   const orphans = parsed.orphans ?? [];
-  process.stdout.write(orphans.length + " " + (orphans[0]?.state?.physicalId ?? ""));
+  process.stdout.write(orphans.length + " " + (orphans[0]?.state?.physicalId ?? "") + " " + (orphans[0]?.logicalId ?? ""));
 });')
 EOF
-if [ "${ORPHAN_COUNT}" != "1" ] || [ -z "${PARAM_NAME}" ]; then
+if [ "${ORPHAN_COUNT}" != "1" ] || [ -z "${PARAM_NAME}" ] || [ -z "${PARAM_LOGICAL_ID}" ]; then
   echo "FAIL: expected exactly 1 orphan record in ${STATE_KEY}, got '${ORPHAN_COUNT}'."
   echo "      With no record there is nothing to leak, so every assertion below"
   echo "      would pass VACUOUSLY — this fixture would report clean over an"
@@ -275,40 +311,102 @@ if plaintext_survives_in_s3; then
 fi
 echo "    OK: plaintext absent from every version under ${STATE_PREFIX}"
 
-echo "==> Phase 5: redeploy with the failure repaired (must adopt)"
+# go-to-k/cdkd#5064: the orphan holds the generation-0 name derived from the
+# stack instance id, and the rollback retired that generation, so phase 5's
+# create takes generation 1 — a name predicted here, before the deploy.
+PARAM_SUFFIX_G0="$(state_name_suffix "${PARAM_LOGICAL_ID}" 0)" || exit 1
+if [ "${PARAM_NAME##*-}" != "${PARAM_SUFFIX_G0}" ]; then
+  echo "FAIL: the orphan ${PARAM_NAME} is not ${PARAM_LOGICAL_ID}'s generation-0 name (suffix derived from state.json's stackInstanceId: ${PARAM_SUFFIX_G0})"
+  exit 1
+fi
+if [ "$(printf '%s' "${STATE}" | jq -r --arg k "${PARAM_LOGICAL_ID}" '.retiredNameGenerations[$k] // "none"')" != "0" ]; then
+  echo "FAIL: the rollback did not retire ${PARAM_LOGICAL_ID} at generation 0 (retiredNameGenerations)"
+  exit 1
+fi
+PARAM_SUFFIX_G1="$(state_name_suffix "${PARAM_LOGICAL_ID}" 1)" || exit 1
+PARAM_EXPECTED_G1="${PARAM_NAME%-*}-${PARAM_SUFFIX_G1}"
+# Registered for the cleanup BEFORE the deploy: a deploy that fails after
+# creating it would otherwise leave a Retain parameter holding the canary.
+PARAM_NAME_2="${PARAM_EXPECTED_G1}"
+PARAM_ORPHAN_MODIFIED="$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)"
+
+echo "==> Phase 5: redeploy with the failure repaired (a NEW parameter; the orphan is not taken back)"
 CDKD_TEST_SECRET_ORPHAN=fixed node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" > "${LOG}" 2>&1 || {
-  echo "FAIL: the redeploy did not succeed — adoption never fired, so phase 6"
-  echo "      would measure the wrong path."
+  echo "FAIL: the redeploy did not succeed — on a stack with a stack instance id"
+  echo "      the create asks for the next generation's name, so nothing should"
+  echo "      collide; phase 6 would measure the wrong path."
   tail -40 "${LOG}"
   exit 1
 }
-if ! grep -q "Adopting " "${LOG}"; then
-  echo "FAIL: the redeploy succeeded but never announced an adoption. A green"
-  echo "      deploy alone does not discriminate — it also passes if the"
-  echo "      parameter had been deleted and simply re-created."
+# The warning: the sentinel is its `cdkd import` remedy clause, the markers are
+# the "does not take it back" statement and the orphan's name, all on the
+# warning's one line.
+if ! grep -qF "adopt it with 'cdkd import'" "${LOG}"; then
+  echo "FAIL: the redeploy did not warn that the rollback's orphan is not taken back (no 'cdkd import' remedy line)"
   tail -40 "${LOG}"
   exit 1
 fi
-echo "    OK: adoption fired"
+if ! grep -F "adopt it with 'cdkd import'" "${LOG}" | grep -F "This deploy does not take it back" | grep -qF "${PARAM_NAME}"; then
+  echo "FAIL: a 'cdkd import' remedy line is present but is not the orphan warning naming ${PARAM_NAME} (wording drifted?):"
+  grep -F "adopt it with 'cdkd import'" "${LOG}" | sed 's/^/  /'
+  exit 1
+fi
+if grep -q "Adopting " "${LOG}"; then
+  echo "FAIL: the redeploy adopted the rollback orphan on a stack with a stack instance id"
+  tail -40 "${LOG}"
+  exit 1
+fi
+STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+PARAM_NAME_2="$(printf '%s' "${STATE}" | jq -r --arg k "${PARAM_LOGICAL_ID}" '.resources[$k].physicalId // ""')"
+if [ "${PARAM_NAME_2}" != "${PARAM_EXPECTED_G1}" ]; then
+  echo "FAIL: state records ${PARAM_LOGICAL_ID} as '${PARAM_NAME_2}', expected the generation-1 name ${PARAM_EXPECTED_G1}"
+  exit 1
+fi
+# The new parameter resolved the canary too, so phase 6 measures a second
+# secret-bearing record rather than one that never held the plaintext.
+if ! aws ssm get-parameter --name "${PARAM_NAME_2}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text 2>/dev/null | grep -qF "${PLAINTEXT}"; then
+  echo "FAIL: the new parameter ${PARAM_NAME_2} does not carry the resolved canary."
+  exit 1
+fi
+if [ "$(aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}" \
+  --query 'Parameter.LastModifiedDate' --output text)" != "${PARAM_ORPHAN_MODIFIED}" ]; then
+  echo "FAIL: the redeploy wrote to the orphan ${PARAM_NAME} — it must leave it alone"
+  exit 1
+fi
+echo "    OK: ${PARAM_NAME_2} created beside the untouched orphan ${PARAM_NAME}, with the warning"
 
-echo "==> Phase 6: the ADOPTION path must not leak either"
-# The adopted record is spliced into `resources` and re-persisted, and the
-# import() readback merges AWS-side attribute values into it. Both are new
+echo "==> Phase 6: the REDEPLOY's writes must not leak either"
+# The redeploy re-persists the carried orphan record and writes the new
+# parameter's record, whose readback merges AWS-side values. Both are new
 # writes of a secret-bearing record, so the leak question is re-asked here
 # rather than assumed settled by phase 4.
 if plaintext_survives_in_s3; then
-  echo "FAIL: the seeded plaintext became readable after the ADOPTION."
-  echo "      The rollback write was clean but the adoption write is not."
+  echo "FAIL: the seeded plaintext became readable after the REDEPLOY."
+  echo "      The rollback write was clean but the redeploy's write is not."
   exit 1
 fi
-echo "    OK: plaintext still absent after adoption"
+echo "    OK: plaintext still absent after the redeploy"
+# The orphan has served its purpose: no record will ever delete it, and it
+# holds the resolved plaintext.
+aws ssm delete-parameter --name "${PARAM_NAME}" --region "${REGION}"
+assert_gone "the orphaned parameter ${PARAM_NAME} survived its own delete" \
+  aws ssm get-parameter --name "${PARAM_NAME}" --region "${REGION}"
+PARAM_NAME=""
 
 echo "==> Phase 7: destroy, then prove the versions are gone too"
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
+# RETAIN: the destroy keeps the new parameter, which holds the resolved
+# plaintext, so the fixture deletes it.
+aws ssm delete-parameter --name "${PARAM_NAME_2}" --region "${REGION}"
+assert_gone "the retained parameter ${PARAM_NAME_2} survived its own delete" \
+  aws ssm get-parameter --name "${PARAM_NAME_2}" --region "${REGION}"
+PARAM_NAME_2=""
 
 cleanup
 trap - EXIT INT TERM
@@ -317,4 +415,4 @@ s3_assert_versions_swept "${STATE_BUCKET}" "${STATE_PREFIX}" "retain-orphan-secr
 echo "    OK: no versions survive"
 
 echo ""
-echo "=== PASS: retain-orphan-secret integ (the orphan record carries the expression, and the seeded plaintext is readable in no S3 version after either the rollback write or the adoption write) ==="
+echo "=== PASS: retain-orphan-secret integ (the orphan record carries the expression, and the seeded plaintext is readable in no S3 version after either the rollback write or the redeploy write; the orphan is left alone and a new parameter takes the next name generation) ==="

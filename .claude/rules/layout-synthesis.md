@@ -26,10 +26,10 @@ parses `manifest.json`; **context-providers/** resolves missing context.
   formatting rule, not a safety one.
 - **assembly-reader.ts** renders EVERY assembly-derived value — a manifest key,
   a `stackName`, a template key, a `Metadata['aws:asset:path']`, a
-  `directoryName`-derived path, a `readFileSync` / `JSON.parse` failure text —
-  through `displaySafe`, in thrown messages AND log lines
+  `directoryName`-derived path, a `readFileSync` failure text (not
+  `JSON.parse`'s, #5254) — through `displaySafe`, in messages AND log lines
   ([#3277](https://github.com/go-to-k/cdkd/issues/3277)). Synthesis is the first
-  layer the CLI reaches, so on a hand-modified assembly these ARE the lines a
+  layer reached, so on a hand-modified assembly these ARE the lines a
   user is asked to trust, and `formatError` sanitizes and bounds only an
   error's `cause`, never the message a thrower builds.
   The split is by what the value IS, not by where it came from: a PATH or

@@ -22,7 +22,7 @@ import {
 import { physicalIdShownBesideCommand } from '../../../src/utils/pasteable-command.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
 import { reverseReplacementNewHoldsName } from '../../../src/deployment/replacement-name-holder.js';
-import { withStackName } from '../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../src/provisioning/resource-name.js';
 import type { ResourceState } from '../../../src/types/state.js';
 import {
   PASTE_PAYLOADS,
@@ -281,7 +281,7 @@ describe('the name-holder diagnosis carries no apostrophe (go-to-k/cdkd#4265)', 
   });
 
   it('the rewritten-name arm', () => {
-    const d = withStackName('Stk', () =>
+    const d = withStackScope({ stackName: 'Stk', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       diagnosisOf(
         ask({
           oldResourceType: 'AWS::IAM::Role',

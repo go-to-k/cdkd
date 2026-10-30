@@ -163,6 +163,16 @@ when it was first sent, written BEFORE the create is sent. It holds no secret.
   record is: a denied delete stops the command before the record is touched,
   even when no ledger exists, because S3 checks the permission first.
 
+### Stack instance id (`stack-instance.json`)
+
+The write-ahead copy of a first deploy's `stackInstanceId`
+(`{"stackInstanceVersion": 1, "stackInstanceId": "<uuid>"}`), described with
+[schema version 13](#version-13-adds-stackinstanceid). It
+exists only between a first deploy's first create and its first state save,
+or after such a deploy was interrupted. `s3:DeleteObject` on its key is
+required wherever deleting the stack record is: `deleteState` deletes it
+first and stops on a denial.
+
 ### Rollback journal (`rollback-journal.json`)
 
 
@@ -215,7 +225,8 @@ resource record the op already carries. It also records whether the deploy
 deleted the old resource BEFORE creating the new one (`oldDeletedBeforeCreate`
 — additive, no bump; `--recreate-via-cc-api` / `--recreate-via-sdk-provider`,
 the update-unsupported fallback, `--replace`'s delete-first fallback, a child
-lost with its re-created parent): the
+lost with its re-created parent; on an id stack the first three create first
+for a generated name, which moves to its next generation): the
 rollback then deletes the new resource before re-creating the old one, so a
 port or name only one of them can hold does not collide. An absent value (an
 older binary's journal) keeps the create-first order. A failed UPDATE carries
@@ -400,7 +411,7 @@ region the CDK app declares.
 ## Schema version history
 
 
-Writers always emit the current version, `version: 12`. Readers accept every
+Writers always emit the current version, `version: 15`. Readers accept every
 earlier version and upgrade it in memory; the next write persists the current
 shape. A binary that meets a version newer than it knows refuses the record
 with an "Upgrade cdkd" error.
@@ -419,6 +430,9 @@ with an "Upgrade cdkd" error.
 | 10 | `observedBaselineRefused` on each resource |
 | 11 | `noEchoLeaves` / `noEchoAttributeNames` on each resource; `NoEcho` values stored as `***` |
 | 12 | `referenceProvenance` on each resource, `outputReferenceProvenance` on the stack |
+| 13 | `stackInstanceId` and `retiredNameGenerations` on the stack, `nameGeneration` / `nameGenerationHigh` on each resource |
+| 14 | `unsettledProperties` on each resource |
+| 15 | `unsettledItems` on each resource |
 
 `version: 2` and `version: 4` have no section of their own below: the first is
 the key layout every later section assumes, and the second is described with
@@ -1126,7 +1140,7 @@ is already `***`.
 `version: 11` alone therefore does not mean a stack's values are masked, and
 only a `cdkd deploy` migrates it.
 
-### `version: 12` records where each reference was resolved (current writers)
+### `version: 12` records where each reference was resolved
 
 Schema `version: 12` records, for each `{{resolve:...}}` token a record holds,
 the region that resolved it and which version of the secret it stood for
@@ -1280,6 +1294,185 @@ one JSON line to the file at exit: its pid, its command line with every flag
 value dropped, the time, and a count of every AWS SDK command it sent, by
 client and command (`src/utils/sdk-call-log.ts`). Nothing of a request,
 response or flag value is kept.
+
+### `version: 13` adds `stackInstanceId`
+
+Schema `version: 13` adds `StackState.stackInstanceId` (issue
+[#5064](https://github.com/go-to-k/cdkd/issues/5064)): a `crypto.randomUUID()`
+naming one lifetime of the stack, from its first state write until its record
+is deleted. It is minted ONLY at that first write — a first deploy, the
+partial save of a failed first deploy, or `cdkd import` creating the record —
+and carried by every writer after it (`stackInstanceIdCarriedFrom` in
+`src/types/state.ts`, fenced by
+`tests/unit/state/stack-instance-id-carriers.test.ts`). It is read through
+`stackInstanceIdOf` (`src/state/stack-instance-id.ts`), which refuses a
+present value that is not a well-formed id rather than reading it as absent.
+cdkd never logs it, and `cdkd state show --json` prints `<withheld>` in its
+place.
+
+A first deploy writes `state.json` only at its end, so the id is first
+written to the `stack-instance.json` sibling. Under the stack lock, the deploy
+reads the sibling beside its diff, and once it is going ahead (past the first
+deploy's state gate, the destructive-plan check and `--require-approval`, so a
+refused or declined deploy writes nothing) and before its first save and first
+create, it reuses the id that read found, or mints one and writes it with
+`If-None-Match: *` (a 409 is retried once; a lost race reads the winner back). A re-run after a crash
+therefore reuses the id and never mints a fresh one. The sibling is read only
+while `state.json` is absent, so a deploy of a stack with a record makes no
+extra call; `--dry-run` reads and writes nothing. The first state save
+carrying the id deletes the sibling: the one version this deploy wrote, when
+it wrote one, else the object and its earlier versions. A deploy runs that
+delete beside its post-save writes and finishes it before the lock is
+released;
+`deleteState` deletes it too, before the record and fail-closed, so a stack
+created again gets a new id. A sibling this binary cannot read refuses the
+deploy, naming the stack. `cdkd import` creating a record reads the sibling
+(the import adopts what an interrupted deploy made) but writes none; a
+nested child it imports keeps the id of a record it already has.
+
+Only a binary that also derives generated names from the id may mint one:
+a record carrying an id says its resources were named with it.
+
+One residual: a pre-v13 binary's `deleteState` does not know the sibling, so
+a first deploy interrupted under v13, then deployed and destroyed by an older
+binary, leaves it, and the stack's next v13 first deploy takes that id.
+
+#### Name generations
+
+The same bump adds `ResourceState.nameGeneration` (absent = 0),
+`ResourceState.nameGenerationHigh` and `StackState.retiredNameGenerations`
+(`src/state/name-generation.ts`), written only on a stack with an id. The
+generated-name suffix is `sha256(id NUL logicalId)[:12]` at generation 0 and
+`sha256(id NUL logicalId NUL decimal(g))[:12]` at generation `g > 0`
+(`stackInstanceNameSuffix`). Every `StackScope` with an id carries the map
+`nameGenerationsOf` builds at the state read (a record's generation, a
+retired id's generation + 1, otherwise 0); a generated name derived in an id
+scope without it throws.
+
+- **Replacement.** The new resource is created at `nextNameGeneration`: one
+  past `max(nameGeneration, nameGenerationHigh)`, skipping a generation whose
+  suffix the record's own physical id already carries (a `cdkd import` of
+  another resource). Its name therefore differs, so a property-driven
+  replacement, `--recreate-via-*` and the update-not-supported fallback all
+  create first. A resource lost with its parent is re-created at its own
+  generation.
+- **Leaving the stack.** A deploy DELETE (a `Retain` included), `cdkd orphan`
+  and a rollback that leaves a `Retain` orphan write the record's highest
+  generation into `retiredNameGenerations`; `stackInstanceIdCarriedFrom`
+  carries the field.
+- **Rollback.** The old side is derived at the OLD record's generation; the
+  restored record's `nameGenerationHigh` is raised to the generation the
+  replacement reached, read from `CompletedOperation.nameGeneration` /
+  `FailedOperation.nameGeneration` (additive journal fields, no
+  `journalVersion` bump). A failed replacement raises it the same way, except
+  one refused on its name (`NAMED_REPLACEMENT_COLLISION`: its create collided
+  or never ran), which made nothing at that generation and journals none, so
+  the retry asks for the name the refusal names.
+- **`cdkd import`.** An unchanged physical id keeps both fields; another
+  physical id records no generation and the replaced record's high-water mark
+  as `nameGenerationHigh`.
+
+They are read through `nameGenerationOf` / `nameGenerationHighWaterOf` /
+`retiredNameGenerationsOf`, which refuse a value that is not a non-negative
+integer (read as 0, a replacement would ask for an earlier generation's
+name). A writer that rebuilds a `ResourceState` field by field spreads
+`nameGenerationCarriedFrom` (same resource) or `nameGenerationField` (a new
+generation), fenced by `tests/unit/state/stack-instance-id-carriers.test.ts`.
+
+#### Migration
+
+No read-time migration: a v12 document is read unchanged and stays a LEGACY
+stack (no id) forever, through every later write. The bump exists because an
+older binary rebuilds a record field by field and would drop the id; it
+refuses a `version: 13` record with the "Upgrade cdkd" error instead.
+
+### `version: 14` adds `unsettledProperties`
+
+Schema `version: 14` adds `ResourceState.unsettledProperties` (issue
+[#5380](https://github.com/go-to-k/cdkd/issues/5380)): the top-level property
+NAMES, never values, whose change a failed `update()` had started with an
+irreversible call, so AWS may hold the recorded value, the attempted one, or
+neither. `properties` keeps the recorded value.
+
+A provider calls `UpdateContext.markUnsettled(key)` immediately before such a
+call (Firehose: before `StartDeliveryStreamEncryption` /
+`StopDeliveryStreamEncryption`), never for a refusal or a failed read before
+it. The engine keeps only a key the update sends or the record holds. The marks are held on the engine (`DeployEngine.unsettledMarks`), outside
+the provider's promise, so a mark survives the per-resource deadline's race,
+Ctrl-C and a retried attempt. A failed update's marks are written onto its
+record in `execute.ts` before any later save, unioned with the record's own; a
+successful update, and the update-not-supported replacement fallback once its
+create succeeded, discard them; the post-rollback save records any mark made
+while the rollback ran.
+
+The next deploy reads the field through `unsettledPropertiesOf`
+(`src/state/unsettled-properties.ts`, malformed = none). The diff adds each
+name as an in-place change labelled `unsettled` even when the template and
+the record agree, the no-change skips do not fire, the name is in
+`UpdateContext.changedProperties`, and `UpdateContext.unsettledProperties`
+tells the provider which keys converge. Before the removal step the engine
+replaces each such key's previous value with what AWS holds
+(`src/deployment/unsettled-convergence.ts`, #5487) and refuses a key AWS is
+still changing; `Tags` keeps the record's side. After the update (the deploy,
+both rollback revert arms and `drift --revert`) the name is cleared only when
+AWS is no longer changing it and holds the requested value under drift's
+comparator; otherwise it stays on the new record. `drift --accept` clears it
+without that check: it records the live value, so record and AWS agree by
+construction. The record the update writes carries no field, which clears it.
+`recordAfterRollbackUpdate` drops it (a rollback revert, `--revert-failed`,
+`drift --revert`); the two rollback arms hand the names to `update()` as
+`UpdateContext.unsettledProperties` first, so they are converged rather than
+skipped. A successful `drift --accept` / `--revert` of the resource drops them
+too, except a name the provider's optional `unsettledInTransition` reports AWS
+is still changing (Firehose: ENABLING / DISABLING). `cdkd drift`
+lists the names in the human report and as `unsettled` in `--json`.
+
+A bump, for v10's reason: an older binary rewriting the record would drop the
+names, and a later deploy back to the recorded template would diff empty and
+leave AWS on the other side. A v13 document is read unchanged (nothing
+unsettled).
+
+### `version: 15` adds `unsettledItems` (current writers)
+
+Schema `version: 15` adds `ResourceState.unsettledItems` (issue
+[#5498](https://github.com/go-to-k/cdkd/issues/5498)): per member path, the
+item names a failed `update()` had added with a call AWS accepted: a DynamoDB
+table's index (`GlobalSecondaryIndexes`) or tag key (`Tags`), a GlobalTable's
+replica Region (`Replicas`), index or replica tag key
+(`Replicas[<region>].Tags`), a Kinesis stream's metric
+(`DesiredShardLevelMetrics`) or tag key. Without it the next
+deploy's convergence (#5503) could not tell an index the failed update created
+from one another tool added, so it kept both; CloudFormation would delete the
+one it created.
+
+A provider calls `UpdateContext.markAttempted(path, items)` right AFTER the
+call resolves (a call that throws added nothing): the index a `Create` was
+accepted for, the metrics `EnableEnhancedMonitoring` turned on that its
+response's `CurrentShardLevelMetrics` did not already list, the tag keys a tag
+call added that the record lacked (none when the record's tags are
+malformed). The engine holds the marks beside `unsettledMarks` and writes them
+in `execute.ts` only under a name the same failure left unsettled; a
+successful update and the replacement fallback discard them.
+
+The reader (`unsettledItemsOf`) keeps a path only under a name in
+`unsettledProperties`, and treats a malformed field as none, an entry over 255
+characters as absent and a path over 100 entries as absent. The next deploy
+hands the items to the provider (`UpdateContext.unsettledItems`) and to
+`readUnsettled`: a live item whose name equals an attempted one EXACTLY joins
+the previous side, so the provider's own diff removes it when the template no
+longer names it; an item only AWS holds is still left, with the #5503 warning.
+A rebuilt record keeps only the items of names still unsettled after the
+proof, and every path that clears the names (`withoutUnsettledProperties`:
+success, `drift --accept` / `--revert`, a rollback revert) clears the items.
+
+A name can be secret-derived. The persist pass rewrites it (the
+`scrubResourceRecord` value scan, and the `NoEcho` persist arm by value), as
+does `cdkd scrub`; a name holding `{{resolve:` or `***` never matches a live
+item, so the item it named is kept rather than removed.
+
+A bump: an older binary rewriting the record would drop the items, and the
+next deploy would keep an index or metric the failed update added. A v14
+document is read unchanged (no items).
 
 ## Fields added without a version bump
 
@@ -1570,7 +1763,7 @@ hash too, and edits to it are not seen through the mask.
 
 ```typescript
 interface StackState {
-  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState, 11 = +noEchoLeaves/noEchoAttributeNames on ResourceState, 12 = +referenceProvenance on ResourceState and +outputReferenceProvenance
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13  // 1 = legacy, 2 = region-prefixed, 3 = +observedProperties, 4 = +imports[], 5 = +deletionPolicy/updateReplacePolicy, 6 = +parentStack/parentLogicalId/parentRegion (nested-stack adoption), 7 = +provisionedBy on ResourceState, 8 = +outputReads[], 9 = +exportNames[], 10 = +observedBaselineRefused on ResourceState, 11 = +noEchoLeaves/noEchoAttributeNames on ResourceState, 12 = +referenceProvenance on ResourceState and +outputReferenceProvenance, 13 = +stackInstanceId/retiredNameGenerations and +nameGeneration/nameGenerationHigh on ResourceState
   stackName: string                        // Stack name
   region?: string                          // Required on version >= 2
   resources: Record<string, ResourceState> // Logical ID → Resource state
@@ -1579,12 +1772,14 @@ interface StackState {
   outputReads?: StateOutputReadEntry[]     // v8+: Fn::GetStackOutput refs (informational — weak reference, never destroy-blocking)
   exportNames?: string[]                   // v9+: which `outputs` keys are Export.Name aliases — the ONLY names Fn::ImportValue may bind to (undefined = pre-v9 record, every key importable until its next deploy; [] = exports nothing)
   skippedOutputs?: Record<string, string>  // informational, no version bump: Outputs keys the last deploy could not resolve and skipped → digest of their template inputs (issue #2740); absent = nothing skipped, or a record older than the field
-  orphans?: StackOrphanRecord[]            // no version bump: resources a rollback retained under `Retain` and moved out of `resources`, kept so a later deploy can re-adopt one instead of colliding with the name it holds; absent = none
+  orphans?: StackOrphanRecord[]            // no version bump: resources a rollback retained under `Retain` and moved out of `resources`; on a legacy stack (no stackInstanceId) kept so a later deploy can re-adopt one instead of colliding with the name it holds, on an id stack only warned about (never re-adopted); absent = none
   conditionVerdicts?: Record<string, { verdict: boolean; fingerprint: string }> // no version bump: the deployed verdict of each condition `cdkd diff` reads that depends on a secret-fed parameter, with a fingerprint of its definitions and inputs (issue #4479); absent = no record
   parentStack?: string                     // v6+: populated on nested-stack child state records (undefined on top-level)
   parentLogicalId?: string                 // v6+: child's AWS::CloudFormation::Stack logical id in the parent's template
   parentRegion?: string                    // v6+: parent's region (always equals `region` until cross-region nested stacks ship)
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>> // v12+: outputs key → token → where and at which version it was resolved; absent = not known
+  stackInstanceId?: string                 // v13+: the id of this lifetime of the stack, minted at its first state write; absent = a legacy stack, which stays one
+  retiredNameGenerations?: Record<string, number> // v13+, id stacks only: logical id → the name generation its record left the stack at; a re-added id starts at that + 1; absent = none
   lastModified: number                     // Unix timestamp (milliseconds)
 }
 ```
@@ -2015,6 +2210,8 @@ interface ResourceState {
   maskedPropertyFingerprints?: Record<string, string> // optional, no bump: per property `properties` holds as `***`, a hash of its template text (issue #4451)
   maskedPropertyInputFingerprints?: Record<string, string> // optional, no bump: per such property, a hash of its template value with its non-secret inputs resolved, bound to the text hash (issue #4543)
   secretNamedAttributes?: string[] // optional, no bump: on a nested-stack row, the `Outputs.<Key>` attributes holding a child resource's name taken from a secret; keys only, read only to mask log lines (issue #3869)
+  nameGeneration?: number                      // v13+, id stacks only: the generation its generated name was derived at; absent = 0
+  nameGenerationHigh?: number                  // v13+, id stacks only: the highest generation a replacement created, when above nameGeneration (a rollback restored this record); absent = none
 }
 ```
 
@@ -2262,7 +2459,7 @@ per-type notes.
 | `AWS::EC2::NetworkAclEntry` | `<networkAclId>\|<ruleNumber>\|<egress>` (`egress` is `true` / `false`) |
 | `AWS::EC2::Route` | `<routeTableId>\|<destination>` (`destination` is the `DestinationCidrBlock`, `DestinationIpv6CidrBlock`, or `DestinationPrefixListId` the route declares) |
 | `AWS::EC2::SecurityGroupIngress` | `<groupId>\|<ipProtocol>\|<fromPort>\|<toPort>` (an omitted port is recorded as `-1`) |
-| `AWS::EC2::VPCGatewayAttachment` | `<internetGatewayId>\|<vpcId>` (note the order — CloudFormation's own identifier is `VpcId` first) |
+| `AWS::EC2::VPCGatewayAttachment` | `<gatewayId>\|<vpcId>`, an `igw-...` or `vgw-...` gateway (note the order — CloudFormation's own identifier is `VpcId` first) |
 | `AWS::Glue::Table` | `<databaseName>\|<tableName>` (either name may itself contain `\|`: cdkd reads the table name as everything after the recorded `DatabaseName`) |
 | `AWS::Lambda::EventInvokeConfig` | `<functionName>\|<qualifier>` (a bare function name is read as qualifier `$LATEST`) |
 | `AWS::Route53::RecordSet` | `<hostedZoneId>\|<name>\|<type>` |
@@ -2299,16 +2496,21 @@ anything; the table is here because the difference is visible when you compare
 | `AWS::EC2::EIP` | the public IP (the segment before the first `\|`) |
 | `AWS::Glue::Table` | the table name — everything after the recorded `DatabaseName` and its `\|`, so a table named `a\|b` resolves to `a\|b` |
 | `AWS::Route53::RecordSet` | the record **name**. A three-part id returns its middle segment without reading state. When the name itself contains `\|` (a longer id), it is everything between the first and the last `\|`, only when that matches the recorded `Name` and the last segment the recorded `Type`; an id that does not match passes through raw |
-| `AWS::S3Tables::Namespace` / `::Table` | the namespace / table name (the segment after the last `\|`) |
+| `AWS::S3Tables::Namespace` | the namespace name (the segment after the last `\|`) |
+| `AWS::S3Tables::Table` | the table **ARN**, from the recorded `TableARN` attribute; a Cloud-Control-routed table's physical id is already the ARN |
 
-The three `AWS::AppSync::*` children are the case where the `Ref` value is not
-a segment at all: cdkd recovers the ARN from the attribute the provider records.
+The three `AWS::AppSync::*` children and an SDK-routed `AWS::S3Tables::Table`
+are the cases where the `Ref` value is not a segment at all: cdkd recovers the
+ARN from the attribute the provider records.
 `cdkd import` records the same attribute a fresh deploy does — it reconstructs
 the ARN from the composite id you supply — so an adopted child's `Ref` and
 `Fn::GetAtt` resolve immediately.
 
 Some records can still lack the attribute. `Ref` on such a record falls back to
-the raw composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
+the raw composite id, except for an `AWS::S3Tables::Table` (one created by a
+cdkd older than v0.201.0): its `Ref` is read like `Fn::GetAtt TableARN`, so the
+re-read below applies to it too, and a `Ref` the re-read cannot answer is
+refused rather than served the composite id. For `Fn::GetAtt` on the ARN attribute, `cdkd deploy`
 re-reads the resource from AWS once and records the real ARN; when that read
 cannot supply one it FAILS rather than serving a value CloudFormation would not
 return. The records are:
@@ -2918,7 +3120,7 @@ needs `s3:ListBucketVersions` and `s3:DeleteObjectVersion`; the policy that
 grants them is in
 [State backup and bucket security](state-management-backup-and-security.md#iam-actions-cdkd-needs-on-the-bucket).
 
-**Six kinds of object need those two version actions, not one** — the five in
+**Seven kinds of object need those two version actions, not one** — the six in
 this table and the `deployments/**` event store below it, plus `state.json` and
 the exports index for a principal that runs `cdkd scrub`. The set has grown
 over time, and the ordinary
@@ -2930,6 +3132,7 @@ commands are now in it:
 | custom-resource response object | `cdkd deploy` (the provider's own cleanup) and `cdkd gc` | the handler's FULL cfn-response, `Data` included — where a handler-minted password or API key lands |
 | transient CFn template | `cdkd import --migrate-from-cloudformation`, `cdkd export`, and MACRO EXPANSION during `cdkd deploy` / `cdkd diff` (any template over the 51,200-byte inline ceiling) | the template body, which carries a secret only if the template does (an inline `Code.ZipFile`, a hand-written literal) |
 | `cdkd-bootstrap/{region}.json` | `cdkd bootstrap --destroy` | the asset bucket and container-repo names. No secret; listed for completeness |
+| `stack-instance.json` | the first state save of a stack carrying its id, and every `deleteState` (`cdkd destroy`, `cdkd state destroy`, `cdkd state orphan`, `cdkd export`, a rolled-back first deploy) | the stack's lifetime id. No secret: `state.json` holds the same id |
 | `lock.json` | every command that RELEASES a stack lock, plus the expired-lock takeover and `cdkd force-unlock` | the lock heartbeat: `owner`, `timestamp`, `expiresAt`, `operation`. No secret -- one row per two-minute renewal, which is why it was the fastest-growing key in the bucket. **Reported differently: see below** |
 
 The journal is the one to note if you are deciding whether this matters to you:

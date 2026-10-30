@@ -26,12 +26,22 @@ import {
 } from '../options.js';
 import { getLogger, reserveStdoutForPayload } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseFailureDebugDetail } from '../../utils/json-parse-failure.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { refusedBaselineRemedy } from './refused-baseline-remedy.js';
-import { CdkdError, PartialFailureError, withErrorHandling } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  PartialFailureError,
+  StackTerminationProtectionError,
+  formatError,
+  withErrorHandling,
+} from '../../utils/error-handler.js';
+import { isInteractiveTerminal, type SelectStreams } from '../interactive-select.js';
+import { type BrowseDeps, nonInteractiveBrowseRefusal, runStateBrowse } from './state-browse.js';
 import { S3StateBackend, type StackStateRef } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
+  asIsMessage,
   displayAwsMessage,
   displayIdent,
   displayStackName,
@@ -97,7 +107,8 @@ import {
 } from '../../provisioning/register-providers.js';
 import { setResolvedResourceTimeouts } from '../../provisioning/resource-timeout-registry.js';
 import { withNestedStackContext } from '../../provisioning/nested-stack-context.js';
-import { withStackName } from '../../provisioning/resource-name.js';
+import { withStackScope } from '../../provisioning/resource-name.js';
+import { nameScopeOf } from '../../state/name-generation.js';
 import {
   redactForState,
   maskReadbackAtCoordinates,
@@ -133,6 +144,7 @@ import {
 } from './state-refresh-observed.js';
 import { BOOTSTRAP_MARKER_PREFIX, parseBootstrapMarker } from '../../assets/asset-storage.js';
 import type { LockInfo, StackState, ResourceState } from '../../types/state.js';
+import { stackInstanceIdOf, withStackInstanceIdWithheld } from '../../state/stack-instance-id.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { forwardSigtermToSigint, watchCommandInterrupt } from '../../utils/interrupt-signals.js';
@@ -569,6 +581,9 @@ export function resolveSingleRegion(
     `Re-run with --stack-region ${commandHole('region')} to disambiguate.`
   );
 }
+
+/** What {@link setupStateBackend} hands back. */
+export type StateSetup = Awaited<ReturnType<typeof setupStateBackend>>;
 
 /**
  * Shared bootstrap for every `state` subcommand: build the AWS clients,
@@ -1129,162 +1144,176 @@ async function stateResourcesCommand(
 
   const setup = await setupStateBackend(options);
   try {
-    const refs = await setup.stateBackend.listStacks();
-    const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
-    if (!ref.region) {
-      throw legacyRecordRefusal(stackName);
-    }
-    const stateResult = await setup.stateBackend.getState(stackName, ref.region);
-    if (!stateResult) {
-      throw new Error(
-        `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
-          `Run 'cdkd state list' to see available stacks.`
-      );
-    }
-
-    // `resources` is an unchecked cast, so a hand-edited or truncated record can
-    // hold a string, a list, a number or a boolean there — and `Object.entries`
-    // accepts all of them. `"abcdef"` yields six `[index, character]` pairs,
-    // which this command rendered as six resources that do not exist. BOTH
-    // output modes fabricated them: `details` is built above the `--json`
-    // branch, so the array that mode emits is the same one the text views
-    // render from.
-    //
-    // Repaired at the LOAD, never at the loop:
-    // `src/state/malformed-resources-bag.ts` owns that rule and the measurement
-    // behind it. This command cannot write state, so it repairs and WARNS
-    // rather than refusing — refusing the diagnostic that shows what is wrong
-    // with a record is the opposite of useful, and `cdkd state list --long`
-    // sends operators here for exactly that reason.
-    if (repairMalformedResourcesForReadOnly(stateResult.state)) {
-      logger.warn(malformedResourcesWarning(stackName, ref.region, renderRecovery(options, setup)));
-    }
-    // And the same for the one VALUE container this command renders — each
-    // resource's `attributes` (issue go-to-k/cdkd#3187). `properties`,
-    // `outputs` and `skippedOutputs` are deliberately out of scope here: this
-    // command renders none of them, and the set it passes says so
-    // (`RESOURCES_RENDERED_CONTAINERS`).
-    //
-    // Gated on the two modes that CARRY attributes, and by the same rule that
-    // excludes the other three containers rather than by a second one. The
-    // default three-column listing prints logicalId / type / physicalId and
-    // nothing else, so an `attributes` it never walks can neither fabricate a
-    // row nor be described by a warning whose text promises "this view shows no
-    // rows there" — the warning would name a block that does not exist in the
-    // output in front of the reader. `cdkd state show` is where that record's
-    // attributes are visible, and this command's own `--long` is one flag away.
-    //
-    // `--json` is INSIDE the gate, not outside it, which is where this departs
-    // from `cdkd state show`: `details` is a PROJECTION rather than the stored
-    // record — it already substitutes `[]` for an absent `dependencies` and
-    // `{}` for an absent `attributes` — so leaving it alone would hand a script
-    // a non-object where the shape it consumes says otherwise, with nothing
-    // said about it. `cdkd state show --json` remains the mode that answers
-    // "what does the record hold", and this warning's text sends the reader
-    // there.
-    if (options.long || options.json) {
-      repairRenderedContainers(
-        stateResult.state,
-        RESOURCES_RENDERED_CONTAINERS,
-        stackName,
-        ref.region,
-        logger,
-        renderRecovery(options, setup)
-      );
-    }
-    // No `?? {}`: the repair above leaves a plain object behind whatever the
-    // record held, and a fallback that can no longer fire only makes a later
-    // reader think the bag is guarded one line down instead of at the load.
-    const resources = stateResult.state.resources;
-    const details: ResourceDetail[] = (
-      Object.entries(resources) as Array<[string, ResourceState | null]>
-    )
-      .map(([logicalId, entry]) => {
-        // Possibly `null`: `resources` is an unchecked cast, and a hand-edited
-        // `{"R": null}` threw on `.resourceType` here in all three modes —
-        // `--json` included, since the details are built before the JSON branch
-        // (issue #2947). A null entry now renders the way the other malformed
-        // shapes already did: a number or a string there never threw, its
-        // missing fields rendering as `undefined` or their defaults.
-        const resource = (entry ?? {}) as ResourceState;
-        return {
-          logicalId,
-          resourceType: resource.resourceType,
-          physicalId: resource.physicalId,
-          dependencies: resource.dependencies ?? [],
-          // Absent-only fallback: a non-object `attributes` was emptied at the
-          // load above, so what reaches `--long`'s `Object.entries` and the
-          // `--json` payload is a map either way (issue go-to-k/cdkd#3187).
-          attributes: resource.attributes ?? {},
-        };
-      })
-      .sort((a, b) => a.logicalId.localeCompare(b.logicalId));
-
-    if (options.json) {
-      process.stdout.write(`${stringifyJsonPayload(details)}\n`);
-      return;
-    }
-
-    if (details.length === 0) {
-      // Nothing to print; leaving output empty matches `state list` semantics
-      // for an empty bucket.
-      return;
-    }
-
-    if (options.long) {
-      const lines: string[] = [];
-      for (const detail of details) {
-        // Same rule and the same split as `renderStateBlock`: a KEY takes
-        // `stripForDisplay`, a record FIELD takes `formatAttributeValue`, which
-        // renders a string identically and survives a hand-edited non-string. These lines are
-        // joined with `\n` too, so an unstripped field forges rows here as well.
-        lines.push(stripForDisplay(detail.logicalId));
-        lines.push(`  Type: ${formatAttributeValue(detail.resourceType)}`);
-        lines.push(`  PhysicalID: ${formatAttributeValue(detail.physicalId)}`);
-        lines.push(`  Dependencies: ${formatDependencyList(detail.dependencies)}`);
-        const attrEntries = Object.entries(detail.attributes);
-        if (attrEntries.length === 0) {
-          lines.push('  Attributes: (none)');
-        } else {
-          lines.push('  Attributes:');
-          for (const [k, v] of attrEntries) {
-            lines.push(`    ${stripForDisplay(k)}: ${formatAttributeValue(v)}`);
-          }
-        }
-        lines.push('');
-      }
-      // Drop trailing blank line for tidy output.
-      if (lines[lines.length - 1] === '') {
-        lines.pop();
-      }
-      process.stdout.write(`${lines.join('\n')}\n`);
-      return;
-    }
-
-    // Default: aligned three-column output, under the same rule as `--long`
-    // above. Rendering happens BEFORE the widths are measured so that a width
-    // describes the string actually printed. Measuring the raw values instead
-    // does NOT misalign the columns — every row pads to the same width, so they
-    // still line up — it pads them all wider, by
-    // `max(raw lengths) - max(stripped lengths)`, with a gap that has nothing
-    // in it. `resourceType` and `physicalId` take the field guard here rather
-    // than raw interpolation, so a hand-edited non-string cannot make `.length`
-    // / `.padEnd` throw and lose the listing; `logicalId` is a map key, so
-    // `stripForDisplay` is right for it.
-    const rows = details.map((d) => ({
-      logicalId: stripForDisplay(d.logicalId),
-      resourceType: formatAttributeValue(d.resourceType),
-      physicalId: formatAttributeValue(d.physicalId),
-    }));
-    const idWidth = Math.max(...rows.map((r) => r.logicalId.length));
-    const typeWidth = Math.max(...rows.map((r) => r.resourceType.length));
-    for (const row of rows) {
-      process.stdout.write(
-        `${row.logicalId.padEnd(idWidth)}  ${row.resourceType.padEnd(typeWidth)}  ${row.physicalId}\n`
-      );
-    }
+    await printStackResources(stackName, options, setup);
   } finally {
     setup.dispose();
+  }
+}
+
+/**
+ * The body of `stateResourcesCommand` against a backend the caller set up and
+ * disposes, so `cdkd state browse` renders exactly what the command prints
+ * without setting up a backend per view.
+ */
+export async function printStackResources(
+  stackName: string,
+  options: Parameters<typeof stateResourcesCommand>[1],
+  setup: StateSetup
+): Promise<void> {
+  const logger = getLogger();
+  const refs = await setup.stateBackend.listStacks();
+  const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
+  if (!ref.region) {
+    throw legacyRecordRefusal(stackName);
+  }
+  const stateResult = await setup.stateBackend.getState(stackName, ref.region);
+  if (!stateResult) {
+    throw new Error(
+      `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `Run 'cdkd state list' to see available stacks.`
+    );
+  }
+
+  // `resources` is an unchecked cast, so a hand-edited or truncated record can
+  // hold a string, a list, a number or a boolean there — and `Object.entries`
+  // accepts all of them. `"abcdef"` yields six `[index, character]` pairs,
+  // which this command rendered as six resources that do not exist. BOTH
+  // output modes fabricated them: `details` is built above the `--json`
+  // branch, so the array that mode emits is the same one the text views
+  // render from.
+  //
+  // Repaired at the LOAD, never at the loop:
+  // `src/state/malformed-resources-bag.ts` owns that rule and the measurement
+  // behind it. This command cannot write state, so it repairs and WARNS
+  // rather than refusing — refusing the diagnostic that shows what is wrong
+  // with a record is the opposite of useful, and `cdkd state list --long`
+  // sends operators here for exactly that reason.
+  if (repairMalformedResourcesForReadOnly(stateResult.state)) {
+    logger.warn(malformedResourcesWarning(stackName, ref.region, renderRecovery(options, setup)));
+  }
+  // And the same for the one VALUE container this command renders — each
+  // resource's `attributes` (issue go-to-k/cdkd#3187). `properties`,
+  // `outputs` and `skippedOutputs` are deliberately out of scope here: this
+  // command renders none of them, and the set it passes says so
+  // (`RESOURCES_RENDERED_CONTAINERS`).
+  //
+  // Gated on the two modes that CARRY attributes, and by the same rule that
+  // excludes the other three containers rather than by a second one. The
+  // default three-column listing prints logicalId / type / physicalId and
+  // nothing else, so an `attributes` it never walks can neither fabricate a
+  // row nor be described by a warning whose text promises "this view shows no
+  // rows there" — the warning would name a block that does not exist in the
+  // output in front of the reader. `cdkd state show` is where that record's
+  // attributes are visible, and this command's own `--long` is one flag away.
+  //
+  // `--json` is INSIDE the gate, not outside it, which is where this departs
+  // from `cdkd state show`: `details` is a PROJECTION rather than the stored
+  // record — it already substitutes `[]` for an absent `dependencies` and
+  // `{}` for an absent `attributes` — so leaving it alone would hand a script
+  // a non-object where the shape it consumes says otherwise, with nothing
+  // said about it. `cdkd state show --json` remains the mode that answers
+  // "what does the record hold", and this warning's text sends the reader
+  // there.
+  if (options.long || options.json) {
+    repairRenderedContainers(
+      stateResult.state,
+      RESOURCES_RENDERED_CONTAINERS,
+      stackName,
+      ref.region,
+      logger,
+      renderRecovery(options, setup)
+    );
+  }
+  // No `?? {}`: the repair above leaves a plain object behind whatever the
+  // record held, and a fallback that can no longer fire only makes a later
+  // reader think the bag is guarded one line down instead of at the load.
+  const resources = stateResult.state.resources;
+  const details: ResourceDetail[] = (
+    Object.entries(resources) as Array<[string, ResourceState | null]>
+  )
+    .map(([logicalId, entry]) => {
+      // Possibly `null`: `resources` is an unchecked cast, and a hand-edited
+      // `{"R": null}` threw on `.resourceType` here in all three modes —
+      // `--json` included, since the details are built before the JSON branch
+      // (issue #2947). A null entry now renders the way the other malformed
+      // shapes already did: a number or a string there never threw, its
+      // missing fields rendering as `undefined` or their defaults.
+      const resource = (entry ?? {}) as ResourceState;
+      return {
+        logicalId,
+        resourceType: resource.resourceType,
+        physicalId: resource.physicalId,
+        dependencies: resource.dependencies ?? [],
+        // Absent-only fallback: a non-object `attributes` was emptied at the
+        // load above, so what reaches `--long`'s `Object.entries` and the
+        // `--json` payload is a map either way (issue go-to-k/cdkd#3187).
+        attributes: resource.attributes ?? {},
+      };
+    })
+    .sort((a, b) => a.logicalId.localeCompare(b.logicalId));
+
+  if (options.json) {
+    process.stdout.write(`${stringifyJsonPayload(details)}\n`);
+    return;
+  }
+
+  if (details.length === 0) {
+    // Nothing to print; leaving output empty matches `state list` semantics
+    // for an empty bucket.
+    return;
+  }
+
+  if (options.long) {
+    const lines: string[] = [];
+    for (const detail of details) {
+      // Same rule and the same split as `renderStateBlock`: a KEY takes
+      // `stripForDisplay`, a record FIELD takes `formatAttributeValue`, which
+      // renders a string identically and survives a hand-edited non-string. These lines are
+      // joined with `\n` too, so an unstripped field forges rows here as well.
+      lines.push(stripForDisplay(detail.logicalId));
+      lines.push(`  Type: ${formatAttributeValue(detail.resourceType)}`);
+      lines.push(`  PhysicalID: ${formatAttributeValue(detail.physicalId)}`);
+      lines.push(`  Dependencies: ${formatDependencyList(detail.dependencies)}`);
+      const attrEntries = Object.entries(detail.attributes);
+      if (attrEntries.length === 0) {
+        lines.push('  Attributes: (none)');
+      } else {
+        lines.push('  Attributes:');
+        for (const [k, v] of attrEntries) {
+          lines.push(`    ${stripForDisplay(k)}: ${formatAttributeValue(v)}`);
+        }
+      }
+      lines.push('');
+    }
+    // Drop trailing blank line for tidy output.
+    if (lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+    process.stdout.write(`${lines.join('\n')}\n`);
+    return;
+  }
+
+  // Default: aligned three-column output, under the same rule as `--long`
+  // above. Rendering happens BEFORE the widths are measured so that a width
+  // describes the string actually printed. Measuring the raw values instead
+  // does NOT misalign the columns — every row pads to the same width, so they
+  // still line up — it pads them all wider, by
+  // `max(raw lengths) - max(stripped lengths)`, with a gap that has nothing
+  // in it. `resourceType` and `physicalId` take the field guard here rather
+  // than raw interpolation, so a hand-edited non-string cannot make `.length`
+  // / `.padEnd` throw and lose the listing; `logicalId` is a map key, so
+  // `stripForDisplay` is right for it.
+  const rows = details.map((d) => ({
+    logicalId: stripForDisplay(d.logicalId),
+    resourceType: formatAttributeValue(d.resourceType),
+    physicalId: formatAttributeValue(d.physicalId),
+  }));
+  const idWidth = Math.max(...rows.map((r) => r.logicalId.length));
+  const typeWidth = Math.max(...rows.map((r) => r.resourceType.length));
+  for (const row of rows) {
+    process.stdout.write(
+      `${row.logicalId.padEnd(idWidth)}  ${row.resourceType.padEnd(typeWidth)}  ${row.physicalId}\n`
+    );
   }
 }
 
@@ -1525,79 +1554,93 @@ async function stateShowCommand(
 
   const setup = await setupStateBackend(options);
   try {
-    const refs = await setup.stateBackend.listStacks();
-    const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
-    if (!ref.region) {
-      throw legacyRecordRefusal(stackName);
-    }
-
-    const [stateResult, lockInfo] = await Promise.all([
-      setup.stateBackend.getState(stackName, ref.region),
-      setup.lockManager.getLockInfo(stackName, ref.region),
-    ]);
-
-    if (!stateResult) {
-      throw new Error(
-        `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
-          `Run 'cdkd state list' to see available stacks.`
-      );
-    }
-
-    if (options.showNested) {
-      // No unreadable-bag test HERE, deliberately. An earlier cut of issue
-      // go-to-k/cdkd#3172 put one at this call site, which covered the ROOT
-      // record and nothing below it: `walkCdkdStateStackTree` RECURSES, so a
-      // healthy root naming a nested child still walked that child's bag
-      // unguarded — re-measured live at 1623 ms / 1277 MB for a planted
-      // 5,000,000-character CHILD bag, in `--json` as well as the text view.
-      // The predicate now lives inside the walker, at the one place every depth
-      // passes through, and its comment there carries the measurements.
-      const tree: CdkdStateStackTree = await buildCdkdStateStackTree(
-        stackName,
-        ref.region,
-        setup.stateBackend,
-        stateResult.state,
-        // The account flags of the missing-child refusal's drop command
-        // (go-to-k/cdkd#4648).
-        renderRecovery(options, setup)
-      );
-      const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
-
-      if (options.json) {
-        // WARNED but not repaired. This is the one mode where an unreadable bag
-        // is invisible in the payload's SHAPE: the node comes back with
-        // `children: []`, which is exactly what a leaf looks like, so a consumer
-        // enumerating the tree concludes it is complete when a subtree was cut.
-        // The record itself is still emitted verbatim, so the evidence survives.
-        warnUnreadableTreeNodes(treeWithLocks, logger, renderRecovery(options, setup));
-        process.stdout.write(`${stringifyJsonPayload(treeToShowJson(treeWithLocks))}\n`);
-        return;
-      }
-
-      repairTreeForTextRender(treeWithLocks, logger, renderRecovery(options, setup));
-      const lines = renderTreeWithChildren(treeWithLocks);
-      process.stdout.write(`${lines.join('\n')}\n`);
-      return;
-    }
-
-    if (options.json) {
-      process.stdout.write(
-        `${stringifyJsonPayload({ state: stateResult.state, lock: lockInfo })}\n`
-      );
-      return;
-    }
-
-    repairRecordForTextRender(
-      stateResult.state,
-      stackName,
-      ref.region,
-      logger,
-      renderRecovery(options, setup)
-    );
-    process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
+    await printStackShow(stackName, options, setup);
   } finally {
     setup.dispose();
   }
+}
+
+/**
+ * The body of `stateShowCommand` against a backend the caller set up and
+ * disposes, so `cdkd state browse` renders exactly what the command prints
+ * without setting up a backend per view.
+ */
+export async function printStackShow(
+  stackName: string,
+  options: Parameters<typeof stateShowCommand>[1],
+  setup: StateSetup
+): Promise<void> {
+  const logger = getLogger();
+  const refs = await setup.stateBackend.listStacks();
+  const ref = resolveSingleRegion(stackName, refs, options.stackRegion);
+  if (!ref.region) {
+    throw legacyRecordRefusal(stackName);
+  }
+
+  const [stateResult, lockInfo] = await Promise.all([
+    setup.stateBackend.getState(stackName, ref.region),
+    setup.lockManager.getLockInfo(stackName, ref.region),
+  ]);
+
+  if (!stateResult) {
+    throw new Error(
+      `No state found for stack ${formatStackRefSafe(ref)} in s3://${setup.bucket}/${setup.prefix}/. ` +
+        `Run 'cdkd state list' to see available stacks.`
+    );
+  }
+
+  if (options.showNested) {
+    // No unreadable-bag test HERE, deliberately. An earlier cut of issue
+    // go-to-k/cdkd#3172 put one at this call site, which covered the ROOT
+    // record and nothing below it: `walkCdkdStateStackTree` RECURSES, so a
+    // healthy root naming a nested child still walked that child's bag
+    // unguarded — re-measured live at 1623 ms / 1277 MB for a planted
+    // 5,000,000-character CHILD bag, in `--json` as well as the text view.
+    // The predicate now lives inside the walker, at the one place every depth
+    // passes through, and its comment there carries the measurements.
+    const tree: CdkdStateStackTree = await buildCdkdStateStackTree(
+      stackName,
+      ref.region,
+      setup.stateBackend,
+      stateResult.state,
+      // The account flags of the missing-child refusal's drop command
+      // (go-to-k/cdkd#4648).
+      renderRecovery(options, setup)
+    );
+    const treeWithLocks = await loadLocksForTree(tree, setup.lockManager, lockInfo);
+
+    if (options.json) {
+      // WARNED but not repaired. This is the one mode where an unreadable bag
+      // is invisible in the payload's SHAPE: the node comes back with
+      // `children: []`, which is exactly what a leaf looks like, so a consumer
+      // enumerating the tree concludes it is complete when a subtree was cut.
+      // The record itself is still emitted verbatim, so the evidence survives.
+      warnUnreadableTreeNodes(treeWithLocks, logger, renderRecovery(options, setup));
+      process.stdout.write(`${stringifyJsonPayload(treeToShowJson(treeWithLocks))}\n`);
+      return;
+    }
+
+    repairTreeForTextRender(treeWithLocks, logger, renderRecovery(options, setup));
+    const lines = renderTreeWithChildren(treeWithLocks);
+    process.stdout.write(`${lines.join('\n')}\n`);
+    return;
+  }
+
+  if (options.json) {
+    process.stdout.write(
+      `${stringifyJsonPayload({ state: withStackInstanceIdWithheld(stateResult.state), lock: lockInfo })}\n`
+    );
+    return;
+  }
+
+  repairRecordForTextRender(
+    stateResult.state,
+    stackName,
+    ref.region,
+    logger,
+    renderRecovery(options, setup)
+  );
+  process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
 }
 
 /**
@@ -2253,7 +2296,8 @@ interface StateShowJson {
 
 function treeToShowJson(node: CdkdStateStackTreeWithLock): StateShowJson {
   return {
-    state: node.state,
+    // go-to-k/cdkd#5064: never the id the stack's names derive from.
+    state: withStackInstanceIdWithheld(node.state),
     lock: node.lock,
     children: node.children.map(treeToShowJson),
   };
@@ -2965,6 +3009,35 @@ function createStateOrphanCommand(): Command {
 }
 
 /**
+ * The stack whose recorded `terminationProtection` covers `stackName`
+ * (go-to-k/cdkd#5238): the stack itself, or the root its `parentStack` chain
+ * leads to, read record by record. `undefined` when none is protected. A
+ * chain that cycles or runs deeper than any nesting cdkd writes stops there,
+ * unprotected by what it could not read; a missing parent record likewise.
+ */
+async function protectedRootOf(
+  stackName: string,
+  state: StackState,
+  region: string,
+  backend: { getState: S3StateBackend['getState'] }
+): Promise<string | undefined> {
+  let name = stackName;
+  let record: StackState | undefined = state;
+  const seen = new Set<string>();
+  for (let depth = 0; record !== undefined && depth < 32; depth++) {
+    if (record.terminationProtection === true) return name;
+    const parent: unknown = record.parentStack;
+    if (typeof parent !== 'string' || parent === '' || seen.has(parent)) return undefined;
+    seen.add(name);
+    const parentRegion: string =
+      typeof record.parentRegion === 'string' ? record.parentRegion : region;
+    name = parent;
+    record = (await backend.getState(parent, parentRegion))?.state;
+  }
+  return undefined;
+}
+
+/**
  * `cdkd state destroy <stacks...>` command implementation
  *
  * Destroys a stack's AWS resources AND removes its state record, **without**
@@ -3260,6 +3333,46 @@ async function stateDestroyCommand(
           continue;
         }
 
+        // go-to-k/cdkd#5238: the stack's last deploy recorded
+        // `terminationProtection: true`, or it is a nested child under a root
+        // stack that did (a root's protection covers its nested stacks, as in
+        // CloudFormation; only the root's record carries the setting).
+        // Refused before the lock and any delete, as `cdkd destroy` does, and
+        // counted toward the partial failure (exit 2) so sibling targets still
+        // run; the runner checks again under the lock. `--remove-protection`
+        // is the bypass, logged at WARN.
+        const protectedRoot = await protectedRootOf(
+          stackName,
+          stateResult.state,
+          refRegion,
+          setup.stateBackend
+        );
+        if (protectedRoot !== undefined) {
+          if (options.removeProtection === true) {
+            logger.warn(
+              safeMsg`Stack ${displayStackName(protectedRoot)} was deployed with terminationProtection: true — bypassing because --remove-protection set`
+            );
+          } else {
+            const recovery = renderRecovery(options, setup);
+            const err = new StackTerminationProtectionError(
+              stackName,
+              undefined,
+              {
+                args: accountArgs(recovery),
+                clause: withheldAccountClause(recovery, 'the command below prints'),
+              },
+              {
+                command: 'cdkd state destroy',
+                stackRegion: refRegion,
+                ...(protectedRoot !== stackName && { root: protectedRoot }),
+              }
+            );
+            logger.error(safeMsg`  ✗ ${asIsMessage(err.message)}`);
+            totalErrors++;
+            continue;
+          }
+        }
+
         // Issue #2117 — the last check before any delete is issued; see the
         // twin in `destroy.ts`. Unconditionally `stoppedEarly`: THIS target is
         // the one left undestroyed, whether or not any follow it.
@@ -3351,6 +3464,7 @@ async function stateDestroyCommand(
                   // --yes skips the per-stack prompt inside the runner.
                   skipConfirmation: options.yes,
                   removeProtection: options.removeProtection === true,
+                  stateDestroy: true,
                   skipFinalSnapshot: options.skipFinalSnapshot === true,
                   // go-to-k/cdkd#4150: a top-level destroy may resolve a
                   // secret-derived principal list; a deploy never does.
@@ -3487,8 +3601,9 @@ function createStateDestroyCommand(): Command {
     .addOption(new Option('--all').hideHelp())
     .option(
       '--remove-protection',
-      'Bypass deletion protection on protected resources by flipping the per-resource ' +
-        `protection flag off in-place before delete. Covers ${removeProtectionTypeList()}.`,
+      'Destroy a stack deployed with terminationProtection: true, and bypass deletion ' +
+        'protection on protected resources by flipping the per-resource protection flag ' +
+        `off in-place before delete. Covers ${removeProtectionTypeList()}.`,
       false
     )
     .addOption(stackRegionOption())
@@ -4620,10 +4735,11 @@ async function refreshObservedForStack(
       logger
     );
 
-    // Refresh in parallel under withStackName so any provider-internal
-    // resource-name resolution sees the right stack (mirrors the deploy
-    // engine's enclosing scope).
-    await withStackName(stackName, async () => {
+    // Refresh in parallel under the stack's naming scope so any
+    // provider-internal resource-name resolution sees the right stack and
+    // lifetime (go-to-k/cdkd#5064; mirrors the deploy engine's scope).
+    const stackInstanceId = stackInstanceIdOf(state, displayStackName(stackName));
+    await withStackScope(nameScopeOf(stackName, stackInstanceId, state), async () => {
       // go-to-k/cdkd#3869: each read runs under the record's printing bag, as
       // `cdkd drift` does: a provider's debug line, and a failed read's AWS
       // error, name the physical id, which for a resource named from a secret
@@ -4829,10 +4945,26 @@ async function refreshObservedForStack(
             refreshed++;
           } catch (err) {
             failed++;
+            // A `SyntaxError` here is almost always a parse failure of a body a
+            // provider read back, and V8's own one quotes a window of that body,
+            // which can hold a plaintext value (issue #5254).
+            // `CloudControlProvider.readCurrentState` throws a snippet-free
+            // `SyntaxError` for its resource model, but a provider's raw one
+            // would not be, so only the class is printed, for any
+            // `SyntaxError`, failing safe; its text goes to `debug`.
+            if (err instanceof SyntaxError) {
+              logger.debug(
+                safeMsg`readCurrentState parse failure for ${displayIdent(logicalId)}: ${parseFailureDebugDetail(err)}`
+              );
+            }
+            const detail =
+              err instanceof SyntaxError
+                ? 'SyntaxError (its text is withheld: a parse error quotes the body it read)'
+                : describeAwsFailure(err).detail;
             logger.warn(
               safeMsg`  ✗ ${displayStackName(stackName)}/${displayIdent(logicalId)} ` +
                 safeMsg`(${displayIdent(resource.resourceType)}): ` +
-                safeMsg`readCurrentState failed — ${describeAwsFailure(err).detail}`
+                safeMsg`readCurrentState failed — ${detail}`
             );
           }
         })
@@ -4977,6 +5109,82 @@ function createStateRefreshObservedCommand(): Command {
 }
 
 /**
+ * `cdkd state browse` (go-to-k/cdkd#5199): the interactive picker over the
+ * views `state resources` / `state show` print. Refused without a terminal
+ * BEFORE any AWS call, naming the commands that work there.
+ */
+async function stateBrowseCommand(options: {
+  stateBucket?: string;
+  statePrefix: string;
+  region?: string;
+  profile?: string;
+  roleArn?: string;
+  verbose: boolean;
+}): Promise<void> {
+  const logger = getLogger();
+  if (options.verbose) logger.setLevel('debug');
+  const streams = { input: process.stdin, output: process.stdout };
+  if (!isInteractiveTerminal(streams)) throw nonInteractiveBrowseRefusal();
+
+  const setup = await setupStateBackend(options);
+  try {
+    await runStateBrowse(stateBrowseDeps(setup, options, streams));
+  } finally {
+    setup.dispose();
+  }
+}
+
+/**
+ * What `cdkd state browse` runs against `setup`: the listing `cdkd state
+ * list` sorts, and each view printed by its command's own printer. Exported
+ * for its unit tests.
+ */
+export function stateBrowseDeps(
+  setup: StateSetup,
+  options: {
+    stateBucket?: string;
+    statePrefix: string;
+    region?: string;
+    profile?: string;
+    roleArn?: string;
+    verbose: boolean;
+  },
+  streams: SelectStreams
+): BrowseDeps {
+  return {
+    streams,
+    listStacks: async () => sortRefs(await setup.stateBackend.listStacks()),
+    label: formatStackRefSafe,
+    printView: async (view, ref) => {
+      if (!ref.region) throw legacyRecordRefusal(ref.stackName);
+      const base = { ...options, stackRegion: ref.region, json: false };
+      if (view === 'show') {
+        await printStackShow(ref.stackName, { ...base, showNested: false }, setup);
+      } else {
+        await printStackResources(
+          ref.stackName,
+          { ...base, long: view === 'resources-long' },
+          setup
+        );
+      }
+    },
+    reportError: (error) => getLogger().error(formatError(error)),
+  };
+}
+
+function createStateBrowseCommand(): Command {
+  const cmd = new Command('browse')
+    .description(
+      'Pick a stack with the keyboard and view its resources or state record (needs a terminal)'
+    )
+    .action(withErrorHandling(stateBrowseCommand));
+
+  [...commonOptions, ...stateOptions].forEach((opt) => cmd.addOption(opt));
+  cmd.addOption(deprecatedRegionOption);
+  return cmd;
+}
+
+/**
  * Create the `state` parent command.
  *
  * Subcommands:
@@ -4995,6 +5203,7 @@ function createStateRefreshObservedCommand(): Command {
 export function createStateCommand(): Command {
   const cmd = new Command('state').description('Manage cdkd state stored in S3');
   cmd.addCommand(createStateInfoCommand());
+  cmd.addCommand(createStateBrowseCommand());
   cmd.addCommand(createStateListCommand());
   cmd.addCommand(createStateResourcesCommand());
   cmd.addCommand(createStateShowCommand());

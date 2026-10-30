@@ -3,7 +3,9 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { provisionResource } from '../../../src/deployment/deploy-engine/provision.js';
 import {
   looksLikeCdkdGeneratedName,
-  withStackName,
+  withNameGeneration,
+  withStackScope,
+  generateResourceName,
 } from '../../../src/provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange } from '../../../src/types/state.js';
@@ -61,47 +63,47 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
  */
 describe('looksLikeCdkdGeneratedName (#1636)', () => {
   it('recognizes the plain `{stackName}-{logicalId}` derivation', () => {
-    expect(looksLikeCdkdGeneratedName('MyStack-DurableFn', 'DurableFn', 'MyStack')).toBe(true);
+    expect(looksLikeCdkdGeneratedName('MyStack-DurableFn', 'DurableFn', 'MyStack', undefined)).toBe(true);
   });
 
   it('recognizes it through a per-type sanitize (lowercase, dots)', () => {
     // An S3-style name goes through `lowercase: true` and a dot-permitting
     // pattern, so the engine — which does not know the per-type options —
     // compares the alphanumeric skeleton.
-    expect(looksLikeCdkdGeneratedName('mystack.databucket', 'DataBucket', 'MyStack')).toBe(true);
+    expect(looksLikeCdkdGeneratedName('mystack.databucket', 'DataBucket', 'MyStack', undefined)).toBe(true);
   });
 
   it('recognizes the TRUNCATED `{prefix}-{8 hex}` form', () => {
     expect(
-      looksLikeCdkdGeneratedName('MyVeryLongStackName-Data-a1b2c3d4', 'DataBucket', 'MyVeryLongStackName')
+      looksLikeCdkdGeneratedName('MyVeryLongStackName-Data-a1b2c3d4', 'DataBucket', 'MyVeryLongStackName', undefined)
     ).toBe(true);
   });
 
   it('rejects a TEMPLATE-supplied name (the safe default)', () => {
     // The user wrote `functionName: 'my-pipe'`. Answering `false` keeps the
     // pre-#1636 wording, which is correct here.
-    expect(looksLikeCdkdGeneratedName('my-pipe', 'Pipe', 'MyStack')).toBe(false);
+    expect(looksLikeCdkdGeneratedName('my-pipe', 'Pipe', 'MyStack', undefined)).toBe(false);
   });
 
   it('rejects a template name that merely SHARES the stack prefix', () => {
     // `{stackName}-{userName}` is what a user-supplied name looks like when
     // the prefix is applied, so a stack-prefix test alone would misclassify
     // it. The logical id is what separates the two.
-    expect(looksLikeCdkdGeneratedName('MyStack-my-pipe', 'Pipe', 'MyStack')).toBe(false);
+    expect(looksLikeCdkdGeneratedName('MyStack-my-pipe', 'Pipe', 'MyStack', undefined)).toBe(false);
   });
 
   it('rejects a truncated-LOOKING name whose prefix is not the derivation', () => {
     // The `-<8 hex>` suffix alone must not be enough, or any hash-suffixed
     // user name would be claimed as cdkd's.
-    expect(looksLikeCdkdGeneratedName('totally-other-a1b2c3d4', 'DataBucket', 'MyStack')).toBe(
+    expect(looksLikeCdkdGeneratedName('totally-other-a1b2c3d4', 'DataBucket', 'MyStack', undefined)).toBe(
       false
     );
   });
 
   it('answers FALSE when the stack name is unresolvable', () => {
-    // Outside a `withStackName` scope there is nothing to derive from, and an
+    // Outside a `withStackScope` scope there is nothing to derive from, and an
     // unresolved case must never assert "cdkd generated this".
-    expect(looksLikeCdkdGeneratedName('MyStack-DurableFn', 'DurableFn', undefined)).toBe(false);
+    expect(looksLikeCdkdGeneratedName('MyStack-DurableFn', 'DurableFn', undefined, undefined)).toBe(false);
   });
 });
 
@@ -166,18 +168,23 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
   }
 
   /**
-   * Drive `provisionResource` INSIDE a `withStackName` scope — the engine's own
+   * Drive `provisionResource` INSIDE a `withStackScope` scope — the engine's own
    * `deploy()` opens one, and the classifier reads it. A test that skipped the
    * scope would silently take the unresolvable branch and pass for the wrong
    * reason.
    */
-  async function collide(physicalId: string): Promise<Error & { cause?: { message?: string } }> {
+  async function collide(
+    physicalId: string,
+    opts: { stackInstanceId?: string; templateNamed?: boolean } = {}
+  ): Promise<Error & { cause?: { message?: string } }> {
     const engine = makeEngine();
     createdPhysicalId = physicalId;
     createFailures = [alreadyExists(physicalId)];
     // A template-supplied name is declared on both sides; a generated one on
-    // neither.
-    const named = physicalId === `${STACK}-Pipe` ? {} : { FunctionName: physicalId };
+    // neither. `templateNamed` overrides the inference for a v13 suffixed
+    // name, which never equals the legacy `${STACK}-Pipe` form either way.
+    const templateNamed = opts.templateNamed ?? physicalId !== `${STACK}-Pipe`;
+    const named = templateNamed ? { FunctionName: physicalId } : {};
 
     const change: ResourceChange = {
       logicalId: 'Pipe',
@@ -202,7 +209,7 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
     const template: CloudFormationTemplate = {
       Resources: { Pipe: { Type: TYPE, Properties: { ...named, Source: 'arn:b' } } },
     };
-    return withStackName(STACK, () =>
+    return withStackScope({ stackName: STACK, stackInstanceId: opts.stackInstanceId, nameGenerations: new Map() }, () =>
       provisionResource(engine, 'Pipe', change, stateResources, STACK, template).then(
         () => {
           throw new Error('expected the collision refusal');
@@ -242,6 +249,29 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
       const err = await collide(`${STACK}-Pipe`);
 
       expect(err.cause?.message).toMatch(/custom-named resource requires replacing/);
+    });
+
+    // go-to-k/cdkd#5064: a v13 stack's SUFFIXED name must be recognized as
+    // GENERATED too, which needs `replacementNameOrigin` to read the SAME
+    // stack instance id the scope carries (`getCurrentStackInstanceId()`),
+    // not just the stack name.
+    it('on a v13 stack the replacement asks for the NEXT generation, so a collision names its likely holder (go-to-k/cdkd#5064 phase 2)', async () => {
+      const ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const at = (generation: number): string =>
+        withStackScope({ stackName: STACK, stackInstanceId: ID, nameGenerations: new Map() }, () =>
+          withNameGeneration({ logicalId: 'Pipe', generation }, () =>
+            generateResourceName('Pipe', { maxLength: 64 })
+          )
+        );
+      const err = await collide(at(0), { stackInstanceId: ID, templateNamed: false });
+
+      // The old resource holds generation 0, the create asked for generation
+      // 1: nothing proves the old one holds the colliding name, so nothing is
+      // deleted, and the refusal names the interrupted attempt and `cdkd import`.
+      expect(err.cause?.message).toContain(at(1));
+      expect(err.cause?.message).toMatch(/interrupted earlier attempt of this replacement/);
+      expect(err.cause?.message).toContain(`cdkd import ${STACK} --resource 'Pipe=${at(1)}'`);
+      expect(err.cause?.message).not.toMatch(/user-supplied physical name/);
     });
   });
 
@@ -288,7 +318,7 @@ describe('DeployEngine replacement-collision message names the RIGHT name origin
       const template: CloudFormationTemplate = {
         Resources: { Pipe: { Type: TYPE, Properties: { Source: 'arn:b' } } },
       };
-      const err = await withStackName(STACK, () =>
+      const err = await withStackScope({ stackName: STACK, stackInstanceId: undefined, nameGenerations: new Map() }, () =>
         provisionResource(engine, 'Pipe', change, stateResources, STACK, template).then(
           () => {
             throw new Error('expected the idempotent-create refusal');

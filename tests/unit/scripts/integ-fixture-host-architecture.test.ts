@@ -33,10 +33,10 @@ const REPO_ROOT = resolve(import.meta.dirname, '../../..');
  *
  * Deriving this from a directory scan would do two harmful things at once: it
  * would go blind to a fixture being dropped from the set, and it would widen
- * the fence to fixtures nobody has run on an arm64 host. 11 further
+ * the fence to fixtures nobody has run on an arm64 host. 6 further
  * Lambda-bearing `local-*` fixtures still declare no architecture
- * (go-to-k/cdkd#2287, measured 2026-09-14); they join this list one at a time,
- * after a green arm64 run each.
+ * (go-to-k/cdkd#2287); they join this list one at a time, after a green arm64
+ * run each.
  */
 /**
  * ...and note what widening this list COSTS, because the constraint is real and
@@ -67,6 +67,9 @@ const FIXTURE_STACKS = [
   'tests/integration/local-invoke-stage/lib/local-invoke-stage-stack.ts',
   // Joined after its RIE faulted under emulation during `$connect` (PR #4537).
   'tests/integration/local-start-api-websocket/lib/stack.ts',
+  // Joined after its RIE faulted under emulation twice in a row during
+  // go-to-k/cdkd#5159's local-* sweep.
+  'tests/integration/local-invoke-ruby/lib/local-invoke-ruby-stack.ts',
 ];
 
 /** The L2 spelling every listed fixture's handlers use; the first row of `ACCEPTED_CTORS`. */
@@ -231,7 +234,7 @@ describe('integ fixture Lambdas run at the host architecture (go-to-k/cdk-local#
   it('pins the fixture count, so a fixture silently leaving the list is loud', () => {
     // The list is literals precisely so it can shrink by accident; this is what
     // makes that accident fail. Raise it as fixtures from go-to-k/cdkd#2287 join.
-    expect(FIXTURE_STACKS.length).toBe(7);
+    expect(FIXTURE_STACKS.length).toBe(8);
     expect(new Set(FIXTURE_STACKS).size).toBe(FIXTURE_STACKS.length);
   });
 });

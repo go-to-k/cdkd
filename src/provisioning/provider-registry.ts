@@ -1118,7 +1118,7 @@ export class ProviderRegistry {
       //     from suppressing a warn about a drop that will then happen.
       //
       // Without the second, this warn told a user with a sticky `cc-api`
-      // alarm that `EvaluationWindow` "will be silently dropped" while Cloud
+      // log group that `ResourcePolicyDocument` "will be silently dropped" while Cloud
       // Control was writing it, and prescribed removing the override — a
       // no-op, since the resource was already on the route that remedy names.
       const stickyCc = provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);

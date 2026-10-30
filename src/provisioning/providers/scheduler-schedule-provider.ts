@@ -14,8 +14,9 @@ import {
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -23,11 +24,12 @@ import type {
   ResourceUpdateResult,
   ResourceImportInput,
   ResourceImportResult,
+  CreateContext,
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { isSecretDerivedValue, maskerOrIdentity } from '../masked-retry-logger.js';
+import { isSecretDerivedValue, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import {
   SECRET_MASK,
   redactForState,
@@ -37,6 +39,8 @@ import {
   isThrottlingError,
   markNonRetryable,
   markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { getCurrentResourceSecrets } from '../../deployment/resource-secrets-scope.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -54,7 +58,8 @@ import {
   redactedDeleteAddressFields,
   redactedDeleteAddressSkip,
 } from '../redacted-delete-address.js';
-import { safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 
 /**
  * SDK Provider for AWS::Scheduler::Schedule.
@@ -206,6 +211,37 @@ export class SchedulerScheduleProvider implements ResourceProvider {
   private readonly providerRegion = ambientRegion();
   private logger = getLogger().child('SchedulerScheduleProvider');
 
+  /**
+   * The failure wrap the create / update / delete / getAttribute catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error keeps its text, masked, stamped only
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error`
+   * throw is withheld like an AWS one, unstamped (it has no chain). The delete
+   * checks `ResourceNotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::Scheduler::Schedule',
@@ -248,9 +284,9 @@ export class SchedulerScheduleProvider implements ResourceProvider {
   /**
    * Map the CFn property shape to the Scheduler SDK input shape. The two
    * are PascalCase-identical except `StartDate` / `EndDate` (CFn carries
-   * ISO strings, the SDK types `Date`) and the Target's ECS sub-shapes
-   * (camelCase islands in the SDK model — see {@link toSdkTarget},
-   * issue #1382).
+   * ISO strings, read as UTC when offset-less as CFn does, issue #5311; the
+   * SDK types `Date`) and the Target's ECS sub-shapes (camelCase islands in
+   * the SDK model — see {@link toSdkTarget}, issue #1382).
    */
   private toSdkFields(
     properties: Record<string, unknown>
@@ -266,10 +302,10 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         ScheduleExpressionTimezone: properties['ScheduleExpressionTimezone'] as string,
       }),
       ...(properties['StartDate'] !== undefined && {
-        StartDate: new Date(properties['StartDate'] as string),
+        StartDate: parseCfnTimestamp(properties['StartDate'] as string),
       }),
       ...(properties['EndDate'] !== undefined && {
-        EndDate: new Date(properties['EndDate'] as string),
+        EndDate: parseCfnTimestamp(properties['EndDate'] as string),
       }),
       ...(properties['State'] !== undefined && {
         State: properties['State'] as CreateScheduleCommandInput['State'],
@@ -383,13 +419,14 @@ export class SchedulerScheduleProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     // Schedule names: <= 64 chars, ^[0-9a-zA-Z-_.]+$ — generateResourceName's
     // stack-prefixed output satisfies both.
     const name =
       (properties['Name'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::Scheduler::Schedule', logicalId);
     const groupName = this.groupNameOf(properties);
 
     this.logger.debug(
@@ -419,12 +456,17 @@ export class SchedulerScheduleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create Schedule ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Schedule ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -800,12 +842,17 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     } catch (error) {
       if (error instanceof ResourceUpdateNotSupportedError) throw error;
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update Schedule ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Schedule ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -851,7 +898,7 @@ export class SchedulerScheduleProvider implements ResourceProvider {
     const wrapDeleteError = (step: string, error: unknown): ProvisioningError => {
       const failureClass =
         error instanceof Error && error.name !== '' ? error.name : 'an unreadable failure';
-      return markRedactedCause(
+      const wrapped = markRedactedCause(
         new ProvisioningError(
           `Failed to delete Schedule ${logicalId}: its recorded GroupName is secret-derived, ` +
             `and ${step} failed (${failureClass})`,
@@ -861,6 +908,17 @@ export class SchedulerScheduleProvider implements ResourceProvider {
           error instanceof Error ? error : undefined
         )
       );
+      // The read and the delete return on `ResourceNotFoundException` before
+      // reaching here, so the one `*NotFound` left is a failed LISTING, which
+      // is not this method's proof of "gone" (two complete listings with no
+      // match). The wrap carries the class, which satisfies the "already
+      // deleted" classifiers' `ResourceNotFoundException` needle and would
+      // drop the record unproven, so mark it not gone: they check the marker
+      // first (go-to-k/cdkd#5222, #5228). A listing that failed on a racing
+      // group delete keeps its retry, which re-lists.
+      return error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(wrapped)
+        : wrapped;
     };
     const findMatches = async (): Promise<{ matches: string[]; datedOnly: number }> => {
       const groups: string[] = [];
@@ -1044,12 +1102,17 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Schedule ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Schedule ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -1084,12 +1147,17 @@ export class SchedulerScheduleProvider implements ResourceProvider {
         error instanceof ResourceNotFoundException
           ? ' Schedules in a custom group cannot be looked up by bare name; the Arn is normally served from cdkd state attributes.'
           : '';
-      throw new ProvisioningError(
-        `Failed to resolve Arn for Schedule ${physicalId}: ${cause?.message ?? safeStringify(error)}.${customGroupHint}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        undefined,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to resolve Arn for Schedule ${physicalId}: ${text}${text.endsWith('.') ? '' : '.'}${customGroupHint}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }

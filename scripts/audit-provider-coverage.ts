@@ -143,12 +143,23 @@ export interface CfnClientLike {
  * registry extensions — out of scope per the issue, and the long tail
  * would balloon the audit runtime past usefulness.
  */
-export async function* paginateListTypes(client: CfnClientLike): AsyncGenerator<string> {
+export async function* paginateListTypes(
+  client: CfnClientLike,
+  provisioningType?: ProvisioningType,
+  /**
+   * Retry each page on throttling and transport errors, as `DescribeType`
+   * does (go-to-k/cdkd#5214 follow-up): back-to-back walks exceed the
+   * account's `ListTypes` rate, and the SDK's own three attempts do not
+   * outlast it.
+   */
+  retry: DescribeTypeRetryOptions = {}
+): AsyncGenerator<string> {
   let nextToken: string | undefined;
   do {
-    const resp = await client.send(
+    const resp = await sendListTypesWithRetry(client, retry, () =>
       new ListTypesCommand({
         Type: 'RESOURCE',
+        ...(provisioningType !== undefined && { ProvisioningType: provisioningType }),
         Visibility: 'PUBLIC' satisfies Visibility,
         Filters: { Category: 'AWS_TYPES' },
         DeprecatedStatus: 'LIVE' satisfies DeprecatedStatus,
@@ -164,6 +175,26 @@ export async function* paginateListTypes(client: CfnClientLike): AsyncGenerator<
     }
     nextToken = resp.NextToken;
   } while (nextToken);
+}
+
+/**
+ * Every listed type's `ProvisioningType`, from one `ListTypes` walk per value
+ * (go-to-k/cdkd#5214): `ListTypes` filters on it, so the three walks classify
+ * every type in ~25 calls instead of one `DescribeType` per type. The three
+ * walks partition the unfiltered listing (measured), so the map's keys ARE
+ * the universe the report covers.
+ */
+export async function listProvisioningTypes(
+  client: CfnClientLike,
+  retry: DescribeTypeRetryOptions = {}
+): Promise<Map<string, ProvisioningType>> {
+  const byType = new Map<string, ProvisioningType>();
+  for (const provisioningType of ['FULLY_MUTABLE', 'IMMUTABLE', 'NON_PROVISIONABLE'] as const) {
+    for await (const typeName of paginateListTypes(client, provisioningType, retry)) {
+      byType.set(typeName, provisioningType);
+    }
+  }
+  return byType;
 }
 
 /**
@@ -246,6 +277,28 @@ export interface DescribeTypeRetryOptions {
 }
 
 /**
+ * `client.send(make())`, retried on a throttling or transport error with the
+ * {@link DEFAULT_RETRY_DELAYS_MS} backoff, as {@link describeTypeWithRetry}
+ * does. `make` builds a fresh command per attempt.
+ */
+async function sendListTypesWithRetry(
+  client: CfnClientLike,
+  options: DescribeTypeRetryOptions,
+  make: () => ListTypesCommand
+): Promise<{ TypeSummaries?: Array<{ TypeName?: string }>; NextToken?: string }> {
+  const delays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  const sleep = options.sleep ?? defaultSleep;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await client.send(make());
+    } catch (err) {
+      if (!isRetryableDescribeTypeError(err) || attempt >= delays.length) throw err;
+      await sleep(delays[attempt] ?? 1000);
+    }
+  }
+}
+
+/**
  * Wrap `DescribeType` with exponential backoff on the failures a later attempt
  * could answer differently — throttles AND transient transport errors (see
  * {@link isRetryableDescribeTypeError}).
@@ -313,6 +366,11 @@ export interface PartitionOptions {
    * whole audit.
    */
   readonly onError?: (typeName: string, err: unknown) => CoverageTier | undefined;
+  /**
+   * Provisioning types already known (from {@link listProvisioningTypes}); a
+   * type found here is classified without a `DescribeType` call.
+   */
+  readonly knownProvisioningTypes?: ReadonlyMap<string, ProvisioningType | string>;
 }
 
 /**
@@ -377,10 +435,12 @@ export async function partitionCoverage(
       limit(async () => {
         let tier: CoverageTier;
         try {
-          const provisioningType = await describeTypeWithRetry(client, typeName, {
-            ...(options.retryDelaysMs && { retryDelaysMs: options.retryDelaysMs }),
-            ...(options.sleep && { sleep: options.sleep }),
-          });
+          const provisioningType =
+            options.knownProvisioningTypes?.get(typeName) ??
+            (await describeTypeWithRetry(client, typeName, {
+              ...(options.retryDelaysMs && { retryDelaysMs: options.retryDelaysMs }),
+              ...(options.sleep && { sleep: options.sleep }),
+            }));
           tier = classifyProvisioningType(provisioningType);
         } catch (err) {
           const handled = onError(typeName, err);
@@ -614,17 +674,13 @@ async function regenerate(): Promise<void> {
   // Agent otherwise holds the event loop open for a few seconds).
   const client = getAwsClients().cloudFormation;
   try {
-    console.error('[audit] enumerating public AWS CFn resource types via ListTypes...');
-    const allTypes: string[] = [];
-    for await (const typeName of paginateListTypes(client)) {
-      allTypes.push(typeName);
-      if (allTypes.length % 100 === 0) {
-        console.error(`[audit] ListTypes: ${allTypes.length} types so far...`);
-      }
-    }
+    console.error('[audit] listing public AWS CFn resource types by provisioning type...');
+    const knownProvisioningTypes = await listProvisioningTypes(client);
+    const allTypes = [...knownProvisioningTypes.keys()];
     console.error(`[audit] ListTypes complete: ${allTypes.length} total types`);
 
     const report = await partitionCoverage(client, registered, allTypes, {
+      knownProvisioningTypes,
       onProgress: (done, total) => {
         if (done % 25 === 0 || done === total) {
           console.error(`[audit] DescribeType: ${done}/${total}`);

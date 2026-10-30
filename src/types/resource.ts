@@ -821,6 +821,93 @@ export interface UpdateContext extends SecretMaskingContext {
    * ABSENT means a direct call, where `withRemovalDefaults` injects instead.
    */
   removedProperties?: ReadonlySet<string> | undefined;
+
+  /**
+   * go-to-k/cdkd#5112: the top-level properties this update CHANGES, decided
+   * as CloudFormation decides it, template to template. The state record is
+   * REDACTED (a dynamic reference stays its `{{resolve:...}}` token, a `NoEcho`
+   * value is `***`) while the desired bag is resolved, so a provider comparing
+   * the two cannot tell an unchanged secret from a changed one. The engine
+   * compares the AS-WRITTEN bags, and also counts as changed a key whose
+   * as-written form hides a move: a masked property whose template text or
+   * inputs moved, a secret read at a newer version than recorded, a fresh
+   * `NoEcho` value AWS did not confirm holding, and a key whose previous side
+   * the engine rewrote for the provider to act on (a re-attachment, a dropped
+   * secret principal list). An update the engine forces with nothing changed
+   * (a `reput` child of a re-created parent) names EVERY key. Names only: no
+   * value reaches the provider.
+   *
+   * A fresh `NoEcho` parameter value is confirmed only by reading the resource
+   * back. That read is taken for it only on a type in
+   * `CHANGED_PROPERTIES_CONSUMER_TYPES`
+   * (`src/provisioning/changed-properties-consumers.ts`), the opt-in a provider
+   * that reads this set joins; on any other type an unconfirmed key stays in
+   * the set (wider than CloudFormation, never narrower) and no AWS call is
+   * added. One deliberate exception to CloudFormation parity: a create-only
+   * path a `NoEcho` parameter feeds that cdkd decided not to replace (warned on
+   * every deploy) is left out, since it cannot be updated in place either.
+   *
+   * Set ONLY by the deploy's in-place UPDATE
+   * (`deploy-engine/update-in-place.ts`). ABSENT on the rollback revert arms
+   * (both bags are state records, compared alike), on `cdkd drift --revert`
+   * (both bags are AWS readbacks with the drifted keys overlaid) and on a direct
+   * call: a provider must then fall back to its own comparison of the two bags.
+   */
+  changedProperties?: ReadonlySet<string> | undefined;
+
+  /**
+   * go-to-k/cdkd#5380: declare, IMMEDIATELY BEFORE an irreversible call that
+   * starts changing a top-level property (a Start / Stop that AWS finishes
+   * asynchronously, a second write after a first one landed), that the change
+   * is in flight. If this `update()` then fails for any reason — the wait
+   * reports `*_FAILED`, the per-resource deadline, Ctrl-C, a later write —
+   * the engine records the name as `ResourceState.unsettledProperties`, and the
+   * next deploy hands it back in {@link unsettledProperties}. Not for a
+   * refusal or a failed read before the call: nothing was sent, so the
+   * recorded value still describes AWS.
+   *
+   * Names only: no value reaches the record. The mark lives on the engine,
+   * outside this call's promise, so it survives a deadline that abandoned the
+   * call. Set ONLY by the deploy's in-place UPDATE; absent elsewhere, so a
+   * provider calls it as `context?.markUnsettled?.(key)`.
+   */
+  markUnsettled?: ((propertyName: string) => void) | undefined;
+
+  /**
+   * go-to-k/cdkd#5498: declare, IMMEDIATELY AFTER a call that adds items to a
+   * collection RESOLVED (never before it: a call that throws added nothing),
+   * the identity names it added under `path` — a member path of a key already
+   * marked with {@link markUnsettled} (`GlobalSecondaryIndexes`, `Tags`,
+   * `Replicas[eu-west-1].GlobalSecondaryIndexes`; closed-vocabulary segments
+   * only). Only names AWS did not hold before the call (a GSI Create, a
+   * metric the response did not list as current, a tag key the record
+   * lacked). If the update then fails, the record keeps them as
+   * `ResourceState.unsettledItems`, and the next convergence may remove an
+   * item it names that neither the record nor the template declares.
+   */
+  markAttempted?: ((path: string, items: readonly string[]) => void) | undefined;
+
+  /**
+   * go-to-k/cdkd#5498: the record's attempted names per member path (see
+   * {@link markAttempted}), for a provider's projection of a collection:
+   * a live item named here (exactly, and not redacted) that neither the record
+   * nor the template declares goes on the previous side, so it is removed.
+   * Set only with {@link unsettledProperties}. No provider reads it today
+   * (they receive the same names through `readUnsettled`); the rollback
+   * retry replay reads it back to hand them to its own convergence step.
+   */
+  unsettledItems?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+
+  /**
+   * go-to-k/cdkd#5380: the top-level properties an EARLIER failed update
+   * left unsettled (see {@link markUnsettled}): AWS may hold the recorded
+   * value, the attempted one, or neither. Each is also in
+   * {@link changedProperties}. A provider that marks a key must, when it
+   * finds that key here, compare the desired value with what AWS holds (not
+   * with the previous bag, which may equal the desired one) and converge it.
+   * Set ONLY by the deploy's in-place UPDATE, and only when non-empty.
+   */
+  unsettledProperties?: ReadonlySet<string> | undefined;
 }
 
 /** A principal kind an inline policy is written onto. */
@@ -1112,6 +1199,22 @@ export interface ResourceProvider {
   disableOuterRetry?: boolean;
 
   /**
+   * go-to-k/cdkd#5131: wait, bounded, until a resource this provider just
+   * deleted no longer holds its name, for a type whose `delete()` returns
+   * while AWS still holds it (a DynamoDB table stays `DELETING`). Called ONLY
+   * by a replacement that deleted the resource itself and re-creates it under
+   * the same name -- never by a destroy or an ordinary deploy, which pay no
+   * wait. Never throws: an exhausted or interrupted wait returns, and the
+   * re-create then fails (or is interrupted) as it would have.
+   */
+  waitForNameReleased?(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    context: { isInterrupted: () => boolean; maskSecrets?: (text: string) => string }
+  ): Promise<void>;
+
+  /**
    * Self-reported minimum wall-clock timeout (ms) the provider needs in
    * order to complete `create` / `update` / `delete` against AWS in the
    * worst case.
@@ -1294,6 +1397,57 @@ export interface ResourceProvider {
     properties?: Record<string, unknown>,
     context?: ReadCurrentStateContext
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
+
+  /**
+   * go-to-k/cdkd#5380: of `names` (a record's `unsettledProperties`), the ones
+   * AWS is STILL changing — an asynchronous transition an earlier `update()`
+   * started and that has not ended (a Firehose stream reading ENABLING /
+   * DISABLING). The deploy refuses to diff such a name (a moving value), its
+   * post-update proof keeps it, and `cdkd drift --accept` / `--revert` keep it
+   * on the record. Called only for a record that names some, so an ordinary
+   * run makes no extra call. A failed or stuck transition (`*_FAILED`, an
+   * arrested resize) counts as in transition. A provider that marks a key with
+   * `UpdateContext.markUnsettled` and whose `readCurrentState` reads an
+   * in-progress state as a value implements it; absent = none in transition.
+   */
+  /**
+   * go-to-k/cdkd#5487: the live values of `names` (a record's unsettled
+   * properties) in the template's shape, for the engine's convergence step
+   * (`src/deployment/unsettled-convergence.ts`) and its post-update proof. A
+   * provider implements it when `readCurrentState` would report a value other
+   * than the one its update compares (Kinesis: the OPEN shard count) or would
+   * swallow a failed read of an unsettled key (Lambda's separately-read
+   * settings). It must THROW, not omit the key, when a read fails. Absent:
+   * `readCurrentState` is used.
+   */
+  readUnsettled?(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    /**
+     * The bag the update sends, so a read can project the live value onto what
+     * the record or the template names (a GlobalTable's replicas): the
+     * convergence must never remove or reset what neither names.
+     */
+    desiredProperties?: Record<string, unknown>,
+    /**
+     * go-to-k/cdkd#5498: the record's attempted names per member path: a live
+     * item named here (exactly, not redacted) that neither the record nor the
+     * template declares goes on the previous side, so it is removed.
+     */
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
+
+  unsettledInTransition?(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    /** The record's `properties`, for a read needing a parent id (an EMR group's `JobFlowId`). */
+    recordedProperties?: Record<string, unknown>
+  ): Promise<ReadonlySet<string>>;
 
   /**
    * go-to-k/cdkd#4606: whether `journaledPhysicalId` — the resource a failed
@@ -1567,6 +1721,61 @@ export interface ResourceProvider {
     aws: Record<string, unknown>,
     properties?: Record<string, unknown>
   ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }>;
+
+  /**
+   * Top-level keys whose ABSENCE from an `observedProperties` baseline records
+   * the property's DEFAULT state, because `readCurrentState` omits the key
+   * while the property is at its default (go-to-k/cdkd#5399: a GlobalTable on
+   * the AWS owned key reads back with no `SSESpecification`). The comparator
+   * otherwise walks only the baseline's top-level keys, so a move away from
+   * the default was invisible there, and `drift --revert` kept the live value.
+   *
+   * For each key returned, `cdkd drift` compares the key even when the
+   * baseline lacks it, and `drift --revert` sends it ABSENT, so `update()`
+   * takes the removal path it takes for a template that removed the property.
+   * Return a key only when that removal path resets it to the default, as
+   * CloudFormation does, and only when `properties` (the template intent)
+   * agrees the property is at its default: a baseline that disagrees with the
+   * template it was captured under is not trusted to clear what the template
+   * declares. Not consulted for a record without `observedProperties`.
+   *
+   * Pure and synchronous: no AWS call.
+   *
+   * @param properties the resource's recorded `properties`. May be `{}`.
+   * @returns top-level property names only; a dotted path is ignored (with a
+   *   debug line) by the caller.
+   */
+  getDriftAbsentMeansDefaultKeys?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[];
+
+  /**
+   * Name the drift positions a secret-bearing template position MOVES to when
+   * {@link canonicalizeDriftProperties} / {@link canonicalizeDriftPair} (or the
+   * readback itself) puts its value somewhere else (go-to-k/cdkd#5332). Step
+   * Functions folds each `DefinitionSubstitutions` value into the `Definition`
+   * leaves that reference it, so a secret proven at
+   * `DefinitionSubstitutions.<name>` is compared, and printed, at
+   * `Definition.States.<S>.<...>`. `cdkd drift` adds every returned path to its
+   * MASKING set, so a change at (or under, or above) one is masked whatever the
+   * value's length — the value scan alone has a needle-length floor.
+   *
+   * Masking only: the paths never feed the exact-leaf rule that drops a change
+   * whose AWS side is absent. Return a coarser ancestor when the exact leaf
+   * cannot be computed (over-masking is the safe direction). MUST be pure,
+   * synchronous and free of AWS calls.
+   *
+   * @param resourceType e.g. `AWS::StepFunctions::StateMachine`
+   * @param properties the resource's recorded `properties` (template intent)
+   * @param secretPaths the dotted paths `cdkd drift` holds as secret-bearing
+   * @returns extra dotted paths to mask (empty when nothing moved)
+   */
+  getDriftSecretPathAliases?(
+    resourceType: string,
+    properties: Record<string, unknown>,
+    secretPaths: ReadonlySet<string>
+  ): string[];
 
   /**
    * Find an already-deployed AWS resource matching the given logicalId from

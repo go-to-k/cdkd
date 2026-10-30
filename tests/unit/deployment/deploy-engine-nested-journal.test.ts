@@ -875,6 +875,49 @@ describe('DeployEngine — nested child journal lifecycle (#3754)', () => {
       }
     });
 
+    // go-to-k/cdkd#5064: `settleJournalAfterSuccess` reads each settle's id
+    // from its OWN record — `previousState` for the root, the CHILD's record
+    // for the child settle — never the parent's id reused for both.
+    it('#5064: passes the root record id to its own settle, the child record id to the child settle', async () => {
+      const ROOT_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+      const CHILD_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const { engine } = build({
+        nested: false,
+        changes: new Map([['Q', createChange('Q')]]),
+        resources: { Child: record('Child', NESTED) },
+        extraState: { stackInstanceId: ROOT_ID } as never,
+        childState: {
+          version: 8,
+          stackName: `${STACK}~Child`,
+          region: REGION,
+          resources: { Leaf: record('Leaf') },
+          outputs: {},
+          lastModified: 0,
+          stackInstanceId: CHILD_ID,
+        } as never,
+        childJournal: {
+          segments: [
+            {
+              timestamp: 1,
+              reason: 'no-rollback-failure',
+              initialDeploy: false,
+              operations: [],
+              failedOperations: [childOrphan as never],
+            },
+            { runId: RUN, timestamp: 2, reason: 'nested-pending-parent', operations: [] },
+          ],
+        },
+      });
+
+      await engine.deploy(STACK, templateOf(['Q']));
+
+      const calls = vi.mocked(settleJournaledOrphansOnSuccess).mock.calls.map((c) => c[0]);
+      const root = calls.find((a) => a.stackName === STACK)!;
+      const child = calls.find((a) => a.stackName === `${STACK}~Child`)!;
+      expect(root.stackInstanceId).toBe(ROOT_ID);
+      expect(child.stackInstanceId).toBe(CHILD_ID);
+    });
+
     it("ownership is judged by the CHILD's record: one holding the orphan id keeps it, journal dropped", async () => {
       const h = harness();
       const childRecord = {

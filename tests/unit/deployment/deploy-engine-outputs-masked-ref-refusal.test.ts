@@ -9,15 +9,17 @@
  * written and never read. That was harmless while a masked recovery key made
  * `refStateLookupFromResource` return `'***'`; once the lookup learned to
  * REFUSE the mask, the fall-through began publishing the raw physical id
- * instead — for a Cloud-Control-routed `AWS::S3Tables::Table`, a UUID-tailed
- * `TableARN` where the table NAME belongs.
+ * instead — for an SDK-routed `AWS::S3Tables::Table`, the
+ * `<tableBucketARN>|<namespace>|<tableName>` composite where the TableARN
+ * belongs. (The vehicle was a Cloud-Control-routed table's masked `TableName`
+ * until issue #5316 made a Table's `Ref` its TableARN.)
  *
  * WHY THAT IS A BLOCKER RATHER THAN A COSMETIC REGRESSION, and what these
  * cases therefore have to pin: the two values are not equally bad downstream.
  * `'***'` is REFUSED by `reresolveCrossStackValue` in the CONSUMING stack
- * (it tests `carriesSecretMask`); an ARN passes, so the consumer resolves its
+ * (it tests `carriesSecretMask`); the composite passes, so the consumer resolves its
  * `Fn::ImportValue` to a wrong value and sends it to AWS — both deploys green.
- * So the assertion is not "the mask is gone" but "the ARN is not published
+ * So the assertion is not "the mask is gone" but "the composite is not published
  * either", and every case pairs the two.
  *
  * The fixture is a NO-CHANGE deploy: no resource is created or updated, so the
@@ -59,7 +61,8 @@ import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 
 const TABLE_TYPE = 'AWS::S3Tables::Table';
-/** Pipe-free and UUID-tailed: the #614-routed shape whose `Ref` needs the state key. */
+/** The SDK-routed composite, whose `Ref` (the TableARN) needs the state key. */
+const TABLE_COMPOSITE = 'arn:aws:s3tables:us-east-1:123456789012:bucket/b|ns|orders_zz2847';
 const TABLE_ARN =
   'arn:aws:s3tables:us-east-1:123456789012:bucket/b/table/6f1f5a90-2847-4b1a-9d6f-dddd';
 const TABLE_NAME = 'orders_zz2847';
@@ -67,21 +70,22 @@ const TABLE_NAME = 'orders_zz2847';
 const stackName = 'outputs-masked-ref-stack';
 
 function makeState(tableName: unknown): StackState {
+  // A masked record masks the recovery key too; an ordinary one records the ARN.
+  const tableArn = tableName === SECRET_MASK ? SECRET_MASK : TABLE_ARN;
   return {
     version: STATE_SCHEMA_VERSION_CURRENT,
     stackName,
     region: 'us-east-1',
     resources: {
       Tbl: {
-        physicalId: TABLE_ARN,
+        physicalId: TABLE_COMPOSITE,
         resourceType: TABLE_TYPE,
         // The bag `cdkd import`'s Cloud Control narrowing writes: the KEY
         // survives, its value is the mask.
         properties: { TableName: tableName },
         observedProperties: { TableName: tableName },
-        attributes: {},
+        attributes: { TableARN: tableArn },
         dependencies: [],
-        provisionedBy: 'cc-api',
       },
       // A HEALTHY sibling, so every case can assert that refusing one output
       // does not take the rest of the pass with it. `AWS::SSM::Parameter`'s
@@ -99,13 +103,12 @@ function makeState(tableName: unknown): StackState {
       // hands the template to CloudFormation, so `overrideLogicalId` and a
       // `--migrate-from-cloudformation` template both produce ids like this.
       'Tbl-2': {
-        physicalId: TABLE_ARN,
+        physicalId: TABLE_COMPOSITE,
         resourceType: TABLE_TYPE,
         properties: { TableName: tableName },
         observedProperties: { TableName: tableName },
-        attributes: {},
+        attributes: { TableARN: tableArn },
         dependencies: [],
-        provisionedBy: 'cc-api',
       },
       // A masked ATTRIBUTE, which is the OTHER pusher's shape: an
       // `Fn::GetAtt` here serves the mask itself rather than falling through
@@ -203,13 +206,13 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     // `undefined`, and on this (no-change) path that makes `resolutionFailed`
     // true, so cdkd keeps the PREVIOUSLY persisted outputs rather than writing
     // a partial map — which is why the saved bag carries neither this key nor
-    // the ARN. Both facts are asserted; the mechanism is named because an
+    // the composite. Both facts are asserted; the mechanism is named because an
     // earlier revision of this comment named the wrong one.
     expect(outputs?.['TableRef']).toBeUndefined();
-    // THE LOAD-BEARING NEGATIVE. A fall-through publishes the ARN, which the
+    // THE LOAD-BEARING NEGATIVE. A fall-through publishes the composite, which the
     // consumer stack's `carriesSecretMask` test does NOT catch — so asserting
     // only "not the mask" would pass on exactly the regression this fences.
-    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_ARN);
+    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_COMPOSITE);
   });
 
   it('reports the refusal by NAME, at default verbosity', async () => {
@@ -220,7 +223,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     // every other output failure rather than inventing a second shape.
     expect(warned).toContain('Failed to resolve output TableRef');
     // ...and names the read, which is what tells the user WHICH record to fix.
-    expect(warned).toContain('Ref Tbl (state key TableName)');
+    expect(warned).toContain('Ref Tbl (state key TableARN)');
     // The remedy is computed, not described.
     expect(warned).toContain("--resource 'Tbl=<physicalId>'");
     // Issue #3892: the value the fall-through would publish is not always the
@@ -274,13 +277,13 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     expect(lines.at(-1)).toMatch(/^Re-import with: cdkd import .*--resource 'Tbl=<physicalId>'/);
   });
 
-  it('publishes the recovered NAME when the record is not masked (scope control)', async () => {
+  it('publishes the recovered ARN when the record is not masked (scope control)', async () => {
     // The other direction. Without this, a refusal that fired on every
     // `Ref`-valued output would pass every case above while breaking every
     // stack that exports one.
     await makeEngine(TABLE_NAME).deploy(stackName, TEMPLATE);
 
-    expect(savedOutputs()?.['TableRef']).toBe(TABLE_NAME);
+    expect(savedOutputs()?.['TableRef']).toBe(TABLE_ARN);
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).not.toContain('Failed to resolve output');
   });
@@ -306,7 +309,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     expect(outputs?.['TableRef2']).toBeUndefined();
     // The ARN must not appear under EITHER key — the second is the one a
     // delta-based guard published.
-    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_ARN);
+    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_COMPOSITE);
     // And both were reported, so neither was dropped silently.
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('Failed to resolve output TableRef:');
@@ -335,17 +338,17 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     const outputs = savedOutputs();
     expect(outputs?.['HyphenRef']).toBeUndefined();
     // THE LOAD-BEARING NEGATIVE, exactly as in the alphanumeric case: what the
-    // fall-through publishes is the ARN, and nothing downstream recognises it.
-    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_ARN);
+    // fall-through publishes is the composite, and nothing downstream recognises it.
+    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_COMPOSITE);
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('Failed to resolve output HyphenRef');
-    expect(warned).toContain('Ref Tbl-2 (state key TableName)');
+    expect(warned).toContain('Ref Tbl-2 (state key TableARN)');
     // The remedy names the hyphenated record too, rather than withholding the
     // one command that repairs it.
     expect(warned).toContain("--resource 'Tbl-2=<physicalId>'");
   });
 
-  it('publishes the recovered NAME for a HYPHENATED id when the record is NOT masked', async () => {
+  it('publishes the recovered ARN for a HYPHENATED id when the record is NOT masked', async () => {
     // The other direction for the case above: a guard that refused every
     // hyphenated `Ref` would pass it while breaking every stack that exports
     // one from an `overrideLogicalId` resource.
@@ -354,7 +357,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
       templateWith({ HyphenRef: { Value: { Ref: 'Tbl-2' } } })
     );
 
-    expect(savedOutputs()?.['HyphenRef']).toBe(TABLE_NAME);
+    expect(savedOutputs()?.['HyphenRef']).toBe(TABLE_ARN);
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).not.toContain('Failed to resolve output');
   });
@@ -413,7 +416,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
   it('refuses an EXPORT NAME even when an earlier output already noted that read', async () => {
     // The pass-2 half of the dedup blocker. Pass 1 merges every value's reads
     // into the shared bag before pass 2 runs, so by the time the alias name
-    // resolves, `Ref Tbl (state key TableName)` is ALREADY in it — a delta
+    // resolves, `Ref Tbl (state key TableARN)` is ALREADY in it — a delta
     // there is empty in the COMMON case, not the rare one. The value output
     // below is what puts it there.
     await makeEngine(SECRET_MASK).deploy(
@@ -425,7 +428,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     );
 
     const outputs = savedOutputs();
-    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_ARN);
+    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_COMPOSITE);
     expect(Object.keys(outputs ?? {}).some((k) => k.startsWith('tbl-'))).toBe(false);
     const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(warned).toContain('Failed to resolve output Aliased:');
@@ -473,7 +476,7 @@ describe('resolveOutputs refuses an output built from a masked state record (#28
     await makeEngine(SECRET_MASK).deploy(stackName, template);
 
     const outputs = savedOutputs();
-    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_ARN);
+    expect(JSON.stringify(outputs ?? {})).not.toContain(TABLE_COMPOSITE);
     // No alias key was published under any spelling.
     expect(Object.keys(outputs ?? {}).some((k) => k.startsWith('tbl-'))).toBe(false);
   });

@@ -257,6 +257,26 @@ describe('Cloud Control registry types: --remove-protection compensation (issue 
     expect(updates(DSQL, 'on')).toHaveLength(0);
   });
 
+  it("masks the failed readback's debug line per value with the delete's maskSecrets (#5180)", async () => {
+    // Every line of a CC delete already passes the masker as a WHOLE line
+    // (`IdScrubLog`); what the threaded masker adds is the per-value pass
+    // BEFORE `safeMsg` flattens a line break, so the secret here spans one.
+    const secret = 'first\nsecond';
+    script(DSQL, { observe: new Error(`read exploded for ${secret}`), del: { failed: TERMINAL_MSG } });
+    await expect(
+      del(newProvider(), DSQL, {
+        ...CTX,
+        maskSecrets: (text: string) => text.split(secret).join('***'),
+      })
+    ).rejects.toThrow();
+    const line = childLogger.debug.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.startsWith('Could not read DeletionProtectionEnabled'));
+    expect(line).toBe(
+      `Could not read DeletionProtectionEnabled on ${ID} before disabling it: read exploded for ***`
+    );
+  });
+
   it('does not compensate a flip Cloud Control rejected', async () => {
     script(DSQL, { observe: true, disableRejects: true, del: { failed: TERMINAL_MSG } });
     await expect(del(newProvider(), DSQL)).rejects.toThrow(TERMINAL_MSG);

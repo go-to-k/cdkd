@@ -80,7 +80,7 @@ After §9, MAIN-CHECKOUT (SKILL.md "Launch mode") runs:
 # UTC MINUTE, not day: post-merge-orphan-push-gate refuses a merged name.
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
 git worktree add ".claude/worktrees/${B##*/}" -b "$B" origin/main
-cd ".claude/worktrees/${B##*/}" && mise trust && mise install && pnpm install
+cd ".claude/worktrees/${B##*/}" && mise trust && mise install && vp install
 ```
 
 IN-PLACE runs THIS block INSTEAD, never both — `git worktree add` here NESTS a

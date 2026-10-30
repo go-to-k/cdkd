@@ -28,7 +28,7 @@
 #   2b. Re-deploy with CDKD_TEST_REMOVAL=true (issue #1160): the TASK fleet's
 #      ResizeSpecifications is DROPPED from the template while its
 #      TargetOnDemandCapacity goes 2 -> 1. Assert the deploy succeeds and warns
-#      naming the removed property (with no CloudFormation-reset claim), the
+#      naming the removed property and saying CloudFormation keeps it too, the
 #      live On-Demand resize timeout stays 25 (cdkd sends no reset), and the
 #      companion resize landed.
 #   3. Destroy + assert the cluster is TERMINATED (it bills per instance-hour,
@@ -96,11 +96,11 @@ RESIZE_TIMEOUT="25"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed property; the sentinel is an independent substring of the same line,
 # so a reworded warning fails loudly instead of reading as "not fired".
-REMOVAL_NEEDLE="(AWS::EMR::InstanceFleetConfig): property ResizeSpecifications was removed from the template"
+REMOVAL_NEEDLE="(AWS::EMR::InstanceFleetConfig): property ResizeSpecifications was removed from the template and keeps its current AWS value, as CloudFormation leaves it"
 REMOVAL_SENTINEL="ModifyInstanceFleet keeps a setting it is not sent"
 # The shared caller's line for a removal no provider handles. It claims a
-# CloudFormation reset, which is unmeasured for this property, so it must not
-# name the fleet.
+# CloudFormation reset, which CloudFormation does not do for this property
+# (CFn A/B on issue #1160), so it must not name the fleet.
 SHARED_REMOVAL_CLAIM="(CloudFormation would reset it to its default)"
 # Deploy logs, streamed through `tee` and read back for the greps; removed by
 # cleanup on every exit path.
@@ -462,9 +462,10 @@ echo "    resize reached AWS (ProvisionedOnDemandCapacity 2)"
 # --- Phase 2b: removal of ResizeSpecifications (issue #1160) ------------
 # ResizeSpecifications leaves the TASK fleet's template while its live
 # On-Demand timeout is 25 (asserted in Phase 1). ModifyInstanceFleet keeps a
-# field it is not sent and cdkd sends no reset, so: the deploy succeeds, the
-# timeout STAYS 25, and the deploy names the removal in a warning (pre-fix it
-# was dropped silently). TargetOnDemandCapacity goes 2 -> 1 in the same
+# field it is not sent and cdkd sends no reset, as CloudFormation leaves it
+# (CFn A/B on issue #1160), so: the deploy succeeds, the timeout STAYS 25, and
+# the deploy names the removal in a warning that says CloudFormation keeps it
+# too. TargetOnDemandCapacity goes 2 -> 1 in the same
 # deploy, so ModifyInstanceFleet demonstrably fires beside the removal.
 echo "==> Phase 2b: re-deploy with CDKD_TEST_REMOVAL=true (ResizeSpecifications dropped, TASK fleet 2 -> 1)"
 PHASE2B_LOG="$(mktemp)"
@@ -516,6 +517,45 @@ if [ "${CAP_P2B}" != "1" ]; then
   exit 1
 fi
 echo "    removal left in place (timeout ${TIMEOUT_P2B} min) beside an applied resize (capacity 1)"
+
+# --- Phase 2c: drift over the deny-listed instance fleet (issue #5179) ----
+# AWS gave `AWS::EMR::InstanceFleetConfig` Cloud Control handlers keyed by a COMPOSITE
+# primaryIdentifier (`ClusterId` + `InstanceFleetId`). The SDK provider has no `readCurrentState` and
+# records the bare fleet id as the physicalId, so drift's Cloud Control
+# fallback had `GetResource` refuse it with a ValidationException on every run:
+# the row landed in `notCompared` (readFailed) and drift exited 2. The type is
+# now on `CC_API_FALLBACK_DENY_LIST`, so the row must be in `notSupported`
+# (drift unknown) and in no `notCompared` entry. One drift call over the stack
+# as deployed; no extra deploy. The exit code is not asserted: other rows in
+# this stack are not this phase's subject.
+echo "==> Phase 2c: drift reports the instance fleet as drift unknown, not a read failure"
+DRIFT_JSON="$(mktemp)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json > "${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+echo "    drift exited ${DRIFT_RC}"
+DRIFT_VERDICT="$(node -e '
+const t = process.argv[1];
+let r;
+try { r = JSON.parse(require("fs").readFileSync(process.argv[2], "utf8")); }
+catch (e) { process.stdout.write("UNPARSEABLE"); process.exit(0); }
+try {
+  const rows = (k) => r.flatMap((s) => s[k] || []).filter((x) => x.type === t);
+  const nc = rows("notCompared");
+  if (nc.length) { process.stdout.write("NOTCOMPARED:" + nc.map((x) => x.cause).join(",")); process.exit(0); }
+  const ns = rows("notSupported").length;
+  const other = ["drifted", "deleted", "clean", "skipped"].map((k) => k + "=" + rows(k).length).join(",");
+  process.stdout.write(ns === 1 ? "OK" : "NOTSUPPORTED=" + ns + "," + other);
+} catch (e) { process.stdout.write("UNEXPECTED_SHAPE"); }
+' "AWS::EMR::InstanceFleetConfig" "${DRIFT_JSON}")"
+rm -f "${DRIFT_JSON}"
+if [ "${DRIFT_VERDICT}" != "OK" ]; then
+  echo "FAIL [phase 2c]: expected exactly one AWS::EMR::InstanceFleetConfig row in notSupported and none in notCompared, got '${DRIFT_VERDICT}' (drift rc ${DRIFT_RC}; pre-fix this read NOTCOMPARED:readFailed, go-to-k/cdkd#5179)" >&2
+  exit 1
+fi
+echo "    instance fleet reported as drift unknown (notSupported), not as a read failure"
 
 # --- Phase 3: destroy ----------------------------------------------------
 echo "==> Phase 3: destroy (EMR termination takes a few minutes)"

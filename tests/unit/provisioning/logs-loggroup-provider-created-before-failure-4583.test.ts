@@ -37,6 +37,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { ResourceAlreadyExistsException } from '@aws-sdk/client-cloudwatch-logs';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { provenNothingCreated } from '../../../src/deployment/generated-name-guard.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
@@ -117,5 +121,47 @@ describe('LogsLogGroupProvider created-before-failure mark (go-to-k/cdkd#4583)',
     expect(error).toBeInstanceOf(Error);
     expect(mockSend).not.toHaveBeenCalled();
     expect(createdBeforeFailure(error, 'MyLG', RESOURCE_TYPE)).toBeUndefined();
+  });
+
+  it('reports the log group name to the sink before the wiring calls (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyLG', RESOURCE_TYPE);
+    let reportAtWiring: unknown = 'not-called';
+    mockSend.mockResolvedValueOnce({}); // CreateLogGroup
+    mockSend.mockImplementationOnce(() => {
+      reportAtWiring = sink.report;
+      return Promise.reject(new Error('PutRetentionPolicy boom'));
+    });
+    mockSend.mockRejectedValueOnce(new Error('DeleteLogGroup boom'));
+
+    await expect(
+      collectCreatedResources(sink, () => provider.create('MyLG', RESOURCE_TYPE, PROPS))
+    ).rejects.toThrow();
+    expect(reportAtWiring).toEqual({ physicalId: NAME });
+    expect(sink.report).toEqual({ physicalId: NAME });
+  });
+
+  it('retracts the report when the cleanup deleted the log group (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyLG', RESOURCE_TYPE);
+    mockSend.mockResolvedValueOnce({}); // CreateLogGroup
+    mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom'));
+    mockSend.mockResolvedValueOnce({}); // DeleteLogGroup
+
+    await expect(
+      collectCreatedResources(sink, () => provider.create('MyLG', RESOURCE_TYPE, PROPS))
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
+  });
+
+  it('reports nothing for a pre-existing log group the create adopted (#5511)', async () => {
+    const sink = new CreatedResourceSink('MyLG', RESOURCE_TYPE);
+    mockSend.mockRejectedValueOnce(
+      new ResourceAlreadyExistsException({ message: 'already exists', $metadata: {} })
+    );
+    mockSend.mockRejectedValueOnce(new Error('PutRetentionPolicy boom'));
+
+    await expect(
+      collectCreatedResources(sink, () => provider.create('MyLG', RESOURCE_TYPE, PROPS))
+    ).rejects.toThrow();
+    expect(sink.report).toBeUndefined();
   });
 });

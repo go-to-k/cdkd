@@ -128,14 +128,27 @@ cdkd local start-api MyStack/MyHttpApi/Resource
 ```
 
 - The bare logical ID works only in a single-stack app.
-- The stack-qualified logical ID works in any app. You need it when two
-  stacks share a logical ID.
+- The stack-qualified logical ID works in any app where the stack's physical
+  name is unique. You need it when two stacks share a logical ID.
+- Two stacks can share one physical stack name, for example one CDK `Stage`
+  deployed twice. start-api refuses to serve them together and names both. To
+  serve one, address it by its CDK path, either with
+  `--stack 'MyStage/MyStack'` or with a target that starts with that path.
 - A construct path prefix matches the resource below it, so you can leave off
   `/Resource`.
 - A full construct path must match the resource's construct path exactly.
 
 A path form also selects the stack, so you do not need `--stack` with it. A
 stack inside a CDK `Stage` is reached as `MyStage/MyStack/MyHttpApi`.
+
+A `--stack` pattern can select several stacks, for example
+`--stack 'Svc*'`. Each stack's APIs are then served with that stack's own
+Lambdas, Stage and CORS settings, even when the stacks reuse a construct ID
+(each declares `new HttpApi(this, 'Api')`). A bare logical ID passed in
+`--assume-role <LogicalId>=<arn>` or as an `--env-vars` key must then name one
+stack's Lambda. If two served stacks declare it, start-api refuses and names
+both stacks. Key the `--env-vars` entry by the Lambda's construct path instead
+(`"SvcA/Handler"`), or serve one stack at a time.
 
 To serve a Function URL, name the Lambda behind it. For a URL created by
 `new lambda.Function(this, 'MyHandler').addFunctionUrl()`, run

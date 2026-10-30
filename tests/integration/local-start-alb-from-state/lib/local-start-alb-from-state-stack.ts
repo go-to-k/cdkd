@@ -205,7 +205,11 @@ export class LocalStartAlbFromStateStack extends cdk.Stack {
       cluster,
       taskDefinition: webTaskDef,
       desiredCount: 0,
-      serviceName: 'cdkd-local-alb-web-svc',
+      // No `serviceName` here, deliberately: cdk-local matches an
+      // `--image-override` key to the construct id (`WebService`) only for a
+      // service that sets none, and verify.sh's override arm uses that key
+      // (go-to-k/cdkd#5156). OrdersService keeps its name for the
+      // `ServiceName` key.
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroups: [serviceSg],

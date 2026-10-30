@@ -48,6 +48,11 @@ import {
   RemoveManagedScalingPolicyCommand,
   PutAutoTerminationPolicyCommand,
   RemoveAutoTerminationPolicyCommand,
+  ModifyInstanceGroupsCommand,
+  ModifyInstanceFleetCommand,
+  PutAutoScalingPolicyCommand,
+  RemoveAutoScalingPolicyCommand,
+  SetUnhealthyNodeReplacementCommand,
   InvalidRequestException,
 } from '@aws-sdk/client-emr';
 import {
@@ -55,6 +60,13 @@ import {
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
+import { getLogger } from '../../../../src/utils/logger.js';
+
+/** The provider's child logger (the mock hands out one object). */
+const providerWarn = (): string[] =>
+  (getLogger().child('EMRClusterProvider') as unknown as {
+    warn: { mock: { calls: unknown[][] } };
+  }).warn.mock.calls.map((c) => String(c[0]));
 
 const RESOURCE_TYPE = 'AWS::EMR::Cluster';
 const CLUSTER_ID = 'j-1A2B3C4D5E6F7';
@@ -124,6 +136,26 @@ function invalidRequest(): InvalidRequestException {
     message: `Cluster id '${CLUSTER_ID}' is not valid.`,
     $metadata: {},
   });
+}
+
+/** A settled `ListInstanceGroups` entry, so a resize wait returns at once. */
+function coreGroup(running: number): Record<string, unknown> {
+  return taskGroup('ig-core', 'Core', running, 'CORE');
+}
+
+function taskGroup(
+  id: string,
+  name: string,
+  running: number,
+  type = 'TASK'
+): Record<string, unknown> {
+  return {
+    Id: id,
+    Name: name,
+    InstanceGroupType: type,
+    Status: { State: 'RUNNING' },
+    RunningInstanceCount: running,
+  };
 }
 
 function newProvider(overrides: { maxWaitMs?: number } = {}): EMRClusterProvider {
@@ -378,6 +410,117 @@ describe('EMRClusterProvider update', () => {
     });
   });
 
+  // go-to-k/cdkd#5418: a replacing member recorded as its `{{resolve:...}}`
+  // reference and handed here resolved is unchanged, as at the top level.
+  describe('a secret-referenced Instances member beside a TerminationProtected toggle', () => {
+    const REF = '{{resolve:secretsmanager:emr-key:SecretString:name}}';
+    const prev = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, Ec2KeyName: REF, TerminationProtected: false },
+    };
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, Ec2KeyName: 'resolved-key', TerminationProtected: true },
+    };
+    const maskSecrets = (text: string): string => text.split('resolved-key').join('***');
+
+    it('applies the toggle when the member only resolves its recorded reference', async () => {
+      routeSend({
+        SetTerminationProtectionCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const result = await newProvider().update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev, {
+        maskSecrets,
+      });
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(SetTerminationProtectionCommand)[0]!.input['TerminationProtected']).toBe(true);
+    });
+
+    it('still refuses when the value is not one the masker resolved', async () => {
+      const err = await newProvider()
+        .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('Instances.Ec2KeyName cannot be updated in place');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#5422 (#5424 review): an in-place member behind a resolved
+    // reference is still applied, from the raw desired value.
+    it('applies an in-place member that only resolves a reference, never dropping it', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(3)] },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const core = (count: unknown) => ({ InstanceCount: count, InstanceType: 'm5.xlarge' });
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core('3') } },
+        { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core(REF) } },
+        { maskSecrets: (text: string) => text.split('3').join('***') }
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-core', InstanceCount: 3 },
+      ]);
+    });
+
+    // go-to-k/cdkd#5422 (#5424 review): a member whose REPLACING part only
+    // resolves its recorded reference, beside an in-place change, is applied in
+    // place instead of refused as a replacement.
+    it('applies the in-place change of a member whose replacing part only resolves a reference', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(2)] },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const core = (type: string, count: number) => ({ InstanceCount: count, InstanceType: type });
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core('resolved-key', 2) } },
+        { ...BASE_PROPS, Instances: { ...BASE_PROPS.Instances, CoreInstanceGroup: core(REF, 1) } },
+        { maskSecrets }
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-core', InstanceCount: 2 },
+      ]);
+    });
+  });
+
+  it('reads an absent Instances block as empty: a lone TerminationProtected is applied', async () => {
+    routeSend({ SetTerminationProtectionCommand: {}, DescribeClusterCommand: clusterOf('WAITING') });
+    const { Instances: _omitted, ...withoutInstances } = BASE_PROPS;
+    const result = await newProvider().update(
+      'MyCluster',
+      CLUSTER_ID,
+      RESOURCE_TYPE,
+      { ...withoutInstances, Instances: { TerminationProtected: true } },
+      withoutInstances
+    );
+    expect(result.wasReplaced).toBe(false);
+    expect(callsOf(SetTerminationProtectionCommand)[0]!.input['TerminationProtected']).toBe(true);
+  });
+
+  it('names the Instances block whole when a side is not an object', async () => {
+    const err = await newProvider()
+      .update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        { ...BASE_PROPS, Instances: 'not-an-object' },
+        { ...BASE_PROPS }
+      )
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      "AWS EMR Cluster's Instances block cannot be updated in place"
+    );
+  });
+
   it('sends SetVisibleToAllUsers on a VisibleToAllUsers change', async () => {
     routeSend({ SetVisibleToAllUsersCommand: {}, DescribeClusterCommand: clusterOf('WAITING') });
     await newProvider().update(
@@ -519,6 +662,623 @@ describe('EMRClusterProvider update', () => {
       newProvider().update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
     ).rejects.toThrow(ResourceUpdateNotSupportedError);
     expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5418: the diff replaces the cluster for a replacing member, so
+  // this refusal is defence in depth and says what CloudFormation does.
+  it('refuses a replacing Instances member as a CloudFormation replacement', async () => {
+    const next = {
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, AdditionalMasterSecurityGroups: ['sg-extra'] },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, { ...BASE_PROPS })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      'Instances.AdditionalMasterSecurityGroups cannot be updated in place — CloudFormation replaces the cluster for this change.'
+    );
+    expect((err as Error).message).toContain('--replace --force-stateful-recreation');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  // go-to-k/cdkd#5422: what CloudFormation applies in place (measured on
+  // #5418) is applied in place, through the group / fleet providers' update().
+  describe('in-place Instances members', () => {
+    const core = (count: number, extra: Record<string, unknown> = {}) => ({
+      InstanceCount: count,
+      InstanceType: 'm5.xlarge',
+      Name: 'Core',
+      ...extra,
+    });
+    const withInstances = (extra: Record<string, unknown>) => ({
+      ...BASE_PROPS,
+      Instances: { ...BASE_PROPS.Instances, ...extra },
+    });
+    const POLICY = {
+      Constraints: { MinCapacity: 1, MaxCapacity: 3 },
+      Rules: [{ Name: 'r', Action: {}, Trigger: {} }],
+    };
+
+    it('resizes the core group with ModifyInstanceGroups and waits for the count', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(2)] },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const result = await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceGroup: core(2) }),
+        withInstances({ CoreInstanceGroup: core(1) })
+      );
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(1);
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input).toEqual({
+        ClusterId: CLUSTER_ID,
+        InstanceGroups: [{ InstanceGroupId: 'ig-core', InstanceCount: 2 }],
+      });
+    });
+
+    it('resizes the TASK group the template names, not another', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [coreGroup(1), taskGroup('ig-t1', 't1', 1), taskGroup('ig-t2', 't2', 3)],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [
+        { InstanceCount: 1, InstanceType: 'm5.xlarge', Name: 't1' },
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Name: 't2' },
+      ];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(3) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand).map((c) => c.input['InstanceGroups'])).toEqual([
+        [{ InstanceGroupId: 'ig-t2', InstanceCount: 3 }],
+      ]);
+    });
+
+    it('refuses, calling nothing that changes AWS, when the named TASK group is not found', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1), taskGroup('ig-t1', 't1', 1)] },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge', Name: 'tx' }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: tasks(2) }),
+          withInstances({ TaskInstanceGroups: tasks(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('found 0 matching TASK instance groups');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('changes nothing in AWS when a later target cannot be found', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(2), taskGroup('ig-t1', 't1', 1)] },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge', Name: 'tx' }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({
+            TerminationProtected: true,
+            UnhealthyNodeReplacement: false,
+            CoreInstanceGroup: core(2),
+            TaskInstanceGroups: tasks(2),
+          }),
+          withInstances({ CoreInstanceGroup: core(1), TaskInstanceGroups: tasks(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      const sent = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+      expect(sent.every((name) => name === 'ListInstanceGroupsCommand')).toBe(true);
+    });
+
+    it('refuses a task group whose Name is a secret reference, before any call that changes AWS', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1), taskGroup('ig-t1', 'batch', 1)] },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const REF = '{{resolve:secretsmanager:group-name:SecretString:name}}';
+      const task = (name: string, count: number) => [
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Name: name },
+      ];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: task('batch', 2) }),
+          withInstances({ TaskInstanceGroups: task(REF, 1) }),
+          { maskSecrets: (text: string) => text.split('batch').join('***') }
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('its Name is a secret reference');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('refuses an unnamed task group whose InstanceType is a secret reference', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [coreGroup(1), { ...taskGroup('ig-t1', 'x', 1), InstanceType: 'm5.large' }],
+        },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const REF = '{{resolve:secretsmanager:group-type:SecretString:type}}';
+      const task = (type: string, count: number) => [{ InstanceCount: count, InstanceType: type }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: task('m5.large', 2) }),
+          withInstances({ TaskInstanceGroups: task(REF, 1) }),
+          { maskSecrets: (text: string) => text.split('m5.large').join('***') }
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('its InstanceType is a secret reference');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('never matches a task group that is shutting down', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-old', 't1', 1), Status: { State: 'SHUTTING_DOWN' } },
+            taskGroup('ig-t1', 't1', 2),
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge', Name: 't1' }];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(2) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-t1', InstanceCount: 2 },
+      ]);
+    });
+
+    it('starts no resize once the shared wait budget is spent', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(2)] },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      let now = 1_000_000;
+      const spy = vi.spyOn(Date, 'now').mockImplementation(() => (now += 10_000));
+      try {
+        const err = await newProvider({ maxWaitMs: 5000 })
+          .update(
+            'MyCluster',
+            CLUSTER_ID,
+            RESOURCE_TYPE,
+            withInstances({ CoreInstanceGroup: core(2) }),
+            withInstances({ CoreInstanceGroup: core(1) })
+          )
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(ProvisioningError);
+        expect((err as Error).message).toContain('the earlier resizes used the whole wait');
+        expect((err as Error).message).not.toContain('Failed to apply');
+        expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('refuses a count that is present but not a number, before any call', async () => {
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: { ...core(1), InstanceCount: { Ref: 'Count' } } }),
+          withInstances({ CoreInstanceGroup: core(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'Instances.CoreInstanceGroup.InstanceCount is not a number'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // CloudFormation fails this removal (raw CFn A/B, go-to-k/cdkd#5422).
+    it('refuses removing a fleet capacity instead of sending 0', async () => {
+      const fleet = (spot?: number) => ({
+        Name: 'Core',
+        TargetOnDemandCapacity: 1,
+        ...(spot !== undefined && { TargetSpotCapacity: spot }),
+        InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge' }],
+      });
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceFleet: fleet() }),
+          withInstances({ CoreInstanceFleet: fleet(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'removing Instances.CoreInstanceFleet.TargetSpotCapacity fails under CloudFormation too'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses removing a group InstanceCount instead of scaling the group to 0', async () => {
+      const { InstanceCount: _count, ...uncounted } = core(1);
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: uncounted }),
+          withInstances({ CoreInstanceGroup: core(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'removing Instances.CoreInstanceGroup.InstanceCount is refused'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('keeps the live size on a rollback replay whose capacity is a masked value', async () => {
+      routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
+      const fleet = (onDemand: unknown) => ({
+        Name: 'Core',
+        TargetOnDemandCapacity: onDemand,
+        InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge' }],
+      });
+      const result = await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceFleet: fleet('***') }),
+        withInstances({ CoreInstanceFleet: fleet(2) }),
+        { replayingState: true }
+      );
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(ModifyInstanceFleetCommand)).toHaveLength(0);
+    });
+
+    it('says a replay skips the AutoScalingPolicy change beside a masked count', async () => {
+      routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
+      const POLICY = { Constraints: { MinCapacity: 1, MaxCapacity: 3 }, Rules: [] };
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceGroup: { ...core(1), InstanceCount: '***', AutoScalingPolicy: POLICY } }),
+        withInstances({ CoreInstanceGroup: core(2) }),
+        { replayingState: true }
+      );
+      expect(providerWarn().some((line) => line.includes("AutoScalingPolicy change is not applied either"))).toBe(true);
+      expect(callsOf(PutAutoScalingPolicyCommand)).toHaveLength(0);
+    });
+
+    it('matches an unnamed SPOT task group by its bid price numerically', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-a', 'a', 1), InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.2' },
+            { ...taskGroup('ig-b', 'b', 3), InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.1' },
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [
+        { InstanceCount: 1, InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.20' },
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Market: 'SPOT', BidPrice: '0.10' },
+      ];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(3) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-b', InstanceCount: 3 },
+      ]);
+    });
+
+    it('tells an unnamed SPOT task group from an ON_DEMAND one of the same type', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-od', 'a', 1), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+            { ...taskGroup('ig-spot', 'b', 4), InstanceType: 'm5.xlarge', Market: 'SPOT' },
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [
+        { InstanceCount: 1, InstanceType: 'm5.xlarge' },
+        { InstanceCount: count, InstanceType: 'm5.xlarge', Market: 'SPOT' },
+      ];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(4) }),
+        withInstances({ TaskInstanceGroups: tasks(2) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-spot', InstanceCount: 4 },
+      ]);
+    });
+
+    it('refuses two indistinguishable unnamed task groups without advising a Name', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-1', 'a', 1), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+            { ...taskGroup('ig-2', 'b', 1), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+          ],
+        },
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge' }];
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ TaskInstanceGroups: tasks(2) }),
+          withInstances({ TaskInstanceGroups: tasks(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain('giving the entry a Name now would replace the cluster');
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('finds an unnamed task group by its instance type', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: {
+          InstanceGroups: [
+            coreGroup(1),
+            { ...taskGroup('ig-small', 'x', 1), InstanceType: 'm5.large', Market: 'ON_DEMAND' },
+            { ...taskGroup('ig-big', 'y', 3), InstanceType: 'm5.xlarge', Market: 'ON_DEMAND' },
+          ],
+        },
+        ModifyInstanceGroupsCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const tasks = (count: number) => [{ InstanceCount: count, InstanceType: 'm5.xlarge' }];
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ TaskInstanceGroups: tasks(3) }),
+        withInstances({ TaskInstanceGroups: tasks(1) })
+      );
+      expect(callsOf(ModifyInstanceGroupsCommand)[0]!.input['InstanceGroups']).toEqual([
+        { InstanceGroupId: 'ig-big', InstanceCount: 3 },
+      ]);
+    });
+
+    it('restates a resize failure for the cluster, naming the Instances path', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1)] },
+        ModifyInstanceGroupsCommand: new Error('boom'),
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: core(2) }),
+          withInstances({ CoreInstanceGroup: core(1) })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain(
+        `Failed to apply Instances.CoreInstanceGroup to EMR cluster ${CLUSTER_ID}: `
+      );
+      expect((err as ProvisioningError).resourceType).toBe(RESOURCE_TYPE);
+    });
+
+    it('puts and removes a core group AutoScalingPolicy', async () => {
+      routeSend({
+        ListInstanceGroupsCommand: { InstanceGroups: [coreGroup(1)] },
+        PutAutoScalingPolicyCommand: {},
+        RemoveAutoScalingPolicyCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceGroup: core(1, { AutoScalingPolicy: POLICY }) }),
+        withInstances({ CoreInstanceGroup: core(1) })
+      );
+      expect(callsOf(PutAutoScalingPolicyCommand)[0]!.input).toEqual({
+        ClusterId: CLUSTER_ID,
+        InstanceGroupId: 'ig-core',
+        AutoScalingPolicy: POLICY,
+      });
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceGroup: core(1) }),
+        withInstances({ CoreInstanceGroup: core(1, { AutoScalingPolicy: POLICY }) })
+      );
+      expect(callsOf(RemoveAutoScalingPolicyCommand)[0]!.input).toEqual({
+        ClusterId: CLUSTER_ID,
+        InstanceGroupId: 'ig-core',
+      });
+      expect(callsOf(ModifyInstanceGroupsCommand)).toHaveLength(0);
+    });
+
+    it('sets UnhealthyNodeReplacement with SetUnhealthyNodeReplacement', async () => {
+      routeSend({
+        SetUnhealthyNodeReplacementCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ UnhealthyNodeReplacement: false }),
+        withInstances({ UnhealthyNodeReplacement: true })
+      );
+      expect(callsOf(SetUnhealthyNodeReplacementCommand)[0]!.input).toEqual({
+        JobFlowIds: [CLUSTER_ID],
+        UnhealthyNodeReplacement: false,
+      });
+    });
+
+    // CloudFormation fails this removal (raw CFn A/B, go-to-k/cdkd#5422).
+    it('refuses removing UnhealthyNodeReplacement before any call', async () => {
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({}),
+          withInstances({ UnhealthyNodeReplacement: false })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain(
+        'removing Instances.UnhealthyNodeReplacement fails under CloudFormation too'
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('names an immutable top-level change before an UnhealthyNodeReplacement removal', async () => {
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          { ...withInstances({}), ReleaseLabel: 'emr-7.10.0' },
+          withInstances({ UnhealthyNodeReplacement: false })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('ReleaseLabel is immutable');
+    });
+
+    it('keeps the live UnhealthyNodeReplacement on a rollback replay removing it', async () => {
+      routeSend({ DescribeClusterCommand: clusterOf('WAITING') });
+      const result = await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({}),
+        withInstances({ UnhealthyNodeReplacement: false }),
+        { replayingState: true }
+      );
+      expect(result.wasReplaced).toBe(false);
+      expect(callsOf(SetUnhealthyNodeReplacementCommand)).toHaveLength(0);
+    });
+
+    it('resizes a core fleet with ModifyInstanceFleet, sending both capacities', async () => {
+      routeSend({
+        ListInstanceFleetsCommand: {
+          InstanceFleets: [
+            {
+              Id: 'if-core',
+              InstanceFleetType: 'CORE',
+              Name: 'Core',
+              Status: { State: 'RUNNING' },
+              ProvisionedOnDemandCapacity: 2,
+              ProvisionedSpotCapacity: 0,
+            },
+          ],
+        },
+        ModifyInstanceFleetCommand: {},
+        DescribeClusterCommand: clusterOf('WAITING'),
+      });
+      const fleet = (onDemand: number) => ({
+        Name: 'Core',
+        TargetOnDemandCapacity: onDemand,
+        InstanceTypeConfigs: [{ InstanceType: 'm5.xlarge' }],
+      });
+      await newProvider().update(
+        'MyCluster',
+        CLUSTER_ID,
+        RESOURCE_TYPE,
+        withInstances({ CoreInstanceFleet: fleet(2) }),
+        withInstances({ CoreInstanceFleet: fleet(1) })
+      );
+      expect(callsOf(ModifyInstanceFleetCommand)[0]!.input).toEqual({
+        ClusterId: CLUSTER_ID,
+        InstanceFleet: { InstanceFleetId: 'if-core', TargetOnDemandCapacity: 2, TargetSpotCapacity: 0 },
+      });
+    });
+
+    it('refuses before any call when a replacing member moved beside an in-place one', async () => {
+      const err = await newProvider()
+        .update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          withInstances({ CoreInstanceGroup: core(2), Ec2KeyName: 'k2' }),
+          withInstances({ CoreInstanceGroup: core(1), Ec2KeyName: 'k1' })
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((err as Error).message).toContain('Instances.Ec2KeyName cannot be updated in place');
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+  });
+
+  it('names the replacing member, not an in-place one moved beside it', async () => {
+    const core = { InstanceCount: 1, InstanceType: 'm5.xlarge', Name: 'Core' };
+    const prev = { ...BASE_PROPS, Instances: { CoreInstanceGroup: core, ...BASE_PROPS.Instances } };
+    const next = {
+      ...BASE_PROPS,
+      Instances: {
+        CoreInstanceGroup: { ...core, InstanceCount: 2 },
+        ...BASE_PROPS.Instances,
+        AdditionalMasterSecurityGroups: ['sg-extra'],
+      },
+    };
+    const err = await newProvider()
+      .update('MyCluster', CLUSTER_ID, RESOURCE_TYPE, next, prev)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect((err as Error).message).toContain(
+      'Instances.AdditionalMasterSecurityGroups cannot be updated in place'
+    );
+    expect((err as Error).message).not.toContain('Instances.CoreInstanceGroup');
   });
 
   it('refuses an immutable top-level property change with a --replace pointer', async () => {

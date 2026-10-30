@@ -49,6 +49,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { describeJsonParseFailure, utf8ByteLength } from '../utils/json-parse-failure.js';
 import { displayIdent, displayStackName } from '../utils/display-safe.js';
 import { expectedOwnerParam } from '../utils/expected-bucket-owner.js';
 import { rebuildClientForBucketRegion } from '../utils/bucket-region-client.js';
@@ -83,61 +84,6 @@ function mapsEqual(a: Map<string, ExportIndexEntry>, b: Map<string, ExportIndexE
     }
   }
   return true;
-}
-
-/**
- * Describe a `JSON.parse` failure WITHOUT echoing the body (issue
- * [#2667](https://github.com/go-to-k/cdkd/issues/2667) review).
- *
- * V8 embeds a window of the INPUT in its parse error, so interpolating
- * `err.message` republishes whatever bytes sat near the syntax error. Measured
- * on node v24.19.0:
- *
- * ```
- * JSON.parse('{"exports":{"K":{"value":hunter2SECRET}}}')
- * -> Unexpected token 'h', ..."K":{"value":hunter2SEC"... is not valid JSON
- * ```
- *
- * This index holds resolved Output VALUES, and for the unscrubbed state
- * `cdkd scrub` targets those are exactly the plaintext — which then reaches a
- * `logger.error` and the command's failure message, i.e. `--dry-run --fail` CI
- * logs. Same class as the `import.ts` parse-snippet leak issue
- * [#2829](https://github.com/go-to-k/cdkd/issues/2829) closed.
- *
- * What survives is the SIZE, plus the OFFSET WHEN V8 STATES ONE — neither is a
- * function of the body's content, and both help an operator holding the object
- * locate the damage. The offset is extracted by pattern rather than passed
- * through, so a message worded differently yields no offset instead of leaking
- * the rest of the sentence. The two numbers are in DIFFERENT UNITS and the
- * message says so: V8 counts `at position` in UTF-16 code units while the size
- * is UTF-8 bytes, so `'{ n\u00f6t json'` reports position 2 and 11 bytes. Measured on node v24.19.0: the `Expected ...`
- * family carries `at position N` and the `Unexpected token 'X', ...snippet...`
- * family — the one that embeds the body, i.e. the case this exists for — does
- * NOT, so the size is what is always present and the offset is a bonus. Both
- * arms are driven by tests.
- */
-function describeParseFailure(err: unknown, bytes: number): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const at = /at position (\d+)/.exec(raw);
-  // `at position` is V8's UTF-16 CODE-UNIT index, not a byte offset -- named
-  // in the rendered text because the size beside it is UTF-8 bytes, and two
-  // numbers in different units with no label is how an operator seeks to the
-  // wrong place in the object.
-  const where = at ? ` at code-unit position ${at[1]}` : '';
-  return `invalid JSON${where}; ${bytes} byte(s) read`;
-}
-
-/**
- * UTF-8 byte length of a decoded body, for {@link describeParseFailure}.
- *
- * `body.length` counts UTF-16 CODE UNITS, so reporting it as "byte(s)" is
- * wrong for any non-ASCII index — an export name outside the BMP counts 2
- * where the object holds 4 (issue #2667 review). The number is meant to help
- * an operator match the message against the object S3 holds, so it has to be
- * the same unit S3 reports.
- */
-function utf8ByteLength(body: string): number {
-  return Buffer.byteLength(body, 'utf8');
 }
 
 /**
@@ -438,7 +384,7 @@ export class ExportIndexStore {
     if (outcome.kind === 'corrupt') {
       throw new Error(
         `Exports index at ${this.indexKey()} could not be parsed ` +
-          `(${describeParseFailure(outcome.error, outcome.bytes)}). ` +
+          `(${describeJsonParseFailure(outcome.error, outcome.bytes)}). ` +
           `Its contents were NOT examined.`
       );
     }
@@ -603,7 +549,7 @@ export class ExportIndexStore {
       }
       if (outcome.kind === 'corrupt') {
         this.logger.warn(
-          `Exports index corrupt (${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}); rebuilding from state.json files`
+          `Exports index corrupt (${describeJsonParseFailure(outcome.error, outcome.bytes)}); rebuilding from state.json files`
         );
         await this.rebuild();
         return;

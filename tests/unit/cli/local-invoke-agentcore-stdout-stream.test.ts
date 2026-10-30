@@ -1225,4 +1225,72 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
     expect(stderr.split(warnNeedle).length - 1).toBe(1);
     expect(stdout).not.toContain(warnNeedle);
   });
+
+  /**
+   * Issue [#3361](https://github.com/go-to-k/cdkd/issues/3361): the teardown's
+   * handlers rendered the failure with `err instanceof Error ? err.message :
+   * String(err)`, and `String()` THROWS for a null-prototype object. The
+   * rendering throw replaced the failure being reported, so the degradation
+   * the handler exists for died with it.
+   */
+  describe('a failure String() cannot convert does not stop the teardown (issue #3361)', () => {
+    const PLACEHOLDER = 'a value that could not be converted to text';
+
+    async function runAgentCoreNoExit(
+      args: string[]
+    ): Promise<Streams & { exitCodes: unknown[] }> {
+      const exitCodes: unknown[] = [];
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        exitCodes.push(code);
+        return undefined as never;
+      }) as typeof process.exit);
+      try {
+        return { ...(await runAgentCore(args)), exitCodes };
+      } finally {
+        exitSpy.mockRestore();
+      }
+    }
+
+    it('a log drain rejecting with one still removes the container and writes the response', async () => {
+      // `drainLogs`'s `.catch` threw on this value, so the drain REJECTED: the
+      // response was never written, and `cleanup()` stopped at its own `await
+      // drainLogs()`, before `docker rm -f`.
+      mocks.killAndDrainContainerLogs.mockRejectedValue(Object.create(null));
+
+      const { stdout, stderr, error, exitCodes } = await runAgentCoreNoExit([
+        'AgentStack:EchoAgent',
+        '--no-pull',
+        '--verbose',
+      ]);
+
+      expect(error).toBeUndefined();
+      expect(exitCodes).toEqual([]);
+      expect(mocks.removeContainer).toHaveBeenCalledWith('cdkd-agentcore-lane2410');
+      expect(stdout).toContain(`${AGENT_PAYLOAD}\n`);
+      expect(stdout + stderr).toContain(`container log drain failed: ${PLACEHOLDER}`);
+    });
+
+    it('a docker rm rejecting with one is reported, and the rest of the cleanup still runs', async () => {
+      // The `removeContainer` catch threw on this value, which aborted
+      // `cleanup()` before the credentials dispose and the stdio flush, and
+      // surfaced only as a `cleanup failed:` line naming the converter's own
+      // `TypeError`.
+      mocks.removeContainer.mockRejectedValue(Object.create(null));
+
+      const { stdout, stderr, error, exitCodes } = await runAgentCoreNoExit([
+        'AgentStack:EchoAgent',
+        '--no-pull',
+        '--verbose',
+      ]);
+
+      expect(error).toBeUndefined();
+      expect(exitCodes).toEqual([]);
+      const transcript = stdout + stderr;
+      expect(transcript).toContain(
+        `removeContainer(cdkd-agentcore-lane2410) failed: ${PLACEHOLDER}`
+      );
+      expect(transcript).not.toContain('cleanup failed:');
+      expect(lastSeq).toContain('flush');
+    });
+  });
 });

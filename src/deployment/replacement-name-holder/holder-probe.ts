@@ -1,4 +1,4 @@
-import { explicitNamePropertyFor, generateResourceName } from '../../provisioning/resource-name.js';
+import { explicitNamePropertyFor, generatedNameFor } from '../../provisioning/resource-name.js';
 import { displayIdent } from '../../utils/display-safe.js';
 import {
   NOT_NAME_KEYED_TYPES,
@@ -247,71 +247,54 @@ export function sentIdentifierIs(
 }
 
 /**
- * Types whose SDK provider mints a nameless create's name with its OWN call to
- * `generateResourceName` — a wrap or options `applyDefaultNameForFallback` does
- * not reproduce, so they stay out of `GENERATED_NAME_VERBATIM`. The name is
- * derived here from the logical id in the create's async scope (stack name),
- * exactly as the provider does; `source` is the provider's expression, which
- * the test pins against the provider file. Only the holder's physical id
- * naming the derived name proves it.
+ * Types whose SDK provider names a nameless create with `generatedNameFor` --
+ * the rule `applyDefaultNameForFallback` fills too, but whose names were never
+ * audited onto `GENERATED_NAME_VERBATIM` (a legacy stack's Cloud Control name
+ * can differ, go-to-k/cdkd#5095), so they count on the deploy side only. The
+ * name is derived here from the logical id in the create's async scope (stack
+ * name and instance id), exactly as the provider does; `source` is the
+ * provider's expression, which the test pins against the provider file. Only
+ * the holder's physical id naming the derived name proves it.
  */
+const derivedEntry = (
+  resourceType: string,
+  file: string
+): { readonly file: string; readonly source: string; derive(logicalId: string): string } => ({
+  file,
+  source: `generatedNameFor('${resourceType}', logicalId)`,
+  derive: (id) => generatedNameFor(resourceType, id),
+});
+
 export const DERIVED_GENERATED_NAMES: Readonly<
   Record<
     string,
     { readonly file: string; readonly source: string; derive(logicalId: string): string }
   >
 > = {
-  'AWS::AutoScaling::AutoScalingGroup': {
-    file: 'asg-provider.ts',
-    source: 'generateResourceName(logicalId, { maxLength: 255 })',
-    derive: (id) => generateResourceName(id, { maxLength: 255 }),
-  },
-  'AWS::CodeCommit::Repository': {
-    file: 'codecommit-repository-provider.ts',
-    source: 'generateResourceName(logicalId, { maxLength: 100 })',
-    derive: (id) => generateResourceName(id, { maxLength: 100 }),
-  },
-  'AWS::DynamoDB::GlobalTable': {
-    file: 'dynamodb-globaltable-provider.ts',
-    source: 'generateResourceName(logicalId, { maxLength: 255 })',
-    derive: (id) => generateResourceName(id, { maxLength: 255 }),
-  },
-  'AWS::Logs::LogGroup': {
-    file: 'logs-loggroup-provider.ts',
-    source:
-      '`/cdkd/${generateResourceName(logicalId, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`',
-    derive: (id) =>
-      `/cdkd/${generateResourceName(id, { maxLength: 506, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`,
-  },
-  'AWS::RDS::DBProxy': {
-    file: 'rds-dbproxy-provider.ts',
-    source: 'generateResourceName(logicalId, { maxLength: 64 })',
-    derive: (id) => generateResourceName(id, { maxLength: 64 }),
-  },
-  'AWS::RDS::DBProxyEndpoint': {
-    file: 'rds-dbproxy-endpoint-provider.ts',
-    source: 'generateResourceName(logicalId, { maxLength: 64 })',
-    derive: (id) => generateResourceName(id, { maxLength: 64 }),
-  },
-  'AWS::S3::Bucket': {
-    file: 's3-bucket-provider.ts',
-    source:
-      'generateResourceName(logicalId, {\n      maxLength: 63,\n      lowercase: true,\n      allowedPattern: /[^a-z0-9.-]/g,\n    })',
-    derive: (id) =>
-      generateResourceName(id, { maxLength: 63, lowercase: true, allowedPattern: /[^a-z0-9.-]/g }),
-  },
-  'AWS::Scheduler::Schedule': {
-    file: 'scheduler-schedule-provider.ts',
-    source: 'generateResourceName(logicalId, { maxLength: 64 })',
-    derive: (id) => generateResourceName(id, { maxLength: 64 }),
-  },
-  'AWS::SSM::Parameter': {
-    file: 'ssm-parameter-provider.ts',
-    source:
-      '`/${generateResourceName(logicalId, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`',
-    derive: (id) =>
-      `/${generateResourceName(id, { maxLength: 1023, allowedPattern: /[^a-zA-Z0-9-/_]/g })}`,
-  },
+  'AWS::AutoScaling::AutoScalingGroup': derivedEntry(
+    'AWS::AutoScaling::AutoScalingGroup',
+    'asg-provider.ts'
+  ),
+  'AWS::CodeCommit::Repository': derivedEntry(
+    'AWS::CodeCommit::Repository',
+    'codecommit-repository-provider.ts'
+  ),
+  'AWS::DynamoDB::GlobalTable': derivedEntry(
+    'AWS::DynamoDB::GlobalTable',
+    'dynamodb-globaltable-provider.ts'
+  ),
+  'AWS::Logs::LogGroup': derivedEntry('AWS::Logs::LogGroup', 'logs-loggroup-provider.ts'),
+  'AWS::RDS::DBProxy': derivedEntry('AWS::RDS::DBProxy', 'rds-dbproxy-provider.ts'),
+  'AWS::RDS::DBProxyEndpoint': derivedEntry(
+    'AWS::RDS::DBProxyEndpoint',
+    'rds-dbproxy-endpoint-provider.ts'
+  ),
+  'AWS::S3::Bucket': derivedEntry('AWS::S3::Bucket', 's3-bucket-provider.ts'),
+  'AWS::Scheduler::Schedule': derivedEntry(
+    'AWS::Scheduler::Schedule',
+    'scheduler-schedule-provider.ts'
+  ),
+  'AWS::SSM::Parameter': derivedEntry('AWS::SSM::Parameter', 'ssm-parameter-provider.ts'),
 };
 
 /** The derived-generation table, for the test that pins it to the providers. */

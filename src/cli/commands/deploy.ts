@@ -16,6 +16,7 @@ import {
   type ResourceTimeoutOption,
 } from '../options.js';
 import { getLogger } from '../../utils/logger.js';
+import { PhaseClock, renderPhaseTimings, timePhase } from '../../utils/phase-timings.js';
 import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { forwardSigtermToSigint } from '../../utils/interrupt-signals.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
@@ -69,7 +70,7 @@ import { ExportIndexStore } from '../../state/export-index-store.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { DagBuilder } from '../../analyzer/dag-builder.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
-import { inferCrossStackStackDeps } from '../../analyzer/cross-stack-deps.js';
+import { inferCrossStackDepsByStack } from '../../analyzer/cross-stack-deps.js';
 import {
   type RoleArnReference,
   producerLookupOver,
@@ -124,6 +125,8 @@ import {
   stacksNoLongerSelected,
   renderAllNoTopLevelStacks,
   renderNoStackMatch,
+  refuseStackNameRegionCollisions,
+  stacksForDependency,
 } from '../stack-matcher.js';
 import { createPrefixMigrationGate } from './prefix-migration-check.js';
 import {
@@ -188,9 +191,14 @@ async function deployCommand(
     requireApproval?: RequireApprovalLevel;
   }
 ): Promise<void> {
+  // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1. The first lap runs
+  // from the process's start, so it holds Node's startup and the module load.
+  const runClock = new PhaseClock('run', { fromProcessStart: true });
+  runClock.lap('node startup + module load');
   // Awaited first, so provider construction below stays synchronous once the
   // stack client scope / globals are set (see `loadProviderClasses`).
   const providerClasses = await loadProviderClasses();
+  runClock.lap('provider load');
   const logger = getLogger();
 
   if (options.verbose) {
@@ -416,6 +424,25 @@ async function deployCommand(
     return { stateBucket, preflightStateBackend, exportIndexStore };
   })();
 
+  // The account id the asset destinations are named from. It needs only the
+  // region and the credentials, so it is asked beside synthesis rather than
+  // after it (go-to-k/cdkd#5200); awaited where it is used, so a failure is
+  // reported at the same point as before.
+  const callerIdentityPromise = (async () => {
+    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
+    const stsClient = new STSClient({
+      ...awsClientDefaults(),
+      region,
+    });
+    try {
+      return await stsClient.send(new GetCallerIdentityCommand({}));
+    } finally {
+      stsClient.destroy();
+    }
+  })();
+  // Handled where it is awaited; a run that fails before then never reads it.
+  callerIdentityPromise.catch(() => undefined);
+
   let deployInterrupted = false;
   const topLevelSigintHandler = () => {
     if (deployInterrupted) {
@@ -479,10 +506,14 @@ async function deployCommand(
       // slow this deploy with a CFn round-trip.
       deferMacroExpansion: true,
     };
+    runClock.lap('config, region, credentials');
     const [result, statePrep] = await Promise.all([
-      synthesizer.synthesize(synthOptions),
-      statePrepPromise,
+      timePhase('run', 'synth (beside the state bucket prep)', () =>
+        synthesizer.synthesize(synthOptions)
+      ),
+      timePhase('run', 'state bucket prep (beside synth)', () => statePrepPromise),
     ]);
+    runClock.lap('synth + state bucket prep');
     const { stateBucket, preflightStateBackend, exportIndexStore } = statePrep;
     preflightBackendForCleanup = preflightStateBackend;
     // The deferred macro-expander (expandMacrosForStacks, below) needs the
@@ -525,7 +556,10 @@ async function deployCommand(
       allLeftOutStageStacks = inStages;
       targetStacks = topLevel;
     } else if (stackPatterns.length > 0) {
-      targetStacks = matchStacks(allStacks, stackPatterns);
+      // Every selected stack, two sharing a physical name included: one Stage
+      // per region under a shared stackName is two stacks, and the AWS CDK
+      // CLI deploys both (#5176). A shared name AND region is refused below.
+      targetStacks = matchStacks(allStacks, stackPatterns, { dedupe: 'identity' });
     } else if (allStacks.length === 1) {
       // Single stack: auto-select
       targetStacks = allStacks;
@@ -560,17 +594,31 @@ async function deployCommand(
     // The same walk collects every `Fn::GetStackOutput` carrying a `RoleArn`
     // (most apps: none), for the cross-account pre-flight below.
     const roleArnReferences: RoleArnReference[] = [];
-    const inferredCrossStackDeps = inferCrossStackStackDeps(allStacks, {
+    // Keyed by stack OBJECT, and an inferred producer is the stack that
+    // EXPORTS the name (or the one `Fn::GetStackOutput` names, in its region),
+    // never one merely found by name: two Stages share names (#5176).
+    const inferredCrossStackDeps = inferCrossStackDepsByStack(allStacks, {
       onRoleArnReference: (consumer, args) => roleArnReferences.push({ consumer, args }),
     });
     // Consulted lazily, by a `RoleArn`-carrying reference only.
     const producerLookup = producerLookupOver(allStacks);
-    const effectiveStackDeps = (stackName: string, deps: readonly string[]): Set<string> => {
-      const union = new Set<string>(deps);
-      for (const producer of inferredCrossStackDeps.get(stackName) ?? []) {
-        union.add(producer);
+    type AppStack = (typeof allStacks)[number];
+    // A stack's producers among `pool`: its manifest dependencies (by name,
+    // resolved to the dependent's own Stage) plus the inferred producers.
+    const dependencyStacks = (
+      stack: AppStack,
+      inferred: Map<AppStack, Set<AppStack>>,
+      pool: readonly AppStack[]
+    ): Set<AppStack> => {
+      const deps = new Set<AppStack>();
+      for (const depName of stack.dependencyNames) {
+        for (const dep of stacksForDependency(depName, stack, pool)) deps.add(dep);
       }
-      return union;
+      const inPool = new Set(pool);
+      for (const producer of inferred.get(stack) ?? []) {
+        if (producer !== stack && inPool.has(producer)) deps.add(producer);
+      }
+      return deps;
     };
 
     // STRONG-only edges (CDK manifest deps + `Fn::ImportValue`) for the
@@ -583,48 +631,53 @@ async function deployCommand(
     // ordering further down still uses the full (strong + weak) set, so when a
     // producer IS in the deploy set it is correctly ordered before its
     // GetStackOutput consumer.
-    const inferredStrongCrossStackDeps = inferCrossStackStackDeps(allStacks, {
+    const inferredStrongCrossStackDeps = inferCrossStackDepsByStack(allStacks, {
       kinds: ['ImportValue'],
     });
-    const effectiveStrongStackDeps = (stackName: string, deps: readonly string[]): Set<string> => {
-      const union = new Set<string>(deps);
-      for (const producer of inferredStrongCrossStackDeps.get(stackName) ?? []) {
-        union.add(producer);
-      }
-      return union;
-    };
 
     // Auto-include dependency stacks (CDK CLI compatible behavior)
     // When deploying StackA that depends on StackB, also deploy StackB first.
     // Use -e / --exclusively to skip this and deploy only the requested stacks.
     if (!options.exclusively) {
-      const targetNames = new Set(targetStacks.map((s) => s.stackName));
-      const allStackMap = new Map(allStacks.map((s) => [s.stackName, s]));
+      // By stack OBJECT, not name: a dependency name two Stages share resolves
+      // to the producer in the dependent's own Stage (#5176).
+      const included = new Set(targetStacks);
 
-      const addDependencies = (stackName: string): void => {
-        const stack = allStackMap.get(stackName);
-        if (!stack) return;
-        for (const depName of effectiveStrongStackDeps(stackName, stack.dependencyNames)) {
-          if (!targetNames.has(depName)) {
-            const depStack = allStackMap.get(depName);
-            if (depStack) {
-              targetNames.add(depName);
-              targetStacks.push(depStack);
-              logger.debug(
-                `Auto-including dependency stack: ${depName} (required by ${stackName})`
-              );
-              addDependencies(depName); // Recursive
-            }
-          }
+      const addDependencies = (stack: (typeof allStacks)[number]): void => {
+        for (const depStack of dependencyStacks(stack, inferredStrongCrossStackDeps, allStacks)) {
+          if (included.has(depStack)) continue;
+          included.add(depStack);
+          targetStacks.push(depStack);
+          logger.debug(
+            `Auto-including dependency stack: ${depStack.stackName} (required by ${stack.stackName})`
+          );
+          addDependencies(depStack); // Recursive
         }
       };
 
       for (const stack of [...targetStacks]) {
-        addDependencies(stack.stackName);
+        addDependencies(stack);
       }
     }
+    // A selected stack and another stack of the app with one physical name and
+    // one region (and, for an unselected one, a possible shared account; two
+    // selected stacks always share the run's) use one CloudFormation stack and state record:
+    // deploying one overwrites the other. Checked against the unselected app
+    // stacks of a selected name that pin a region too, so a selected stack
+    // never lands on such a stack's record (#5176). An unselected env-agnostic
+    // stack is not: where it lives depends on the run that deployed it. Refused
+    // here, before any per-stack AWS call, for the regions the synthesized app
+    // pins; a stack without `env.region` is checked again once its region is
+    // resolved below.
+    const selectedNames = new Set(targetStacks.map((s) => s.stackName));
+    const selectedSet = new Set(targetStacks);
+    const sameNamedAppStacks = allStacks.filter(
+      (s) => selectedSet.has(s) || (selectedNames.has(s.stackName) && s.region !== undefined)
+    );
+    refuseStackNameRegionCollisions(sameNamedAppStacks, (s) => s.region, selectedSet);
+    const deployedStacks = new Set(targetStacks);
     const deployedNames = new Set(targetStacks.map((s) => s.stackName));
-    const leftOut = allLeftOutStageStacks.filter((s) => !deployedNames.has(s.stackName));
+    const leftOut = allLeftOutStageStacks.filter((s) => !deployedStacks.has(s));
     if (leftOut.length > 0) logger.warn(renderAllLeftOutStageStacks(leftOut));
     if (!options.all && stackPatterns.length > 0) {
       // A pattern that used to select a stack by a physical-name wildcard and
@@ -698,12 +751,21 @@ async function deployCommand(
       logger,
       siblings: allStacks.filter((s) => !s.region).map((s) => s.stackName),
     });
+    // Keyed by stack OBJECT: two stacks sharing a name in different regions
+    // each keep their own (#5176).
     const stackRegions = new Map(
       await Promise.all(
-        targetStacks.map(
-          async (s) => [s.stackName, await regionForStack(s.stackName, s.region)] as const
-        )
+        targetStacks.map(async (s) => [s, await regionForStack(s.stackName, s.region)] as const)
       )
+    );
+    // The resolved regions: an env-agnostic stack may land in the region
+    // another stack of its name pins, selected or not -- the #2100 hold puts it
+    // on us-east-1 when a record of its name is there, which can be a sibling
+    // Stage's.
+    refuseStackNameRegionCollisions(
+      sameNamedAppStacks,
+      (s) => stackRegions.get(s) ?? s.region,
+      selectedSet
     );
     const crossPrefixGuard = new CrossPrefixGuard(preflightStateBackend, {
       readOnly: options.dryRun === true,
@@ -720,17 +782,13 @@ async function deployCommand(
     // macro injecting an ImportValue) no longer contributes an
     // inferred edge — expansion requires selection, which requires the
     // inference, so the cycle is broken in favor of selection scoping.
+    runClock.lap('stack selection, stack regions');
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
+    runClock.lap('macro expansion');
 
     // 3. Build work graph: asset-publish → stack deploy (DAG)
-    const { STSClient, GetCallerIdentityCommand } = await import('@aws-sdk/client-sts');
-    const stsClient = new STSClient({
-      ...awsClientDefaults(),
-      region,
-    });
-    const callerIdentity = await stsClient.send(new GetCallerIdentityCommand({}));
-    const accountId = callerIdentity.Account!;
-    stsClient.destroy();
+    const accountId = (await callerIdentityPromise).Account!;
+    runClock.lap('caller identity');
 
     const assetPublisher = new AssetPublisher();
     // Issue #1002 — per-region asset-mode detection (legacy vs cdkd-assets).
@@ -789,14 +847,25 @@ async function deployCommand(
 
     // Build work graph
     const workGraph = new WorkGraph();
-    const stackMap = new Map(targetStacks.map((s) => [s.stackName, s]));
+    // A stack's work-graph key: its physical name, plus its region when
+    // another stack in this deploy shares that name (#5176). The collision
+    // refusal above makes (name, region) unique, and a deploy without a
+    // shared name keeps the node ids it always had.
+    const sharedNames = new Set(
+      targetStacks.map((s) => s.stackName).filter((name, i, names) => names.indexOf(name) !== i)
+    );
+    const graphKey = (s: (typeof targetStacks)[number]): string =>
+      sharedNames.has(s.stackName)
+        ? `${s.stackName}@${stackRegions.get(s) ?? deployStackRegion(s, baseRegion)}`
+        : s.stackName;
     // Issue #1002 PR 2 — per-stack §6 mapping table for stacks whose region
     // is in cdkd-assets mode. Consumed by the deploy engine's
-    // post-resolution audit + the NestedStackProvider context below.
-    const stackRedirects = new Map<string, AssetRedirectMap>();
+    // post-resolution audit + the NestedStackProvider context below. Keyed
+    // by stack object: two regions' asset storage differ (#5176).
+    const stackRedirects = new Map<(typeof targetStacks)[number], AssetRedirectMap>();
 
     for (const stack of targetStacks) {
-      const stackNodeId = `stack:${stack.stackName}`;
+      const stackNodeId = `stack:${graphKey(stack)}`;
       const stackDeps = new Set<string>();
 
       // Asset-mode resolution + §6 mapping table + §7 template rewrite +
@@ -809,8 +878,7 @@ async function deployCommand(
       // opted in, so skipping the rewrite would deploy split-brain
       // references that the audit then rejects.
       if (stack.assetManifestPath) {
-        const assetRegion =
-          stackRegions.get(stack.stackName) ?? deployStackRegion(stack, baseRegion);
+        const assetRegion = stackRegions.get(stack) ?? deployStackRegion(stack, baseRegion);
         const manifest = loadPublishableAssetManifest(stack.assetManifestPath);
         if (manifest) {
           // The RAW spelling travels to the marker read (its second probe is what
@@ -826,7 +894,7 @@ async function deployCommand(
           if (assetMode.mode === 'cdkd-assets') {
             redirect = buildAssetRedirectMap(manifest, assetMode.marker, accountId, assetRegion);
             if (redirect.entries.length > 0) {
-              stackRedirects.set(stack.stackName, redirect);
+              stackRedirects.set(stack, redirect);
               const rewritten = rewriteTemplateAssetReferences(stack.template, redirect);
               logger.debug(
                 `Rewrote ${rewritten} asset reference(s) to cdkd asset storage ` +
@@ -842,7 +910,7 @@ async function deployCommand(
               accountId,
               region: assetRegion,
               ...(options.profile && { profile: options.profile }),
-              nodePrefix: `${stack.stackName}:`,
+              nodePrefix: `${graphKey(stack)}:`,
               ...(redirect && { redirect }),
               // The app's outdir, NOT the manifest's directory: a Stage's
               // assets are staged into the app root and its `source.path` is
@@ -859,12 +927,10 @@ async function deployCommand(
       // Add inter-stack dependencies: the UNION of CDK manifest deps
       // (`dependencyNames`) and inferred raw cross-stack references, so a
       // consumer waits for its producer even without an explicit
-      // `addDependency`. Both are guarded by `stackMap.has(...)` so only
-      // edges between stacks in this deploy set are added.
-      for (const depName of effectiveStackDeps(stack.stackName, stack.dependencyNames)) {
-        if (stackMap.has(depName)) {
-          stackDeps.add(`stack:${depName}`);
-        }
+      // `addDependency`. Only edges between stacks in this deploy set are
+      // added, each to the producer the dependent's Stage holds (#5176).
+      for (const depStack of dependencyStacks(stack, inferredCrossStackDeps, targetStacks)) {
+        stackDeps.add(`stack:${graphKey(depStack)}`);
       }
 
       workGraph.addNode({
@@ -918,7 +984,7 @@ async function deployCommand(
       // Wrap the entire per-stack deploy body in withSkipPrefix so every
       // `generateResourceName(name, { userSupplied: true })` call inside
       // the provider chain sees the resolved flag via AsyncLocalStorage.
-      // The inner `withStackName(...)` lives in DeployEngine.deploy; the
+      // The inner `withStackScope(...)` lives in DeployEngine.deploy; the
       // two stores are independent so order does not matter, but
       // outer-skipPrefix / inner-stackName keeps the call-site readable.
       return withSkipPrefix(skipPrefix, () => runStackInner(stackInfo));
@@ -936,8 +1002,7 @@ async function deployCommand(
           `Deploy interrupted before stack '${stackInfo.stackName}' started — not starting it.`
         );
       }
-      const stackRegion =
-        stackRegions.get(stackInfo.stackName) ?? deployStackRegion(stackInfo, baseRegion);
+      const stackRegion = stackRegions.get(stackInfo) ?? deployStackRegion(stackInfo, baseRegion);
 
       logger.info(
         `\n${cyan('Deploying stack:')} ${bold(cyan(stackInfo.stackName))}${stackRegion !== baseRegion ? gray(` (region: ${stackRegion})`) : ''}`
@@ -1221,7 +1286,7 @@ async function deployCommand(
         // Issue #1002 PR 2 — thread the stack's §6 mapping table into the
         // engine (post-resolution audit) and the nested-stack context
         // (child-template rewrite). Undefined in legacy mode.
-        const assetRedirect = stackRedirects.get(stackInfo.stackName);
+        const assetRedirect = stackRedirects.get(stackInfo);
 
         const deployEngineOptions: DeployEngineOptions = {
           concurrency: options.concurrency,
@@ -1272,6 +1337,8 @@ async function deployCommand(
             resourceTimeoutByType: options.resourceTimeout.perTypeMs,
           }),
           ...(approveDeployment && { requireApproval, approveDeployment }),
+          // go-to-k/cdkd#5238: recorded so `cdkd state destroy` can honor it.
+          ...(stackInfo.terminationProtection === true && { terminationProtection: true }),
         };
 
         const stackDeployEngine = new DeployEngine(
@@ -1586,6 +1653,7 @@ async function deployCommand(
       }
     }
 
+    runClock.lap('work graph build, recreate checks');
     // Execute work graph
     await workGraph.execute(
       {
@@ -1595,7 +1663,7 @@ async function deployCommand(
       },
       async (node) => {
         if (node.type === 'asset-build' || node.type === 'asset-publish') {
-          await assetPublisher.executeNode(node);
+          await timePhase('run', node.type, () => assetPublisher.executeNode(node), node.id);
         } else {
           const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };
 
@@ -1647,10 +1715,13 @@ async function deployCommand(
       );
     }
   } finally {
+    runClock.lap('assets + stacks, summary');
     unforwardSigterm();
     process.removeListener('SIGINT', topLevelSigintHandler);
     awsClients.destroy();
     preflightBackendForCleanup?.destroyClient();
+    // go-to-k/cdkd#5200: on every path, so a failed deploy reports too.
+    for (const line of renderPhaseTimings()) logger.info(line);
   }
 }
 

@@ -12,12 +12,16 @@ import {
   type RequestCertificateRequest,
   type CertificateOptions,
 } from '@aws-sdk/client-acm';
+import { ChangeResourceRecordSetsCommand } from '@aws-sdk/client-route-53';
 import { getLogger } from '../../utils/logger.js';
+import { displayIdent, safeMsg } from '../../utils/display-safe.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { markNotGone } from '../not-gone.js';
 import { isPlainImportValue, normalizeAwsTagsToCfn, VALUE_NOT_SHOWN } from '../import-helpers.js';
 import { logicalIdShown } from '../composite-id.js';
 import { commandHole } from '../../utils/pasteable-command.js';
@@ -84,8 +88,37 @@ function isCertificateInUseError(error: unknown): boolean {
   // class. `/in use/i`, NOT `/still in use/`: ACM's own wording is
   // `Certificate arn:... is in use.` -- the stricter phrase matched nothing AWS
   // actually sends.
-  const message = error instanceof Error ? error.message : String(error);
+  // `.detail`, byte-identical to the `instanceof Error ? .message : String()`
+  // ternary, but it cannot throw on a value `String()` cannot convert (a
+  // null-prototype object). Defence in depth: this runs inside the
+  // replacement's catch, whose `'partial'` outcome an out-throw would discard,
+  // but `delete()` wraps every failure in a `ProvisioningError` today, so no
+  // non-`Error` reaches it (go-to-k/cdkd#3361).
+  const message = describeAwsFailure(error).detail;
   return /ResourceInUseException|in use/i.test(message);
+}
+
+/** TTL CloudFormation gives the DNS validation record it writes. */
+const VALIDATION_RECORD_TTL = 300;
+
+/**
+ * The hosted zone to write each domain's DNS validation record into, from the
+ * template's `DomainValidationOptions[].HostedZoneId`. Only for DNS validation
+ * (CloudFormation allows `HostedZoneId` with no other method); a domain without
+ * a zone is left to the user, who is shown the record to add.
+ */
+function dnsValidationZones(properties: Record<string, unknown>): Map<string, string> {
+  const zones = new Map<string, string>();
+  const options = properties['DomainValidationOptions'];
+  if (properties['ValidationMethod'] !== 'DNS' || !Array.isArray(options)) return zones;
+  for (const option of options as Array<Record<string, unknown>>) {
+    const domain = option['DomainName'];
+    const zone = option['HostedZoneId'];
+    if (typeof domain === 'string' && domain && typeof zone === 'string' && zone) {
+      zones.set(domain, zone);
+    }
+  }
+  return zones;
 }
 
 /**
@@ -253,18 +286,21 @@ export class ACMCertificateProvider implements ResourceProvider {
       input['SubjectAlternativeNames'] = properties['SubjectAlternativeNames'];
     }
     if (Array.isArray(properties['DomainValidationOptions'])) {
-      // CFn shape is `{DomainName, HostedZoneId?, ValidationDomain?}`. ACM
-      // SDK accepts only `{DomainName, ValidationDomain}` — drop HostedZoneId
-      // (a CDK auto-validation custom-resource concept, not an ACM input).
-      input['DomainValidationOptions'] = (
-        properties['DomainValidationOptions'] as Array<Record<string, unknown>>
-      )
-        .map((opt) => {
-          const cleaned: Record<string, unknown> = { DomainName: opt['DomainName'] };
-          if (opt['ValidationDomain']) cleaned['ValidationDomain'] = opt['ValidationDomain'];
-          return cleaned;
-        })
-        .filter((opt) => opt['DomainName']);
+      // CFn shape is `{DomainName, HostedZoneId?, ValidationDomain?}`. The ACM
+      // API's `DomainValidationOption` is `{DomainName, ValidationDomain}` with
+      // BOTH required, so an entry without a `ValidationDomain` cannot be sent:
+      // the SDK serializes the missing member as null and ACM answers
+      // "Member must not be null". Such an entry carries nothing ACM needs (the
+      // CDK writes `{DomainName, HostedZoneId}` for DNS validation by hosted
+      // zone), so it is left out and ACM applies its own default. `HostedZoneId`
+      // is not an ACM input; it is used for the Route 53 write below.
+      const options = (properties['DomainValidationOptions'] as Array<Record<string, unknown>>)
+        .filter((opt) => opt['DomainName'] && opt['ValidationDomain'])
+        .map((opt) => ({
+          DomainName: opt['DomainName'],
+          ValidationDomain: opt['ValidationDomain'],
+        }));
+      if (options.length > 0) input['DomainValidationOptions'] = options;
     }
     if (properties['CertificateAuthorityArn']) {
       input['CertificateAuthorityArn'] = properties['CertificateAuthorityArn'];
@@ -338,11 +374,18 @@ export class ACMCertificateProvider implements ResourceProvider {
         );
       }
       requestedArn = certificateArn;
+      // go-to-k/cdkd#5511: report before the issuance wait.
+      reportCreatedResource(logicalId, resourceType, certificateArn);
       this.logger.debug(`Requested ACM certificate: ${certificateArn}`);
 
       const noWait = process.env['CDKD_NO_WAIT'] === 'true';
       if (!noWait) {
-        await this.waitForCertificateIssued(certificateArn, logicalId, resourceType);
+        await this.waitForCertificateIssued(
+          certificateArn,
+          logicalId,
+          resourceType,
+          dnsValidationZones(properties)
+        );
       } else {
         this.logger.warn(
           `Skipping wait for ACM certificate ${logicalId} (CDKD_NO_WAIT=true). ` +
@@ -368,8 +411,17 @@ export class ACMCertificateProvider implements ResourceProvider {
       // BEFORE the request (a missing DomainName, a rejected input) deletes
       // nothing.
       const survivorNote = requestedArn
-        ? await this.cleanupRequestedCertificate(requestedArn, logicalId, idempotencyToken)
+        ? await this.cleanupRequestedCertificate(
+            requestedArn,
+            logicalId,
+            idempotencyToken,
+            context?.maskSecrets
+          )
         : undefined;
+      // go-to-k/cdkd#5511: the cleanup deleted the certificate.
+      if (requestedArn && survivorNote === undefined) {
+        retractCreatedResource(logicalId, resourceType, requestedArn);
+      }
 
       // Pass through cdkd-typed errors untouched (#1272): re-labelling an inner
       // ProvisioningError replaces its precise message with this outer one.
@@ -480,7 +532,8 @@ export class ACMCertificateProvider implements ResourceProvider {
   private async cleanupRequestedCertificate(
     certificateArn: string,
     logicalId: string,
-    idempotencyToken: IdempotencyToken
+    idempotencyToken: IdempotencyToken,
+    maskSecrets: ((text: string) => string) | undefined
   ): Promise<string | undefined> {
     try {
       await this.acmClient.send(new DeleteCertificateCommand({ CertificateArn: certificateArn }));
@@ -523,16 +576,26 @@ export class ACMCertificateProvider implements ResourceProvider {
         idempotencyToken.release();
         return undefined;
       }
-      const detail = describeAwsFailure(cleanupError).detail;
+      // An AWS-authored failure is named by its class at warn, and AWS's text
+      // (a denied `DeleteCertificate` names the caller) goes to `debug` under
+      // the same head, both through the create's masker (go-to-k/cdkd#2319).
+      const mask = maskSecrets ?? ((text: string) => text);
+      const cleanupFailure = describeAwsFailure(cleanupError);
+      const cleanupHead = `Could not delete the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested: `;
+      if (cleanupFailure.redacted) {
+        this.logger.debug(mask(`${cleanupHead}${cleanupFailure.detail}`));
+      }
       this.logger.warn(
-        `Could not delete the ACM certificate ${certificateArn} that the failed create of ${logicalId} requested: ${detail}`
+        mask(
+          `${cleanupHead}${cleanupFailure.redacted ? cleanupFailure.summary : cleanupFailure.detail}`
+        )
       );
       // Deliberately NOT releasing the token here: the certificate is still
       // there, so a retry being answered with that same one is the outcome we
       // want rather than a hazard -- and it is what stops a retry from adding a
       // SECOND survivor.
       //
-      // The raw `detail` stays in the warn above and out of this note, which is
+      // AWS's text stays in the lines above and out of this note, which is
       // spliced into the THROWN message. `isRetryableTransientError` classifies
       // by substring-matching that message against
       // `RETRYABLE_ERROR_MESSAGE_PATTERNS`, so an AWS cleanup error whose text
@@ -788,7 +851,7 @@ export class ACMCertificateProvider implements ResourceProvider {
       this.logger.debug(`Successfully deleted ACM certificate ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -800,6 +863,12 @@ export class ACMCertificateProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -949,9 +1018,12 @@ export class ACMCertificateProvider implements ResourceProvider {
   private async waitForCertificateIssued(
     certificateArn: string,
     logicalId: string,
-    resourceType: string
+    resourceType: string,
+    zones: ReadonlyMap<string, string> = new Map()
   ): Promise<void> {
     this.logger.debug(`Waiting for ACM certificate ${certificateArn} to reach ISSUED status...`);
+    /** Validation records already written, so a later poll does not write one twice. */
+    const written = new Map<string, Set<string>>();
     let interrupted = false;
     /** The last validation-record block printed, so we re-print only on a CHANGE. */
     let lastValidationOptions: string | undefined;
@@ -1025,7 +1097,19 @@ export class ACMCertificateProvider implements ResourceProvider {
         // `ResourceRecord`, there is no copy at all, which is why the message
         // below tells them to re-run rather than to look further up.
         if (status === 'PENDING_VALIDATION') {
-          const rendered = this.renderValidationOptions(validations);
+          // A record whose domain has a `HostedZoneId` is written here, on the poll
+          // that first carries it; only the rest is left for the user to add.
+          await this.writeValidationRecords(
+            validations,
+            zones,
+            written,
+            certificateArn,
+            logicalId,
+            resourceType
+          );
+          const rendered = this.renderValidationOptions(
+            validations.filter((v) => !(v.DomainName && zones.has(v.DomainName)))
+          );
           if (rendered !== undefined && rendered !== lastValidationOptions) {
             this.logger.info(rendered);
             lastValidationOptions = rendered;
@@ -1070,6 +1154,70 @@ export class ACMCertificateProvider implements ResourceProvider {
       );
     } finally {
       process.removeListener('SIGINT', sigintHandler);
+    }
+  }
+
+  /**
+   * Write the DNS validation CNAME of every domain that names a hosted zone, as
+   * CloudFormation does for `DomainValidationOptions[].HostedZoneId`. An UPSERT:
+   * the record is derived from the domain and the account, so a certificate
+   * that is replaced finds it already there with the same value.
+   *
+   * The record is NOT removed when the certificate is deleted. It is shared by
+   * every certificate for the domain, and CloudFormation leaves it too.
+   *
+   * @throws ProvisioningError (carrying the certificate ARN) when the write fails,
+   *   so the caller retires the certificate it requested.
+   */
+  private async writeValidationRecords(
+    validations: DomainValidation[],
+    zones: ReadonlyMap<string, string>,
+    written: Map<string, Set<string>>,
+    certificateArn: string,
+    logicalId: string,
+    resourceType: string
+  ): Promise<void> {
+    for (const validation of validations) {
+      const zone = validation.DomainName ? zones.get(validation.DomainName) : undefined;
+      const record = validation.ResourceRecord;
+      if (!zone || !record?.Name || !record.Value) {
+        continue;
+      }
+      if (written.get(zone)?.has(record.Name)) continue;
+      try {
+        await getAwsClients().route53.send(
+          new ChangeResourceRecordSetsCommand({
+            HostedZoneId: zone,
+            ChangeBatch: {
+              Changes: [
+                {
+                  Action: 'UPSERT',
+                  ResourceRecordSet: {
+                    Name: record.Name,
+                    Type: 'CNAME',
+                    TTL: VALIDATION_RECORD_TTL,
+                    ResourceRecords: [{ Value: record.Value }],
+                  },
+                },
+              ],
+            },
+          })
+        );
+      } catch (error) {
+        throw new ProvisioningError(
+          safeMsg`ACM certificate ${displayIdent(logicalId)} could not get its DNS validation record ${displayIdent(record.Name)} written to hosted zone ${displayIdent(zone)}: ${describeAwsFailure(error).summary}. The caller needs route53:ChangeResourceRecordSets on that zone.`,
+          resourceType,
+          logicalId,
+          certificateArn,
+          error instanceof Error ? error : undefined
+        );
+      }
+      const inZone = written.get(zone) ?? new Set<string>();
+      inZone.add(record.Name);
+      written.set(zone, inZone);
+      this.logger.info(
+        safeMsg`Wrote DNS validation record ${displayIdent(record.Name)} to hosted zone ${displayIdent(zone)} for ${displayIdent(validation.DomainName)}`
+      );
     }
   }
 

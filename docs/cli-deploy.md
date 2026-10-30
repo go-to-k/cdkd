@@ -65,7 +65,7 @@ These six flags are explained on this page.
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--concurrency <number>` | `10` | Maximum concurrent resource operations per stack. |
+| `--concurrency <number>` | `20` | Maximum concurrent resource operations per stack. |
 | `--stack-concurrency <number>` | `4` | Maximum concurrent stack deployments. |
 | `--asset-publish-concurrency <number>` | `8` | Maximum concurrent asset publishes (S3 uploads and ECR pushes). |
 | `--image-build-concurrency <number>` | `4` | Maximum concurrent Docker image builds. |
@@ -173,12 +173,12 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::CloudFront::Distribution` | same as default | Return after the create / update call | Wait for `Deployed` (3-15 min) | Waits | Waits (`wait_for_deployment`, default true) |
 | `AWS::ECS::Service` | same as default | Return after `CreateService` / `UpdateService` | Wait for steady state | Waits for steady state | Does not wait (`wait_for_steady_state`, default false) |
 | `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait (waiting is a separate `aws_acm_certificate_validation` resource) |
-| `AWS::RDS::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
-| `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
-| `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create call | Wait for `available` (5-10 min) | same as default | Waits | Waits |
+| `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
+| `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
+| `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for changed cluster security groups to apply | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
 | `AWS::EC2::NatGateway` | Return while `pending` | Wait for `available` (1-2 min) | same as default | Waits | Waits |
-| `AWS::EC2::Instance` | Return while `pending` | Wait for `running` (30-60 s) | same as default | Waits | Waits |
+| `AWS::EC2::Instance` | Return while `pending`; an update that stops the instance (an `InstanceType` / `UserData` change) still waits for `stopped`, then returns after the start | Wait for `running` (30-60 s), on create and after an update's stop and start | same as default | Waits | Waits |
 | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Return while `provisioning` | Wait for `active` (90-180 s) | same as default | Waits | Waits |
 | `AWS::Lambda::MicrovmImage` | Return while `CREATING` | Wait for `CREATED` | same as default | Waits | n/a |
 
@@ -190,10 +190,24 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
+- **`AWS::Route53::HostedZone` waits for accelerated recovery to settle in
+  every mode**, `--no-wait` included, on create and on update, whenever a
+  deploy turns `HostedZoneFeatures.EnableAcceleratedRecovery` on or off: the
+  zone refuses record changes until it reads `ENABLED` or `DISABLED` (about
+  four minutes), and CloudFormation waits the same way.
 - **`AWS::Lambda::NetworkConnector` waits for `ACTIVE` in every mode.** AWS
   rejects a web function revision that uses a connector still in `PENDING`, so
   an early return would only move the wait into a failure. See
   [cdkd deploy: wait mode details](cli-deploy-waits.md#aws-lambda-networkconnector).
+- **A regional NAT gateway's `AvailabilityZoneAddresses` update does not wait
+  for its addresses to settle, in any mode.** CloudFormation waits about five
+  minutes per zone. cdkd waits only where AWS would refuse the next call, and
+  then in every mode, `--no-wait` included, up to 15 minutes in all:
+  - re-adding an address that AWS is still releasing waits for the release;
+  - releasing an address that is still being associated, such as a rollback
+    right after the deploy that added it, waits for the association;
+  - releasing the gateway's last associated address waits until another
+    address the template keeps has associated.
 - **CloudFront and `AWS::Lambda::MicrovmImage` through Cloud Control.** cdkd
   provisions common resource types by calling the service's own API, and the
   rest through the AWS Cloud Control API. The early return in the table
@@ -209,7 +223,9 @@ A deploy enforces that in two places, and refuses when a check fails:
   alarm, EventBridge rule, S3 bucket, ECS cluster, load balancer, target
   group or state machine, the deploy looks the name up first. If a resource
   holds the name and nothing this stack records names it, that create is
-  refused with `GENERATED_NAME_HELD`. See
+  refused with `GENERATED_NAME_HELD`. On a stack with a `stackInstanceId`,
+  a planned replacement of one of these types is checked the same way at the
+  new resource's next generated name. See
   [Name check before a create](state-store-name-check.md).
 - **Against the stack registry.** A first deploy claims the stack's marker in
   the state bucket, and refuses when the marker names another prefix. A later
@@ -217,8 +233,8 @@ A deploy enforces that in two places, and refuses when a check fails:
   or adds or updates a nested stack. See
   [Stack registry](state-store-registry.md).
 
-An ordinary redeploy pays for neither check: it looks no name up and makes no
-registry request.
+An ordinary redeploy that creates and replaces nothing pays for neither check:
+it looks no name up and makes no registry request.
 
 When the deploy fails, its automatic rollback keeps a resource it created,
 and does not delete it, if another prefix holds the stack or the check cannot

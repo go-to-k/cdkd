@@ -78,7 +78,12 @@ vi.mock('../../../src/provisioning/nested-stack-context.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/resource-name.js', () => ({
-  withStackName: (_name: string, fn: () => unknown) => fn(),
+  // go-to-k/cdkd#5064 phase 2: a replay binds the record's name generation.
+  withNameGeneration: (_binding: unknown, fn: () => unknown) => fn(),
+  isNameGeneration: (value: unknown) =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0,
+  stackInstanceNameSuffix: () => '000000000000',
+  withStackScope: (_name: string, fn: () => unknown) => fn(),
   withSkipPrefix: (_skip: boolean, fn: () => unknown) => fn(),
   getCurrentSkipPrefix: () => true,
   // The rollback masker reads the type's name property (issue #4037).

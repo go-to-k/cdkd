@@ -1,0 +1,17 @@
+{
+  "name": "cdkd-integ-wide-web-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "12 independent Lambda Web Functions on Cloud Control: how --concurrency settings compare (issue #5242)",
+  "scripts": { "build": "tsc", "watch": "tsc -w" },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.273.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

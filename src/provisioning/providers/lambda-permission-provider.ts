@@ -12,7 +12,12 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { LambdaCreateClientCache } from './lambda-create-client.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import type {
   CreateContext,
@@ -28,12 +33,18 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
+import {
+  generateResourceName,
+  getCurrentStackInstanceId,
+  isBeforeStateRead,
+} from '../resource-name.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 
 /**
@@ -141,19 +152,34 @@ export class LambdaPermissionProvider implements ResourceProvider {
   }
 
   /**
-   * A `create()` / `update()` failure wrap quoting the caught error's text
-   * masked (issue #2177): AWS quotes a rejected request value back (a
-   * function name, a source ARN). The `cause` stays unmasked, and a message
-   * the mask changed is stamped so the retry classifiers read that chain
-   * (`wrapMaskedAwsError`, issue #4244). A method, so
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's masker, and the wrap is stamped `markRedactedCause`, so the
+   * retry classifiers read the withheld text on the `cause` chain. An "already
+   * exists" (a taken statement id) is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error keeps its text, masked (issue #2177),
+   * stamped only when the mask changed it (`wrapMaskedAwsError`, issue #4244);
+   * a non-`Error` throw is withheld like an AWS one, unstamped (it has no
+   * chain). The delete tests its typed not-found before it wraps. A method, so
    * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
+  private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
-    build: (maskedText: string) => ProvisioningError
+    build: (text: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   /**
@@ -207,17 +233,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
       );
     }
 
-    // Generate a unique StatementId from the logicalId (max 100 chars)
-    let statementId = logicalId.replace(/[^a-zA-Z0-9_-]/g, '');
-    if (statementId.length > 100) {
-      // Simple hash: sum char codes and convert to hex
-      let hashNum = 0;
-      for (let i = 0; i < logicalId.length; i++) {
-        hashNum = ((hashNum << 5) - hashNum + logicalId.charCodeAt(i)) | 0;
-      }
-      const hash = Math.abs(hashNum).toString(16).padStart(8, '0').substring(0, 8);
-      statementId = `${statementId.substring(0, 91)}-${hash}`;
-    }
+    const statementId = permissionStatementId(logicalId);
 
     try {
       const addParams: import('@aws-sdk/client-lambda').AddPermissionCommandInput = {
@@ -251,7 +267,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -345,7 +361,7 @@ export class LambdaPermissionProvider implements ResourceProvider {
         throw error;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
+      throw this.wrapCaughtError(
         log.mask,
         error,
         (text) =>
@@ -505,13 +521,24 @@ export class LambdaPermissionProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Lambda permission ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Lambda permission ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this statement is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -658,4 +685,39 @@ export class LambdaPermissionProvider implements ResourceProvider {
     }
     return null;
   }
+}
+
+/**
+ * The StatementId a create sends (go-to-k/cdkd#5137). The template never
+ * names one, so cdkd generates it.
+ *
+ * - A stack with an instance id gets `{StackName}-{LogicalId}-{suffix}`, as
+ *   CloudFormation does, with a new suffix at each replacement's name
+ *   generation. A replacement then creates its statement under a new id,
+ *   whether the function changed or not, and the create runs first.
+ * - A legacy stack keeps the bare logical id it has always sent, cut to 100
+ *   characters with a hash.
+ *
+ * AWS allows `[a-zA-Z0-9-_.]`, at most 100 characters; `.` is left out.
+ */
+export function permissionStatementId(logicalId: string): string {
+  // Before the state read the stack's instance id is unknown, so this must not
+  // fall back to the legacy id: `generateResourceName` refuses that scope.
+  if (getCurrentStackInstanceId() !== undefined || isBeforeStateRead()) {
+    return generateResourceName(logicalId, {
+      maxLength: 100,
+      allowedPattern: /[^a-zA-Z0-9_-]/g,
+    });
+  }
+  let statementId = logicalId.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (statementId.length > 100) {
+    // Simple hash: sum char codes and convert to hex
+    let hashNum = 0;
+    for (let i = 0; i < logicalId.length; i++) {
+      hashNum = ((hashNum << 5) - hashNum + logicalId.charCodeAt(i)) | 0;
+    }
+    const hash = Math.abs(hashNum).toString(16).padStart(8, '0').substring(0, 8);
+    statementId = `${statementId.substring(0, 91)}-${hash}`;
+  }
+  return statementId;
 }

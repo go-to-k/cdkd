@@ -85,13 +85,21 @@ import {
   type MonitoringConfiguration,
   type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
+import { isDeepStrictEqual } from 'node:util';
+import { ecsServiceLaunchTypeSetOrChanged } from '../../analyzer/replacement-rules.js';
 import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markDeleteStarted } from '../delete-started.js';
+import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { markRedactedCause } from '../../deployment/retryable-errors.js';
-import { generateResourceName } from '../resource-name.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import {
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { generatedNameFor } from '../resource-name.js';
 import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
@@ -122,8 +130,10 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import {
   createMaskedLogSinks,
+  maskerOrIdentity,
   withDerivedNameMasks,
   type MaskedLogSinks,
+  type MaskerFn,
 } from '../masked-retry-logger.js';
 import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
 import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
@@ -444,6 +454,20 @@ export const settleRolloutDelays = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
 
+/**
+ * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
+ * not gone (go-to-k/cdkd#2319, #5228). The wrap names the class, and the
+ * deploy and destroy delete classifiers (`deploy-engine/delete.ts`,
+ * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
+ * in a message as "already deleted" unless the error is marked. This
+ * resource's own not-found returned before the wrap, so a `NotFound` class
+ * reaching it is another object's (an operation, a key, a namespace) and the
+ * resource may still exist. Retryability stays the retry classifiers'.
+ */
+function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
+  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
+}
+
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
   private taskDefinitionCreateClient?: ECSClient;
@@ -456,9 +480,11 @@ export class ECSProvider implements ResourceProvider {
    * these are removed from the template: CapacityProviderStrategy,
    * PlacementConstraints, PlacementStrategies, PlatformVersion,
    * HealthCheckGracePeriodSeconds, EnableECSManagedTags, PropagateTags,
-   * EnableExecuteCommand. `UpdateService` keeps an absent member, so sending
-   * nothing is parity. ServiceConnectConfiguration IS reset by CloudFormation
-   * (see `updateService`). The earlier #1160 resets for the keep list were
+   * EnableExecuteCommand, and (#1160) AvailabilityZoneRebalancing.
+   * `UpdateService` keeps an absent member, so sending nothing is parity.
+   * ServiceConnectConfiguration, VolumeConfigurations,
+   * VpcLatticeConfigurations and Monitoring ARE reset by CloudFormation (see
+   * `updateService`). The earlier #1160 resets for the keep list were
    * parity bugs and are removed.
    */
   removalDefaults = new Map<string, ReadonlyMap<string, unknown>>();
@@ -659,31 +685,37 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
-   * The `ProvisioningError` a `create()` / `update()` catch throws, its caught
-   * error's text masked BEFORE it joins the message (issue #2177). Mostly AWS
-   * text, which quotes a rejected request value back (a cluster, family or
-   * service name, a role ARN) off the RESOLVED `properties` bag; also a cdkd
-   * refusal describing a bag value (`readConfigString`). Masking the raw text
-   * reaches the masker's whole-value arm and the operation's derived-name
-   * needles, which the deploy engine's mask of the assembled message cannot.
+   * The failure wrap every create / update / delete catch throws.
    *
-   * The `cause` stays unmasked, and a message the mask CHANGED is stamped
-   * `markRedactedCause`, so the retry classifiers read that chain rather than a
-   * masked text a secret or a needle cut retry wording out of (the issue #4244
-   * class); an unchanged message is not stamped. A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap. Same
-   * logic as `wrapMaskedAwsError` (`src/deployment/retryable-errors.ts`, added
-   * by PR #4257): delegate to it once that is on `main`.
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
+   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
+   * the withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}). A non-`Error` throw is withheld the same
+   * way, unstamped: it has no chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text, masked RAW (issue
+   * #2177: AWS text quotes a rejected request value back off the RESOLVED
+   * `properties` bag, and a cdkd refusal can describe a bag value), stamped
+   * exactly when the mask changed it (`wrapMaskedAwsError`, issue #4244). The
+   * deletes check not-found by type before they wrap. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
    */
-  private wrapMaskedError(
-    log: MaskedLogSinks,
+  private wrapCaughtError(
+    mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const raw = error instanceof Error ? error.message : String(error);
-    const masked = log.mask(raw);
-    const wrapped = build(masked);
-    return masked === raw ? wrapped : markRedactedCause(wrapped);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
   // ─── Dispatch ─────────────────────────────────────────────────────
@@ -808,8 +840,21 @@ export class ECSProvider implements ResourceProvider {
           ])
         );
       case 'AWS::ECS::TaskDefinition':
-        // Refuses before any AWS call or log line, interpolating no bag value.
-        return this.updateTaskDefinition(logicalId, physicalId, resourceType, properties);
+        // A change outside `Tags` refuses before any AWS call or log line,
+        // interpolating no bag value. The physical id is the revision ARN,
+        // which embeds the family.
+        return this.updateTaskDefinition(
+          logicalId,
+          physicalId,
+          resourceType,
+          properties,
+          previousProperties,
+          this.operationSinks(context, [
+            [properties['Family'], familyOfTaskDefinitionArn(physicalId)],
+            [previousProperties['Family'], familyOfTaskDefinitionArn(physicalId)],
+          ]),
+          context?.maskSecrets
+        );
       case 'AWS::ECS::Service': {
         // A Service's physical id is its ARN, which embeds the service name
         // and (long format) the cluster name.
@@ -827,7 +872,8 @@ export class ECSProvider implements ResourceProvider {
             [properties['Cluster'], recordedCluster],
             [previousProperties['Cluster'], recordedCluster],
             [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
-          ])
+          ]),
+          context?.desiredFromAwsReadback === true
         );
       }
       default:
@@ -946,8 +992,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -1078,8 +1124,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -1120,13 +1166,22 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete ECS cluster ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const refused = markNotGoneOnNotFoundClass(
+        error,
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ECS cluster ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
+      throw refused;
     }
   }
 
@@ -1157,7 +1212,7 @@ export class ECSProvider implements ResourceProvider {
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
     const family =
       (properties['Family'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::ECS::TaskDefinition', logicalId);
 
     try {
       // Issue #2080: after an earlier ambiguous attempt, name the revision it
@@ -1234,8 +1289,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -1249,27 +1304,94 @@ export class ECSProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * ECS TaskDefinitions are immutable revisioned resources: every property
+   * change but `Tags` registers a new revision whose `taskDefinitionArn`
+   * differs from the cdkd-state physicalId. Routing such a change through
+   * `cdkd drift --revert` would silently swap state's physicalId for a
+   * freshly-registered revision (and deregister the previous one) without the
+   * user's awareness, so it is refused; the deploy path replaces
+   * (CREATE→DELETE) on those properties instead.
+   *
+   * `Tags` is the one property the registry schema leaves updatable
+   * (`tagUpdatable`), and CloudFormation tags the SAME revision in place
+   * (measured for issue #5392: a tags-only change set said `Modify`,
+   * `Replacement: False`, and the revision kept its ARN). So a change whose
+   * only moved key is `Tags` is applied with `TagResource` / `UntagResource`.
+   *
+   * `maskSecrets` is the caller's `context?.maskSecrets`, the raw masker
+   * `unchangedBehindSecretReference` compares a recorded `{{resolve:...}}`
+   * leaf with (`log.mask` carries derived name needles it must not see).
+   */
   private async updateTaskDefinition(
     logicalId: string,
-    _physicalId: string,
-    _resourceType: string,
-    _properties: Record<string, unknown>
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    log: MaskedLogSinks,
+    maskSecrets: UpdateContext['maskSecrets']
   ): Promise<ResourceUpdateResult> {
-    // ECS TaskDefinitions are immutable revisioned resources: every property
-    // change creates a new revision via RegisterTaskDefinition, and the new
-    // revision's `taskDefinitionArn` differs from the cdkd-state physicalId.
-    // Routing this through `cdkd drift --revert` would silently swap state's
-    // physicalId for a freshly-registered revision (and deregister the
-    // previous one) without the user's awareness — surface a clear error
-    // instead. The deploy code path uses Replace (CREATE→DELETE) for property
-    // changes, which is the correct semantics here.
-    return Promise.reject(
-      new ResourceUpdateNotSupportedError(
+    // A key whose record keeps a secret-derived leaf as its `{{resolve:...}}`
+    // reference while the desired side holds the resolved value has not moved
+    // (go-to-k/cdkd#4275); every key here but Tags is create-only, which the
+    // helper's engine gate requires.
+    let movedOutsideTags = false;
+    for (const key of new Set([...Object.keys(properties), ...Object.keys(previousProperties)])) {
+      if (key === 'Tags' || isDeepStrictEqual(properties[key], previousProperties[key])) continue;
+      if (
+        await unchangedBehindSecretReference({
+          resourceType,
+          key,
+          desired: properties[key],
+          previous: previousProperties[key],
+          maskSecrets,
+        })
+      ) {
+        continue;
+      }
+      movedOutsideTags = true;
+      break;
+    }
+    if (movedOutsideTags) {
+      throw new ResourceUpdateNotSupportedError(
         'AWS::ECS::TaskDefinition',
         logicalId,
-        'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
-      )
-    );
+        'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change but Tags registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
+      );
+    }
+    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
+    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    log.debug(`Updating tags of ECS task definition ${logicalId}: ${physicalId}`);
+    try {
+      await this.applyTagDiff(
+        physicalId,
+        resourceType,
+        logicalId,
+        previousProperties['Tags'],
+        properties['Tags'],
+        log
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update ECS task definition ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
+      );
+    }
+    return {
+      physicalId,
+      wasReplaced: false,
+      attributes: { TaskDefinitionArn: physicalId },
+    };
   }
 
   private async deleteTaskDefinition(
@@ -1299,13 +1421,22 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete ECS task definition ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const refused = markNotGoneOnNotFoundClass(
+        error,
+        this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ECS task definition ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        )
       );
+      throw refused;
     }
   }
 
@@ -1343,7 +1474,7 @@ export class ECSProvider implements ResourceProvider {
 
     const serviceName =
       (properties['ServiceName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::ECS::Service', logicalId);
     // go-to-k/cdkd#4583: the ARN of a service CreateService returned that the
     // cleanup below could not delete, named for the failed-CREATE journal.
     let survivorArn: string | undefined;
@@ -1436,6 +1567,10 @@ export class ECSProvider implements ResourceProvider {
       }
 
       log.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
+      // go-to-k/cdkd#5511: only a service this create made (not a held one).
+      if (heldBefore === 'free') {
+        reportCreatedResource(logicalId, resourceType, service.serviceArn);
+      }
 
       // Under --full-wait a steady-state timeout has to fail the resource,
       // which means throwing AFTER AWS has already created the service. The
@@ -1511,6 +1646,7 @@ export class ECSProvider implements ResourceProvider {
                 force: true,
               })
             );
+            retractCreatedResource(logicalId, resourceType, service.serviceArn);
             // warn, not debug: the dominant --full-wait failure is a crashing
             // container, and this delete removes the service the user would
             // reach for first when asking "why". Say where the evidence
@@ -1520,8 +1656,14 @@ export class ECSProvider implements ResourceProvider {
             );
           } catch (cleanupError) {
             survivorArn = service.serviceArn;
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteService` names the caller) goes to `debug`
+            // under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: `;
+            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
             log.warn(
-              `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: ${describeAwsFailure(cleanupError).detail}. Manual deletion may be required before the next deploy: ${deleteCommand.render()}`
+              `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Manual deletion may be required before the next deploy: ${deleteCommand.render()}`
             );
           }
         }
@@ -1532,10 +1674,19 @@ export class ECSProvider implements ResourceProvider {
         // `cdkd events` metadata extraction.
         // Names `--full-wait` and two `aws` commands, so the logical id is
         // shown only when plain (go-to-k/cdkd#4295).
-        throw new Error(
-          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${describeAwsFailure(waitError).detail}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
+        // An AWS-authored failure (the rollout poll's DescribeServices) is
+        // named by its class here, its text at `debug` and on the stamped
+        // `cause` chain (go-to-k/cdkd#2319); the outer wrap keeps this
+        // cdkd-authored sentence.
+        const waitFailure = describeAwsFailure(waitError);
+        if (waitFailure.redacted) {
+          log.debug(`ECS service ${logicalId} steady-state wait failed: ${waitFailure.detail}`);
+        }
+        const steadyStateError = new Error(
+          `ECS service ${logicalIdShown(logicalId)} did not reach steady state under --full-wait: ${waitFailure.summary.replace(/\.$/, '')}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}`,
           { cause: waitError }
         );
+        throw waitFailure.redacted ? markRedactedCause(steadyStateError) : steadyStateError;
       }
 
       return {
@@ -1547,7 +1698,7 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(log, error, (text) => {
+      throw this.wrapCaughtError(log.mask, error, (text) => {
         const wrapped = new ProvisioningError(
           // The wrapped text can be the `--full-wait` refusal, with its `aws`
           // commands, so the logical id is shown only when plain
@@ -1594,6 +1745,38 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * The error a `waitUntilServicesStable` that did not succeed throws, with
+   * AWS's text withheld (go-to-k/cdkd#2319). `@smithy/util-waiter` throws a
+   * plain `Error` whose message is the JSON of the waiter's result: every
+   * DescribeServices answer it saw (service, task-definition and role ARNs)
+   * and every failure's text (a denied call quotes the caller's assumed-role
+   * ARN). It carries no AWS-authored signal, so the failure wrap would keep it
+   * whole and persist it to `deployments/{runId}.jsonl`. The thrown message
+   * names the waiter's state and error name plus the `--verbose` pointer; the
+   * result goes to `debug`, masked, and stays on the stamped `cause` chain for
+   * the retry classifiers. Any other error is returned as it is.
+   */
+  private wrapWaiterResultError(error: unknown, logicalId: string, log: MaskedLogSinks): unknown {
+    if (!(error instanceof Error)) return error;
+    let state: unknown;
+    try {
+      state = (JSON.parse(error.message) as { state?: unknown } | null)?.state;
+    } catch {
+      return error;
+    }
+    if (typeof state !== 'string' || !/^[A-Z]+$/.test(state)) return error;
+    log.debug(`ECS service ${logicalId} ServicesStable waiter result: ${error.message}`);
+    const reduced = new Error(
+      `the ServicesStable waiter ended in state ${state}${error.name && error.name !== 'Error' ? ` (${error.name})` : ''}. ${VERBOSE_POINTER}`,
+      { cause: error }
+    );
+    // Keep the waiter's name (`TimeoutError`): `isAmbiguousOutcomeError` and
+    // the chain walks read it, and this adds a link to the cause chain.
+    reduced.name = error.name;
+    return markRedactedCause(reduced);
+  }
+
+  /**
    * Settle an ECS Service according to the run's wait mode.
    *
    * cdkd does NOT wait for steady state by default (issue #1275). The three
@@ -1629,12 +1812,16 @@ export class ECSProvider implements ResourceProvider {
         600,
         (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
       );
-      await waitUntilServicesStable(
-        // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
-        // #1177 poll-cap sweep.
-        { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
-        { cluster, services: [serviceRef] }
-      );
+      try {
+        await waitUntilServicesStable(
+          // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
+          // #1177 poll-cap sweep.
+          { client: this.getClient(), maxWaitTime, minDelay: 5, maxDelay: 10 },
+          { cluster, services: [serviceRef] }
+        );
+      } catch (waiterError) {
+        throw this.wrapWaiterResultError(waiterError, logicalId, log);
+      }
       // waitUntilServicesStable's condition (a single deployment whose
       // runningCount matches desiredCount) is satisfied a few seconds BEFORE
       // ECS flips the PRIMARY deployment's rolloutState to COMPLETED — a race
@@ -1695,7 +1882,9 @@ export class ECSProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    log: MaskedLogSinks
+    log: MaskedLogSinks,
+    /** `cdkd drift --revert` (`UpdateContext.desiredFromAwsReadback`). */
+    desiredFromAwsReadback: boolean
   ): Promise<ResourceUpdateResult> {
     log.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
@@ -1728,6 +1917,35 @@ export class ECSProvider implements ResourceProvider {
       );
     }
 
+    // `UpdateService` has no `launchType` member: a changed LaunchType is a
+    // replacement (issue #5392, the registry's predicate), so one that still
+    // reaches here is refused rather than recorded while AWS keeps the old
+    // value. A removal keeps the live value, as CloudFormation does.
+    //
+    // An ADD: an ordinary deploy never brings one here, because the
+    // replacement rule replaces on an add first. Outside `cdkd drift
+    // --revert` the one caller that does is the rollback revert, restoring
+    // the value a removal left live, so the add passes and sends nothing.
+    // Under drift --revert the previous side is the AWS readback, which omits
+    // LaunchType for a service moved to a capacity provider strategy out of
+    // band; restoring it needs a replacement, so the add is refused too. Only
+    // `desiredFromAwsReadback` is read: every other caller passes.
+    const previousLaunchType = previousProperties['LaunchType'];
+    if (
+      (previousLaunchType != null || desiredFromAwsReadback) &&
+      ecsServiceLaunchTypeSetOrChanged(previousLaunchType, properties['LaunchType'])
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        desiredFromAwsReadback
+          ? // The template and state are unchanged, so `deploy --replace`
+            // would plan nothing here.
+            'UpdateService cannot change a service launch type, so drift --revert cannot restore it. Destroy + redeploy the stack to restore it, or run cdkd drift --accept to keep the live value'
+          : 'UpdateService cannot change a service launch type; CloudFormation replaces the service. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
+      );
+    }
+
     // loadBalancers / serviceRegistries are only accepted by UpdateService when
     // the service uses the ECS rolling-update deployment controller. For
     // CODE_DEPLOY (blue/green) and EXTERNAL controllers, AWS rejects these
@@ -1749,8 +1967,8 @@ export class ECSProvider implements ResourceProvider {
       );
     } catch (error) {
       // The refusal can describe the bag value it read (issue #2177).
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -2066,28 +2284,19 @@ export class ECSProvider implements ResourceProvider {
     // "this parameter triggers a new service deployment": re-sending an
     // unchanged value on an unrelated update could start a spurious rollout.
     //
-    // Removal (present before, absent now) semantics per member — the #1160
-    // doctrine wants live-probed reset sentinels; none of these have been
-    // live-probed yet, so each choice below is documented from the API docs
-    // and marked UNVERIFIED-LIVE where a probe is still owed:
-    //   - ServiceConnectConfiguration -> `{ enabled: false }`. A real
-    //     CloudFormation A/B (#5004) confirmed CloudFormation resets it to
-    //     disabled on removal, so this reset is parity.
-    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`. NOT
-    //     measured against CloudFormation (#5004): behavior unchanged, matching
-    //     the empty-list clear sentinel of the sibling list members
-    //     (LoadBalancers / ServiceRegistries). Unlike
-    //     those, the UpdateService doc does not spell out "pass an empty list
-    //     to remove" for these two. UNVERIFIED-LIVE.
-    //   - AvailabilityZoneRebalancing -> DEFERRED (no reset sent). The SDK
-    //     doc is explicit that an absent value on UpdateService keeps the
-    //     existing setting, and the defaults genuinely diverge (CreateService
-    //     defaults ENABLED; a service that never had a value is treated as
-    //     DISABLED), so there is no single defensible CFn reset value without
-    //     a live probe — same deferral shape as DeploymentConfiguration above.
-    //   - Monitoring -> DEFERRED (no reset sent). Its removal reset would
-    //     need the sub-field merge semantics of MonitoringConfiguration
-    //     live-probed first (the DeploymentConfiguration precedent above).
+    // Removal (present before, absent now) semantics per member, each settled
+    // by a real CloudFormation A/B (#5004, #1160):
+    //   - ServiceConnectConfiguration -> `{ enabled: false }`: CloudFormation
+    //     resets it to disabled on removal.
+    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`:
+    //     CloudFormation clears both (the service revision carries neither
+    //     afterwards), and UpdateService clears on an empty list.
+    //   - AvailabilityZoneRebalancing -> no reset sent: CloudFormation KEEPS
+    //     the live value (DISABLED stayed DISABLED, not the schema's ENABLED
+    //     default), and UpdateService keeps an absent member.
+    //   - Monitoring -> `{ metricConfigurations: [] }`: CloudFormation resets
+    //     the service revision to exactly that, while UpdateService keeps an
+    //     absent member (the old 20-second resolution survived).
     //   - DeploymentController -> no reset by design: absent means the
     //     default ECS controller, and sending nothing keeps AWS's current
     //     controller (the property is only sent when present AND changed —
@@ -2158,10 +2367,15 @@ export class ECSProvider implements ResourceProvider {
     const monitoringChanged =
       JSON.stringify(previousProperties['Monitoring'] ?? null) !==
       JSON.stringify(properties['Monitoring'] ?? null);
-    const monitoringInput =
-      monitoringChanged && properties['Monitoring'] != null
-        ? this.convertMonitoringConfiguration(properties['Monitoring'] as Record<string, unknown>)
-        : undefined;
+    const monitoringInput = monitoringChanged
+      ? clearOnUpdateRemoval(
+          this.convertMonitoringConfiguration(
+            properties['Monitoring'] as Record<string, unknown> | undefined
+          ),
+          previousProperties['Monitoring'] as MonitoringConfiguration | undefined,
+          { metricConfigurations: [] }
+        )
+      : undefined;
 
     // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
     // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
@@ -2253,8 +2467,8 @@ export class ECSProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapMaskedError(
-        log,
+      throw this.wrapCaughtError(
+        log.mask,
         error,
         (text) =>
           new ProvisioningError(
@@ -2353,13 +2567,25 @@ export class ECSProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        `Failed to delete ECS service ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const wrapped = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete ECS service ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // A missing CLUSTER means the service is gone too, so it stays readable
+      // as already deleted; any other `NotFound` class (a Service Connect
+      // `NamespaceNotFoundException` from the scale-down UpdateService) is
+      // not this service's.
+      const failure = this.isClusterNotFoundException(error)
+        ? wrapped
+        : markNotGoneOnNotFoundClass(error, wrapped);
       throw stripped ? markDeleteStarted(failure) : failure;
     }
   }
@@ -4109,7 +4335,7 @@ export class ECSProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (resourceType !== 'AWS::ECS::Cluster' || properties['ClusterName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 255 });
+    return generatedNameFor('AWS::ECS::Cluster', logicalId);
   }
 
   /**
@@ -4193,10 +4419,19 @@ export class ECSProvider implements ResourceProvider {
       // free would let the probe hand the name to a create that adopts.
       const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
       if (unanswered !== undefined) {
+        // `reason` is ECS's short failure code; `detail` is AWS's free text,
+        // which reaches a persisted deploy failure through the replacement
+        // name probe, so it goes to `debug` and the message points at
+        // `--verbose` instead (go-to-k/cdkd#2319).
+        if (unanswered.detail !== undefined) {
+          this.logger.debug(
+            `DescribeClusters failure detail for cluster ${displaySafe(explicit)}: ${displaySafe(unanswered.detail)}`
+          );
+        }
         throw new Error(
           `DescribeClusters did not answer for cluster ${displaySafe(explicit)}: ` +
             `${displaySafe(unanswered.reason ?? 'no reason given')}` +
-            (unanswered.detail !== undefined ? ` (${displaySafe(unanswered.detail)})` : '')
+            (unanswered.detail !== undefined ? `. ${VERBOSE_POINTER}` : '')
         );
       }
       return null;

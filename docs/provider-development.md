@@ -115,7 +115,7 @@ import { getLogger } from '../../utils/logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { assertRegionMatch } from '../region-check.js';
-import type { ResourceProvider, UpdateContext } from '../../types/resource.js';
+import type { CreateContext, ResourceProvider, UpdateContext } from '../../types/resource.js';
 
 export class DocDBSubnetGroupProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;
@@ -184,7 +184,8 @@ physical id and its attributes.
 async create(
   logicalId: string,
   resourceType: string,
-  properties: Record<string, unknown>
+  properties: Record<string, unknown>,
+  context?: CreateContext
 ): Promise<ResourceCreateResult> {
   this.logger.debug(safeMsg`Creating DocDB DBSubnetGroup ${logicalId}`);
   // A malformed Tags value is refused before any call.
@@ -196,7 +197,7 @@ async create(
 
   const dbSubnetGroupName =
     (properties['DBSubnetGroupName'] as string | undefined) ||
-    generateResourceName(logicalId, { maxLength: 255, lowercase: true });
+    generatedNameFor('AWS::DocDB::DBSubnetGroup', logicalId);
 
   try {
     await this.getCreateClient().send(
@@ -216,13 +217,17 @@ async create(
     };
   } catch (error) {
     const cause = error instanceof Error ? error : undefined;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ProvisioningError(
-      `Failed to create DocDB DBSubnetGroup ${logicalId}: ${message}`,
-      resourceType,
-      logicalId,
-      dbSubnetGroupName,
-      cause
+    throw this.wrapCaughtError(
+      context?.maskSecrets,
+      error,
+      (text) =>
+        new ProvisioningError(
+          `Failed to create DocDB DBSubnetGroup ${logicalId}: ${text}`,
+          resourceType,
+          logicalId,
+          dbSubnetGroupName,
+          cause
+        )
     );
   }
 }
@@ -230,9 +235,26 @@ async create(
 
 Five things in this method apply to every provider:
 
-- **The name.** When the template gives no name, `generateResourceName`
-  (`src/provisioning/resource-name.ts`) builds `{StackName}-{LogicalId}-{Hash}`
-  and cuts it to the service's length limit.
+- **The name.** When the template gives no name, `generatedNameFor`
+  (`src/provisioning/resource-name.ts`) names the resource by the type's rule
+  in `FALLBACK_NAME_RULES` (length, characters, case, any prefix). A Cloud
+  Control create fills the name from the same rule, so the resource is named
+  the same on either route; a new type gets a rule there, and the
+  `generated-name-route-parity` and `generated-name-limits` unit tests list it.
+  `generateResourceName` underneath builds `{StackName}-{LogicalId}-{suffix}`,
+  where the 12-character suffix comes from the stack's instance id and the
+  resource's name generation, and cuts the `{StackName}-{LogicalId}` part to
+  fit the service's length limit. A stack deployed before the instance id
+  existed keeps `{StackName}-{LogicalId}`. Call it inside the stack's
+  `withStackScope`: the deploy and every replay open one, and a generated name
+  derived before the deploy reads the stack's state throws. A scope with an
+  instance id must also carry `nameGenerations` (built from the state record
+  by `nameGenerationsOf` in `src/state/name-generation.ts`), or the name
+  throws. A provider never picks a generation itself: the deploy binds a
+  replacement's next generation with `withNameGeneration` around the create.
+  A unit test that derives a generated name opens
+  `withStackScope({ stackName, stackInstanceId: undefined, nameGenerations: undefined }, ...)`
+  for a legacy name, or passes a map such as `new Map()` beside an id.
 - **The physical id.** Return what CloudFormation's `Ref` returns for the
   type. For a subnet group that is its name.
 - **The attributes.** Return each attribute a template can read with
@@ -240,6 +262,30 @@ Five things in this method apply to every provider:
 - **The error.** Put every AWS call inside a `try`, and rethrow a failure as
   `ProvisioningError` with the type, the logical id, the physical id and the
   original error as the cause. The user then sees which resource failed.
+  The thrown message is saved in `deployments/{runId}.jsonl`, and AWS's text
+  for an access denial names the caller's role, so the message must not
+  quote AWS. Define `wrapCaughtError` as a private method of the provider:
+  `gen-update-wrap-coverage` recognises a `this.<method>(...)` call that
+  returns a `ProvisioningError` as a wrap. For an AWS-authored failure it
+  puts the error's class and a `--verbose` pointer in the message, and sends
+  AWS's text, masked, to the debug log. The body is a few lines; here
+  `wrapDocDBFailure` in `docdb-shared.ts` holds it, and `wrapCaughtError` in
+  `rds-provider.ts` is the same body inline:
+
+  ```ts
+  private wrapCaughtError(
+    mask: ((text: string) => string) | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+  ```
 - **The log line.** `safeMsg` keeps a value from the template on one line, so
   the value cannot forge a log row.
 

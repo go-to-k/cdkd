@@ -25,12 +25,14 @@ import {
   type Tag as ASGTag,
   type LaunchTemplateSpecification,
   type AvailabilityZoneDistribution,
+  type AvailabilityZoneImpairmentPolicy,
   type CapacityReservationSpecification,
   type DeletionProtection,
   type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
 import { DescribeInstancesCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { markNotGone } from '../not-gone.js';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -40,7 +42,7 @@ import {
   observeThenDisableInstanceApiTermination,
   reEnableInstanceApiTermination,
 } from '../ec2-termination-protection.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -58,11 +60,21 @@ import {
   pasteableAwsCommand,
   WITHHELD_AWS_COMMAND,
 } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import {
@@ -249,7 +261,7 @@ function listWhat(kind: ListKind): string {
 /**
  * Every list property of one bag, keyed by kind. The caller passes its own
  * literal read of each property (`{ Tags: properties['Tags'], ... }`) so the
- * handled-property wiring walk still sees which property feeds the calls.
+ * call site shows (and a grep finds) which property feeds the calls.
  */
 function readLists(values: Record<ListKind, unknown>, side: ListSide): Record<ListKind, ListRead> {
   const out = {} as Record<ListKind, ListRead>;
@@ -327,8 +339,9 @@ function itemsOf(read: ListRead): unknown[] {
  * change"). Per the real CloudFormation A/B in go-to-k/cdkd#5004, a property
  * REMOVED from the template is reset by CloudFormation for only four members
  * (InstanceMaintenancePolicy, MaxInstanceLifetime,
- * CapacityReservationSpecification, AvailabilityZoneDistribution) — those get
- * a removal reset here, declared in `removalDefaults` or a local
+ * CapacityReservationSpecification, AvailabilityZoneDistribution), plus
+ * AvailabilityZoneImpairmentPolicy per the #1160 A/B — those get a removal
+ * reset here, declared in `removalDefaults` or a local
  * `clearOnUpdateRemoval`. Every other optional member (HealthCheckType,
  * HealthCheckGracePeriod, Cooldown, TerminationPolicies,
  * NewInstancesProtectedFromScaleIn, CapacityRebalance, DesiredCapacityType,
@@ -604,8 +617,10 @@ export class ASGProvider implements ResourceProvider {
     [
       'AWS::AutoScaling::AutoScalingGroup',
       new Map<string, unknown>([
-        // go-to-k/cdkd#5004 (real CloudFormation A/B, us-east-1): CloudFormation
-        // RESETS exactly these four on removal, so cdkd resets them too. The
+        // go-to-k/cdkd#5004 and #1160 (real CloudFormation A/Bs, us-east-1):
+        // CloudFormation RESETS five members on removal, so cdkd resets them
+        // too: the three below, plus MaxInstanceLifetime and
+        // AvailabilityZoneImpairmentPolicy, which `update()` resets locally. The
         // other nine members of this type (HealthCheckType,
         // HealthCheckGracePeriod, Cooldown, TerminationPolicies,
         // NewInstancesProtectedFromScaleIn, CapacityRebalance,
@@ -831,7 +846,7 @@ export class ASGProvider implements ResourceProvider {
 
     const groupName =
       (properties['AutoScalingGroupName'] as string | undefined) ||
-      generateResourceName(logicalId, { maxLength: 255 });
+      generatedNameFor('AWS::AutoScaling::AutoScalingGroup', logicalId);
 
     // ONE masked sink for this method's own lines (issue #1997).
     const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
@@ -966,6 +981,8 @@ export class ASGProvider implements ResourceProvider {
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
+      // go-to-k/cdkd#5511: report before the wiring calls.
+      reportCreatedResource(logicalId, resourceType, groupName);
 
       // `CreateAutoScalingGroup` takes neither `MetricsCollection` nor
       // `NotificationConfigurations`: each rides its own API, which only the
@@ -1005,6 +1022,7 @@ export class ASGProvider implements ResourceProvider {
         }
       } catch (wiringError) {
         survivorNote = await this.retireFailedCreate(groupName, logicalId, properties, maskSecrets);
+        if (survivorNote === undefined) retractCreatedResource(logicalId, resourceType, groupName);
         // The group itself was created: an error from its wiring is an
         // auxiliary object's, never this group's name collision (#3826).
         throw markAuxiliaryFailure(wiringError, logicalId);
@@ -1030,7 +1048,7 @@ export class ASGProvider implements ResourceProvider {
       // would otherwise classify as retryable.
       // The AWS text goes through the operation's masker: a 5xx or a refusal
       // can quote a resolved secret-derived value (issue #2176).
-      const failure = wrapMaskedAwsError(
+      const failure = this.wrapCaughtError(
         maskSecrets,
         error,
         (text) =>
@@ -1135,9 +1153,20 @@ export class ASGProvider implements ResourceProvider {
       const outcome = deleteAccepted
         ? `cdkd started deleting it but could not confirm it is gone`
         : `cdkd could not delete it`;
+      // The note joins the THROWN (persisted) message, so an AWS-authored
+      // cleanup failure is named by its class there, and AWS's text goes to
+      // debug (go-to-k/cdkd#2319): a denied DeleteAutoScalingGroup names the
+      // caller's assumed-role ARN.
+      const cleanupFailure = describeAwsFailure(cleanupError);
+      if (cleanupFailure.redacted) {
+        debug(
+          `Retiring AutoScalingGroup ${logicalId} after its create-time wiring failed did not ` +
+            `finish: ${cleanupFailure.detail}`
+        );
+      }
       return maskSecrets(
         `The group was created, and ${outcome} (` +
-          `${describeAwsFailure(cleanupError).detail}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
+          `${cleanupFailure.summary}); outside a rollback's re-create, the failed deploy's rollback journal records ` +
           `it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ` +
           pasteableAwsCommand(
             maskSecrets
@@ -1331,29 +1360,31 @@ export class ASGProvider implements ResourceProvider {
       // input field means "no change". Per the #5004 CloudFormation A/B,
       // CloudFormation resets only InstanceMaintenancePolicy, MaxInstanceLifetime,
       // CapacityReservationSpecification and AvailabilityZoneDistribution when
-      // removed (the rest keep the live value; see below). A constant reset arrives in
+      // removed, plus AvailabilityZoneImpairmentPolicy per the #1160 A/B (the
+      // rest keep the live value; see below). A constant reset arrives in
       // `properties` from `removalDefaults` (see its declaration for each
       // value's doc basis); the coerced / aliased fields below resolve theirs
       // locally through `clearOnUpdateRemoval`.
       //
-      // Deliberately NOT reset on removal:
-      //   - DesiredCapacity: CFn leaves current capacity unmanaged when the
-      //     property is absent (scaling policies own it) — leaving it
-      //     unchanged IS the CFn-parity behavior.
-      //   - MinSize / MaxSize: required properties, never removable.
-      //   - LaunchTemplate vs MixedInstancesPolicy, VPCZoneIdentifier vs
-      //     AvailabilityZones: mutually-exclusive pairs — a "removal" is
-      //     really a switch to the other member, which the API applies by
-      //     presence; pure removal of both is an invalid template.
-      //   - ServiceLinkedRoleARN: no documented clear sentinel; the default
-      //     is an account-specific service-linked-role ARN — leave unchanged.
-      //   - Context: SDK doc says "Reserved." — leave unchanged.
-      //   - SkipZonalShiftValidation: transient per-request validation flag,
-      //     not persisted group config — nothing to reset.
-      //   - AvailabilityZoneImpairmentPolicy: DEFERRED — the SDK model
-      //     documents no default for `ImpairedZoneHealthCheckBehavior` (and
-      //     none for `ZonalShiftEnabled`), so a reset shape cannot be derived
-      //     without guessing; removal currently keeps the live value.
+      // go-to-k/cdkd#1160 (real CloudFormation A/B, us-east-1, with the
+      // UpdateAutoScalingGroup input CloudFormation sent read from CloudTrail):
+      //   - AvailabilityZoneImpairmentPolicy: RESET. CloudFormation sends
+      //     `ZonalShiftEnabled: false` with the PREVIOUS
+      //     `ImpairedZoneHealthCheckBehavior`, and AWS then reports no policy.
+      //     cdkd sends the same shape (below).
+      //   - DesiredCapacity, ServiceLinkedRoleARN (a custom-suffix role):
+      //     KEPT — CloudFormation sends nothing and the live value stays, so
+      //     cdkd sends nothing either. MinSize / MaxSize are required.
+      //   - LaunchTemplate <-> MixedInstancesPolicy and VPCZoneIdentifier ->
+      //     AvailabilityZones: CloudFormation sends only the member the
+      //     template now declares, exactly as cdkd does. AWS then drops the
+      //     other launch member, but KEEPS the subnets on a switch to
+      //     AvailabilityZones — parity either way.
+      //   - SkipZonalShiftValidation: write-only in the CloudFormation schema
+      //     (a per-request flag, never read back) — nothing to reset.
+      //   - Context: "Reserved." AWS refuses any value an account sets ("is
+      //     not allowed to access Context"), so no deployable template can
+      //     remove one.
       //
       // Sub-field removal inside a KEPT config object (issue #1225 — the
       // #1160 bug class one level down) is deliberately passed through
@@ -1416,6 +1447,28 @@ export class ASGProvider implements ResourceProvider {
       const deletionProtectionInput = properties['DeletionProtection'] as
         | DeletionProtection
         | undefined;
+      // RESET by CloudFormation (#1160 A/B): zonal shift off, the previous
+      // health-check behavior re-sent (the CloudFormation schema requires
+      // both members; AWS then reports no policy).
+      const previousImpairmentPolicy = previousProperties['AvailabilityZoneImpairmentPolicy'];
+      const previousImpairedBehavior =
+        typeof previousImpairmentPolicy === 'object' && previousImpairmentPolicy !== null
+          ? (previousImpairmentPolicy as Record<string, unknown>)['ImpairedZoneHealthCheckBehavior']
+          : undefined;
+      const availabilityZoneImpairmentPolicyInput =
+        clearOnUpdateRemoval<AvailabilityZoneImpairmentPolicy>(
+          properties['AvailabilityZoneImpairmentPolicy'] as
+            | AvailabilityZoneImpairmentPolicy
+            | undefined,
+          previousImpairmentPolicy as AvailabilityZoneImpairmentPolicy | undefined,
+          {
+            ZonalShiftEnabled: false,
+            ...(typeof previousImpairedBehavior === 'string' && {
+              ImpairedZoneHealthCheckBehavior:
+                previousImpairedBehavior as AvailabilityZoneImpairmentPolicy['ImpairedZoneHealthCheckBehavior'],
+            }),
+          }
+        );
 
       await this.getClient().send(
         new UpdateAutoScalingGroupCommand({
@@ -1469,12 +1522,8 @@ export class ASGProvider implements ResourceProvider {
           ...(availabilityZoneDistributionInput !== undefined && {
             AvailabilityZoneDistribution: availabilityZoneDistributionInput,
           }),
-          // Removal reset DEFERRED (no SDK-documented default for the
-          // sub-fields) — see the comment block above.
-          ...(properties['AvailabilityZoneImpairmentPolicy'] !== undefined && {
-            AvailabilityZoneImpairmentPolicy: properties[
-              'AvailabilityZoneImpairmentPolicy'
-            ] as never,
+          ...(availabilityZoneImpairmentPolicyInput !== undefined && {
+            AvailabilityZoneImpairmentPolicy: availabilityZoneImpairmentPolicyInput,
           }),
           ...(properties['SkipZonalShiftValidation'] !== undefined && {
             SkipZonalShiftValidation: properties['SkipZonalShiftValidation'] as boolean,
@@ -1507,10 +1556,46 @@ export class ASGProvider implements ResourceProvider {
   }
 
   /**
-   * The `update()` failure wrap. AWS can quote the group name, which can be
-   * secret-derived (go-to-k/cdkd#4275), so its text goes through the masker,
-   * stamped exactly when the mask changed it so the retry classifiers read
-   * the unmasked cause.
+   * The failure wrap the create / update / delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through `mask`, and the
+   * wrap is stamped `markRedactedCause`, so the retry classifiers read the
+   * withheld text on the `cause` chain. An "already exists" is restated
+   * ({@link relayedNameCollision}), except from a create-time wiring call's
+   * failure ({@link markAuxiliaryFailure}), where "it" would read as the
+   * group. A non-`Error` throw is withheld the same way, unstamped: it has no
+   * chain to read.
+   *
+   * A cdkd-authored or transport error keeps its text masked (AWS's SDK and
+   * cdkd's own refusals can quote the group name, which can be secret-derived,
+   * go-to-k/cdkd#4275), stamped exactly when the mask changed it
+   * (`wrapMaskedAwsError`). The delete checks its not-found by type and
+   * message on the RAW error before it wraps, so no "already gone" reading
+   * depends on the wrapped text.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (maskedText: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    const wrapped = build(`${mask(failure.summary)}${relay}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * The `update()` failure wrap ({@link wrapCaughtError}), through the masker
+   * paired with the recorded group name. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
    */
   private wrapUpdateError(
     error: unknown,
@@ -1520,7 +1605,7 @@ export class ASGProvider implements ResourceProvider {
     maskSecrets: MaskerFn | undefined
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return wrapMaskedAwsError(
+    return this.wrapCaughtError(
       maskerOrIdentity(maskSecrets),
       error,
       (text) =>
@@ -1572,7 +1657,13 @@ export class ASGProvider implements ResourceProvider {
       );
     } catch (error) {
       if (current) {
-        await this.settleInstanceFlips(logicalId, current, error, context?.expectedRegion);
+        await this.settleInstanceFlips(
+          logicalId,
+          current,
+          error,
+          context?.expectedRegion,
+          context?.maskSecrets
+        );
       }
       throw error;
     }
@@ -1601,7 +1692,8 @@ export class ASGProvider implements ResourceProvider {
     logicalId: string,
     groupFlip: ProtectionFlipRecord,
     error: unknown,
-    region: string | undefined
+    region: string | undefined,
+    mask: MaskerFn | undefined
   ): Promise<void> {
     const instances = this.groupInstanceFlips.get(groupFlip);
     if (!instances) return;
@@ -1616,6 +1708,7 @@ export class ASGProvider implements ResourceProvider {
           logicalId,
           physicalId: instanceId,
           logger: this.logger,
+          mask,
           site: autoScalingGroupInstanceProtectionSite(instanceId, region),
           reEnable: () => this.reEnableLaunchedInstance(instanceId),
         },
@@ -1687,6 +1780,7 @@ export class ASGProvider implements ResourceProvider {
         logicalId,
         physicalId,
         logger: this.logger,
+        mask: context?.maskSecrets,
         site: autoScalingGroupProtectionSite(physicalId, context?.expectedRegion, removedValue),
         reEnable: async () => {
           const value = removedValue();
@@ -1736,6 +1830,7 @@ export class ASGProvider implements ResourceProvider {
           flip,
           logger: this.logger,
           physicalId,
+          mask: context?.maskSecrets,
           guardName: 'DeletionProtection',
           observe: async () => {
             const group = await this.describeGroup(physicalId);
@@ -1764,7 +1859,9 @@ export class ASGProvider implements ResourceProvider {
         // Non-fatal: log and proceed. The actual delete below surfaces
         // any real error.
         this.logger.debug(
-          `Could not disable DeletionProtection on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          maskerOrIdentity(context?.maskSecrets)(
+            `Could not disable DeletionProtection on ${physicalId}: ${describeAwsFailure(flipError).detail}`
+          )
         );
       }
 
@@ -1815,13 +1912,24 @@ export class ASGProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete AutoScalingGroup ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete AutoScalingGroup ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // not-found check above means this group is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 

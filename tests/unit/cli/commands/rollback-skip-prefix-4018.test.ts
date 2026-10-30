@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 /**
  * Issue #4018: `cdkd deploy` derives a user-supplied physical name inside
  * `withSkipPrefix(<resolved flag>)`, but `cdkd rollback` replayed its journal
- * inside `withStackName` alone, so a provider that rewrites even an explicit
+ * inside `withStackScope` alone, so a provider that rewrites even an explicit
  * name (`generateResourceNameWithFallback`: IAM Role / User / Group /
  * InstanceProfile / ManagedPolicy, ELBv2 LB / TG) re-created the old resource
  * under `<stack>-<name>` although the deploy had created `<name>`.
@@ -77,6 +77,7 @@ import { NoSuchEntityException } from '@aws-sdk/client-iam';
 import { rollbackCommand } from '../../../../src/cli/commands/rollback.js';
 import { IAMManagedPolicyProvider } from '../../../../src/provisioning/providers/iam-managed-policy-provider.js';
 import { IAMRoleProvider } from '../../../../src/provisioning/providers/iam-role-provider.js';
+import { getCurrentStackInstanceId } from '../../../../src/provisioning/resource-name.js';
 import type { RollbackJournalSegment } from '../../../../src/types/rollback-journal.js';
 import { awsSdkError } from '../../_aws-sdk-error.js';
 
@@ -143,6 +144,8 @@ function installRollback(opts: {
   /** Replaces the single segment; OLDEST first, as the journal stores them. */
   segments?: Array<Record<string, unknown>>;
   resources?: Record<string, unknown>;
+  /** go-to-k/cdkd#5064: the record's stack instance id, for `inSegmentScope`. */
+  stackInstanceId?: string;
 }): { saveState: ReturnType<typeof vi.fn>; popSegment: ReturnType<typeof vi.fn> } {
   const saveState = vi.fn().mockResolvedValue('etag-2');
   const popSegment = vi.fn().mockResolvedValue(0);
@@ -176,6 +179,7 @@ function installRollback(opts: {
           resources: opts.resources ?? { MyRole: roleRow(opts.newPhysicalId, 'my-role-v2') },
           outputs: {},
           lastModified: 1,
+          ...(opts.stackInstanceId !== undefined && { stackInstanceId: opts.stackInstanceId }),
         },
         etag: 'etag-1',
       }),
@@ -580,5 +584,44 @@ describe('cdkd rollback re-creates under the name the deploy used (#4018)', () =
 
     expect(aws.created).toEqual(['my-role']);
     expect(legacyWarnings()).toEqual([]);
+  });
+
+  // go-to-k/cdkd#5064: `inSegmentScope` opens `withStackScope({ stackName,
+  // stackInstanceId })` around every replayed op, so a provider's call inside
+  // it sees the RECORD's id via `getCurrentStackInstanceId()`.
+  it('#5064: replays a segment inside the record stack instance scope', async () => {
+    const STACK_INSTANCE_ID = '3f2c1d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const seenIds: Array<string | undefined> = [];
+    registry.provider = {
+      update: vi.fn(async () => {
+        seenIds.push(getCurrentStackInstanceId());
+        return { physicalId: 'my-role', wasReplaced: false };
+      }),
+      delete: vi.fn(async () => undefined),
+    };
+    installRollback({
+      oldPhysicalId: 'my-role',
+      newPhysicalId: 'my-role',
+      stackInstanceId: STACK_INSTANCE_ID,
+      segment: {
+        skipPrefix: true,
+        operations: [
+          {
+            logicalId: 'MyRole',
+            changeType: 'UPDATE',
+            resourceType: ROLE,
+            physicalId: 'my-role',
+            previousState: {
+              ...roleRow('my-role', 'my-role'),
+              properties: { RoleName: 'my-role', AssumeRolePolicyDocument: TRUST, Description: 'old' },
+            } as never,
+          },
+        ],
+      },
+    });
+
+    await rollbackCommand(STACK, { ...opts });
+
+    expect(seenIds).toEqual([STACK_INSTANCE_ID]);
   });
 });

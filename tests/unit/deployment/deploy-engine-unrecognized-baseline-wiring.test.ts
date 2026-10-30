@@ -64,10 +64,10 @@ vi.mock('p-limit', () => ({
 }));
 
 const STACK_NAME = 'MyStack';
-const LOGICAL_ID = 'MyAlarm';
+const LOGICAL_ID = 'MyLogGroup';
 /** Routable, with a REMOVABLE silent drop — `diff-calculator-silent-drop.test.ts`'s pair. */
-const TYPE = 'AWS::CloudWatch::Alarm';
-const DROPPED = 'EvaluationWindow';
+const TYPE = 'AWS::Logs::LogGroup';
+const DROPPED = 'ResourcePolicyDocument';
 const ALLOW_KEY = `${TYPE}:${DROPPED}`;
 /** A property name no CFn schema will ever carry. */
 const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
@@ -77,15 +77,22 @@ const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
  * object-valued key never deep-equals the record there (reported with #3713).
  */
 const UNKNOWN_VALUE = 'held-since-the-last-deploy';
-const WINDOW = { WallClockWindow: { Timezone: 'UTC' } };
+const POLICY = {
+  Version: '2012-10-17',
+  Statement: [
+    {
+      Effect: 'Allow',
+      Principal: { Service: 'delivery.logs.amazonaws.com' },
+      Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+      Resource: '*',
+    },
+  ],
+};
 
 const WRITTEN: Record<string, unknown> = {
-  AlarmName: 'alarm-1',
-  ComparisonOperator: 'GreaterThanThreshold',
-  EvaluationPeriods: 1,
-  MetricName: 'Errors',
-  Namespace: 'AWS/Lambda',
-  Threshold: 1,
+  LogGroupName: 'log-group-1',
+  LogGroupClass: 'STANDARD',
+  RetentionInDays: 1,
 };
 
 /** The record: the unknown key already deployed, unchanged in the template. */
@@ -116,8 +123,8 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
   beforeEach(() => {
     vi.clearAllMocks();
     provider = {
-      create: vi.fn().mockResolvedValue({ physicalId: 'alarm-1', attributes: {} }),
-      update: vi.fn().mockResolvedValue({ physicalId: 'alarm-1' }),
+      create: vi.fn().mockResolvedValue({ physicalId: 'log-group-1', attributes: {} }),
+      update: vi.fn().mockResolvedValue({ physicalId: 'log-group-1' }),
       delete: vi.fn().mockResolvedValue(undefined),
       getAttribute: vi.fn(),
     };
@@ -179,7 +186,7 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
       stackName: STACK_NAME,
       resources: {
         [LOGICAL_ID]: {
-          physicalId: 'alarm-1',
+          physicalId: 'log-group-1',
           resourceType: TYPE,
           properties: structuredClone(RECORDED),
           attributes: {},
@@ -227,14 +234,14 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
     expect(coverage.ccRouteUnavailable).toBe(false);
     expect(coverage.silentDrop.has(DROPPED)).toBe(true);
     expect(coverage.createOnlyDrops.has(DROPPED)).toBe(false);
-    const desired = { ...RECORDED, [DROPPED]: WINDOW };
+    const desired = { ...RECORDED, [DROPPED]: POLICY };
     expect(findRoutableUnrecognizedProperties(TYPE, desired, new Set())).toEqual([UNKNOWN]);
     expect(findRoutableUnrecognizedProperties(TYPE, desired, new Set(), RECORDED)).toEqual([]);
   });
 
   it('pre-flight: every validateResourceProperties row carries the record bag', async () => {
-    const template = arrange({ ...RECORDED, Threshold: 2 }, [
-      { path: 'Threshold', oldValue: 1, newValue: 2, requiresReplacement: false },
+    const template = arrange({ ...RECORDED, RetentionInDays: 3 }, [
+      { path: 'RetentionInDays', oldValue: 1, newValue: 3, requiresReplacement: false },
     ]);
     expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
     expect(mockProviderRegistry.validateResourceProperties).toHaveBeenCalledTimes(1);
@@ -253,8 +260,8 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
     // accepted drop and equals the record: no provider call. On PRESENCE the
     // unknown key would route the resource, the accepted list empties, and the
     // skip is missed — a redundant update on every deploy.
-    const template = arrange({ ...RECORDED, [DROPPED]: WINDOW }, [
-      { path: DROPPED, oldValue: undefined, newValue: WINDOW, requiresReplacement: false },
+    const template = arrange({ ...RECORDED, [DROPPED]: POLICY }, [
+      { path: DROPPED, oldValue: undefined, newValue: POLICY, requiresReplacement: false },
     ]);
     expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
     expect(provider.update).not.toHaveBeenCalled();
@@ -263,7 +270,7 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
 
   it('no-change skip, other polarity: a CHANGED unknown key still reaches the provider', async () => {
     // Without this, a skip that fired unconditionally would pass the case above.
-    const template = arrange({ ...RECORDED, [UNKNOWN]: 'changed', [DROPPED]: WINDOW }, [
+    const template = arrange({ ...RECORDED, [UNKNOWN]: 'changed', [DROPPED]: POLICY }, [
       { path: UNKNOWN, oldValue: UNKNOWN_VALUE, newValue: 'changed', requiresReplacement: false },
     ]);
     expect(await deployAndCatch(makeEngine(), template)).toBeUndefined();
@@ -271,15 +278,16 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
   });
 
   it('replaceDecision (property-driven replacement) passes the record bag', async () => {
-    const template = arrange({ ...RECORDED, AlarmName: 'alarm-2' }, [
-      { path: 'AlarmName', oldValue: 'alarm-1', newValue: 'alarm-2', requiresReplacement: true },
+    const template = arrange({ ...RECORDED, LogGroupName: 'log-group-2' }, [
+      { path: 'LogGroupName', oldValue: 'log-group-1', newValue: 'log-group-2', requiresReplacement: true },
     ]);
-    await deployAndCatch(makeEngine(), template);
+    // a log group is a stateful type (src/provisioning/stateful-types.ts); the replacement guard needs the opt-in, which is not what this test is about
+    await deployAndCatch(makeEngine({ forceStatefulRecreation: true }), template);
     // The label call always sets `forceCcApi`; the old delete carries no
     // `properties`. What remains is the replacement's create decision.
     const creates = routingCalls().filter((c) => 'properties' in c && !('forceCcApi' in c));
     expect(creates.length, `calls: ${JSON.stringify(routingCalls())}`).toBe(1);
-    expect(creates[0]!['properties']).toEqual({ ...RECORDED, AlarmName: 'alarm-2' });
+    expect(creates[0]!['properties']).toEqual({ ...RECORDED, LogGroupName: 'log-group-2' });
     expect(creates[0]!['previousProperties']).toEqual(RECORDED);
     expect(provider.create).toHaveBeenCalledTimes(1);
   });
@@ -301,10 +309,11 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
           ? { provider, provisionedBy: 'cc-api' as const }
           : { provider, provisionedBy: 'sdk' as const }
     );
-    const template = arrange({ ...RECORDED, AlarmName: 'alarm-2' }, [
-      { path: 'AlarmName', oldValue: 'alarm-1', newValue: 'alarm-2', requiresReplacement: true },
+    const template = arrange({ ...RECORDED, LogGroupName: 'log-group-2' }, [
+      { path: 'LogGroupName', oldValue: 'log-group-1', newValue: 'log-group-2', requiresReplacement: true },
     ]);
-    await deployAndCatch(makeEngine(), template);
+    // a log group is a stateful type (src/provisioning/stateful-types.ts); the replacement guard needs the opt-in, which is not what this test is about
+    await deployAndCatch(makeEngine({ forceStatefulRecreation: true }), template);
     const calls = routingCalls();
     const results = mockProviderRegistry.getProviderFor.mock.results.map(
       (r) => (r.value as { provisionedBy: string }).provisionedBy
@@ -321,10 +330,11 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
 
   it('replDecision (UPDATE-not-supported replacement) passes the record bag', async () => {
     provider.update.mockRejectedValue(new ResourceUpdateNotSupportedError(TYPE, LOGICAL_ID));
-    const template = arrange({ ...RECORDED, Threshold: 2 }, [
-      { path: 'Threshold', oldValue: 1, newValue: 2, requiresReplacement: false },
+    const template = arrange({ ...RECORDED, RetentionInDays: 3 }, [
+      { path: 'RetentionInDays', oldValue: 1, newValue: 3, requiresReplacement: false },
     ]);
-    expect(await deployAndCatch(makeEngine({ replace: true }), template)).toBeUndefined();
+    // a log group is a stateful type (src/provisioning/stateful-types.ts); the replacement guard needs the opt-in, which is not what this test is about
+    expect(await deployAndCatch(makeEngine({ replace: true, forceStatefulRecreation: true }), template)).toBeUndefined();
     expect(provider.delete).toHaveBeenCalledTimes(1);
     expect(provider.create).toHaveBeenCalledTimes(1);
     // The last routing call is the replacement create's; the update dispatch
@@ -332,7 +342,7 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
     const calls = routingCalls();
     const last = calls[calls.length - 1]!;
     expect(Object.keys(last), `calls: ${JSON.stringify(calls)}`).not.toContain('provisionedBy');
-    expect(last['properties']).toEqual({ ...RECORDED, Threshold: 2 });
+    expect(last['properties']).toEqual({ ...RECORDED, RetentionInDays: 3 });
     expect(last['previousProperties']).toEqual(RECORDED);
   });
 });

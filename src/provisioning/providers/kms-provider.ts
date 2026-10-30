@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   KMSClient,
   CreateKeyCommand,
@@ -20,6 +21,7 @@ import {
   UntagResourceCommand,
   ListKeysCommand,
   NotFoundException,
+  DisabledException,
   type CreateKeyCommandInput,
   type CreateKeyCommandOutput,
   type KeyMetadata,
@@ -28,7 +30,11 @@ import {
   type OriginType,
 } from '@aws-sdk/client-kms';
 import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import {
+  CdkdError,
+  ProvisioningError,
+  ResourceUpdateNotSupportedError,
+} from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -43,6 +49,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { withRemovalDefaults } from '../update-removal.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import {
@@ -50,6 +57,7 @@ import {
   markCreatedBeforeFailure,
   markSupersedesEarlierCreate,
 } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 import { createHash } from 'node:crypto';
 import {
   AMBIGUOUS_LATCH_TTL_MS,
@@ -69,6 +77,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import {
   isThrottlingError,
   isTransientServerError,
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
 } from '../../deployment/retryable-errors.js';
@@ -198,6 +207,17 @@ export class KMSProvider implements ResourceProvider {
     ['AWS::KMS::Alias', new Set(['AliasName', 'TargetKeyId'])],
   ]);
 
+  /**
+   * Issue #1160: CloudFormation resets a removed `RotationPeriodInDays` to
+   * 365 while rotation stays on (A/B, us-east-1, 2026-10-20: 90 -> 365, alone
+   * and beside another change). `EnableKeyRotation` keeps an absent period,
+   * so `updateKey` re-sends the declared 365. A removed `KeyPolicy` resets
+   * too, but to a policy naming the key's account, so `updateKey` builds it.
+   */
+  removalDefaults = new Map<string, ReadonlyMap<string, unknown>>([
+    ['AWS::KMS::Key', new Map<string, unknown>([['RotationPeriodInDays', 365]])],
+  ]);
+
   private getClient(): KMSClient {
     if (!this.client) {
       this.client = new KMSClient({
@@ -276,7 +296,7 @@ export class KMSProvider implements ResourceProvider {
           resourceType,
           properties,
           _previousProperties,
-          context?.maskSecrets
+          context
         );
       case 'AWS::KMS::Alias':
         return this.updateAlias(
@@ -334,12 +354,12 @@ export class KMSProvider implements ResourceProvider {
     const keyPolicy = properties['KeyPolicy'];
     const keySpec = properties['KeySpec'] as string | undefined;
     const keyUsage = properties['KeyUsage'] as string | undefined;
-    const enableKeyRotation = properties['EnableKeyRotation'] as boolean | undefined;
-    const multiRegion = properties['MultiRegion'] as boolean | undefined;
+    const enableKeyRotation = templateBool(properties['EnableKeyRotation']);
+    const multiRegion = templateBool(properties['MultiRegion']);
     const origin = properties['Origin'] as string | undefined;
-    const bypassPolicyLockoutSafetyCheck = properties['BypassPolicyLockoutSafetyCheck'] as
-      | boolean
-      | undefined;
+    const bypassPolicyLockoutSafetyCheck = templateBool(
+      properties['BypassPolicyLockoutSafetyCheck']
+    );
 
     const input: CreateKeyCommandInput = {
       Description: description,
@@ -372,7 +392,7 @@ export class KMSProvider implements ResourceProvider {
         JSON.stringify({
           input,
           enableKeyRotation: enableKeyRotation === true,
-          enabled: properties['Enabled'] !== false,
+          enabled: templateBool(properties['Enabled']) !== false,
         })
       )
       .digest('hex');
@@ -407,6 +427,7 @@ export class KMSProvider implements ResourceProvider {
         setBounded(pendingKeys, attemptKey, { keyId, keyArn, inputDigest, heldAtMs: Date.now() });
         // Before the lookup below, so a throw in it still marks the key created.
         createdKeyId = keyId;
+        reportCreatedResource(logicalId, resourceType, keyId);
         // go-to-k/cdkd#4945: this key replaces a held one a retry declined.
         // Same age limit as the held key it replaced.
         const declinedAtMs = supersededAttempts.get(attemptKey);
@@ -422,9 +443,10 @@ export class KMSProvider implements ResourceProvider {
       }
 
       createdKeyId = keyId;
+      reportCreatedResource(logicalId, resourceType, keyId);
 
       // EnableKeyRotation must be called separately after key creation
-      if (enableKeyRotation) {
+      if (enableKeyRotation === true) {
         const rotationPeriodInDays = properties['RotationPeriodInDays'] as number | undefined;
         this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
         await this.getClient().send(
@@ -438,7 +460,7 @@ export class KMSProvider implements ResourceProvider {
       }
 
       // Disable key if Enabled is explicitly false
-      const enabled = properties['Enabled'] as boolean | undefined;
+      const enabled = templateBool(properties['Enabled']);
       if (enabled === false) {
         this.logger.debug(`Disabling KMS Key ${logicalId}`);
         await this.getClient().send(new DisableKeyCommand({ KeyId: keyId }));
@@ -734,11 +756,45 @@ export class KMSProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    context: UpdateContext | undefined
   ): Promise<ResourceUpdateResult> {
     this.logger.debug(`Updating KMS Key ${logicalId}: ${physicalId}`);
+    const mask = context?.maskSecrets;
+    properties = withRemovalDefaults(
+      this.removalDefaults,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#5299: a key's spec, usage, region scope and origin are
+    // fixed at creation, and KMS has no call that changes them.
+    const immutableChanged = changedImmutableKeyProperties(properties, previousProperties);
+    if (
+      immutableChanged.length > 0 &&
+      !(await this.liveKeyMatches(physicalId, properties, immutableChanged, logicalId))
+    ) {
+      throw new ResourceUpdateNotSupportedError(
+        resourceType,
+        logicalId,
+        immutableKeySuggestion(immutableChanged)
+      );
+    }
+
+    // Issue #1160, CloudFormation A/B (us-east-1, 2026-10-20), each removal
+    // alone and beside another change: a removed Description is cleared, a
+    // removed `Enabled: false` enables the key, and a removed
+    // `EnableKeyRotation: true` turns rotation off -- the comparisons below
+    // already do each. A removed RotationPeriodInDays arrives as the declared
+    // 365 (`removalDefaults`); a removed KeyPolicy is handled at its call.
+    // A string-typed boolean (a String parameter's Ref) reads as CloudFormation
+    // reads it: 'false' is false.
+    const newEnabled = templateBool(properties['Enabled']);
+    const oldEnabled = templateBool(previousProperties['Enabled']);
+    const enabledChange =
+      newEnabled === oldEnabled ? undefined : newEnabled === false ? 'disable' : 'enable';
 
     try {
       // Update Description if changed
@@ -754,38 +810,65 @@ export class KMSProvider implements ResourceProvider {
         );
       }
 
-      // Update EnableKeyRotation if changed
-      const newEnableKeyRotation = properties['EnableKeyRotation'] as boolean | undefined;
-      const oldEnableKeyRotation = previousProperties['EnableKeyRotation'] as boolean | undefined;
-      if (newEnableKeyRotation !== oldEnableKeyRotation) {
-        if (newEnableKeyRotation) {
-          const rotationPeriodInDays = properties['RotationPeriodInDays'] as number | undefined;
-          this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
-          await this.getClient().send(
-            new EnableKeyRotationCommand({
-              KeyId: physicalId,
-              ...(rotationPeriodInDays !== undefined && {
-                RotationPeriodInDays: rotationPeriodInDays,
-              }),
-            })
-          );
-        } else {
-          this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
-          await this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId }));
-        }
+      // CloudFormation's order (issue #1160 A/Bs, issuecomment-6286212485 and
+      // issuecomment-6287991009): EnableKey, rotation, DisableKey, then tags
+      // and the key policy. KMS refuses a rotation call on a disabled key
+      // (`DisabledException`), so the key is enabled first and disabled after
+      // it; and a policy that denies `kms:DisableKey` is put only after the
+      // disable, which CloudFormation accepts. A rotation change on a key that
+      // stays disabled fails, as it does in CloudFormation.
+      if (enabledChange === 'enable') {
+        this.logger.debug(`Enabling KMS Key ${logicalId}`);
+        await this.getClient().send(new EnableKeyCommand({ KeyId: physicalId }));
       }
 
-      // Update Enabled if changed
-      const newEnabled = properties['Enabled'] as boolean | undefined;
-      const oldEnabled = previousProperties['Enabled'] as boolean | undefined;
-      if (newEnabled !== oldEnabled) {
-        if (newEnabled === false) {
-          this.logger.debug(`Disabling KMS Key ${logicalId}`);
-          await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
-        } else {
-          this.logger.debug(`Enabling KMS Key ${logicalId}`);
-          await this.getClient().send(new EnableKeyCommand({ KeyId: physicalId }));
+      // Update rotation if EnableKeyRotation or, with rotation on, the period
+      // changed. `EnableKeyRotation` on a key already rotating sets the new
+      // period; without the period check a changed or removed
+      // RotationPeriodInDays was never sent (issue #1160).
+      const newEnableKeyRotation = templateBool(properties['EnableKeyRotation']);
+      const oldEnableKeyRotation = templateBool(previousProperties['EnableKeyRotation']);
+      const rotationPeriodInDays = properties['RotationPeriodInDays'] as number | undefined;
+      if (newEnableKeyRotation === true) {
+        if (
+          newEnableKeyRotation !== oldEnableKeyRotation ||
+          // An absent desired period is never a change: a removal arrives as
+          // the injected 365, and `drift --revert` (whose previous side is a
+          // readback holding the live period) has nothing to send.
+          (rotationPeriodInDays !== undefined &&
+            rotationPeriodInDays !== previousProperties['RotationPeriodInDays'])
+        ) {
+          this.logger.debug(`Enabling key rotation for KMS Key ${logicalId}`);
+          await this.sendRotation(
+            () =>
+              this.getClient().send(
+                new EnableKeyRotationCommand({
+                  KeyId: physicalId,
+                  ...(rotationPeriodInDays !== undefined && {
+                    RotationPeriodInDays: rotationPeriodInDays,
+                  }),
+                })
+              ),
+            enabledChange === 'enable',
+            resourceType,
+            logicalId,
+            physicalId
+          );
         }
+      } else if (newEnableKeyRotation !== oldEnableKeyRotation) {
+        this.logger.debug(`Disabling key rotation for KMS Key ${logicalId}`);
+        await this.sendRotation(
+          () => this.getClient().send(new DisableKeyRotationCommand({ KeyId: physicalId })),
+          enabledChange === 'enable',
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+
+      if (enabledChange === 'disable') {
+        this.logger.debug(`Disabling KMS Key ${logicalId}`);
+        await this.getClient().send(new DisableKeyCommand({ KeyId: physicalId }));
       }
 
       // Apply tag diff. KMS's TagResource takes [{TagKey, TagValue}] (NOT
@@ -821,6 +904,16 @@ export class KMSProvider implements ResourceProvider {
           ? oldKeyPolicy
           : JSON.stringify(oldKeyPolicy)
         : undefined;
+      // Issue #1160: a KeyPolicy REMOVED from the template is a reset, not an
+      // empty policy -- CloudFormation puts the KMS default key policy back
+      // (A/B, us-east-1, 2026-10-20, alone and beside another change), the
+      // same policy `CreateKey` attaches when none is given. Removal is judged
+      // template-vs-template (`removedProperties`), so `drift --revert`, whose
+      // set is empty, never reaches it and the gate above still holds there.
+      const policyRemoved =
+        context?.removedProperties !== undefined
+          ? context.removedProperties.has('KeyPolicy')
+          : oldKeyPolicy !== undefined && newKeyPolicy === undefined;
       if (newPolicyStr !== oldPolicyStr && newPolicyStr) {
         this.logger.debug(`Updating key policy for KMS Key ${logicalId}`);
         await this.getClient().send(
@@ -828,6 +921,21 @@ export class KMSProvider implements ResourceProvider {
             KeyId: physicalId,
             PolicyName: 'default',
             Policy: newPolicyStr,
+            // go-to-k/cdkd#5299: `createKey` sends the declared bypass, so
+            // the update does too; without it KMS refuses a policy the
+            // template already told it to accept.
+            ...(templateBool(properties['BypassPolicyLockoutSafetyCheck']) === true && {
+              BypassPolicyLockoutSafetyCheck: true,
+            }),
+          })
+        );
+      } else if (policyRemoved && newKeyPolicy === undefined) {
+        this.logger.debug(safeMsg`Resetting key policy for KMS Key ${logicalId} to the default`);
+        await this.getClient().send(
+          new PutKeyPolicyCommand({
+            KeyId: physicalId,
+            PolicyName: 'default',
+            Policy: await this.defaultKeyPolicy(physicalId),
           })
         );
       }
@@ -836,6 +944,9 @@ export class KMSProvider implements ResourceProvider {
 
       return { physicalId, wasReplaced: false };
     } catch (error) {
+      // A cdkd-typed throw (the disabled-key refusal in `sendRotation`) is
+      // already worded for the user.
+      if (error instanceof CdkdError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         mask,
@@ -850,6 +961,100 @@ export class KMSProvider implements ResourceProvider {
           )
       );
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5299: whether the live key already holds the desired value of
+   * every property in `changed`. A cdkd before the fix recorded such a change
+   * as deployed while the key kept the old value, so a template put back to
+   * the live value differs from the record but not from the key: nothing to
+   * send, and the update records the template. A failed read is "no", so the
+   * refusal stands.
+   */
+  private async liveKeyMatches(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    changed: readonly string[],
+    logicalId: string
+  ): Promise<boolean> {
+    let md: KeyMetadata | undefined;
+    try {
+      md = (await this.getClient().send(new DescribeKeyCommand({ KeyId: physicalId }))).KeyMetadata;
+    } catch {
+      return false;
+    }
+    if (!md) return false;
+    const live = immutableKeyShape(md as unknown as Record<string, unknown>);
+    const desired = immutableKeyShape(properties);
+    const matches = changed.every((name) => isDeepStrictEqual(desired[name], live[name]));
+    if (matches) {
+      this.logger.debug(
+        safeMsg`KMS Key ${logicalId}: the live key already holds the desired ${changed.join(', ')}; the record differed`
+      );
+    }
+    return matches;
+  }
+
+  /**
+   * A rotation call (`EnableKeyRotation` / `DisableKeyRotation`). KMS refuses
+   * it on a disabled key, as CloudFormation's update does (issue #1160 A/B), so
+   * that refusal is restated as what the template must change; it is final,
+   * since a retry meets the same disabled key. Not when this update has just
+   * enabled the key (`justEnabled`): there a DisabledException is KMS still
+   * catching up with the EnableKey, so it goes to the caller's ordinary wrap
+   * and the retry that heals it stays possible.
+   */
+  private async sendRotation(
+    send: () => Promise<unknown>,
+    justEnabled: boolean,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string
+  ): Promise<void> {
+    try {
+      await send();
+    } catch (error) {
+      if (!(error instanceof DisabledException) || justEnabled) throw error;
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`Failed to update KMS Key ${logicalId}: the key is currently disabled in AWS, and KMS refuses a key rotation change on a disabled key (CloudFormation fails this update too). Enable the key first (declare Enabled: true, or enable it in AWS), or drop the rotation change from this update.`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error
+        )
+      );
+    }
+  }
+
+  /**
+   * The KMS default key policy for `keyId`, as `CreateKey` attaches it when no
+   * policy is given and as CloudFormation puts it back when KeyPolicy is
+   * removed (issue #1160 A/B): `Id: key-default-1`, one statement allowing
+   * `kms:*` to the key's account root. The partition and account come from
+   * the key's own ARN, so a key in another partition or account gets its own.
+   */
+  private async defaultKeyPolicy(keyId: string): Promise<string> {
+    const resp = await this.getClient().send(new DescribeKeyCommand({ KeyId: keyId }));
+    const match = /^arn:([^:]+):kms:[^:]*:(\d{12}):key\//.exec(resp.KeyMetadata?.Arn ?? '');
+    if (match === null) {
+      throw new Error(
+        'DescribeKey returned no key ARN, so the default key policy cannot name the account'
+      );
+    }
+    return JSON.stringify({
+      Version: '2012-10-17',
+      Id: 'key-default-1',
+      Statement: [
+        {
+          Sid: 'Enable IAM User Permissions',
+          Effect: 'Allow',
+          Principal: { AWS: `arn:${match[1]}:iam::${match[2]}:root` },
+          Action: 'kms:*',
+          Resource: '*',
+        },
+      ],
+    });
   }
 
   private async deleteKey(
@@ -1322,4 +1527,58 @@ export class KMSProvider implements ResourceProvider {
     // reaching here needs an explicit `--resource` override.
     return null;
   }
+}
+
+/**
+ * The properties KMS fixes when a key is created, each with the value an
+ * absent one means. No KMS update call has a member for any of them.
+ */
+function immutableKeyShape(properties: Record<string, unknown>): Record<string, unknown> {
+  return {
+    KeySpec: properties['KeySpec'] ?? 'SYMMETRIC_DEFAULT',
+    KeyUsage: properties['KeyUsage'] ?? 'ENCRYPT_DECRYPT',
+    MultiRegion: templateBool(properties['MultiRegion']) === true,
+    Origin: properties['Origin'] ?? 'AWS_KMS',
+  };
+}
+
+/**
+ * go-to-k/cdkd#5299: the names among `KeySpec`, `KeyUsage`, `MultiRegion` and
+ * `Origin` whose desired value differs from the previous one. Each side is
+ * compared with its default filled in, so declaring or dropping a default
+ * value is no change (CFn A/B, us-east-1, 2026-10-26: both complete).
+ */
+function changedImmutableKeyProperties(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): string[] {
+  const desired = immutableKeyShape(properties);
+  const previous = immutableKeyShape(previousProperties);
+  return Object.keys(desired).filter((name) => !isDeepStrictEqual(desired[name], previous[name]));
+}
+
+/**
+ * go-to-k/cdkd#5299: the refusal's suggestion for a change to a property KMS
+ * fixes at creation. The schema lists no createOnly property, so the diff
+ * routes such a change to `update()`, which used to send nothing and report
+ * success while the live key kept the old value. CloudFormation fails the update instead of
+ * replacing the key, whatever `UpdateReplacePolicy` says (CFn A/B, us-east-1,
+ * 2026-10-26), so cdkd refuses too; `--replace` is the opt-in replacement, and
+ * `AWS::KMS::Key` being stateful, it also takes `--force-stateful-recreation`
+ * unless the old key is retained. Only property names are printed.
+ */
+function immutableKeySuggestion(changed: readonly string[]): string {
+  const one = changed.length === 1;
+  return `${changed.join(', ')} changed, and KMS fixes ${one ? 'it' : 'them'} when the key is created (CloudFormation fails this update too). To keep the key, restore the previous ${one ? 'value' : 'values'}. To replace it, re-deploy with --replace, plus --force-stateful-recreation unless the key's UpdateReplacePolicy is Retain; without Retain the old key is scheduled for deletion, and data encrypted under it cannot be decrypted once that deletion completes`;
+}
+
+/**
+ * A template boolean as CloudFormation reads it: `true` / `'true'` is true,
+ * `false` / `'false'` is false (a String parameter's Ref arrives as a
+ * string), absent stays absent. Anything else is truthiness, as before.
+ */
+function templateBool(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value.toLowerCase() === 'true';
+  return Boolean(value);
 }

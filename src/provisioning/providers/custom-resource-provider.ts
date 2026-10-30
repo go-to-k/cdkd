@@ -2,13 +2,14 @@ import {
   LambdaClient,
   InvokeCommand,
   GetFunctionCommand,
+  GetFunctionConfigurationCommand,
   UpdateFunctionConfigurationCommand,
   waitUntilFunctionActiveV2,
   waitUntilFunctionUpdatedV2,
   type InvocationResponse,
 } from '@aws-sdk/client-lambda';
 import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
 import {
   S3Client,
   PutObjectCommand,
@@ -44,6 +45,7 @@ import {
   isIamPropagationError,
   isMarkedNonRetryable,
   markNonRetryable,
+  markRedactedCause,
 } from '../../deployment/retryable-errors.js';
 import { type DeleteContext } from '../region-check.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
@@ -614,6 +616,14 @@ function parseLambdaPayload(
 }
 
 /**
+ * `text` closed with exactly one full stop: a redacted `describeAwsFailure`
+ * summary already ends with `VERBOSE_POINTER`'s, and a pass-through may not.
+ */
+function asSentence(text: string): string {
+  return text.endsWith('.') ? text : `${text}.`;
+}
+
+/**
  * Decode the base64 `LogResult` a `LogType: 'Tail'` invoke returns into the
  * backing function's log tail (issue #1674).
  *
@@ -634,28 +644,43 @@ function decodeInvokeLogTail(logResult: string | undefined): string | undefined 
 }
 
 /**
- * The backing function's own STATUS fields out of one `GetFunction` response,
- * as `Key=value` parts (issue #2033). Literal reads of AWS-authored fields only
- * — never the whole payload, which carries `Configuration.Environment.Variables`
- * and the presigned `Code.Location`.
+ * The backing function's own STATUS fields out of one `GetFunction` response
+ * (issue #2033). Literal reads of AWS-authored fields only — never the whole
+ * payload, which carries `Configuration.Environment.Variables` and the
+ * presigned `Code.Location`.
+ *
+ * `parts` are the state and reason-CODE fields as `Key=value`, plus a
+ * `Key withheld` marker for each reason SENTENCE present; `reasons` are those
+ * sentences as `Key=value`, for `logger.debug` only (go-to-k/cdkd#2319). A
+ * thrown message is persisted to `deployments/{runId}.jsonl`, and AWS words a
+ * reason with ARNs: a `KMSAccessDenied` reason quotes the denied principal's
+ * assumed-role ARN, which names the account. The code keeps the diagnosis.
  */
-function lambdaStatusParts(response: unknown): string[] {
+function lambdaStatusParts(response: unknown): { parts: string[]; reasons: string[] } {
   const config = (response as { Configuration?: unknown } | null | undefined)?.Configuration;
-  if (typeof config !== 'object' || config === null || Array.isArray(config)) return [];
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    return { parts: [], reasons: [] };
+  }
   const fields = config as Record<string, unknown>;
-  const status: Array<[string, unknown]> = [
-    ['State', fields['State']],
-    ['StateReasonCode', fields['StateReasonCode']],
-    ['StateReason', fields['StateReason']],
-    ['LastUpdateStatus', fields['LastUpdateStatus']],
-    ['LastUpdateStatusReasonCode', fields['LastUpdateStatusReasonCode']],
-    ['LastUpdateStatusReason', fields['LastUpdateStatusReason']],
+  const status: Array<[string, unknown, 'shown' | 'withheld']> = [
+    ['State', fields['State'], 'shown'],
+    ['StateReasonCode', fields['StateReasonCode'], 'shown'],
+    ['StateReason', fields['StateReason'], 'withheld'],
+    ['LastUpdateStatus', fields['LastUpdateStatus'], 'shown'],
+    ['LastUpdateStatusReasonCode', fields['LastUpdateStatusReasonCode'], 'shown'],
+    ['LastUpdateStatusReason', fields['LastUpdateStatusReason'], 'withheld'],
   ];
   const parts: string[] = [];
-  for (const [key, value] of status) {
-    if (typeof value === 'string' && value !== '') parts.push(`${key}=${value}`);
+  const reasons: string[] = [];
+  for (const [key, value, kind] of status) {
+    if (typeof value !== 'string' || value === '') continue;
+    if (kind === 'shown') parts.push(`${key}=${value}`);
+    else {
+      parts.push(`${key} withheld`);
+      reasons.push(`${key}=${value}`);
+    }
   }
-  return parts;
+  return { parts, reasons };
 }
 
 /**
@@ -802,10 +827,11 @@ function waiterRejectionDebugLines(rejections: WaiterRejections): string[] {
  * deploy knows. So what is kept is an allowlist:
  *
  *  - the waiter state and its fixed `reason` string;
- *  - the function's status fields, from `reason`, or else from the most
- *    recently FIRST-SEEN observed key that parses as one (`observedResponses`
- *    keeps each key at its first-seen position, so a repeated key is not
- *    moved to the end);
+ *  - the function's state and reason-code fields, from `reason`, or else from
+ *    the most recently FIRST-SEEN observed key that parses as one
+ *    (`observedResponses` keeps each key at its first-seen position, so a
+ *    repeated key is not moved to the end); a reason SENTENCE is only marked
+ *    withheld and returned in `reasons` for `debug` ({@link lambdaStatusParts});
  *  - `<status>: OK` keys;
  *  - each recorded REJECTION as `describeAwsFailure` summarizes it — its class
  *    for an AWS-authored one (a credential failure included), its text for a
@@ -820,7 +846,7 @@ function waiterRejectionDebugLines(rejections: WaiterRejections): string[] {
 function describeLambdaWaiterFailure(
   error: unknown,
   rejections: WaiterRejections
-): string | undefined {
+): { text: string; reasons: string[] } | undefined {
   if (!(error instanceof Error)) return undefined;
   let parsed: unknown;
   try {
@@ -836,7 +862,7 @@ function describeLambdaWaiterFailure(
     !Array.isArray(result.observedResponses)
       ? (result.observedResponses as Record<string, unknown>)
       : {};
-  const parts = lambdaStatusParts(result.reason);
+  const { parts, reasons } = lambdaStatusParts(result.reason);
   if (parts.length === 0) {
     for (const key of Object.keys(observed).reverse()) {
       let response: unknown;
@@ -845,9 +871,10 @@ function describeLambdaWaiterFailure(
       } catch {
         continue;
       }
-      const observedParts = lambdaStatusParts(response);
-      if (observedParts.length > 0) {
-        parts.push(...observedParts);
+      const observedStatus = lambdaStatusParts(response);
+      if (observedStatus.parts.length > 0) {
+        parts.push(...observedStatus.parts);
+        reasons.push(...observedStatus.reasons);
         break;
       }
     }
@@ -879,19 +906,23 @@ function describeLambdaWaiterFailure(
   const state = typeof result.state === 'string' ? result.state : 'failure';
   const reason =
     typeof result.reason === 'string' && result.reason !== '' ? `: ${result.reason}` : '';
-  return (
-    `${error.name} (waiter ${state}${reason}; ` +
-    `${parts.length > 0 ? parts.join(', ') : 'no function status reported'}). ` +
-    `The waiter's raw payload is withheld because it embeds the whole GetFunction ` +
-    `response, environment variables included; run \`aws lambda get-function\` for the detail.`
-  );
+  return {
+    text:
+      `${error.name} (waiter ${state}${reason}; ` +
+      `${parts.length > 0 ? parts.join(', ') : 'no function status reported'}). ` +
+      (reasons.length > 0 ? `${VERBOSE_POINTER} ` : '') +
+      `The waiter's raw payload is withheld because it embeds the whole GetFunction ` +
+      `response, environment variables included; run \`aws lambda get-function\` for the detail.`,
+    reasons,
+  };
 }
 
 /**
  * If `error` is a failed Lambda waiter, overwrite its `message` (and the first
  * line of its `stack`) IN PLACE with the {@link describeLambdaWaiterFailure}
  * text and return that text; otherwise return `undefined` and leave `error`
- * alone.
+ * alone. The status reason sentences that text withholds go to `debug` first,
+ * since the rewrite removes them from the error too.
  *
  * In place, not only in the wrapper's message, because the caught error stays
  * the wrapper's direct `cause` (the classifiers walk the chain, and
@@ -899,9 +930,15 @@ function describeLambdaWaiterFailure(
  * and a render that walks the chain — the CLI's fatal `util.inspect` of an
  * escaped error — would otherwise print the payload.
  */
-function withholdWaiterPayload(error: unknown, rejections: WaiterRejections): string | undefined {
-  const described = describeLambdaWaiterFailure(error, rejections);
-  if (described === undefined || !(error instanceof Error)) return undefined;
+function withholdWaiterPayload(
+  error: unknown,
+  rejections: WaiterRejections,
+  debug: (line: string) => void
+): string | undefined {
+  const failure = describeLambdaWaiterFailure(error, rejections);
+  if (failure === undefined || !(error instanceof Error)) return undefined;
+  for (const reason of failure.reasons) debug(safeMsg`Lambda waiter status reason: ${reason}`);
+  const described = failure.text;
   const header = `${error.name}: ${error.message}`;
   const stack = typeof error.stack === 'string' ? error.stack : '';
   try {
@@ -933,8 +970,12 @@ function withholdWaiterPayload(error: unknown, rejections: WaiterRejections): st
  * the two waiter calls, which catch every client exception) keeps only its
  * NAME: the fallback withholds too rather than relaying an unknown message.
  */
-function describeWaiterFailure(error: unknown, rejections: WaiterRejections): string {
-  const withheld = withholdWaiterPayload(error, rejections);
+function describeWaiterFailure(
+  error: unknown,
+  rejections: WaiterRejections,
+  debug: (line: string) => void
+): string {
+  const withheld = withholdWaiterPayload(error, rejections, debug);
   if (withheld !== undefined) return withheld;
   const name = error instanceof Error ? error.name : 'Error';
   return (
@@ -951,18 +992,21 @@ function describeWaiterFailure(error: unknown, rejections: WaiterRejections): st
  * `waitForBackingLambdaReady`; the thrown error is `markNonRetryable` (the
  * waiter already polled to its budget) and its text carries no AWS message
  * or `GetFunction` payload. `abortSignal` stops the wait on a Ctrl-C.
+ * `maxWaitSeconds` caps the budget (default 600) for a caller that shares one
+ * deadline across several functions.
  */
 export async function waitForLambdaFunctionActive(
   client: LambdaClient,
   functionArn: string,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  maxWaitSeconds = 600
 ): Promise<void> {
   const rejections = new WaiterRejections();
   try {
     await waitUntilFunctionActiveV2(
       {
         client: observingLambdaClient(client, rejections),
-        maxWaitTime: 600,
+        maxWaitTime: maxWaitSeconds,
         minDelay: 1,
         maxDelay: 5,
         ...(abortSignal ? { abortSignal } : {}),
@@ -976,11 +1020,68 @@ export async function waitForLambdaFunctionActive(
     }
     throw markNonRetryable(
       new Error(
-        `Lambda function ${functionArn} did not reach the Active state: ${describeWaiterFailure(error, rejections)}`,
+        `Lambda function ${functionArn} did not reach the Active state: ${describeWaiterFailure(
+          error,
+          rejections,
+          (line) => log.debug(line)
+        )}`,
         { cause: error }
       )
     );
   }
+}
+
+/**
+ * `arn:<partition>:lambda:<region>:<account>:function:<name>[:<qualifier>]`.
+ * A layer (`:layer:`) or an event-source mapping ARN never matches: only a
+ * function can be `Pending`.
+ */
+const LAMBDA_FUNCTION_ARN =
+  /^arn:aws(?:-[a-z]+)*:lambda:[a-z0-9-]+:\d{12}:function:[\w-]+(?::[\w$-]+)?$/;
+
+/** Bounds on the property walk: a custom resource bag is user data, not a trusted shape. */
+const REFERENCED_LAMBDA_MAX_DEPTH = 8;
+const REFERENCED_LAMBDA_MAX_ARNS = 16;
+/** ONE budget for the whole scan: stuck functions must not add up to hours before the handler runs. */
+const REFERENCED_LAMBDA_MAX_WAIT_SECONDS = 600;
+
+/**
+ * The Lambda function ARNs a custom resource's resolved properties point at,
+ * other than its own backing function (`excludeArn`), in first-seen order and
+ * de-duplicated. Only string VALUES are read, never keys.
+ *
+ * A handler that hands such an ARN to an AWS API (the CDK `BucketNotifications`
+ * handler passes it to `PutBucketNotificationConfiguration` as a destination)
+ * is a consumer that AWS rejects while the function is still `Pending`, exactly
+ * as an ELBv2 Lambda target is (go-to-k/cdkd#5002).
+ *
+ * `maxArns` bounds the scan (default {@link REFERENCED_LAMBDA_MAX_ARNS}). A caller
+ * that filters the result afterwards passes `Infinity` and caps the FILTERED list
+ * itself, so a function that is new on update is not hidden behind ARNs that
+ * were already there.
+ */
+export function collectReferencedLambdaFunctionArns(
+  properties: unknown,
+  excludeArn: string,
+  maxArns: number = REFERENCED_LAMBDA_MAX_ARNS
+): string[] {
+  const found = new Set<string>();
+  const walk = (value: unknown, depth: number): void => {
+    if (found.size >= maxArns || depth > REFERENCED_LAMBDA_MAX_DEPTH) return;
+    if (typeof value === 'string') {
+      if (value !== excludeArn && LAMBDA_FUNCTION_ARN.test(value)) found.add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const item of Object.values(value)) walk(item, depth + 1);
+    }
+  };
+  walk(properties, 0);
+  return [...found];
 }
 
 /**
@@ -1852,6 +1953,41 @@ export class CustomResourceProvider implements ResourceProvider {
   }
 
   /**
+   * The `create()` / `update()` failure wrap. A method, so
+   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   *
+   * An AWS-authored failure (an `Invoke`, `Publish` or response-placeholder
+   * `PutObject` rejection) reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug`, masked, since
+   * it can quote a rejected request value. A cdkd-authored error (the
+   * handler's FAILED reason, a readiness-waiter failure, a timeout) keeps its
+   * text. A non-`Error` throw is withheld the same way. The caught error stays
+   * the `cause` (the persisted `awsErrorCode` / `requestId` come from it) and
+   * the wrap is `markRedactedCause`d, so any chain-reading classifier still
+   * sees AWS's wording. The IAM-propagation retry does not depend on either:
+   * it runs inside `invokeCustomResourceWithRetry` (`isTransientAuthzThrow`)
+   * on the raw error, before this wrap, and `disableOuterRetry` keeps the
+   * outer `withRetry` from ever classifying the wrap.
+   * No "already exists" restatement: every AWS call here acts on something
+   * other than the custom resource (`markAuxiliaryFailure`, #3826), so none
+   * can be this resource's name collision.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return build(failure.detail);
+    this.logger.debug(maskerOrIdentity(mask)(build(failure.detail).message));
+    // A non-`Error` throw has no chain for the stamp to name.
+    const wrapped = build(failure.summary);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
    * Create a custom resource by invoking its Lambda handler
    */
   async create(
@@ -1900,7 +2036,8 @@ export class CustomResourceProvider implements ResourceProvider {
         // Issue #2178: the handler's response can echo the RESOLVED
         // `ResourceProperties` back, so the payload refusal masks before it
         // stringifies. Absent means unmasked.
-        maskerOrIdentity(context?.maskSecrets)
+        maskerOrIdentity(context?.maskSecrets),
+        { properties }
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -1936,12 +2073,17 @@ export class CustomResourceProvider implements ResourceProvider {
       // be this resource's name collision (#3826).
       markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create custom resource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create custom resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -1999,7 +2141,8 @@ export class CustomResourceProvider implements ResourceProvider {
           OldResourceProperties: this.stringifyProperties(previousProperties),
         }),
         // Issue #2178: see `create()` — same payload refusal, same bag.
-        maskerOrIdentity(context?.maskSecrets)
+        maskerOrIdentity(context?.maskSecrets),
+        { properties, previousProperties }
       );
 
       if (cfnResponse.Status === 'FAILED') {
@@ -2030,12 +2173,17 @@ export class CustomResourceProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update custom resource ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update custom resource ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -2299,13 +2447,23 @@ export class CustomResourceProvider implements ResourceProvider {
       // rendered into the `Error` the deploy-side replacement sites throw, and
       // their catch classifies "already deleted" by substring, so an AWS text
       // carrying `does not exist` would put the record right back in the bin.
+      //
+      // The class at warn, AWS's sentence at debug (go-to-k/cdkd#2319): a
+      // denied `Invoke` names the caller's assumed-role ARN, which the masker
+      // does not cover.
+      const failure = describeAwsFailure(error);
       this.logger.warn(
         show(
-          `Failed to delete custom resource ${logicalId}, but continuing: ${describeAwsFailure(error).detail}. ` +
+          `Failed to delete custom resource ${logicalId}, but continuing: ${asSentence(failure.summary)} ` +
             `The Delete handler did not complete, so anything this custom resource manages may still ` +
             `be LIVE${handlerSkipRemedy(context, logicalId)}`
         )
       );
+      if (failure.redacted) {
+        this.logger.debug(
+          show(`Custom resource ${logicalId} delete failure detail: ${failure.detail}`)
+        );
+      }
       return { outcome: 'skipped', reason: CR_DELETE_INVOKE_FAILED_SKIP_REASON };
     }
   }
@@ -2467,7 +2625,11 @@ export class CustomResourceProvider implements ResourceProvider {
       responseURL: string;
       stackId: string;
     }) => Record<string, unknown>,
-    mask: MaskerFn | undefined
+    mask: MaskerFn | undefined,
+    referenced?: {
+      properties: Record<string, unknown>;
+      previousProperties?: Record<string, unknown>;
+    }
   ): Promise<CfnCustomResourceResponse> {
     // One watch for the whole invocation, disposed in the `finally` below, so
     // Ctrl-C aborts a 47.75s pre-delivery backoff and the placeholder
@@ -2483,6 +2645,18 @@ export class CustomResourceProvider implements ResourceProvider {
       // fail, and delete — after a bounded re-ask — reports the resource
       // `skipped` and keeps it.
       const stackId = await this.resolveSyntheticStackId(logicalId, operation, watch);
+      // Once per call, never per attempt: a retry re-invokes the handler, not the
+      // functions its properties name. Create / update only (delete passes none).
+      if (referenced !== undefined) {
+        await this.waitForReferencedLambdasActive(
+          logicalId,
+          serviceToken,
+          referenced.properties,
+          referenced.previousProperties,
+          watch,
+          mask
+        );
+      }
       // Two budgets, counted SEPARATELY (issue #2033). Sharing the loop counter
       // would let a pre-delivery throw consume the FAILED-response arm's budget
       // — with the arms on 26 and 2, three thrown retries would silently leave
@@ -2505,7 +2679,7 @@ export class CustomResourceProvider implements ResourceProvider {
         let invocation: { requestId: string; responseKey: string; responseURL: string } | undefined;
 
         try {
-          invocation = await this.prepareInvocation(logicalId, watch);
+          invocation = await this.prepareInvocation(logicalId, watch, mask);
           const request = buildRequest({ ...invocation, stackId });
 
           this.logger.debug(
@@ -2547,12 +2721,21 @@ export class CustomResourceProvider implements ResourceProvider {
             IAM_PROPAGATION_INITIAL_DELAY_MS * Math.pow(2, preDeliveryRetries),
             IAM_PROPAGATION_MAX_DELAY_MS
           );
+          // The class at warn, AWS's sentence at debug (go-to-k/cdkd#2319):
+          // an `AccessDeniedException` names the caller's assumed-role ARN,
+          // which the masker does not cover.
+          const failure = describeAwsFailure(error);
           this.logger.warn(
             `Custom resource ${operation} for ${logicalId} hit a transient IAM-authorization error ` +
               `before the request was delivered (attempt ${attempt + 1}/${this.preDeliveryAuthzMaxRetries + 1}): ` +
-              `${this.truncateReason(shown(describeAwsFailure(error).detail))}. ` +
+              `${asSentence(this.truncateReason(shown(failure.summary)))} ` +
               `Retrying in ${delayMs / 1000}s with a fresh response URL and RequestId.`
           );
+          if (failure.redacted) {
+            this.logger.debug(
+              `Custom resource ${operation} for ${logicalId} pre-delivery failure detail: ${shown(failure.detail)}`
+            );
+          }
           // Best-effort, and BEFORE the sleep so an interrupt cannot skip it.
           // The next attempt signs a fresh key, so this one is unreachable.
           if (invocation !== undefined) {
@@ -2591,7 +2774,7 @@ export class CustomResourceProvider implements ResourceProvider {
                 : `The handler's reason carried no authorization wording; the denial was found in the backing function's log: ${this.truncateReason(shown(logAuthzMatch.line))}. `) +
               `Recycling the backing function's execution environment and retrying so its next cold start picks up the propagated policy.`
           );
-          await this.recycleBackingFunctionExecEnv(serviceToken, logicalId);
+          await this.recycleBackingFunctionExecEnv(serviceToken, logicalId, mask);
           continue;
         }
 
@@ -2866,7 +3049,8 @@ export class CustomResourceProvider implements ResourceProvider {
    */
   private async recycleBackingFunctionExecEnv(
     serviceToken: string,
-    logicalId: string
+    logicalId: string,
+    mask: MaskerFn | undefined
   ): Promise<void> {
     // SNS-backed custom resources have no Lambda to recycle (the token is a
     // topic ARN); skip the pointless, guaranteed-to-fail API call.
@@ -2900,7 +3084,9 @@ export class CustomResourceProvider implements ResourceProvider {
       // message can quote (`carriesResponseBody`).
       this.logger.debug(
         `Could not recycle backing function for ${logicalId} (${
-          withholdWaiterPayload(error, rejections) ??
+          withholdWaiterPayload(error, rejections, (line) =>
+            this.logger.debug(maskerOrIdentity(mask)(line))
+          ) ??
           (error instanceof Error && carriesResponseBody(error)
             ? `${error.name} (response body withheld)`
             : describeAwsFailure(error).detail)
@@ -2966,7 +3152,7 @@ export class CustomResourceProvider implements ResourceProvider {
     // one consumer that breaks against not-ready Lambdas — instead of
     // gating every Lambda CREATE on Active, which doubled deploy time on
     // VPC-Lambda benchmark stacks.
-    await this.waitForBackingLambdaReady(serviceToken, logicalId);
+    await this.waitForBackingLambdaReady(serviceToken, logicalId, mask);
 
     const invokeResponse = await this.invokeLambda(serviceToken, request);
     onDelivered();
@@ -3048,7 +3234,11 @@ export class CustomResourceProvider implements ResourceProvider {
    * caught error is rewritten IN PLACE to the same text, since it stays this
    * wrapper's `cause`.
    */
-  private async waitForBackingLambdaReady(serviceToken: string, logicalId: string): Promise<void> {
+  private async waitForBackingLambdaReady(
+    serviceToken: string,
+    logicalId: string,
+    mask: MaskerFn | undefined
+  ): Promise<void> {
     // One record per waiter: rejections the first waiter polled through
     // before succeeding say nothing about why the second one failed.
     let rejections = new WaiterRejections();
@@ -3082,11 +3272,116 @@ export class CustomResourceProvider implements ResourceProvider {
         new Error(
           `Lambda backing custom resource ${logicalId} (${serviceToken}) did not reach a ready state for Invoke: ${describeWaiterFailure(
             error,
-            rejections
+            rejections,
+            (line) => this.logger.debug(maskerOrIdentity(mask)(line))
           )}`,
           { cause: error }
         )
       );
+    }
+  }
+
+  /**
+   * Wait for each Lambda function the resource's properties point at (other
+   * than its own backing function) to leave `Pending`, before the handler runs
+   * (go-to-k/cdkd#5002 class; the first instance seen was an S3 notification
+   * destination: `PutBucketNotificationConfiguration` answers "Unable to
+   * validate the following destination configurations" for a `Pending` function).
+   * `LambdaFunctionProvider.create` returns while the function is `Pending`, and
+   * only a handler can tell what it will do with the ARN, so the wait lives here.
+   *
+   * **Best effort, never fatal.** One `GetFunctionConfiguration` per ARN, and
+   * only a `Pending` function starts the waiter: the waiter's generated
+   * `checkState` turns EVERY exception into RETRY, so calling it for an ARN cdkd
+   * cannot read (deleted, another account or region, `lambda:GetFunction`
+   * denied) would burn its whole 600s budget on a property the handler may never
+   * touch. A read error, a `Failed` function or a spent waiter therefore skips
+   * the wait and leaves the verdict to the handler, which is what a deploy did
+   * before this wait existed. Only Ctrl-C throws.
+   *
+   * **One budget for the whole scan**: the waiters share a single
+   * {@link REFERENCED_LAMBDA_MAX_WAIT_SECONDS} deadline, so several stuck
+   * functions cannot turn a fast handler failure into a long hang.
+   *
+   * On update only an ARN absent from `previousProperties` is read: one that was
+   * already there belongs to a function an earlier deploy created.
+   *
+   * Costs nothing for a custom resource whose properties name no function ARN.
+   */
+  private async waitForReferencedLambdasActive(
+    logicalId: string,
+    serviceToken: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown> | undefined,
+    watch: InterruptWatch,
+    mask: MaskerFn | undefined
+  ): Promise<void> {
+    // An ARN can come from an SSM or NoEcho value, and an AWS failure summary can echo
+    // it, so every line is masked as a whole.
+    const debug = (line: string): void => this.logger.debug(maskerOrIdentity(mask)(line));
+    // Neither scan is capped: the cap applies to what is left AFTER the filter, so
+    // an ARN that is new on update is read even when 16 older ones precede it.
+    const already = new Set(
+      previousProperties === undefined
+        ? []
+        : collectReferencedLambdaFunctionArns(previousProperties, serviceToken, Infinity)
+    );
+    const fresh = collectReferencedLambdaFunctionArns(properties, serviceToken, Infinity).filter(
+      (arn) => !already.has(arn)
+    );
+    if (fresh.length > REFERENCED_LAMBDA_MAX_ARNS) {
+      debug(
+        safeMsg`${logicalId} references ${fresh.length} Lambda functions; only the first ${REFERENCED_LAMBDA_MAX_ARNS} are waited for`
+      );
+    }
+    const arns = fresh.slice(0, REFERENCED_LAMBDA_MAX_ARNS);
+    const deadline = Date.now() + REFERENCED_LAMBDA_MAX_WAIT_SECONDS * 1000;
+    // One controller for the reads and the waiters: a Ctrl-C aborts whichever is running.
+    const abort = new AbortController();
+    const poll = setInterval(() => {
+      if (watch.isInterrupted()) abort.abort();
+    }, 1000);
+    try {
+      for (const arn of arns) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        let state: string | undefined;
+        try {
+          const config = await this.lambdaClient.send(
+            new GetFunctionConfigurationCommand({ FunctionName: arn }),
+            { abortSignal: abort.signal }
+          );
+          state = config.State;
+        } catch (error) {
+          // A Ctrl-C that landed during the read aborts it and is seen here.
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          debug(
+            safeMsg`Not waiting for ${arn} referenced by ${logicalId}: ${describeAwsFailure(error).summary}`
+          );
+          continue;
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (state !== 'Pending') continue;
+
+        // `waitUntil*` rejects a `maxWaitTime` that is not above its 1s minimum delay.
+        const remainingSeconds = Math.floor((deadline - Date.now()) / 1000);
+        if (remainingSeconds <= 1) {
+          debug(
+            safeMsg`The wait budget for the functions referenced by ${logicalId} is spent; leaving ${arn} to the handler`
+          );
+          break;
+        }
+        debug(safeMsg`Waiting for ${arn} referenced by ${logicalId} to become Active`);
+        try {
+          await waitForLambdaFunctionActive(this.lambdaClient, arn, abort.signal, remainingSeconds);
+        } catch (error) {
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+          debug(
+            safeMsg`Referenced function ${arn} of ${logicalId} did not become Active; leaving it to the handler: ${describeAwsFailure(error).summary}`
+          );
+        }
+      }
+    } finally {
+      clearInterval(poll);
     }
   }
 
@@ -3309,7 +3604,8 @@ export class CustomResourceProvider implements ResourceProvider {
    */
   private async prepareInvocation(
     logicalId: string,
-    watch: InterruptWatch
+    watch: InterruptWatch,
+    mask: MaskerFn | undefined
   ): Promise<{
     requestId: string;
     responseKey: string;
@@ -3317,7 +3613,7 @@ export class CustomResourceProvider implements ResourceProvider {
   }> {
     const requestId = `cdkd-${Date.now()}-${Math.random().toString(36).substring(7)}`;
     const responseKey = this.getResponseKey(requestId);
-    const responseURL = await this.generateResponseURL(responseKey, logicalId, watch);
+    const responseURL = await this.generateResponseURL(responseKey, logicalId, watch, mask);
     return { requestId, responseKey, responseURL };
   }
 
@@ -3327,7 +3623,8 @@ export class CustomResourceProvider implements ResourceProvider {
   private async generateResponseURL(
     responseKey: string,
     logicalId: string,
-    watch: InterruptWatch
+    watch: InterruptWatch,
+    mask: MaskerFn | undefined
   ): Promise<string> {
     if (!this.responseBucket) {
       // Fallback: return a dummy URL (legacy behavior)
@@ -3389,7 +3686,15 @@ export class CustomResourceProvider implements ResourceProvider {
         }
       );
     } catch (error) {
-      throw markNonRetryable(error instanceof Error ? error : new Error(safeStringify(error)));
+      if (error instanceof Error) throw markNonRetryable(error);
+      // A non-`Error` rejection is withheld like the create / update wrap
+      // withholds it (go-to-k/cdkd#2319): a plain `Error` built from its text
+      // would read as cdkd-authored and reach the persisted message.
+      const failure = describeAwsFailure(error);
+      this.logger.debug(
+        maskerOrIdentity(mask)(`Response placeholder PutObject failure detail: ${failure.detail}`)
+      );
+      throw markNonRetryable(new Error(failure.summary));
     }
 
     // Generate pre-signed PUT URL (valid for 2 hours to accommodate async Provider framework

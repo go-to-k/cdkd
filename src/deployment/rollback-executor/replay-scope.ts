@@ -1,4 +1,9 @@
-import type { ResourceState, StackOrphanRecord } from '../../types/state.js';
+import type {
+  ResourceState,
+  StackOrphanRecord,
+  SupersededResourceRecord,
+} from '../../types/state.js';
+import type { RolledBackCreate } from '../../state/name-generation.js';
 import type { Logger } from '../../types/config.js';
 import type { RollbackInlinePolicyWriters } from '../inline-policy-claims.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
@@ -27,6 +32,8 @@ export interface ReplayOpScope {
   readonly orphanLogicalIds: Set<string>;
   readonly result: RollbackReplayResult;
   readonly onOrphan: ((record: StackOrphanRecord) => void) | undefined;
+  /** go-to-k/cdkd#5064: told of a CREATE taken back before `afterOp` saves. */
+  readonly onRolledBackCreate: ((create: RolledBackCreate) => void) | undefined;
   readonly inlinePolicyWriters: RollbackInlinePolicyWriters;
   readonly afterOp: ((logicalId: string) => Promise<void> | void) | undefined;
   readonly isInterrupted: (() => boolean) | undefined;
@@ -43,6 +50,30 @@ export interface ReplayOpScope {
    * `replaySingle`'s shared catch for its ROLLBACK_RESOURCE_FAILED event.
    */
   createRollbackRoute: 'sdk' | 'cc-api' | undefined;
+  /** go-to-k/cdkd#5064: set when the replay runs this op ahead of its slot. */
+  readonly deferral: ReplayDeferral | undefined;
+}
+
+/**
+ * go-to-k/cdkd#5064: a renamed reverse-replacement run AHEAD of the ops that
+ * revert to its old name. The create-first arm hands its delete of the new
+ * resource to `defer` instead of running it, and the replay runs it at the
+ * op's own slot, after those ops moved off the new resource. The handed
+ * function never throws.
+ *
+ * Between the two, no record holds the new resource, so the arm reports it to
+ * `onSuperseded` BEFORE `afterOp` saves the old record, and to
+ * `onSupersededSettled` once the delete ran: a run killed in between leaves it
+ * in `StackState.supersededResources` (#5111), which the next deploy deletes.
+ *
+ * `keep` is handed only when the new resource IS so recorded: the replay calls
+ * it INSTEAD of `finish` when a resource that still uses the new copy did not
+ * revert, or on an interrupt, and the entry stays for the next deploy.
+ */
+export interface ReplayDeferral {
+  defer(finish: () => Promise<void>, keep?: (reason: string) => void): void;
+  onSuperseded?: ((entry: SupersededResourceRecord) => void) | undefined;
+  onSupersededSettled?: ((entry: SupersededResourceRecord) => void) | undefined;
 }
 
 /**
@@ -63,4 +94,28 @@ export function withReplayDeletePrinting<T>(
   return withPrintingSecrets(scope.secrets, () =>
     deployBag === undefined ? fn() : withPrintingSecrets(deployBag, fn)
   );
+}
+
+/**
+ * go-to-k/cdkd#5064: report that a CREATE's resource was taken back and its
+ * record (`undefined` for none) left `stateResources`: onto `result`, and to
+ * the caller's callback BEFORE the arm's `afterOp` saves, so every save from
+ * then on retires the logical id's generation. CREATE ops only.
+ */
+export function noteRolledBackCreate(
+  scope: {
+    result: Pick<RollbackReplayResult, 'rolledBackCreates'>;
+    onRolledBackCreate: ((create: RolledBackCreate) => void) | undefined;
+  },
+  op: { logicalId: string; changeType: string; nameGeneration?: unknown },
+  record: ResourceState | undefined
+): void {
+  if (op.changeType !== 'CREATE') return;
+  const create: RolledBackCreate = {
+    logicalId: op.logicalId,
+    record,
+    ...(op.nameGeneration !== undefined && { nameGeneration: op.nameGeneration }),
+  };
+  scope.result.rolledBackCreates.push(create);
+  scope.onRolledBackCreate?.(create);
 }

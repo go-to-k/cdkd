@@ -238,7 +238,8 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
   // image swaps on container Lambdas. Surface `Code.ImageUri` when AWS
   // reports it; the ZIP-side sub-paths stay declared via
   // `getDriftUnknownPaths` (`Code.S3Bucket` / `Code.S3Key` /
-  // `Code.S3ObjectVersion` / `Code.ZipFile` / `Code.SourceKMSKeyArn`).
+  // `Code.S3ObjectVersion` / `Code.S3ObjectStorageMode` / `Code.ZipFile` /
+  // `Code.SourceKMSKeyArn`).
   it('surfaces Code.ImageUri for container Lambdas (PackageType=Image)', async () => {
     mockSend.mockResolvedValueOnce({
       Configuration: {
@@ -300,6 +301,9 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       'Code.S3Bucket',
       'Code.S3Key',
       'Code.S3ObjectVersion',
+      // Issue #5300: now sent on create / UpdateFunctionCode, but GetFunction
+      // has no member to read it back -- a state value would drift forever.
+      'Code.S3ObjectStorageMode',
       'Code.ZipFile',
       'Code.SourceKMSKeyArn',
     ]);

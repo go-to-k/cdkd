@@ -109,7 +109,7 @@ describe('DeployEngine per-call deps helpers read per-deploy state LIVE', () => 
     expect(deps.noEchoCeilingReadbackTimeoutMs()).toBe(1);
   });
 
-  it('replacementDeps reads secretsRun, stackRecordsView, deployStateResources, interrupted and interruptCause live', () => {
+  it('replacementDeps reads secretsRun, stackRecordsView, deployStateResources, interrupted, interruptCause and userInterrupted live', () => {
     const engine = makeEngine();
     const deps = engine.replacementDeps();
 
@@ -130,6 +130,9 @@ describe('DeployEngine per-call deps helpers read per-deploy state LIVE', () => 
 
     engine.interruptCause = 'sibling-failure';
     expect(deps.interruptCause()).toBe('sibling-failure');
+
+    engine.userInterrupted = true;
+    expect(deps.userInterrupted()).toBe(true);
   });
 
   it('rollbackDeps reads secretsRun, noEchoRun, outputsRun, recordedImports, recordedOutputReads, resumedCreates, absentJournalVersionPurge and interrupted live, and resets resumedCreates on the engine', () => {
@@ -172,6 +175,9 @@ describe('DeployEngine per-call deps helpers read per-deploy state LIVE', () => 
 
     engine.interrupted = true;
     expect(deps.interrupted()).toBe(true);
+
+    engine.userInterrupted = true;
+    expect(deps.userInterrupted()).toBe(true);
   });
 
   it('outputsDeps forwards buildResolverContext and noEchoPositionSources bound to the CURRENT engine, not a snapshot', () => {

@@ -18,6 +18,10 @@
  *  - `TINY_A` / `TINY_B`, two characters, below the masker's substring floor and
  *    in no fixed wording, so on a cdkd line only the RAW value mask or a
  *    derived-name needle can remove them.
+ *
+ * Since go-to-k/cdkd#2319 an AWS-authored failure's text is withheld from the
+ * thrown message (class plus `--verbose` pointer) and goes to the masked debug
+ * line, so an AWS echo is asserted on the transcript.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
@@ -71,6 +75,7 @@ vi.spyOn(
 import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { RecordedSecretValues } from '../../../src/deployment/secret-redaction.js';
 import { WITHHELD_AWS_COMMAND } from '../../../src/provisioning/replacement-protection-advice.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 import {
   hasRedactedCause,
   isRetryableTransientError,
@@ -436,7 +441,9 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
         const message = await thrownMessage(c.run(provider));
         expect(message).toContain(c.prefix);
         expect(message).not.toContain(LONG);
-        expect(message).toContain(MASKED_ECHO);
+        expect(transcript()).toContain(MASKED_ECHO);
+        expect(transcript()).not.toContain(LONG);
+        expect(message).toContain(VERBOSE_POINTER);
       });
     }
 
@@ -454,7 +461,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(`Creation of service was not idempotent: ${SECRET_MASK}`);
+      expect(transcript()).toContain(`Creation of service was not idempotent: ${SECRET_MASK}`);
+      expect(message).toContain(VERBOSE_POINTER);
       expect(message).not.toContain(TINY_A);
     });
 
@@ -520,7 +528,10 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
       expect(warned).toContain(
         `Failed to clean up partially-created ECS service Svc (${ARN_PREFIX}:service/${SECRET_MASK}/${SECRET_MASK}):`
       );
-      expect(warned).toContain(MASKED_ECHO);
+      // go-to-k/cdkd#2319: the class at warn, AWS's text at debug, masked there.
+      expect(warned).toContain(`InvalidParameterException. ${VERBOSE_POINTER}`);
+      expect(warned).not.toContain('Invalid value');
+      expect(debugSpy.mock.calls.map((args) => String(args[0])).join('\n')).toContain(MASKED_ECHO);
       expect(warned).toContain(WITHHELD_AWS_COMMAND);
       expect(message).toContain('did not reach steady state under --full-wait');
       expect(message).toContain(WITHHELD_AWS_COMMAND);
@@ -554,7 +565,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(`Cluster not found: ${SECRET_MASK}`);
+      expect(transcript()).toContain(`Cluster not found: ${SECRET_MASK}`);
+      expect(message).toContain(VERBOSE_POINTER);
       expect(`${message}\n${transcript()}`).not.toContain(TINY_A);
     });
 
@@ -625,7 +637,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(`Cluster not found: ${SECRET_MASK}`);
+      expect(transcript()).toContain(`Cluster not found: ${SECRET_MASK}`);
+      expect(message).toContain(VERBOSE_POINTER);
       expect(`${message}\n${transcript()}`).not.toContain(TINY_B);
     });
   });
@@ -812,7 +825,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(MASKED_ECHO);
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(message).toContain(VERBOSE_POINTER);
       expect(message).not.toContain(OLD_NAME);
       expect(transcript()).toContain(`Updating ECS cluster Clu: ${SECRET_MASK}`);
       expect(transcript()).not.toContain(OLD_NAME);
@@ -847,7 +861,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(MASKED_ECHO);
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(message).toContain(VERBOSE_POINTER);
       expect(transcript()).toContain(`Updating ECS service Svc: ${ARN_PREFIX}:service/${SECRET_MASK}`);
       expect(`${message}\n${transcript()}`).not.toContain(OLD_SERVICE);
     });
@@ -892,7 +907,8 @@ describe('ECSProvider masked log sinks (issue #2177)', () => {
           { maskSecrets }
         )
       );
-      expect(message).toContain(MASKED_ECHO);
+      expect(transcript()).toContain(MASKED_ECHO);
+      expect(message).toContain(VERBOSE_POINTER);
       expect(transcript()).toContain(`Updating ECS service Svc: ${SECRET_MASK}`);
       expect(`${message}\n${transcript()}`).not.toContain(OLD_SERVICE);
     });

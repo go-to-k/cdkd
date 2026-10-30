@@ -28,7 +28,8 @@ import { getAwsClients } from '../../utils/aws-clients.js';
 import { IamCreateClientCache } from './iam-create-client.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceNameWithFallback } from '../resource-name.js';
+import { markNotGone } from '../not-gone.js';
+import { generateResourceNameWithFallback, recordedGeneratedNameKept } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { withRemovalDefaults } from '../update-removal.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
@@ -41,9 +42,19 @@ import {
   type MaskerFn,
 } from '../masked-retry-logger.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import {
+  isAuxiliaryFailure,
+  markAuxiliaryFailure,
+  markCreatedBeforeFailure,
+} from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
-import { markNonRetryable, wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import type {
   CreateContext,
   UpdateContext,
@@ -96,19 +107,35 @@ export class IAMRoleProvider implements ResourceProvider {
   private logger = getLogger().child('IAMRoleProvider');
 
   /**
-   * A failure wrap quoting the caught error's text through the operation's
-   * masker (issue #2177). The `cause` stays unmasked, and a message the mask
-   * changed is stamped so the retry classifiers read that chain rather than
-   * the masked message, whose IAM-propagation wording a secret needle could
-   * cut (`wrapMaskedAwsError`, issue #4244). A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
+   * A failure wrap that never quotes AWS's own text (issue #2319). The thrown
+   * message is persisted to `deployments/{runId}.jsonl`, and an IAM
+   * `AccessDenied` names the caller's assumed-role ARN, so an AWS-authored
+   * failure is named by its class plus the `--verbose` pointer: AWS's text
+   * goes to `debug` through the masker, and the wrap is stamped
+   * `markRedactedCause` so the retry classifiers read the withheld text (the
+   * IAM-propagation wording included) on the unmasked `cause` chain. An
+   * "already exists" is restated ({@link relayedNameCollision}); the class
+   * name keeps `NoSuchEntity` in the message for the engine's not-found
+   * matchers. A cdkd-authored or transport error, or a non-`Error` throw,
+   * keeps its text masked (issue #2177, `wrapMaskedAwsError`, issue #4244).
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call. A method, so `gen-update-wrap-coverage`
+   * sees the catch that throws it as a wrap.
    */
   private wrapMaskedError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    return wrapMaskedAwsError(mask, error, build);
+    const failure = describeAwsFailure(error);
+    if (!(error instanceof Error)) return build(mask(failure.detail));
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    // Not from a post-create step (`markAuxiliaryFailure`), where "it" would
+    // read as the resource just created.
+    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
+    return markRedactedCause(build(`${mask(failure.summary)}${relay}`));
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -266,6 +293,7 @@ export class IAMRoleProvider implements ResourceProvider {
       const response = await createClient.send(new CreateRoleCommand(createParams));
       leftBehind = true;
       createdRoleIdentity = roleIdentityToken(response.Role?.RoleId);
+      reportCreatedResource(logicalId, resourceType, roleName, createdRoleIdentity); // go-to-k/cdkd#5511
 
       log.debug(`Created IAM role: ${v(roleName)}`);
 
@@ -322,6 +350,7 @@ export class IAMRoleProvider implements ResourceProvider {
           await this.detachAllManagedPolicies(roleName, log);
           await this.deleteAllInlinePolicies(roleName, log);
           await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
+          retractCreatedResource(logicalId, resourceType, roleName);
           leftBehind = false;
           log.debug(
             `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`
@@ -337,8 +366,14 @@ export class IAMRoleProvider implements ResourceProvider {
           // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
           // redirections.
           const aws = pasteableAwsCommand(log.mask);
+          // An AWS-authored failure is named by its class at warn, and AWS's
+          // text (a denied `DeleteRole` names the caller) goes to `debug` under
+          // the same head (go-to-k/cdkd#2319).
+          const cleanupFailure = describeAwsFailure(cleanupError);
+          const cleanupHead = `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): `;
+          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
           log.warn(
-            `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): ${v(describeAwsFailure(cleanupError).detail)}. Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
+            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
           );
         }
         // The resource itself was created: an "already exists" from its wiring
@@ -359,9 +394,9 @@ export class IAMRoleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      // Issue #2177: the AWS message is masked RAW before interpolation. The
-      // cause stays unmasked: a masked message is stamped so the retry
-      // classifiers read the chain (`wrapMaskedError`, issue #4244).
+      // An AWS-authored failure is named by its class (issue #2319) and any
+      // other text masked RAW (issue #2177). The cause stays unmasked, and the
+      // stamp lets the retry classifiers read it (`wrapMaskedError`, #4244).
       throw this.wrapMaskedError(log.mask, error, (text) => {
         const built = new ProvisioningError(
           `Failed to create IAM role ${logicalId}: ${text}`,
@@ -452,7 +487,22 @@ export class IAMRoleProvider implements ResourceProvider {
           `'cdkd drift --accept' records the live one; only a deploy renames the role.`
       );
     }
-    const newRoleName = revertKeepsName ? physicalId : derivedRoleName;
+    // go-to-k/cdkd#5064: an un-named role whose recorded name differs from the
+    // derivation only by the naming scheme keeps it, never a replacement.
+    const generatedNameKept = recordedGeneratedNameKept({
+      recorded: physicalId,
+      derived: derivedRoleName,
+      declaredName: properties['RoleName'],
+      previousDeclaredName: previousProperties['RoleName'],
+      logicalId,
+      options: { maxLength: 64 },
+    });
+    if (generatedNameKept) {
+      log.debug(
+        `IAM role ${logicalId}: keeping its generated name ${v(physicalId)} (the template names no role)`
+      );
+    }
+    const newRoleName = revertKeepsName || generatedNameKept ? physicalId : derivedRoleName;
 
     // Check if immutable properties changed (requires replacement)
     // RoleName and Path are immutable - cannot be changed after creation
@@ -600,6 +650,8 @@ export class IAMRoleProvider implements ResourceProvider {
       } catch (error) {
         // No `oldResourceSurvivor: 'kept'` (go-to-k/cdkd#4911): `delete()`
         // strips the role before `DeleteRole` refuses, so it is not whole.
+        // `error` is `delete()`'s wrap, which names an AWS failure by its class
+        // (go-to-k/cdkd#2319): this reason is persisted as a RESOURCE_SKIPPED.
         orphanReason = log.mask(
           `old role ${v(physicalId)} could not be deleted: ${safeStringify(error)}`
         );
@@ -743,7 +795,7 @@ export class IAMRoleProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      // Issue #2177 -- masked RAW and stamped, as in `create()`.
+      // Redacted or masked RAW, and stamped, as in `create()` (`wrapMaskedError`).
       throw this.wrapMaskedError(
         log.mask,
         error,
@@ -828,14 +880,25 @@ export class IAMRoleProvider implements ResourceProvider {
       log.debug(`Successfully deleted IAM role ${logicalId}`);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      const failure = new ProvisioningError(
-        log.mask(`Failed to delete IAM role ${logicalId}: ${describeAwsFailure(error).detail}`),
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const failure = this.wrapMaskedError(
+        log.mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            log.mask(`Failed to delete IAM role ${logicalId}: ${text}`),
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
-      throw progress.stripped ? markDeleteStarted(failure) : failure;
+      // The wrap names an AWS failure by its CLASS, which the delete classifiers
+      // read as "already deleted" on a `NotFound` needle: only the typed
+      // not-found above means this one is gone (go-to-k/cdkd#2319). IAM's own
+      // `NoSuchEntity` is not such a class.
+      const marked =
+        error instanceof Error && error.name.includes('NotFound') ? markNotGone(failure) : failure;
+      throw progress.stripped ? markDeleteStarted(marked) : marked;
     }
   }
 

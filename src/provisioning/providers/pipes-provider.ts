@@ -19,20 +19,25 @@ import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import {
   isThrottlingError,
   isTransientServerError,
   markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { parseCfnTimestamp } from '../../utils/cfn-timestamp.js';
 import { definedAttributes } from '../attribute-map.js';
 import { startInterruptWatch } from '../interrupt-watch.js';
 import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
@@ -148,6 +153,14 @@ function pipeIdentityToken(
 
 /** States a pipe rests in. */
 const SETTLED_STATES: ReadonlySet<string> = new Set(['RUNNING', 'STOPPED']);
+/** go-to-k/cdkd#5487: the states AWS is still moving a pipe through. */
+const MOVING_STATES: ReadonlySet<string> = new Set([
+  'CREATING',
+  'UPDATING',
+  'STARTING',
+  'STOPPING',
+  'DELETING',
+]);
 
 /** Poll interval for the settle and gone waits. */
 const PIPE_POLL_INTERVAL_MS = 5_000;
@@ -303,7 +316,7 @@ function toSdkTargetParameters(value: unknown): PipeTargetParameters | undefined
 /**
  * CFn `SourceParameters` -> the CreatePipe shape. The only divergence is
  * Kinesis `StartingPositionTimestamp`: CFn carries an ISO string, the SDK
- * types a `Date`.
+ * types a `Date`; an offset-less string is read as UTC (issue #5311).
  */
 function toSdkSourceParameters(value: unknown): PipeSourceParameters | undefined {
   const source = asRecord(value);
@@ -316,7 +329,7 @@ function toSdkSourceParameters(value: unknown): PipeSourceParameters | undefined
     ...source,
     KinesisStreamParameters: {
       ...kinesis,
-      StartingPositionTimestamp: new Date(kinesis['StartingPositionTimestamp']),
+      StartingPositionTimestamp: parseCfnTimestamp(kinesis['StartingPositionTimestamp']),
     },
   } as PipeSourceParameters;
 }
@@ -438,6 +451,37 @@ export class PipesPipeProvider implements ResourceProvider {
   private createClient: PipesClient | undefined;
   private readonly providerRegion = ambientRegion();
   private readonly logger = getLogger().child('PipesPipeProvider');
+
+  /**
+   * The failure wrap the create / update / delete / getAttribute catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
+   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
+   * operation's `maskSecrets` (`mask`), and the wrap is stamped
+   * `markRedactedCause`, so the retry classifiers read the withheld text on the
+   * `cause` chain. An "already exists" is restated ({@link relayedNameCollision}).
+   * A cdkd-authored or transport error keeps its text, masked, stamped only
+   * when the mask changed it (`wrapMaskedAwsError`, issue #4244); a non-`Error`
+   * throw is withheld like an AWS one, unstamped (it has no chain). The delete
+   * checks `NotFoundException` by type before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn | undefined,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const m = maskerOrIdentity(mask);
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(m, error, build);
+    this.logger.debug(m(build(m(failure.detail)).message));
+    const wrapped = build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
   private readonly options: PipesProviderOptions;
   private readonly sleep = (ms: number): Promise<void> =>
     this.options.sleep ? this.options.sleep(ms) : new Promise((r) => setTimeout(r, ms));
@@ -545,8 +589,7 @@ export class PipesPipeProvider implements ResourceProvider {
     // Pipe names: 1-64 chars of [.\-_A-Za-z0-9]. generateResourceName's
     // stack-prefixed output keeps to that charset and `maxLength` caps it.
     const name =
-      (properties['Name'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      (properties['Name'] as string | undefined) ?? generatedNameFor('AWS::Pipes::Pipe', logicalId);
     const tags = desiredTagMap(properties['Tags'], logicalId);
     this.logger.debug(mask(`Creating Pipe ${logicalId}: ${name}`));
 
@@ -589,16 +632,23 @@ export class PipesPipeProvider implements ResourceProvider {
         })
       );
       createdIdentity = pipeIdentityToken(name, created?.Arn, created?.CreationTime);
+      // go-to-k/cdkd#5511: reported before the settle wait.
+      reportCreatedResource(logicalId, resourceType, name, createdIdentity);
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        // AWS echoes resolved inputs into its text: masked like the settle
-        // reason (`waitForSettled`).
-        `Failed to create Pipe ${logicalId}: ${mask(cause?.message ?? safeStringify(error))}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      // AWS echoes resolved inputs into its text: masked like the settle
+      // reason (`waitForSettled`).
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create Pipe ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
 
@@ -713,6 +763,11 @@ export class PipesPipeProvider implements ResourceProvider {
           previousProperties['SourceParameters']
         );
         if (sourceParameters !== undefined) input.SourceParameters = sourceParameters;
+        // Every key the call changes, before it: the settle wait that follows
+        // can fail with the change accepted.
+        for (const key of this.changedPipeFields(desired, previousProperties)) {
+          context?.markUnsettled?.(key);
+        }
         const accepted = await this.getClient().send(new UpdatePipeCommand(input));
         settled = await this.waitForSettled(
           physicalId,
@@ -724,10 +779,21 @@ export class PipesPipeProvider implements ResourceProvider {
         );
       }
 
-      const plan = planTagDiff(tagMapAsList(previousProperties['Tags']), tagMapAsList(desiredTags));
+      const recordedPlan = planTagDiff(
+        tagMapAsList(previousProperties['Tags']),
+        tagMapAsList(desiredTags)
+      );
+      // go-to-k/cdkd#5487: unsettled Tags re-send every template tag (AWS may
+      // lack the ones a failed update did not reach) and remove only the
+      // recorded ones the template dropped.
+      const plan =
+        context?.unsettledProperties?.has('Tags') === true
+          ? { ...recordedPlan, set: planTagDiff([], tagMapAsList(desiredTags)).set }
+          : recordedPlan;
       const warning = tagPlanWarning(plan, resourceType, logicalId);
       if (warning) this.logger.warn(warning);
       if (plan.set.size > 0 || plan.remove.length > 0) {
+        context?.markUnsettled?.('Tags');
         settled ??= await this.describe(physicalId);
         const arn = settled.Arn;
         if (!arn) {
@@ -757,14 +823,19 @@ export class PipesPipeProvider implements ResourceProvider {
         );
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        // AWS echoes resolved inputs into its text: masked like the settle
-        // reason (`waitForSettled`).
-        `Failed to update Pipe ${logicalId}: ${mask(cause?.message ?? safeStringify(error))}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      // AWS echoes resolved inputs into its text: masked like the settle
+      // reason (`waitForSettled`).
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update Pipe ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
     return { physicalId, wasReplaced: false, attributes: this.attributesOf(settled) };
@@ -802,12 +873,17 @@ export class PipesPipeProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete Pipe ${logicalId}: ${cause?.message ?? safeStringify(error)}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        context?.maskSecrets,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete Pipe ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
     // A DELETING pipe still holds its name, so a same-name create (a
@@ -938,16 +1014,30 @@ export class PipesPipeProvider implements ResourceProvider {
    */
   async getAttribute(
     physicalId: string,
-    _resourceType: string,
+    resourceType: string,
     attributeName: string,
-    _logicalId: string
+    logicalId: string
   ): Promise<unknown> {
     let response: DescribePipeCommandOutput;
     try {
       response = await this.describe(physicalId);
     } catch (error) {
       if (error instanceof NotFoundException) return undefined;
-      throw error;
+      // The rethrow reaches the persisted deploy events: AWS's text is
+      // withheld like the create / update / delete wraps' (go-to-k/cdkd#2319).
+      if (!describeAwsFailure(error).redacted) throw error;
+      throw this.wrapCaughtError(
+        undefined,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to read ${attributeName} of Pipe ${physicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error instanceof Error ? error : undefined
+          )
+      );
     }
     return this.attributesOf(response)[attributeName];
   }
@@ -1041,12 +1131,64 @@ export class PipesPipeProvider implements ResourceProvider {
     desired: Record<string, unknown>,
     previous: Record<string, unknown>
   ): boolean {
+    return this.changedPipeFields(desired, previous).length > 0;
+  }
+
+  /** The non-`Tags` top-level keys whose desired value differs from `previous`. */
+  private changedPipeFields(
+    desired: Record<string, unknown>,
+    previous: Record<string, unknown>
+  ): string[] {
     const keys = new Set([...Object.keys(desired), ...Object.keys(previous)]);
     keys.delete('Tags');
-    for (const key of keys) {
-      if (JSON.stringify(desired[key]) !== JSON.stringify(previous[key])) return true;
+    return [...keys].filter(
+      (key) => JSON.stringify(desired[key]) !== JSON.stringify(previous[key])
+    );
+  }
+
+  /**
+   * go-to-k/cdkd#5487: while the pipe is CREATING, UPDATING, STARTING,
+   * STOPPING or DELETING, an unsettled key other than `Tags` is still
+   * changing. A failed read keeps
+   * every name, which only costs the next deploy a re-send.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    _resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    try {
+      const state = (await this.describe(physicalId)).CurrentState;
+      // Only a state AWS is moving through. A failed one (`*_FAILED`) is at
+      // rest: the update must run, since only another UpdatePipe recovers it
+      // (`readUnsettled` makes it re-send).
+      if (state === undefined || !MOVING_STATES.has(state)) return new Set();
+      return new Set([...names].filter((name) => name !== 'Tags'));
+    } catch {
+      return names;
     }
-    return false;
+  }
+
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState` for the engine's convergence step,
+   * except that a pipe at rest in a failed state (`*_FAILED`) reports none of
+   * the unsettled names: whatever its configuration reads, it is not what the
+   * failed call asked for, so the update re-sends them.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (typeof live !== 'object' || live === null) return live;
+    const state = (await this.describe(physicalId)).CurrentState;
+    if (state === undefined || !state.endsWith('_FAILED')) return live;
+    const out: Record<string, unknown> = { ...live };
+    for (const name of names) delete out[name];
+    return out;
   }
 
   /** The pipe's current state, or `undefined` once it is gone. */
@@ -1110,14 +1252,23 @@ export class PipesPipeProvider implements ResourceProvider {
           // A stale read shows the state from BEFORE the update, a failure
           // included, which the update may be about to clear: poll again.
           if (state !== undefined && state.endsWith('_FAILED') && !stale) {
-            const reason = response.StateReason ? `: ${mask(response.StateReason)}` : '';
-            throw markNonRetryable(
+            // AWS's `StateReason` is persisted with the thrown message, and a
+            // bad role names the account (go-to-k/cdkd#2319): the message
+            // carries the `--verbose` pointer, the reason goes to `debug`
+            // through the masker and onto the `cause`.
+            const reason = describeAwsStatusReason({ message: response.StateReason }, '');
+            const build = (text: string, cause?: Error): ProvisioningError =>
               new ProvisioningError(
-                `Pipe ${logicalId} ${phase} failed: AWS reports ${state}${reason}`,
+                `Pipe ${logicalId} ${phase} failed: AWS reports ${state}${text}`,
                 resourceType,
                 logicalId,
-                name
-              )
+                name,
+                cause
+              );
+            if (!reason.redacted) throw markNonRetryable(build(''));
+            this.logger.debug(mask(build(`: ${mask(reason.detail)}`).message));
+            throw markNonRetryable(
+              markRedactedCause(build(`. ${reason.summary}`, new Error(reason.detail)))
             );
           }
           this.logger.debug(mask(`Pipe ${name} state: ${state ?? 'unknown'}, waiting to settle`));
@@ -1150,10 +1301,11 @@ export class PipesPipeProvider implements ResourceProvider {
 
   /**
    * After `CreatePipe` succeeded and the settle wait failed: delete the pipe
-   * so it does not survive unrecorded, then return the ORIGINAL error,
-   * extended with what happened to the pipe. The gone wait is SHORT (a failed
-   * create must not also spend the full delete wait), so the message claims
-   * the pipe is gone only when a read confirmed it.
+   * so it does not survive unrecorded, then return the ORIGINAL error (an
+   * AWS-authored one wrapped first), extended with what happened to the pipe.
+   * The gone wait is SHORT (a failed create must not also spend the full
+   * delete wait), so the message claims the pipe is gone only when a read
+   * confirmed it.
    */
   private async retireFailedCreate(
     name: string,
@@ -1163,8 +1315,25 @@ export class PipesPipeProvider implements ResourceProvider {
     mask: MaskerFn,
     createdIdentity: string | undefined
   ): Promise<Error> {
-    // The settle wait throws only Errors; the fallback keeps the type honest.
-    const original = error instanceof Error ? error : new Error(String(error));
+    // A settle read can rethrow an AWS-authored failure (a denied
+    // DescribePipe), whose text names the caller: wrap it like the CreatePipe
+    // failure (go-to-k/cdkd#2319) so the notes below join a message that
+    // carries its class, not AWS's text. cdkd's own settle errors stay as
+    // they are.
+    const original = describeAwsFailure(error).redacted
+      ? this.wrapCaughtError(
+          mask,
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to create Pipe ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              name,
+              error instanceof Error ? error : undefined
+            )
+        )
+      : (error as Error);
     // go-to-k/cdkd#4583: CreatePipe returned, so `name` (the id delete() takes)
     // is this create's pipe; name it for the failed-CREATE journal whenever it
     // may still be there, with CreatePipe's identity token (#4606). Terminal:
@@ -1194,7 +1363,10 @@ export class PipesPipeProvider implements ResourceProvider {
     try {
       await this.getClient().send(new DeletePipeCommand({ Name: name }));
     } catch (cleanupError) {
-      if (cleanupError instanceof NotFoundException) return original;
+      if (cleanupError instanceof NotFoundException) {
+        retractCreatedResource(logicalId, resourceType, name);
+        return original;
+      }
       return orphaned(describeAwsFailure(cleanupError).summary);
     }
     let gone = false;
@@ -1221,6 +1393,7 @@ export class PipesPipeProvider implements ResourceProvider {
       return orphaned('its delete did not complete (AWS reports a failed or rolled-back delete)');
     }
     if (gone) {
+      retractCreatedResource(logicalId, resourceType, name);
       original.message += ' (cdkd deleted the pipe it had created, so nothing is left behind)';
       return original;
     }
@@ -1228,6 +1401,7 @@ export class PipesPipeProvider implements ResourceProvider {
     // no read at all), or a status read that failed. Only a DELETING read
     // shows the delete progressing; without one, cdkd cannot say it did.
     if (sawDeleting) {
+      retractCreatedResource(logicalId, resourceType, name);
       original.message +=
         ' (cdkd started deleting the pipe it had created; a re-deploy may report the ' +
         'name in use until AWS finishes)';

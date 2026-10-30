@@ -4,6 +4,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const mockCloudFormationSend = vi.fn();
 const mockLoggerWarn = vi.fn();
+const mockLoggerInfo = vi.fn();
+const mockLoggerError = vi.fn();
 const mockLoggerDebug = vi.fn();
 // Stands in for `runWithStackAwsClients`: a scope's own CloudFormation client.
 const clientScope = new AsyncLocalStorage<{ send: (...args: unknown[]) => unknown }>();
@@ -18,9 +20,9 @@ vi.mock('../../../src/utils/logger.js', () => ({
   getLogger: () => ({
     child: () => ({
       debug: mockLoggerDebug,
-      info: vi.fn(),
+      info: mockLoggerInfo,
       warn: mockLoggerWarn,
-      error: vi.fn(),
+      error: mockLoggerError,
     }),
     debug: vi.fn(),
     info: vi.fn(),
@@ -36,6 +38,13 @@ import {
   createOnlyChangeRequiresReplacement,
   clearCreateOnlyPropertiesCache,
 } from '../../../src/provisioning/create-only-properties.js';
+import {
+  LEAK_BODY,
+  LEAK_TOKEN,
+  expectLeakTokenOnlyAtDebug,
+  expectV8QuotesLeakToken,
+  loggedText,
+} from '../_json-parse-leak.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from '../../../src/provisioning/create-only-snapshot.generated.js';
 import {
   DESCRIBE_TYPE_MAX_IN_FLIGHT,
@@ -986,5 +995,30 @@ describe('createOnlyChangeRequiresReplacement (pure path-granular comparison, is
     expect(createOnlyChangeRequiresReplacement(PIPE_PATHS, 'Target', 'arn:a', 'arn:b', eq)).toBe(
       false
     );
+  });
+});
+
+describe('an unparseable DescribeType schema (issue #5254)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearCreateOnlyPropertiesCache();
+  });
+
+  it('warns with the size only, never a window of the schema', async () => {
+    expectV8QuotesLeakToken();
+    mockCloudFormationSend.mockResolvedValueOnce({ Schema: LEAK_BODY });
+
+    await getCreateOnlyPropertyPaths(UNSNAPSHOTTED);
+
+    const warned = loggedText(mockLoggerWarn);
+    expect(warned).toContain(
+      `the DescribeType schema is not valid JSON: invalid JSON; ${Buffer.byteLength(LEAK_BODY, 'utf8')} byte(s) read`
+    );
+    expectLeakTokenOnlyAtDebug({
+      debug: mockLoggerDebug,
+      info: mockLoggerInfo,
+      warn: mockLoggerWarn,
+      error: mockLoggerError,
+    });
   });
 });

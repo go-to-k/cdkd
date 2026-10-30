@@ -64,7 +64,7 @@ import {
   PipesPipeProvider,
   toUpdateSourceParameters,
 } from '../../../../src/provisioning/providers/pipes-provider.js';
-import { withStackName } from '../../../../src/provisioning/resource-name.js';
+import { withStackScope } from '../../../../src/provisioning/resource-name.js';
 import {
   ProviderRegistry,
   STICKY_CC_MIGRATION_EXEMPT,
@@ -74,7 +74,14 @@ import {
   ProvisioningError,
   ResourceUpdateNotSupportedError,
 } from '../../../../src/utils/error-handler.js';
-import { isMarkedNonRetryable } from '../../../../src/deployment/retryable-errors.js';
+import {
+  hasRedactedCause,
+  isMarkedNonRetryable,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../../src/utils/aws-failure-text.js';
+import { createdBeforeFailure } from '../../../../src/provisioning/auxiliary-failure.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 import {
   disarmInterruptWatchForTests,
@@ -137,6 +144,7 @@ const KINESIS_PREVIOUS = {
 beforeEach(() => {
   mockSend.mockReset();
   childLogger.warn.mockReset();
+  childLogger.debug.mockReset();
   clientRegion.value = 'us-east-1';
 });
 
@@ -326,9 +334,20 @@ describe('PipesPipeProvider.update', () => {
         described({ CurrentState: 'UPDATE_FAILED', StateReason: 'role cannot read stream' }),
     });
     const provider = new PipesPipeProvider({ sleep: noSleep });
-    await expect(
-      provider.update('Pipe', NAME, TYPE, { ...KINESIS_PREVIOUS, Description: 'v2' }, KINESIS_PREVIOUS)
-    ).rejects.toThrow(/AWS reports UPDATE_FAILED: role cannot read stream/);
+    const error = await provider
+      .update('Pipe', NAME, TYPE, { ...KINESIS_PREVIOUS, Description: 'v2' }, KINESIS_PREVIOUS)
+      .then(
+        () => undefined,
+        (e: Error) => e
+      );
+    // go-to-k/cdkd#2319: the persisted message carries the --verbose pointer;
+    // AWS's reason is on the debug line and the cause.
+    expect(error?.message).toBe(`Pipe Pipe update failed: AWS reports UPDATE_FAILED. ${VERBOSE_POINTER}`);
+    expect((error?.cause as Error | undefined)?.message).toBe('role cannot read stream');
+    expect(hasRedactedCause(error)).toBe(true);
+    expect(childLogger.debug).toHaveBeenCalledWith(
+      'Pipe Pipe update failed: AWS reports UPDATE_FAILED: role cannot read stream'
+    );
   });
 
   it('refuses before UpdatePipe when the client region differs from the recorded one', async () => {
@@ -361,6 +380,36 @@ describe('PipesPipeProvider.update', () => {
 });
 
 describe('PipesPipeProvider.create', () => {
+  it('reads an offset-less Kinesis StartingPositionTimestamp as UTC under a non-UTC TZ (#5311)', async () => {
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = 'Asia/Tokyo';
+      route({
+        CreatePipeCommand: () => ({ Name: NAME, Arn: ARN }),
+        DescribePipeCommand: () => described({ CurrentState: 'RUNNING' }),
+      });
+      await new PipesPipeProvider({ sleep: noSleep }).create('Pipe', TYPE, {
+        Name: NAME,
+        RoleArn: 'arn:aws:iam::123456789012:role/r',
+        Source: 'arn:aws:kinesis:us-east-1:123456789012:stream/src',
+        Target: 'arn:aws:sqs:us-east-1:123456789012:q',
+        SourceParameters: {
+          KinesisStreamParameters: {
+            StartingPosition: 'AT_TIMESTAMP',
+            StartingPositionTimestamp: '2026-01-01T00:00:00',
+          },
+        },
+      });
+      const input = sent(CreatePipeCommand)[0]!.input;
+      expect(
+        (input.SourceParameters.KinesisStreamParameters.StartingPositionTimestamp as Date).toISOString()
+      ).toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
   it('maps the ECS target islands and the Kinesis timestamp, then waits for the pipe to settle', async () => {
     const states = ['CREATING', 'RUNNING'];
     route({
@@ -436,7 +485,7 @@ describe('PipesPipeProvider.create', () => {
   it('generates a stack-prefixed name when the template gives none', async () => {
     route({ CreatePipeCommand: () => ({}), DescribePipeCommand: () => described() });
     const provider = new PipesPipeProvider({ sleep: noSleep });
-    const result = await withStackName('MyStack', () =>
+    const result = await withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('Pipe', TYPE, { RoleArn: 'r', Source: 's', Target: 't' })
     );
     expect(result.physicalId).toBe('MyStack-Pipe');
@@ -480,7 +529,8 @@ describe('PipesPipeProvider.create', () => {
         () => undefined,
         (e: Error) => e
       );
-    expect(error?.message).toMatch(/AWS reports CREATE_FAILED: target unreachable/);
+    expect(error?.message).toContain(`AWS reports CREATE_FAILED. ${VERBOSE_POINTER}`);
+    expect(error?.message).not.toContain('target unreachable');
     expect(error?.message).toMatch(/cdkd deleted the pipe it had created/);
     expect(sent(DeletePipeCommand)[0]!.input).toEqual({ Name: NAME });
   });
@@ -805,7 +855,7 @@ describe('PipesPipeProvider review-round cases', () => {
   it('caps a generated name at 64 characters', async () => {
     route({ CreatePipeCommand: () => ({}), DescribePipeCommand: () => described() });
     const provider = new PipesPipeProvider({ sleep: noSleep });
-    const result = await withStackName('S'.repeat(80), () =>
+    const result = await withStackScope({ stackName: 'S'.repeat(80), stackInstanceId: undefined, nameGenerations: new Map() }, () =>
       provider.create('Pipe', TYPE, { RoleArn: 'r', Source: 's', Target: 't' })
     );
     expect(result.physicalId.length).toBeLessThanOrEqual(64);
@@ -986,8 +1036,12 @@ describe('PipesPipeProvider review-round cases', () => {
         () => undefined,
         (e: Error) => e
       );
-    expect(error?.message).toContain('role *** denied');
-    expect(error?.message).not.toContain('s3cr3t-role');
+    // The reason is withheld from the message (go-to-k/cdkd#2319) and reaches
+    // the debug line masked.
+    expect(error?.message).not.toContain('denied');
+    const debug = childLogger.debug.mock.calls.map((c) => String(c[0]));
+    expect(debug).toContain('Pipe Pipe update failed: AWS reports UPDATE_FAILED: role *** denied');
+    expect(debug.join('\n')).not.toContain('s3cr3t-role');
     expect(isMarkedNonRetryable(error)).toBe(true);
   });
 
@@ -1024,7 +1078,8 @@ describe('PipesPipeProvider review-round cases', () => {
     );
     expect(rejected).toBeInstanceOf(ProvisioningError);
     expect((rejected as Error).message).toContain('Failed to delete Pipe Pipe');
-    expect((rejected as Error).message).toContain('a value that could not be converted to text');
+    // Withheld from the persisted message (go-to-k/cdkd#2319).
+    expect((rejected as Error).message).toContain('a non-Error value of type object');
     expect((rejected as Error).message).not.toContain('Cannot convert object to primitive value');
   });
 
@@ -1059,7 +1114,7 @@ describe('PipesPipeProvider review-round cases', () => {
         () => undefined,
         (e: Error) => e
       );
-    expect(error?.message).toMatch(/AWS reports CREATE_FAILED: bad target$/);
+    expect(error?.message).toMatch(/AWS reports CREATE_FAILED\. Re-run with --verbose for AWS's own message\.$/);
   });
 
   it('the cleanup command names the client region', async () => {
@@ -1184,7 +1239,8 @@ describe('PipesPipeProvider second review round', () => {
         () => undefined,
         (e: Error) => e
       );
-    expect(error?.message).toMatch(/update failed: AWS reports START_FAILED: no access/);
+    expect(error?.message).toContain(`update failed: AWS reports START_FAILED. ${VERBOSE_POINTER}`);
+    expect(error?.message).not.toContain('no access');
     // The settle failure is rethrown as is, not wrapped a second time.
     expect(error?.message).not.toMatch(/Failed to update Pipe/);
   });
@@ -1427,5 +1483,221 @@ describe('PipesPipeProvider unconfirmed cleanup wording', () => {
       expect(error?.message).toMatch(UNCONFIRMED);
       expect(error?.message).not.toMatch(/started deleting/);
     });
+  });
+});
+
+/**
+ * go-to-k/cdkd#2319: a thrown message is persisted to
+ * `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its class
+ * plus the `--verbose` pointer; AWS's text (the caller's assumed-role ARN on an
+ * access denial) goes to the masked debug line and stays on the `cause`.
+ */
+describe('PipesPipeProvider: AWS failure text stays out of the thrown message (#2319)', () => {
+  const ROLE_ARN = 'arn:aws:sts::123456789012:assumed-role/deployer/session-2319';
+  const DENIED = `User: ${ROLE_ARN} is not authorized to perform: pipes:Op`;
+  const denied = (): Error =>
+    Object.assign(new Error(DENIED), {
+      name: 'AccessDeniedException',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400, requestId: 'req-pipes-2319' },
+    });
+  const mask = (t: string): string => t.replaceAll('session-2319', '***');
+  const fail = (): never => {
+    throw denied();
+  };
+  const SITES = [
+    {
+      site: 'create',
+      handlers: { CreatePipeCommand: fail },
+      wrap: 'Failed to create Pipe Pipe',
+      run: (p: PipesPipeProvider) =>
+        p.create(
+          'Pipe',
+          TYPE,
+          { Name: NAME, RoleArn: 'r', Source: 's', Target: 't' },
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      site: 'update',
+      handlers: { UpdatePipeCommand: fail },
+      wrap: 'Failed to update Pipe Pipe',
+      run: (p: PipesPipeProvider) =>
+        p.update(
+          'Pipe',
+          NAME,
+          TYPE,
+          { ...KINESIS_PREVIOUS, Description: 'v2' },
+          KINESIS_PREVIOUS,
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      site: 'delete',
+      handlers: { DeletePipeCommand: fail },
+      wrap: 'Failed to delete Pipe Pipe',
+      run: (p: PipesPipeProvider) =>
+        p.delete('Pipe', NAME, TYPE, undefined, { maskSecrets: mask }),
+    },
+  ] as const;
+
+  it.each(SITES)('$site names the class, keeps the text on cause and masked debug', async (c) => {
+    route(c.handlers);
+    const failure = await c.run(new PipesPipeProvider({ sleep: noSleep })).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure).toBeInstanceOf(ProvisioningError);
+    expect(failure!.message).toBe(`${c.wrap}: AccessDeniedException. ${VERBOSE_POINTER}`);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect((failure!.cause as Error).message).toBe(DENIED);
+    expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+    const debug = childLogger.debug.mock.calls.map((call) => String(call[0]));
+    expect(debug).toContain(`${c.wrap}: ${mask(DENIED)}`);
+    expect(debug.join('\n')).not.toContain('session-2319');
+  });
+
+  it('a cdkd-authored failure keeps its text, masked, stamped when the mask changed it', async () => {
+    route({
+      DeletePipeCommand: () => {
+        throw new Error('socket hang up near session-2319');
+      },
+    });
+    const failure = await SITES[2].run(new PipesPipeProvider({ sleep: noSleep })).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe('Failed to delete Pipe Pipe: socket hang up near ***');
+    expect(hasRedactedCause(failure)).toBe(true);
+  });
+
+  it('getAttribute names the class of an AWS-authored read failure', async () => {
+    route({
+      DescribePipeCommand: () => {
+        throw denied();
+      },
+    });
+    const failure = await new PipesPipeProvider({ sleep: noSleep })
+      .getAttribute(NAME, TYPE, 'Arn', 'Pipe')
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+    expect(failure).toBeInstanceOf(ProvisioningError);
+    expect(failure!.message).toBe(
+      `Failed to read Arn of Pipe ${NAME}: AccessDeniedException. ${VERBOSE_POINTER}`
+    );
+    expect(failure!.message).not.toContain('123456789012');
+    expect((failure!.cause as Error).message).toBe(DENIED);
+    expect(hasRedactedCause(failure)).toBe(true);
+  });
+
+  it('a non-Error throw is withheld, unstamped', async () => {
+    route({
+      DeletePipeCommand: () => {
+        throw DENIED;
+      },
+    });
+    const failure = await SITES[2].run(new PipesPipeProvider({ sleep: noSleep })).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to delete Pipe Pipe: a non-Error value of type string. ${VERBOSE_POINTER}`
+    );
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  it('restates an "already exists" from CreatePipe', async () => {
+    route({
+      CreatePipeCommand: () => {
+        throw Object.assign(new Error('Pipe Pipe already exists'), {
+          name: 'ConflictException',
+          $fault: 'client',
+          $metadata: { httpStatusCode: 409 },
+        });
+      },
+    });
+    const failure = await SITES[0].run(new PipesPipeProvider({ sleep: noSleep })).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe(
+      `Failed to create Pipe Pipe: ConflictException. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+  });
+
+  // A denied DescribePipe during the create's settle wait is rethrown into
+  // retireFailedCreate, which used to append its notes to the raw SDK error.
+  describe('a denied settle read after CreatePipe', () => {
+    const settleDenied = (deleteFails: boolean): void => {
+      let reads = 0;
+      route({
+        CreatePipeCommand: () => ({ Arn: 'arn:aws:pipes:us-east-1:123456789012:pipe/Pipe' }),
+        DescribePipeCommand: () => {
+          reads += 1;
+          if (reads === 1) throw denied();
+          throw new NotFoundException({ message: 'gone', $metadata: {} });
+        },
+        DeletePipeCommand: () => {
+          if (deleteFails)
+            throw Object.assign(new Error('busy'), {
+              name: 'ConflictException',
+              $fault: 'client',
+              $metadata: { httpStatusCode: 409 },
+            });
+          return {};
+        },
+      });
+    };
+
+    it('cleanup succeeded: the class, not the text, and the chain still reads it', async () => {
+      settleDenied(false);
+      const failure = await SITES[0].run(new PipesPipeProvider({ sleep: noSleep })).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure!.message).toBe(
+        `Failed to create Pipe Pipe: AccessDeniedException. ${VERBOSE_POINTER} ` +
+          '(cdkd deleted the pipe it had created, so nothing is left behind)'
+      );
+      expect(failure!.message).not.toContain('123456789012');
+      expect((failure!.cause as Error).message).toBe(DENIED);
+      expect(hasRedactedCause(failure)).toBe(true);
+      expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+    });
+
+    it('cleanup failed: the orphan notes join the wrap, journaled and non-retryable', async () => {
+      settleDenied(true);
+      const failure = await SITES[0].run(new PipesPipeProvider({ sleep: noSleep })).then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+      expect(failure).toBeInstanceOf(ProvisioningError);
+      expect(failure!.message).toMatch(
+        new RegExp(
+          `^Failed to create Pipe Pipe: AccessDeniedException\\. Re-run with --verbose for AWS's own message\\. \\(cdkd could not delete the pipe it had created: ConflictException\\.`
+        )
+      );
+      expect(failure!.message).not.toContain('123456789012');
+      expect((failure!.cause as Error).message).toBe(DENIED);
+      expect(createdBeforeFailure(failure, 'Pipe', TYPE)).toBe(NAME);
+      expect(isMarkedNonRetryable(failure)).toBe(true);
+    });
+  });
+
+  it('a settle failure with no StateReason keeps its message, unstamped', async () => {
+    route({
+      UpdatePipeCommand: () => ({ LastModifiedTime: MODIFIED }),
+      DescribePipeCommand: () => described({ CurrentState: 'UPDATE_FAILED' }),
+    });
+    const failure = await SITES[1].run(new PipesPipeProvider({ sleep: noSleep })).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+    expect(failure!.message).toBe('Pipe Pipe update failed: AWS reports UPDATE_FAILED');
+    expect(hasRedactedCause(failure)).toBe(false);
+    expect(isMarkedNonRetryable(failure)).toBe(true);
   });
 });

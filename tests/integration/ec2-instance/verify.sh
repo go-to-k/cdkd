@@ -56,6 +56,18 @@
 # `false` is applied (1f), and `true` again (1g, for the destroy arm). See the
 # phases' comment.
 #
+# Also the issue #5445 arm: the #1281 instance declares a /dev/sdf gp3 data
+# volume Encrypted with a fixture-owned CMK and 3500 IOPS; DescribeVolumes must
+# show that key and those IOPS (pre-#5445 both were dropped on create), and the
+# destroy must leave the CMK PendingDeletion.
+#
+# Phase 1h is the issue #5446 arm: one deploy changes InstanceType, moves the
+# instance to a second security group and adds UserData; the instance must
+# keep its id and come back running as t3.small, in that group only, with the
+# template's user data. Phase 1g adds an SSM parameter reading
+# Fn::GetAtt Instance.PublicIp, and after the stop/start both the PublicIp
+# Output and that parameter must carry the instance's new address.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -262,6 +274,15 @@ cleanup() {
       fi
     done
   fi
+  if [ -n "${EBS_KEY_ARN:-}" ]; then
+    # Issue #5445: the fixture CMK, in case state destroy could not reach it.
+    # A key already PendingDeletion refuses a second schedule; that is the
+    # normal case after a clean destroy, hence `|| true`.
+    aws kms schedule-key-deletion \
+      --key-id "${EBS_KEY_ARN}" \
+      --pending-window-in-days 7 \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -437,6 +458,9 @@ fi
 # Capture the ids now so the cleanup trap can reach the instances from here on.
 INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.InstanceId // ""')
 PUBLIC_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicInstanceId // ""')
+# Issue #5445: the fixture CMK exists from this deploy on, so the trap's
+# schedule-key-deletion must be able to reach it from here too.
+EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
 if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ] || [ -z "${PUBLIC_INSTANCE_ID}" ] || [ "${PUBLIC_INSTANCE_ID}" = "null" ]; then
   echo "FAIL: could not resolve both instance ids from the --no-wait state" >&2
   echo "${NOWAIT_STATE}" | jq '.outputs'
@@ -756,6 +780,59 @@ if [ -z "${NI_GROUP}" ]; then
   exit 1
 fi
 echo "    OK: #1281 instance ${PUBLIC_INSTANCE_ID} has public IP ${PUBLIC_IP} and ENI group ${NI_GROUP}"
+
+# --- Assertions: the #5445 BlockDeviceMappings Ebs members reached AWS -------
+# The #1281 instance also declares a /dev/sdf gp3 data volume, Encrypted with
+# the fixture-owned CMK and 3500 IOPS. Before #5445 only VolumeSize /
+# VolumeType / DeleteOnTermination were sent, so the volume launched without
+# the CMK (unencrypted, or under the account's default key) and at the gp3
+# baseline of 3000 IOPS. KmsKeyId is the discriminating half for encryption:
+# an account with EBS encryption-by-default passes `Encrypted` on its own.
+EBS_KEY_ARN=$(echo "${STATE}" | jq -r '.outputs.EbsKeyArn // ""')
+case "${EBS_KEY_ARN}" in
+  arn:aws*:kms:*:key/*) ;;
+  *)
+    echo "FAIL: issue #5445 -- .outputs.EbsKeyArn is '${EBS_KEY_ARN}', expected a KMS key ARN" >&2
+    echo "${STATE}" | jq '.outputs'
+    exit 1
+    ;;
+esac
+SDF_VOLUME_ID=$(echo "${PUBLIC_INSTANCE}" | jq -r '[.BlockDeviceMappings[]? | select(.DeviceName == "/dev/sdf") | .Ebs.VolumeId] | first // ""')
+if [ -z "${SDF_VOLUME_ID}" ]; then
+  echo "FAIL: issue #5445 -- instance ${PUBLIC_INSTANCE_ID} has no /dev/sdf volume; the BlockDeviceMappings entry did not reach RunInstances" >&2
+  echo "${PUBLIC_INSTANCE}" | jq '{BlockDeviceMappings}'
+  exit 1
+fi
+SDF_VOLUME=$(aws ec2 describe-volumes \
+  --volume-ids "${SDF_VOLUME_ID}" \
+  --region "${REGION}" \
+  --query 'Volumes[0]' --output json)
+SDF_ENCRYPTED=$(echo "${SDF_VOLUME}" | jq -r 'if has("Encrypted") then .Encrypted | tostring else "null" end')
+SDF_KMS_KEY=$(echo "${SDF_VOLUME}" | jq -r '.KmsKeyId // "<absent>"')
+SDF_IOPS=$(echo "${SDF_VOLUME}" | jq -r '.Iops // "<absent>"')
+SDF_TYPE=$(echo "${SDF_VOLUME}" | jq -r '.VolumeType // "<absent>"')
+SDF_SIZE=$(echo "${SDF_VOLUME}" | jq -r '.Size // "<absent>"')
+if [ "${SDF_ENCRYPTED}" != "true" ]; then
+  echo "FAIL: issue #5445 -- /dev/sdf volume ${SDF_VOLUME_ID} Encrypted is '${SDF_ENCRYPTED}', expected true; Ebs.Encrypted was dropped on create" >&2
+  echo "${SDF_VOLUME}" | jq '{Encrypted, KmsKeyId, Iops, VolumeType, Size}'
+  exit 1
+fi
+if [ "${SDF_KMS_KEY}" != "${EBS_KEY_ARN}" ]; then
+  echo "FAIL: issue #5445 -- /dev/sdf volume ${SDF_VOLUME_ID} KmsKeyId is '${SDF_KMS_KEY}', expected the fixture CMK ${EBS_KEY_ARN}; Ebs.KmsKeyId was dropped on create" >&2
+  echo "${SDF_VOLUME}" | jq '{Encrypted, KmsKeyId, Iops, VolumeType, Size}'
+  exit 1
+fi
+if [ "${SDF_IOPS}" != "3500" ]; then
+  echo "FAIL: issue #5445 -- /dev/sdf volume ${SDF_VOLUME_ID} Iops is '${SDF_IOPS}', expected 3500 (the gp3 baseline is 3000); Ebs.Iops was dropped on create" >&2
+  echo "${SDF_VOLUME}" | jq '{Encrypted, KmsKeyId, Iops, VolumeType, Size}'
+  exit 1
+fi
+# Controls: members the pre-#5445 mapper already sent.
+if [ "${SDF_TYPE}" != "gp3" ] || [ "${SDF_SIZE}" != "8" ]; then
+  echo "FAIL: issue #5445 control -- /dev/sdf volume ${SDF_VOLUME_ID} is ${SDF_TYPE} / ${SDF_SIZE} GiB, expected gp3 / 8 GiB" >&2
+  exit 1
+fi
+echo "    OK: #5445 /dev/sdf volume ${SDF_VOLUME_ID} is Encrypted with the fixture CMK ${EBS_KEY_ARN}, Iops 3500, gp3 / 8 GiB"
 
 # --- Assertions: each backfilled prop reached AWS ---------------------
 INSTANCE=$(aws ec2 describe-instances \
@@ -1256,9 +1333,105 @@ echo "    OK: explicit DisableApiTermination false applied (issue #1160)"
 # Phase 1g: declare it true again, so Phase 2's destroy still exercises the
 # --remove-protection flip of a protected instance (the #609 destroy arm).
 echo "==> Phase 1g: DisableApiTermination declared true again (issue #1160)"
-removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true
+removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_IP_READER=true
 poll_until "termination protection after DisableApiTermination: true" "True" read_dat
 echo "    OK: explicit DisableApiTermination true applied; the destroy below meets a protected instance"
+
+# Phase 1h (issue #5446): InstanceType t3.micro -> t3.small, SecurityGroupIds
+# moved to the stack's second group, and UserData added, in ONE deploy.
+# CloudFormation applies all three to the SAME instance (measured: a stop and
+# a start for the type and the user data, the groups with no interruption).
+# Before #5446 the deploy reported success and AWS kept t3.micro, the first
+# group and no user data. Termination protection (Phase 1g) does not block a
+# stop, and the destroy below still meets a protected instance.
+echo "==> Phase 1h: in-place InstanceType / SecurityGroupIds / UserData update (issue #5446)"
+UPDATE_SG_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.UpdateSgId // ""') \
+  || UPDATE_SG_ID="<state read error>"
+case "${UPDATE_SG_ID}" in
+  sg-*) ;;
+  *) echo "FAIL: issue #5446 -- .outputs.UpdateSgId is '${UPDATE_SG_ID}', expected a security group id" >&2; exit 1 ;;
+esac
+P1H_IP_BEFORE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text 2>&1) \
+  || P1H_IP_BEFORE="<read error>"
+removal_deploy P1H_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true
+P1H_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5446 -- could not read the state after the Phase 1h deploy: $(sanitize_aws_output "${P1H_STATE}")" >&2
+  exit 1
+}
+P1H_INSTANCE_ID=$(echo "${P1H_STATE}" | jq -r '.outputs.InstanceId // ""')
+if [ "${P1H_INSTANCE_ID}" != "${INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5446 -- .outputs.InstanceId is '${P1H_INSTANCE_ID}' after the update, expected the same instance ${INSTANCE_ID}; CloudFormation updates these in place" >&2
+  exit 1
+fi
+P1H_INSTANCE=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0]' --output json 2>&1) || {
+  echo "FAIL: issue #5446 -- describe-instances ${INSTANCE_ID} failed after the Phase 1h deploy: $(sanitize_aws_output "${P1H_INSTANCE}")" >&2
+  exit 1
+}
+P1H_TYPE=$(echo "${P1H_INSTANCE}" | jq -r '.InstanceType // "<absent>"')
+P1H_STATE_NAME=$(echo "${P1H_INSTANCE}" | jq -r '.State.Name // "<absent>"')
+P1H_GROUPS=$(echo "${P1H_INSTANCE}" | jq -r '[.SecurityGroups[]?.GroupId] | sort | join(",")')
+if [ "${P1H_TYPE}" != "t3.small" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} is '${P1H_TYPE}' after the update, expected t3.small; the InstanceType change was not applied" >&2
+  exit 1
+fi
+if [ "${P1H_GROUPS}" != "${UPDATE_SG_ID}" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} is in '${P1H_GROUPS}' after the update, expected only ${UPDATE_SG_ID}; the SecurityGroupIds change was not applied" >&2
+  exit 1
+fi
+if [ "${P1H_STATE_NAME}" != "running" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} is '${P1H_STATE_NAME}' after the update, expected running; the stop for the change was not followed by a start" >&2
+  exit 1
+fi
+P1H_USERDATA=$(aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" --attribute userData \
+  --region "${REGION}" --query 'UserData.Value' --output text 2>&1) \
+  || P1H_USERDATA="<describe-failed: $(sanitize_aws_output "${P1H_USERDATA}")>"
+# The template value is Fn::Base64 of this script; EC2 reports the stored user
+# data base64-encoded, so the two must be byte-equal (a double encoding would
+# store the base64 text itself).
+P1H_WANT_USERDATA=$(printf '#!/bin/bash\necho cdkd-5446\n' | base64 | tr -d '\n')
+if [ "${P1H_USERDATA}" != "${P1H_WANT_USERDATA}" ]; then
+  echo "FAIL: issue #5446 -- instance ${INSTANCE_ID} user data is '${P1H_USERDATA}', expected '${P1H_WANT_USERDATA}'; the UserData change was not applied, or was encoded twice" >&2
+  exit 1
+fi
+echo "    OK: #5446 same instance ${INSTANCE_ID} is t3.small, in ${UPDATE_SG_ID} only, running, with the template's user data"
+# The stop/start gives the instance (no Elastic IP) a new public address. The
+# update records it, so the `PublicIp` Output (Fn::GetAtt Instance.PublicIp)
+# must read the NEW live address, not the one the instance had before.
+P1H_IP_AFTER=$(echo "${P1H_INSTANCE}" | jq -r '.PublicIpAddress // ""')
+P1H_IP_OUTPUT=$(echo "${P1H_STATE}" | jq -r '.outputs.PublicIp // ""')
+if [ -z "${P1H_IP_AFTER}" ] || [ "${P1H_IP_OUTPUT}" != "${P1H_IP_AFTER}" ]; then
+  echo "FAIL: issue #5446 -- .outputs.PublicIp is '${P1H_IP_OUTPUT}' after the stop/start, expected the live address '${P1H_IP_AFTER}' (before: ${P1H_IP_BEFORE}); the update did not record the new public address" >&2
+  exit 1
+fi
+if [ "${P1H_IP_AFTER}" = "${P1H_IP_BEFORE}" ]; then
+  echo "    NOTE: #5446 the public address did not change across the stop/start (${P1H_IP_AFTER}); the Output check above holds but does not discriminate this run"
+else
+  echo "    OK: #5446 .outputs.PublicIp moved with the stop/start (${P1H_IP_BEFORE} -> ${P1H_IP_AFTER})"
+fi
+# A RESOURCE reader too (Phase 1g created it): the SSM parameter whose Value is
+# Fn::GetAtt Instance.PublicIp must be PROMOTED by the update and carry the new
+# address. Before the reader promotion it kept the pre-stop address.
+IP_READER_NAME=$(echo "${P1H_STATE}" | jq -r '.outputs.IpReaderParamName // ""')
+if [ -z "${IP_READER_NAME}" ]; then
+  echo "FAIL: issue #5446 -- .outputs.IpReaderParamName is missing; Phase 1g should have created the PublicIp reader" >&2
+  exit 1
+fi
+IP_READER_VALUE=$(aws ssm get-parameter --name "${IP_READER_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text 2>&1) || {
+  echo "FAIL: issue #5446 -- get-parameter ${IP_READER_NAME} failed: $(sanitize_aws_output "${IP_READER_VALUE}")" >&2
+  exit 1
+}
+if [ "${IP_READER_VALUE}" != "${P1H_IP_AFTER}" ]; then
+  echo "FAIL: issue #5446 -- SSM parameter ${IP_READER_NAME} (Fn::GetAtt Instance.PublicIp) is '${IP_READER_VALUE}' after the stop/start, expected the live address '${P1H_IP_AFTER}' (before: ${P1H_IP_BEFORE}); the reader was not promoted" >&2
+  exit 1
+fi
+if [ "${P1H_IP_AFTER}" = "${P1H_IP_BEFORE}" ]; then
+  echo "    NOTE: #5446 the public address did not change, so the reader check does not discriminate this run"
+else
+  echo "    OK: #5446 the PublicIp reader (SSM parameter) followed the stop/start to ${IP_READER_VALUE}"
+fi
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
@@ -1327,5 +1500,19 @@ else
   exit 1
 fi
 
+# Issue #5445: the fixture CMK must be scheduled for deletion by the destroy
+# (RemovalPolicy.DESTROY), never left Enabled.
+EBS_KEY_STATE=$(aws kms describe-key \
+  --key-id "${EBS_KEY_ARN}" \
+  --region "${REGION}" \
+  --query KeyMetadata.KeyState --output text 2>&1) \
+  || EBS_KEY_STATE="<describe-failed: $(sanitize_aws_output "${EBS_KEY_STATE}")>"
+if [ "${EBS_KEY_STATE}" != "PendingDeletion" ]; then
+  echo "FAIL: issue #5445 -- fixture CMK ${EBS_KEY_ARN} is '${EBS_KEY_STATE}' after destroy, expected PendingDeletion" >&2
+  exit 1
+fi
+echo "    OK: #5445 fixture CMK is PendingDeletion"
+EBS_KEY_ARN=""
+
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #4606 identity reads + #1160 removal) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update) ==="

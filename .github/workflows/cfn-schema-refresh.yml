@@ -40,8 +40,8 @@ name: CFn schema fixture refresh
 #
 #   * a day with no drift opens NO PR — the job stops at the drift step, so the
 #     cost of a quiet day is one short run, not a review cycle. (With a refresh
-#     PR already OPEN a quiet day is no longer short: the regeneration, the five
-#     check families and the diagnosis all run, because that is the only way the
+#     PR already OPEN a quiet day is no longer short: the regeneration, every
+#     check family and the diagnosis all run, because that is the only way the
 #     PR's decision marking can be RE-EVALUATED and cleared. Nothing is
 #     committed on that arm.);
 #   * the open-PR guard below already bounds concurrency at ONE, so raising the
@@ -77,8 +77,8 @@ name: CFn schema fixture refresh
 # `AWS::Route53::RecordSet.GeoProximityLocation` — the case that motivated this
 # — is settled that way. Everything else still lands RED: a removal whose SDK
 # member is gone (retiring it is a behaviour change), a possible rename, and new
-# nested keys on `AWS::Glue::Connection` taking
-# `audit:nested-key-coverage:check` from rc=0 to rc=1.
+# nested keys on `AWS::Glue::Connection` that no wire bag carries yet, which
+# redden the sdk-wire suites.
 on:
   schedule:
     # 04:37 UTC daily. Off the hour on purpose — the top of the hour is heavily
@@ -132,7 +132,7 @@ jobs:
           # explicit token instead. `release.yml` already does this.
           persist-credentials: false
 
-      - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1
+      - uses: voidzero-dev/setup-vp@cab1ab9eaff52d4857875f4f2c016e36af8f2c76 # v1
         with:
           node-version: "24"
           cache: true
@@ -399,6 +399,19 @@ jobs:
               appsync-graphqlapi-config-props \
               appsync-resolver-datasource-props \
               ecs-service-config-props
+          # The differential wire suites (go-to-k/cdkd#3723) read each type's
+          # nested and create-only paths from the fixtures, so a nested key AWS
+          # adds under a handled top-level reds them — the class the nested-key
+          # critic's retired key pass used to catch. Their log is kept: the
+          # diagnosis lists the paths it names. `status` is read inside a
+          # function `run_check` calls from an `if`, where `set -e` is off.
+          sdk_wire_suites() {
+            vp test run sdk-wire-coverage > /tmp/sdk-wire.log 2>&1
+            status=$?
+            cat /tmp/sdk-wire.log
+            return "${status}"
+          }
+          run_check sdk-wire-coverage sdk_wire_suites
           # Through the environment FILE, not a shell variable: each `run:` is
           # its own shell, so a plain assignment here is simply gone by the
           # Diagnose step — and an absent `--failed-checks` reads as "nothing
@@ -445,6 +458,7 @@ jobs:
             --nested-key-log /tmp/nested-key.log \
             --nested-key-rc "${nested_key_rc}" \
             --failed-checks "${FAILED_CHECKS}" \
+            --sdk-wire-log /tmp/sdk-wire.log \
             --skipped-log /tmp/skipped.log \
             --auto-tolerated /tmp/auto-tolerated.json \
             --decision-count-out /tmp/decision-count.txt \

@@ -34,6 +34,10 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { FirehoseProvider } from '../../../src/provisioning/providers/firehose-provider.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 
 /** Route each SDK command by its class name to a handler. */
 function route(handlers: Record<string, () => unknown>): void {
@@ -92,6 +96,34 @@ describe('FirehoseProvider create marks the resource it made before failing (#45
     const { DeliveryStreamName: _omit, ...unnamed } = props;
     const error = await caught(new FirehoseProvider().create('Stream', TYPE, unnamed));
     expect(createdBeforeFailure(error, 'Stream', TYPE)).toBe('Stream');
+  });
+
+  it('reports the stream name before the active-wait (#5511)', async () => {
+    const sink = new CreatedResourceSink('Stream', TYPE);
+    let atDescribe: unknown = 'unset';
+    route({
+      CreateDeliveryStreamCommand: () => ({
+        DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/my-stream',
+      }),
+      DescribeDeliveryStreamCommand: () => {
+        atDescribe = sink.report;
+        throw new Error('describe throttled');
+      },
+    });
+    await caught(
+      collectCreatedResources(sink, () => new FirehoseProvider().create('Stream', TYPE, props))
+    );
+    expect(atDescribe).toEqual({ physicalId: 'my-stream' });
+    expect(sink.report).toEqual({ physicalId: 'my-stream' });
+  });
+
+  it('reports nothing when CreateDeliveryStream itself fails (#5511)', async () => {
+    const sink = new CreatedResourceSink('Stream', TYPE);
+    route({ CreateDeliveryStreamCommand: fail('ResourceInUseException') });
+    await caught(
+      collectCreatedResources(sink, () => new FirehoseProvider().create('Stream', TYPE, props))
+    );
+    expect(sink.report).toBeUndefined();
   });
 
   it('does not mark when CreateDeliveryStream itself fails', async () => {

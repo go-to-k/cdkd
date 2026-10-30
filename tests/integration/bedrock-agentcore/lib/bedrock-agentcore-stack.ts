@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as path from 'path';
 import { fileURLToPath } from 'node:url';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as agentcore from '@aws-cdk/aws-bedrock-agentcore-alpha';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * CloudFormation A/B (us-east-1) cleared each one, the lifecycle back to the
  * service defaults 900 / 28800; cdkd's full-replace UpdateAgentRuntime does
  * the same.
+ *
+ * Issue #5433: Phase 1 also routes the JWT authorizer through a managed VPC
+ * Lattice private endpoint whose `ManagedVpcResource.Tags` carry keys a
+ * first-letter case flip would change (`Env`, `Cost-Center`) or the readback
+ * flip would (`lowerKey`); verify.sh reads them back from AWS and through
+ * `cdkd drift`. AgentCore Identity validates the discovery URL from INSIDE
+ * the VPC (through the Lattice resource gateway), so the gateway's subnets
+ * need egress to the public Cognito endpoint: one NAT gateway (an isolated
+ * VPC fails the create with "Failed to validate discovery url"). The VPC
+ * stays in both phases so the removal phase only drops the endpoint with the
+ * authorizer.
+ *
+ * Issue #2762: Phase 1 also gives the code runtime a top-level Tags map (keys
+ * a case flip would change), a RequestHeaderConfiguration allowlist and a
+ * SessionStorage FilesystemConfigurations entry; the removal phase drops all
+ * three (Tags through UntagResource, the other two by the full replace).
+ * PlatformVersion and CapacityProviderConfiguration stay unset: the first
+ * has no documented value set, the second needs a capacity provider.
  *
  * covers: AWS::BedrockAgentCore::Runtime
  */
@@ -71,6 +90,47 @@ export class BedrockAgentcoreStack extends cdk.Stack {
             environmentVariables: { CDKD_INTEG: 'bedrock-agentcore' },
           }),
     });
+    // Issue #5433: user-keyed tag map under the authorizer's private endpoint.
+    // verify.sh pins the AZs by AZ ID (CDKD_AUTH_AZS, comma-separated names):
+    // AZ names map to different AZ IDs per account, and AgentCore / VPC
+    // Lattice serve only some AZ IDs.
+    const authAzs = process.env.CDKD_AUTH_AZS?.split(',').filter((az) => az !== '');
+    const authVpc = new ec2.Vpc(this, 'AuthVpc', {
+      ...(authAzs && authAzs.length > 0 ? { availabilityZones: authAzs } : { maxAzs: 2 }),
+      natGateways: 1,
+      subnetConfiguration: [
+        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
+        { name: 'private', subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS, cidrMask: 24 },
+      ],
+    });
+    // Both phases: destroy deletes the runtime (and its managed endpoint)
+    // before the subnets / VPC.
+    codeRuntime.node.addDependency(authVpc);
+    if (!isRemoval) {
+      (codeRuntime.node.defaultChild as cdk.CfnResource).addPropertyOverride(
+        'AuthorizerConfiguration.CustomJWTAuthorizer.PrivateEndpoint',
+        {
+          ManagedVpcResource: {
+            VpcIdentifier: authVpc.vpcId,
+            SubnetIds: authVpc.privateSubnets.map((s) => s.subnetId),
+            EndpointIpAddressType: 'IPV4',
+            Tags: { Env: 'cdkd-integ', 'Cost-Center': '5433', lowerKey: 'v' },
+          },
+        }
+      );
+    }
+    if (!isRemoval) {
+      // Issue #2762: the SDK provider sends these instead of routing the
+      // runtime to Cloud Control.
+      const cfn = codeRuntime.node.defaultChild as cdk.CfnResource;
+      cfn.addPropertyOverride('Tags', { Env: 'cdkd-integ', lowerKey: 'v2762' });
+      cfn.addPropertyOverride('RequestHeaderConfiguration', {
+        RequestHeaderAllowlist: ['X-Amzn-Bedrock-AgentCore-Runtime-Custom-Cdkd'],
+      });
+      cfn.addPropertyOverride('FilesystemConfigurations', [
+        { SessionStorage: { MountPath: '/mnt/cdkd' } },
+      ]);
+    }
     if (isRemoval) {
       // The L2 always renders these two; delete them so the keys are REMOVED.
       const cfnCodeRuntime = codeRuntime.node.defaultChild as cdk.CfnResource;

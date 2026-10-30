@@ -108,12 +108,16 @@ vi.mock('../../../src/cli/commands/retire-cfn-stack.js', async () => {
 const mockGetState = vi.fn<(s: string, r: string) => Promise<unknown>>();
 const mockSaveState = vi.fn<(...args: unknown[]) => Promise<string>>();
 const mockMarkRollbackJournalImported = vi.fn<(...args: unknown[]) => Promise<string[]>>();
+const mockStackInstanceIdForFirstWrite = vi
+  .fn<(...args: unknown[]) => Promise<string>>()
+  .mockResolvedValue('00000000-0000-4000-8000-000000000000');
 vi.mock('../../../src/state/s3-state-backend.js', () => ({
   S3StateBackend: vi.fn().mockImplementation(() => ({
     destroyClient: vi.fn(),
     verifyBucketExists: vi.fn(async () => undefined),
     getState: mockGetState,
     saveState: mockSaveState,
+    stackInstanceIdForFirstWrite: mockStackInstanceIdForFirstWrite,
     markRollbackJournalImported: mockMarkRollbackJournalImported,
   })),
 }));

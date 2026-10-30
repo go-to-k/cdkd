@@ -12,6 +12,7 @@ On this page:
 - [A property you set in the template never reaches AWS](#a-property-you-set-in-the-template-never-reaches-aws)
 - [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
 - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
+- [deleting a Cognito `AccountRecoverySetting`, `SmsConfiguration`, `UserPoolTier` or `DeletionProtection` changes nothing on the pool](#deleting-a-cognito-accountrecoverysetting-smsconfiguration-userpooltier-or-deletionprotection-changes-nothing-on-the-pool)
 
 ## A property you set in the template never reaches AWS
 
@@ -25,7 +26,7 @@ provider does not send, cdkd provisions that resource through the Cloud
 Control API, which forwards every property. The deploy says so:
 
 ```
-MyAlarm (AWS::CloudWatch::Alarm): routing via Cloud Control API (cdkd's SDK Provider does not yet wire EvaluationWindow — CC API will forward the full property map. Override via --prefer-sdk-route AWS::CloudWatch::Alarm:EvaluationWindow.)
+MyLogGroup (AWS::Logs::LogGroup): routing via Cloud Control API (cdkd's SDK Provider does not yet wire ResourcePolicyDocument — CC API will forward the full property map. Override via --prefer-sdk-route AWS::Logs::LogGroup:ResourcePolicyDocument.)
 ```
 
 A missing field therefore means the resource stayed on the SDK provider.
@@ -155,6 +156,26 @@ before it sends any change, with a message that names the pool's live
 `AllowedFirstAuthFactors`. `WEB_AUTHN` is refused the same way unless
 `WebAuthnFactorConfiguration` is `MULTI_FACTOR_WITH_USER_VERIFICATION`. The
 fix is the same explicit declaration.
+
+## deleting a Cognito `AccountRecoverySetting`, `SmsConfiguration`, `UserPoolTier` or `DeletionProtection` changes nothing on the pool
+
+You remove one of these from an `AWS::Cognito::UserPool`. The deploy
+succeeds, but the pool keeps its value. The deploy warns, naming the
+property:
+
+```text
+Cognito User Pool MyUserPool (us-east-1_xxxxxxxxx): the template no longer declares
+AccountRecoverySetting, and UpdateUserPool keeps a member it omits
+```
+
+`UpdateUserPool` keeps a member that the call leaves out, and CloudFormation
+keeps all four on the same edit, so cdkd sends no reset. To change the live
+value, declare the property with the value you want. For `DeletionProtection`
+that is `INACTIVE`, and for `UserPoolTier` it is `ESSENTIALS`, the default.
+
+Removing `MfaConfiguration` together with every MFA factor property is
+different. CloudFormation turns MFA off, and cdkd does the same and warns. A
+removed `UserPoolTags` key is untagged.
 
 ## Related
 

@@ -62,6 +62,7 @@ import {
   isRetryableTransientError,
   isThrottlingError,
 } from '../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
 
 /**
  * Each case drives its provider's update() into at least one AWS `send` by
@@ -85,6 +86,9 @@ const CASES = [
     logicalId: 'MyTopic',
     physicalId: 'arn:aws:sns:us-east-1:123456789012:my-topic',
     expectedPrefix: 'Failed to update SNS topic MyTopic',
+    // go-to-k/cdkd#2319: a non-Error throw is withheld from the persisted
+    // message rather than stringified into it.
+    nonErrorText: `a non-Error value of type string. ${VERBOSE_POINTER}`,
     mock: () => mockSnsSend,
     make: () => new SNSTopicProvider(),
     next: { TopicName: 'my-topic', DisplayName: 'after' },
@@ -107,6 +111,9 @@ const CASES = [
     logicalId: 'MyLg',
     physicalId: '/cdkd/my-lg',
     expectedPrefix: 'Failed to update log group MyLg',
+    // go-to-k/cdkd#2319: a non-Error throw is withheld from the persisted
+    // message rather than stringified into it.
+    nonErrorText: `a non-Error value of type string. ${VERBOSE_POINTER}`,
     mock: () => mockLogsSend,
     make: () => new LogsLogGroupProvider(),
     next: { LogGroupName: '/cdkd/my-lg', RetentionInDays: 30 },
@@ -147,7 +154,7 @@ describe('SDK provider update() error wrapping (issue #1267)', () => {
         expect(c.mock()).toHaveBeenCalled();
       });
 
-      it('wraps a non-Error rejection with a stringified message and no cause', async () => {
+      it('wraps a non-Error rejection with no cause', async () => {
         c.mock().mockRejectedValue('boom');
 
         const provider = c.make();
@@ -160,7 +167,9 @@ describe('SDK provider update() error wrapping (issue #1267)', () => {
         );
 
         await expect(promise).rejects.toThrow(ProvisioningError);
-        await expect(promise).rejects.toThrow(`${c.expectedPrefix}: boom`);
+        const expected = 'nonErrorText' in c ? c.nonErrorText : 'boom';
+        await expect(promise).rejects.toThrow(`${c.expectedPrefix}: ${expected}`);
+        if (expected !== 'boom') await expect(promise).rejects.not.toThrow('boom');
         const caught = await promise.catch((e: unknown) => e);
         expect((caught as Error).cause).toBeUndefined();
       });

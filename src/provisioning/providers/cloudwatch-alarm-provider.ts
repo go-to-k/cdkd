@@ -13,15 +13,18 @@ import {
 } from '@aws-sdk/client-cloudwatch';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { markNotGone } from '../not-gone.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { chunks, withApiLimit } from '../name-lookup.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -32,7 +35,12 @@ import type {
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { isThrottlingError } from '../../deployment/retryable-errors.js';
+import {
+  isThrottlingError,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
 import { safeMsg } from '../../utils/display-safe.js';
 
 /**
@@ -42,6 +50,47 @@ import { safeMsg } from '../../utils/display-safe.js';
  * prose; an AWS message quoting an alarm whose NAME holds that text costs at
  * most the bounded retry budget before it fails as it would have.
  */
+/**
+ * go-to-k/cdkd#5524: `{ SlidingWindow: {} }` exactly -- the evaluation window
+ * an alarm uses when none is set. A sliding window has no options, so any
+ * other member (or a non-empty `SlidingWindow`) is not the default.
+ */
+function isDefaultEvaluationWindow(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== 'SlidingWindow') return false;
+  const sliding = (value as Record<string, unknown>)['SlidingWindow'];
+  return (
+    sliding !== null &&
+    typeof sliding === 'object' &&
+    !Array.isArray(sliding) &&
+    Object.keys(sliding).length === 0
+  );
+}
+
+/**
+ * go-to-k/cdkd#5524: every PutMetricAlarm member AWS refuses beside
+ * `EvaluationCriteria` (the PromQL form), per `PutMetricAlarmInput`'s
+ * documentation in @aws-sdk/client-cloudwatch 3.1156.0, plus
+ * `EvaluationWindow`, which that documentation excludes for PromQL alarms.
+ */
+const PROMQL_EXCLUDED_MEMBERS: readonly string[] = [
+  'Namespace',
+  'MetricName',
+  'Dimensions',
+  'Period',
+  'Unit',
+  'Statistic',
+  'ExtendedStatistic',
+  'Metrics',
+  'Threshold',
+  'ComparisonOperator',
+  'ThresholdMetricId',
+  'EvaluationPeriods',
+  'DatapointsToAlarm',
+  'EvaluationWindow',
+];
+
 function isAlarmWriteThrottle(error: unknown): boolean {
   return (
     isThrottlingError(error) || (error instanceof Error && error.message.includes('Rate exceeded'))
@@ -57,6 +106,37 @@ function isAlarmWriteThrottle(error: unknown): boolean {
 export class CloudWatchAlarmProvider implements ResourceProvider {
   private cloudWatchClient: CloudWatchClient;
   private logger = getLogger().child('CloudWatchAlarmProvider');
+
+  /**
+   * The failure wrap this provider's create, update and delete catches throw.
+   *
+   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
+   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}), so a create-first
+   * replacement still recognises the collision. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, issue #4244); a non-`Error` throw is withheld like
+   * an AWS one, unstamped (it has no chain). A delete catch tests not-found
+   * before it wraps.
+   *
+   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
+   * side-effect-free constructor call.
+   */
+  private wrapCaughtError(
+    mask: MaskerFn,
+    error: unknown,
+    build: (text: string) => ProvisioningError
+  ): ProvisioningError {
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -84,36 +164,13 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         'ExtendedStatistic',
         'EvaluateLowSampleCountPercentile',
         'ThresholdMetricId',
-      ]),
-    ],
-  ]);
-
-  /**
-   * Properties this provider deliberately does NOT wire through to the SDK,
-   * with a one-line rationale per entry (consumed by the property-coverage
-   * check, issue #391).
-   *
-   * `EvaluationCriteria` / `EvaluationInterval` appear in the CloudFormation
-   * `AWS::CloudWatch::Alarm` registry schema but are absent from BOTH the AWS
-   * SDK `PutMetricAlarm` input (`@aws-sdk/client-cloudwatch`) AND the
-   * aws-cdk-lib `CfnAlarm` L1 — a newer CFn-schema surface ahead of SDK / CDK
-   * support, so there is no wire path to forward them and no CDK app can emit
-   * them. Per the #609 backfillability rule (a property absent from EITHER the
-   * SDK create input OR the CDK L1 is not backfillable), they are classified
-   * unhandled-by-design rather than left as a "not yet implemented" TODO.
-   */
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::CloudWatch::Alarm',
-      new Map([
-        [
-          'EvaluationCriteria',
-          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
-        ],
-        [
-          'EvaluationInterval',
-          'Absent from both the SDK PutMetricAlarm input and the aws-cdk-lib CfnAlarm L1 (a newer CFn-schema-only property ahead of SDK/CDK support); no wire path to forward it and no CDK app can emit it.',
-        ],
+        // go-to-k/cdkd#2762: PutMetricAlarm members with the CFn spelling.
+        'ActionConfiguration',
+        'WarmUpConfiguration',
+        // go-to-k/cdkd#5524: the last three, also with the CFn spelling.
+        'EvaluationWindow',
+        'EvaluationCriteria',
+        'EvaluationInterval',
       ]),
     ],
   ]);
@@ -129,7 +186,8 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating CloudWatch alarm ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
@@ -166,12 +224,17 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to create CloudWatch alarm ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        undefined,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create CloudWatch alarm ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            cause
+          )
       );
     }
   }
@@ -236,12 +299,17 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to update CloudWatch alarm ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      throw this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to update CloudWatch alarm ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
     }
   }
@@ -338,13 +406,24 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       }
 
       const cause = error instanceof Error ? error : undefined;
-      throw new ProvisioningError(
-        `Failed to delete CloudWatch alarm ${logicalId}: ${describeAwsFailure(error).detail}`,
-        resourceType,
-        logicalId,
-        physicalId,
-        cause
+      const thrown = this.wrapCaughtError(
+        maskerOrIdentity(context?.maskSecrets),
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to delete CloudWatch alarm ${logicalId}: ${text}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            cause
+          )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -500,6 +579,22 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         properties['EvaluateLowSampleCountPercentile']
       ),
       ThresholdMetricId: emptyToUndefined(properties['ThresholdMetricId']),
+      // go-to-k/cdkd#2762: the CFn spelling of both is the SDK member's, down
+      // to every nested key, so the declared value is forwarded as is.
+      // PutMetricAlarm replaces the whole alarm configuration, so a member
+      // left out (a removal) stores the alarm without it: no warm-up, no tag
+      // propagation.
+      ActionConfiguration: properties['ActionConfiguration'],
+      WarmUpConfiguration: properties['WarmUpConfiguration'],
+      // go-to-k/cdkd#5524: the same holds for these three. EvaluationWindow is
+      // a union (`SlidingWindow: {}` or `WallClockWindow: { Timezone }`) and
+      // EvaluationCriteria one (`PromQLCriteria: { Query, PendingPeriod,
+      // RecoveryPeriod }`), both spelled as the SDK spells them. A removal
+      // stores the alarm on AWS's default: a sliding window, or the metric
+      // form.
+      EvaluationWindow: properties['EvaluationWindow'],
+      EvaluationCriteria: properties['EvaluationCriteria'],
+      EvaluationInterval: properties['EvaluationInterval'] as number | undefined,
     };
 
     // Metrics array (math expressions / composite metrics).
@@ -515,6 +610,10 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
         if (m['Label'] !== undefined) entry['Label'] = m['Label'];
         if (m['ReturnData'] !== undefined) entry['ReturnData'] = m['ReturnData'];
         if (m['Period'] !== undefined) entry['Period'] = m['Period'];
+        // A cross-account metric: CDK emits `AccountId` when the metric's
+        // account differs from the stack's. Omitted, the alarm watches the
+        // same-named metric in the alarm's own account (go-to-k/cdkd#3723).
+        if (m['AccountId'] !== undefined) entry['AccountId'] = m['AccountId'];
         if (m['MetricStat'] !== undefined) {
           const stat = m['MetricStat'] as Record<string, unknown>;
           const metric = stat['Metric'] as Record<string, unknown>;
@@ -541,6 +640,19 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       params['Dimensions'] = properties['Dimensions'] as
         | Array<{ Name: string; Value: string }>
         | undefined;
+      // go-to-k/cdkd#5524, Class 1: a PromQL alarm (EvaluationCriteria) takes
+      // none of the metric members, and PutMetricAlarm refuses `Dimensions`
+      // beside it even when empty. An EMPTY list adds nothing to any alarm
+      // (PutMetricAlarm replaces the whole configuration either way), so it
+      // is dropped there; a non-empty one is a template error and goes to AWS
+      // as declared, to be refused as CloudFormation would.
+      if (
+        properties['EvaluationCriteria'] !== undefined &&
+        Array.isArray(params['Dimensions']) &&
+        (params['Dimensions'] as unknown[]).length === 0
+      ) {
+        delete params['Dimensions'];
+      }
     }
 
     return params as unknown as PutMetricAlarmCommandInput;
@@ -563,7 +675,12 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
    * `ComparisonOperator`, `Threshold`, `EvaluationPeriods`, `Period`,
    * `DatapointsToAlarm`, `ActionsEnabled`, `AlarmActions`,
    * `OKActions`, `InsufficientDataActions`, `TreatMissingData`, `Unit`,
-   * `Dimensions`, `Metrics`).
+   * `Dimensions`, `Metrics`), plus, when AWS reports them,
+   * `ExtendedStatistic`, `EvaluateLowSampleCountPercentile`,
+   * `ThresholdMetricId`, `ActionConfiguration`, `WarmUpConfiguration`,
+   * `EvaluationWindow`, `EvaluationCriteria` and `EvaluationInterval`. A
+   * PromQL alarm (one with `EvaluationCriteria`) gets none of the metric
+   * members, placeholders included.
    *
    * `DescribeAlarms` returns the result via either `MetricAlarms` (single-
    * metric form) or `CompositeAlarms` (composite form). cdkd's provider
@@ -591,21 +708,35 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     // sets get placeholders so a user switching from one form to the
     // other on the same alarm is detected.
     const result: Record<string, unknown> = {};
+    // go-to-k/cdkd#5524, Class 1 (docs/provider-rules.md): a PromQL alarm
+    // carries `EvaluationCriteria`, and PutMetricAlarm refuses every metric
+    // member beside it -- Namespace, MetricName, Dimensions, Period, Unit,
+    // Statistic, ExtendedStatistic, Metrics, Threshold, ComparisonOperator,
+    // ThresholdMetricId, EvaluationPeriods, DatapointsToAlarm -- and
+    // EvaluationWindow too. None of them is emitted for such an alarm, the
+    // always-emit placeholders included: `cdkd drift --revert` sends this bag
+    // to update(). A console-side ADD of one of them beside the criteria is
+    // impossible; a console SWITCH of the whole alarm to the metric form is
+    // not, and getDriftAbsentMeansDefaultKeys below names those members for a
+    // PromQL template so the switch is reported and reverted.
+    const promql = alarm.EvaluationCriteria !== undefined;
     if (alarm.AlarmName !== undefined) result['AlarmName'] = alarm.AlarmName;
     result['AlarmDescription'] = alarm.AlarmDescription ?? '';
-    result['MetricName'] = alarm.MetricName ?? '';
-    result['Namespace'] = alarm.Namespace ?? '';
-    result['Statistic'] = alarm.Statistic ?? '';
-    if (alarm.ComparisonOperator !== undefined) {
-      result['ComparisonOperator'] = alarm.ComparisonOperator;
-    }
-    if (alarm.Threshold !== undefined) result['Threshold'] = alarm.Threshold;
-    if (alarm.EvaluationPeriods !== undefined) {
-      result['EvaluationPeriods'] = alarm.EvaluationPeriods;
-    }
-    if (alarm.Period !== undefined) result['Period'] = alarm.Period;
-    if (alarm.DatapointsToAlarm !== undefined) {
-      result['DatapointsToAlarm'] = alarm.DatapointsToAlarm;
+    if (!promql) {
+      result['MetricName'] = alarm.MetricName ?? '';
+      result['Namespace'] = alarm.Namespace ?? '';
+      result['Statistic'] = alarm.Statistic ?? '';
+      if (alarm.ComparisonOperator !== undefined) {
+        result['ComparisonOperator'] = alarm.ComparisonOperator;
+      }
+      if (alarm.Threshold !== undefined) result['Threshold'] = alarm.Threshold;
+      if (alarm.EvaluationPeriods !== undefined) {
+        result['EvaluationPeriods'] = alarm.EvaluationPeriods;
+      }
+      if (alarm.Period !== undefined) result['Period'] = alarm.Period;
+      if (alarm.DatapointsToAlarm !== undefined) {
+        result['DatapointsToAlarm'] = alarm.DatapointsToAlarm;
+      }
     }
     result['ActionsEnabled'] = alarm.ActionsEnabled ?? true;
     result['AlarmActions'] = alarm.AlarmActions ? [...alarm.AlarmActions] : [];
@@ -614,12 +745,14 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
       ? [...alarm.InsufficientDataActions]
       : [];
     result['TreatMissingData'] = alarm.TreatMissingData ?? '';
-    result['Unit'] = alarm.Unit ?? '';
-    result['Dimensions'] = (alarm.Dimensions ?? []).map((d) => ({
-      ...(d.Name !== undefined ? { Name: d.Name } : {}),
-      ...(d.Value !== undefined ? { Value: d.Value } : {}),
-    }));
-    result['Metrics'] = (alarm.Metrics ?? []).map((m) => m as unknown as Record<string, unknown>);
+    if (!promql) {
+      result['Unit'] = alarm.Unit ?? '';
+      result['Dimensions'] = (alarm.Dimensions ?? []).map((d) => ({
+        ...(d.Name !== undefined ? { Name: d.Name } : {}),
+        ...(d.Value !== undefined ? { Value: d.Value } : {}),
+      }));
+      result['Metrics'] = (alarm.Metrics ?? []).map((m) => m as unknown as Record<string, unknown>);
+    }
 
     // Emit-when-present (NOT always-emit) for the extended-statistic /
     // anomaly-detection / low-sample-count fields. Unlike the always-emit
@@ -628,14 +761,44 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     // emit-when-present can't drop a templated value, and emitting them
     // unconditionally would break the "AWS minimum response" key-set
     // regression test (cloudwatch-alarm-provider-readcurrentstate.test.ts).
-    if (alarm.ExtendedStatistic !== undefined) {
+    if (!promql && alarm.ExtendedStatistic !== undefined) {
       result['ExtendedStatistic'] = alarm.ExtendedStatistic;
     }
     if (alarm.EvaluateLowSampleCountPercentile !== undefined) {
       result['EvaluateLowSampleCountPercentile'] = alarm.EvaluateLowSampleCountPercentile;
     }
-    if (alarm.ThresholdMetricId !== undefined) {
+    if (!promql && alarm.ThresholdMetricId !== undefined) {
       result['ThresholdMetricId'] = alarm.ThresholdMetricId;
+    }
+    // go-to-k/cdkd#2762: emit-when-present, as the three above. The SDK shape
+    // of both is the CFn one, so the value is carried as read.
+    if (alarm.ActionConfiguration !== undefined) {
+      result['ActionConfiguration'] = alarm.ActionConfiguration;
+    }
+    if (alarm.WarmUpConfiguration !== undefined) {
+      result['WarmUpConfiguration'] = alarm.WarmUpConfiguration;
+    }
+    // go-to-k/cdkd#5524: emit-when-present too, in the SDK shape, which is
+    // the CFn one -- except at the default. AWS may report `SlidingWindow: {}`
+    // on an alarm that declares no window, or omit it on one that declares
+    // it, so the default is omitted either way and the two read the same.
+    // getDriftAbsentMeansDefaultKeys below keeps the key compared, the shape
+    // docs/provider-rules.md gives for a readback that omits its default.
+    if (
+      !promql &&
+      alarm.EvaluationWindow !== undefined &&
+      !isDefaultEvaluationWindow(alarm.EvaluationWindow)
+    ) {
+      result['EvaluationWindow'] = alarm.EvaluationWindow;
+    }
+    if (alarm.EvaluationCriteria !== undefined) {
+      result['EvaluationCriteria'] = alarm.EvaluationCriteria;
+    }
+    // PromQL-only: PutMetricAlarm refuses EvaluationInterval on an alarm
+    // configured with MetricName or Metrics, so a value AWS might report on a
+    // metric alarm must not reach `drift --revert`'s update().
+    if (promql && alarm.EvaluationInterval !== undefined) {
+      result['EvaluationInterval'] = alarm.EvaluationInterval;
     }
 
     // Tags via ListTagsForResource (uses the alarm ARN from DescribeAlarms).
@@ -655,6 +818,69 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     return result;
   }
 
+  /**
+   * go-to-k/cdkd#5524: the readback omits the default window, so a BASELINE
+   * that spells it -- the template bag, on a record with no
+   * `observedProperties` -- would otherwise report `{ SlidingWindow: {} }`
+   * against an absent readback as drift. That baseline member is dropped,
+   * keyed on the baseline itself being exactly the default and the readback
+   * carrying no window. Dropping it is safe for `drift --revert`, which sends
+   * the returned baseline: PutMetricAlarm stores an absent window as the same
+   * sliding window. Every other pair is returned by identity.
+   */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    if (
+      resourceType !== 'AWS::CloudWatch::Alarm' ||
+      !isDefaultEvaluationWindow(baseline['EvaluationWindow']) ||
+      aws['EvaluationWindow'] !== undefined
+    ) {
+      return { baseline, aws };
+    }
+    const trimmed = { ...baseline };
+    delete trimmed['EvaluationWindow'];
+    return { baseline: trimmed, aws };
+  }
+
+  /**
+   * go-to-k/cdkd#5524: the readback omits the default window, so a baseline on
+   * the default carries no `EvaluationWindow`, and the baseline-keys-only walk
+   * would never notice a wall-clock window set in the console. Naming the key
+   * keeps it compared, and `drift --revert` sends it absent, which
+   * PutMetricAlarm (a full replace) stores as the default sliding window.
+   * Only while the template is on the default too, and never for a PromQL
+   * alarm, which takes no window at all. A metric alarm also names
+   * `EvaluationCriteria` / `EvaluationInterval`, the PromQL-only pair.
+   */
+  getDriftAbsentMeansDefaultKeys(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    if (resourceType !== 'AWS::CloudWatch::Alarm') return [];
+    if (properties['EvaluationCriteria'] !== undefined) {
+      // A PromQL template: a console switch to the metric form surfaces the
+      // metric members on the AWS side only, and `drift --revert` builds its
+      // bag on that readback, so without this it would send them beside
+      // EvaluationCriteria, which PutMetricAlarm refuses. Named, each is
+      // compared and sent absent, which stores the PromQL alarm the template
+      // declares. A member the template itself declares is left out: that
+      // template is refused by AWS anyway, and it is not on its default.
+      return [...PROMQL_EXCLUDED_MEMBERS].filter((key) => properties[key] === undefined);
+    }
+    // A metric alarm: a console switch to PromQL would surface only as the
+    // metric members' drift, and the revert would then send them beside the
+    // PromQL members. Naming both keeps them compared and sends them absent,
+    // which PutMetricAlarm stores as the metric alarm the template declares.
+    const keys = ['EvaluationCriteria', 'EvaluationInterval'];
+    const declared = properties['EvaluationWindow'];
+    if (declared === undefined || isDefaultEvaluationWindow(declared))
+      keys.push('EvaluationWindow');
+    return keys;
+  }
+
   /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
   generatedCreateName(
     _resourceType: string,
@@ -662,7 +888,7 @@ export class CloudWatchAlarmProvider implements ResourceProvider {
     properties: Record<string, unknown>
   ): string | undefined {
     if (properties['AlarmName']) return undefined;
-    return generateResourceName(logicalId, { maxLength: 256 });
+    return generatedNameFor('AWS::CloudWatch::Alarm', logicalId);
   }
 
   /**

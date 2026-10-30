@@ -9,7 +9,7 @@
  * to every type `--remove-protection` covers.
  */
 import { isTruthyCfnBoolean } from './data-delete-intent.js';
-import { extractLocalDeletionProtection } from './providers/dynamodb-globaltable-provider.js';
+import { extractAnyDeletionProtection } from './providers/dynamodb-globaltable-provider.js';
 
 /**
  * Where a type's protection flag lives in a resource's property bag: a
@@ -40,11 +40,14 @@ export const PROTECTION_PROPERTY_BY_TYPE: Record<string, ProtectionLocator> = {
   'AWS::Neptune::DBCluster': 'DeletionProtection',
   'AWS::Neptune::DBInstance': 'DeletionProtection',
   'AWS::DynamoDB::Table': 'DeletionProtectionEnabled',
-  // CFn and CDK put the flag on the local replica
-  // (`Replicas[?Region==<region>].DeletionProtectionEnabled`); the provider's
-  // `readCurrentState` writes it top-level. `extractLocalDeletionProtection`
-  // reads the replica first and the top-level key second, as `create()` does.
-  'AWS::DynamoDB::GlobalTable': (bag, region) => extractLocalDeletionProtection(bag, region ?? ''),
+  // CFn and CDK put the flag on each replica
+  // (`Replicas[].DeletionProtectionEnabled`), and so does the provider's
+  // `readCurrentState` since go-to-k/cdkd#5381 (an older `observedProperties`
+  // holds the local one top-level). Protected when the local table is (replica
+  // first, top-level second, as `create()` reads it) or when any cross-region
+  // replica is, since cdkd sets and `--remove-protection` clears that guard too
+  // (go-to-k/cdkd#5355).
+  'AWS::DynamoDB::GlobalTable': (bag, region) => extractAnyDeletionProtection(bag, region ?? ''),
   'AWS::EC2::Instance': 'DisableApiTermination',
   'AWS::Cognito::UserPool': 'DeletionProtection',
   'AWS::AutoScaling::AutoScalingGroup': 'DeletionProtection',

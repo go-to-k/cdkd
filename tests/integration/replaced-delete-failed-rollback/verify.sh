@@ -456,8 +456,10 @@ if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Could not delete old Target (${TAR
   echo "[verify] FAIL: precondition -- the deploy did not report the refused delete of the old Target (${TARGET_A}); the replacement or the deny did not happen as designed (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Failed to create IAM managed policy Breaker" \
-  || ! printf '%s' "${DEPLOY_FLAT}" | grep -qiF "explicit deny"; then
+# The CLI names the AWS failure by its class (AccessDenied); AWS's own
+# "explicit deny" text appears only under --verbose, so match the class on the
+# same line as Breaker's create.
+if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Failed to create IAM managed policy Breaker: AccessDenied"; then
   echo "[verify] FAIL: precondition -- the deploy did not fail on the role's explicit deny of Breaker's create (output above)" >&2
   exit 1
 fi

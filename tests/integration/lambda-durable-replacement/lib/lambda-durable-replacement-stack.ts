@@ -16,14 +16,19 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  *   - removal (CDKD_TEST_REMOVAL=true) — the same function WITHOUT it, which
  *     the registry classifies as a replacement
  *
- * The function's name is deliberately LEFT TO cdkd (no `functionName`), which
- * is the shape issue #1625 asked for — and the shape that showed the issue's
- * own premise to be wrong. cdkd generates `{stackName}-{logicalId}`
- * DETERMINISTICALLY (`generateResourceName`), so the replacement's create-first
- * attempt lands on the name the OLD function still holds: an unnamed Lambda
- * collides exactly like a pinned one, and the physical id is the same on both
- * sides of the replacement (so "assert the physical id changed" cannot be the
- * proof — see verify.sh for what is asserted instead).
+ * The function carries an EXPLICIT, per-run `functionName`
+ * (`CDKD_TEST_FN_NAME`, set by verify.sh), so the replacement's create-first
+ * attempt lands on the name the OLD function still holds, and the physical id
+ * is the same on both sides of the replacement (so "assert the physical id
+ * changed" cannot be the proof — see verify.sh for what is asserted instead).
+ *
+ * Issue #1625 asked for an UNNAMED function, and until go-to-k/cdkd#5064 phase
+ * 2 that collided the same way, since cdkd generated the same name again. On a
+ * stack with a stack instance id it no longer does: a replacement of an
+ * un-named resource creates at the NEXT name generation, under a new name, so
+ * nothing collides and neither the refusal nor `--replace`'s delete-first
+ * would be reached. A declared name keeps today's same-name collision, which
+ * is what this fixture exercises.
  */
 export class LambdaDurableReplacementStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -35,11 +40,16 @@ export class LambdaDurableReplacementStack extends cdk.Stack {
     // this is a replacement whose create-first attempt collides with a
     // resource that is NOT the one being replaced.
     const heldName = process.env.CDKD_TEST_HELD_NAME;
+    // The managed function's own declared name, per run (see the class
+    // docstring). Required: without it the function is un-named and the
+    // replacement under test never collides.
+    const declaredName = process.env.CDKD_TEST_FN_NAME;
+    if (declaredName === undefined || declaredName === '') {
+      throw new Error('CDKD_TEST_FN_NAME must name the function (verify.sh sets it per run)');
+    }
 
     const fn = new lambda.Function(this, 'DurableFn', {
-      // No `functionName` on purpose — see the class docstring — except in the
-      // held-name phase above.
-      ...(heldName !== undefined && heldName !== '' && { functionName: heldName }),
+      functionName: heldName !== undefined && heldName !== '' ? heldName : declaredName,
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: 'index.handler',
       code: lambda.Code.fromInline('exports.handler = async () => ({});'),
@@ -62,7 +72,7 @@ export class LambdaDurableReplacementStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'FunctionName', {
       value: fn.functionName,
-      description: 'Generated Lambda function name (stable across the replacement)',
+      description: 'Declared Lambda function name (stable across the replacement)',
     });
   }
 }

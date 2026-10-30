@@ -17,6 +17,8 @@ import {
 } from '@aws-sdk/client-elasticache';
 import { CdkdError } from '../utils/error-handler.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
+import { markRedactedCause } from '../deployment/retryable-errors.js';
+import { safeMsg } from '../utils/display-safe.js';
 import { logicalIdShown, resourceTypeShown } from './composite-id.js';
 
 /** Minimal logger surface used here (avoids coupling to the full Logger type). */
@@ -275,6 +277,34 @@ function errMsg(error: unknown): string {
   return describeAwsFailure(error).detail;
 }
 
+/**
+ * The failure sentence a thrown `FINAL_SNAPSHOT_FAILED` message quotes
+ * (go-to-k/cdkd#2319). A thrown message is persisted to
+ * `deployments/{runId}.jsonl`, and an AWS `AccessDenied` names the caller's
+ * assumed-role ARN, so an AWS-authored failure is its CLASS plus the
+ * `--verbose` pointer, and AWS's own text goes to `debug` after `head`. A
+ * cdkd-authored error keeps its text. Always ends its sentence.
+ */
+function failureSentence(logger: InfoLogger, head: string, error: unknown): string {
+  const failure = describeAwsFailure(error);
+  if (!failure.redacted) return `${failure.detail}.`;
+  logger.debug(safeMsg`${head}: ${failure.detail}`);
+  return failure.summary;
+}
+
+/**
+ * A `FINAL_SNAPSHOT_FAILED` refusal carrying `error` as its `cause`, stamped
+ * `markRedactedCause` when AWS's text was withheld from the message, so the
+ * retry classifiers read it on the chain instead.
+ */
+function finalSnapshotFailure(message: string, error: unknown): CdkdError {
+  const cause = error instanceof Error ? error : undefined;
+  const thrown = new CdkdError(message, 'FINAL_SNAPSHOT_FAILED', cause);
+  return cause !== undefined && describeAwsFailure(cause).redacted
+    ? markRedactedCause(thrown)
+    : thrown;
+}
+
 function isVolumeNotFound(error: unknown): boolean {
   const name = error instanceof Error ? error.name : '';
   return name === 'InvalidVolume.NotFound' || errMsg(error).includes('InvalidVolume.NotFound');
@@ -347,10 +377,10 @@ export async function createEbsFinalSnapshot(
         );
         return null;
       }
-      throw new CdkdError(
-        `Failed to create the final snapshot for ${logicalId} (${volumeId}) required by ` +
-          `DeletionPolicy: Snapshot: ${errMsg(createError)}. The volume was NOT deleted.`,
-        'FINAL_SNAPSHOT_FAILED'
+      const head = `Failed to create the final snapshot for ${logicalId} (${volumeId}) required by DeletionPolicy: Snapshot`;
+      throw finalSnapshotFailure(
+        `${head}: ${failureSentence(logger, head, createError)} The volume was NOT deleted.`,
+        createError
       );
     }
   }
@@ -392,12 +422,11 @@ export async function createEbsFinalSnapshot(
         // already deleted", dropping a live volume from state WITHOUT
         // deleting it. The call sites rethrow FINAL_SNAPSHOT_* errors before
         // applying those heuristics.
-        throw new CdkdError(
-          `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId}): ` +
-            `${errMsg(pollError)}. The volume was NOT deleted; re-run the destroy (the ` +
-            `snapshot is reused, not duplicated).`,
-          'FINAL_SNAPSHOT_FAILED',
-          pollError instanceof Error ? pollError : undefined
+        const head = `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${volumeId})`;
+        throw finalSnapshotFailure(
+          `${head}: ${failureSentence(logger, head, pollError)} The volume was NOT deleted; ` +
+            `re-run the destroy (the snapshot is reused, not duplicated).`,
+          pollError
         );
       }
     }
@@ -587,12 +616,11 @@ async function waitForNamedSnapshot(opts: {
       if (opts.isTransientNotFound(pollError) && ++notFoundPolls <= 24) {
         status = undefined; // still propagating — keep polling
       } else {
-        throw new CdkdError(
-          `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${sourceId}): ` +
-            `${errMsg(pollError)}. The ${noun} was NOT deleted; re-run the delete (the ` +
-            `snapshot is reused, not duplicated).`,
-          'FINAL_SNAPSHOT_FAILED',
-          pollError instanceof Error ? pollError : undefined
+        const head = `Failed while waiting for final snapshot ${snapshotId} of ${logicalId} (${sourceId})`;
+        throw finalSnapshotFailure(
+          `${head}: ${failureSentence(logger, head, pollError)} The ${noun} was NOT deleted; ` +
+            `re-run the delete (the snapshot is reused, not duplicated).`,
+          pollError
         );
       }
     }
@@ -731,10 +759,10 @@ export async function createRedshiftFinalSnapshot(
         );
         return null;
       }
-      throw new CdkdError(
-        `Failed to create the final snapshot for ${logicalId} (${clusterId}) required by ` +
-          `DeletionPolicy: Snapshot: ${errMsg(createError)}. The cluster was NOT deleted.`,
-        'FINAL_SNAPSHOT_FAILED'
+      const head = `Failed to create the final snapshot for ${logicalId} (${clusterId}) required by DeletionPolicy: Snapshot`;
+      throw finalSnapshotFailure(
+        `${head}: ${failureSentence(logger, head, createError)} The cluster was NOT deleted.`,
+        createError
       );
     }
   }
@@ -881,12 +909,10 @@ export async function createReplicationGroupFinalSnapshot(
       );
       return null;
     }
-    throw new CdkdError(
-      `Failed to read replication group ${replicationGroupId} (${logicalId}) to pick the final ` +
-        `snapshot source required by DeletionPolicy: Snapshot: ${errMsg(describeError)}. The ` +
-        `replication group was NOT deleted.`,
-      'FINAL_SNAPSHOT_FAILED',
-      describeError instanceof Error ? describeError : undefined
+    const head = `Failed to read replication group ${replicationGroupId} (${logicalId}) to pick the final snapshot source required by DeletionPolicy: Snapshot`;
+    throw finalSnapshotFailure(
+      `${head}: ${failureSentence(logger, head, describeError)} The replication group was NOT deleted.`,
+      describeError
     );
   }
 
@@ -953,11 +979,10 @@ export async function createReplicationGroupFinalSnapshot(
         );
         return null;
       }
-      throw new CdkdError(
-        `Failed to create the final snapshot for ${logicalId} (${replicationGroupId}) required ` +
-          `by DeletionPolicy: Snapshot: ${errMsg(createError)}. The replication group was NOT ` +
-          `deleted.`,
-        'FINAL_SNAPSHOT_FAILED'
+      const head = `Failed to create the final snapshot for ${logicalId} (${replicationGroupId}) required by DeletionPolicy: Snapshot`;
+      throw finalSnapshotFailure(
+        `${head}: ${failureSentence(logger, head, createError)} The replication group was NOT deleted.`,
+        createError
       );
     }
   }

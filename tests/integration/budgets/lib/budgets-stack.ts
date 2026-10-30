@@ -9,8 +9,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *
  * covers: AWS::Budgets::Budget
  *
- * Baseline: a 1 USD monthly cost budget with one ACTUAL/GREATER_THAN 80%
- * email notification.
+ * Baseline: a 1 USD monthly cost budget, filtered to SQS spend, with one
+ * ACTUAL/GREATER_THAN 80% email notification.
  *
  * CDKD_TEST_UPDATE=true exercises the in-place UPDATE paths:
  *   - BudgetLimit 1 -> 2 USD (UpdateBudget; the budget name is unchanged so
@@ -23,9 +23,8 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
  *     (the tag diff: UntagResource for the dropped key, TagResource for the
  *     changed one; issue #3989)
  *
- * The SQS queue is the `cdkd drift` sibling (issue #2151): the budget's SDK
- * provider has no `readCurrentState` and the type has no Cloud Control READ
- * handler, so drift must report it unknown while still comparing the queue.
+ * The SQS queue is the `cdkd drift` sibling (issue #2151): drift must compare
+ * it beside the budget, which the provider reads back itself (issue #5183).
  */
 export class BudgetsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -50,6 +49,12 @@ export class BudgetsStack extends cdk.Stack {
         budgetLimit: {
           amount: isUpdate ? 2 : 1,
           unit: 'USD',
+        },
+        // Read back only on `ShowFilterExpression` (issue #5183): Phase 2d's
+        // `drift --revert` sends the readback, so a missing filter would be
+        // cleared on AWS.
+        filterExpression: {
+          dimensions: { key: 'SERVICE', values: ['Amazon Simple Queue Service'] },
         },
       },
       notificationsWithSubscribers: [

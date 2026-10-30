@@ -132,18 +132,27 @@ describe('recordedProtectionEvidence', () => {
     );
   });
 
-  it("reads a global table's flag on the deploy region's replica only", () => {
-    const bag = {
+  it("reads a global table's flag on the deploy region's replica or any cross-region one", () => {
+    // go-to-k/cdkd#5355: cdkd now sets a cross-region replica's own guard, and
+    // AWS refuses that replica's drop while it is on.
+    const label =
+      "cdkd's recorded properties for this resource carry DeletionProtectionEnabled on the " +
+      'table or a replica: true';
+    const remoteOnly = {
       Replicas: [
         { Region: 'us-east-1', DeletionProtectionEnabled: false },
         { Region: 'eu-west-1', DeletionProtectionEnabled: true },
       ],
     };
-    expect(evidence('AWS::DynamoDB::GlobalTable', bag, undefined, 'us-east-1')).toBeUndefined();
-    expect(evidence('AWS::DynamoDB::GlobalTable', bag, undefined, 'eu-west-1')).toBe(
-      "cdkd's recorded properties for this resource carry DeletionProtectionEnabled for the " +
-        'deploy region: true'
-    );
+    expect(evidence('AWS::DynamoDB::GlobalTable', remoteOnly, undefined, 'us-east-1')).toBe(label);
+    expect(evidence('AWS::DynamoDB::GlobalTable', remoteOnly, undefined, 'eu-west-1')).toBe(label);
+    const none = {
+      Replicas: [
+        { Region: 'us-east-1', DeletionProtectionEnabled: false },
+        { Region: 'eu-west-1', DeletionProtectionEnabled: false },
+      ],
+    };
+    expect(evidence('AWS::DynamoDB::GlobalTable', none, undefined, 'us-east-1')).toBeUndefined();
   });
 
   it('a type with no protection flag, or a torn bag, yields nothing', () => {

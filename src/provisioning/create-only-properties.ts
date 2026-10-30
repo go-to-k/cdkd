@@ -11,12 +11,13 @@
  * rejected it with a typed error — at best — or silently dropped it).
  *
  * This module resolves each resource type's `createOnlyProperties` from the
- * CloudFormation registry schema via `cloudformation:DescribeType`, reduced to
- * the TOP-LEVEL containing property names (a nested path like
- * `/properties/Foo/Bar` strips to `Foo`) so the diff's top-level property keys
- * match. The diff calculator consults it as a fallback for any property the
- * registry does not explicitly classify, so a createOnly change on ANY type now
- * correctly drives a replacement.
+ * CloudFormation registry schema via `cloudformation:DescribeType` as full
+ * PATHS (`/properties/Foo/Bar` is `['Foo', 'Bar']`), never reduced to the
+ * top-level: `createOnlyChangeRequiresReplacement` compares the value AT each
+ * path, so a nested entry leaves its siblings updatable. The diff calculator
+ * consults it as a fallback for any property the registry does not explicitly
+ * classify, so a createOnly change on ANY type now correctly drives a
+ * replacement.
  *
  * Caching semantics match {@link ./write-only-properties.ts} (the sibling
  * DescribeType-backed resolver): only SUCCESSFUL lookups are cached per
@@ -41,6 +42,8 @@ import { parseCreateOnlyPropertyPointers } from './create-only-paths.js';
 import { CREATE_ONLY_PATHS_SNAPSHOT } from './create-only-snapshot.generated.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { getLogger } from '../utils/logger.js';
+import { parseJsonNamingNoBody } from '../utils/json-parse-failure.js';
+import { safeMsg } from '../utils/display-safe.js';
 
 /**
  * Per-type cache of SUCCESSFUL lookups only. The value is the in-flight (or
@@ -358,6 +361,19 @@ export function isIntrinsicShaped(value: object): boolean {
 }
 
 /**
+ * `JSON.parse` of a DescribeType `Schema`, whose failure names only its offset
+ * and size (issue [#5254](https://github.com/go-to-k/cdkd/issues/5254)): the
+ * caller's warning interpolates the thrown message.
+ */
+function parseRegistrySchema(resourceType: string, schema: string): unknown {
+  return parseJsonNamingNoBody(schema, 'the DescribeType schema', (line) =>
+    getLogger()
+      .child('CreateOnlyProperties')
+      .debug(safeMsg`${resourceType}: ${line}`)
+  );
+}
+
+/**
  * Parse a DescribeType response's schema into create-only paths.
  *
  * A response without a Schema (e.g. a still-registering / private type, or a
@@ -372,7 +388,8 @@ function parseCreateOnlyResponse(
 ): ReadonlyArray<readonly string[]> {
   const result = schema
     ? parseCreateOnlyPropertyPointers(
-        (JSON.parse(schema) as { createOnlyProperties?: unknown }).createOnlyProperties
+        (parseRegistrySchema(resourceType, schema) as { createOnlyProperties?: unknown })
+          .createOnlyProperties
       )
     : [];
   getLogger()

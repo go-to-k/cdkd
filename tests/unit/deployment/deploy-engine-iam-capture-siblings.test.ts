@@ -68,7 +68,11 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
     readCurrentState: ReturnType<typeof vi.fn>;
   };
 
-  let mockStateBackend: { getState: ReturnType<typeof vi.fn>; saveState: ReturnType<typeof vi.fn> };
+  let mockStateBackend: {
+    getState: ReturnType<typeof vi.fn>;
+    saveState: ReturnType<typeof vi.fn>;
+    stackInstanceIdForFirstWrite: ReturnType<typeof vi.fn>;
+  };
   let mockLockManager: {
     acquireLockWithRetry: ReturnType<typeof vi.fn>;
     releaseLock: ReturnType<typeof vi.fn>;
@@ -138,6 +142,9 @@ describe('DeployEngine - IAM principal observed-capture sibling context', () => 
     mockStateBackend = {
       getState: vi.fn().mockResolvedValue(undefined),
       saveState: vi.fn().mockResolvedValue('etag-new'),
+      stackInstanceIdForFirstWrite: vi
+        .fn()
+        .mockResolvedValue('00000000-0000-4000-8000-000000000000'),
     };
   });
 

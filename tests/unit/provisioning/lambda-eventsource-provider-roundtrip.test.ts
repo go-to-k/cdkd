@@ -241,7 +241,7 @@ describe('LambdaEventSourceMappingProvider read-update round-trip', () => {
     });
   });
 
-  describe('#609 backfill: 3 create-only props are silently omitted on update', () => {
+  describe('#609 backfill: 3 props the Update API does not take are never forwarded', () => {
     function getUpdateInput(): Record<string, unknown> {
       const call = mockSend.mock.calls.find(
         (c) => c[0] instanceof UpdateEventSourceMappingCommand
@@ -250,29 +250,25 @@ describe('LambdaEventSourceMappingProvider read-update round-trip', () => {
     }
 
     it('omits Queues / Topics / StartingPositionTimestamp from UpdateEventSourceMapping', async () => {
-      // These 3 props are absent from `UpdateEventSourceMappingRequest`
-      // (confirmed against `@aws-sdk/client-lambda` 3.x type defs). AWS
-      // would reject a forwarded value with `ValidationException`; CFn
-      // semantics treat a template change to these as a replace, which
-      // cdkd's diff layer schedules independently of update(). The
-      // provider's update() must NOT forward them even when present in
-      // properties — this test guards against a future copy-paste
-      // regression that wires them into the update input shape.
+      // These 3 props are absent from `UpdateEventSourceMappingRequest`. A
+      // StartingPositionTimestamp change is a replacement (create-only in the
+      // CFn schema); a Queues / Topics change is refused before any call
+      // (issue #5356, `lambda-eventsource-provider-update-5356.test.ts`). An
+      // UNCHANGED value rides in properties on every update, and must not be
+      // wired into the update input either.
+      const unchanged = {
+        FunctionName: 'fn',
+        SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
+        Queues: ['queue-a'],
+        Topics: ['topic-a'],
+        StartingPositionTimestamp: 1717000000,
+      };
       await provider.update(
         'L',
         UUID,
         'AWS::Lambda::EventSourceMapping',
-        {
-          FunctionName: 'fn',
-          SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
-          Queues: ['queue-a'],
-          Topics: ['topic-a'],
-          StartingPositionTimestamp: 1717000000,
-        },
-        {
-          FunctionName: 'fn',
-          SelfManagedEventSource: { Endpoints: { KafkaBootstrapServers: ['b.example:9092'] } },
-        }
+        { ...unchanged, BatchSize: 20 },
+        unchanged
       );
 
       const input = getUpdateInput();

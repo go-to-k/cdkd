@@ -250,6 +250,57 @@ describe('cdkd destroy: terminationProtection guard', () => {
     expect(messages).toMatch(/redeploy/);
   });
 
+  describe('protection the stack was DEPLOYED with (go-to-k/cdkd#5238)', () => {
+    const recordedProtected = () => ({
+      state: { ...makeStackState('Protected'), terminationProtection: true as const },
+      etag: '"x"',
+    });
+
+    it('refuses when the record says protected though the code no longer does, exit 2', async () => {
+      mockSynthesize.mockResolvedValue({
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        stacks: [makeStackInfo('Protected', 'us-east-1', false)],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(recordedProtected());
+
+      await expect(runDestroy(['Protected', '--yes'])).rejects.toThrow();
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(mockRunDestroyForStack).not.toHaveBeenCalled();
+      const messages = errorSpy.mock.calls.map((c) => String(c[0] ?? '')).join('\n');
+      expect(messages).toContain('was last deployed with terminationProtection: true');
+      expect(messages).toContain('Redeploy it with the protection off');
+      expect(messages).toContain('cdkd destroy Protected --remove-protection');
+    });
+
+    it('--remove-protection bypasses it with a warning', async () => {
+      mockSynthesize.mockResolvedValue({
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        stacks: [makeStackInfo('Protected', 'us-east-1', false)],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue(recordedProtected());
+
+      await runDestroy(['Protected', '--yes', '--remove-protection']).catch(() => undefined);
+      expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    });
+
+    it('CONTROL: a record without the field and unprotected code destroys', async () => {
+      mockSynthesize.mockResolvedValue({
+        manifest: {},
+        assemblyDir: '/tmp/cdk.out',
+        stacks: [makeStackInfo('Protected', 'us-east-1', false)],
+      });
+      mockListStacks.mockResolvedValue([{ stackName: 'Protected', region: 'us-east-1' }]);
+      mockGetState.mockResolvedValue({ state: makeStackState('Protected'), etag: '"x"' });
+
+      await runDestroy(['Protected', '--yes']).catch(() => undefined);
+      expect(mockRunDestroyForStack).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('the protected-stack retry carries --profile, the bucket and the prefix (go-to-k/cdkd#4648 review)', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},

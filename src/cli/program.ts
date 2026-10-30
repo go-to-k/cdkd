@@ -17,6 +17,7 @@ import { createRollbackCommand } from './commands/rollback.js';
 import { createEventsCommand } from './commands/events.js';
 import { createGcCommand } from './commands/gc.js';
 import { createOrphanCommand } from './commands/orphan.js';
+import { createRefactorCommand } from './commands/refactor.js';
 import { createPublishAssetsCommand } from './commands/publish-assets.js';
 import { createForceUnlockCommand } from './commands/force-unlock.js';
 import { createStateCommand } from './commands/state.js';
@@ -96,6 +97,7 @@ export function buildProgram(): Command {
   program.addCommand(createEventsCommand());
   program.addCommand(createGcCommand());
   program.addCommand(createOrphanCommand());
+  program.addCommand(createRefactorCommand());
   program.addCommand(createImportCommand());
   program.addCommand(createPublishAssetsCommand());
   program.addCommand(createForceUnlockCommand());

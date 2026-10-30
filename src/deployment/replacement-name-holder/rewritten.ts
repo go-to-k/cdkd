@@ -1,7 +1,11 @@
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import {
+  applyDefaultNameForFallback,
+  explicitNamePropertyFor,
+  fallbackNamePropertyFor,
   generateResourceNameWithFallback,
   getCurrentSkipPrefix,
+  getCurrentStackInstanceId,
   withSkipPrefix,
 } from '../../provisioning/resource-name.js';
 import { withDerivedNameMasks } from '../../provisioning/masked-retry-logger.js';
@@ -11,7 +15,7 @@ import {
   CASE_INSENSITIVE_NAME_TYPES,
   GENERATED_NAME_VERBATIM,
 } from './name-keys.js';
-import { valueAt, holderIdNames } from './holder-probe.js';
+import { valueAt, holderIdNames, DERIVED_GENERATED_NAMES } from './holder-probe.js';
 import { type ReplacementNameChange, replacementCreateAdoptsName } from './deploy-name.js';
 
 /**
@@ -192,6 +196,95 @@ export function replacementSentNameMoves(input: {
     heldName: held,
     heldProperty: sent.property,
     physicalId: input.physicalId,
+  };
+}
+
+/**
+ * The name a replacement's create GENERATES, derived in the caller's async
+ * scope (go-to-k/cdkd#5064 phase 2), for a type whose sent name cdkd knows
+ * how to derive: an audited verbatim SDK create or any Cloud Control create
+ * of a type with a fallback rule (`applyDefaultNameForFallback`), a provider
+ * wrapping its own derivation (`DERIVED_GENERATED_NAMES`), or a rewriting
+ * provider's logical-id fallback (`SENT_NAME_REWRITTEN`). `undefined` for any
+ * other type, or when `desired` declares the name.
+ */
+function generatedReplacementName(
+  resourceType: string,
+  createdVia: ProvisionedBy | undefined,
+  desired: Record<string, unknown> | undefined,
+  logicalId: string
+): { property: string; name: string } | undefined {
+  const declared = (property: string): boolean => {
+    const value = desired?.[property];
+    return value !== undefined && value !== null && value !== '';
+  };
+  const fallbackProperty = fallbackNamePropertyFor(resourceType);
+  if (createdVia === 'cc-api' || GENERATED_NAME_VERBATIM.has(resourceType)) {
+    if (fallbackProperty === undefined || declared(fallbackProperty)) return undefined;
+    // `desired` for a directory bucket's zone id; an underivable name proves nothing.
+    const name = applyDefaultNameForFallback(logicalId, resourceType, desired ?? {}, 'omit')[
+      fallbackProperty
+    ];
+    return typeof name === 'string' ? { property: fallbackProperty, name } : undefined;
+  }
+  const rewrite = ownEntry(SENT_NAME_REWRITTEN, resourceType);
+  if (rewrite !== undefined) {
+    if (declared(rewrite.property)) return undefined;
+    return {
+      property: rewrite.property,
+      name: generateResourceNameWithFallback(undefined, logicalId, {
+        maxLength: rewrite.maxLength,
+      }),
+    };
+  }
+  const derived = ownEntry(DERIVED_GENERATED_NAMES, resourceType);
+  const property = explicitNamePropertyFor(resourceType);
+  if (derived === undefined || property === undefined || declared(property)) return undefined;
+  return { property, name: derived.derive(logicalId) };
+}
+
+/**
+ * Does a replacement on a stack with a stack instance id ask for a GENERATED
+ * name the old resource does not hold (go-to-k/cdkd#5064 phase 2)? Its create
+ * runs at the next name generation (bound by the caller), so the name it
+ * generates differs from the one the old resource was created under, and the
+ * replacement can create first -- CloudFormation's order, which a generated
+ * name with no generation could only take with `--replace`. Compared, exactly,
+ * with the name the old physical id carries; a legacy stack, a Type change, a
+ * declared name, a type whose sent name cdkd cannot derive, or a physical id
+ * that already names the new name answers `undefined`, the pre-existing
+ * behaviour.
+ */
+export function replacementGeneratedNameMoves(input: {
+  oldResourceType: string;
+  newResourceType: string;
+  createdVia: ProvisionedBy | undefined;
+  desiredProperties: Record<string, unknown> | undefined;
+  physicalId: string;
+  logicalId: string;
+}): ReplacementNameChange | undefined {
+  if (getCurrentStackInstanceId() === undefined) return undefined;
+  if (input.oldResourceType !== input.newResourceType) return undefined;
+  const generated = generatedReplacementName(
+    input.newResourceType,
+    input.createdVia,
+    input.desiredProperties,
+    input.logicalId
+  );
+  if (generated === undefined || generated.name === '') return undefined;
+  const fold = CASE_INSENSITIVE_NAME_TYPES.has(input.newResourceType)
+    ? (value: string): string => value.toLowerCase()
+    : (value: string): string => value;
+  if (input.physicalId === '' || holderIdNames(fold(input.physicalId), fold(generated.name))) {
+    return undefined;
+  }
+  return {
+    property: generated.property,
+    desiredName: generated.name,
+    heldName: undefined,
+    heldProperty: undefined,
+    physicalId: input.physicalId,
+    generated: true,
   };
 }
 

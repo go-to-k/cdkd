@@ -57,6 +57,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 STREAM_NAME="${STACK}-data-stream"
 # ElastiCache lowercases CacheSubnetGroupName; the stack sets it from stackName.
 SUBNET_GROUP="$(printf '%s' "${STACK}-redis-subnet-group" | tr '[:upper:]' '[:lower:]')"
+MC_SUBNET_GROUP="$(printf '%s' "${STACK}-memcached-subnet-group" | tr '[:upper:]' '[:lower:]')"
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 DEPLOY_LOG="$(mktemp -t cache-streaming.XXXXXX)"
 
@@ -268,6 +269,169 @@ if [ "${CACHE_ID_AFTER}" != "${CACHE_ID}" ]; then
 fi
 echo "    OK: removal was an in-place update"
 
+echo "==> Step 4d: NODE TYPE deploy (issue #5438) -- CacheNodeType cache.t3.micro -> cache.t3.small"
+# CDKD_TEST_NODETYPE=true changes only CacheNodeType (CDKD_TEST_REMOVAL stays
+# set, so the #5004 phase's template is otherwise unchanged). Real
+# CloudFormation scales the node in place (same cluster id, ApplyImmediately).
+# Before #5438 cdkd's ModifyCacheCluster omitted CacheNodeType: the deploy
+# succeeded and the cluster stayed cache.t3.micro.
+assert_cc "pre-scale CacheNodeType" 'CacheNodeType' "cache.t3.micro"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+NODETYPE_RC=$?
+set -e
+if [ "${NODETYPE_RC}" -ne 0 ]; then
+  echo "FAIL: node-type deploy exited ${NODETYPE_RC}" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: node-type deploy exited 0"
+# The deploy waits for the scale to finish, so the new type is live as soon as
+# it returns (assert_cc's 60s poll only absorbs read-after-write lag).
+assert_cc "SCALED CacheNodeType (#5438)" 'CacheNodeType' "cache.t3.small"
+assert_cc "post-scale CacheClusterStatus" 'CacheClusterStatus' "available"
+CACHE_ID_SCALED=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
+if [ "${CACHE_ID_SCALED}" != "${CACHE_ID}" ]; then
+  echo "FAIL: cache cluster was REPLACED by the node-type deploy (${CACHE_ID} -> ${CACHE_ID_SCALED})" >&2
+  exit 1
+fi
+echo "    OK: node-type change was an in-place update"
+
+echo "==> Step 4e: NODE REMOVAL deploy (issue #5441) -- Memcached NumCacheNodes 2 -> 1"
+# The Memcached cluster's id is auto-generated; attribute it via its own
+# subnet group. Before #5441 cdkd sent NumCacheNodes alone and AWS refused it
+# (InvalidParameterCombination: CacheNodeIdsToRemove), failing this deploy;
+# real CloudFormation removes the lowest node id and keeps the cluster.
+mc_field() { # usage: mc_field <JMESPath on the single Memcached cluster>
+  aws elasticache describe-cache-clusters --region "${REGION}" --show-cache-node-info \
+    --query "CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'] | [0].$1" --output text
+}
+MC_ID=$(mc_field 'CacheClusterId')
+if [ -z "${MC_ID}" ] || [ "${MC_ID}" = "None" ]; then
+  echo "FAIL: cannot resolve the Memcached cluster on subnet group ${MC_SUBNET_GROUP}" >&2
+  exit 1
+fi
+MC_NODES_BEFORE=$(mc_field 'CacheNodes[].CacheNodeId | sort(@) | join(`,`, @)')
+if [ "${MC_NODES_BEFORE}" != "0001,0002" ]; then
+  echo "FAIL: Memcached cluster ${MC_ID} starts with nodes '${MC_NODES_BEFORE}', expected 0001,0002" >&2
+  exit 1
+fi
+echo "    OK: Memcached cluster ${MC_ID} starts with nodes ${MC_NODES_BEFORE}"
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+NODEREMOVE_RC=$?
+set -e
+if [ "${NODEREMOVE_RC}" -ne 0 ]; then
+  echo "FAIL: node-removal deploy exited ${NODEREMOVE_RC} (#5441)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: node-removal deploy exited 0"
+# The deploy waits until the removed node is gone, so the count is final as
+# soon as it returns (the loop only absorbs read-after-write lag).
+MC_NODES_AFTER=""
+for _i in 1 2 3 4 5 6; do
+  MC_NODES_AFTER=$(mc_field 'CacheNodes[].CacheNodeId | sort(@) | join(`,`, @)')
+  [ "${MC_NODES_AFTER}" = "0002" ] && break
+  sleep 10
+done
+if [ "${MC_NODES_AFTER}" != "0002" ]; then
+  echo "FAIL: Memcached cluster nodes are '${MC_NODES_AFTER}' after the removal, expected 0002 (CloudFormation keeps the highest id)" >&2
+  exit 1
+fi
+MC_COUNT=$(mc_field 'NumCacheNodes')
+if [ "${MC_COUNT}" != "1" ]; then
+  echo "FAIL: Memcached NumCacheNodes is '${MC_COUNT}', expected 1" >&2
+  exit 1
+fi
+MC_ID_AFTER=$(mc_field 'CacheClusterId')
+if [ "${MC_ID_AFTER}" != "${MC_ID}" ]; then
+  echo "FAIL: Memcached cluster was REPLACED by the node-removal deploy (${MC_ID} -> ${MC_ID_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: Memcached cluster ${MC_ID} scaled in place to node 0002 (#5441)"
+
+echo "==> Step 4f: ZONE MOVE deploy (issue #5458) -- Memcached PreferredAvailabilityZones [az0] -> [az1]"
+# Real CloudFormation REPLACES the cluster when the list moves to zones the
+# previous list does not name. Before #5458 cdkd updated it in place, sending
+# NewAvailabilityZones with no node added, which AWS refuses: the deploy
+# failed. The type is in the stateful-recreate guard set, so the replacement
+# needs --force-stateful-recreation (a refusal without it is the guard, not
+# this bug).
+MC_AZ_BEFORE=$(mc_field 'CacheNodes[0].CustomerAvailabilityZone')
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true CDKD_TEST_PAZMOVE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" --force-stateful-recreation \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+PAZMOVE_RC=$?
+set -e
+if [ "${PAZMOVE_RC}" -ne 0 ]; then
+  echo "FAIL: zone-move deploy exited ${PAZMOVE_RC} (#5458)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: zone-move deploy exited 0"
+MC_ON_GROUP=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text)
+if [ "${MC_ON_GROUP}" != "1" ]; then
+  echo "FAIL: ${MC_ON_GROUP} Memcached clusters on ${MC_SUBNET_GROUP} after the zone move, expected 1 (old one not deleted?)" >&2
+  exit 1
+fi
+MC_ID_MOVED=$(mc_field 'CacheClusterId')
+if [ "${MC_ID_MOVED}" = "${MC_ID}" ]; then
+  echo "FAIL: Memcached cluster ${MC_ID} was NOT replaced by the zone move (#5458: CloudFormation replaces it)" >&2
+  exit 1
+fi
+MOVE_AZ=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r '.outputs.MemcachedMoveAz // empty')
+if [ -z "${MOVE_AZ}" ] || [ "${MOVE_AZ}" = "${MC_AZ_BEFORE}" ]; then
+  echo "FAIL: cannot resolve a target zone other than ${MC_AZ_BEFORE} from the MemcachedMoveAz output (got '${MOVE_AZ}')" >&2
+  exit 1
+fi
+MC_AZ_AFTER=$(mc_field 'CacheNodes[0].CustomerAvailabilityZone')
+if [ "${MC_AZ_AFTER}" != "${MOVE_AZ}" ]; then
+  echo "FAIL: the replacement's node is in '${MC_AZ_AFTER}', expected ${MOVE_AZ} (the template's new zone)" >&2
+  exit 1
+fi
+assert_gone "replaced Memcached cluster ${MC_ID} still exists after the zone move" \
+  aws elasticache describe-cache-clusters --cache-cluster-id "${MC_ID}" --region "${REGION}"
+echo "    OK: zone move replaced ${MC_ID} with ${MC_ID_MOVED}, node in ${MC_AZ_AFTER} (#5458)"
+
+echo "==> Step 4g: SG REMOVAL deploy (issue #5491) -- the Redis cluster's VpcSecurityGroupIds removed"
+# PARITY PIN, not a pre-fix red: cdkd sent no SecurityGroupIds for a removed
+# list before #5491 as well. Real CloudFormation keeps the live group on this
+# change (its Modify carries no securityGroupIds), so this goes RED only
+# against a provider that resets or clears the group on removal. The companion
+# PreferredMaintenanceWindow change (wed -> thu) proves the Modify fired.
+SG_BEFORE=$(cc_field 'SecurityGroups[].SecurityGroupId | join(`,`, @)')
+if [ -z "${SG_BEFORE}" ] || [ "${SG_BEFORE}" = "None" ]; then
+  echo "FAIL: the Redis cluster ${CACHE_ID} reports no security group before the SG removal" >&2
+  exit 1
+fi
+set +e
+CDKD_TEST_REMOVAL=true CDKD_TEST_NODETYPE=true CDKD_TEST_NODEREMOVE=true CDKD_TEST_PAZMOVE=true CDKD_TEST_SGREMOVE=true \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --verbose --yes > "${DEPLOY_LOG}" 2>&1
+SGREMOVE_RC=$?
+set -e
+if [ "${SGREMOVE_RC}" -ne 0 ]; then
+  echo "FAIL: SG-removal deploy exited ${SGREMOVE_RC} (#5491)" >&2
+  tail -60 "${DEPLOY_LOG}" >&2
+  exit 1
+fi
+echo "    OK: SG-removal deploy exited 0"
+assert_cc "companion PreferredMaintenanceWindow (Modify fired, #5491)" 'PreferredMaintenanceWindow' "thu:05:00-thu:06:00"
+assert_cc "KEPT security groups after removing VpcSecurityGroupIds (#5491)" 'SecurityGroups[].SecurityGroupId | join(`,`, @)' "${SG_BEFORE}"
+CACHE_ID_SG=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "CacheClusters[?CacheSubnetGroupName=='${SUBNET_GROUP}'].CacheClusterId | [0]" --output text)
+if [ "${CACHE_ID_SG}" != "${CACHE_ID}" ]; then
+  echo "FAIL: the Redis cluster was REPLACED by the SG removal (${CACHE_ID} -> ${CACHE_ID_SG})" >&2
+  exit 1
+fi
+echo "    OK: SG removal kept ${SG_BEFORE} on ${CACHE_ID} in place (#5491)"
+
 echo "==> Step 5: destroy"
 set +e
 node "${LOCAL_DIST}" destroy "${STACK}" \
@@ -294,6 +458,14 @@ if [ "${CACHE_LEFT}" != "0" ]; then
   echo "FAIL: ${CACHE_LEFT} ElastiCache cluster(s) still exist after destroy (orphan)" >&2
   exit 1
 fi
+MC_LEFT=$(aws elasticache describe-cache-clusters --region "${REGION}" \
+  --query "length(CacheClusters[?CacheSubnetGroupName=='${MC_SUBNET_GROUP}'])" --output text)
+if [ "${MC_LEFT}" != "0" ]; then
+  echo "FAIL: ${MC_LEFT} Memcached cluster(s) still exist after destroy (orphan)" >&2
+  exit 1
+fi
+assert_gone "Memcached subnet group ${MC_SUBNET_GROUP} still exists after destroy" \
+  aws elasticache describe-cache-subnet-groups --cache-subnet-group-name "${MC_SUBNET_GROUP}" --region "${REGION}"
 sweep_log_groups
 LG_LEFT=$(aws logs describe-log-groups --region "${REGION}" \
   --log-group-name-prefix "/aws/lambda/${STACK}-" --query 'logGroups[].logGroupName' --output text)

@@ -16,7 +16,7 @@ import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { generateResourceName } from '../resource-name.js';
+import { generatedNameFor } from '../resource-name.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import {
   planTagDiff,
@@ -26,6 +26,7 @@ import {
   DBPROXY_TAGS_WHAT,
 } from '../tag-list.js';
 import type {
+  CreateContext,
   ResourceProvider,
   ResourceCreateResult,
   ResourceUpdateResult,
@@ -44,12 +45,19 @@ import {
   withDerivedNameMasks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
-import { wrapMaskedAwsError } from '../../deployment/retryable-errors.js';
+import {
+  markNonRetryable,
+  markRedactedCause,
+  relayedNameCollision,
+  wrapMaskedAwsError,
+} from '../../deployment/retryable-errors.js';
+import { markNotGone } from '../not-gone.js';
 import { injectiveKey, injectiveKeyPrefix } from '../../state/record-keys.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 30 * 60 * 1000;
@@ -57,12 +65,10 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
 /**
  * Issue #1160: the optional, mutable properties whose REMOVAL from the
  * template leaves the live value in place. `ModifyDBProxy` keeps any setting
- * it is not sent, and cdkd sends no reset on purpose: CloudFormation's
- * published DBProxy handler
- * (aws-cloudformation-resource-providers-rds-proxy, `UpdateHandler`) forwards
- * the desired model's null the same way, so a reset would diverge from it.
- * The update warns instead of staying silent. `RoleArn` is required, and the
- * create-only properties replace the proxy, so neither belongs here.
+ * it is not sent, and cdkd sends no reset. The update warns instead of
+ * staying silent. `RoleArn` is required, and the create-only properties
+ * replace the proxy, so neither belongs here. `Auth` is retained only where
+ * the update does not refuse its removal ({@link authRemovalRefused}).
  */
 const RETAINED_ON_REMOVAL: readonly string[] = [
   'Auth',
@@ -71,6 +77,40 @@ const RETAINED_ON_REMOVAL: readonly string[] = [
   'DebugLogging',
   'VpcSecurityGroupIds',
 ];
+
+/**
+ * The {@link RETAINED_ON_REMOVAL} properties CloudFormation is MEASURED to keep
+ * too (CFn A/B us-east-1 2026-10-22: `RequireTLS` true, `IdleClientTimeout`
+ * 900, `DebugLogging` true and a custom `VpcSecurityGroupIds` removed together
+ * left every live value in place, and the update succeeded). `Auth` is not
+ * here: CloudFormation sends its removal, so a warning naming it claims
+ * nothing about CloudFormation.
+ */
+const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
+  'RequireTLS',
+  'IdleClientTimeout',
+  'DebugLogging',
+  'VpcSecurityGroupIds',
+]);
+
+/**
+ * Issue #1160: whether `update()` refuses an `Auth` removal. AWS requires
+ * `Auth` while `DefaultAuthScheme` is `NONE` or unset, and CloudFormation
+ * sends the removal, so its update fails (CFn A/B us-east-1 2026-10-22:
+ * `UPDATE_FAILED`, "the 'Auth' parameter is required when the
+ * 'defaultAuthScheme' parameter is set to NONE or not specified"). cdkd
+ * refuses the same deploy before any call. With `DefaultAuthScheme` set,
+ * CloudFormation's removal would be accepted, so nothing is refused. That arm
+ * reaches this provider only under `--allow-unsupported-properties
+ * DefaultAuthScheme` (the property is a silent drop, so a template declaring
+ * it otherwise routes through Cloud Control); the scheme was then never sent
+ * and AWS still requires `Auth`, so the proxy keeps `Auth` and the update
+ * warns, as before.
+ */
+const authRemovalRefused = (properties: Record<string, unknown>): boolean => {
+  const scheme = properties['DefaultAuthScheme'];
+  return scheme === undefined || scheme === 'NONE';
+};
 
 /**
  * AWS RDS DBProxy Provider
@@ -92,7 +132,8 @@ const RETAINED_ON_REMOVAL: readonly string[] = [
  * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
  *   DebugLogging / IdleClientTimeout / RequireTLS / RoleArn /
  *   SecurityGroups); a removed field is left at its live value and warned
- *   about (`RETAINED_ON_REMOVAL`). Tags handled via separate `AddTagsToResource` /
+ *   about (`RETAINED_ON_REMOVAL`), except an `Auth` removal AWS would refuse,
+ *   which is refused before any call (`authRemovalRefused`). Tags handled via separate `AddTagsToResource` /
  *   `RemoveTagsFromResource` diff. EngineFamily and VpcSubnetIds are
  *   immutable on AWS; a diff in those surfaces as `ResourceReplacement`
  *   from the deploy engine, not handled here.
@@ -173,8 +214,10 @@ export class RDSDBProxyProvider implements ResourceProvider {
   async create(
     logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
+    properties: Record<string, unknown>,
+    context?: CreateContext
   ): Promise<ResourceCreateResult> {
+    const mask = maskerOrIdentity(context?.maskSecrets);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(
       properties['Tags'],
@@ -187,7 +230,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     );
     const dbProxyName =
       (properties['DBProxyName'] as string | undefined) ??
-      generateResourceName(logicalId, { maxLength: 64 });
+      generatedNameFor('AWS::RDS::DBProxy', logicalId);
     const engineFamily = properties['EngineFamily'] as EngineFamily | undefined;
     if (!engineFamily) {
       throw new ProvisioningError(
@@ -241,8 +284,10 @@ export class RDSDBProxyProvider implements ResourceProvider {
         })
       );
     } catch (error) {
-      throw this.wrapError(error, 'CREATE', resourceType, logicalId, undefined);
+      throw this.wrapCaughtError(error, 'CREATE', resourceType, logicalId, undefined, mask);
     }
+    // go-to-k/cdkd#5511: reported before the available poll.
+    reportCreatedResource(logicalId, resourceType, dbProxyName);
 
     // Wait until DBProxyStatus = 'available'. Post-create wiring (Targets via
     // RDSDBProxyTargetGroupProvider.create()) requires the proxy to be
@@ -280,7 +325,14 @@ export class RDSDBProxyProvider implements ResourceProvider {
           } else if (error instanceof ProvisioningError) {
             throw error;
           } else {
-            throw this.wrapError(error, 'CREATE (poll)', resourceType, logicalId, dbProxyName);
+            throw this.wrapCaughtError(
+              error,
+              'CREATE (poll)',
+              resourceType,
+              logicalId,
+              dbProxyName,
+              mask
+            );
           }
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -328,6 +380,27 @@ export class RDSDBProxyProvider implements ResourceProvider {
       DBPROXY_TAGS_WHAT,
       DBPROXY_TAG_OPTIONS
     );
+    // Issue #1160: an Auth removal CloudFormation's update fails on is refused
+    // before any call (`authRemovalRefused`). Not on a rollback replay or
+    // `drift --revert`: neither removes anything from a template. A replay
+    // keeps the live Auth and warns; `drift --revert` passes an empty removed
+    // set, so it keeps the live Auth without a warning.
+    if (
+      context?.replayingState !== true &&
+      context?.desiredFromAwsReadback !== true &&
+      this.removedRetained(properties, previousProperties, context).includes('Auth') &&
+      authRemovalRefused(properties)
+    ) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`${logicalId} (${resourceType}): Auth was removed from the template, but AWS requires Auth while DefaultAuthScheme is NONE or unset, and CloudFormation's update fails on the same change. Declare Auth again; nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+
     const client = this.getClient();
     // The physical id IS the proxy name, which can be secret-derived. Paired
     // with the RECORDED name (go-to-k/cdkd#4339): after a secret rotation the
@@ -399,7 +472,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
       try {
         await client.send(new ModifyDBProxyCommand(input as never));
       } catch (error) {
-        throw this.wrapError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
+        throw this.wrapCaughtError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
       }
     }
 
@@ -429,9 +502,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
 
   /**
    * Issue #1160: one warning naming each {@link RETAINED_ON_REMOVAL} property
-   * the template dropped. The removed set is the caller's (template against
-   * template, EMPTY on `drift --revert`, whose previous side is a readback);
-   * a direct call applies the same presence test (`removedTemplateKeys`).
+   * the template dropped ({@link removedRetained}).
    */
   private warnOnRetainedRemovals(
     logicalId: string,
@@ -440,6 +511,32 @@ export class RDSDBProxyProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context: UpdateContext | undefined
   ): void {
+    const retained = this.removedRetained(properties, previousProperties, context);
+    if (retained.length === 0) return;
+    const one = retained.length === 1;
+    const names = `${one ? 'property' : 'properties'} ${retained.join(', ')}`;
+    // The CloudFormation claim only when CloudFormation is measured to keep
+    // EVERY named property (CFN_KEEPS_ON_REMOVAL).
+    this.logger.warn(
+      context?.replayingState === true
+        ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ModifyDBProxy keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
+        : retained.every((key) => CFN_KEEPS_ON_REMOVAL.has(key))
+          ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; ModifyDBProxy keeps a setting it is not sent. Declare the property with the value you want to change it.`
+          : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.`
+    );
+  }
+
+  /**
+   * The {@link RETAINED_ON_REMOVAL} properties the template dropped. The
+   * removed set is the caller's (template against template, EMPTY on
+   * `drift --revert`, whose previous side is a readback); a direct call
+   * applies the same presence test (`removedTemplateKeys`).
+   */
+  private removedRetained(
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): string[] {
     const removed = context?.removedProperties;
     const retained: string[] = [];
     for (const key of RETAINED_ON_REMOVAL) {
@@ -449,14 +546,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
           : previousProperties[key] !== undefined && properties[key] === undefined;
       if (isRemoved) retained.push(key);
     }
-    if (retained.length === 0) return;
-    const one = retained.length === 1;
-    const names = `${one ? 'property' : 'properties'} ${retained.join(', ')}`;
-    this.logger.warn(
-      context?.replayingState === true
-        ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ModifyDBProxy keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
-        : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; ModifyDBProxy keeps a setting it is not sent, so the proxy keeps its current value. Declare the property with the value you want to change it.`
-    );
+    return retained;
   }
 
   async delete(
@@ -467,6 +557,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
     context?: DeleteContext
   ): Promise<void> {
     const client = this.getClient();
+    const mask = maskerOrIdentity(context?.maskSecrets);
 
     this.logger.debug(`Deleting DBProxy ${physicalId}`);
 
@@ -485,7 +576,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
         this.logger.debug(`DBProxy ${physicalId} already gone, treating as success`);
         return;
       }
-      throw this.wrapError(error, 'DELETE', resourceType, logicalId, physicalId);
+      throw this.wrapDeleteError(error, 'DELETE', resourceType, logicalId, physicalId, mask);
     }
 
     // Wait for the proxy to fully disappear. AWS keeps the resource in
@@ -501,7 +592,14 @@ export class RDSDBProxyProvider implements ResourceProvider {
           this.logger.debug(`DBProxy ${physicalId} fully deleted`);
           return;
         }
-        throw this.wrapError(error, 'DELETE (poll)', resourceType, logicalId, physicalId);
+        throw this.wrapDeleteError(
+          error,
+          'DELETE (poll)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
@@ -705,7 +803,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
           new RemoveTagsFromResourceCommand({ ResourceName: arn, TagKeys: toRemove })
         );
       } catch (error) {
-        throw this.wrapError(
+        throw this.wrapCaughtError(
           error,
           'UPDATE (remove tags)',
           resourceType,
@@ -719,7 +817,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
       try {
         await client.send(new AddTagsToResourceCommand({ ResourceName: arn, Tags: toAdd }));
       } catch (error) {
-        throw this.wrapError(
+        throw this.wrapCaughtError(
           error,
           'UPDATE (add tags)',
           resourceType,
@@ -773,29 +871,65 @@ export class RDSDBProxyProvider implements ResourceProvider {
     }
   }
 
-  private wrapError(
+  /**
+   * The failure wrap this provider's create, update, delete and tag catches
+   * throw.
+   *
+   * An AWS-authored failure reaches the message as its CLASS plus the
+   * `--verbose` pointer (go-to-k/cdkd#2319): a thrown message is persisted to
+   * `deployments/{runId}.jsonl`, and an RDS `AccessDenied` names the caller's
+   * assumed-role ARN. AWS's own text goes to `debug` through the operation's
+   * masker, and the wrap is stamped `markRedactedCause`, so the retry
+   * classifiers read the withheld text on the `cause` chain. An "already
+   * exists" is restated ({@link relayedNameCollision}); this provider marks
+   * no post-create call auxiliary, so nothing gates it. A cdkd-authored or transport
+   * error keeps its text, masked, stamped only when the mask changed it
+   * (`wrapMaskedAwsError`, go-to-k/cdkd#4339); a non-`Error` throw is withheld
+   * like an AWS one, unstamped (it has no chain). A delete catch tests
+   * not-found by type before it wraps.
+   */
+  private wrapCaughtError(
     error: unknown,
     op: string,
     resourceType: string,
     logicalId: string,
     physicalId: string | undefined,
     // AWS can quote a secret-derived name, the pre-rotation one included
-    // (go-to-k/cdkd#4339); stamped exactly when the mask changed its text.
-    // Absent means unmasked.
+    // (go-to-k/cdkd#4339). Absent means unmasked.
     mask: MaskerFn = maskerOrIdentity(undefined)
   ): ProvisioningError {
     const cause = error instanceof Error ? error : undefined;
-    return wrapMaskedAwsError(
-      mask,
-      error,
-      (text) =>
-        new ProvisioningError(
-          `${op} failed for ${logicalId}: ${text}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          cause
-        )
-    );
+    const build = (text: string): ProvisioningError =>
+      new ProvisioningError(
+        `${op} failed for ${logicalId}: ${text}`,
+        resourceType,
+        logicalId,
+        physicalId,
+        cause
+      );
+    const failure = describeAwsFailure(error);
+    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
+    this.logger.debug(mask(build(mask(failure.detail)).message));
+    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+  }
+
+  /**
+   * {@link wrapCaughtError} for a delete catch. The wrap names an AWS failure
+   * by its CLASS, and the delete classifiers read `NotFound` in a message as
+   * "already deleted": a class naming ANOTHER object's not-found (the typed
+   * not-found of this resource returned before the wrap) is marked
+   * `markNotGone`, so the record is kept (go-to-k/cdkd#2319).
+   */
+  private wrapDeleteError(
+    error: unknown,
+    op: string,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string,
+    mask: MaskerFn
+  ): ProvisioningError {
+    const thrown = this.wrapCaughtError(error, op, resourceType, logicalId, physicalId, mask);
+    return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 }

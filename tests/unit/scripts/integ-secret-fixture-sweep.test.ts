@@ -373,7 +373,13 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       'docdb-neptune',
       'eventbridge-api-destination',
       'iam-access-key',
+      // Issue #5364: an AppSync API key, whose id is the credential and the
+      // physical id the import records; the fixture sweeps the prefix.
+      'import-migrate-appsync',
       'import-secret-observed',
+      // Issue #1160: a generated DocumentDB master password, resolved through
+      // a dynamic reference into the cluster; the fixture sweeps the prefix.
+      'lambda-esm-documentdb',
       'lambda-esm-self-managed-kafka',
       // Issue #2056: an `unsafePlainText` secret behind a `{{resolve:...}}`
       // export; both stacks' prefixes are swept and asserted on success.
@@ -382,6 +388,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       // Issue #2740: one `unsafePlainText` secret holding a `username` only; the
       // fixture sources the helper and asserts the sweep on its success path.
       'output-never-resolved-diff',
+      // Issue #1160: phase 2 resolves the L2 cluster's generated master
+      // password into an L1 cluster; the fixture sweeps the prefix.
+      'rds-aurora',
       // Issue #4606: a literal master password on an L1 cluster and instance,
       // which the failed CREATE's journal carries; the fixture sweeps the prefix.
       'rds-fix-forward-orphan',
@@ -944,6 +953,10 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // `safeStringify` module (no module state), read by the rethrowing
       // catches so a thrown value with no string form cannot replace the failure.
       '../../utils/aws-failure-text.js',
+      // go-to-k/cdkd#5323: the `safeMsg` formatter (imports only `node:crypto`;
+      // constants only), building the replica-removal debug line from region
+      // names and the secret's ARN, never a value.
+      '../../utils/display-safe.js',
       '../../utils/error-handler.js',
       '../../utils/logger.js',
       '../config-shape.js',
@@ -952,6 +965,9 @@ describe('shapes deliberately NOT treated as seeding, and the premises behind th
       // one type; no module state). The provider hands it the context's masker
       // and name pairs, never the minted value.
       '../masked-retry-logger.js',
+      // go-to-k/cdkd#2319: the import-free LEAF `markNotGone` module (a
+      // registered symbol, no module state), stamped on the delete wrap.
+      '../not-gone.js',
       '../region-check.js',
       '../resource-name.js',
       // go-to-k/cdkd#3994: the stateless Tags reader (no module state; it

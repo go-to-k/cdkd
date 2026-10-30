@@ -195,16 +195,16 @@ describe('AppSyncProvider update dispatch', () => {
 
   it('still surfaces ResourceUpdateNotSupportedError on immutable identity-field diffs', async () => {
     // The immutable-field rejections moved into per-type handlers; verify
-    // that contract via a representative case (DataSource.Type) so the
-    // dispatch layer's "no blanket rejection" change does not silently
-    // remove the structural defense-in-depth.
+    // that contract via a representative case (DataSource.Name, create-only
+    // on CloudFormation) so the dispatch layer's "no blanket rejection"
+    // change does not silently remove the structural defense-in-depth.
     await expect(
       provider.update(
         'MyId',
         'api-1|ds',
         'AWS::AppSync::DataSource',
-        { ApiId: 'api-1', Name: 'ds', Type: 'AWS_LAMBDA' },
-        { ApiId: 'api-1', Name: 'ds', Type: 'AMAZON_DYNAMODB' }
+        { ApiId: 'api-1', Name: 'other', Type: 'NONE' },
+        { ApiId: 'api-1', Name: 'ds', Type: 'NONE' }
       )
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
   });

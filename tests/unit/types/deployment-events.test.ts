@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { extractDeploymentEventError } from '../../../src/types/deployment-events.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 /** AWS-SDK-shaped error: carries `$metadata.requestId` + a service `Code`. */
 function awsError(opts: {
@@ -52,6 +53,45 @@ describe('extractDeploymentEventError', () => {
     const result = extractDeploymentEventError(err);
     expect(result.name).toBe('ProvisioningError');
     expect(result.message).toBe('top-level boom');
+  });
+
+  // go-to-k/cdkd#2319: a raw SDK error reaching the recorder (a provider that
+  // lets it escape, a rethrow after a classifier) would persist AWS's text,
+  // which names the caller on a denial, into a store that outlives the run.
+  it('records an AWS-authored outermost error by its class, not its text', () => {
+    const denial = awsSdkError(
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is not authorized to perform: sqs:CreateQueue',
+      'AccessDenied'
+    );
+
+    const result = extractDeploymentEventError(denial);
+
+    expect(result.name).toBe('AccessDenied');
+    expect(result.message).toBe("AccessDenied. Re-run with --verbose for AWS's own message.");
+    expect(result.awsErrorCode).toBe('AccessDenied');
+    expect(result.requestId).toBe('req-test');
+    // The recorder reduces only its own copy.
+    expect(denial.message).toContain('123456789012');
+  });
+
+  it('records a $fault-marked SDK error by its class', () => {
+    const err = Object.assign(new Error('Denied for arn:aws:iam::123456789012:role/Deployer'), {
+      name: 'AccessDeniedException',
+      $fault: 'client',
+    });
+
+    expect(extractDeploymentEventError(err).message).toBe(
+      "AccessDeniedException. Re-run with --verbose for AWS's own message."
+    );
+  });
+
+  it('keeps a transport error text, which carries no caller identity', () => {
+    // Retry stamps `$metadata` without a status code on a socket failure.
+    const err = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), {
+      $metadata: { attempts: 3 },
+    });
+
+    expect(extractDeploymentEventError(err).message).toBe('connect ECONNREFUSED 127.0.0.1:443');
   });
 
   it('extracts the DEEPEST AWS-shaped error code + requestId from the cause chain', () => {

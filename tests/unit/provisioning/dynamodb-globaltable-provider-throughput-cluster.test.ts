@@ -436,11 +436,14 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
         'PAY_PER_REQUEST'
       );
       expect(sdk?.OnDemandThroughput).toBeUndefined();
-      const [replica] = toSdkReplicaGlobalSecondaryIndexes(
-        [{ IndexName: 'gsi1', OnDemandThroughputOverride: { MaxReadRequestUnits: [] } }],
-        'PAY_PER_REQUEST'
-      )!;
-      expect(replica?.OnDemandThroughputOverride).toBeUndefined();
+      // With no override left the entry has nothing to send, so it is dropped
+      // (go-to-k/cdkd#5489: AWS refuses an action-less replica update).
+      expect(
+        toSdkReplicaGlobalSecondaryIndexes(
+          [{ IndexName: 'gsi1', OnDemandThroughputOverride: { MaxReadRequestUnits: [] } }],
+          'PAY_PER_REQUEST'
+        )
+      ).toBeUndefined();
     });
 
     it('rejects the shapes bare Number() would have accepted', () => {
@@ -1331,7 +1334,7 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       const next: Record<string, unknown> = { ...clone(previous), BillingMode: 'PROVISIONED' };
       delete (next['Replicas'] as Record<string, unknown>[])[1]!['ReadOnDemandThroughputSettings'];
       // Give the flipped replica a real edit so it still classifies modified.
-      (next['Replicas'] as Record<string, unknown>[])[1]!['TableClassOverride'] =
+      (next['Replicas'] as Record<string, unknown>[])[1]!['TableClass'] =
         'STANDARD_INFREQUENT_ACCESS';
 
       await provider.update('OnDemand', 'od-table', RESOURCE_TYPE, next, previous);

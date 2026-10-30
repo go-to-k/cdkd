@@ -504,14 +504,9 @@ describe('ECSProvider read-update round-trip', () => {
 
   // ─── AWS::ECS::TaskDefinition ──────────────────────────────────
 
-  it('TaskDefinition.update rejects with ResourceUpdateNotSupportedError; no spurious AWS calls', async () => {
-    // TaskDefinition revisions are immutable: every property change
-    // creates a new revision via RegisterTaskDefinition, and the
-    // returned `taskDefinitionArn` differs from cdkd state's physicalId.
-    // Routing through `cdkd drift --revert` would silently swap
-    // physicalId for a freshly-registered revision and deregister the
-    // previous one. The only safe outcome is a clear error, NOT a
-    // silent revision-bump against AWS.
+  it('TaskDefinition no-drift round-trip: resolves with zero mutating SDK calls', async () => {
+    // Only Tags is updatable in place (issue #5392); with nothing moved
+    // the update resolves on the recorded revision and sends nothing.
     const observed = {
       Family: 'my-td',
       Cpu: '256',
@@ -526,9 +521,35 @@ describe('ECSProvider read-update round-trip', () => {
 
     await expect(
       provider.update('L', TD_ARN, 'AWS::ECS::TaskDefinition', observed, observed)
+    ).resolves.toMatchObject({ physicalId: TD_ARN, wasReplaced: false });
+
+    expect(mutatingSends()).toHaveLength(0);
+  });
+
+  it('TaskDefinition.update refuses a drift outside Tags (revisions are immutable); no AWS calls', async () => {
+    // Every other property change registers a new revision whose ARN
+    // differs from cdkd state's physicalId. Routing through
+    // `cdkd drift --revert` would silently swap physicalId for a
+    // freshly-registered revision and deregister the previous one, so
+    // the only safe outcome is a clear error.
+    const observed = {
+      Family: 'my-td',
+      Cpu: '256',
+      Memory: '512',
+      ContainerDefinitions: [{ Name: 'app', Image: 'nginx:latest' }],
+      Tags: [],
+    };
+
+    await expect(
+      provider.update(
+        'L',
+        TD_ARN,
+        'AWS::ECS::TaskDefinition',
+        { ...observed, Memory: '1024' },
+        observed
+      )
     ).rejects.toBeInstanceOf(ResourceUpdateNotSupportedError);
 
-    // No mutating AWS calls — the error fires before any send().
     expect(mutatingSends()).toHaveLength(0);
   });
 

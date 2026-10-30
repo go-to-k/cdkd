@@ -30,6 +30,15 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
+import {
+  hasRedactedCause,
+  isRetryableTransientError,
+  retryClassificationText,
+} from '../../../src/deployment/retryable-errors.js';
+import { VERBOSE_POINTER } from '../../../src/utils/aws-failure-text.js';
+import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
+import { getLogger } from '../../../src/utils/logger.js';
 
 describe('RDSProvider', () => {
   let provider: RDSProvider;
@@ -1082,5 +1091,296 @@ describe('RDSProvider unassigned attributes are omitted, never recorded as an em
 
     expect(result.physicalId).toBe('my-cluster');
     expect(result.attributes).toStrictEqual({});
+  });
+});
+
+// go-to-k/cdkd#2319: every create / update / delete wrap is persisted to
+// `deployments/{runId}.jsonl`, so an AWS-authored failure is named by its class
+// plus the --verbose pointer; AWS's text (the caller's role ARN) goes to the
+// masked debug line and stays on `cause` for the retry classifiers.
+describe('RDSProvider thrown wraps withhold AWS text (#2319)', () => {
+  const DENIED =
+    'User: arn:aws:sts::111122223333:assumed-role/deployer/s3cr3t is not authorized to perform: rds:X';
+  const denied = (): Error =>
+    Object.assign(new Error(DENIED), {
+      name: 'AccessDenied',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 403 },
+    });
+  const mask = (t: string): string => t.replaceAll('s3cr3t', '***');
+  const debugLines = (): string[] =>
+    vi.mocked(getLogger().child('x').debug).mock.calls.map((c) => String(c[0]));
+  let provider: RDSProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new RDSProvider();
+  });
+
+  const SUBNET_PROPS = {
+    DBSubnetGroupName: 'my-subnet-group',
+    DBSubnetGroupDescription: 'd',
+    SubnetIds: ['subnet-aaa', 'subnet-bbb'],
+  };
+  const cases: Array<{ wrap: string; run: (p: RDSProvider) => Promise<unknown> }> = [
+    {
+      wrap: 'Failed to create DBSubnetGroup Sg',
+      run: (p) => p.create('Sg', 'AWS::RDS::DBSubnetGroup', SUBNET_PROPS, { maskSecrets: mask }),
+    },
+    {
+      wrap: 'Failed to update DBSubnetGroup Sg',
+      run: (p) =>
+        p.update('Sg', 'my-subnet-group', 'AWS::RDS::DBSubnetGroup', SUBNET_PROPS, SUBNET_PROPS, {
+          maskSecrets: mask,
+        }),
+    },
+    {
+      wrap: 'Failed to delete DBSubnetGroup Sg',
+      run: (p) =>
+        p.delete('Sg', 'my-subnet-group', 'AWS::RDS::DBSubnetGroup', undefined, {
+          maskSecrets: mask,
+        }),
+    },
+    {
+      wrap: 'Failed to create DBCluster Db',
+      run: (p) =>
+        p.create('Db', 'AWS::RDS::DBCluster', { DBClusterIdentifier: 'db-1', Engine: 'aurora-mysql' }, {
+          maskSecrets: mask,
+        }),
+    },
+    {
+      wrap: 'Failed to update DBCluster Db',
+      run: (p) =>
+        p.update(
+          'Db',
+          'db-1',
+          'AWS::RDS::DBCluster',
+          { DBClusterIdentifier: 'db-1', Engine: 'aurora-mysql', BackupRetentionPeriod: 7 },
+          { DBClusterIdentifier: 'db-1', Engine: 'aurora-mysql', BackupRetentionPeriod: 1 },
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      wrap: 'Failed to delete DBCluster Db',
+      run: (p) => p.delete('Db', 'db-1', 'AWS::RDS::DBCluster', {}, { maskSecrets: mask }),
+    },
+    {
+      wrap: 'Failed to create DBInstance In',
+      run: (p) =>
+        p.create(
+          'In',
+          'AWS::RDS::DBInstance',
+          { DBInstanceIdentifier: 'in-1', DBInstanceClass: 'db.t3.micro', Engine: 'mysql' },
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      wrap: 'Failed to update DBInstance In',
+      run: (p) =>
+        p.update(
+          'In',
+          'in-1',
+          'AWS::RDS::DBInstance',
+          { DBInstanceIdentifier: 'in-1', DBInstanceClass: 'db.t3.small', Engine: 'mysql' },
+          { DBInstanceIdentifier: 'in-1', DBInstanceClass: 'db.t3.micro', Engine: 'mysql' },
+          { maskSecrets: mask }
+        ),
+    },
+    {
+      wrap: 'Failed to delete DBInstance In',
+      run: (p) => p.delete('In', 'in-1', 'AWS::RDS::DBInstance', {}, { maskSecrets: mask }),
+    },
+  ];
+
+  it.each(cases)('$wrap: an AWS-authored failure is named by its class', async (c) => {
+    mockSend.mockRejectedValue(denied());
+
+    const failure = await c.run(provider).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(failure!.message).toBe(`${c.wrap}: AccessDenied. ${VERBOSE_POINTER}`);
+    expect(failure!.message).not.toContain('111122223333');
+    expect((failure!.cause as Error).message).toBe(DENIED);
+    expect(hasRedactedCause(failure)).toBe(true);
+    // `not authorized to perform` is retryable (IAM propagation), read on the chain.
+    expect(isRetryableTransientError(failure, retryClassificationText(failure))).toBe(true);
+    expect(debugLines()).toContain(`${c.wrap}: ${mask(DENIED)}`);
+    expect(debugLines().join('\n')).not.toContain('s3cr3t');
+  });
+
+  it.each(cases)('$wrap: a cdkd-authored failure keeps its text', async (c) => {
+    mockSend.mockRejectedValue(new Error('socket hang up'));
+
+    const failure = await c.run(provider).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(failure!.message).toBe(`${c.wrap}: socket hang up`);
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  it('a non-Error throw is withheld, unstamped', async () => {
+    mockSend.mockRejectedValue('raw s3cr3t value');
+
+    const failure = await provider
+      .delete('Sg', 'my-subnet-group', 'AWS::RDS::DBSubnetGroup')
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    expect(failure!.message).toBe(
+      `Failed to delete DBSubnetGroup Sg: a non-Error value of type string. ${VERBOSE_POINTER}`
+    );
+    expect(hasRedactedCause(failure)).toBe(false);
+  });
+
+  it('restates an "already exists" from CreateDBCluster', async () => {
+    mockSend.mockRejectedValue(
+      Object.assign(new Error('DB Cluster already exists'), {
+        name: 'DBClusterAlreadyExistsFault',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      })
+    );
+
+    const failure = await provider
+      .create('Db', 'AWS::RDS::DBCluster', { DBClusterIdentifier: 'db-1', Engine: 'aurora-mysql' })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    expect(failure!.message).toBe(
+      `Failed to create DBCluster Db: DBClusterAlreadyExistsFault. ${VERBOSE_POINTER} AWS reports that it already exists.`
+    );
+  });
+
+  it('the DBCluster delete keeps the detached note after the withheld class', async () => {
+    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      switch (cmd.constructor.name) {
+        case 'DescribeDBClustersCommand':
+          return {
+            DBClusters: [
+              { DBClusterIdentifier: 'db-1', DBClusterArn: 'arn:aws:rds:us-east-1:1:cluster:db-1', Status: 'available' },
+            ],
+          };
+        case 'RemoveFromGlobalClusterCommand':
+          return {};
+        case 'DescribeGlobalClustersCommand':
+          return { GlobalClusters: [{ GlobalClusterMembers: [] }] };
+        default:
+          throw denied();
+      }
+    });
+
+    const failure = await provider
+      .delete('Db', 'db-1', 'AWS::RDS::DBCluster', { GlobalClusterIdentifier: 'my-global' })
+      .then(
+        () => undefined,
+        (e: unknown) => e as Error
+      );
+
+    expect(failure!.message).toBe(
+      `Failed to delete DBCluster Db: AccessDenied. ${VERBOSE_POINTER} (it was already detached from its global cluster, and stays a standalone cluster)`
+    );
+    // The detach stripped the cluster, so the redacted wrap carries the mark.
+    expect(isDeleteStarted(failure)).toBe(true);
+    expect(hasRedactedCause(failure)).toBe(true);
+  });
+
+  // The #5161 leak shape: a failure AFTER the create returned is re-thrown by
+  // the partial-create cleanup and must still reach the wrap, mark intact. The
+  // cluster's cleanup delete is denied too, so the cluster stays behind.
+  it.each([
+    {
+      type: 'AWS::RDS::DBCluster',
+      create: 'CreateDBClusterCommand',
+      created: { DBCluster: { DBClusterIdentifier: 'db-1', DbClusterResourceId: 'cluster-R' } },
+      props: { DBClusterIdentifier: 'db-1', Engine: 'aurora-mysql' },
+      wrap: 'Failed to create DBCluster Db',
+      id: 'db-1',
+    },
+    {
+      type: 'AWS::RDS::DBInstance',
+      create: 'CreateDBInstanceCommand',
+      created: { DBInstance: { DBInstanceIdentifier: 'in-1', DbiResourceId: 'db-R' } },
+      props: { DBInstanceIdentifier: 'in-1', DBInstanceClass: 'db.t3.micro', Engine: 'mysql' },
+      wrap: 'Failed to create DBInstance Db',
+      id: 'in-1',
+    },
+  ])('$type: a denied settle read after the create is withheld', async (c) => {
+    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === c.create) return c.created;
+      throw denied();
+    });
+
+    const failure = await provider.create('Db', c.type, c.props, { maskSecrets: mask }).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(failure!.message).toBe(`${c.wrap}: AccessDenied. ${VERBOSE_POINTER}`);
+    expect((failure!.cause as Error).message).toBe(DENIED);
+    expect(hasRedactedCause(failure)).toBe(true);
+    expect(createdBeforeFailure(failure, 'Db', c.type)).toBe(c.id);
+    const warns = vi.mocked(getLogger().child('x').warn).mock.calls.map((w) => String(w[0]));
+    expect(warns.join('\n')).not.toContain('s3cr3t');
+    expect(debugLines().join('\n')).not.toContain('s3cr3t');
+  });
+
+  it('the partially-created DBCluster cleanup lines go through the create masker', async () => {
+    mockSend.mockImplementation(async (cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'CreateDBClusterCommand') {
+        return { DBCluster: { DBClusterIdentifier: 'db-1' } };
+      }
+      throw denied();
+    });
+
+    await provider
+      .create(
+        'Db',
+        'AWS::RDS::DBCluster',
+        { DBClusterIdentifier: 'db-1', Engine: 'aurora-mysql', DeletionProtection: true },
+        { maskSecrets: mask }
+      )
+      .catch(() => undefined);
+
+    const warns = vi.mocked(getLogger().child('x').warn).mock.calls.map((w) => String(w[0]));
+    // The class at warn, AWS's text masked at debug (go-to-k/cdkd#2319).
+    expect(
+      warns.some((w) =>
+        w.includes(`partially-created DBCluster Db (db-1): AccessDenied. ${VERBOSE_POINTER} THE CLUSTER`)
+      )
+    ).toBe(true);
+    expect(warns.join('\n')).not.toContain('not authorized');
+    expect(
+      debugLines().some((d) => d.includes(`partially-created DBCluster Db (db-1): ${mask(DENIED)}`))
+    ).toBe(true);
+    expect(debugLines().some((d) => d.includes('Could not disable DeletionProtection'))).toBe(true);
+    expect([...warns, ...debugLines()].join('\n')).not.toContain('s3cr3t');
+  });
+
+  it.each([
+    { type: 'AWS::RDS::DBCluster', id: 'db-1', kind: 'DBCluster' },
+    { type: 'AWS::RDS::DBInstance', id: 'in-1', kind: 'DBInstance' },
+  ])('$kind --remove-protection: a failed disable is logged masked', async (c) => {
+    mockSend.mockRejectedValue(denied());
+
+    await provider
+      .delete('Db', c.id, c.type, {}, { maskSecrets: mask, removeProtection: true })
+      .catch(() => undefined);
+
+    expect(debugLines()).toContain(
+      `Could not disable deletion protection for ${c.kind} Db: ${mask(DENIED)}`
+    );
+    // Only this provider's lines: the shared pre-flip observe line is
+    // `observeThenDisableProtection`'s (deletion-protection-compensation.ts).
+    const own = debugLines().filter((d) => !d.startsWith('Could not read DeletionProtection'));
+    expect(own.join('\n')).not.toContain('s3cr3t');
   });
 });

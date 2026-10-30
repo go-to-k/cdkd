@@ -20,6 +20,9 @@
 #   Link B->C : composite C's AlarmRule on AWS contains alarm B's real name.
 #   Link C->D : SSM param D's Value on AWS == "composite=<C.Arn>;alarm=<B.Arn>"
 #               using C's + B's REAL ARNs read back from AWS (the CC-API link).
+#   Alarm B2  : the metric-math alarm's MetricStat entry on AWS carries
+#               AccountId == this account (go-to-k/cdkd#3723: a dropped
+#               Metrics[].AccountId reads back empty).
 #   Link C/A/D->E : Lambda E's env on AWS resolves UPSTREAM_TOPIC_ARN /
 #               UPSTREAM_COMPOSITE_ARN / UPSTREAM_PARAM_NAME / UPSTREAM_JOINED
 #               to the REAL upstream attributes (terminal multi-attr Fn::Sub).
@@ -79,6 +82,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 
 TOPIC_NAME="cdkd-getatt-chain-topic"
 ALARM_NAME="cdkd-getatt-chain-alarm"
+MATH_ALARM_NAME="cdkd-getatt-chain-math-alarm"
 COMPOSITE_ALARM_NAME="cdkd-getatt-chain-composite"
 PARAM_NAME="/cdkd/getatt-chain/composite-and-alarm-arns"
 FUNCTION_NAME="cdkd-getatt-chain-fn"
@@ -207,6 +211,21 @@ esac
 echo "    OK: composite AlarmRule references alarm B's name"
 
 # --------------------------------------------------------------------
+# Alarm B2 : Metrics[].AccountId must reach PutMetricAlarm (go-to-k/cdkd#3723).
+# --------------------------------------------------------------------
+echo ""
+echo "==> Alarm B2 (SDK): the metric-math alarm's Metrics[].AccountId must reach AWS"
+[ -n "${ACCOUNT_ID}" ] && [ "${ACCOUNT_ID}" != "None" ] \
+  || fail "could not resolve this account's id from sts get-caller-identity"
+B2_ACCOUNT=$(aws cloudwatch describe-alarms --region "${REGION}" \
+  --alarm-names "${MATH_ALARM_NAME}" --alarm-types MetricAlarm \
+  --query 'MetricAlarms[0].Metrics[?MetricStat].AccountId | [0]' --output text)
+if [ "${B2_ACCOUNT}" != "${ACCOUNT_ID}" ]; then
+  fail "alarm ${MATH_ALARM_NAME} MetricStat AccountId is '${B2_ACCOUNT}', expected '${ACCOUNT_ID}' (Metrics[].AccountId dropped before PutMetricAlarm)"
+fi
+echo "    OK: math alarm's MetricStat entry carries AccountId == this account"
+
+# --------------------------------------------------------------------
 # Link C -> D : SSM param D's Value on AWS == joined real C.Arn + B.Arn.
 # This is the critical CC-API attribute -> SDK-resource property hop.
 # --------------------------------------------------------------------
@@ -295,6 +314,15 @@ if [ -n "${B_LEFT}" ] && [ "${B_LEFT}" != "None" ]; then
   fail "Alarm ${ALARM_NAME} still exists after destroy"
 fi
 echo "    OK: alarm B is gone"
+
+# B2: metric-math alarm gone.
+B2_LEFT=$(aws cloudwatch describe-alarms --region "${REGION}" \
+  --alarm-names "${MATH_ALARM_NAME}" --alarm-types MetricAlarm \
+  --query 'MetricAlarms[0].AlarmArn' --output text)
+if [ -n "${B2_LEFT}" ] && [ "${B2_LEFT}" != "None" ]; then
+  fail "Alarm ${MATH_ALARM_NAME} still exists after destroy"
+fi
+echo "    OK: math alarm B2 is gone"
 
 # A: SNS topic gone.
 A_LEFT=$(aws sns list-topics --region "${REGION}" \

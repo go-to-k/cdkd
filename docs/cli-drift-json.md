@@ -72,6 +72,7 @@ and `notCompared`.
 | `skipped` | Resources cdkd does not check for drift. |
 | `notCompared` | Resources not fully compared. |
 | `warnings` | Stack-level messages, as strings. |
+| `unsettled` | Resources a failed deploy left with unsettled properties. |
 
 Details the table leaves out:
 
@@ -84,6 +85,12 @@ Details the table leaves out:
 - `skipped` includes the parent's row for a nested stack, because the nested
   stack has a report of its own in the array.
 - `warnings` is left out when there are none.
+- An `unsettled` entry names a resource whose last update failed after it
+  had started changing a property, with those property names under
+  `properties` (never their values). AWS may hold either the recorded value
+  or the attempted one. The next `cdkd deploy` sends them again, and a
+  successful `--accept` or `--revert` of the resource clears them. The key is
+  left out when there are none.
 
 ### `warnings`
 
@@ -105,8 +112,8 @@ An entry in `notCompared` is a resource cdkd could not fully compare:
     "cause": "refused"
   },
   {
-    "logicalId": "Budget1",
-    "type": "AWS::Budgets::Budget",
+    "logicalId": "Queue1",
+    "type": "AWS::SQS::Queue",
     "referencesUnresolved": false,
     "cause": "readFailed"
   }

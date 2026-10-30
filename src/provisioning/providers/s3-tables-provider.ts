@@ -13,6 +13,7 @@ import {
   ListTablesCommand,
   ListTableBucketsCommand,
   ListTagsForResourceCommand,
+  RenameTableCommand,
   TagResourceCommand,
   UntagResourceCommand,
   NotFoundException,
@@ -22,6 +23,8 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { markRedactedCause, relayedNameCollision } from '../../deployment/retryable-errors.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { reportCreatedResource } from '../created-resource-sink.js';
+import { markNotGone } from '../not-gone.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import {
   compositeIdFormatMessage,
@@ -178,7 +181,8 @@ export class S3TablesProvider implements ResourceProvider {
    * transport error, or a non-`Error` throw, keeps its text, as in the
    * EventBridge bus provider's wrap (go-to-k/cdkd#5053); the thrown message is
    * masked by the deploy engine. Every delete checks `NotFoundException`
-   * by type before it wraps, so no "already deleted" reading depends on AWS's
+   * by type before it wraps, and stamps a wrap naming another `NotFound` class
+   * `markNotGone`, so no "already deleted" reading depends on AWS's
    * wording.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
@@ -315,7 +319,8 @@ export class S3TablesProvider implements ResourceProvider {
         resourceType,
         properties,
         previousProperties,
-        context?.maskSecrets
+        context?.maskSecrets,
+        context?.recordedAttributes
       );
     } catch (error) {
       // Pass through every cdkd-typed error untouched. For THIS provider the
@@ -346,18 +351,27 @@ export class S3TablesProvider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    recordedAttributes: Readonly<Record<string, unknown>> | undefined
   ): Promise<ResourceUpdateResult> {
-    // S3 Tables RESOURCES themselves are immutable (no UpdateTable /
-    // UpdateTableBucket / UpdateNamespace APIs), but TAGS ARE mutable
-    // via the separate TagResource / UntagResource control-plane calls.
-    // So `update()` is no longer a blanket no-op: when the only property
-    // that changed is `Tags`, dispatch a tag-diff against the underlying
-    // resource ARN. Table (#609 PR #739) + TableBucket (#609, this PR)
-    // both have Tags wired; the Namespace case stays no-op (Namespaces
-    // are not taggable per the S3Tables SDK — ListTagsForResource only
-    // accepts table-bucket or table ARNs).
+    // There is no UpdateTable / UpdateTableBucket / UpdateNamespace API.
+    // TAGS are mutable via TagResource / UntagResource (Table #609 PR #739,
+    // TableBucket #609), and a Table's `TableName` / `Namespace` via
+    // RenameTable (go-to-k/cdkd#5313). The Namespace case stays a no-op:
+    // Namespaces are not taggable (ListTagsForResource only accepts
+    // table-bucket or table ARNs) and both their properties are create-only.
     if (resourceType === 'AWS::S3Tables::Table') {
+      // Planned (and refused) before any write, so a refusal changes nothing.
+      const rename = await this.planTableRename(
+        logicalId,
+        physicalId,
+        resourceType,
+        properties,
+        mask
+      );
+      // Tags against the CURRENT identity, the rename LAST: a failure before
+      // the rename leaves the record naming the table AWS still has, and the
+      // next deploy re-sends both (each is idempotent).
       await this.applyTableTagsDiff(
         logicalId,
         physicalId,
@@ -366,6 +380,25 @@ export class S3TablesProvider implements ResourceProvider {
         properties['Tags'],
         mask
       );
+      if (rename === undefined) return { physicalId, wasReplaced: false };
+      try {
+        await this.getClient().send(rename.command);
+      } catch (error) {
+        if (
+          !(error instanceof NotFoundException) ||
+          !(await this.renameAlreadyApplied(rename.target, recordedAttributes))
+        ) {
+          throw error;
+        }
+      }
+      this.logger.debug(
+        safeMsg`Renamed S3 Tables Table ${logicalId}: ${physicalId} -> ${rename.physicalId}`
+      );
+      // In place: the table ARN ends in a table id that a rename keeps, so the
+      // recorded `TableARN` attribute carries forward (measured against
+      // CloudFormation 2026-10-26: TableName and Namespace changes are both
+      // `Replacement: False`, and `Fn::GetAtt TableARN` is unchanged).
+      return { physicalId: rename.physicalId, wasReplaced: false };
     } else if (resourceType === 'AWS::S3Tables::TableBucket') {
       // TableBucket's physicalId IS the bucket ARN, so the tag-diff path
       // can use it directly (no GetTableBucket lookup hop needed — unlike
@@ -516,7 +549,7 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -528,6 +561,12 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -749,7 +788,7 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -761,6 +800,12 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -866,6 +911,7 @@ export class S3TablesProvider implements ResourceProvider {
         })
       );
       tableCreated = true;
+      reportCreatedResource(logicalId, resourceType, physicalId);
 
       // Capture the REAL table ARN AWS returns — its actual format is
       // NOT inferrable from the compound parts (we tried; AWS rejected
@@ -1530,7 +1576,7 @@ export class S3TablesProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
+      const thrown = this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
@@ -1542,6 +1588,12 @@ export class S3TablesProvider implements ResourceProvider {
             cause
           )
       );
+      // The wrap names an AWS failure by its CLASS, and the delete classifiers
+      // read `NotFoundException` in a message as "already deleted": only the
+      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
+      throw error instanceof Error && error.name.includes('NotFound')
+        ? markNotGone(thrown)
+        : thrown;
     }
   }
 
@@ -1558,6 +1610,121 @@ export class S3TablesProvider implements ResourceProvider {
     const map: Record<string, string> = {};
     for (const t of tags) map[t.Key] = t.Value;
     return map;
+  }
+
+  /**
+   * The RenameTable a Table update owes, or `undefined` when the desired
+   * `TableName` (or its `Name` alias) and `Namespace` match the table the
+   * record names (go-to-k/cdkd#5313).
+   *
+   * Compared with the PHYSICAL ID, not the previous properties: the id names
+   * the table AWS holds, and a record an older cdkd wrote after a silently
+   * dropped rename carries the new name in its properties only. A key the
+   * template omits keeps its current value.
+   *
+   * The new id keeps the stored shape: a composite gets the new namespace and
+   * name; a bare table ARN (an imported row) stays as it is, since a rename
+   * keeps the table's ARN.
+   */
+  private async planTableRename(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    mask: ((text: string) => string) | undefined
+  ): Promise<
+    | {
+        command: RenameTableCommand;
+        physicalId: string;
+        target: { tableBucketARN: string; namespace: string; name: string };
+      }
+    | undefined
+  > {
+    const desiredString = (key: string, value: unknown): string | undefined => {
+      if (value === undefined) return undefined;
+      if (typeof value === 'string' && value.length > 0) return value;
+      throw new ProvisioningError(
+        safeMsg`${key} for S3 Tables Table ${logicalId} must be a non-empty string; refusing the update`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    };
+    const desiredNamespace = desiredString('Namespace', properties['Namespace']);
+    const desiredName = desiredString('TableName', properties['TableName'] ?? properties['Name']);
+    if (desiredNamespace === undefined && desiredName === undefined) return undefined;
+
+    const current = await this.resolveTableParts(physicalId);
+    if (current === 'not-found' || current === 'unparseable') {
+      throw new ProvisioningError(
+        current === 'not-found'
+          ? safeMsg`S3 Tables Table '${physicalId}' no longer exists (state is out of sync); ` +
+              `refusing to record a rename that did not happen`
+          : compositeIdFormatMessage(S3_TABLES_TABLE_ID_FORMAT, logicalId, physicalId),
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    const newNamespace = desiredNamespace ?? current.namespace;
+    const newName = desiredName ?? current.name;
+    if (newNamespace === current.namespace && newName === current.name) return undefined;
+
+    const newPhysicalId = physicalId.includes('|')
+      ? packCompositeId(
+          resourceType,
+          logicalId,
+          [
+            { name: 'tableBucketARN', value: current.tableBucketARN },
+            { name: 'namespace', value: newNamespace },
+            { name: 'name', value: newName },
+          ],
+          { maskSecrets: mask }
+        )
+      : physicalId;
+    return {
+      physicalId: newPhysicalId,
+      target: { tableBucketARN: current.tableBucketARN, namespace: newNamespace, name: newName },
+      command: new RenameTableCommand({
+        tableBucketARN: current.tableBucketARN,
+        namespace: current.namespace,
+        name: current.name,
+        ...(newNamespace !== current.namespace && { newNamespaceName: newNamespace }),
+        ...(newName !== current.name && { newName }),
+      }),
+    };
+  }
+
+  /**
+   * Whether a RenameTable that answered `NotFoundException` had already been
+   * applied: a replay of a rename whose first answer was lost (an SDK or
+   * deploy-engine retry after a 5xx) finds the old name gone. Only on EXACT
+   * attribution: the table now at the target name carries the `TableARN` the
+   * record holds (its trailing table id is unique and a rename keeps it). A
+   * record without one, or another table at the target name, is not this
+   * table, and the NotFound is surfaced.
+   */
+  private async renameAlreadyApplied(
+    target: { tableBucketARN: string; namespace: string; name: string },
+    recordedAttributes: Readonly<Record<string, unknown>> | undefined
+  ): Promise<boolean> {
+    const recordedArn = recordedAttributes?.['TableARN'];
+    if (typeof recordedArn !== 'string' || recordedArn.length === 0) return false;
+    // A failed lookup (AccessDenied, a throttle) attributes nothing; the
+    // caller then rethrows the ORIGINAL NotFound, not this read's error.
+    try {
+      const liveArn = await this.lookupTableArn(
+        target.tableBucketARN,
+        target.namespace,
+        target.name
+      );
+      return liveArn === recordedArn;
+    } catch (lookupError) {
+      this.logger.debug(
+        safeMsg`Could not check whether the rename of ${target.name} was already applied: ${describeAwsFailure(lookupError).summary}`
+      );
+      return false;
+    }
   }
 
   /**

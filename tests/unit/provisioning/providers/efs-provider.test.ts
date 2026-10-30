@@ -57,7 +57,7 @@ import { EFSProvider } from '../../../../src/provisioning/providers/efs-provider
 import { ResourceUpdateNotSupportedError } from '../../../../src/utils/error-handler.js';
 import { allowUnscopedCreateTokensForTests } from '../../../../src/provisioning/providers/idempotency-token.js';
 
-// These cases drive create() directly, outside a withStackName scope, so the
+// These cases drive create() directly, outside a withStackScope scope, so the
 // stack-scoped create token (go-to-k/cdkd#4428) is opted out of its guard.
 beforeAll(() => {
   allowUnscopedCreateTokensForTests(true);
@@ -674,10 +674,22 @@ describe('EFSProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('AccessPoint always rejects with ResourceUpdateNotSupportedError (no mutable surface)', async () => {
+    it('AccessPoint rejects a non-tag change with ResourceUpdateNotSupportedError', async () => {
       await expect(
-        provider.update('MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {})
+        provider.update(
+          'MyAP',
+          'fsap-123',
+          'AWS::EFS::AccessPoint',
+          { FileSystemId: 'fs-2' },
+          { FileSystemId: 'fs-1' }
+        )
       ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('AccessPoint with no diff is a silent no-op (#5464: tags are its one mutable surface)', async () => {
+      const result = await provider.update('MyAP', 'fsap-123', 'AWS::EFS::AccessPoint', {}, {});
+      expect(result).toEqual({ physicalId: 'fsap-123', wasReplaced: false });
       expect(mockSend).not.toHaveBeenCalled();
     });
   });
@@ -723,7 +735,10 @@ describe('EFSProvider', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('MountTarget: explicit override returned as-is, no AWS calls', async () => {
+    it('MountTarget: explicit override is described for its IpAddress attribute (#2762)', async () => {
+      mockSend.mockResolvedValueOnce({
+        MountTargets: [{ MountTargetId: 'fsmt-123', IpAddress: '10.0.0.5' }],
+      });
       const result = await provider.import(
         makeInput({
           logicalId: 'MT',
@@ -731,8 +746,9 @@ describe('EFSProvider', () => {
           knownPhysicalId: 'fsmt-123',
         })
       );
-      expect(result).toEqual({ physicalId: 'fsmt-123', attributes: {} });
-      expect(mockSend).not.toHaveBeenCalled();
+      expect(result).toEqual({ physicalId: 'fsmt-123', attributes: { IpAddress: '10.0.0.5' } });
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeMountTargetsCommand);
     });
 
     it('MountTarget: returns null without explicit override', async () => {

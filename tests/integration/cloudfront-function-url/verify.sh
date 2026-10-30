@@ -132,8 +132,11 @@ if [ -z "${POLICY_JSON}" ]; then
   exit 1
 fi
 
-STATEMENT=$(echo "${POLICY_JSON}" | jq --arg sid "${EXPLICIT_SID}" \
-  '.Statement[] | select(.Sid == $sid)')
+# Since #5139 the statement id is generated as CloudFormation does
+# (`<StackName>-<LogicalId>-<12 hex>`), so match the deterministic prefix; a
+# stack recorded before stack instance ids still carries the bare logical id.
+STATEMENT=$(echo "${POLICY_JSON}" | jq --arg sid "${EXPLICIT_SID}" --arg prefix "${STACK}-${EXPLICIT_SID}-" \
+  '.Statement[] | select(.Sid == $sid or (.Sid | startswith($prefix)))')
 if [ -z "${STATEMENT}" ] || [ "${STATEMENT}" = "null" ]; then
   echo "FAIL: explicit permission SID '${EXPLICIT_SID}' not found in resource policy" >&2
   echo "${POLICY_JSON}" | jq .

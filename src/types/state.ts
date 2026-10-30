@@ -184,14 +184,51 @@
  *       it WRITES from this run's resolution, an unchanged one through a
  *       one-time capture that sends nothing and changes no other field.
  *
+ * - 13 — adds `StackState.stackInstanceId` (issue
+ *       [#5064](https://github.com/go-to-k/cdkd/issues/5064)): a random id
+ *       minted at the FIRST state write of a stack (its first deploy, the
+ *       partial save of a failed first deploy, or `cdkd import` creating the
+ *       record), naming one lifetime of the stack between its creation and
+ *       its record's deletion. A first deploy writes it ahead to the
+ *       `stack-instance.json` sibling (`src/state/stack-instance-id.ts`)
+ *       before any resource create, so a re-run after a crash reuses it.
+ *       ABSENT means a LEGACY stack, and it stays legacy: no writer mints one
+ *       for a stack that already has a record.
+ *       A bump, for v10's reason: an older binary rebuilds a record field by
+ *       field and would drop the id, turning the stack legacy behind the
+ *       next reader's back. A v12 document is read unchanged (legacy).
+ *
+ * - 14 — adds `ResourceState.unsettledProperties` (issue
+ *       [#5380](https://github.com/go-to-k/cdkd/issues/5380)): the top-level
+ *       property NAMES (never values) a provider's `update()` declared it was
+ *       about to change with an irreversible call before that update failed,
+ *       so AWS may hold either side. The next deploy treats each as changed
+ *       and the provider converges it against AWS. Read through
+ *       `unsettledPropertiesOf` (malformed = none).
+ *       A bump, for v10's reason: an older binary rewriting the record would
+ *       drop the names, and a later deploy back to the recorded template would
+ *       diff empty and leave AWS on the other side. A v13 document is read
+ *       unchanged (nothing unsettled).
+ *
+ * - 15 — adds `ResourceState.unsettledItems` (issue
+ *       [#5498](https://github.com/go-to-k/cdkd/issues/5498)): per unsettled
+ *       collection, the IDENTITY NAMES (an index name, a replica region, a
+ *       metric, a tag key — never a value) a failed update's call had been
+ *       ACCEPTED for adding, so the next convergence (and the automatic
+ *       revert) can remove exactly what cdkd started. Read through
+ *       `unsettledItemsOf` (only paths under an unsettled key; malformed or
+ *       over-cap = none). A bump, for v10's reason: an older binary rewriting
+ *       the record would drop the names, and the item would be kept instead of
+ *       removed. A v14 document is read unchanged (nothing attempted).
+ *
  * cdkd readers handle every prior version. Writers always emit
  * `STATE_SCHEMA_VERSION_CURRENT`. An older cdkd binary that only knows an
  * earlier version will fail with a clear error when it encounters a higher
  * version, rather than silently mishandling the new format.
  */
-export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
+export type StateSchemaVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
 export const STATE_SCHEMA_VERSION_LEGACY: StateSchemaVersion = 1;
-export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 12;
+export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 15;
 
 /**
  * Every schema version this binary can read. Writers always emit
@@ -200,7 +237,7 @@ export const STATE_SCHEMA_VERSION_CURRENT: StateSchemaVersion = 12;
  * "upgrade cdkd" error in the parser.
  */
 export const STATE_SCHEMA_VERSIONS_READABLE: readonly StateSchemaVersion[] = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 ];
 
 /**
@@ -516,6 +553,31 @@ export interface StackState {
   orphans?: StackOrphanRecord[];
 
   /**
+   * Resources a replacement superseded whose delete has not succeeded yet
+   * (go-to-k/cdkd#5111): the old copy of a replaced resource, recorded the
+   * moment its delete is deferred (an in-use target group a listener still
+   * points at, say), in the same save that records the replacement. Without
+   * it, a deploy killed before its end-of-deploy retry left the old resource
+   * in AWS with no record at all.
+   *
+   * A deploy's cleanup retries each entry once the deploy's creates, updates
+   * and deletes are done (a no-change deploy included) and drops it once
+   * deleted; one still refused is kept, with a warning. `cdkd destroy`
+   * deletes them after the stack's own resources, and keeps the state while
+   * one fails. An entry whose physical id and type a record of `resources`
+   * holds is not deleted -- a rollback took it back -- and is dropped.
+   *
+   * Each entry carries the superseded `ResourceState` verbatim, so it is
+   * secret-bearing exactly as {@link orphans} is: `redactStateForPersist`
+   * scrubs it the same way. Additive, so NO schema bump: an older binary
+   * drops the field on its next save, which degrades to the pre-#5111
+   * behaviour (the old resource left untracked). Carried by every writer
+   * through {@link stackInstanceIdCarriedFrom}. Read through
+   * `supersededResourcesOf` (`src/deployment/superseded-resources.ts`).
+   */
+  supersededResources?: SupersededResourceRecord[];
+
+  /**
    * The verdict the last deploy computed for each condition `cdkd diff` reads
    * but cannot evaluate, because its closure reaches a parameter fed a secret
    * `{{resolve:...}}` reference (go-to-k/cdkd#4479). Keyed by condition name.
@@ -558,6 +620,61 @@ export interface StackState {
    */
   outputReferenceProvenance?: Record<string, Record<string, ReferenceProvenance>>;
 
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the id of this LIFETIME of the
+   * stack, a `crypto.randomUUID()` minted at the stack's first state write and
+   * kept until its record is deleted. ABSENT = a legacy stack (every record
+   * written before v13), which stays legacy: nothing mints one for a stack that
+   * already has a record. Read through `stackInstanceIdOf`
+   * (`src/state/stack-instance-id.ts`); carried by every field-enumerating
+   * writer through {@link stackInstanceIdCarriedFrom}. Never logged.
+   */
+  stackInstanceId?: string;
+
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): per logical id whose record LEFT
+   * this stack (a deploy's delete, `Retain` included, or `cdkd orphan`), the
+   * highest name generation that record reached (`max(nameGeneration,
+   * nameGenerationHigh)`). A later CREATE of the same logical id takes the
+   * next generation, so a re-added resource never asks for a name an earlier
+   * copy held -- CloudFormation's random suffix gives the same guarantee.
+   * Written only on a stack with a `stackInstanceId`; carried with it through
+   * {@link stackInstanceIdCarriedFrom}. Read through
+   * `retiredNameGenerationsOf` (`src/state/name-generation.ts`).
+   */
+  retiredNameGenerations?: Record<string, number>;
+
+  /**
+   * Resources an interrupted or in-progress `cdkd refactor` is moving OUT of
+   * this stack (go-to-k/cdkd#5212). Written to the SOURCE record first, with
+   * the moving record still in `resources`; the destination then adds the
+   * record, and a last source save drops both the record and its entry. While
+   * an entry is present, `cdkd deploy` and `cdkd destroy` of this stack refuse
+   * (the record may also be in the destination, whose resource this stack's
+   * deploy would delete), and the next `cdkd refactor` of this stack finishes
+   * the move. Ids only, never a value.
+   *
+   * Additive, NO schema bump (the `orphans` precedent): an older binary drops
+   * the field on its next save and does not refuse, a stated consequence.
+   * Carried by every writer through {@link stackInstanceIdCarriedFrom}. Read
+   * through `pendingMovesOutOf` (`src/state/pending-moves.ts`).
+   */
+  pendingMovesOut?: PendingMoveOut[];
+
+  /**
+   * The stack was last deployed with `terminationProtection: true`
+   * (go-to-k/cdkd#5238). Each deploy writes it from the synthesized stack
+   * (present only when true), so it is what the DEPLOYED stack says, as in
+   * CloudFormation; `cdkd destroy` and `cdkd state destroy` refuse while it
+   * is set unless `--remove-protection` is given. `cdkd state destroy` has no
+   * CDK app, so this is the only place it can learn the setting.
+   *
+   * Additive, NO schema bump (the `orphans` precedent): an older binary drops
+   * the field on its next save and does not refuse, a stated consequence.
+   * Carried by every non-deploy writer through {@link stackInstanceIdCarriedFrom}.
+   */
+  terminationProtection?: true;
+
   /** Last modification timestamp (Unix milliseconds) */
   lastModified: number;
 }
@@ -593,6 +710,20 @@ export interface ReferenceProvenance {
   readVersions?: string[];
 }
 
+/** One entry of {@link StackState.pendingMovesOut} (go-to-k/cdkd#5212). */
+export interface PendingMoveOut {
+  /** The record's logical id in THIS stack. */
+  from: string;
+  /** The destination stack's name. */
+  toStack: string;
+  /** The destination stack's region. */
+  toRegion: string;
+  /** The record's logical id in the destination. */
+  to: string;
+  /** When the move started (Unix milliseconds). */
+  startedAt: number;
+}
+
 /** One entry of {@link StackState.conditionVerdicts} (go-to-k/cdkd#4479). */
 export interface RecordedConditionVerdict {
   /** The verdict the deploy computed against the real parameter values. */
@@ -619,11 +750,86 @@ export interface StackOrphanRecord {
 }
 
 /**
+ * One resource a replacement superseded and has not deleted yet
+ * (go-to-k/cdkd#5111). See {@link StackState.supersededResources}.
+ */
+export interface SupersededResourceRecord {
+  /** The logical id whose replacement superseded it. */
+  logicalId: string;
+
+  /** When its delete was deferred (Unix milliseconds). */
+  supersededAt: number;
+
+  /** The superseded record, verbatim as state held it before the replacement. */
+  state: ResourceState;
+
+  /** The `UpdateReplacePolicy` the replacement's delete ran under. */
+  updateReplacePolicy?: 'Delete' | 'Retain' | 'Snapshot' | 'RetainExceptOnCreate';
+
+  /** The final snapshot the replacement's delete was to take (`Snapshot`). */
+  finalSnapshotIdentifier?: string;
+
+  /** The replacement ran under `--force-stateful-recreation`. */
+  forceDataDelete?: true;
+
+  /**
+   * The replacement ran under `--skip-final-snapshot`. Only this consent
+   * counts: a later run's flag never skips a snapshot this one promised.
+   */
+  skipFinalSnapshot?: true;
+}
+
+/**
  * Individual resource state
  */
 export interface ResourceState {
   /** Physical resource ID (ARN, name, etc.) */
   physicalId: string;
+
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the GENERATION of the name cdkd
+   * generated for this resource on a stack with a `stackInstanceId`. ABSENT =
+   * 0, the generation every first create takes. A replacement creates the new
+   * resource under the next generation (a new name, so it is created before
+   * the old one is deleted, as CloudFormation does); a CREATE of a logical id
+   * whose earlier record left the stack takes the generation after
+   * `StackState.retiredNameGenerations`. Never written on a legacy stack.
+   * Read through `nameGenerationOf` (`src/state/name-generation.ts`).
+   */
+  nameGeneration?: number;
+
+  /**
+   * State schema v13 (go-to-k/cdkd#5064): the highest generation a
+   * replacement of this resource ever CREATED, when it exceeds
+   * `nameGeneration` -- a rollback put the older resource back. The next
+   * replacement goes past it, so a name a rolled-back copy held is never asked
+   * for again. ABSENT = `nameGeneration`.
+   */
+  nameGenerationHigh?: number;
+
+  /**
+   * State schema v14 (go-to-k/cdkd#5380): top-level property NAMES (never
+   * values) whose change a failed `update()` had started with an irreversible
+   * call, so AWS may hold either the recorded value or the attempted one.
+   * `properties` keeps the recorded value; the next deploy treats each name as
+   * changed and the provider converges it against AWS. ABSENT = nothing
+   * unsettled. Cleared by a successful update, `cdkd rollback --revert-failed`
+   * and `cdkd drift --accept` / `--revert`. Read through
+   * `unsettledPropertiesOf` (`src/state/unsettled-properties.ts`).
+   */
+  unsettledProperties?: string[];
+
+  /**
+   * State schema v15 (go-to-k/cdkd#5498): per member path of an unsettled
+   * collection (`GlobalSecondaryIndexes`, `Tags`, `DesiredShardLevelMetrics`,
+   * `Replicas[eu-west-1].GlobalSecondaryIndexes` — closed-vocabulary segments
+   * only), the identity names a failed update's call was ACCEPTED for adding.
+   * Names only, redacted like `properties`; a name holding `{{resolve:` or
+   * `***` never matches a live item. Written only by the deploy's failure
+   * save; stripped with `unsettledProperties`. Read through `unsettledItemsOf`
+   * (`src/state/unsettled-properties.ts`).
+   */
+  unsettledItems?: Record<string, string[]>;
 
   /** CloudFormation resource type (e.g., AWS::Lambda::Function) */
   resourceType: string;
@@ -1413,6 +1619,67 @@ export function exportNamesCarriedFrom(
 }
 
 /**
+ * Carry {@link StackState.stackInstanceId} and
+ * {@link StackState.retiredNameGenerations} across a rebuild (state schema
+ * v13, go-to-k/cdkd#5064): absent stays absent, present stays as it was,
+ * VERBATIM (a malformed value is the reader's to refuse, never a writer's to
+ * drop).
+ *
+ * **Every** field-enumerating `StackState` literal must spread this, beside
+ * {@link orphansCarriedFrom}. A dropped id is silent and turns the stack into
+ * a legacy one for every later reader. Spread-form writers
+ * (`{ ...previous, ... }`) carry it already; they spread it too, so the rule
+ * has no exception to remember
+ * (`tests/unit/state/stack-instance-id-carriers.test.ts`).
+ */
+export function stackInstanceIdCarriedFrom(
+  previous:
+    | Pick<
+        StackState,
+        | 'stackInstanceId'
+        | 'retiredNameGenerations'
+        | 'supersededResources'
+        | 'pendingMovesOut'
+        | 'terminationProtection'
+      >
+    | null
+    | undefined
+): Pick<
+  StackState,
+  | 'stackInstanceId'
+  | 'retiredNameGenerations'
+  | 'supersededResources'
+  | 'pendingMovesOut'
+  | 'terminationProtection'
+> {
+  // go-to-k/cdkd#5064: the lifetime's retired name generations travel with
+  // its id -- a writer that dropped them would hand a re-added resource a
+  // name an earlier copy of it held.
+  // go-to-k/cdkd#5111: so do the superseded resources still to delete -- a
+  // writer that dropped them would leave live resources with no record.
+  return {
+    ...(previous?.stackInstanceId !== undefined && { stackInstanceId: previous.stackInstanceId }),
+    ...(previous?.retiredNameGenerations !== undefined && {
+      retiredNameGenerations: previous.retiredNameGenerations,
+    }),
+    ...(previous?.supersededResources !== undefined && {
+      supersededResources: previous.supersededResources,
+    }),
+    // go-to-k/cdkd#5212: so does an unfinished refactor move -- a writer that
+    // dropped it would let this stack's next deploy delete a resource the
+    // move's destination already holds.
+    ...(previous?.pendingMovesOut !== undefined && {
+      pendingMovesOut: previous.pendingMovesOut,
+    }),
+    // go-to-k/cdkd#5238: so does the deployed stack's termination protection
+    // -- a writer that dropped it would let `cdkd state destroy` delete a
+    // protected stack. Only `true` is carried: a hand-edited other value
+    // protects nothing and is not repeated.
+    ...(previous?.terminationProtection === true && { terminationProtection: true }),
+  };
+}
+
+/**
  * The `skippedOutputs` field to write when a save carries the PREVIOUS
  * record's `outputs` bag forward instead of re-resolving it (issue #2740). The
  * record describes that bag — which keys the deploy that wrote it could not
@@ -1531,6 +1798,14 @@ export interface PropertyChange {
    * renderer labels it, since `*** -> ***` reads as no change.
    */
   maskedExpressionChanged?: true;
+
+  /**
+   * Set on a change only the record's `unsettledProperties` adds
+   * (go-to-k/cdkd#5380): an earlier update of the property failed after an
+   * irreversible call, so AWS may hold either side although the template and
+   * the record agree. Always in place; the diff renderer labels it.
+   */
+  unsettled?: true;
 
   /**
    * Set on an `inPlacePropagated` change the READ-PROVENANCE arm added

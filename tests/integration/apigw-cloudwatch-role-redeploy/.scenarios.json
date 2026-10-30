@@ -1,0 +1,5 @@
+{
+  "scenarios": [
+    "deletion-policy-retain"
+  ]
+}

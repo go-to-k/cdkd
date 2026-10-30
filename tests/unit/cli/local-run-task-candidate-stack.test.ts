@@ -44,4 +44,13 @@ describe('pickCandidateStack (go-to-k/cdkd#3953)', () => {
     expect(candidate('TaskDef', [api])).toBe(api);
     expect(candidate('TaskDef', [api, top])).toBeUndefined();
   });
+
+  it('names no candidate for a physical name two Stage stacks share (#5176)', () => {
+    const east = stack('Api', 'UsEast/Api');
+    const west = stack('Api', 'UsWest/Api');
+    // Neither clone's state, never the first one's.
+    expect(candidate('Api:TaskDef', [east, west])).toBeUndefined();
+    // A CDK path still names one.
+    expect(candidate('UsWest/Api/TaskDef', [east, west])).toBe(west);
+  });
 });

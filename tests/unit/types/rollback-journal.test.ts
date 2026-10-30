@@ -1,4 +1,16 @@
-import { describe, it, expect } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+
+// A stable double, so the parse failure's `debug` line is assertable.
+const { loggerMock } = vi.hoisted(() => ({
+  loggerMock: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+vi.mock('../../../src/utils/logger.js', () => ({
+  getLogger: () => ({ ...loggerMock, child: () => loggerMock }),
+}));
+
+beforeEach(() => {
+  for (const fn of Object.values(loggerMock)) fn.mockClear();
+});
 import {
   ROLLBACK_JOURNAL_VERSION,
   parseRollbackJournal,
@@ -89,18 +101,67 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     throw new Error('expected parseRollbackJournal to throw');
   };
 
-  it('flattens the BODY BYTES V8 quotes back in its invalid-JSON message', () => {
+  it('quotes none of the BODY BYTES V8 quotes in its invalid-JSON message (issue #5247)', () => {
     // An ARRAY opener, deliberately: V8 quotes the offending input only in the
     // `Unexpected token 'X', "..."` form, and an object-shaped truncation takes
     // the position-only `SyntaxError` instead, which quotes nothing and makes
     // the case vacuous. The invisible sits EARLY because that quote is
     // truncated at ~18 units.
-    const message = messageOf('[1,2,\n  Phys\u200bicalID: arn:forged]', 'S');
+    const body = '[1,2,\n  Phys\u200bicalID: arn:forged]';
+    const message = messageOf(body, 'S');
 
     expect(message).not.toMatch(CTRL);
     expect(message).not.toMatch(INVISIBLE);
-    // Removed, not censored -- the surrounding text still reads.
-    expect(message).toContain('Phys ical');
+    expect(message).not.toContain('Phys');
+    expect(message).toBe(
+      `Rollback journal for 'S' is not valid JSON: invalid JSON; ${Buffer.byteLength(body, 'utf8')} byte(s) read`
+    );
+  });
+
+  it('names no secret-like token from the body in the message or a cause (issue #5247)', () => {
+    const body = '{"password":hunter2SECRET,"x":1}';
+    // Premise: V8 itself quotes the token for this body, so the absence below
+    // is the fix's doing and not the fixture's.
+    let v8: unknown;
+    try {
+      JSON.parse(body);
+    } catch (e) {
+      v8 = e;
+    }
+    expect((v8 as Error).message).toContain('hunter2');
+
+    let caught: unknown;
+    try {
+      parseRollbackJournal(body, 'S');
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const chain: string[] = [];
+    for (let e: unknown = caught; e instanceof Error; e = e.cause) {
+      chain.push(e.message, String(e.stack));
+    }
+    expect(chain.join('\n')).not.toContain('hunter2');
+    expect((caught as Error).message).toMatch(/is not valid JSON: invalid JSON; \d+ byte\(s\) read$/);
+    // V8's text is at `debug` and nowhere louder.
+    const logged = (fn: { mock: { calls: unknown[][] } }): string =>
+      fn.mock.calls.map((c) => c.map(String).join(' ')).join('\n');
+    expect(logged(loggerMock.debug)).toContain('hunter2');
+    for (const fn of [loggerMock.info, loggerMock.warn, loggerMock.error]) {
+      expect(logged(fn)).not.toContain('hunter2');
+    }
+  });
+
+  it('keeps V8 text on the debug line flattened through the allowlist (issues #3003, #5247)', () => {
+    messageOf('[1,2,\n  Phys\u200bicalID: arn:forged]', 'S');
+
+    const line = loggerMock.debug.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .find((m: string) => m.startsWith("Rollback journal for 'S' failed to parse:"));
+    // `Phys ical` can only have come FROM the body, so the line is not vacuous.
+    expect(line).toContain('Phys ical');
+    expect(line).not.toMatch(CTRL);
+    expect(line).not.toMatch(INVISIBLE);
   });
 
   it('flattens the STACK NAME, which is an S3 key segment', () => {
@@ -136,14 +197,11 @@ describe('parseRollbackJournal refuses to forge a line (issue #3064)', () => {
     expect(messageOf(body, 'S')).toContain("'journalVersion' (null)");
   });
 
-  it('still says something when the quoted input sanitises away entirely', () => {
-    // Why there is no empty-detail fallback: V8's own wording is ASCII prose
-    // and survives the allowlist even when every byte it quoted does not, so
-    // the detail is never empty and a placeholder branch would be dead.
+  it('still says something when the body is nothing but control bytes', () => {
     const message = messageOf('\u0000\u0001', 'S');
 
     expect(message).not.toMatch(CTRL);
-    expect(message).toMatch(/is not valid JSON: \S/);
+    expect(message).toMatch(/is not valid JSON: invalid JSON( at code-unit position \d+)?; 2 byte\(s\) read$/);
   });
 
   it('flattens the stack name in the newer-version refusal too, and keeps the PROPERTY raw', () => {
@@ -390,6 +448,27 @@ describe('parseRollbackJournal refuses a malformed operation (issue #3140)', () 
     expect(messageOf(journalWith([{ ...op, oldResourceRetained: 'no' }]))).toContain(
       'oldResourceRetained must be a boolean when present (got string).'
     );
+  });
+
+  // go-to-k/cdkd#5064 phase 2: a rollback writes it into the restored record's
+  // high-water mark, so only a non-negative integer is read.
+  it('refuses a nameGeneration that is not a non-negative integer, on either op list', () => {
+    for (const [bad, k] of [
+      ['1', 'string'],
+      [-1, 'number'],
+      [1.5, 'number'],
+      [null, 'null'],
+    ] as const) {
+      expect(messageOf(journalWith([{ ...op, nameGeneration: bad }]))).toContain(
+        `segments[0].operations[0].nameGeneration must be a non-negative integer when present (got ${k}).`
+      );
+      expect(messageOf(journalWith([], [{ ...op, nameGeneration: bad }]))).toContain(
+        `segments[0].failedOperations[0].nameGeneration must be a non-negative integer when present (got ${k}).`
+      );
+    }
+    expect(() =>
+      parseRollbackJournal(journalWith([{ ...op, nameGeneration: 3 }]), 'MyStack')
+    ).not.toThrow();
   });
 
   // go-to-k/cdkd#1710: both select a `--revert-failed` delete arm for a

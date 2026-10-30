@@ -425,6 +425,13 @@
       "scenarios": []
     },
     {
+      "name": "apigw-cloudwatch-role-redeploy",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-retain"
+      ]
+    },
+    {
       "name": "apigw-gateway-response",
       "annotated": true,
       "scenarios": []
@@ -441,6 +448,11 @@
     },
     {
       "name": "apigw-usage-plan-key",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "apigw-vpclink-integration-target",
       "annotated": false,
       "scenarios": []
     },
@@ -584,6 +596,11 @@
     {
       "name": "cc-protection-flip-eks",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "cc-required-name-generation",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -956,6 +973,11 @@
       "scenarios": []
     },
     {
+      "name": "dynamodb-globaltable-replica-settings",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "dynamodb-gsi-update",
       "annotated": false,
       "scenarios": []
@@ -1006,6 +1028,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-sg-source-group-name",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ec2-vpc",
       "annotated": true,
       "scenarios": []
@@ -1038,6 +1065,11 @@
     {
       "name": "ecs-service-update-props",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "ecs-taskdef-tags-launch-type",
+      "annotated": false,
       "scenarios": []
     },
     {
@@ -1187,6 +1219,22 @@
         "cdkd-asset-storage",
         "cdkd-gc"
       ]
+    },
+    {
+      "name": "generated-name-lifecycle",
+      "annotated": true,
+      "scenarios": [
+        "deletion-policy-retain",
+        "elbv2-listener-tg-lb-deletion-order",
+        "rollback-failure-injection",
+        "state-schema-migration",
+        "update-replace-breadth"
+      ]
+    },
+    {
+      "name": "generated-name-security-group",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "getatt-fallback-guard",
@@ -1348,6 +1396,13 @@
       ]
     },
     {
+      "name": "import-migrate-appsync",
+      "annotated": true,
+      "scenarios": [
+        "migrate-from-cfn-handover"
+      ]
+    },
+    {
       "name": "import-migrate-vpc",
       "annotated": true,
       "scenarios": [
@@ -1483,6 +1538,11 @@
     },
     {
       "name": "lambda-env-removal",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "lambda-esm-documentdb",
       "annotated": false,
       "scenarios": []
     },
@@ -1785,6 +1845,16 @@
       "scenarios": []
     },
     {
+      "name": "local-start-microvm",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-microvm-from-state",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "local-start-service",
       "annotated": true,
       "scenarios": [
@@ -1793,6 +1863,16 @@
     },
     {
       "name": "local-start-service-watch-fast",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-web-function",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "local-start-web-function-from-state",
       "annotated": false,
       "scenarios": []
     },
@@ -1924,6 +2004,11 @@
       "scenarios": [
         "dynamic-reference-resolution"
       ]
+    },
+    {
+      "name": "nlb-quic-server-id",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "nlb-source-nat",
@@ -2081,6 +2166,16 @@
       "scenarios": [
         "cc-api-getatt-enrichment-redshift-cluster"
       ]
+    },
+    {
+      "name": "refactor-command",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "refactor-move",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "remove-protection",
@@ -2323,6 +2418,20 @@
       ]
     },
     {
+      "name": "schema-v12-to-v13-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
+      "name": "schema-v14-to-v15-migration",
+      "annotated": true,
+      "scenarios": [
+        "state-schema-migration"
+      ]
+    },
+    {
       "name": "schema-v5-to-v6-migration",
       "annotated": true,
       "scenarios": [
@@ -2398,6 +2507,11 @@
       "scenarios": []
     },
     {
+      "name": "secretsmanager-replica-rekey",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "secretsmanager-update-value-source",
       "annotated": false,
       "scenarios": []
@@ -2428,6 +2542,11 @@
       "scenarios": [
         "sg-circular-dependency"
       ]
+    },
+    {
+      "name": "shared-stackname-multi-region",
+      "annotated": false,
+      "scenarios": []
     },
     {
       "name": "sns-event-source",
@@ -2543,6 +2662,11 @@
       ]
     },
     {
+      "name": "termination-protection",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "throttle-wide-dag",
       "annotated": true,
       "scenarios": [
@@ -2611,6 +2735,16 @@
     {
       "name": "wait-condition-handle",
       "annotated": true,
+      "scenarios": []
+    },
+    {
+      "name": "wide-independent",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "wide-web-functions",
+      "annotated": false,
       "scenarios": []
     }
   ],
@@ -2766,7 +2900,9 @@
       "scenario": "deletion-policy-retain",
       "description": "DeletionPolicy: Retain skip on destroy (schema v5 recorded value wins over template).",
       "fixtures": [
-        "deletion-policy-retain"
+        "apigw-cloudwatch-role-redeploy",
+        "deletion-policy-retain",
+        "generated-name-lifecycle"
       ]
     },
     {
@@ -2849,7 +2985,8 @@
       "scenario": "elbv2-listener-tg-lb-deletion-order",
       "description": "ELBv2 destroy ordering web: Listener/ListenerRule before TargetGroup (ResourceInUse), TG + Listener before the LoadBalancer, and the LB hyperplane ENI + registered-target ENI release before Subnet/SecurityGroup delete (DependencyViolation).",
       "fixtures": [
-        "deletion-ordering-complex"
+        "deletion-ordering-complex",
+        "generated-name-lifecycle"
       ]
     },
     {
@@ -3086,6 +3223,7 @@
         "import-attribute-readback-network",
         "import-heal-prefix-record",
         "import-lambda-url-attributes",
+        "import-migrate-appsync",
         "import-migrate-vpc",
         "import-retain-destroy",
         "migrate-from-cfn"
@@ -3213,6 +3351,7 @@
       "scenario": "rollback-failure-injection",
       "description": "deploy-engine ROLLBACK path on a RICH multi-resource stack (VPC+SG+IAM Role+Lambda-in-VPC+SSM Parameter): a self-contained env-gated (`ROLLBACK_INTEG_FAIL`) failing SQS Queue (out-of-range messageRetentionPeriod) wired to depend on the fast siblings forces a deploy failure AFTER siblings complete; verify.sh asserts the completed siblings are rolled back (no orphan VPC/SG/ENI/Role/Lambda/SSM, state empty) and the #808 events captured RESOURCE_FAILED + ROLLBACK_* + RUN_FINISHED=FAILED.",
       "fixtures": [
+        "generated-name-lifecycle",
         "rollback-failure-injection"
       ]
     },
@@ -3297,9 +3436,12 @@
       "scenario": "state-schema-migration",
       "description": "Legacy v1 / v2 state schema auto-migrates on next write; old binary fails clearly on a newer schema.",
       "fixtures": [
+        "generated-name-lifecycle",
         "legacy-state-migration",
         "schema-v10-to-v11-migration",
         "schema-v11-to-v12-migration",
+        "schema-v12-to-v13-migration",
+        "schema-v14-to-v15-migration",
         "schema-v5-to-v6-migration",
         "schema-v8-to-v9-migration",
         "schema-v9-to-v10-migration"
@@ -3323,6 +3465,7 @@
       "scenario": "update-replace-breadth",
       "description": "Second-deploy property mutation exercising BOTH cdkd update paths in one stack: in-place provider.update() (S3 versioning toggle / Lambda env+memory / IAM inline-policy edit / SecurityGroup ingress add — physical id unchanged) AND replacement (S3 BucketName change per the replacement-rules registry — new physical id, old resource cleaned up). Regression net for provider update() paths + #807 replacement propagation + #809 Cloud Control write-only-property UPDATE on non-ECS types.",
       "fixtures": [
+        "generated-name-lifecycle",
         "update-replace"
       ]
     },
@@ -3367,6 +3510,7 @@
     "apigw-stage-props",
     "apigw-stage-throttling",
     "apigw-usage-plan-key",
+    "apigw-vpclink-integration-target",
     "app-autoscaling-recreate",
     "appconfig",
     "aws-custom-resource",
@@ -3377,6 +3521,7 @@
     "cc-api-fallback",
     "cc-api-fallback-transitions",
     "cc-final-snapshot-handlers",
+    "cc-required-name-generation",
     "cc-to-sdk-reroute",
     "cc-write-only-create-only",
     "cdk-cross-account-lookup-role",
@@ -3399,6 +3544,7 @@
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",
+    "dynamodb-globaltable-replica-settings",
     "dynamodb-gsi-update",
     "dynamodb-ondemand",
     "dynamodb-sse",
@@ -3407,8 +3553,10 @@
     "dynamodb-ttl-attr-change",
     "ec2-instance-fanout",
     "ec2-route-targets",
+    "ec2-sg-source-group-name",
     "ecr-scanning",
     "ecs-schedule-targets",
+    "ecs-taskdef-tags-launch-type",
     "efs-immutable-replacement",
     "elbv2-same-name-replacement",
     "eventbridge-api-destination",
@@ -3419,6 +3567,7 @@
     "export-nested-stack",
     "fallback-recreate-children",
     "fifo-sqs-event-source",
+    "generated-name-security-group",
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",
     "glue-securityconfig-replace",
@@ -3444,6 +3593,7 @@
     "lambda-config-field-removal",
     "lambda-destinations",
     "lambda-env-removal",
+    "lambda-esm-documentdb",
     "lambda-esm-self-managed-kafka",
     "lambda-event-invoke-config-update",
     "lambda-fix-forward-orphan",
@@ -3461,7 +3611,11 @@
     "local-start-alb-from-state",
     "local-start-cloudfront",
     "local-start-cloudfront-from-state",
+    "local-start-microvm",
+    "local-start-microvm-from-state",
     "local-start-service-watch-fast",
+    "local-start-web-function",
+    "local-start-web-function-from-state",
     "loggroup-class-guard",
     "loggroup-kms-associate",
     "loggroup-never-expire-guard",
@@ -3473,6 +3627,7 @@
     "nested-stack-deep",
     "nested-stack-replace-guard",
     "nested-stack-rollback",
+    "nlb-quic-server-id",
     "nodejs-function",
     "noecho-named-producer",
     "noecho-parameter-masking",
@@ -3489,6 +3644,8 @@
     "recreate-target-readers",
     "recreate-via-cc-api",
     "recreate-via-sdk-provider",
+    "refactor-command",
+    "refactor-move",
     "remove-protection-compensation",
     "remove-protection-journaled-orphan",
     "rename-refactor",
@@ -3514,8 +3671,10 @@
     "sdk-to-cc-autoroute",
     "secret-derived-immutable-names",
     "secrets-rotation-schedule",
+    "secretsmanager-replica-rekey",
     "secretsmanager-update-value-source",
     "servicediscovery",
+    "shared-stackname-multi-region",
     "sns-event-source",
     "sns-inline-subscription",
     "sns-subscription-filter",
@@ -3526,6 +3685,9 @@
     "stepfunctions-s3-definition",
     "stream-delete-redeploy",
     "synthetics-canary",
-    "unrecognized-key-autoroute"
+    "termination-protection",
+    "unrecognized-key-autoroute",
+    "wide-independent",
+    "wide-web-functions"
   ]
 }

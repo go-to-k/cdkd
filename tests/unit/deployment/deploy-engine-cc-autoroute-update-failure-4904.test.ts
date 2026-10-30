@@ -32,6 +32,9 @@ import type { ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceChange, ResourceState as StateRecord } from '../../../src/types/state.js';
 import { InterruptedWaitError } from '../../../src/provisioning/interrupt-watch.js';
 import { markWaitAbandoned } from '../../../src/provisioning/wait-abandoned.js';
+import { hasRedactedCause } from '../../../src/deployment/retryable-errors.js';
+import { extractDeploymentEventError } from '../../../src/types/deployment-events.js';
+import { awsSdkError } from '../_aws-sdk-error.js';
 
 /**
  * A failed UPDATE that this deploy auto-routed from the SDK provider to Cloud
@@ -152,6 +155,51 @@ describe('auto-routed SDK-to-Cloud Control update failure (#4904)', () => {
       expect(message).toContain('--prefer-sdk-route AWS::SNS::Topic:ArchivePolicy');
     }
   );
+
+  // go-to-k/cdkd#2319: the event recorder reduces AWS's own error to its
+  // class, so a remedy appended to it would never reach the persisted row.
+  it('wraps an AWS-authored update error, keeping the remedy beside its class', async () => {
+    stubLogger.debug.mockClear();
+    updateError = awsSdkError(
+      'User: arn:aws:sts::123456789012:assumed-role/Deployer/s is denied sns:SetTopicAttributes',
+      'AccessDeniedException'
+    );
+
+    const thrown = (await runUpdate(makeEngine(AUTO_ROUTED), 'sdk')) as Error;
+
+    expect(thrown).not.toBe(updateError);
+    expect(thrown.cause).toBe(updateError);
+    expect(hasRedactedCause(thrown)).toBe(true);
+    expect(
+      thrown.message.startsWith(
+        "AccessDeniedException. Re-run with --verbose for AWS's own message."
+      )
+    ).toBe(true);
+    expect(thrown.message).toContain('--recreate-via-cc-api MyTopic');
+    expect(thrown.message).not.toContain('123456789012');
+    expect(extractDeploymentEventError(thrown).message).toContain(
+      '--prefer-sdk-route AWS::SNS::Topic:ArchivePolicy'
+    );
+    const debugLine = stubLogger.debug.mock.calls
+      .map(([m]) => String(m))
+      .find((m) => m.includes('Deployer'));
+    expect(debugLine).toContain('MyTopic: the update failed:');
+    expect(extractDeploymentEventError(thrown).name).toBe('AccessDeniedException');
+  });
+
+  it('keeps the remedy in the recorded message for a credential resolution failure', async () => {
+    updateError = Object.assign(new Error('Could not load credentials from profile arn:aws:iam::123456789012:role/x'), {
+      name: 'CredentialsProviderError',
+    });
+
+    const thrown = (await runUpdate(makeEngine(AUTO_ROUTED), 'sdk')) as Error;
+
+    expect(thrown.cause).toBe(updateError);
+    const recorded = extractDeploymentEventError(thrown);
+    expect(recorded.message).toContain('--prefer-sdk-route AWS::SNS::Topic:ArchivePolicy');
+    expect(recorded.message).toMatch(/^CredentialsProviderError\. Re-run with --verbose/);
+    expect(recorded.message).not.toContain('123456789012');
+  });
 
   it('drops --recreate-via-cc-api inside a nested child engine', async () => {
     const engine = makeEngine(AUTO_ROUTED, {

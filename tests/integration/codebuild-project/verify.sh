@@ -2,7 +2,7 @@
 # cdkd integration test: AWS::CodeBuild::Project removal semantics (issue #1160
 # codebuild batch).
 #
-# Deploys a NO_SOURCE project carrying BuildBatchConfig plus the seven optional
+# Deploys a project carrying BuildBatchConfig plus the seven optional
 # UpdateProject fields a live CFn A/B (2026-08-10) proved CloudFormation
 # RETAINS on removal. Then re-deploys with CDKD_TEST_REMOVAL=true, which drops
 # ALL EIGHT from the template, and asserts the asymmetry cdkd now matches:
@@ -14,10 +14,21 @@
 #     pass-through is parity. Asserting these is what stops an over-eager
 #     provider that reset everything from passing this fixture.
 #
+# Phase 1 also declares `Visibility: PUBLIC_READ` + `ResourceAccessRole`
+# (go-to-k/cdkd#2762), sent through UpdateProjectVisibility; Phase 2 drops both
+# and asserts the PRIVATE / no-role reset CloudFormation applies. It also
+# declares `EncryptionKey` + `Tags`, and Phase 2 asserts the managed-key reset
+# and the tag removal CloudFormation applies (go-to-k/cdkd#1160).
+#
+# Phase 1 also declares `VpcConfig`, `FileSystemLocations`, `SecondarySources`,
+# `SecondarySourceVersions`, `SecondaryArtifacts` and `BadgeEnabled`; Phase 2
+# drops all six and asserts they are still live, which is what CloudFormation
+# does (CFn A/B, go-to-k/cdkd#5492).
+#
 # Then destroys and confirms a clean teardown.
 #
 # Phase 0 first deploys with CDKD_TEST_NONPROV_REFUSAL=true, which adds a
-# `Visibility` property the SDK provider does not handle, and asserts the
+# `Triggers` property the SDK provider does not handle, and asserts the
 # deploy is refused pre-flight with nothing provisioned (issue #3866).
 # Phase 1b asserts `--recreate-via-cc-api` on the deployed project is refused
 # and leaves it intact (issue #3887).
@@ -90,9 +101,18 @@ cleanup() {
       --state-bucket "${STATE_BUCKET:-}" --yes >/dev/null 2>&1
     state_destroy_rc=$?
   fi
-  # The project is the only stateful leftover a torn run can strand; the
-  # execution role goes with the stack.
+  # Raw sweep for what a torn run can strand. The project is swept by its
+  # fixed name. The go-to-k/cdkd#5492 scaffolding (VPC, subnet, security group,
+  # secondary-artifact bucket) is swept ONLY by the physical ids this run read
+  # from its own state after Phase 1, never by a name pattern, so a parallel
+  # run's resources are never touched. Order: project (references the SG and
+  # subnet), then SG and subnet, then the VPC. The bucket is never written to
+  # (no build runs), so a plain `rb` suffices. The role goes with the stack.
   aws codebuild delete-project --name "${PROJECT_NAME}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${SG_ID:-}" ] && aws ec2 delete-security-group --group-id "${SG_ID}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${SUBNET_ID:-}" ] && aws ec2 delete-subnet --subnet-id "${SUBNET_ID}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${VPC_ID:-}" ] && aws ec2 delete-vpc --vpc-id "${VPC_ID}" --region "${REGION}" >/dev/null 2>&1
+  [ -n "${ARTIFACT_BUCKET:-}" ] && aws s3 rb "s3://${ARTIFACT_BUCKET}" --region "${REGION}" >/dev/null 2>&1
   if [ -n "${STATE_BUCKET:-}" ]; then
     # state.json is gated on the destroy SUCCEEDING: it is the only pointer to
     # resources a failed destroy left behind, so removing it on failure turns a
@@ -152,6 +172,17 @@ assert_field() { # usage: assert_field <description> <jq-path> <expected>
   echo "    ok: ${desc} = ${got}"
 }
 
+# go-to-k/cdkd#1160: Phase 1 declares the AWS managed S3 key by its KEY ARN,
+# which reads back as that ARN; the removal reset reads back as the ALIAS ARN.
+# DescribeKey on an AWS managed alias creates the key if the account lacks it.
+CDKD_INTEG_CB_KEY_ARN="$(aws kms describe-key --key-id alias/aws/s3 --region "${REGION}" \
+  --query 'KeyMetadata.Arn' --output text)"
+case "${CDKD_INTEG_CB_KEY_ARN}" in
+  arn:aws*:kms:*:key/?*) ;;
+  *) echo "FAIL: could not resolve the aws/s3 managed key ARN (got '${CDKD_INTEG_CB_KEY_ARN}')" >&2; exit 1 ;;
+esac
+export CDKD_INTEG_CB_KEY_ARN
+
 # --- Phase 0: issue #3866 pre-flight refusal --------------------------
 # AWS::CodeBuild::Project is NON_PROVISIONABLE (Cloud Control has no handlers),
 # so a property its SDK provider does not handle must stop the deploy BEFORE
@@ -159,13 +190,13 @@ assert_field() { # usage: assert_field <description> <jq-path> <expected>
 # Control, which failed mid-deploy with UnsupportedActionException after the
 # role had been created -- also a non-zero exit, so the rc alone proves
 # nothing: the refusal's own wording is the discriminator.
-echo "==> Phase 0: a Visibility property is refused pre-flight (issue #3866)"
+echo "==> Phase 0: a Triggers property is refused pre-flight (issue #3866)"
 if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes 2>&1)"; then
   printf '%s\n' "${REFUSAL_OUT}" >&2
-  echo "FAIL: Phase 0 deploy exited 0; a Visibility property on AWS::CodeBuild::Project must be refused" >&2
+  echo "FAIL: Phase 0 deploy exited 0; a Triggers property on AWS::CodeBuild::Project must be refused" >&2
   exit 1
 fi
 REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
@@ -177,8 +208,8 @@ fi
 for needle in \
   'AWS::CodeBuild::Project uses properties' \
   'cannot fall back to Cloud Control API' \
-  '- Visibility: ' \
-  '--prefer-sdk-route AWS::CodeBuild::Project:Visibility'; do
+  '- Triggers: ' \
+  '--prefer-sdk-route AWS::CodeBuild::Project:Triggers'; do
   if ! printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF -- "${needle}"; then
     echo "FAIL: Phase 0 output lacks the pre-flight refusal wording: '${needle}'" >&2
     exit 1
@@ -213,9 +244,63 @@ assert_field "concurrentBuildLimit"            '.concurrentBuildLimit'   '2'
 assert_field "autoRetryLimit"                  '.autoRetryLimit'         '3'
 assert_field "cache.type"                      '.cache.type'             'LOCAL'
 assert_field "logsConfig.cloudWatchLogs.status" '.logsConfig.cloudWatchLogs.status' 'DISABLED'
+# go-to-k/cdkd#1160 baselines, so the Phase 2 resets cannot pass vacuously.
+assert_field "encryptionKey (the managed key's KEY ARN)" '.encryptionKey' "${CDKD_INTEG_CB_KEY_ARN}"
+assert_field "user tags"                       '[.tags[]? | select(.key | startswith("aws:") | not) | "\(.key)=\(.value)"] | join(",")' 'cdkd-integ-tag=phase1'
+# go-to-k/cdkd#5492 baselines: the six fields CloudFormation KEEPS on removal.
+# Asserted here so the Phase 2 retention reads cannot pass on fields that never
+# landed.
+assert_field "vpcConfig subnet + security group count" \
+  '[(.vpcConfig.subnets // [] | length), (.vpcConfig.securityGroupIds // [] | length)] | join(",")' '1,1'
+VPC_ID_P1="$(project_field '.vpcConfig.vpcId')"
+case "${VPC_ID_P1}" in
+  vpc-?*) echo "    ok: vpcConfig.vpcId = ${VPC_ID_P1}" ;;
+  *) echo "FAIL: vpcConfig.vpcId: expected a vpc- id, got '${VPC_ID_P1}'" >&2; exit 1 ;;
+esac
+assert_field "fileSystemLocations identifiers"  '[.fileSystemLocations[]?.identifier] | join(",")' 'efs1'
+assert_field "secondarySources identifiers"     '[.secondarySources[]?.sourceIdentifier] | join(",")' 'src2'
+assert_field "secondarySourceVersions"          '[.secondarySourceVersions[]? | "\(.sourceIdentifier)=\(.sourceVersion)"] | join(",")' 'src2=refs/heads/main'
+assert_field "secondaryArtifacts identifiers"   '[.secondaryArtifacts[]?.artifactIdentifier] | join(",")' 'art2'
+assert_field "badge.badgeEnabled"               '.badge.badgeEnabled' 'true'
+# go-to-k/cdkd#2762: the UpdateProjectVisibility pair after CreateProject.
+assert_field "projectVisibility"               '.projectVisibility'      'PUBLIC_READ'
+ROLE_ARN_P1="$(project_field '.serviceRole')"
+assert_field "resourceAccessRole (the service role)" '.resourceAccessRole' "${ROLE_ARN_P1}"
+# Routing guard: the reads above prove the pair reached AWS, not which layer
+# sent it. Declaring either used to be refused pre-flight (no Cloud Control
+# route), so the SDK provider is the only layer that can have.
+PROVISIONED_BY_P1="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r \
+  '[.resources[] | select(.resourceType == "AWS::CodeBuild::Project") | .provisionedBy // "sdk"] | join(" ")')"
+if [ "${PROVISIONED_BY_P1}" != "sdk" ]; then
+  echo "FAIL: the project's routing layer is '${PROVISIONED_BY_P1}', expected 'sdk'" >&2
+  exit 1
+fi
+echo "    ok: provisionedBy = sdk"
 
 PROJECT_ARN_P1="$(project_field '.arn')"
 PROJECT_CREATED_P1="$(project_field '.created')"
+
+# go-to-k/cdkd#5492 scaffolding ids, read from THIS run's state so cleanup() can
+# sweep them by id and Phase 3 can assert each is gone. Every one must resolve:
+# an empty id would silently skip both the sweep and the gone-check.
+state_physical_id() { # usage: state_physical_id <resourceType>
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "$1" \
+    '[.resources[] | select(.resourceType == $t) | .physicalId] | if length == 1 then .[0] else "" end'
+}
+VPC_ID="$(state_physical_id 'AWS::EC2::VPC')"
+SUBNET_ID="$(state_physical_id 'AWS::EC2::Subnet')"
+SG_ID="$(state_physical_id 'AWS::EC2::SecurityGroup')"
+ARTIFACT_BUCKET="$(state_physical_id 'AWS::S3::Bucket')"
+case "${VPC_ID}" in vpc-?*) ;; *) echo "FAIL: state VPC id: expected one vpc- id, got '${VPC_ID}'" >&2; exit 1 ;; esac
+case "${SUBNET_ID}" in subnet-?*) ;; *) echo "FAIL: state subnet id: expected one subnet- id, got '${SUBNET_ID}'" >&2; exit 1 ;; esac
+case "${SG_ID}" in sg-?*) ;; *) echo "FAIL: state security group id: expected one sg- id, got '${SG_ID}'" >&2; exit 1 ;; esac
+if [ -z "${ARTIFACT_BUCKET}" ]; then
+  echo "FAIL: state secondary-artifact bucket: expected one bucket name, got none" >&2
+  exit 1
+fi
+# The project's live VPC config must point at the recorded scaffolding.
+assert_field "vpcConfig.vpcId is the recorded VPC" '.vpcConfig.vpcId' "${VPC_ID}"
+echo "    ok: scaffolding ids ${VPC_ID} ${SUBNET_ID} ${SG_ID} ${ARTIFACT_BUCKET}"
 
 # --- Phase 1b: issue #3887 recreate refusal ----------------------------
 # AWS::CodeBuild::Project has no Cloud Control handlers. `--recreate-via-cc-api`
@@ -266,7 +351,7 @@ fi
 echo "    ok: recreate refused, project intact (${PROJECT_ARN_P1B}, created ${PROJECT_CREATED_P1B})"
 
 # --- Phase 2: removal redeploy ---------------------------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops all eight)"
+echo "==> Phase 2: redeploy with CDKD_TEST_REMOVAL=true (drops the optional fields)"
 CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -278,6 +363,17 @@ echo "==> Phase 2: the ONE field CFn resets must be gone"
 # cdkd and invisible to the next `cdkd diff`. Post-fix the removal sends the
 # empty object and AWS nulls the block out.
 assert_field "buildBatchConfig cleared on removal" '.buildBatchConfig' 'null'
+# go-to-k/cdkd#2762: CloudFormation resets a removed Visibility to PRIVATE and
+# clears a removed ResourceAccessRole (CFn A/B); so must cdkd.
+assert_field "projectVisibility reset on removal" '.projectVisibility'  'PRIVATE'
+assert_field "resourceAccessRole cleared on removal" '.resourceAccessRole' 'null'
+# go-to-k/cdkd#1160: CloudFormation resets a removed EncryptionKey to the AWS
+# managed S3 key and removes every tag when Tags is removed (CFn A/B). Pre-fix,
+# UpdateProject merged both absent members and the old values stayed.
+assert_field "encryptionKey reset to the managed key on removal" \
+  '(.encryptionKey // "") | test(":alias/aws/s3$")' 'true'
+assert_field "user tags removed on removal" \
+  '[.tags[]? | select(.key | startswith("aws:") | not)] | length' '0'
 
 echo "==> Phase 2: the seven fields CFn RETAINS must be unchanged"
 # These are the CFn-parity pins. If a future change "fixes" them into resets,
@@ -289,6 +385,18 @@ assert_field "concurrentBuildLimit retained"   '.concurrentBuildLimit'   '2'
 assert_field "autoRetryLimit retained"         '.autoRetryLimit'         '3'
 assert_field "cache.type retained"             '.cache.type'             'LOCAL'
 assert_field "logsConfig retained"             '.logsConfig.cloudWatchLogs.status' 'DISABLED'
+
+echo "==> Phase 2: the six fields CFn KEEPS (go-to-k/cdkd#5492) must be unchanged"
+# CFn A/B: CloudFormation's UpdateProject omitted each removed member and the
+# live value stayed, so cdkd must send nothing for them either. A provider that
+# "fixed" any of them into a reset (an empty list, `badgeEnabled: false`) fails
+# here.
+assert_field "vpcConfig retained"               '.vpcConfig.vpcId' "${VPC_ID_P1}"
+assert_field "fileSystemLocations retained"     '[.fileSystemLocations[]?.identifier] | join(",")' 'efs1'
+assert_field "secondarySources retained"        '[.secondarySources[]?.sourceIdentifier] | join(",")' 'src2'
+assert_field "secondarySourceVersions retained" '[.secondarySourceVersions[]? | "\(.sourceIdentifier)=\(.sourceVersion)"] | join(",")' 'src2=refs/heads/main'
+assert_field "secondaryArtifacts retained"      '[.secondaryArtifacts[]?.artifactIdentifier] | join(",")' 'art2'
+assert_field "badge.badgeEnabled retained"      '.badge.badgeEnabled' 'true'
 
 # Replacement guard: the removal must be an in-place UPDATE. A same-name
 # replacement would delete and re-create the project, which would also clear
@@ -320,6 +428,16 @@ if [ "${NOT_FOUND_COUNT}" != "1" ]; then
   echo "FAIL: CodeBuild project ${PROJECT_NAME} survived destroy (projectsNotFound=${NOT_FOUND_COUNT})" >&2
   exit 1
 fi
+
+echo "==> Phase 3: assert the go-to-k/cdkd#5492 scaffolding is gone"
+assert_gone "VPC ${VPC_ID} survived destroy" \
+  aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
+assert_gone "subnet ${SUBNET_ID} survived destroy" \
+  aws ec2 describe-subnets --subnet-ids "${SUBNET_ID}" --region "${REGION}"
+assert_gone "security group ${SG_ID} survived destroy" \
+  aws ec2 describe-security-groups --group-ids "${SG_ID}" --region "${REGION}"
+assert_gone "secondary-artifact bucket ${ARTIFACT_BUCKET} survived destroy" \
+  aws s3api head-bucket --bucket "${ARTIFACT_BUCKET}"
 
 echo "==> Phase 3: assert state was removed"
 assert_gone "state file ${STATE_KEY} still exists after destroy" \

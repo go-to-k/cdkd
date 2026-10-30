@@ -243,7 +243,14 @@ describe("a nested child's revert under cdkd rollback --remove-protection (go-to
     let inner: unknown;
     vi.mocked(replayRollback).mockImplementationOnce(async () => {
       inner = getCurrentNestedStackContext()?.destroyOptions;
-      return { failures: 0, warnings: 0, skipped: 0, interrupted: false, orphaned: [] };
+      return {
+        failures: 0,
+        warnings: 0,
+        skipped: 0,
+        interrupted: false,
+        orphaned: [],
+        rolledBackCreates: [],
+      };
     });
     await harness(ROLLBACK_FLAGGED).revert();
     expect(inner).toEqual({ statePrefix: 'cdkd', removeProtection: true });

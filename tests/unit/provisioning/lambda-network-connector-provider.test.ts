@@ -47,6 +47,10 @@ vi.mock('../../../src/provisioning/providers/lambda-web-function-arns.js', async
 import { LambdaNetworkConnectorProvider } from '../../../src/provisioning/providers/lambda-network-connector-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { createdBeforeFailure } from '../../../src/provisioning/auxiliary-failure.js';
+import {
+  CreatedResourceSink,
+  collectCreatedResources,
+} from '../../../src/provisioning/created-resource-sink.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
 import { resetIdempotencyTokensForTests } from '../../../src/provisioning/providers/idempotency-token.js';
 
@@ -171,7 +175,7 @@ describe('LambdaNetworkConnectorProvider', () => {
       ])
     );
     const failed = await provider.create('Nc', TYPE, props).catch((e: unknown) => e);
-    expect(String(failed)).toContain('entered FAILED: The operator role does not have sufficient permissions');
+    expect(String(failed)).toContain('entered FAILED: Re-run with --verbose');
     expect(createdBeforeFailure(failed, 'Nc', TYPE)).toBe(ARN);
     expect(isMarkedNonRetryable(failed)).toBe(true);
     expect(callsOf(DeleteNetworkConnectorCommand)).toHaveLength(0);
@@ -235,6 +239,31 @@ describe('LambdaNetworkConnectorProvider', () => {
     ]);
   });
 
+  it('a Key-only tag is accepted on create and update and sent with an empty Value; a Key-less tag is refused', async () => {
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateNetworkConnectorCommand', [{ Arn: ARN, State: 'PENDING' }]],
+        ['GetNetworkConnectorCommand', [active]],
+        ['TagResourceCommand', [{}]],
+        ['UntagResourceCommand', [{}]],
+      ])
+    );
+    await provider.create('Nc', TYPE, { ...props, Tags: [{ Key: 'flag' }] });
+    expect(callsOf(CreateNetworkConnectorCommand)[0]!.input['Tags']).toEqual({ flag: '' });
+    await provider.update('Nc', ARN, TYPE, { ...props, Tags: [{ Key: 'flag' }] }, props);
+    expect(callsOf(UntagResourceCommand)[0]!.input).toEqual({ Resource: ARN, TagKeys: ['team'] });
+    expect(callsOf(TagResourceCommand)[0]!.input).toEqual({ Resource: ARN, Tags: { flag: '' } });
+
+    mockSend.mockClear();
+    sentBy.length = 0;
+    const bad = { ...props, Tags: [{ Value: 'x' }] };
+    await expect(provider.create('Nc', TYPE, bad)).rejects.toThrow(/Tags of .* is not a list of tags/);
+    await expect(provider.update('Nc', ARN, TYPE, bad, props)).rejects.toThrow(
+      /desired Tags of .* is not a list of tags/
+    );
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it('update fails when the connector update ends Failed', async () => {
     respond(
       new Map<string, unknown[]>([
@@ -244,7 +273,7 @@ describe('LambdaNetworkConnectorProvider', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow('update failed: bad sg');
+    ).rejects.toThrow('update failed: Re-run with --verbose');
   });
 
   it('update refuses a wrong-region client and a malformed configuration before any write', async () => {
@@ -276,7 +305,7 @@ describe('LambdaNetworkConnectorProvider', () => {
         ['GetNetworkConnectorCommand', [{ State: 'DELETE_FAILED', StateReason: 'in use' }]],
       ])
     );
-    await expect(provider.delete('Nc', ARN, TYPE)).rejects.toThrow('entered DELETE_FAILED: in use');
+    await expect(provider.delete('Nc', ARN, TYPE)).rejects.toThrow('entered DELETE_FAILED: Re-run with --verbose');
   });
 
   it('delete treats not-found as deleted in the expected region, and refuses it from another region', async () => {
@@ -394,7 +423,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow('entered FAILED: subnet gone');
+    ).rejects.toThrow('entered FAILED: Re-run with --verbose');
   });
 
   it('a config and tag change tags before the update puts the connector in progress', async () => {
@@ -427,7 +456,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow('entered DELETING: deleted elsewhere');
+    ).rejects.toThrow('entered DELETING: Re-run with --verbose');
     expect(callsOf(GetNetworkConnectorCommand)).toHaveLength(1);
   });
 
@@ -471,7 +500,7 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     );
     await expect(
       provider.update('Nc', ARN, TYPE, { ...props, OperatorRole: `${ROLE}2` }, props)
-    ).rejects.toThrow(`entered ${state}: why`);
+    ).rejects.toThrow(`entered ${state}: Re-run with --verbose`);
     expect(callsOf(GetNetworkConnectorCommand)).toHaveLength(1);
   });
 
@@ -508,5 +537,41 @@ describe('LambdaNetworkConnectorProvider — review round gaps', () => {
     await expect(provider.delete('Nc', ARN, TYPE)).rejects.toThrow(
       'Failed to delete Lambda network connector Nc: throttled'
     );
+  });
+});
+
+describe('LambdaNetworkConnectorProvider — created-resource sink (#5511)', () => {
+  const provider = new LambdaNetworkConnectorProvider();
+
+  it('reports the ARN before the settle wait', async () => {
+    const sink = new CreatedResourceSink('Nc', TYPE);
+    respond(
+      new Map<string, unknown[]>([
+        ['CreateNetworkConnectorCommand', [{ Arn: ARN }]],
+        ['GetNetworkConnectorCommand', [new Error('socket hang up')]],
+      ])
+    );
+    let atWait: unknown = 'not-called';
+    const impl = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (cmd: object) => {
+      if (cmd.constructor.name === 'GetNetworkConnectorCommand' && atWait === 'not-called') {
+        atWait = sink.report;
+      }
+      return impl(cmd);
+    });
+    await collectCreatedResources(sink, () => provider.create('Nc', TYPE, props)).catch(
+      () => undefined
+    );
+    expect(atWait).toEqual({ physicalId: ARN });
+    expect(sink.report).toEqual({ physicalId: ARN });
+  });
+
+  it('reports nothing when the create call fails before an ARN', async () => {
+    const sink = new CreatedResourceSink('Nc', TYPE);
+    respond(new Map<string, unknown[]>([['CreateNetworkConnectorCommand', [new Error('denied')]]]));
+    await collectCreatedResources(sink, () => provider.create('Nc', TYPE, props)).catch(
+      () => undefined
+    );
+    expect(sink.report).toBeUndefined();
   });
 });
