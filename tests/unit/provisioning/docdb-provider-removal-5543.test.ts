@@ -47,7 +47,10 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
-import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
+import {
+  DOCDB_CLUSTER_KEPT_ON_REMOVAL,
+  DocDBProvider,
+} from '../../../src/provisioning/providers/docdb-provider.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 
 const CLUSTER = 'AWS::DocDB::DBCluster';
@@ -60,6 +63,7 @@ const CLUSTER_PREVIOUS = {
   DBClusterParameterGroupName: 'custom-docdb50',
   BackupRetentionPeriod: 2,
 };
+/** The four #5543 measured; the list also holds the #5004 / #1160 keeps. */
 const CLUSTER_KEPT = [
   'EngineVersion',
   'PreferredBackupWindow',
@@ -141,6 +145,61 @@ describe('DocDBProvider removal of CloudFormation-kept properties (#5543)', () =
         [...provider.handledProperties.get(type)!].sort()
       );
     }
+  });
+
+  it('the cluster warning list holds every CloudFormation-measured keep', () => {
+    expect([...DOCDB_CLUSTER_KEPT_ON_REMOVAL].sort()).toEqual(
+      [...CLUSTER_KEPT, 'DeletionProtection', 'BackupRetentionPeriod', 'VpcSecurityGroupIds'].sort()
+    );
+  });
+
+  it('a removed DeletionProtection is warned about too (kept, #5004)', async () => {
+    await deployUpdate(
+      CLUSTER,
+      'my-cluster',
+      { BackupRetentionPeriod: 2 },
+      { BackupRetentionPeriod: 2, DeletionProtection: true }
+    );
+
+    expect(sentInput('ModifyDBClusterCommand')['DeletionProtection']).toBeUndefined();
+    expect(warnings()).toEqual([
+      expect.stringContaining('property DeletionProtection was removed from the template'),
+    ]);
+  });
+
+  it('a rollback revert says the failed deploy added the value, not that it was removed', async () => {
+    await new DocDBProvider().update(
+      'L',
+      'my-cluster',
+      CLUSTER,
+      { BackupRetentionPeriod: 2 },
+      { BackupRetentionPeriod: 2, EngineVersion: '5.0.0' },
+      { removedProperties: new Set(['EngineVersion']), replayingState: true }
+    );
+
+    expect(warnings()).toEqual([
+      expect.stringContaining(
+        'L (AWS::DocDB::DBCluster): property EngineVersion is absent from the state being restored; the rollback leaves the value the failed deploy applied in place'
+      ),
+    ]);
+    expect(warnings()[0]).not.toContain('removed from the template');
+  });
+
+  it('does not warn when the update fails after the Modify call', async () => {
+    routeDbSends();
+    const base = dbSend.getMockImplementation()!;
+    dbSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'DescribeDBClustersCommand') {
+        throw Object.assign(new Error('boom'), { name: 'InternalFailure' });
+      }
+      return base(command);
+    });
+
+    await expect(
+      deployUpdate(CLUSTER, 'my-cluster', { BackupRetentionPeriod: 2 }, CLUSTER_PREVIOUS)
+    ).rejects.toThrow();
+    expect(sentInput('ModifyDBClusterCommand')).toBeDefined();
+    expect(warnings()).toEqual([]);
   });
 
   it('a removed cluster EngineVersion / windows / parameter group sends nothing and is warned about once', async () => {

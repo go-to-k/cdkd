@@ -12,7 +12,10 @@ import {
 import { FSxFileSystemProvider } from '../../../src/provisioning/providers/fsx-filesystem-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
-import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
+import {
+  DOCDB_CLUSTER_KEPT_ON_REMOVAL,
+  DocDBProvider,
+} from '../../../src/provisioning/providers/docdb-provider.js';
 import { DocDBSubnetGroupProvider } from '../../../src/provisioning/providers/docdb-subnet-group-provider.js';
 
 /**
@@ -824,7 +827,7 @@ const DOCDB_CLUSTER_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:cluster:${DOCDB_CLUS
  * poll and the tag diff has an ARN. An update that SENDS a new Port or group
  * list is answered as applied (the value the ModifyDBCluster just carried),
  * so `waitForClusterPortApplied` / `waitForSecurityGroupsApplied`
- * (${DOCDB_SRC}:1338-1404) settle on their first poll too. No member instances, so
+ * (docdb-provider.ts) settle on their first poll too. No member instances, so
  * the member waits have nothing to poll.
  */
 function docdbArmCluster(_physicalId: string, bag: Bag): void {
@@ -899,34 +902,20 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...Object.fromEntries(
-          [
-            'EngineVersion',
-            'DBClusterParameterGroupName',
-            'PreferredBackupWindow',
-            'PreferredMaintenanceWindow',
-          ].map((key) => [
+          DOCDB_CLUSTER_KEPT_ON_REMOVAL.map((key) => [
             `update-remove:${key}`,
             kept(
-              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
             ),
           ])
         ),
         'update-remove:MasterUserPassword': kept(
-          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC}:60-65, 582-583)`
-        ),
-        'update-remove:DeletionProtection': kept(
-          `and CloudFormation keeps the live value too (CFn A/B, #5004, ${DOCDB_SRC}:244-250, 596-599)`
-        ),
-        'update-remove:BackupRetentionPeriod': kept(
-          `and CloudFormation keeps the live value too (CFn A/B, #5004, ${DOCDB_SRC}:244-250, 596-603)`
-        ),
-        'update-remove:VpcSecurityGroupIds': kept(
-          `and CloudFormation keeps a DocDB cluster's groups on removal too (CFn A/B, #1160, ${DOCDB_SRC}:584-588)`
+          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
         ),
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VpcSecurityGroupIds.${i}`,
-            `the desired group list is sent whole from next (${DOCDB_SRC}:564-565, 611), so a dropped element reaches the wire through next, which update-add observes`,
+            `the desired group list is sent whole from next (${DOCDB_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
           ])
         ),
       },
@@ -976,9 +965,9 @@ const DOCDB_INSTANCE_CASE: TypeCase = {
         Tags: fresh(DOCDB_TAGS),
       },
       expectedSilent: {
-        'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC}:1006)`,
+        'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC} updateDBInstance)`,
         'update-remove:PreferredMaintenanceWindow': `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`,
-        'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC}:990-996)`,
+        'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC} updateDBInstance)`,
       },
       expectedRemovalThrows: TAG_REFUSALS,
     },
