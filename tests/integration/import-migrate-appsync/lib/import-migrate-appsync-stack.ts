@@ -47,5 +47,13 @@ export class ImportMigrateAppSyncStack extends cdk.Stack {
     });
     pin(resolver, 'Res');
     resolver.addDependency(schema);
+
+    // Issue #5540: CloudFormation's values are the oracle for cdkd's. The
+    // run captures these from `cdk deploy` and compares cdkd's after the
+    // migrate: the API key's `Arn` / `Ref` (`.../apikeys/<id>`) and the
+    // schema's `Ref` (`<apiId>GraphQLSchema`).
+    new cdk.CfnOutput(this, 'KeyArn', { value: key.attrArn });
+    new cdk.CfnOutput(this, 'KeyRef', { value: key.ref });
+    new cdk.CfnOutput(this, 'SchemaRef', { value: schema.ref });
   }
 }

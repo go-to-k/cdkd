@@ -17,6 +17,8 @@
 #   6. `cdkd drift --json`: nothing drifted or deleted, and the API, schema and
 #      data source were compared clean.
 #   7. `cdkd deploy` (no template change): nothing updated.
+#   7b. cdkd's stack outputs (the API key's `Arn` / `Ref`, the schema's `Ref`)
+#       equal what CloudFormation resolved in step 3 (issue #5540).
 #   8. `cdkd destroy --force`; gone-probes for the API and the state.
 set -euo pipefail
 
@@ -159,6 +161,9 @@ if [ "$(awk '$1 == "Schema" { print $2 }' "${WORK}/cfn-ids.txt")" != "${API_ID}G
   echo "[verify] FAIL: premise — expected ${API_ID}GraphQLSchema as the schema's CloudFormation id"
   exit 1
 fi
+# The oracle for step 7b: the values CloudFormation ITSELF resolved (#5540).
+aws cloudformation describe-stacks --stack-name "${STACK}" --region "${REGION}" \
+  --query 'Stacks[0].Outputs' --output json > "${WORK}/cfn-outputs.json"
 echo "[verify] step 3 ok: api=${API_ID} key=${KEY_ID}"
 
 echo "[verify] step 4: cdkd import --migrate-from-cloudformation"
@@ -236,6 +241,24 @@ for line in 'Created: 0' 'Updated: 0' 'Deleted: 0' 'Unchanged: 5'; do
   fi
 done
 echo "[verify] step 7 ok"
+
+echo "[verify] step 7b: cdkd's outputs equal CloudFormation's (issue #5540)"
+aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK}/state-after-deploy.json" --region "${REGION}" >/dev/null
+python3 - "${WORK}/cfn-outputs.json" "${WORK}/state-after-deploy.json" <<'PY'
+import json, sys
+cfn = {o["OutputKey"]: o["OutputValue"] for o in json.load(open(sys.argv[1])) or []}
+cdkd = json.load(open(sys.argv[2])).get("outputs") or {}
+keys = ["KeyArn", "KeyRef", "SchemaRef"]
+missing = [k for k in keys if not cfn.get(k)]
+if missing:
+    print(f"[verify] FAIL: CloudFormation reported no value for {missing}")
+    sys.exit(1)
+bad = [f"{k}: cdkd {cdkd.get(k)!r}, CloudFormation {cfn[k]!r}" for k in keys if cdkd.get(k) != cfn[k]]
+if bad:
+    print("[verify] FAIL:\n  " + "\n  ".join(bad))
+    sys.exit(1)
+print("[verify] step 7b ok: " + ", ".join(f"{k}={cfn[k]}" for k in keys))
+PY
 
 echo "[verify] step 8: cdkd destroy --force"
 (cd "${TEST_DIR}" && ${CLI} destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --force)

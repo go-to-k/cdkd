@@ -192,8 +192,8 @@ const CFN_APPSYNC_ARN_RESOURCE_PATHS: Readonly<Record<string, RegExp>> = {
   'AWS::AppSync::GraphQLApi': /^apis\/([^/|]+)$/,
   'AWS::AppSync::DataSource': /^apis\/([^/|]+)\/datasources\/([^/|]+)$/,
   'AWS::AppSync::Resolver': /^apis\/([^/|]+)\/types\/([^/|]+)\/resolvers\/([^/|]+)$/,
-  // CloudFormation writes `apikeys/`; the ARN AppSync documents (and cdkd
-  // builds) says `apikey/`.
+  // CloudFormation writes `apikeys/` (as cdkd builds since #5540); the ARN
+  // AppSync documents says `apikey/`.
   'AWS::AppSync::ApiKey': /^apis\/([^/|]+)\/apikeys?\/([^/|]+)$/,
 };
 
@@ -607,7 +607,7 @@ export class AppSyncProvider implements ResourceProvider {
     }
     if (resourceType === 'AWS::AppSync::ApiKey' && parts.length === 2) {
       const [apiId, apiKeyId] = parts as [string, string];
-      const apiKeyArn = await arn(`apis/${apiId}/apikey/${apiKeyId}`);
+      const apiKeyArn = await arn(`apis/${apiId}/apikeys/${apiKeyId}`);
       return { ApiKey: apiKeyId, ...(apiKeyArn && { Arn: apiKeyArn }) };
     }
     return undefined;
@@ -3876,7 +3876,7 @@ export class AppSyncProvider implements ResourceProvider {
     // Always rebuilt — `CreateApiKey` reports no ARN at all — so this is the
     // arm most exposed to the post-create throw described in `createDataSource`.
     const apiKeyArn = await this.buildAppSyncArnOrWarn(
-      `apis/${apiId}/apikey/${apiKeyId}`,
+      `apis/${apiId}/apikeys/${apiKeyId}`,
       logicalId,
       physicalId
     );
@@ -3885,13 +3885,12 @@ export class AppSyncProvider implements ResourceProvider {
       physicalId,
       attributes: {
         ApiKey: apiKeyId,
-        // CFn's `Ref` for this type returns the API key ARN, documented as
-        // `arn:aws:appsync:us-east-1:123456789012:apis/graphqlapiid/apikey/apikeya1bzhi`
-        // (docs-verified 2026-08-12) — note the segment is SINGULAR `apikey`.
+        // CFn's `Ref` and `Fn::GetAtt Arn` for this type return the API key
+        // ARN with the PLURAL segment, `.../apis/<apiId>/apikeys/<keyId>`
+        // (measured on a live stack, issue #5540). The CFn docs print the
+        // singular `apikey`, which #1681 followed; the measurement wins.
         // Unlike its DataSource / Resolver siblings, `CreateApiKey` reports no
-        // ARN at all, so this one must be reconstructed. The pre-#1681 value
-        // was wrong twice over: a literal `*:*` for region / account, and the
-        // plural `apikeys`.
+        // ARN at all, so this one must be reconstructed.
         ...(apiKeyArn !== undefined && { Arn: apiKeyArn }),
       },
     };
