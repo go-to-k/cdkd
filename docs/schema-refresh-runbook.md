@@ -243,7 +243,7 @@ through.
 | `audit:sdk-attr-coverage:check` | A new read-only `*Arn` / `*Url` on a type that had none, which a cross-resource `Fn::GetAtt` cannot resolve |
 | `audit:enrichment-coverage:check` | A new computed attribute on a Cloud-Control type that nothing populates on read |
 | `fixture-consumer-tests` | A unit test asserting something about a specific type's schema no longer matches the capture |
-| `sdk-wire-coverage` | A new nested key under a top-level an SDK provider handles, which no wire bag carries yet (the section lists the paths) |
+| `sdk-wire-coverage` | A new nested key under a top-level an SDK provider handles, which no wire bag carries yet (the section lists the paths); or a changed `type` / `enum` that a wire bag's value no longer matches |
 
 A fourth section, **"Fixtures this report could not read"**, means the
 comparison itself failed for those types — neither their removals nor their
