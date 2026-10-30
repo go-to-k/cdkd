@@ -6,8 +6,10 @@ import {
   UpdateTableCommand,
 } from '@aws-sdk/client-dynamodb';
 
-const { mockSend, warnSpy } = vi.hoisted(() => ({
+const { mockSend, regionalSend, mockAutoScalingSend, warnSpy } = vi.hoisted(() => ({
   mockSend: vi.fn(),
+  regionalSend: vi.fn(),
+  mockAutoScalingSend: vi.fn(),
   warnSpy: vi.fn(),
 }));
 
@@ -19,15 +21,28 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 
 // Issue #4639: `CreateTable` goes through a dedicated client built in the
 // shared client's region. Route that one to the shared double, so `mockSend`
-// still sees every call; any other region keeps the real class.
+// still sees every call. Any other region is a dropped replica's own table
+// (go-to-k/cdkd#5581 reads it there): `regionalSend`, which reads it gone, so
+// no case reaches real AWS.
 vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aws-sdk/client-dynamodb')>();
   const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
   return {
     ...actual,
     DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) =>
-      cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : new actual.DynamoDBClient(cfg ?? {})
+      cfg?.region === 'us-east-1'
+        ? getAwsClients().dynamoDB
+        : { send: regionalSend, config: { region: () => Promise.resolve(cfg?.region ?? '') } }
     ),
+  };
+});
+vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
+  return {
+    ...actual,
+    ApplicationAutoScalingClient: vi
+      .fn()
+      .mockImplementation(() => ({ send: mockAutoScalingSend })),
   };
 });
 
@@ -61,6 +76,12 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
   beforeEach(() => {
     mockSend.mockReset();
     warnSpy.mockReset();
+    regionalSend.mockReset();
+    regionalSend.mockRejectedValue(
+      new ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} })
+    );
+    mockAutoScalingSend.mockReset();
+    mockAutoScalingSend.mockResolvedValue({ ScalableTargets: [] });
     provider = new DynamoDBGlobalTableProvider();
   });
 
@@ -228,6 +249,67 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
     const finalDelete = mockSend.mock.calls.findIndex((c) => c[0] instanceof DeleteTableCommand);
     expect(lastReplicaDelete).toBeGreaterThan(-1);
     expect(finalDelete).toBeGreaterThan(lastReplicaDelete);
+  });
+
+  it("deregisters the dropped replica's leftover scalable targets in its region after the drop (go-to-k/cdkd#5581)", async () => {
+    // Same shape as the case above: eu-west-1 was added, ap-south-1's add
+    // failed, and the cleanup drops eu-west-1. DynamoDB registered targets for
+    // the eu-west-1 replica table when it was added; they outlive the drop.
+    mockSend.mockResolvedValueOnce({}); // CreateTable
+    mockSend.mockResolvedValueOnce({
+      Table: { TableName: 'my-test-table-xxx', TableStatus: 'ACTIVE', TableArn: 'a' },
+    });
+    mockSend.mockResolvedValueOnce({}); // UpdateTable Create eu-west-1
+    mockSend.mockResolvedValueOnce({
+      Table: { Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] },
+    });
+    mockSend.mockRejectedValueOnce(new Error('UpdateTable replica ap-south-1 boom'));
+    mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'eu-west-1' }] } });
+    mockSend.mockResolvedValueOnce({}); // UpdateTable Delete eu-west-1
+    mockSend.mockRejectedValueOnce(
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+    ); // waitForReplicaGone
+    mockSend.mockResolvedValueOnce({}); // DeleteTable
+    mockAutoScalingSend.mockImplementation(async (command: { constructor: { name: string } }) =>
+      command.constructor.name === 'DescribeScalableTargetsCommand'
+        ? {
+            ScalableTargets: [
+              {
+                ResourceId: 'table/my-test-table-xxx',
+                ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+              },
+            ],
+          }
+        : {}
+    );
+
+    await expect(
+      provider.create('MyTable', RESOURCE_TYPE, {
+        ...baseProps,
+        StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+        Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }, { Region: 'ap-south-1' }],
+      })
+    ).rejects.toThrow('Failed to create DynamoDB GlobalTable');
+
+    const deregisterIdx = mockAutoScalingSend.mock.calls.findIndex(
+      (c) => c[0].constructor.name === 'DeregisterScalableTargetCommand'
+    );
+    expect(deregisterIdx).toBeGreaterThan(-1);
+    expect(mockAutoScalingSend.mock.calls[deregisterIdx]![0].input).toEqual({
+      ServiceNamespace: 'dynamodb',
+      ResourceId: 'table/my-test-table-xxx',
+      ScalableDimension: 'dynamodb:table:WriteCapacityUnits',
+    });
+    const dropIdx = mockSend.mock.calls.findIndex(
+      (c) =>
+        c[0] instanceof UpdateTableCommand &&
+        (c[0].input.ReplicaUpdates?.[0] as { Delete?: unknown } | undefined)?.Delete !== undefined
+    );
+    expect(mockAutoScalingSend.mock.invocationCallOrder[deregisterIdx]).toBeGreaterThan(
+      mockSend.mock.invocationCallOrder[dropIdx]!
+    );
+    // The replica's own table was read in ITS region before anything went.
+    expect(regionalSend).toHaveBeenCalledTimes(1);
   });
 
   it('replica-drop cleanup-itself-fails: original wiring error propagates AND recovery WARN fires (Issue #389 item #4)', async () => {

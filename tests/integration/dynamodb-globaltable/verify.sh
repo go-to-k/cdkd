@@ -94,6 +94,11 @@
 #     12b-e  main table (PROVISIONED): add a replica carrying its own
 #            ReadProvisionedThroughputSettings, assert the resulting
 #            ProvisionedThroughputOverride, then remove the replica.
+#            go-to-k/cdkd#5581: 12c-7 waits for the WRITE scalable target
+#            DynamoDB registers for the replica's table in eu-west-1, and
+#            12e0 (after the removal) asserts none is left. 16a4 re-checks
+#            both tables after destroy as a safety net only: no table reaches
+#            the destroy with an autoscaled eu-west-1 replica.
 #     12e1-4 OnDemandReplicaTable (PAY_PER_REQUEST): add a replica with an
 #            on-demand ceiling, CHANGE it, then DROP it — the last asserting
 #            the live value is UNCHANGED and cdkd warned, since AWS offers
@@ -769,6 +774,35 @@ echo "[verify] step 12a (Issue #1419): assert the LOCAL replica's read dimension
 assert_scalable_target "table/${TABLE_NAME}" dynamodb:table:ReadCapacityUnits 5 50 \
   "step 12a local replica read autoscaling"
 
+# go-to-k/cdkd#5581: every dynamodb scalable target registered in $1 for table
+# $2 or one of its indexes, one "<ResourceId> <ScalableDimension>" per line.
+# Adding a replica to the autoscaled HistoryTable makes DynamoDB itself
+# (`replication.dynamodb.amazonaws.com`) register targets for the replica's
+# table in the replica's region, the WRITE dimension included; removing the
+# replica used to deregister only the read one. A filter projection, never
+# `length(...)`, which the CLI evaluates per PAGE. Tail-less: a failed list is
+# the function's own non-zero status, never an empty "nothing registered".
+replica_region_targets() { # $1 = region, $2 = table name
+  aws application-autoscaling describe-scalable-targets \
+    --service-namespace dynamodb \
+    --region "$1" \
+    --query "ScalableTargets[?ResourceId=='table/$2' || starts_with(ResourceId, 'table/$2/index/')].[ResourceId, ScalableDimension]" \
+    --output text
+}
+assert_no_replica_region_targets() { # $1 = region, $2 = table name, $3 = label
+  local left
+  left="$(replica_region_targets "$1" "$2")" || {
+    echo "[verify] FAIL (#5581) $3: could not list the scalable targets in $1" >&2
+    exit 1
+  }
+  if [ -n "${left}" ]; then
+    echo "[verify] FAIL (#5581) $3: scalable target(s) for table/$2 survived in $1 (the removed replica's table is gone):" >&2
+    echo "${left}" >&2
+    exit 1
+  fi
+  echo "[verify] $3 ok (#5581): no scalable target for table/$2 left in $1"
+}
+
 # Item D — opt-in cross-region replica round-trip. Guarded behind
 # CDKD_INTEG_MULTI_REGION=1 because the wall-clock + cost is large.
 if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
@@ -1058,6 +1092,29 @@ for logical_id, resource in json.load(sys.stdin).get("resources", {}).items():
   fi
   echo "[verify] step 12c-6 ok: eu-west-1 replica DeletionProtectionEnabled = False"
 
+  # go-to-k/cdkd#5581 vacuity guard: step 12e0's "no target left" proves the
+  # removal deregistered the replica's WRITE target only if one was there to
+  # begin with. No cdkd call registers it — DynamoDB does, when the replica is
+  # added — so wait for it (registration can trail the replica's ACTIVE).
+  echo "[verify] step 12c-7 (#5581): the eu-west-1 replica table has a WriteCapacityUnits scalable target before its removal"
+  EU_WRITE_TARGET=""
+  for _ in $(seq 1 18); do
+    # Captured on its own: a FAILED list is a failure here, never "no target
+    # yet" (which would end in a misleading verdict after the whole wait).
+    EU_TARGETS="$(replica_region_targets eu-west-1 "${TABLE_NAME}")" || {
+      echo "[verify] FAIL (#5581) step 12c-7: could not list the scalable targets in eu-west-1" >&2
+      exit 1
+    }
+    EU_WRITE_TARGET="$(printf '%s\n' "${EU_TARGETS}" | grep -F 'dynamodb:table:WriteCapacityUnits' || true)"
+    [ -n "${EU_WRITE_TARGET}" ] && break
+    sleep 10
+  done
+  if [ -z "${EU_WRITE_TARGET}" ]; then
+    echo "[verify] FAIL (#5581): no dynamodb:table:WriteCapacityUnits target for table/${TABLE_NAME} in eu-west-1 after ~3 min, so step 12e0 could not tell a fixed removal from a broken one (did DynamoDB stop registering replica write targets?)" >&2
+    exit 1
+  fi
+  echo "[verify] step 12c-7 ok: ${EU_WRITE_TARGET}"
+
   echo "[verify] step 12d: remove the eu-west-1 replica"
   CDKD_TEST_UPDATE=deletion-protection,autoscaling ${CLI} deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --verbose
 
@@ -1098,6 +1155,11 @@ for logical_id, resource in json.load(sys.stdin).get("resources", {}).items():
     exit 1
   fi
   echo "[verify] step 12e ok: eu-west-1 replica removed (DescribeTable returns RNF)"
+
+  # go-to-k/cdkd#5581: before the fix the removal deregistered only the READ
+  # target, and the write target step 12c-7 saw outlived the replica.
+  echo "[verify] step 12e0 (#5581): the removed replica left no scalable target in eu-west-1"
+  assert_no_replica_region_targets eu-west-1 "${TABLE_NAME}" "step 12e0"
 
   # ─── Issue #1512: the ON-DEMAND replica throughput override ────────────
   #
@@ -2510,6 +2572,16 @@ if [ "${CDKD_INTEG_MULTI_REGION:-0}" = "1" ]; then
     exit 1
   fi
   echo "[verify] step 16a3 ok: no cross-region orphan left behind"
+
+  # go-to-k/cdkd#5581: a SAFETY NET, not the delete path's proof. Neither
+  # table that ever had an eu-west-1 replica may leave a scalable target there
+  # once destroyed, but by now HistoryTable's replica was removed at 12d (12e0
+  # already asserted that) and OnDemandReplicaTable is PAY_PER_REQUEST, so
+  # neither reaches `delete()`'s replica sweep with a target to remove. That
+  # call site is covered by unit tests only.
+  echo "[verify] step 16a4 (#5581): no scalable target for a destroyed table survives in eu-west-1"
+  assert_no_replica_region_targets eu-west-1 "${TABLE_NAME}" "step 16a4"
+  assert_no_replica_region_targets eu-west-1 "${OD_REPLICA_TABLE}" "step 16a4"
 fi
 
 echo "[verify] step 16a2 (Issue #1419): assert the per-INDEX scalable target did not survive destroy"

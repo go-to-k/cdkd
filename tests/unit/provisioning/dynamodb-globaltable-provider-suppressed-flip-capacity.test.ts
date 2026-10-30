@@ -17,6 +17,36 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
   }),
 }));
 
+// go-to-k/cdkd#5581: a removed replica's table is read in ITS region, and its
+// leftover scalable targets listed there. Doubles for both, so no case reaches
+// real AWS: the replica's table reads gone, and nothing is left registered.
+vi.mock('@aws-sdk/client-dynamodb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-dynamodb')>();
+  const { getAwsClients } = await import('../../../src/utils/aws-clients.js');
+  const goneReplica = {
+    send: () =>
+      Promise.reject(
+        new actual.ResourceNotFoundException({ message: 'Requested resource not found', $metadata: {} })
+      ),
+    config: { region: () => Promise.resolve('eu-west-1') },
+  };
+  return {
+    ...actual,
+    DynamoDBClient: vi.fn().mockImplementation((cfg: { region?: string } | undefined) =>
+      cfg?.region === 'us-east-1' ? getAwsClients().dynamoDB : goneReplica
+    ),
+  };
+});
+vi.mock('@aws-sdk/client-application-auto-scaling', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@aws-sdk/client-application-auto-scaling')>();
+  return {
+    ...actual,
+    ApplicationAutoScalingClient: vi
+      .fn()
+      .mockImplementation(() => ({ send: () => Promise.resolve({ ScalableTargets: [] }) })),
+  };
+});
+
 vi.mock('../../../src/utils/logger.js', () => {
   childLogger.child.mockReturnValue(childLogger);
   return {
