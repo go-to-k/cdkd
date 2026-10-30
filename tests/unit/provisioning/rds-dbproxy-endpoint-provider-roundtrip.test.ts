@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { RDSDBProxyEndpointProvider } from '../../../src/provisioning/providers/rds-dbproxy-endpoint-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxyEndpoint';
 const EP_NAME = 'MyEndpoint';
@@ -56,6 +57,7 @@ describe('RDSDBProxyEndpointProvider', () => {
       expect(Array.from(handled!).sort()).toEqual([
         'DBProxyEndpointName',
         'DBProxyName',
+        'EndpointNetworkType',
         'Tags',
         'TargetRole',
         'VpcSecurityGroupIds',
@@ -96,6 +98,28 @@ describe('RDSDBProxyEndpointProvider', () => {
       });
       expect(mockSend.mock.calls[0]![0].constructor.name).toBe('CreateDBProxyEndpointCommand');
       expect(mockSend.mock.calls[1]![0].constructor.name).toBe('DescribeDBProxyEndpointsCommand');
+      // Nothing declared, nothing sent: AWS picks its default network type.
+      expect(mockSend.mock.calls[0]![0].input.EndpointNetworkType).toBeUndefined();
+    });
+
+    // go-to-k/cdkd#2762: a declared EndpointNetworkType reaches
+    // CreateDBProxyEndpoint, so the type stays on the SDK route.
+    it('sends a declared EndpointNetworkType on CreateDBProxyEndpoint', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxyEndpoint: { DBProxyEndpointName: EP_NAME } })
+        .mockResolvedValueOnce({
+          DBProxyEndpoints: [
+            {
+              DBProxyEndpointName: EP_NAME,
+              DBProxyEndpointArn: EP_ARN,
+              Endpoint: EP_HOST,
+              Status: 'available',
+            },
+          ],
+        });
+      await provider.create('EP', RESOURCE_TYPE, { ...validProps, EndpointNetworkType: 'DUAL' });
+      expect(mockSend.mock.calls[0]![0].constructor.name).toBe('CreateDBProxyEndpointCommand');
+      expect(mockSend.mock.calls[0]![0].input.EndpointNetworkType).toBe('DUAL');
     });
 
     it('rejects when DBProxyName is missing', async () => {
@@ -148,6 +172,31 @@ describe('RDSDBProxyEndpointProvider', () => {
         )
       ).rejects.toThrow(/TargetRole is immutable/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // go-to-k/cdkd#2762: create-only in the CFn schema, and ModifyDBProxyEndpoint
+    // takes no such member, so a change is refused before any call.
+    it('rejects when EndpointNetworkType differs (immutable)', async () => {
+      await expect(
+        provider.update(
+          'EP',
+          EP_NAME,
+          RESOURCE_TYPE,
+          { EndpointNetworkType: 'DUAL' },
+          { EndpointNetworkType: 'IPV4' }
+        )
+      ).rejects.toThrow(/EndpointNetworkType is immutable/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    // The engine replaces on the change before update() is reached; the rule
+    // names the key, so no DescribeType answer is needed for that.
+    it('classifies an EndpointNetworkType change as a replacement', () => {
+      const registry = new ReplacementRulesRegistry();
+      expect(registry.isClassified(RESOURCE_TYPE, 'EndpointNetworkType')).toBe(true);
+      expect(registry.requiresReplacement(RESOURCE_TYPE, 'EndpointNetworkType', 'IPV4', 'DUAL')).toBe(
+        true
+      );
     });
 
     it('rejects when VpcSubnetIds differs (immutable)', async () => {
@@ -417,6 +466,7 @@ describe('RDSDBProxyEndpointProvider', () => {
               VpcSubnetIds: ['subnet-aaa', 'subnet-bbb'],
               VpcSecurityGroupIds: ['sg-aaa'],
               TargetRole: 'READ_ONLY',
+              EndpointNetworkType: 'DUAL',
             },
           ],
         })
@@ -428,6 +478,7 @@ describe('RDSDBProxyEndpointProvider', () => {
         VpcSubnetIds: ['subnet-aaa', 'subnet-bbb'],
         VpcSecurityGroupIds: ['sg-aaa'],
         TargetRole: 'READ_ONLY',
+        EndpointNetworkType: 'DUAL',
         Tags: [{ Key: 'env', Value: 'prod' }],
       });
     });
@@ -446,6 +497,8 @@ describe('RDSDBProxyEndpointProvider', () => {
         .mockResolvedValueOnce({ TagList: [] });
       const result = await provider.readCurrentState(EP_NAME);
       expect((result as Record<string, unknown> | undefined)?.['TargetRole']).toBe('READ_WRITE');
+      // No value AWS did not report is invented for EndpointNetworkType.
+      expect(result).not.toHaveProperty('EndpointNetworkType');
     });
 
     it('returns RESOURCE_NOT_FOUND when the endpoint is gone', async () => {

@@ -10,6 +10,7 @@ import {
   DBProxyEndpointNotFoundFault,
   DBProxyNotFoundFault,
   type DBProxyEndpointTargetRole,
+  type EndpointNetworkType,
   type Tag,
 } from '@aws-sdk/client-rds';
 import { getLogger } from '../../utils/logger.js';
@@ -83,7 +84,9 @@ const POLL_TIMEOUT_MS = 30 * 60 * 1000;
  *   (`VpcSecurityGroupIds` → SDK input `VpcSecurityGroupIds`,
  *   `NewDBProxyEndpointName` via rename). Tags diff via separate
  *   `AddTagsToResource` / `RemoveTagsFromResource` calls. DBProxyName /
- *   VpcSubnetIds / TargetRole are immutable on AWS.
+ *   VpcSubnetIds / TargetRole / EndpointNetworkType are immutable on AWS
+ *   (`EndpointNetworkType` is create-only in the CFn schema and
+ *   `ModifyDBProxyEndpoint` has no such member; go-to-k/cdkd#2762).
  * - `delete`: `DeleteDBProxyEndpointCommand`, then polls until
  *   `DBProxyEndpointNotFoundFault`. Idempotent on NotFound (region-match
  *   gated). `DBProxyNotFoundFault` also idempotent — if the parent DBProxy
@@ -112,6 +115,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
         'VpcSubnetIds',
         'VpcSecurityGroupIds',
         'TargetRole',
+        'EndpointNetworkType',
         'Tags',
       ]),
     ],
@@ -202,6 +206,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
           VpcSubnetIds: vpcSubnetIds,
           VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
           TargetRole: properties['TargetRole'] as DBProxyEndpointTargetRole | undefined,
+          EndpointNetworkType: properties['EndpointNetworkType'] as EndpointNetworkType | undefined,
           Tags: tags.length > 0 ? tags : undefined,
         })
       );
@@ -336,7 +341,13 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     // recorded as its `{{resolve:...}}` reference and handed here resolved,
     // which is no change; the physical id IS the endpoint name
     // (go-to-k/cdkd#4275).
-    for (const field of ['DBProxyName', 'DBProxyEndpointName', 'VpcSubnetIds', 'TargetRole']) {
+    for (const field of [
+      'DBProxyName',
+      'DBProxyEndpointName',
+      'VpcSubnetIds',
+      'TargetRole',
+      'EndpointNetworkType',
+    ]) {
       if (
         JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field]) &&
         !(await unchangedBehindSecretReference({
@@ -357,8 +368,8 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
     }
 
     // AWS only allows VpcSecurityGroupIds + NewDBProxyEndpointName on
-    // ModifyDBProxyEndpoint. TargetRole / VpcSubnetIds / DBProxyName are
-    // immutable (rejected above).
+    // ModifyDBProxyEndpoint. TargetRole / VpcSubnetIds / DBProxyName /
+    // EndpointNetworkType are immutable (rejected above).
     const oldSG = (previousProperties['VpcSecurityGroupIds'] as string[]) ?? [];
     const newSG = (properties['VpcSecurityGroupIds'] as string[]) ?? [];
     if (JSON.stringify(oldSG) !== JSON.stringify(newSG)) {
@@ -543,6 +554,7 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       VpcSubnetIds?: string[];
       VpcSecurityGroupIds?: string[];
       TargetRole?: string;
+      EndpointNetworkType?: string;
     };
     const result: Record<string, unknown> = {
       DBProxyEndpointName: e.DBProxyEndpointName,
@@ -550,6 +562,10 @@ export class RDSDBProxyEndpointProvider implements ResourceProvider {
       VpcSubnetIds: e.VpcSubnetIds ?? [],
       VpcSecurityGroupIds: e.VpcSecurityGroupIds ?? [],
       TargetRole: e.TargetRole ?? 'READ_WRITE',
+      // Omitted when AWS reports none: the drift comparator ignores a key
+      // state does not hold, and an endpoint created without the property
+      // records none (go-to-k/cdkd#2762).
+      ...(e.EndpointNetworkType !== undefined && { EndpointNetworkType: e.EndpointNetworkType }),
     };
 
     if (e.DBProxyEndpointArn) {

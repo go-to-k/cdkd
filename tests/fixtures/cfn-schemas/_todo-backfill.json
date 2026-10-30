@@ -257,9 +257,6 @@
       "EndpointNetworkType",
       "TargetConnectionNetworkType"
     ],
-    "AWS::RDS::DBProxyEndpoint": [
-      "EndpointNetworkType"
-    ],
     "AWS::S3::Bucket": [
       "AbacStatus",
       "BucketNamePrefix",
