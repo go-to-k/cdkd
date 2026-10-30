@@ -36,6 +36,11 @@
 # reset. Phase 2 asserts all three are STILL live via DescribeDBInstances;
 # protection is retained, so the phase-3 destroy passes --remove-protection.
 #
+# #5542 (removal RESETS, as CloudFormation does): phase 2 also DROPS
+# VPCSecurityGroups. A real CloudFormation A/B (#5542) showed CFn sends the
+# VPC's `default` security group on that removal, so phase 2 asserts the
+# instance ends up on exactly that group, no longer on the custom one.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -378,8 +383,26 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
-# --- Phase 2: UPDATE pass (#5004 removal keeps the value) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval, move Port 5433 -> 5434; all three must be KEPT)"
+# #5542 premise: the VPC's `default` group, which the phase-2 removal of
+# VPCSecurityGroups must attach. Resolved through the instance's own subnet
+# group VPC, and it must differ from the custom group phase 1 asserted.
+INSTANCE_VPC=$(echo "${INSTANCE}" | jq -r '.DBSubnetGroup.VpcId // ""')
+if [ -z "${INSTANCE_VPC}" ]; then
+  echo "FAIL: #5542 premise: DescribeDBInstances reports no DBSubnetGroup.VpcId" >&2
+  exit 1
+fi
+DEFAULT_SG=$(aws ec2 describe-security-groups \
+  --filters "Name=vpc-id,Values=${INSTANCE_VPC}" "Name=group-name,Values=default" \
+  --region "${REGION}" \
+  --query 'SecurityGroups[0].GroupId' --output text)
+if [ -z "${DEFAULT_SG}" ] || [ "${DEFAULT_SG}" = "None" ] || [ "${DEFAULT_SG}" = "${EXPECTED_SG}" ]; then
+  echo "FAIL: #5542 premise: VPC ${INSTANCE_VPC} default security group is '${DEFAULT_SG}' (custom group: ${EXPECTED_SG})" >&2
+  exit 1
+fi
+echo "    VPC ${INSTANCE_VPC} default security group: ${DEFAULT_SG} (#5542)"
+
+# --- Phase 2: UPDATE pass (#5004 removal keeps the value, #5542 resets) -------
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval, which must be KEPT, and VPCSecurityGroups, which must move to the VPC default group; move Port 5433 -> 5434)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -422,6 +445,26 @@ if [ -z "${SETTLED}" ] || [ "${AFTER_PROTECTION}" != "true" ] || [ "${AFTER_IAM}
   exit 1
 fi
 echo "    OK: after removal, AWS kept DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true + MonitoringInterval=${EXPECTED_MONITORING_INTERVAL} (#5004, matches CloudFormation)"
+
+# #5542: the removed VPCSecurityGroups RESETS to the VPC's default group, as
+# CloudFormation does. The swap can trail 'available', so poll for it; a cdkd
+# that sends nothing leaves the custom group attached and fails here.
+echo "==> Asserting the removed VPCSecurityGroups moved the instance to the VPC default group (#5542)"
+AFTER_SGS=""
+for _ in $(seq 1 30); do
+  AFTER_SGS=$(aws rds describe-db-instances \
+    --db-instance-identifier "${DB_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'DBInstances[0]' --output json |
+    jq -r '[.VpcSecurityGroups[]? | "\(.VpcSecurityGroupId):\(.Status)"] | sort | join(",")')
+  [ "${AFTER_SGS}" = "${DEFAULT_SG}:active" ] && break
+  sleep 10
+done
+if [ "${AFTER_SGS}" != "${DEFAULT_SG}:active" ]; then
+  echo "FAIL: after removing VPCSecurityGroups, the instance's groups are '${AFTER_SGS}', expected only the VPC default group '${DEFAULT_SG}:active' (custom group: ${EXPECTED_SG}) -- #5542: CloudFormation attaches the VPC default group on that removal" >&2
+  exit 1
+fi
+echo "    OK: after removal, the instance is on the VPC default group ${DEFAULT_SG} only (#5542, matches CloudFormation)"
 
 # --- Phase 3: destroy -------------------------------------------------
 # --remove-protection: DeletionProtection is retained on removal (#5004), so
