@@ -1658,6 +1658,14 @@ describe('IntrinsicFunctionResolver - per-type Arn handler sweep', () => {
       expected: 'arn:aws:appsync:us-east-1:123456789012:apis/abcdefg12345',
     },
     {
+      // Issue #5540: CloudFormation's id for the schema, the same value as
+      // its `Ref` — measured as `<apiId>GraphQLSchema`.
+      type: 'AWS::AppSync::GraphQLSchema',
+      physicalId: 'abcdefg12345',
+      attribute: 'Id',
+      expected: 'abcdefg12345GraphQLSchema',
+    },
+    {
       // The record written by an EARLIER binary carries no `ExecuteApiArn`
       // (issue go-to-k/cdkd#2833 added it), and an API whose own properties are
       // unchanged diffs NO_CHANGE — so its provider never runs and the heal

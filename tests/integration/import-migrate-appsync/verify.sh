@@ -17,7 +17,7 @@
 #   6. `cdkd drift --json`: nothing drifted or deleted, and the API, schema and
 #      data source were compared clean.
 #   7. `cdkd deploy` (no template change): nothing updated.
-#   7b. cdkd's stack outputs (the API key's `Arn` / `Ref`, the schema's `Ref`)
+#   7b. cdkd's stack outputs (the API key's `Arn` / `Ref`, the schema's `Ref` / `Id`)
 #       equal what CloudFormation resolved in step 3 (issue #5540).
 #   8. `cdkd destroy --force`; gone-probes for the API and the state.
 set -euo pipefail
@@ -248,7 +248,7 @@ python3 - "${WORK}/cfn-outputs.json" "${WORK}/state-after-deploy.json" <<'PY'
 import json, sys
 cfn = {o["OutputKey"]: o["OutputValue"] for o in json.load(open(sys.argv[1])) or []}
 cdkd = json.load(open(sys.argv[2])).get("outputs") or {}
-keys = ["KeyArn", "KeyRef", "SchemaRef"]
+keys = ["KeyArn", "KeyRef", "SchemaRef", "SchemaId"]
 missing = [k for k in keys if not cfn.get(k)]
 if missing:
     print(f"[verify] FAIL: CloudFormation reported no value for {missing}")

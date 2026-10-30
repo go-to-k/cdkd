@@ -55,5 +55,6 @@ export class ImportMigrateAppSyncStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'KeyArn', { value: key.attrArn });
     new cdk.CfnOutput(this, 'KeyRef', { value: key.ref });
     new cdk.CfnOutput(this, 'SchemaRef', { value: schema.ref });
+    new cdk.CfnOutput(this, 'SchemaId', { value: schema.attrId });
   }
 }

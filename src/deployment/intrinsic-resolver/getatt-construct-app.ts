@@ -9,6 +9,7 @@ import {
   refuseUnservedAttribute,
 } from './getatt-refusals.js';
 import { noteAttributeSecrecy } from './getatt.js';
+import { graphQLSchemaCfnId } from './ref-values.js';
 
 /**
  * `constructAttribute`'s per-type handlers for AWS::Events::Rule through AWS::SNS::Topic, moved
@@ -184,6 +185,12 @@ export async function constructAttributeForAppTypes(
           context
         );
     }
+  }
+
+  // AppSync GraphQLSchema: `Id` is CloudFormation's id for it,
+  // `<apiId>GraphQLSchema` — the same value as its `Ref` (issue #5540).
+  if (resourceType === 'AWS::AppSync::GraphQLSchema' && attributeName === 'Id') {
+    return graphQLSchemaCfnId(physicalId);
   }
 
   // `AWS::ApiGatewayV2::Api` (physicalId is the bare api id). The provider

@@ -299,6 +299,16 @@ export const REF_RETURNS_ARN_FROM_STATE = new Map<string, readonly string[]>([
 ]);
 
 /**
+ * CloudFormation's id for an `AWS::AppSync::GraphQLSchema` — its `Ref` and
+ * `Fn::GetAtt Id` — `<apiId>GraphQLSchema` (measured, issue #5540), from cdkd's
+ * physical id, the bare API id. AppSync API ids are lowercase alphanumeric; a
+ * record already carrying the suffix (a migration before #5364) passes through.
+ */
+export function graphQLSchemaCfnId(physicalId: string): string {
+  return /^[a-z0-9]+$/.test(physicalId) ? `${physicalId}GraphQLSchema` : physicalId;
+}
+
+/**
  * Is `value`, recorded under `attributeName` of a `resourceType` record, a
  * pre-#1681 PLACEHOLDER ARN — a value that is present but knowably unusable?
  *
@@ -698,12 +708,8 @@ export function cfnRefValueFromPhysicalId(
   if (resourceType === 'AWS::S3Tables::Table') {
     return s3TablesTableRefFromPhysicalId(physicalId, stateLookup);
   }
-  // AWS::AppSync::GraphQLSchema: CFn's `Ref` is `<apiId>GraphQLSchema`
-  // (measured, issue #5540), cdkd's physical id the bare API id. AppSync API
-  // ids are lowercase alphanumeric; a record already carrying the suffix (a
-  // migration before #5364) passes through unchanged.
-  if (resourceType === 'AWS::AppSync::GraphQLSchema' && /^[a-z0-9]+$/.test(physicalId)) {
-    return `${physicalId}GraphQLSchema`;
+  if (resourceType === 'AWS::AppSync::GraphQLSchema') {
+    return graphQLSchemaCfnId(physicalId);
   }
   // AWS::Glue::Table: the table name, which may itself contain `|` (issue
   // #1672) — see the helper for why no generic Set can extract it.
