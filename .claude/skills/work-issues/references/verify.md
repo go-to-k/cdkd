@@ -63,7 +63,11 @@ tests passing is necessary but NOT sufficient:
   it" needs `grep -rl '<type's last segment>' tests/integration/*/lib` empty
   first (an L2 fixture need not spell the full type; one an L2 creates
   IMPLICITLY needs a synthed template grepped) — an existing fixture takes the new arm
-  (#4369).
+  (#4369). A mode behind an env flag `verify.sh` does not set itself
+  (`grep -n 'CDKD_INTEG_[A-Z_]*:-' <fixture>/verify.sh`, `RUN_ID` aside) is its
+  own run: a PR on its path runs the flag and the ledger NOTE names the mode
+  (`dynamodb-globaltable`'s `CDKD_INTEG_MULTI_REGION=1` sat unrun from
+  2026-09-25 and hid two breakages until #5577 enabled it).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
