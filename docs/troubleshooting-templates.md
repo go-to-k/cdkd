@@ -18,7 +18,6 @@ On this page:
 - ["Properties validation failed": a list where an object is expected, or the reverse](#properties-validation-failed-a-list-where-an-object-is-expected-or-the-reverse)
 - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
 - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
-- ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-sent-by-cdkd-yet)
 - ["Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"](#configuration-vpcegressconfiguration-elasticipconfiguration-cannot-be-sent-by-cdkd-yet)
 
 ## An unsupported resource type
@@ -259,29 +258,6 @@ Glue writes the Iceberg metadata itself. The created table comes back with
 
 See "Glue table Iceberg support" in
 [Supported Resources](supported-resources.md) for the background.
-
-## "SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be sent by cdkd yet"
-
-```text
-AWS::Lambda::EventSourceMapping MyMapping: SelfManagedKafkaEventSourceConfig.ConsumptionMode
-cannot be sent by cdkd yet — the AWS SDK for JavaScript does not model the member, so it
-would be dropped from the CreateEventSourceMapping request without an error.
-Remove ConsumptionMode from SelfManagedKafkaEventSourceConfig to deploy the mapping without it.
-```
-
-The CloudFormation schema declares `ConsumptionMode` (`Stream` or `Queue`) on a
-self-managed Kafka event source mapping, but the AWS SDK cdkd calls Lambda
-through drops it from the request. cdkd refuses a create that declares it, and
-an update that adds or changes it, rather than deploy a mapping without the
-mode you asked for.
-
-Remove `ConsumptionMode` from `SelfManagedKafkaEventSourceConfig`.
-
-Sending the resource through the Cloud Control API does not help, because
-Lambda rejects the member there too (`Unsupported 'ConsumptionMode' parameter
-for given event source mapping type`). A `cdkd rollback` or
-`cdkd drift --revert` only warns, because those commands re-apply a recorded
-configuration.
 
 ## "Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"
 

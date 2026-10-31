@@ -1099,7 +1099,7 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
     expectRedactedFailure(error, raw, `function:${TINY}`, 'function:***');
   });
 
-  it('routes the create path lines and the replay warning through the masker', async () => {
+  it('routes the create path lines through the masker', async () => {
     const spy = spyMasker();
     fakeLambda({ CreateEventSourceMappingCommand: () => ({ UUID: 'uuid-1' }) });
     await new LambdaEventSourceMappingProvider().create(
@@ -1108,12 +1108,10 @@ describe('LambdaEventSourceMappingProvider masked log sinks (issue #2177)', () =
       {
         FunctionName: 'fn',
         EventSourceArn: queueArn,
-        SelfManagedKafkaEventSourceConfig: { ConsumptionMode: 'Queue' },
       },
-      { maskSecrets: spy.mask, replayingState: true }
+      { maskSecrets: spy.mask }
     );
     expect(routed(spy.seen(), 'Creating event source mapping Esm')).toBe(true);
-    expect(spy.seen().some((t) => t.includes('Proceeding without it'))).toBe(true);
     expect(routed(spy.seen(), 'Successfully created event source mapping Esm')).toBe(true);
   });
 

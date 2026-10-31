@@ -61,6 +61,14 @@ import {
  * it). TOPIC phase (the DEFAULTS env plus CDKD_TEST_ESM_TOPIC=true) changes the
  * topic, which UpdateEventSourceMapping cannot carry and CloudFormation
  * refuses: the deploy must fail and leave the mapping's topic as it was.
+ *
+ * Issue #3850, in every phase: a second mapping on its own topic declares
+ * `ConsumptionMode: Queue`. Lambda refuses `Queue` beside `StartingPosition` or
+ * `MaximumBatchingWindowInSeconds`, so it omits both, on an L1 because the L2
+ * requires a starting position. Its `BatchSize` follows the UPDATE phase, which
+ * proves an in-place update of a Queue mapping. MODE phase (the DEFAULTS env
+ * plus CDKD_TEST_ESM_MODE=true) changes its mode to `Stream`, which Lambda
+ * refuses on update: the deploy must fail and leave the mapping as it was.
  */
 export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -70,6 +78,7 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
     const isRemoval = isUpdate && process.env.CDKD_TEST_REMOVAL === 'true';
     const isDefaults = isRemoval && process.env.CDKD_TEST_ESM_DEFAULTS === 'true';
     const isTopicChange = isDefaults && process.env.CDKD_TEST_ESM_TOPIC === 'true';
+    const isModeChange = isDefaults && process.env.CDKD_TEST_ESM_MODE === 'true';
 
     const secret = new secretsmanager.Secret(this, 'KafkaAuth', {
       secretName: `${this.stackName}-kafka-auth`,
@@ -137,5 +146,22 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
       cfnEsm.addPropertyOverride('MaximumRetryAttempts', 3);
       cfnEsm.addPropertyOverride('MaximumRecordAgeInSeconds', 3600);
     }
+
+    // Issue #3850: the L1 interface may not know the member, so an override.
+    const queueEsm = new lambda.CfnEventSourceMapping(this, 'QueueEsm', {
+      functionName: fn.functionName,
+      topics: ['cdkd-integ-queue-topic'],
+      enabled: false,
+      batchSize: isUpdate ? 20 : 10,
+      selfManagedEventSource: {
+        endpoints: { kafkaBootstrapServers: ['b-1.cdkd-integ.example.com:9092'] },
+      },
+      sourceAccessConfigurations: [{ type: 'SASL_SCRAM_512_AUTH', uri: secret.secretArn }],
+    });
+    queueEsm.addPropertyOverride(
+      'SelfManagedKafkaEventSourceConfig.ConsumptionMode',
+      isModeChange ? 'Stream' : 'Queue'
+    );
+    if (fn.role !== undefined) queueEsm.node.addDependency(fn.role);
   }
 }

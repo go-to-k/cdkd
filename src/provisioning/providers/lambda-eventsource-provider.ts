@@ -274,46 +274,32 @@ function toCfnSelfManagedEventSource(selfManagedEventSource: unknown): unknown {
 }
 
 /**
- * `SelfManagedKafkaEventSourceConfig.ConsumptionMode` (`Stream` | `Queue`) is in
- * the CFn registry schema but in no `@aws-sdk/client-lambda` release yet
- * (installed 3.1135.0, latest published 3.1141.0, issue #3848). The SDK v3
- * serializer drops members it does not model, so a forwarded value never
- * reaches Lambda: create() would build a mapping without the requested mode and
- * report success, and update() (see {@link kafkaConfigForUpdate}) never names it.
+ * `SelfManagedKafkaEventSourceConfig.ConsumptionMode` (`Stream` | `Queue`,
+ * issue #3850) goes to `CreateEventSourceMapping` with the rest of the block.
+ * Measured live 2026-11-01 in us-east-1 on a disabled self-managed Kafka mapping:
  *
- * Deliberate parity divergence: CloudFormation forwards the member, cdkd
- * refuses it on the template path. No shape of it can be delivered through the
- * SDK — measured 2026-09-26 by serializing, offline, a
- * `CreateEventSourceMappingCommand` carrying `ConsumptionMode: 'Queue'`; the
- * request body held `ConsumerGroupId` only. Cloud Control (CloudFormation's own
- * handler, and cdkd's `--recreate-via-cc-api` route) is no alternative either:
- * probed live 2026-09-27 in us-east-1 on a disabled self-managed Kafka mapping,
- * Lambda rejected `Stream` and `Queue`, on-demand and with
- * `ProvisionedPollerConfig`, every time with "Unsupported 'ConsumptionMode'
- * parameter for given event source mapping type".
- * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
- * installed client sends the member. Lifting the refusal then also needs
- * {@link kafkaConfigForUpdate} to send it, plus the readback (issue #3850);
- * forwarding it on create alone reopens the drop on update.
+ * - Lambda accepts both values, on-demand and with `ProvisionedPollerConfig`.
+ *   It refuses `Queue` beside `StartingPosition` or
+ *   `MaximumBatchingWindowInSeconds`; cdkd leaves that refusal to Lambda.
+ * - A mapping created without the member reads back as `Stream`, so an omitted
+ *   value and `Stream` are the same mode.
+ * - `UpdateEventSourceMapping` refuses a change ("Updates to the
+ *   ConsumptionMode parameter are not supported"), so update() never names the
+ *   member and refuses the change itself. The CFn schema does not mark it
+ *   create-only, so the diff layer does not replace the mapping on its own.
  */
 const KAFKA_CONSUMPTION_MODE_KEY = 'ConsumptionMode';
+const KAFKA_DEFAULT_CONSUMPTION_MODE = 'Stream';
 
-/** The declared `ConsumptionMode`, or `undefined` when the template omits it. */
-function declaredConsumptionMode(properties: Record<string, unknown>): unknown {
+/** The mode the properties ask for: the declared value, or Lambda's default. */
+function consumptionModeOf(properties: Record<string, unknown>): unknown {
   const config = properties['SelfManagedKafkaEventSourceConfig'];
-  if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
-  return (config as Record<string, unknown>)[KAFKA_CONSUMPTION_MODE_KEY];
-}
-
-function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'update'): string {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+    return KAFKA_DEFAULT_CONSUMPTION_MODE;
+  }
   return (
-    `AWS::Lambda::EventSourceMapping ${logicalId}: ` +
-    `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be sent by cdkd yet — ` +
-    `the AWS SDK for JavaScript does not model the member, so it would be dropped from the ` +
-    `${mode === 'create' ? 'CreateEventSourceMapping' : 'UpdateEventSourceMapping'} request ` +
-    `without an error. ` +
-    `Remove ${KAFKA_CONSUMPTION_MODE_KEY} from ` +
-    `SelfManagedKafkaEventSourceConfig to deploy the mapping without it.`
+    (config as Record<string, unknown>)[KAFKA_CONSUMPTION_MODE_KEY] ??
+    KAFKA_DEFAULT_CONSUMPTION_MODE
   );
 }
 
@@ -337,7 +323,7 @@ function consumptionModeRefusalMessage(logicalId: string, mode: 'create' | 'upda
  *   so that is what a removal from the template sends.
  *
  * A present-but-non-object desired block is left alone rather than read as a
- * removal. `ConsumptionMode` is never named: it is refused before this runs.
+ * removal. `ConsumptionMode` is never named: update() refuses a change to it.
  */
 function kafkaConfigForUpdate(
   desired: unknown,
@@ -722,17 +708,6 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       );
     }
 
-    // Outside the `try` so the typed refusal is not re-wrapped below. A state
-    // replay only warns: the record's value was dropped the same way when it
-    // was first deployed, so the restored mapping matches what it replaces.
-    if (declaredConsumptionMode(properties) !== undefined) {
-      const message = consumptionModeRefusalMessage(logicalId, 'create');
-      if (context?.replayingState !== true) {
-        throw new ProvisioningError(message, resourceType, logicalId);
-      }
-      log.warn(safeMsg`${message} Proceeding without it: this create replays a cdkd state record.`);
-    }
-
     try {
       const params: import('@aws-sdk/client-lambda').CreateEventSourceMappingCommandInput = {
         FunctionName: functionName,
@@ -1016,11 +991,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     // a state replay or a drift revert, which restore a recorded or read-back
     // configuration this update cannot carry either way.
     const restoring = context?.replayingState === true || context?.desiredFromAwsReadback === true;
-    for (const key of ['Queues', 'Topics'] as const) {
-      if (JSON.stringify(properties[key]) === JSON.stringify(previousProperties[key])) continue;
-      const reason =
-        `${key} cannot be changed on an existing event source mapping ` +
-        `(UpdateEventSourceMapping does not take it, and CloudFormation refuses the change too)`;
+    const refuseChange = (reason: string): void => {
       if (!restoring) {
         throw new ResourceUpdateNotSupportedError(
           resourceType,
@@ -1031,22 +1002,18 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       log.warn(
         safeMsg`AWS::Lambda::EventSourceMapping ${logicalId}: ${reason}. Proceeding without it: this update restores a recorded or read-back configuration.`
       );
+    };
+    for (const key of ['Queues', 'Topics'] as const) {
+      if (JSON.stringify(properties[key]) === JSON.stringify(previousProperties[key])) continue;
+      refuseChange(
+        `${key} cannot be changed on an existing event source mapping ` +
+          `(UpdateEventSourceMapping does not take it, and CloudFormation refuses the change too)`
+      );
     }
-    // update() never names ConsumptionMode (kafkaConfigForUpdate), so only a
-    // CHANGED value is lost; an unchanged one (a record an older cdkd wrote)
-    // sends nothing either way. Refused before the first AWS call on the
-    // template path, warned on a state replay or a drift revert.
-    const desiredMode = declaredConsumptionMode(properties);
-    if (
-      desiredMode !== undefined &&
-      JSON.stringify(desiredMode) !== JSON.stringify(declaredConsumptionMode(previousProperties))
-    ) {
-      const message = consumptionModeRefusalMessage(logicalId, 'update');
-      if (!restoring) {
-        throw new ProvisioningError(message, resourceType, logicalId, physicalId);
-      }
-      log.warn(
-        safeMsg`${message} Proceeding without it: this update restores a recorded or read-back configuration.`
+    if (consumptionModeOf(properties) !== consumptionModeOf(previousProperties)) {
+      refuseChange(
+        `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be changed on an ` +
+          `existing event source mapping (UpdateEventSourceMapping refuses it)`
       );
     }
     try {
