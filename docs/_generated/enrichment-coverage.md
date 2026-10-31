@@ -49,7 +49,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CodeCommit::Repository` | `Arn`, `CloneUrlHttp`, `CloneUrlSsh`, `Name` |
 | `AWS::Cognito::UserPool` | `Arn`, `ProviderName`, `ProviderURL` |
 | `AWS::DLM::LifecyclePolicy` | `Arn` |
-| `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `ReadEndpoint` |
+| `AWS::DocDB::DBCluster` | `ClusterResourceId`, `Endpoint`, `ReadEndpoint`, `ServerlessV2PlatformVersion` |
 | `AWS::DocDB::DBInstance` | `Endpoint`, `Port` |
 | `AWS::DynamoDB::GlobalTable` | `Arn`, `StreamArn`, `TableId` |
 | `AWS::DynamoDB::Table` | `Arn` |
@@ -146,7 +146,7 @@ SDK-backed types whose computed attribute is unenriched: only exposed on the #61
 | `AWS::CodeCommit::Repository` | yes | sdk-fallback-gap | `Arn` (GAP), `CloneUrlHttp` (GAP), `CloneUrlSsh` (GAP), `Name` (GAP), `RepositoryId` (allow) |
 | `AWS::Cognito::UserPool` | yes | sdk-fallback-gap | `Arn` (GAP), `ProviderName` (GAP), `ProviderURL` (GAP), `UserPoolId` (allow) |
 | `AWS::DLM::LifecyclePolicy` | yes | sdk-fallback-gap | `Arn` (GAP), `PolicyId` (allow) |
-| `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (allow), `ReadEndpoint` (GAP) |
+| `AWS::DocDB::DBCluster` | yes | sdk-fallback-gap | `ClusterResourceId` (GAP), `Endpoint` (GAP), `Id` (allow), `ReadEndpoint` (GAP), `ServerlessV2PlatformVersion` (GAP) |
 | `AWS::DocDB::DBInstance` | yes | sdk-fallback-gap | `Endpoint` (GAP), `Id` (allow), `Port` (GAP) |
 | `AWS::DocDB::DBSubnetGroup` | yes | no-computed-attr | _(none)_ |
 | `AWS::DynamoDB::GlobalTable` | yes | sdk-fallback-gap | `Arn` (GAP), `StreamArn` (GAP), `TableId` (GAP) |

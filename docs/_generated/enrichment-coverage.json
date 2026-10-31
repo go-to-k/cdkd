@@ -882,7 +882,8 @@
         "ClusterResourceId",
         "Endpoint",
         "Id",
-        "ReadEndpoint"
+        "ReadEndpoint",
+        "ServerlessV2PlatformVersion"
       ],
       "enrichedKeys": [],
       "attributes": [
@@ -902,12 +903,17 @@
         {
           "name": "ReadEndpoint",
           "status": "gap"
+        },
+        {
+          "name": "ServerlessV2PlatformVersion",
+          "status": "gap"
         }
       ],
       "gaps": [
         "ClusterResourceId",
         "Endpoint",
-        "ReadEndpoint"
+        "ReadEndpoint",
+        "ServerlessV2PlatformVersion"
       ]
     },
     {
