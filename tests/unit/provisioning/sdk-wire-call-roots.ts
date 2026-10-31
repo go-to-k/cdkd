@@ -76,6 +76,11 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
         'one call per update step (an index create, a replica update, a settings change), each carrying its own update member, which the chain names',
     },
   },
+  'AWS::Neptune::DBCluster': {
+    repeated: {
+      AddRoleToDBClusterCommand: PER_ITEM('AssociatedRoles', 'RoleArn'),
+    },
+  },
   'AWS::EC2::NatGateway': {
     repeated: {
       AssociateNatGatewayAddressCommand: PER_ITEM('AvailabilityZoneAddresses', 'address'),

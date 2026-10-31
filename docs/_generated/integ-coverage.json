@@ -4872,6 +4872,7 @@
         "destroy-interrupt",
         "diff-intrinsic-target-change",
         "dlm-lifecycle-policy",
+        "docdb-neptune",
         "drift-revert",
         "ec2-instance-fanout",
         "ecs-bluegreen",
@@ -5032,6 +5033,9 @@
         "dlm-lifecycle-policy": [
           "l2",
           "literal"
+        ],
+        "docdb-neptune": [
+          "l2"
         ],
         "drift-revert": [
           "l2"

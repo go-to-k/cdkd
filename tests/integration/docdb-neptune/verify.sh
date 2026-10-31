@@ -25,6 +25,9 @@
 #       KEEPS the live value of each, so cdkd must send no reset. The same
 #       redeploy changes the DocDB subnet group description, an in-place
 #       update through the provider's update() (issue #2613).
+#       Step 3c also CHANGES the go-to-k/cdkd#2762 properties (role swap, log
+#       type, CopyTagsToSnapshot, ServerlessScalingConfiguration,
+#       PubliclyAccessible).
 #   3d. wait for both clusters to be available, then assert the baseline
 #       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
 #       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
@@ -423,6 +426,51 @@ if [ "${NEPTUNE_BASE_AMVU}" != "false" ]; then
   echo "[verify] FAIL: Neptune instance baseline AutoMinorVersionUpgrade='${NEPTUNE_BASE_AMVU}', expected false" >&2
   exit 1
 fi
+# go-to-k/cdkd#2762: each backfilled property used to route its resource through
+# Cloud Control, which applied it too, so the live values alone pass pre-fix.
+# The ROUTE is what only the backfill turns green.
+assert_neptune_sdk_route() { # usage: assert_neptune_sdk_route <state json>
+  local logical route
+  for logical in NeptuneCluster NeptuneInstance; do
+    route=$(echo "$1" | jq -r --arg l "${logical}" '.resources[$l].provisionedBy // "null"')
+    if [ "${route}" != "sdk" ]; then
+      echo "[verify] FAIL: #2762: ${logical} is provisionedBy '${route}', want 'sdk' (a property the provider does not handle moved it to Cloud Control)" >&2
+      exit 1
+    fi
+  done
+}
+# "<RoleArn tail>:<Status>" of each attached role, then the rest, one line.
+neptune_backfill_view() { # usage: neptune_backfill_view <cluster json> <instance json>
+  local cluster instance
+  cluster=$(echo "$1" | jq -r '[([.AssociatedRoles[]? | ((.RoleArn | split("/") | last) + ":" + .Status)] | join(",")),
+    (.CopyTagsToSnapshot | tostring), ((.EnabledCloudwatchLogsExports // []) | join(",")), (.NetworkType // "null"),
+    (.ServerlessV2ScalingConfiguration.MinCapacity | tostring), (.ServerlessV2ScalingConfiguration.MaxCapacity | tostring)] | join(" ")') || return 1
+  instance=$(echo "$2" | jq -r '.PubliclyAccessible | tostring') || return 1
+  echo "${cluster} ${instance}"
+}
+assert_neptune_sdk_route "${STATE}"
+NEPTUNE_ROLE_A=$(echo "${STATE}" | jq -r '.resources.NeptuneRoleA.physicalId // ""')
+NEPTUNE_ROLE_B=$(echo "${STATE}" | jq -r '.resources.NeptuneRoleB.physicalId // ""')
+if [ -z "${NEPTUNE_ROLE_A}" ] || [ -z "${NEPTUNE_ROLE_B}" ]; then
+  echo "[verify] FAIL: #2762: could not resolve the Neptune roles from state (a='${NEPTUNE_ROLE_A}', b='${NEPTUNE_ROLE_B}')" >&2
+  exit 1
+fi
+NEPTUNE_BASE_INST=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0]' --output json)
+NEPTUNE_2762_BASE=$(neptune_backfill_view "${NEPTUNE_BASE}" "${NEPTUNE_BASE_INST}")
+NEPTUNE_2762_WANT="${NEPTUNE_ROLE_A}:ACTIVE true audit IPV4 1 8 false"
+if [ "${NEPTUNE_2762_BASE}" != "${NEPTUNE_2762_WANT}" ]; then
+  echo "[verify] FAIL: #2762: Neptune baseline reads '${NEPTUNE_2762_BASE}', want '${NEPTUNE_2762_WANT}'" >&2
+  exit 1
+fi
+# Every declared zone is live; AWS may report more than the declared list.
+NEPTUNE_AZ_MISSING=$(jq -nr --argjson state "${STATE}" --argjson live "${NEPTUNE_BASE}" \
+  '($state.resources.NeptuneCluster.properties.AvailabilityZones // ["<none recorded>"]) - $live.AvailabilityZones | join(",")')
+if [ -n "${NEPTUNE_AZ_MISSING}" ]; then
+  echo "[verify] FAIL: #2762: declared AvailabilityZones missing from the live cluster: '${NEPTUNE_AZ_MISSING}'" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: the backfilled Neptune properties are live, through the SDK route (#2762)"
 # Issue #1160 Port removal arm: both clusters start on a non-default port.
 DOCDB_BASE_PORT=$(echo "${DOCDB_BASE}" | jq -r '.Port // "null"')
 NEPTUNE_BASE_PORT=$(echo "${NEPTUNE_BASE}" | jq -r '.Port // "null"')
@@ -734,6 +782,41 @@ for needle in \
   fi
 done
 echo "[verify] step 3d ok: Neptune engine, backup window and both parameter groups kept after removal and named in cdkd's warning (#5544, matches CloudFormation)"
+
+# go-to-k/cdkd#2762: the update path. The role swap settled inside the deploy; a
+# log type or PubliclyAccessible can lag ModifyDB*, so poll a bounded while.
+assert_neptune_sdk_route "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+NEPTUNE_2762_WANT="${NEPTUNE_ROLE_B}:ACTIVE false slowquery IPV4 1 16 true"
+NEPTUNE_2762_NOW=""
+for _ in $(seq 1 40); do
+  NEPTUNE_2762_C=$(aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0]' --output json)
+  NEPTUNE_2762_I=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+    --region "${REGION}" --query 'DBInstances[0]' --output json)
+  NEPTUNE_2762_NOW=$(neptune_backfill_view "${NEPTUNE_2762_C}" "${NEPTUNE_2762_I}")
+  [ "${NEPTUNE_2762_NOW}" = "${NEPTUNE_2762_WANT}" ] && break
+  sleep 15
+done
+if [ "${NEPTUNE_2762_NOW}" != "${NEPTUNE_2762_WANT}" ]; then
+  echo "[verify] FAIL: #2762: after the redeploy, Neptune reads '${NEPTUNE_2762_NOW}', want '${NEPTUNE_2762_WANT}'" >&2
+  exit 1
+fi
+# readCurrentState against the live shape (AWS's order, its empty FeatureName):
+# none of these keys may report drift. Other keys are not this arm's business.
+DRIFT_2762_JSON=$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)
+# A crashed drift prints nothing, which must not read as "no drift".
+DRIFT_2762_SEEN=$(echo "${DRIFT_2762_JSON}" | jq -r '[.[] | ((.clean // []) + (.drifted // []) + (.notCompared // []))[] | select(.logicalId == "NeptuneCluster")] | length' || echo 0)
+if [ "${DRIFT_2762_SEEN}" != "1" ]; then
+  echo "[verify] FAIL: #2762: cdkd drift did not report NeptuneCluster (seen '${DRIFT_2762_SEEN}'): ${DRIFT_2762_JSON}" >&2
+  exit 1
+fi
+DRIFT_2762=$(echo "${DRIFT_2762_JSON}" | jq -r '[.[].drifted[] | select(.logicalId == "NeptuneCluster" or .logicalId == "NeptuneInstance")
+  | .changes[]?.path | select(test("^(AssociatedRoles|AvailabilityZones|CopyTagsToSnapshot|EnableCloudwatchLogsExports|NetworkType|ServerlessScalingConfiguration|PubliclyAccessible|AllowMajorVersionUpgrade)"))] | join(",")')
+if [ -n "${DRIFT_2762}" ]; then
+  echo "[verify] FAIL: #2762: cdkd drift reports the backfilled properties right after a deploy: '${DRIFT_2762}'" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: the backfilled Neptune properties changed in place through the SDK route and drift reads them clean (#2762)"
 
 # Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must
 # move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends

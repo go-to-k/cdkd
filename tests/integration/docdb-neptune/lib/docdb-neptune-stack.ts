@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as docdb from 'aws-cdk-lib/aws-docdb';
 import * as neptune from 'aws-cdk-lib/aws-neptune';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
@@ -15,9 +16,10 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * `Modify*Cluster` / `Describe*` / `Delete*` responses.
  *
  * Resources:
- *  - 1 VPC + 2 private isolated subnets in 2 AZs (DocDB / Neptune both
- *    require ≥ 2 subnets in distinct AZs via a DBSubnetGroup; private-
- *    isolated keeps it cheap — no NAT, no IGW).
+ *  - 1 VPC + 2 public subnets in 2 AZs (DocDB / Neptune both require ≥ 2
+ *    subnets in distinct AZs via a DBSubnetGroup; no NAT keeps it cheap, and
+ *    the IGW is what lets the Neptune instance turn `PubliclyAccessible` on
+ *    for go-to-k/cdkd#2762).
  *  - 1 DocDB DBSubnetGroup
  *  - 1 DocDB DBCluster (1 instance, db.t3.medium, MasterUsername=admin,
  *    MasterUserPassword=TempPass1234! — chosen for AWS's accept rules:
@@ -26,6 +28,16 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *  - 1 Neptune DBSubnetGroup
  *  - 1 Neptune DBCluster (Neptune uses IAM auth so no Master credentials)
  *  - 1 Neptune DBInstance (db.t3.medium)
+ *  - 2 IAM roles, swapped on the Neptune cluster by the removal redeploy
+ *
+ * go-to-k/cdkd#2762 (backfill): the Neptune cluster declares `AssociatedRoles`,
+ * `AvailabilityZones`, `CopyTagsToSnapshot`, `EnableCloudwatchLogsExports`,
+ * `NetworkType`, `ServerlessScalingConfiguration` and
+ * `DBInstanceParameterGroupName`, the instance `AllowMajorVersionUpgrade` and
+ * `PubliclyAccessible`. Before the backfill each one routed the resource
+ * through Cloud Control, so verify.sh asserts the SDK route first; the
+ * `CDKD_TEST_REMOVAL=true` redeploy CHANGES the updatable ones (it does not
+ * drop them), and verify.sh reads each from AWS after both deploys.
  *
  * #1160 / #5004 (removal) phases: the BASELINE deploy sets non-default
  * values for the removable ModifyDBCluster fields on both clusters
@@ -68,17 +80,18 @@ export class DocdbNeptuneStack extends cdk.Stack {
     // template entirely — the removal shape, not a value change.
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
 
-    // VPC: 2 AZs, private-isolated only (no NAT, no IGW). DocDB and
-    // Neptune are reached only via cluster endpoints inside the VPC,
-    // which is fine for a deploy-then-destroy test (we never connect).
+    // VPC: 2 AZs, public subnets, no NAT. DocDB and Neptune are not reached
+    // at all (a deploy-then-destroy test never connects). The IGW exists only
+    // for the Neptune instance's PubliclyAccessible flip (#2762): no security
+    // group here admits inbound traffic.
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
       natGateways: 0,
       subnetConfiguration: [
         {
           cidrMask: 24,
-          name: 'Isolated',
-          subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
         },
       ],
     });
@@ -91,7 +104,7 @@ export class DocdbNeptuneStack extends cdk.Stack {
     });
 
     const subnetIds = vpc.selectSubnets({
-      subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+      subnetType: ec2.SubnetType.PUBLIC,
     }).subnetIds;
 
     // ── DocDB ─────────────────────────────────────────────────────────
@@ -201,8 +214,31 @@ export class DocdbNeptuneStack extends cdk.Stack {
     );
     neptuneInstanceParams.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
+    // Issue #2762: both exist in both deploys, so the swap never deletes a
+    // role a cluster still holds. Stable ids: verify.sh reads them from state.
+    const neptuneRole = (id: string): iam.Role => {
+      const role = new iam.Role(this, id, {
+        assumedBy: new iam.ServicePrincipal('rds.amazonaws.com'),
+      });
+      (role.node.defaultChild as cdk.CfnResource).overrideLogicalId(id);
+      return role;
+    };
+    const neptuneRoleA = neptuneRole('NeptuneRoleA');
+    const neptuneRoleB = neptuneRole('NeptuneRoleB');
+
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
+      // Issue #2762: each one routed the cluster through Cloud Control before
+      // the backfill. The updatable ones CHANGE in the removal redeploy.
+      associatedRoles: [{ roleArn: (isRemoval ? neptuneRoleB : neptuneRoleA).roleArn }],
+      availabilityZones: vpc.availabilityZones,
+      copyTagsToSnapshot: isRemoval ? false : true,
+      enableCloudwatchLogsExports: isRemoval ? ['slowquery'] : ['audit'],
+      networkType: 'IPV4',
+      serverlessScalingConfiguration: { minCapacity: 1, maxCapacity: isRemoval ? 16 : 8 },
+      // A per-call flag of a major upgrade: this redeploy has none, so it
+      // must be accepted and sent nowhere. Dropped without a warning.
+      dbInstanceParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
       // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
       // moves a Neptune cluster to the VPC's `default` security group on
       // removal (real A/B), so verify.sh asserts exactly that.
@@ -240,6 +276,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
     // Issue #5544: as `Sg`, so the destroy after the removal still deletes
     // the cluster before its (still attached) parameter group.
     neptuneCluster.addDependency(neptuneClusterParams);
+    // Issue #2762: as `Sg`: RoleA is unreferenced after the swap, and the
+    // destroy must not reach either role before the cluster.
+    neptuneCluster.node.addDependency(neptuneRoleA, neptuneRoleB);
 
     const neptuneInstance = new neptune.CfnDBInstance(this, 'NeptuneInstance', {
       dbClusterIdentifier: neptuneCluster.ref,
@@ -252,6 +291,10 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // Issue #5544: DROPPED in the CDKD_TEST_REMOVAL redeploy; CloudFormation
       // keeps it attached (real A/B), so verify.sh asserts it still is.
       dbParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
+      // Issue #2762: the update path turns it on (IAM auth stays on: #5004).
+      publiclyAccessible: isRemoval ? true : false,
+      // Issue #2762: write-only, ModifyDBInstance only; nothing to read back.
+      allowMajorVersionUpgrade: true,
     });
     neptuneInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     neptuneInstance.addDependency(neptuneCluster);
