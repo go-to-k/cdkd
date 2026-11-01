@@ -731,6 +731,21 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     for (const line of errors) expect(line).not.toContain(arn);
   });
 
+  it('a bare flip with no clear answer names the customer-managed key it may have reset (#2762)', async () => {
+    const fiveHundred = Object.assign(new Error('internal'), {
+      name: 'InternalErrorException',
+      $fault: 'server',
+      $metadata: { httpStatusCode: 503 },
+    });
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k' } }],
+      echoError: { INACTIVE: echoRefusal() },
+      bareLandedError: { INACTIVE: fiveHundred },
+    });
+    await expect(del()).rejects.toThrow();
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringMatching(/advanced security and customer-managed key were reset/));
+  });
+
   it('the ERROR report stays silent about an AWS owned key', async () => {
     script({ echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
     await expect(del()).rejects.toSatisfy(says('domain configured'));

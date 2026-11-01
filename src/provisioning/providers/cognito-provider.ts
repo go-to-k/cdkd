@@ -4338,7 +4338,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Retried by the caller before any DeleteUserPool; no warn here.
       if (isTransientCognitoFailure(echoError)) throw echoError;
       if (!isRefusedEcho(echoError)) {
-        this.warnGuardLeftOn(physicalId, mask, echoError);
+        this.warnGuardLeftOn(physicalId, pool, mask, echoError);
         throw echoError;
       }
       try {
@@ -4361,13 +4361,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             this.logger.warn(
               safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool with DeletionProtection alone ` +
                 safeMsg`(the pool's own configuration was refused) answered ${mask(describeAwsFailure(bareError).summary)}; ` +
-                safeMsg`if that write landed, the pool's self sign-up, Lambda triggers and advanced ` +
-                safeMsg`security were reset. Retrying the delete.`
+                safeMsg`if that write landed, the pool's ${bareFlipResets(pool)} were reset. Retrying the delete.`
             );
           }
           throw bareError;
         }
-        this.warnGuardLeftOn(physicalId, mask, bareError, echoError);
+        this.warnGuardLeftOn(physicalId, pool, mask, bareError, echoError);
         throw bareError;
       }
       const kept = this.preFlipPools.get(flip);
@@ -4404,6 +4403,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    */
   private warnGuardLeftOn(
     physicalId: string,
+    pool: UserPoolType,
     mask: MaskerFn,
     error: unknown,
     echoError?: unknown
@@ -4445,7 +4445,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
                 : safeMsg`, so whether DeletionProtection was turned off is unknown. Its other settings were ` +
                   safeMsg`not reset.`
               : safeMsg`, so whether DeletionProtection was turned off ALONE is unknown; if it was, the ` +
-                safeMsg`pool's self sign-up, Lambda triggers and advanced security were reset.`) +
+                safeMsg`pool's ${bareFlipResets(pool)} were reset.`) +
             safeMsg` If the delete then fails, cdkd turns the guard back on. Check the pool with ` +
             safeMsg`aws cognito-idp describe-user-pool.`
     );
