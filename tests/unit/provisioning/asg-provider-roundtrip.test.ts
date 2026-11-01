@@ -887,3 +887,205 @@ describe('ASGProvider readCurrentState', () => {
   });
 });
 
+
+// go-to-k/cdkd#2762: PlacementGroup, InstanceLifecyclePolicy and
+// AvailabilityZoneIds reach CreateAutoScalingGroup and read back for drift.
+describe('ASGProvider PlacementGroup / InstanceLifecyclePolicy / AvailabilityZoneIds (issue #2762)', () => {
+  const policy = { RetentionTriggers: { TerminateHookAbandon: 'retain' } };
+
+  function createInput(): Record<string, unknown> {
+    const calls = mockSend.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c instanceof CreateAutoScalingGroupCommand);
+    expect(calls).toHaveLength(1);
+    return (calls[0] as unknown as { input: Record<string, unknown> }).input;
+  }
+
+  function describeReturns(group: Record<string, unknown>): void {
+    mockSend.mockImplementation((command: unknown) =>
+      Promise.resolve(
+        command instanceof DescribeAutoScalingGroupsCommand
+          ? {
+              AutoScalingGroups: [
+                { AutoScalingGroupName: 'my-asg', MinSize: 0, MaxSize: 0, ...group },
+              ],
+            }
+          : {}
+      )
+    );
+  }
+
+  it('sends all three on create', async () => {
+    describeReturns({ AutoScalingGroupARN: 'arn:asg:my-asg' });
+    await new ASGProvider().create('MyAsg', RESOURCE_TYPE, {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 0,
+      MaxSize: 0,
+      LaunchTemplate: { LaunchTemplateId: 'lt-aaaa1111', Version: '1' },
+      AvailabilityZoneIds: ['use1-az1', 'use1-az2'],
+      PlacementGroup: 'pg-spread',
+      InstanceLifecyclePolicy: policy,
+    });
+
+    const input = createInput();
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1', 'use1-az2']);
+    expect(input['PlacementGroup']).toBe('pg-spread');
+    expect(input['InstanceLifecyclePolicy']).toEqual(policy);
+    expect(input).not.toHaveProperty('AvailabilityZones');
+  });
+
+  it('sends none of them on create when the template declares none', async () => {
+    describeReturns({ AutoScalingGroupARN: 'arn:asg:my-asg' });
+    await new ASGProvider().create('MyAsg', RESOURCE_TYPE, {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 0,
+      MaxSize: 0,
+      LaunchTemplate: { LaunchTemplateId: 'lt-aaaa1111', Version: '1' },
+      AvailabilityZones: ['us-east-1a'],
+    });
+
+    const input = createInput();
+    expect(input).not.toHaveProperty('AvailabilityZoneIds');
+    expect(input).not.toHaveProperty('PlacementGroup');
+    expect(input).not.toHaveProperty('InstanceLifecyclePolicy');
+  });
+
+  it('reads all three back', async () => {
+    describeReturns({
+      AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+      AvailabilityZoneIds: ['use1-az1', 'use1-az2'],
+      PlacementGroup: 'pg-spread',
+      InstanceLifecyclePolicy: policy,
+    });
+    const state = bagOf(await new ASGProvider().readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE));
+
+    expect(state?.['AvailabilityZones']).toEqual(['us-east-1a', 'us-east-1b']);
+    expect(state?.['AvailabilityZoneIds']).toEqual(['use1-az1', 'use1-az2']);
+    expect(state?.['PlacementGroup']).toBe('pg-spread');
+    expect(state?.['InstanceLifecyclePolicy']).toEqual(policy);
+  });
+
+  it('reads an unset group as an empty zone-id list with no placement group or policy', async () => {
+    describeReturns({ PlacementGroup: '' });
+    const state = bagOf(await new ASGProvider().readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE));
+
+    expect(state?.['AvailabilityZoneIds']).toEqual([]);
+    expect(state).not.toHaveProperty('PlacementGroup');
+    expect(state).not.toHaveProperty('InstanceLifecyclePolicy');
+  });
+});
+
+// go-to-k/cdkd#2762: the readback -> update round trip `drift --revert` takes,
+// and a rollback re-create from a record holding the readback, must not put
+// both zone members on one call.
+describe('ASGProvider zone members from a readback (issue #2762)', () => {
+  function readbackOf(group: Record<string, unknown>): void {
+    mockSend.mockImplementation((command: unknown) =>
+      Promise.resolve(
+        command instanceof DescribeAutoScalingGroupsCommand
+          ? {
+              AutoScalingGroups: [
+                {
+                  AutoScalingGroupName: 'my-asg',
+                  AutoScalingGroupARN: 'arn:asg:my-asg',
+                  MinSize: 0,
+                  MaxSize: 0,
+                  AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+                  AvailabilityZoneIds: ['use1-az1', 'use1-az2'],
+                  ...group,
+                },
+              ],
+            }
+          : {}
+      )
+    );
+  }
+
+  function inputOf(commandClass: unknown): Record<string, unknown> {
+    const call = mockSend.mock.calls
+      .map((c) => c[0])
+      .find((c) => c instanceof (commandClass as new (...a: never[]) => unknown));
+    expect(call).toBeDefined();
+    return (call as { input: Record<string, unknown> }).input;
+  }
+
+  it('drift --revert of a subnet group sends the subnets and no zone member', async () => {
+    readbackOf({ VPCZoneIdentifier: 'subnet-a,subnet-b' });
+    const provider = new ASGProvider();
+    const readback = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE))!;
+    mockSend.mockClear();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      { ...readback, MaxSize: 1 },
+      readback,
+      { desiredFromAwsReadback: true }
+    );
+
+    const input = inputOf(UpdateAutoScalingGroupCommand);
+    expect(input['MaxSize']).toBe(1);
+    expect(input['VPCZoneIdentifier']).toBe('subnet-a,subnet-b');
+    expect(input).not.toHaveProperty('AvailabilityZones');
+    expect(input).not.toHaveProperty('AvailabilityZoneIds');
+  });
+
+  it('drift --revert of a zone-only group sends exactly the changed zone ids', async () => {
+    readbackOf({});
+    const provider = new ASGProvider();
+    const readback = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE))!;
+    mockSend.mockClear();
+    await provider.update(
+      'MyAsg',
+      'my-asg',
+      RESOURCE_TYPE,
+      { ...readback, AvailabilityZoneIds: ['use1-az1'] },
+      readback,
+      { desiredFromAwsReadback: true }
+    );
+
+    const input = inputOf(UpdateAutoScalingGroupCommand);
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1']);
+    expect(input).not.toHaveProperty('AvailabilityZones');
+  });
+
+  it('a rollback re-create from a readback-shaped record sends no zone member beside subnets', async () => {
+    readbackOf({ VPCZoneIdentifier: 'subnet-a,subnet-b' });
+    const provider = new ASGProvider();
+    const record = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE))!;
+    mockSend.mockClear();
+    await provider.create('MyAsg', RESOURCE_TYPE, record, { replayingState: true });
+
+    const input = inputOf(CreateAutoScalingGroupCommand);
+    expect(input['VPCZoneIdentifier']).toBe('subnet-a,subnet-b');
+    expect(input).not.toHaveProperty('AvailabilityZones');
+    expect(input).not.toHaveProperty('AvailabilityZoneIds');
+  });
+
+  it('a rollback re-create from a zone-only readback-shaped record sends only the zone ids', async () => {
+    readbackOf({});
+    const provider = new ASGProvider();
+    const record = bagOf(await provider.readCurrentState('my-asg', 'MyAsg', RESOURCE_TYPE))!;
+    mockSend.mockClear();
+    await provider.create('MyAsg', RESOURCE_TYPE, record, { replayingState: true });
+
+    const input = inputOf(CreateAutoScalingGroupCommand);
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1', 'use1-az2']);
+    expect(input).not.toHaveProperty('AvailabilityZones');
+  });
+
+  it('a template create declaring both zone members passes both through (AWS refuses it, as for CloudFormation)', async () => {
+    readbackOf({});
+    await new ASGProvider().create('MyAsg', RESOURCE_TYPE, {
+      AutoScalingGroupName: 'my-asg',
+      MinSize: 0,
+      MaxSize: 0,
+      AvailabilityZones: ['us-east-1a'],
+      AvailabilityZoneIds: ['use1-az1'],
+    });
+
+    const input = inputOf(CreateAutoScalingGroupCommand);
+    expect(input['AvailabilityZones']).toEqual(['us-east-1a']);
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1']);
+  });
+});

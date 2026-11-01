@@ -25,6 +25,13 @@ import * as sns from 'aws-cdk-lib/aws-sns';
  * verify.sh asserts what CloudFormation does: MaxInstanceLifetime and the
  * impairment policy are cleared, the other two keep their live values (#5004).
  *
+ * Issue #2762 leg (SDK-route backfill): phases 1-2 declare a spread
+ * PlacementGroup and an InstanceLifecyclePolicy (TerminateHookAbandon: retain),
+ * both first sent by CreateAutoScalingGroup. The removal phase drops both
+ * (CloudFormation A/B: PlacementGroup is cleared, the policy is KEPT) and ADDS
+ * AvailabilityZoneIds, the zone ids of the group's own subnets, which verify.sh
+ * reads off the live group after phase 1 and passes in CDKD_ASG_AZ_IDS.
+ *
  * min/max/desiredCapacity are all 0 so no instances launch — keeps the deploy
  * cheap and destroy fast (no instance teardown wait).
  */
@@ -108,8 +115,30 @@ export class LaunchTemplateAsgInplaceStack extends cdk.Stack {
     // mutable ASG properties in phases 1-2, then REMOVE them from the template
     // in the removal phase. Set via the L1 escape hatch so the exact CFn
     // property names land in the template (no L2 API drift).
+    const cfnAsg = asg.node.defaultChild as autoscaling.CfnAutoScalingGroup;
+    // A stable logical id, so verify.sh reads THIS record's provisionedBy.
+    cfnAsg.overrideLogicalId('Asg');
+
+    // Issue #2762 leg. The placement group stays in every phase, so the removal
+    // phase drops only the group's reference to it. Spread works with any
+    // instance type. The two ASG properties are set by their CloudFormation
+    // names, independent of the aws-cdk-lib version the fixture resolves.
+    const placementGroup = new ec2.CfnPlacementGroup(this, 'Pg', { strategy: 'spread' });
     if (!isRemoval) {
-      const cfnAsg = asg.node.defaultChild as autoscaling.CfnAutoScalingGroup;
+      cfnAsg.addPropertyOverride('PlacementGroup', placementGroup.ref);
+      // AWS's default is `terminate`.
+      cfnAsg.addPropertyOverride('InstanceLifecyclePolicy', {
+        RetentionTriggers: { TerminateHookAbandon: 'retain' },
+      });
+    } else {
+      const zoneIds = (process.env.CDKD_ASG_AZ_IDS ?? '').split(',').filter((z: string) => z !== '');
+      if (zoneIds.length === 0) {
+        throw new Error('CDKD_TEST_REMOVAL=true needs CDKD_ASG_AZ_IDS (set by verify.sh)');
+      }
+      cfnAsg.addPropertyOverride('AvailabilityZoneIds', zoneIds);
+    }
+
+    if (!isRemoval) {
       cfnAsg.healthCheckGracePeriod = 90; // CFn default: 0
       cfnAsg.maxInstanceLifetime = 604800; // 7 days; CFn default: none (API min is 86400)
       cfnAsg.terminationPolicies = ['OldestInstance']; // CFn default: ['Default']

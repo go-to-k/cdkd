@@ -8624,6 +8624,7 @@
     "AWS::DSQL::Cluster",
     "AWS::DocDB::GlobalCluster",
     "AWS::EC2::LaunchTemplate",
+    "AWS::EC2::PlacementGroup",
     "AWS::EC2::PrefixList",
     "AWS::EC2::SecurityGroupEgress",
     "AWS::EC2::TransitGateway",

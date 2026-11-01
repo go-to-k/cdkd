@@ -514,3 +514,167 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
     });
   });
 });
+
+// go-to-k/cdkd#2762 (real CloudFormation A/B, us-east-1, the
+// UpdateAutoScalingGroup input read from CloudTrail): a removed PlacementGroup
+// is sent as `PlacementGroup: ""` and cleared, a removed InstanceLifecyclePolicy
+// is not sent and stays, and an AvailabilityZoneIds -> AvailabilityZones switch
+// sends only the newly declared member.
+describe('ASGProvider update — PlacementGroup / InstanceLifecyclePolicy / AvailabilityZoneIds (issue #2762)', () => {
+  const base = { AutoScalingGroupName: ASG_NAME, MinSize: 0, MaxSize: 0 };
+  const policy = { RetentionTriggers: { TerminateHookAbandon: 'retain' } };
+
+  it('sends all three when declared', async () => {
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      {
+        ...base,
+        PlacementGroup: 'pg-two',
+        InstanceLifecyclePolicy: policy,
+        AvailabilityZoneIds: ['use1-az1', 'use1-az2'],
+      },
+      { ...base, PlacementGroup: 'pg-one', AvailabilityZoneIds: ['use1-az1'] }
+    );
+
+    const input = updateCallInput();
+    expect(input['PlacementGroup']).toBe('pg-two');
+    expect(input['InstanceLifecyclePolicy']).toEqual(policy);
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1', 'use1-az2']);
+  });
+
+  it('clears a removed PlacementGroup with an empty string and sends nothing for a removed InstanceLifecyclePolicy', async () => {
+    await new ASGProvider().update('MyAsg', ASG_NAME, RESOURCE_TYPE, base, {
+      ...base,
+      PlacementGroup: 'pg-one',
+      InstanceLifecyclePolicy: policy,
+    });
+
+    const input = updateCallInput();
+    expect(input['PlacementGroup']).toBe('');
+    expect(input).not.toHaveProperty('InstanceLifecyclePolicy');
+  });
+
+  it('sends no PlacementGroup when neither side declares one', async () => {
+    await new ASGProvider().update('MyAsg', ASG_NAME, RESOURCE_TYPE, base, base);
+
+    expect(updateCallInput()).not.toHaveProperty('PlacementGroup');
+  });
+
+  it('sends only AvailabilityZones on an AvailabilityZoneIds -> AvailabilityZones switch, and the reverse', async () => {
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { ...base, AvailabilityZones: ['us-east-1a'] },
+      { ...base, AvailabilityZoneIds: ['use1-az1', 'use1-az2'] }
+    );
+    const toNames = updateCallInput();
+    expect(toNames['AvailabilityZones']).toEqual(['us-east-1a']);
+    expect(toNames).not.toHaveProperty('AvailabilityZoneIds');
+
+    mockSend.mockClear();
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { ...base, AvailabilityZoneIds: ['use1-az1'] },
+      { ...base, AvailabilityZones: ['us-east-1a'] }
+    );
+    const toIds = updateCallInput();
+    expect(toIds['AvailabilityZoneIds']).toEqual(['use1-az1']);
+    expect(toIds).not.toHaveProperty('AvailabilityZones');
+  });
+});
+
+// go-to-k/cdkd#2762: readCurrentState reports BOTH zone members, and AWS refuses
+// both in one UpdateAutoScalingGroup, so a readback- or state-borne desired bag
+// sends at most one: none beside subnets, else the member that changed.
+describe('ASGProvider update — zone members from a readback or state record (issue #2762)', () => {
+  const live = {
+    AutoScalingGroupName: ASG_NAME,
+    MinSize: 0,
+    MaxSize: 0,
+    VPCZoneIdentifier: [],
+    AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+    AvailabilityZoneIds: ['use1-az1', 'use1-az2'],
+  };
+  const withSubnets = { ...live, VPCZoneIdentifier: ['subnet-a', 'subnet-b'] };
+
+  it('sends no zone member beside subnets, even when both changed (zones follow VPCZoneIdentifier)', async () => {
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      {
+        ...withSubnets,
+        VPCZoneIdentifier: ['subnet-c'],
+        AvailabilityZones: ['us-east-1c'],
+        AvailabilityZoneIds: ['use1-az4'],
+      },
+      withSubnets,
+      { desiredFromAwsReadback: true }
+    );
+
+    const input = updateCallInput();
+    expect(input['VPCZoneIdentifier']).toBe('subnet-c');
+    expect(input).not.toHaveProperty('AvailabilityZones');
+    expect(input).not.toHaveProperty('AvailabilityZoneIds');
+  });
+
+  it('sends neither zone member on a drift --revert that changed neither', async () => {
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { ...live, MaxSize: 1 },
+      live,
+      { desiredFromAwsReadback: true }
+    );
+
+    const input = updateCallInput();
+    expect(input['MaxSize']).toBe(1);
+    expect(input).not.toHaveProperty('AvailabilityZones');
+    expect(input).not.toHaveProperty('AvailabilityZoneIds');
+  });
+
+  it('sends only the zone ids when both changed on a rollback replay without subnets', async () => {
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { ...live, AvailabilityZones: ['us-east-1a'], AvailabilityZoneIds: ['use1-az1'] },
+      live,
+      { replayingState: true }
+    );
+
+    const input = updateCallInput();
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1']);
+    expect(input).not.toHaveProperty('AvailabilityZones');
+  });
+
+  it('sends only the names when the ids are unchanged or unreported', async () => {
+    await new ASGProvider().update(
+      'MyAsg',
+      ASG_NAME,
+      RESOURCE_TYPE,
+      { ...live, AvailabilityZones: ['us-east-1a'], AvailabilityZoneIds: [] },
+      { ...live, AvailabilityZoneIds: ['use1-az1'] },
+      { desiredFromAwsReadback: true }
+    );
+
+    const input = updateCallInput();
+    expect(input['AvailabilityZones']).toEqual(['us-east-1a']);
+    expect(input).not.toHaveProperty('AvailabilityZoneIds');
+  });
+
+  it('passes a template bag through as declared, subnets and both zone members included', async () => {
+    await new ASGProvider().update('MyAsg', ASG_NAME, RESOURCE_TYPE, withSubnets, live);
+
+    const input = updateCallInput();
+    expect(input['VPCZoneIdentifier']).toBe('subnet-a,subnet-b');
+    expect(input['AvailabilityZones']).toEqual(['us-east-1a', 'us-east-1b']);
+    expect(input['AvailabilityZoneIds']).toEqual(['use1-az1', 'use1-az2']);
+  });
+});

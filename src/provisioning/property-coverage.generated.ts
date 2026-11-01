@@ -444,6 +444,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'AutoScalingGroupName',
         'AvailabilityZoneDistribution',
+        'AvailabilityZoneIds',
         'AvailabilityZoneImpairmentPolicy',
         'AvailabilityZones',
         'CapacityRebalance',
@@ -457,6 +458,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DesiredCapacityType',
         'HealthCheckGracePeriod',
         'HealthCheckType',
+        'InstanceLifecyclePolicy',
         'InstanceMaintenancePolicy',
         'LaunchTemplate',
         'LifecycleHookSpecificationList',
@@ -468,6 +470,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'MixedInstancesPolicy',
         'NewInstancesProtectedFromScaleIn',
         'NotificationConfigurations',
+        'PlacementGroup',
         'ServiceLinkedRoleARN',
         'SkipZonalShiftValidation',
         'Tags',
@@ -477,9 +480,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VPCZoneIdentifier',
       ]),
       silentDrop: new Map<string, string>([
-        ['AvailabilityZoneIds', 'not yet implemented by cdkd'],
-        ['InstanceId', 'not yet implemented by cdkd'],
-        ['InstanceLifecyclePolicy', 'not yet implemented by cdkd'],
+        [
+          'InstanceId',
+          'CreateAutoScalingGroup derives a new launch configuration from the instance, and AWS Launch Configurations are end-of-life 2024-10 like LaunchConfigurationName; use LaunchTemplate instead',
+        ],
         [
           'LaunchConfigurationName',
           'AWS Launch Configurations end-of-life 2024-10; use LaunchTemplate instead',
@@ -488,7 +492,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'NotificationConfiguration',
           'Legacy singular form; use NotificationConfigurations (plural) which cdkd already wires',
         ],
-        ['PlacementGroup', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>(['InstanceId']),
       readOnly: new Set<string>(['AutoScalingGroupARN']),

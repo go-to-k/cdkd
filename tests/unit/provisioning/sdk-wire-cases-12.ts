@@ -2062,6 +2062,10 @@ const ASG_KEPT: Record<string, string> = {
     'CloudFormation sends only the member the template now declares and AWS keeps the subnets, parity (#1160 A/B, asg-provider.ts:1374-1378)',
   AvailabilityZones:
     'CloudFormation sends only the member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+  AvailabilityZoneIds:
+    'CloudFormation sends only the zone member the template now declares, as cdkd does (#2762 A/B, asg-provider.ts UpdateAutoScalingGroup removal notes)',
+  InstanceLifecyclePolicy:
+    'KEPT by CloudFormation on removal: it sends nothing and the live retention trigger stays (#2762 A/B, asg-provider.ts UpdateAutoScalingGroup removal notes)',
   SkipZonalShiftValidation:
     'write-only per-request flag in the CloudFormation schema, never read back: nothing to reset (asg-provider.ts:1379-1380)',
   Context:
@@ -2099,6 +2103,10 @@ const ASG_NESTED: Record<string, string> = {
     'the subnet list is re-sent whole, comma-joined, from the desired bag (asg-provider.ts:1353, 1481, 2228-2237)',
   AvailabilityZones:
     'the zone list is re-sent whole from the desired bag (asg-provider.ts:1482-1484)',
+  AvailabilityZoneIds:
+    'the zone-id list is re-sent whole from the desired bag, as AvailabilityZones is',
+  InstanceLifecyclePolicy:
+    'the policy is re-sent whole from the desired bag, never read from the previous side; its update-add probe observes delivery',
   TerminationPolicies:
     'the policy list is re-sent whole from the desired bag (asg-provider.ts:1494-1496)',
   InstanceMaintenancePolicy:
@@ -2212,6 +2220,9 @@ const ASG_EVERY: Bag = {
   },
   InstanceMaintenancePolicy: { MinHealthyPercentage: 90, MaxHealthyPercentage: 120 },
   DeletionProtection: 'prevent-force-deletion',
+  PlacementGroup: 'pg-spread',
+  // `retain` differs from AWS's `terminate` default.
+  InstanceLifecyclePolicy: { RetentionTriggers: { TerminateHookAbandon: 'retain' } },
 };
 
 const ASG_TRAFFIC_TYPE =
@@ -2221,6 +2232,8 @@ const ASG_MIXED: Bag = {
   AutoScalingGroupName: ASG_NAME,
   MinSize: '1',
   MaxSize: '4',
+  // Zone IDs rather than names: AWS refuses both in one request.
+  AvailabilityZoneIds: ['use1-az1', 'use1-az2'],
   MixedInstancesPolicy: {
     InstancesDistribution: {
       OnDemandAllocationStrategy: 'prioritized',
