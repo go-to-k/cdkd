@@ -151,6 +151,14 @@ update, and its line reads `[via CC API: sticky]`. A resource the deploy
 replaces is routed like a new one, so its line never says `sticky`. Delete
 lines carry no routing note.
 
+A type Cloud Control cannot serve has no such route, so its line carries no
+routing note either. When the template sets a property on it that cdkd's SDK
+provider does not handle, the diff warns instead, because the deploy refuses
+the resource unless
+[`--prefer-sdk-route`](cli-deploy-safety-routing.md#prefer-sdk-route-deploy)
+accepts the drop. The diff still exits `0`, since a deploy with that flag goes
+through.
+
 ### `[adopted from a rollback orphan]`
 
 ```text

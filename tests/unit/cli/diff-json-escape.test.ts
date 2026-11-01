@@ -68,7 +68,7 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({ getProvider: vi.fn() })),
+  ProviderRegistry: vi.fn().mockImplementation(() => ({ getProvider: vi.fn(), ccRouteUnavailableReason: vi.fn() })),
 }));
 
 import { createDiffCommand } from '../../../src/cli/commands/diff.js';

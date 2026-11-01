@@ -24,6 +24,13 @@ import type { ResourceChange, StackState } from '../../../src/types/state.js';
 /** No row replaced: every existing case is an in-place diff. */
 const NO_CHANGES: ReadonlyMap<string, ResourceChange> = new Map();
 
+/** Every type here has a Cloud Control route; #5600's arm has its own file. */
+const routes = (
+  template: CloudFormationTemplate,
+  state: StackState,
+  changes: ReadonlyMap<string, ResourceChange>
+): Map<string, string[]> => collectCcApiRoutes(template, state, changes, () => undefined);
+
 const EXEMPT_TYPE = (() => {
   for (const [type, e] of STICKY_CC_MIGRATION_EXEMPT) if (e.mode === 'sdk-coverage') return type;
   throw new Error('no sdk-coverage member; these cases would be vacuous');
@@ -67,7 +74,7 @@ function templateWith(
 
 describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
   it('says the resource is RETURNING when the flip conditions hold', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', EXEMPT_TYPE, { DisplayName: 'new' }),
       stateWith('R', EXEMPT_TYPE, { DisplayName: 'old' }), NO_CHANGES
     );
@@ -75,7 +82,7 @@ describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
   });
 
   it('says STICKY for a type carrying no exemption', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', 'AWS::CloudFormation::WaitConditionHandle', {}),
       stateWith('R', 'AWS::CloudFormation::WaitConditionHandle', {}), NO_CHANGES
     );
@@ -88,7 +95,7 @@ describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
     // routed it to the SDK provider: the annotation stated the opposite of
     // what the deploy would do. A cc-broken type flips unconditionally, so it
     // must say so even with no properties on either side.
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', CC_BROKEN_TYPE),
       stateWith('R', CC_BROKEN_TYPE, {}), NO_CHANGES
     );
@@ -101,7 +108,7 @@ describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
     // cc-api-recorded resource prints `sticky` for a deploy that will flip it
     // — the same inverse-of-truth, reintroduced one level above the shared
     // predicate. Found in review, after the `?? {}` was initially missing.
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', EXEMPT_TYPE),
       stateWith('R', EXEMPT_TYPE, { DisplayName: 'old' }), NO_CHANGES
     );
@@ -109,7 +116,7 @@ describe('cdkd diff routing annotation for a cc-api record (#2719)', () => {
   });
 
   it('annotates nothing for a resource with no state record', () => {
-    const hits = collectCcApiRoutes(templateWith('R', EXEMPT_TYPE, {}), {
+    const hits = routes(templateWith('R', EXEMPT_TYPE, {}), {
       version: 9,
       stackName: 'S',
       region: 'us-east-1',
@@ -137,13 +144,13 @@ describe('cdkd diff routing annotation for an unrecognized key (#3713)', () => {
 
   it('does NOT name a key the record already holds unchanged', () => {
     const bag = { QueueName: 'q', [UNKNOWN]: 'same' };
-    const hits = collectCcApiRoutes(templateWith('R', TYPE, { ...bag }), stateWith('R', TYPE, { ...bag }), NO_CHANGES);
+    const hits = routes(templateWith('R', TYPE, { ...bag }), stateWith('R', TYPE, { ...bag }), NO_CHANGES);
     // The record is on 'cc-api', so the sticky arm is what remains.
     expect(hits.get('R')).toEqual(['sticky']);
   });
 
   it('names the key once its value differs from the record', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', TYPE, { QueueName: 'q', [UNKNOWN]: 'changed' }),
       stateWith('R', TYPE, { QueueName: 'q', [UNKNOWN]: 'same' }), NO_CHANGES
     );
@@ -176,7 +183,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   });
 
   it('keeps `sticky` on an IN-PLACE update (the control)', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', TYPE, { QueueName: 'q', VisibilityTimeout: 60 }),
       stateWith('R', TYPE, { QueueName: 'q', VisibilityTimeout: 30 }),
       update(TYPE, [
@@ -187,7 +194,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   });
 
   it('drops `sticky` on a create-only property change', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', TYPE, { QueueName: 'q2' }),
       stateWith('R', TYPE, { QueueName: 'q1' }),
       update(TYPE, [{ path: 'QueueName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true }])
@@ -199,7 +206,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
     // No `propertyChanges` at all, so only the recorded-type clause can
     // classify this row as replaced. The diff's own Type change carries a
     // `Type` property change too; the case above covers that clause.
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', OTHER_TYPE, { Type: 'String', Value: 'v' }),
       stateWith('R', TYPE, { QueueName: 'q' }),
       update(OTHER_TYPE, undefined)
@@ -208,7 +215,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   });
 
   it('drops `sticky` on the Type change the diff actually produces', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', OTHER_TYPE, { Type: 'String', Value: 'v' }),
       stateWith('R', TYPE, { QueueName: 'q' }),
       update(OTHER_TYPE, [
@@ -223,7 +230,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
     (flag) => {
       // The deploy updates in place until the propagated value is read, and
       // its live label keeps the recorded route meanwhile.
-      const hits = collectCcApiRoutes(
+      const hits = routes(
         templateWith('R', TYPE, { QueueName: 'q' }),
         stateWith('R', TYPE, { QueueName: 'q' }),
         update(TYPE, [
@@ -242,7 +249,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
 
   it('drops `sticky` when a create-only change sits beside an in-place one', () => {
     // A real row usually mixes the two; ANY non-ceiling replacement decides.
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', TYPE, { QueueName: 'q2', VisibilityTimeout: 60 }),
       stateWith('R', TYPE, { QueueName: 'q1', VisibilityTimeout: 30 }),
       update(TYPE, [
@@ -254,7 +261,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   });
 
   it('drops `sticky` when a real replacement sits beside a ceiling', () => {
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', TYPE, { QueueName: 'q2', RedrivePolicy: { Ref: 'X' } }),
       stateWith('R', TYPE, { QueueName: 'q1' }),
       update(TYPE, [
@@ -274,7 +281,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
   it('drops the RETURNING token too on a replaced row of an exempt type', () => {
     // Without a replacement this row prints the returning token (the #2719
     // case above); a replacement is a fresh create, which returns from nowhere.
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', EXEMPT_TYPE, { TopicName: 'b' }),
       stateWith('R', EXEMPT_TYPE, { TopicName: 'a' }),
       update(EXEMPT_TYPE, [
@@ -286,7 +293,7 @@ describe('cdkd diff routing annotation for a replaced cc-api row (#3453)', () =>
 
   it('keeps a FRESH hit on a replaced row — the create reads the same template bag', () => {
     const UNKNOWN = 'CdkdTotallyNewPropertyFromTheFuture';
-    const hits = collectCcApiRoutes(
+    const hits = routes(
       templateWith('R', TYPE, { QueueName: 'q2', [UNKNOWN]: 'changed' }),
       stateWith('R', TYPE, { QueueName: 'q1', [UNKNOWN]: 'same' }),
       update(TYPE, [{ path: 'QueueName', oldValue: 'q1', newValue: 'q2', requiresReplacement: true }])

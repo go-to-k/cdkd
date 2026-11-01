@@ -1,0 +1,241 @@
+/**
+ * `cdkd diff` on a type with no Cloud Control route (issue
+ * [#5600](https://github.com/go-to-k/cdkd/issues/5600)): `AWS::CodeBuild::Project`
+ * with `Triggers` printed `[via CC API: Triggers]`, and `--json` carried the
+ * same claim in `ccApi`, while the deploy refuses the resource pre-flight.
+ *
+ * Runs through the REAL registration and predicate, because what is pinned is
+ * that the preview agrees with `ProviderRegistry.validateResourceProperties`.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+vi.mock('../../../src/utils/aws-clients.js', async (importOriginal) =>
+  (await import('../deployment/_inert-cloudformation-client.js')).withInertCloudFormationClient(importOriginal)
+);
+
+const warn = vi.hoisted(() => vi.fn());
+vi.mock('../../../src/utils/logger.js', () => {
+  const fns = {
+    setLevel: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn,
+    error: vi.fn(),
+    child: () => fns,
+  };
+  return { getLogger: () => fns };
+});
+
+import {
+  buildDiffTree,
+  collectCcApiRoutes,
+  computeStackDiff,
+  countBlocking,
+  findUnroutableDropRefusals,
+} from '../../../src/cli/commands/diff-recursive.js';
+import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
+import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
+import {
+  loadProviderClasses,
+  registerAllProviders,
+} from '../../../src/provisioning/register-providers.js';
+import type { CloudFormationTemplate } from '../../../src/types/resource.js';
+import type { StackState } from '../../../src/types/state.js';
+import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
+
+const TYPE = 'AWS::CodeBuild::Project';
+const STACK = 'S';
+const CHILD = `${STACK}~Child`;
+
+const registry = new ProviderRegistry();
+registerAllProviders(registry, await loadProviderClasses());
+const reasonOf = (resourceType: string): string | undefined =>
+  registry.ccRouteUnavailableReason(resourceType);
+
+const template = (type = TYPE, properties: Record<string, unknown> = { Triggers: {} }) =>
+  ({ Resources: { R: { Type: type, Properties: properties } } }) as unknown as CloudFormationTemplate;
+
+function stateOf(resources: StackState['resources'] = {}, stackName = STACK): StackState {
+  return {
+    stackName,
+    region: 'us-east-1',
+    version: 10,
+    resources,
+    outputs: {},
+    lastModified: 0,
+  } as unknown as StackState;
+}
+
+const backend = (states: Record<string, StackState>): S3StateBackend =>
+  ({
+    getState: async (stackName: string) =>
+      states[stackName] ? { state: states[stackName], etag: 'fake' } : null,
+  }) as unknown as S3StateBackend;
+
+const warnings = (): string[] => warn.mock.calls.map(([message]) => String(message));
+
+describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('has the premise: the deploy refuses this template pre-flight', () => {
+    expect(reasonOf(TYPE)).toBeDefined();
+    expect(() =>
+      registry.validateResourceProperties([
+        { logicalId: 'R', resourceType: TYPE, properties: { Triggers: {} } },
+      ])
+    ).toThrow(/cannot fall back to Cloud Control API/);
+  });
+
+  it('prints no route for it', () => {
+    expect(collectCcApiRoutes(template(), stateOf(), new Map(), reasonOf).has('R')).toBe(false);
+  });
+
+  it('prints no sticky route either: the same refusal reads no recorded layer', () => {
+    const state = stateOf({
+      R: { physicalId: 'p', resourceType: TYPE, properties: {}, provisionedBy: 'cc-api' },
+    } as unknown as StackState['resources']);
+    expect(collectCcApiRoutes(template(), state, new Map(), reasonOf).has('R')).toBe(false);
+  });
+
+  it('keeps the route of a type Cloud Control serves, through the same predicate', () => {
+    const hits = collectCcApiRoutes(
+      template('AWS::ApiGatewayV2::Api', { Body: {} }),
+      stateOf(),
+      new Map(),
+      reasonOf
+    );
+    expect(hits.get('R')).toEqual(['Body']);
+    expect(
+      findUnroutableDropRefusals(
+        template('AWS::ApiGatewayV2::Api', { Body: {} }),
+        {},
+        reasonOf
+      )
+    ).toEqual([]);
+  });
+
+  it('keeps the sticky tag of a recorded resource with no drop', () => {
+    const state = stateOf({
+      R: { physicalId: 'p', resourceType: TYPE, properties: {}, provisionedBy: 'cc-api' },
+    } as unknown as StackState['resources']);
+    const hits = collectCcApiRoutes(template(TYPE, {}), state, new Map(), reasonOf);
+    expect(hits.get('R')).toEqual(['sticky']);
+  });
+
+  it('names the property, the reason and the --prefer-sdk-route entry in the warning', () => {
+    const [reason, ...rest] = findUnroutableDropRefusals(template(), {}, reasonOf);
+    expect(rest).toEqual([]);
+    expect(reason).toContain(`R (${TYPE})`);
+    expect(reason).toContain('refuses Triggers');
+    expect(reason).toContain(reasonOf(TYPE));
+    expect(reason).toContain(`--prefer-sdk-route ${TYPE}:Triggers`);
+  });
+
+  it('skips AWS::CDK::Metadata, which the deploy check filters out', () => {
+    expect(
+      findUnroutableDropRefusals(template('AWS::CDK::Metadata'), {}, () => 'no route')
+    ).toEqual([]);
+  });
+
+  describe('through buildDiffTree', () => {
+    const diff = (tpl: CloudFormationTemplate, extra: object = {}) =>
+      buildDiffTree({
+        stackName: STACK,
+        displayName: STACK,
+        region: 'us-east-1',
+        template: tpl,
+        nestedTemplates: {},
+        recursive: false,
+        stateBackend: backend({ [STACK]: stateOf() }),
+        diffCalculator: new DiffCalculator(),
+        isNestedChild: false,
+        ccRouteUnavailableReason: reasonOf,
+        ...extra,
+      });
+
+    it('warns instead of a route, and does not exit 3: the flag lets the deploy through', async () => {
+      const node = await diff(template());
+      expect(node.changes.get('R')?.changeType).toBe('CREATE');
+      expect(node.ccApiRoutes.has('R')).toBe(false);
+      expect(countBlocking(node)).toBe(0);
+      expect(warnings().filter((m) => m.includes('refuses Triggers'))).toHaveLength(1);
+    });
+
+    it('reads the passed predicate, not the type alone', async () => {
+      // A served type a provider could still opt out of (`disableCcApiFallback`),
+      // which only the registry knows.
+      const served = template('AWS::ApiGatewayV2::Api', { Body: {} });
+      expect((await diff(served)).ccApiRoutes.get('R')).toEqual(['Body']);
+      const node = await diff(served, { ccRouteUnavailableReason: () => 'opted out' });
+      expect(node.ccApiRoutes.has('R')).toBe(false);
+    });
+
+    it('knows a type with no handlers with no registry passed', async () => {
+      const node = await diff(template(), { ccRouteUnavailableReason: undefined });
+      expect(node.ccApiRoutes.has('R')).toBe(false);
+    });
+
+    describe('in a nested child', () => {
+      let dir: string;
+
+      beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), 'cdkd-5600-'));
+      });
+
+      afterEach(() => {
+        rmSync(dir, { recursive: true, force: true });
+      });
+
+      it('reads the same predicate, so the threading reaches the child', async () => {
+        const childPath = join(dir, 'child.json');
+        // A served type, so only the threaded predicate can refuse the row.
+        writeFileSync(
+          childPath,
+          JSON.stringify(template('AWS::ApiGatewayV2::Api', { Body: {} }))
+        );
+        const node = await diff(
+          {
+            Resources: { Child: { Type: 'AWS::CloudFormation::Stack', Properties: {} } },
+          } as unknown as CloudFormationTemplate,
+          {
+            recursive: true,
+            ccRouteUnavailableReason: () => 'opted out',
+            nestedTemplates: { Child: childPath },
+            stateBackend: backend({
+              [STACK]: stateOf({
+                Child: {
+                  physicalId: CHILD,
+                  resourceType: 'AWS::CloudFormation::Stack',
+                  properties: {},
+                },
+              } as unknown as StackState['resources']),
+              [CHILD]: stateOf({}, CHILD),
+            }),
+          }
+        );
+        const kid = node.children.find((c) => c.stackName === CHILD);
+        expect(kid, 'the nested child node is missing').toBeDefined();
+        expect(kid!.changes.get('R')?.changeType).toBe('CREATE');
+        expect(kid!.ccApiRoutes.has('R')).toBe(false);
+        expect(warnings().filter((m) => m.includes('refuses Body'))).toHaveLength(1);
+      });
+    });
+  });
+
+  it('does not warn for a caller that previews no deploy (`cdkd refactor`)', async () => {
+    await computeStackDiff(
+      stateOf(),
+      template(),
+      'us-east-1',
+      STACK,
+      backend({ [STACK]: stateOf() }),
+      new DiffCalculator()
+    );
+    expect(warnings().filter((m) => m.includes('refuses Triggers'))).toEqual([]);
+  });
+});
