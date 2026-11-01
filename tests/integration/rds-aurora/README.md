@@ -10,7 +10,9 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   on the SDK route (every key the L2 emits is handled since issue #2762), then
   verify.sh rewrites its record to `provisionedBy: cc-api`, the Cloud Control
   route the record keeps on later deploys, and asserts that route and that
-  destroying it left no manual snapshot (issue #3993)
+  destroying it left no manual snapshot (issue #3993). Its writer instance
+  declares `PromotionTier: 0`; verify.sh asserts the writer is created on the
+  SDK route with that tier live (issue #2762)
 - **Secrets Manager Secret** - Auto-generated database credentials (created by CDK)
 - **RDS Proxy** (`AuroraProxy`) - sets `DebugLogging` in phase 1 and DROPS it in
   the `CDKD_TEST_UPDATE=true` phase; verify.sh asserts the live value stays

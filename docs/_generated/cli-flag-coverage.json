@@ -2376,6 +2376,7 @@
     "--endpoint-name",
     "--enforce-consumer-deletion",
     "--engine",
+    "--engine-version",
     "--entity-filter",
     "--entries",
     "--env-vars",

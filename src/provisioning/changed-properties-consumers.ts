@@ -16,12 +16,14 @@
  * correct set, only a wider one: the DocDB DB cluster reads it for
  * `MasterUserPassword` alone, the RDS DB cluster for it plus its
  * go-to-k/cdkd#2762 parameter group, window, tag-copy and storage type keys,
- * and the RDS DB instance for it plus its #2762 storage, backup and
- * Performance Insights keys. AWS never
+ * and the RDS DB instance for it plus `EngineVersion` and its #2762 storage,
+ * backup, Performance Insights and other backfill keys. AWS never
  * returns the password, so a readback could not confirm it and they stay out
  * (#5153); a `NoEcho`-fed #2762 key is re-sent, the safe direction, except
  * a `NoEcho`-fed `AllocatedStorage` on an instance autoscaling has grown past
- * it, which RDS refuses as a shrink on every deploy that re-sends it. A LEAF: the
+ * it, which RDS refuses as a shrink on every deploy that re-sends it, and a
+ * `NoEcho`-fed `EngineVersion` AWS has auto-upgraded past, which RDS refuses
+ * as a downgrade the same way. A LEAF: the
  * deploy engine imports it, never a provider module.
  */
 export const CHANGED_PROPERTIES_CONSUMER_TYPES: ReadonlySet<string> = new Set([

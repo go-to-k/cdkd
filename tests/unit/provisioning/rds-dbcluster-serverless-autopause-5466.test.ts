@@ -194,6 +194,13 @@ describe('RDSProvider DBCluster SecondsUntilAutoPause (issue #5466)', () => {
     // An absent or empty bag records nothing to scope by: the path is compared.
     expect(provider.getDriftUnknownPaths(TYPE, {})).toEqual([]);
     expect(provider.getDriftUnknownPaths(TYPE)).toEqual([]);
-    expect(provider.getDriftUnknownPaths('AWS::RDS::DBInstance', {})).toEqual([]);
+    // The cluster path never reaches a DB instance (whose own unreadable flags
+    // are go-to-k/cdkd#2762's).
+    expect(provider.getDriftUnknownPaths('AWS::RDS::DBInstance', {})).not.toContain(path);
+    expect(
+      provider.getDriftUnknownPaths('AWS::RDS::DBInstance', {
+        ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 1 },
+      })
+    ).not.toContain(path);
   });
 });
