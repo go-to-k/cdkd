@@ -95,6 +95,70 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3850)', (
     });
   });
 
+  it.each([
+    ['StartingPosition', { StartingPosition: 'TRIM_HORIZON' }],
+    ['StartingPositionTimestamp', { StartingPositionTimestamp: 1700000000 }],
+    ['MaximumBatchingWindowInSeconds', { MaximumBatchingWindowInSeconds: 0 }],
+  ])('replays an old Queue record beside %s without the mode', async (_label, extra) => {
+    await provider.create(
+      'Esm',
+      TYPE,
+      { ...kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: 'Queue' }), ...extra },
+      { replayingState: true }
+    );
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    const command = mockSend.mock.calls[0]![0] as CreateEventSourceMappingCommand;
+    expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumerGroupId: 'g' });
+  });
+
+  it('replays a Stream record beside a StartingPosition as it is', async () => {
+    await provider.create(
+      'Esm',
+      TYPE,
+      { ...kafkaProps({ ConsumptionMode: 'Stream' }), StartingPosition: 'TRIM_HORIZON' },
+      { replayingState: true }
+    );
+    expect(mockWarn).not.toHaveBeenCalled();
+    const command = mockSend.mock.calls[0]![0] as CreateEventSourceMappingCommand;
+    expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumptionMode: 'Stream' });
+  });
+
+  it('keeps the mode on a replay of a sendable Queue record, and off the replay path', async () => {
+    const sendable = kafkaProps({ ConsumptionMode: 'Queue' });
+    await provider.create('Esm', TYPE, sendable, { replayingState: true });
+    await provider.create('Esm', TYPE, { ...sendable, StartingPosition: 'TRIM_HORIZON' });
+    expect(mockWarn).not.toHaveBeenCalled();
+    for (const call of mockSend.mock.calls) {
+      const command = call[0] as CreateEventSourceMappingCommand;
+      expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumptionMode: 'Queue' });
+    }
+  });
+
+  describe('canonicalizeDriftPair', () => {
+    const oldBaseline = kafkaProps({ ConsumerGroupId: 'g' });
+    const live = (mode: string) => kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: mode });
+
+    it('completes a baseline that predates the member, without mutating it', async () => {
+      const aws = live('Stream');
+      const result = await provider.canonicalizeDriftPair(TYPE, oldBaseline, aws, oldBaseline);
+      expect(result.baseline).toEqual(aws);
+      expect(result.aws).toBe(aws);
+      expect(oldBaseline['SelfManagedKafkaEventSourceConfig']).toEqual({ ConsumerGroupId: 'g' });
+    });
+
+    it.each([
+      ['a live Queue', oldBaseline, live('Queue'), oldBaseline],
+      ['a template asking for Queue', oldBaseline, live('Stream'), live('Queue')],
+      ['a baseline holding the member', live('Stream'), live('Stream'), oldBaseline],
+      ['a readback without the member', oldBaseline, oldBaseline, oldBaseline],
+      ['a mapping without the block', { FunctionName: 'fn' }, { FunctionName: 'fn' }, {}],
+    ])('leaves %s alone', async (_label, baseline, aws, properties) => {
+      const result = await provider.canonicalizeDriftPair(TYPE, baseline, aws, properties);
+      expect(result.baseline).toBe(baseline);
+      expect(result.aws).toBe(aws);
+    });
+  });
+
   describe('update', () => {
     it.each([
       ['Stream to Queue', { ConsumptionMode: 'Queue' }, { ConsumptionMode: 'Stream' }],

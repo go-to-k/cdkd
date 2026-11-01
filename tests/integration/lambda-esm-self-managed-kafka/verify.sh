@@ -40,6 +40,10 @@
 #      ConsumptionMode changes, which UpdateEventSourceMapping refuses. Assert
 #      the deploy FAILS naming the member and AWS keeps the mapping and its Queue
 #      mode (issue #3850).
+#   2f. Queue -> Stream adding a StartingPosition: a create-first replacement on
+#      the same function, topic and brokers. Assert it collides and deletes nothing.
+#   2g. The mode change alone with --replace, the refusal's advice. Assert a new
+#      UUID in Stream mode.
 #   Phase 1 also asserts the declared zero batching window and the Value-less
 #   tag reached AWS (issue #5356), and a second mapping is live in Queue mode
 #   (issue #3850; Phase 2 asserts its in-place BatchSize update).
@@ -144,8 +148,14 @@ queue_esm_uuid() {
   aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
     --query "EventSourceMappings[?Topics[0]=='cdkd-integ-queue-topic'] | [0].UUID" --output text
 }
-queue_esm_field() { # usage: queue_esm_field <uuid> <jq path>
-  aws lambda get-event-source-mapping --uuid "$1" --region "${REGION}" --output json | jq -r "$2"
+# ConsumptionMode, through Cloud Control: aws-cli 2.38.4 does not model the member
+# and drops it from get-event-source-mapping (measured 2026-11-01, the SDK and
+# Cloud Control both read Queue on the same mapping).
+queue_esm_mode() { # usage: queue_esm_mode <uuid>
+  local raw
+  raw="$(aws cloudcontrol get-resource --type-name AWS::Lambda::EventSourceMapping \
+    --identifier "$1" --region "${REGION}" --query ResourceDescription.Properties --output text)" || return 1
+  printf '%s' "${raw}" | jq -r '.SelfManagedKafkaEventSourceConfig.ConsumptionMode // "ABSENT"'
 }
 # Bootstrap servers AWS reports, under the SDK's enum key. A missing key yields
 # an empty string (the `|| ` + backtick-empty-array coalesces null INSIDE
@@ -208,7 +218,7 @@ if [ -z "${QUEUE_UUID_P1}" ] || [ "${QUEUE_UUID_P1}" = "None" ]; then
   echo "FAIL: no Queue-mode event source mapping found on ${FN} after deploy" >&2
   exit 1
 fi
-MODE_P1="$(queue_esm_field "${QUEUE_UUID_P1}" '.SelfManagedKafkaEventSourceConfig.ConsumptionMode // "ABSENT"')"
+MODE_P1="$(queue_esm_mode "${QUEUE_UUID_P1}")"
 if [ "${MODE_P1}" != "Queue" ]; then
   echo "FAIL: AWS holds ConsumptionMode='${MODE_P1}', expected 'Queue' (issue #3850)" >&2
   exit 1
@@ -259,21 +269,23 @@ echo "    OK: no drift"
 # is still Creating / Updating with ResourceInUseException, which is NOT in
 # cdkd's retryable pattern table. Gate on the TERMINAL set, not on "not
 # Creating": Enabling / Disabling are also in-flight states.
-wait_settled() {
+wait_settled() { # usage: wait_settled [uuid]; defaults to the first mapping
+  local uuid="${1:-${UUID_P1}}"
   local state="" settled=""
   for _ in $(seq 1 24); do
-    state="$(aws lambda get-event-source-mapping --uuid "${UUID_P1}" --region "${REGION}" \
+    state="$(aws lambda get-event-source-mapping --uuid "${uuid}" --region "${REGION}" \
       --query 'State' --output text)" || return 1
     case "${state}" in
       Enabled | Disabled) settled=1; break ;;
     esac
     sleep 5
   done
-  [ -z "${settled}" ] && { echo "FAIL: ESM ${UUID_P1} never reached Enabled/Disabled (last State=${state})" >&2; return 1; }
+  [ -z "${settled}" ] && { echo "FAIL: ESM ${uuid} never reached Enabled/Disabled (last State=${state})" >&2; return 1; }
   echo "    ESM settled (State=${state})"
 }
 echo "==> Phase 2: wait for the ESM to settle, then re-deploy with CDKD_TEST_UPDATE=true (batchSize 10 -> 20)"
 wait_settled || { echo "FAIL: waiting for ESM ${UUID_P1} to settle failed" >&2; exit 1; }
+wait_settled "${QUEUE_UUID_P1}" || { echo "FAIL: waiting for ESM ${QUEUE_UUID_P1} to settle failed" >&2; exit 1; }
 env -u CDKD_TEST_REMOVAL -u CDKD_TEST_ESM_DEFAULTS -u CDKD_TEST_ESM_TOPIC -u CDKD_TEST_ESM_MODE CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -287,8 +299,8 @@ if [ "$(queue_esm_uuid)" != "${QUEUE_UUID_P1}" ]; then
   echo "FAIL: the UPDATE phase replaced the Queue mapping (issue #3850)" >&2
   exit 1
 fi
-QUEUE_BATCH_P2="$(queue_esm_field "${QUEUE_UUID_P1}" '.BatchSize // "ABSENT"')"
-QUEUE_MODE_P2="$(queue_esm_field "${QUEUE_UUID_P1}" '.SelfManagedKafkaEventSourceConfig.ConsumptionMode // "ABSENT"')"
+QUEUE_BATCH_P2="$(aws lambda get-event-source-mapping --uuid "${QUEUE_UUID_P1}" --region "${REGION}" --query BatchSize --output text)"
+QUEUE_MODE_P2="$(queue_esm_mode "${QUEUE_UUID_P1}")"
 if [ "${QUEUE_BATCH_P2}" != "20" ] || [ "${QUEUE_MODE_P2}" != "Queue" ]; then
   echo "FAIL: the Queue mapping holds BatchSize='${QUEUE_BATCH_P2}' ConsumptionMode='${QUEUE_MODE_P2}', expected 20 and Queue (issue #3850)" >&2
   exit 1
@@ -467,7 +479,7 @@ echo "    OK: the Topics change was refused and the mapping kept its topic"
 echo "==> Phase 2e: re-deploy with CDKD_TEST_ESM_MODE=true (the mode changes; the deploy must be refused)"
 MODE_LOG="$(mktemp)"
 MODE_RC=0
-env -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true CDKD_TEST_ESM_MODE=true \
+env -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true CDKD_TEST_ESM_MODE=stream \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes \
   >"${MODE_LOG}" 2>&1 || MODE_RC=$?
 if [ "${MODE_RC}" = "0" ]; then
@@ -487,12 +499,55 @@ if [ "$(queue_esm_uuid)" != "${QUEUE_UUID_P1}" ]; then
   echo "FAIL: the refused ConsumptionMode change replaced the mapping (issue #3850)" >&2
   exit 1
 fi
-MODE_P5="$(queue_esm_field "${QUEUE_UUID_P1}" '.SelfManagedKafkaEventSourceConfig.ConsumptionMode // "ABSENT"')"
+MODE_P5="$(queue_esm_mode "${QUEUE_UUID_P1}")"
 if [ "${MODE_P5}" != "Queue" ]; then
   echo "FAIL: after the refused change, AWS holds ConsumptionMode='${MODE_P5}', expected 'Queue'" >&2
   exit 1
 fi
 echo "    OK: the ConsumptionMode change was refused and the mapping kept its mode"
+
+deploy_mode() { # usage: deploy_mode <CDKD_TEST_ESM_MODE> [deploy flags...]
+  local mode="$1"; shift
+  env -u CDKD_TEST_ESM_TOPIC CDKD_TEST_UPDATE=true CDKD_TEST_REMOVAL=true CDKD_TEST_ESM_DEFAULTS=true \
+    CDKD_TEST_ESM_MODE="${mode}" node "${LOCAL_DIST}" deploy "${STACK}" \
+    --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes "$@"
+}
+
+# A real move off Queue adds a StartingPosition, which is create-only, so cdkd
+# replaces create-first. Lambda keys a mapping on function, topic and brokers, so
+# the new one collides with the old, and nothing may be deleted.
+echo "==> Phase 2f: Queue -> Stream with a StartingPosition collides and keeps the mapping"
+COLLIDE_LOG="$(mktemp)"
+COLLIDE_RC=0
+deploy_mode stream-sp >"${COLLIDE_LOG}" 2>&1 || COLLIDE_RC=$?
+if [ "${COLLIDE_RC}" = "0" ] || ! grep -qF 'the create-first attempt collided' "${COLLIDE_LOG}"; then
+  echo "FAIL: expected the create-first collision, got exit ${COLLIDE_RC} (issue #3850)" >&2
+  tail -n 40 "${COLLIDE_LOG}" >&2
+  rm -f "${COLLIDE_LOG}"
+  exit 1
+fi
+rm -f "${COLLIDE_LOG}"
+if [ "$(queue_esm_uuid)" != "${QUEUE_UUID_P1}" ] || [ "$(queue_esm_mode "${QUEUE_UUID_P1}")" != "Queue" ]; then
+  echo "FAIL: the collided replacement changed the Queue mapping (issue #3850)" >&2
+  exit 1
+fi
+echo "    OK: the collision left the Queue mapping in place"
+
+# The refusal's own advice: a mode change alone, opted into a delete + create.
+echo "==> Phase 2g: Queue -> Stream with --replace recreates the mapping"
+deploy_mode stream --replace
+QUEUE_UUID_LAST="$(queue_esm_uuid)"
+if [ -z "${QUEUE_UUID_LAST}" ] || [ "${QUEUE_UUID_LAST}" = "None" ] || [ "${QUEUE_UUID_LAST}" = "${QUEUE_UUID_P1}" ]; then
+  echo "FAIL: expected a new mapping replacing ${QUEUE_UUID_P1}, found '${QUEUE_UUID_LAST}' (issue #3850)" >&2
+  exit 1
+fi
+wait_settled "${QUEUE_UUID_LAST}" || { echo "FAIL: waiting for ESM ${QUEUE_UUID_LAST} to settle failed" >&2; exit 1; }
+MODE_P7="$(queue_esm_mode "${QUEUE_UUID_LAST}")"
+if [ "${MODE_P7}" != "Stream" ]; then
+  echo "FAIL: mapping ${QUEUE_UUID_LAST} holds ConsumptionMode='${MODE_P7}', expected 'Stream' (issue #3850)" >&2
+  exit 1
+fi
+echo "    OK: --replace recreated the mapping in Stream mode"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"
@@ -515,6 +570,12 @@ for _ in $(seq 1 24); do
   sleep 5
 done
 [ -z "${ESM_GONE}" ] && { echo "FAIL: event source mapping ${UUID_P1} still exists after destroy" >&2; exit 1; }
+QUEUE_ESM_GONE=""
+for _ in $(seq 1 24); do
+  if gone_probe aws lambda get-event-source-mapping --uuid "${QUEUE_UUID_LAST}" --region "${REGION}"; then QUEUE_ESM_GONE=1; break; fi
+  sleep 5
+done
+[ -z "${QUEUE_ESM_GONE}" ] && { echo "FAIL: event source mapping ${QUEUE_UUID_LAST} still exists after destroy" >&2; exit 1; }
 echo "    OK: event source mapping gone"
 
 # The Secret is the one resource this fixture adds beyond Lambda, and cleanup()

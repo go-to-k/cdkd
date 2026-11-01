@@ -304,6 +304,30 @@ function consumptionModeOf(properties: Record<string, unknown>): unknown {
 }
 
 /**
+ * A create replaying a state record: drop `ConsumptionMode: Queue` from a record
+ * that also holds a member Lambda refuses beside it. Only a cdkd older than
+ * #3848 can have written one, with the SDK dropping the mode, so the mapping it
+ * replays never ran in Queue mode, and sending the record as it is would fail a
+ * rollback the user cannot fix. `undefined` when the record is sendable.
+ */
+function replayableKafkaConfig(
+  properties: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (consumptionModeOf(properties) !== 'Queue') return undefined;
+  if (
+    properties['StartingPosition'] === undefined &&
+    properties['StartingPositionTimestamp'] === undefined &&
+    properties['MaximumBatchingWindowInSeconds'] === undefined
+  ) {
+    return undefined;
+  }
+  const { [KAFKA_CONSUMPTION_MODE_KEY]: _dropped, ...rest } = properties[
+    'SelfManagedKafkaEventSourceConfig'
+  ] as Record<string, unknown>;
+  return rest;
+}
+
+/**
  * The `UpdateEventSourceMapping` value for `SelfManagedKafkaEventSourceConfig` /
  * `AmazonManagedKafkaEventSourceConfig`, or `undefined` to send nothing
  * (issue #3851). Neither block is create-only, so CloudFormation updates it in
@@ -759,6 +783,14 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
         params.SelfManagedKafkaEventSourceConfig = properties[
           'SelfManagedKafkaEventSourceConfig'
         ] as import('@aws-sdk/client-lambda').SelfManagedKafkaEventSourceConfig;
+      const replayableKafka =
+        context?.replayingState === true ? replayableKafkaConfig(properties) : undefined;
+      if (replayableKafka !== undefined) {
+        log.warn(
+          safeMsg`AWS::Lambda::EventSourceMapping ${logicalId}: the state record holds ConsumptionMode Queue beside a member Lambda refuses with it, so the mapping it records never ran in Queue mode. Proceeding without ConsumptionMode: this create replays a cdkd state record.`
+        );
+        params.SelfManagedKafkaEventSourceConfig = replayableKafka;
+      }
       if (properties['AmazonManagedKafkaEventSourceConfig'])
         params.AmazonManagedKafkaEventSourceConfig = properties[
           'AmazonManagedKafkaEventSourceConfig'
@@ -1010,7 +1042,10 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           `(UpdateEventSourceMapping does not take it, and CloudFormation refuses the change too)`
       );
     }
-    if (consumptionModeOf(properties) !== consumptionModeOf(previousProperties)) {
+    if (
+      JSON.stringify(consumptionModeOf(properties)) !==
+      JSON.stringify(consumptionModeOf(previousProperties))
+    ) {
       refuseChange(
         `SelfManagedKafkaEventSourceConfig.${KAFKA_CONSUMPTION_MODE_KEY} cannot be changed on an ` +
           `existing event source mapping (UpdateEventSourceMapping refuses it)`
@@ -1693,6 +1728,41 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
    * `--resource <logicalId>=<UUID>` (matching the physical id format
    * returned by `create()`).
    */
+  /**
+   * An `observedProperties` baseline a cdkd older than #3850 wrote lacks
+   * `ConsumptionMode`, because the SDK dropped it from the readback, while the
+   * live block now carries it. Complete such a baseline from the readback when
+   * the mode is `Stream` and the template agrees, so an upgrade alone reports no
+   * drift. A live `Queue` stays a finding.
+   */
+  async canonicalizeDriftPair(
+    _resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>,
+    properties?: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const key = 'SelfManagedKafkaEventSourceConfig';
+    const block = baseline[key];
+    if (
+      typeof block !== 'object' ||
+      block === null ||
+      Array.isArray(block) ||
+      KAFKA_CONSUMPTION_MODE_KEY in block ||
+      consumptionModeOf(aws) !== KAFKA_DEFAULT_CONSUMPTION_MODE ||
+      consumptionModeOf(properties ?? {}) !== KAFKA_DEFAULT_CONSUMPTION_MODE ||
+      (aws[key] as Record<string, unknown> | undefined)?.[KAFKA_CONSUMPTION_MODE_KEY] === undefined
+    ) {
+      return { baseline, aws };
+    }
+    return {
+      baseline: {
+        ...baseline,
+        [key]: { ...block, [KAFKA_CONSUMPTION_MODE_KEY]: KAFKA_DEFAULT_CONSUMPTION_MODE },
+      },
+      aws,
+    };
+  }
+
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (!input.knownPhysicalId) return null;
     // Issue #3627: read back `EventSourceMappingArn`, which `create()` records

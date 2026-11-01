@@ -18,6 +18,7 @@ On this page:
 - ["Properties validation failed": a list where an object is expected, or the reverse](#properties-validation-failed-a-list-where-an-object-is-expected-or-the-reverse)
 - ["The following custom resources pass a secure dynamic reference"](#the-following-custom-resources-pass-a-secure-dynamic-reference)
 - ["OpenTableFormatInput.IcebergInput.IcebergTableInput cannot be deployed" on a Glue table](#opentableformatinput-iceberginput-icebergtableinput-cannot-be-deployed-on-a-glue-table)
+- ["SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be changed on an existing event source mapping"](#selfmanagedkafkaeventsourceconfig-consumptionmode-cannot-be-changed-on-an-existing-event-source-mapping)
 - ["Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"](#configuration-vpcegressconfiguration-elasticipconfiguration-cannot-be-sent-by-cdkd-yet)
 
 ## An unsupported resource type
@@ -258,6 +259,19 @@ Glue writes the Iceberg metadata itself. The created table comes back with
 
 See "Glue table Iceberg support" in
 [Supported Resources](supported-resources.md) for the background.
+
+## "SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be changed on an existing event source mapping"
+
+Lambda fixes a self-managed Kafka mapping's `ConsumptionMode` at creation, and an
+omitted value means `Stream`. A change of the mode alone is refused before any
+AWS call. `cdkd deploy --replace` deletes the mapping and creates it again.
+
+A real move between the modes also changes `StartingPosition`, because `Queue`
+does not take one. That makes the deploy replace the mapping, creating the new
+one first, and Lambda refuses a second mapping for the same function, topic and
+brokers: the deploy fails with `the create-first attempt collided` and deletes
+nothing. `--replace` refuses that case too. To move, remove the mapping from the
+template, deploy, then add it back with the new mode.
 
 ## "Configuration.VpcEgressConfiguration.ElasticIpConfiguration cannot be sent by cdkd yet"
 

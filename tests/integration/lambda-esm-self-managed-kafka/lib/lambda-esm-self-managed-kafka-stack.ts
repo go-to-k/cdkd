@@ -66,9 +66,11 @@ import {
  * `ConsumptionMode: Queue`. Lambda refuses `Queue` beside `StartingPosition` or
  * `MaximumBatchingWindowInSeconds`, so it omits both, on an L1 because the L2
  * requires a starting position. Its `BatchSize` follows the UPDATE phase, which
- * proves an in-place update of a Queue mapping. MODE phase (the DEFAULTS env
- * plus CDKD_TEST_ESM_MODE=true) changes its mode to `Stream`, which Lambda
- * refuses on update: the deploy must fail and leave the mapping as it was.
+ * proves an in-place update of a Queue mapping. CDKD_TEST_ESM_MODE (on the
+ * DEFAULTS env): `stream` changes only the mode, which Lambda refuses on update,
+ * so the deploy must fail, and with --replace must recreate the mapping.
+ * `stream-sp` also adds a StartingPosition, the create-only change a real move
+ * off Queue makes: the create-first replacement must collide and delete nothing.
  */
 export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -78,7 +80,7 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
     const isRemoval = isUpdate && process.env.CDKD_TEST_REMOVAL === 'true';
     const isDefaults = isRemoval && process.env.CDKD_TEST_ESM_DEFAULTS === 'true';
     const isTopicChange = isDefaults && process.env.CDKD_TEST_ESM_TOPIC === 'true';
-    const isModeChange = isDefaults && process.env.CDKD_TEST_ESM_MODE === 'true';
+    const modeChange = isDefaults ? process.env.CDKD_TEST_ESM_MODE : undefined;
 
     const secret = new secretsmanager.Secret(this, 'KafkaAuth', {
       secretName: `${this.stackName}-kafka-auth`,
@@ -160,8 +162,9 @@ export class LambdaEsmSelfManagedKafkaStack extends cdk.Stack {
     });
     queueEsm.addPropertyOverride(
       'SelfManagedKafkaEventSourceConfig.ConsumptionMode',
-      isModeChange ? 'Stream' : 'Queue'
+      modeChange === undefined ? 'Queue' : 'Stream'
     );
+    if (modeChange === 'stream-sp') queueEsm.addPropertyOverride('StartingPosition', 'TRIM_HORIZON');
     if (fn.role !== undefined) queueEsm.node.addDependency(fn.role);
   }
 }

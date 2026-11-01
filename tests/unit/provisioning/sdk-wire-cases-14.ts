@@ -164,32 +164,32 @@ const DOCUMENTDB_BAG: Bag = {
 
 /**
  * `update()` builds each of these blocks from the desired bag alone and sends
- * it whole (${SRC}:1071-1112, 1147-1160); the previous side is read only for
- * a removal of the WHOLE block (the reset arms, ${SRC}:1177-1201). So a
+ * it whole (${SRC}:1106-1147, 1182-1195); the previous side is read only for
+ * a removal of the WHOLE block (the reset arms, ${SRC}:1212-1236). So a
  * member dropped from inside a still-declared block reaches the wire through
  * `next` (its `update-add` probe observes it), and varying `prev` alone sends
  * the same request.
  */
 const wholeFromNext = (top: string): string =>
-  `${top} is sent whole from the desired bag (${SRC}:1071-1112, 1147-1160), so the removal reaches the wire through next, which update-add observes; prev is read only when the whole block is removed (${SRC}:1177-1201)`;
+  `${top} is sent whole from the desired bag (${SRC}:1106-1147, 1182-1195), so the removal reaches the wire through next, which update-add observes; prev is read only when the whole block is removed (${SRC}:1212-1236)`;
 
 /** `update-remove:<path>` -> `wholeFromNext(top)` for every path under `top` in `bag`. */
 const underWhole = (bag: Bag, top: string): Record<string, string> =>
   Object.fromEntries(paths(bag[top], [top]).map((p) => [`update-remove:${p.join('.')}`, wholeFromNext(top)]));
 
 const FUNCTION_NAME_REQUIRED =
-  `FunctionName is required by the CloudFormation schema, so no template drops it; update() names the function from the desired bag only (${SRC}:1067-1070)`;
+  `FunctionName is required by the CloudFormation schema, so no template drops it; update() names the function from the desired bag only (${SRC}:1102-1105)`;
 
 const NO_FUNCTION_NAME: Record<string, Throw> = {
   'create:FunctionName': {
-    why: `create() refuses a mapping with no FunctionName before any call (${SRC}:702-709)`,
+    why: `create() refuses a mapping with no FunctionName before any call (${SRC}:726-733)`,
     says: /FunctionName is required for event source mapping/,
   },
 };
 
 /** A Value-less tag is accepted (DBPROXY_TAG_OPTIONS); a Key-less one is refused (go-to-k/cdkd#3994). */
 const TAG_KEY_REFUSED: Throw = {
-  why: `a Tags entry without its Key is refused before any call (${SRC}:692-700, 976-984, go-to-k/cdkd#3994)`,
+  why: `a Tags entry without its Key is refused before any call (${SRC}:716-724, 1008-1016, go-to-k/cdkd#3994)`,
   says: /is not a list of tags with a non-empty string Key/,
 };
 const TAG_KEY_THROWS: Record<string, Throw> = Object.fromEntries(
@@ -199,10 +199,10 @@ const TAG_KEY_THROWS: Record<string, Throw> = Object.fromEntries(
 );
 
 const CONSUMER_GROUP_KEPT =
-  `ConsumerGroupId is sent on update only when declared and changed (${SRC}:342-344): UpdateEventSourceMapping refuses the member even unchanged (measured live, ${SRC}:313-318), so no request can carry its removal; CFn unmeasured for the removal`;
+  `ConsumerGroupId is sent on update only when declared and changed (${SRC}:366-368): UpdateEventSourceMapping refuses the member even unchanged (measured live, ${SRC}:337-342), so no request can carry its removal; CFn unmeasured for the removal`;
 
 const DOCUMENTDB_UNCHANGEABLE = (member: string): string =>
-  `UpdateEventSourceMapping refuses DocumentDBEventSourceConfig.${member} even unchanged, and CloudFormation sends FullDocument alone, leaving it as it is (CloudFormation A/B, #1160, ${SRC}:353-375); update() sends the same and warns (${SRC}:1113-1123)`;
+  `UpdateEventSourceMapping refuses DocumentDBEventSourceConfig.${member} even unchanged, and CloudFormation sends FullDocument alone, leaving it as it is (CloudFormation A/B, #1160, ${SRC}:377-399); update() sends the same and warns (${SRC}:1148-1158)`;
 
 const ESM_CASE: TypeCase = {
   resourceType: 'AWS::Lambda::EventSourceMapping',
@@ -238,7 +238,7 @@ const ESM_CASE: TypeCase = {
         ...underWhole(SQS_BAG, 'MetricsConfig'),
         ...underWhole(SQS_BAG, 'ScalingConfig'),
         ...underWhole(SQS_BAG, 'ProvisionedPollerConfig'),
-        'update-remove:ProvisionedPollerConfig': `kept on an SQS mapping: CloudFormation sends nothing for the removal and the poller config stays (CloudFormation A/B, #1160, ${SRC}:1249-1250, 1321-1324)`,
+        'update-remove:ProvisionedPollerConfig': `kept on an SQS mapping: CloudFormation sends nothing for the removal and the poller config stays (CloudFormation A/B, #1160, ${SRC}:1284-1285, 1356-1359)`,
       },
       expectedRemovalThrows: { ...NO_FUNCTION_NAME, ...TAG_KEY_THROWS },
     },
@@ -266,8 +266,8 @@ const ESM_CASE: TypeCase = {
         ...underWhole(SELF_MANAGED_KAFKA_BAG, 'LoggingConfig'),
         ...underWhole(SELF_MANAGED_KAFKA_BAG, 'ProvisionedPollerConfig'),
         ...underWhole(SELF_MANAGED_KAFKA_BAG, 'SourceAccessConfigurations'),
-        'update-remove:MaximumBatchingWindowInSeconds': `kept on a Kafka mapping: the 500 ms default cannot be restored through UpdateEventSourceMapping, and CloudFormation keeps the value (CloudFormation A/B, #1160, ${SRC}:1224-1236)`,
-        'update-remove:MaximumRetryAttempts': `kept on a Kafka mapping with a warning naming it (${SRC}:1304-1313, 1326-1335): the stream-numeric resets are gated to Kinesis / DynamoDB (${SRC}:1217-1222); CFn unmeasured`,
+        'update-remove:MaximumBatchingWindowInSeconds': `kept on a Kafka mapping: the 500 ms default cannot be restored through UpdateEventSourceMapping, and CloudFormation keeps the value (CloudFormation A/B, #1160, ${SRC}:1259-1271)`,
+        'update-remove:MaximumRetryAttempts': `kept on a Kafka mapping with a warning naming it (${SRC}:1339-1348, 1361-1370): the stream-numeric resets are gated to Kinesis / DynamoDB (${SRC}:1252-1257); CFn unmeasured`,
         'update-remove:SelfManagedKafkaEventSourceConfig.ConsumerGroupId': CONSUMER_GROUP_KEPT,
       },
       expectedRemovalThrows: NO_FUNCTION_NAME,
@@ -277,7 +277,7 @@ const ESM_CASE: TypeCase = {
       bag: fresh(SELF_MANAGED_KAFKA_ON_DEMAND_BAG),
       expectedSilent: {
         'update-remove:FunctionName': FUNCTION_NAME_REQUIRED,
-        'update-remove:BisectBatchOnFunctionError': `kept with a warning while the Kafka mapping declares no ProvisionedPollerConfig: Kafka takes it in provisioned mode only, so a reset could make AWS refuse the whole update (${SRC}:1268-1282); CFn unmeasured`,
+        'update-remove:BisectBatchOnFunctionError': `kept with a warning while the Kafka mapping declares no ProvisionedPollerConfig: Kafka takes it in provisioned mode only, so a reset could make AWS refuse the whole update (${SRC}:1303-1317); CFn unmeasured`,
       },
       expectedRemovalThrows: NO_FUNCTION_NAME,
     },
@@ -315,8 +315,8 @@ const ESM_CASE: TypeCase = {
           DOCUMENTDB_UNCHANGEABLE('CollectionName'),
         'update-vary:DocumentDBEventSourceConfig.CollectionName':
           DOCUMENTDB_UNCHANGEABLE('CollectionName'),
-        'update-remove:DocumentDBEventSourceConfig.FullDocument': `kept with a warning: a block that drops FullDocument sends none, and CloudFormation keeps the live value (CloudFormation A/B, #1160, ${SRC}:364-367, 1124-1127)`,
-        'update-remove:DocumentDBEventSourceConfig': `kept with a warning: CloudFormation sends no DocumentDBEventSourceConfig when the block is removed, and the live block stays (CloudFormation A/B, #1160, ${SRC}:364-367, 1337-1344)`,
+        'update-remove:DocumentDBEventSourceConfig.FullDocument': `kept with a warning: a block that drops FullDocument sends none, and CloudFormation keeps the live value (CloudFormation A/B, #1160, ${SRC}:388-391, 1159-1162)`,
+        'update-remove:DocumentDBEventSourceConfig': `kept with a warning: CloudFormation sends no DocumentDBEventSourceConfig when the block is removed, and the live block stays (CloudFormation A/B, #1160, ${SRC}:388-391, 1372-1379)`,
       },
       expectedRemovalThrows: NO_FUNCTION_NAME,
     },
