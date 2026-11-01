@@ -21,7 +21,9 @@
  * returns the password, so a readback could not confirm it and they stay out
  * (#5153); a `NoEcho`-fed #2762 key is re-sent, the safe direction, except
  * a `NoEcho`-fed `AllocatedStorage` on an instance autoscaling has grown past
- * it, which RDS refuses as a shrink on every deploy that re-sends it. A LEAF: the
+ * it, which RDS refuses as a shrink on every deploy that re-sends it, and a
+ * `NoEcho`-fed `EngineVersion` AWS has auto-upgraded past, which RDS refuses
+ * as a downgrade the same way. A LEAF: the
  * deploy engine imports it, never a provider module.
  */
 export const CHANGED_PROPERTIES_CONSUMER_TYPES: ReadonlySet<string> = new Set([

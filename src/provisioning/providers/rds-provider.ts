@@ -21,6 +21,7 @@ import {
   type DBCluster,
   type ModifyDBClusterCommandInput,
   type ModifyDBInstanceCommandInput,
+  type CreateDBInstanceCommandInput,
 } from '@aws-sdk/client-rds';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -2111,7 +2112,7 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['DatabaseInsightsMode'] != null && {
             DatabaseInsightsMode: properties[
               'DatabaseInsightsMode'
-            ] as ModifyDBInstanceCommandInput['DatabaseInsightsMode'],
+            ] as CreateDBInstanceCommandInput['DatabaseInsightsMode'],
           }),
           ...(properties['DedicatedLogVolume'] != null && {
             DedicatedLogVolume: properties['DedicatedLogVolume'] as boolean,
