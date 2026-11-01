@@ -28,6 +28,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { refuseMaskedReplayBaseline } from '../../../src/deployment/rollback-executor/replay-props.js';
 import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
 import {
   docdbLogExportChange,
@@ -386,6 +387,40 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         );
       });
 
+      it('a held rollback records what AWS holds, and a later false + password leaves', async () => {
+        armCluster();
+        const restored = { ManageMasterUserPassword: false, BackupRetentionPeriod: 2 };
+        const result = await updateCluster(
+          restored,
+          { ManageMasterUserPassword: true },
+          { replayingState: true }
+        );
+        expect(result.effectiveProperties).toEqual({
+          ManageMasterUserPassword: true,
+          BackupRetentionPeriod: 2,
+        });
+        mockSend.mockClear();
+        armCluster();
+        await updateCluster(
+          { ...restored, MasterUserPassword: PASSWORD },
+          result.effectiveProperties as Bag
+        );
+        expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({
+          ManageMasterUserPassword: false,
+          MasterUserPassword: PASSWORD,
+        });
+      });
+
+      it('an update that sends the flag records the bag as it is', async () => {
+        armCluster();
+        const result = await updateCluster(
+          { ManageMasterUserPassword: false, MasterUserPassword: PASSWORD },
+          { ManageMasterUserPassword: true },
+          { replayingState: true }
+        );
+        expect(result.effectiveProperties).toBeUndefined();
+      });
+
       it('a template false with no password still reaches AWS, which answers it', async () => {
         armCluster();
         await updateCluster({ ManageMasterUserPassword: false }, { ManageMasterUserPassword: true });
@@ -435,6 +470,50 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         expect(input['MasterUserSecretKmsKeyId']).toBeUndefined();
       });
 
+      it('a changed key alone reads the live side, and goes out on a managed cluster', async () => {
+        armCluster(managed);
+        await updateCluster(
+          { MasterUserSecretKmsKeyId: 'other' },
+          { MasterUserSecretKmsKeyId: 'held' }
+        );
+        expect(sent('ModifyDBClusterCommand')[0]!['MasterUserSecretKmsKeyId']).toBe('other');
+        expect(sent('DescribeDBClustersCommand').length).toBeGreaterThan(1);
+      });
+
+      it('a changed key on a cluster AWS does not manage stays unsent', async () => {
+        armCluster();
+        await updateCluster(
+          { MasterUserSecretKmsKeyId: 'other' },
+          { MasterUserSecretKmsKeyId: 'held' }
+        );
+        expect(sent('ModifyDBClusterCommand')[0]!['MasterUserSecretKmsKeyId']).toBeUndefined();
+      });
+
+      it('an unchanged key adds no read', async () => {
+        armCluster(managed);
+        const bag = { MasterUserSecretKmsKeyId: 'held', BackupRetentionPeriod: 2 };
+        await updateCluster({ ...bag, BackupRetentionPeriod: 3 }, bag);
+        expect(sent('DescribeDBClustersCommand')).toHaveLength(1);
+      });
+
+      it('a declared alias cannot be compared with the live key: no change', async () => {
+        armCluster(managed);
+        await updateCluster(
+          { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: 'alias/team-a/foo' },
+          {}
+        );
+        expect(sent('ModifyDBClusterCommand')[0]!['MasterUserSecretKmsKeyId']).toBeUndefined();
+      });
+
+      it('another bare id than the live key is a change', async () => {
+        armCluster(managed);
+        await updateCluster(
+          { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: 'other' },
+          {}
+        );
+        expect(sent('ModifyDBClusterCommand')[0]!['MasterUserSecretKmsKeyId']).toBe('other');
+      });
+
       it('leaving reads it too, and sends the declared password', async () => {
         armCluster(managed);
         await updateCluster({ ManageMasterUserPassword: false, MasterUserPassword: PASSWORD }, {});
@@ -473,6 +552,29 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       } as never);
       expect(sent('CreateDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['an alias and its ARN', 'alias/foo', 'arn:aws:kms:us-east-1:1:alias/foo', false],
+      ['a key ARN and its bare id', KEY_ARN, 'k', false],
+      ['a key/ id and its bare id', 'key/k', 'k', false],
+      ['two aliases sharing a last segment', 'alias/team-a/foo', 'alias/team-b/foo', true],
+      ['an alias and a key sharing a last segment', 'alias/k', 'k', true],
+    ])('%s under a managed password', async (_name, next, recorded, sends) => {
+      armCluster();
+      await updateCluster(
+        { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: next },
+        { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: recorded }
+      );
+      expect(sent('ModifyDBClusterCommand')[0]!['MasterUserSecretKmsKeyId']).toBe(
+        sends ? next : undefined
+      );
+    });
+
+    it('a masked recorded password never reaches update() on a rollback', () => {
+      expect(() =>
+        refuseMaskedReplayBaseline({ MasterUserPassword: '***' }, 'L')
+      ).toThrow(/Cannot roll .* back: its recorded baseline holds the redaction mask/);
     });
 
     it('refuses a ManageMasterUserPassword that is no boolean, before any call', async () => {

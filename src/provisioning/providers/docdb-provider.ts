@@ -144,9 +144,14 @@ function rotateMasterUserPassword(
   );
 }
 
-/** Whether two spellings name one KMS key: the same text, or an ARN and its bare id. */
+/** A KMS key id without its ARN prefix or `key/` segment: an alias keeps its whole name. */
+function kmsKeyText(key: string): string {
+  return key.replace(/^arn:[^:]*:kms:[^:]*:[^:]*:/, '').replace(/^key\//, '');
+}
+
+/** Whether two spellings name one KMS key: an ARN equals its bare id, or its `alias/...`. */
 function sameKmsKey(a: string, b: string | undefined): boolean {
-  return b !== undefined && a.split('/').pop() === b.split('/').pop();
+  return b !== undefined && kmsKeyText(a) === kmsKeyText(b);
 }
 
 /**
@@ -1141,6 +1146,9 @@ export class DocDBProvider implements ResourceProvider {
             ? { ...described, Port: portToSend }
             : described
         ),
+        ...(credentials.effectiveProperties !== undefined && {
+          effectiveProperties: credentials.effectiveProperties,
+        }),
       };
     } catch (error) {
       // A refusal of ours names its own cause.
@@ -1739,14 +1747,15 @@ export class DocDBProvider implements ResourceProvider {
    *
    * - The managed side is the record's flag. A record without one (never
    *   declared, or a deploy dropped it and the cluster stayed managed) reads
-   *   `MasterUserSecret` when a password or the flag is about to go out, and only
-   *   then; its ARN is never kept.
+   *   `MasterUserSecret` when a password, the flag or a changed key is about to
+   *   go out, and only then; its ARN is never kept.
    * - The flag goes out on a change, or beside a key change.
    * - Leaving managed mode sends the declared password whether it changed or
    *   not: AWS refuses `false` without one.
    * - `drift --revert` never changes the mode, either way: its bags hold no
    *   password or key. A rollback turning management off with no password to
-   *   send sends nothing. Both leave a warning for after the update.
+   *   send sends nothing and records `true`, what AWS holds. Both leave a warning
+   *   for after the update.
    */
   private async planMasterCredentials(
     physicalId: string,
@@ -1761,6 +1770,7 @@ export class DocDBProvider implements ResourceProvider {
     secretKmsKey: string | undefined;
     password: string | undefined;
     heldWarning: string | undefined;
+    effectiveProperties?: Record<string, unknown>;
   }> {
     const managed = this.readBooleanProperty(
       'ManageMasterUserPassword',
@@ -1771,12 +1781,20 @@ export class DocDBProvider implements ResourceProvider {
     );
     const changedPassword = masterUserPasswordToSend(properties, previousProperties, context);
     const recordedFlag = coerceCfnBoolean(previousProperties['ManageMasterUserPassword']);
+    const key = properties['MasterUserSecretKmsKeyId'] as string | undefined;
+    const recordedKey = previousProperties['MasterUserSecretKmsKeyId'] as string | undefined;
     let managedSide = recordedFlag ?? false;
-    let heldKey = previousProperties['MasterUserSecretKmsKeyId'] as string | undefined;
-    if (recordedFlag === undefined && (changedPassword !== undefined || managed !== undefined)) {
+    let keyChange = key != null && !sameKmsKey(key, recordedKey);
+    if (
+      recordedFlag === undefined &&
+      (changedPassword !== undefined || managed !== undefined || keyChange)
+    ) {
       const secret = (await this.describeDBCluster(physicalId))?.MasterUserSecret;
       managedSide = secret !== undefined;
-      heldKey ??= secret?.KmsKeyId;
+      // A live key is a uuid or ARN, which no declared alias can be compared with.
+      if (recordedKey === undefined && secret?.KmsKeyId !== undefined && key != null) {
+        keyChange = !sameKmsKey(key, secret.KmsKeyId) && !kmsKeyText(key).startsWith('alias/');
+      }
     }
     const leaving = managed === false && managedSide;
     const declared = properties['MasterUserPassword'];
@@ -1786,26 +1804,28 @@ export class DocDBProvider implements ResourceProvider {
       dynamicReferenceTokens(declared).length === 0;
     const password = leaving ? (declaredUsable ? declared : undefined) : changedPassword;
     const modeChange = managed !== undefined && managed !== managedSide;
-    const held =
-      context?.desiredFromAwsReadback === true && modeChange
-        ? safeMsg`${logicalId} (${resourceType}): cdkd drift --revert does not change ManageMasterUserPassword, so it is left as it is. Declare it in the template and deploy to change it.`
-        : origin.stateBorne && leaving && password === undefined
-          ? safeMsg`${logicalId} (${resourceType}): ManageMasterUserPassword stays true: turning it off needs a MasterUserPassword, which the restored state does not hold. Declare both in the template and deploy.`
-          : undefined;
-    if (held !== undefined) {
+    if (context?.desiredFromAwsReadback === true && modeChange) {
       return {
         managed: undefined,
         secretKmsKey: undefined,
         password: undefined,
-        heldWarning: held,
+        heldWarning: safeMsg`${logicalId} (${resourceType}): cdkd drift --revert does not change ManageMasterUserPassword, so it is left as it is. Declare it in the template and deploy to change it.`,
       };
     }
-    const key = properties['MasterUserSecretKmsKeyId'] as string | undefined;
+    if (origin.stateBorne && leaving && password === undefined) {
+      return {
+        managed: undefined,
+        secretKmsKey: undefined,
+        password: undefined,
+        heldWarning: safeMsg`${logicalId} (${resourceType}): ManageMasterUserPassword stays true: turning it off needs a MasterUserPassword, which the restored state does not hold. Declare both in the template and deploy.`,
+        // The record says what AWS holds, so a later `false` is still a change.
+        effectiveProperties: { ...properties, ManageMasterUserPassword: true },
+      };
+    }
     // The key rides only turning management on or a change while it stays on:
     // AWS takes one only then, answers the second itself, and never beside false.
     const sendKey =
-      key != null &&
-      ((modeChange && managed === true) || (!sameKmsKey(key, heldKey) && (managed ?? managedSide)));
+      key != null && ((modeChange && managed === true) || (keyChange && (managed ?? managedSide)));
     return {
       managed: modeChange || sendKey ? managed : undefined,
       secretKmsKey: sendKey ? key : undefined,
