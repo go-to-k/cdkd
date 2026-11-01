@@ -149,7 +149,18 @@ describe('DocDBProvider removal of CloudFormation-kept properties (#5543)', () =
 
   it('the cluster warning list holds every CloudFormation-measured keep', () => {
     expect([...DOCDB_CLUSTER_KEPT_ON_REMOVAL].sort()).toEqual(
-      [...CLUSTER_KEPT, 'DeletionProtection', 'BackupRetentionPeriod', 'VpcSecurityGroupIds'].sort()
+      [
+        ...CLUSTER_KEPT,
+        'DeletionProtection',
+        'BackupRetentionPeriod',
+        'VpcSecurityGroupIds',
+        // The #2762 A/B.
+        'CopyTagsToSnapshot',
+        'EnableCloudwatchLogsExports',
+        'StorageType',
+        'ServerlessV2ScalingConfiguration',
+        'MasterUserSecretKmsKeyId',
+      ].sort()
     );
   });
 

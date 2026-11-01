@@ -37,15 +37,9 @@ const REFUSED: ReadonlyArray<{
   },
   {
     resourceType: 'AWS::DocDB::DBCluster',
-    property: 'EnableCloudwatchLogsExports',
-    value: ['audit'],
+    property: 'UseLatestRestorableTime',
+    value: true,
     handled: { MasterUsername: 'admin', StorageEncrypted: true },
-  },
-  {
-    resourceType: 'AWS::DocDB::DBInstance',
-    property: 'CACertificateIdentifier',
-    value: 'rds-ca-rsa2048-g1',
-    handled: { DBInstanceClass: 'db.r5.large', DBClusterIdentifier: 'c' },
   },
 ];
 

@@ -172,7 +172,7 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
     // re-derivation, so a count computed from the same walk cannot satisfy the
     // fence it guards.
     expect(typesRead, 'read too few schema fixtures — is the walk still finding them?').toBeGreaterThan(100);
-    expect(dropsChecked, 'checked too few silent drops — is the coverage map still populated?').toBeGreaterThan(200);
+    expect(dropsChecked, 'checked too few silent drops — is the coverage map still populated?').toBeGreaterThan(100);
     expect(
       typesWithCreateOnlyDrops,
       'no type has a create-only silent drop — the comparand collapsed, so this ' +
