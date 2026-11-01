@@ -620,7 +620,8 @@ describe('update', () => {
       const name = command.constructor.name;
       if (name === 'DescribeTableCommand') {
         reads += 1;
-        const status = reads < 4 ? 'CREATING' : 'ACTIVE';
+        // Past the reads the update itself makes before the op.
+        const status = reads < 8 ? 'CREATING' : 'ACTIVE';
         order.push(status);
         return Promise.resolve({
           Table: { ...live, VectorIndexes: [{ IndexName: 'other', IndexStatus: status }] },
