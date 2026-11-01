@@ -288,13 +288,20 @@ function isProvisionedIoStorage(properties: Record<string, unknown>): boolean {
 
 /**
  * go-to-k/cdkd#2762: the ModifyDBInstance members for the storage, backup,
- * maintenance, option group, certificate and Performance Insights properties,
- * plus `AllocatedStorage`. Each follows the handler's update translation (the
- * archived `aws-cloudformation-resource-providers-rds` `Translator.
+ * maintenance, option group, certificate, Performance Insights, network type,
+ * license model, promotion tier, Database Insights and dedicated log volume
+ * properties, plus `AllocatedStorage` and `EngineVersion`. Each follows the
+ * handler's update translation (the archived
+ * `aws-cloudformation-resource-providers-rds` `Translator.
  * modifyDbInstanceRequest` and `UpdateHandler`):
  *
  * - Each is sent only when the template changed it; a removal sends nothing,
- *   so RDS keeps the live value, as CloudFormation does.
+ *   so RDS keeps the live value, as CloudFormation does. The handler sends
+ *   `PromotionTier` and `AllowMajorVersionUpgrade` on every update; cdkd only
+ *   on a change (and the flag beside a changed `EngineVersion`), the rest
+ *   being no-ops.
+ * - `CertificateRotationRestart` goes out only beside a changed
+ *   `CACertificateIdentifier`, as the handler sends it.
  * - A removed `MaxAllocatedStorage` turns storage autoscaling off, the one
  *   reset: the handler sends the live `AllocatedStorage` as the maximum
  *   (`unsetMaxAllocatedStorage`), the documented way to turn it off. cdkd
@@ -307,7 +314,8 @@ function isProvisionedIoStorage(properties: Record<string, unknown>): boolean {
  *   asked to shrink. The handler sends that pair on every update of such
  *   storage; cdkd only on a storage change, the rest being no-ops.
  * - A rollback replay (`replayingState`) takes the handler's rollback arm for
- *   the storage size: it never sends a smaller one.
+ *   the storage size, never sending a smaller one, and sends no
+ *   `EngineVersion`.
  * - `EnablePerformanceInsights`, `PerformanceInsightsKMSKeyId` and
  *   `PerformanceInsightsRetentionPeriod` are coupled: a changed flag or key
  *   sends both changes, an enabled flag sends the declared key, a changed key
@@ -341,11 +349,31 @@ async function instanceModifyBackfillMembers(
   ] as const) {
     if (changed(key)) members[key] = properties[key] as string;
   }
-  for (const key of ['MultiAZ', 'AutoMinorVersionUpgrade', 'CopyTagsToSnapshot'] as const) {
+  for (const key of ['NetworkType', 'LicenseModel'] as const) {
+    if (changed(key)) members[key] = properties[key] as string;
+  }
+  if (changed('DatabaseInsightsMode')) {
+    members.DatabaseInsightsMode = properties[
+      'DatabaseInsightsMode'
+    ] as ModifyDBInstanceCommandInput['DatabaseInsightsMode'];
+  }
+  for (const key of [
+    'MultiAZ',
+    'AutoMinorVersionUpgrade',
+    'CopyTagsToSnapshot',
+    'DedicatedLogVolume',
+  ] as const) {
     if (changed(key)) members[key] = properties[key] as boolean;
   }
   if (changed('StorageThroughput')) {
     members.StorageThroughput = Number(properties['StorageThroughput']);
+  }
+  if (changed('PromotionTier')) members.PromotionTier = Number(properties['PromotionTier']);
+  // The handler sends `CertificateRotationRestart` only beside a changed
+  // `CACertificateIdentifier`: the flag is not persistent, it only says how
+  // that rotation restarts the instance.
+  if (changed('CACertificateIdentifier') && properties['CertificateRotationRestart'] != null) {
+    members.CertificateRotationRestart = properties['CertificateRotationRestart'] as boolean;
   }
 
   if (changed('MaxAllocatedStorage')) {
@@ -370,6 +398,23 @@ async function instanceModifyBackfillMembers(
   // AllocatedStorage nor Iops, and on it the largest of the live, previous and
   // declared sizes.
   const rollback = context?.replayingState === true;
+  // `EngineVersion` goes out only when changed, never on a rollback replay
+  // (the handler's rollback arm omits it: RDS refuses an engine downgrade).
+  // Re-sending an unchanged one was refused as a downgrade once AWS had
+  // auto-upgraded the minor version (`AutoMinorVersionUpgrade` defaults on).
+  // `AllowMajorVersionUpgrade` is the template's own value, as the handler
+  // sends it: beside a changed version, or when the flag itself changed. An
+  // undeclared flag sends nothing, so RDS refuses a major upgrade, as it does
+  // under CloudFormation.
+  if (changed('EngineVersion') && !rollback) {
+    members.EngineVersion = String(properties['EngineVersion'] as string | number);
+  }
+  if (
+    changed('AllowMajorVersionUpgrade') ||
+    (members.EngineVersion !== undefined && properties['AllowMajorVersionUpgrade'] != null)
+  ) {
+    members.AllowMajorVersionUpgrade = properties['AllowMajorVersionUpgrade'] as boolean;
+  }
   if (changed('AllocatedStorage') && !rollback) members.AllocatedStorage = desiredAllocated;
   if (isProvisionedIoStorage(properties)) {
     if (
@@ -783,6 +828,19 @@ export class RDSProvider implements ResourceProvider {
         'StorageThroughput',
         'OptionGroupName',
         'CACertificateIdentifier',
+        // go-to-k/cdkd#2762: network type, license model, promotion tier,
+        // Database Insights mode and dedicated log volume ride
+        // CreateDBInstance and, when changed, ModifyDBInstance under the same
+        // name. `AllowMajorVersionUpgrade` and `CertificateRotationRestart`
+        // are ModifyDBInstance-only flags RDS never reads back
+        // (`instanceModifyBackfillMembers`).
+        'NetworkType',
+        'LicenseModel',
+        'PromotionTier',
+        'DatabaseInsightsMode',
+        'DedicatedLogVolume',
+        'AllowMajorVersionUpgrade',
+        'CertificateRotationRestart',
       ]),
     ],
   ]);
@@ -2038,6 +2096,26 @@ export class RDSProvider implements ResourceProvider {
               properties['PerformanceInsightsRetentionPeriod']
             ),
           }),
+          // go-to-k/cdkd#2762: as CloudFormation's create translation sends
+          // them. `AllowMajorVersionUpgrade` and `CertificateRotationRestart`
+          // are not CreateDBInstance members.
+          ...(properties['NetworkType'] != null && {
+            NetworkType: properties['NetworkType'] as string,
+          }),
+          ...(properties['LicenseModel'] != null && {
+            LicenseModel: properties['LicenseModel'] as string,
+          }),
+          ...(properties['PromotionTier'] != null && {
+            PromotionTier: Number(properties['PromotionTier']),
+          }),
+          ...(properties['DatabaseInsightsMode'] != null && {
+            DatabaseInsightsMode: properties[
+              'DatabaseInsightsMode'
+            ] as ModifyDBInstanceCommandInput['DatabaseInsightsMode'],
+          }),
+          ...(properties['DedicatedLogVolume'] != null && {
+            DedicatedLogVolume: properties['DedicatedLogVolume'] as boolean,
+          }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -2131,18 +2209,9 @@ export class RDSProvider implements ResourceProvider {
       // independently. Wire-format flips: CFn `Port` → SDK `DBPortNumber`
       // (different field name on the Modify shape — AWS uses `Port` on
       // Create and `DBPortNumber` on Modify), CFn `VPCSecurityGroups` →
-      // SDK `VpcSecurityGroupIds`. `EngineVersion` is paired with
-      // `AllowMajorVersionUpgrade: true` so a major-version bump is
-      // permitted without a separate template toggle (matches CFn's
-      // documented behavior when the user has raised EngineVersion across
-      // a major boundary).
-      const newEngineVersion = properties['EngineVersion'] as string | undefined;
-      const prevEngineVersion = previousProperties['EngineVersion'] as string | undefined;
-      const allowMajorVersionUpgrade =
-        newEngineVersion !== undefined &&
-        newEngineVersion !== prevEngineVersion &&
-        prevEngineVersion !== undefined &&
-        newEngineVersion.split('.')[0] !== prevEngineVersion.split('.')[0];
+      // SDK `VpcSecurityGroupIds`. `EngineVersion` and
+      // `AllowMajorVersionUpgrade` go out only when changed
+      // (`instanceModifyBackfillMembers`, go-to-k/cdkd#2762).
       // #609 — `MasterUserSecret` `{ KmsKeyId }` → scalar
       // `MasterUserSecretKmsKeyId` (same flip as create()).
       const masterUserSecret = properties['MasterUserSecret'] as { KmsKeyId?: string } | undefined;
@@ -2177,11 +2246,13 @@ export class RDSProvider implements ResourceProvider {
       // `required`), and a removal sends nothing: CloudFormation sends no class
       // either, and the update keeps the live one (same comment).
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
-      // go-to-k/cdkd#2762: the storage, backup, maintenance and Performance
-      // Insights members, and AllocatedStorage, go out only when changed, as
-      // CloudFormation sends them. AllocatedStorage used to be re-sent on
-      // every update, which RDS refuses as a shrink once autoscaling
-      // (MaxAllocatedStorage) has grown the instance past the template value.
+      // go-to-k/cdkd#2762: the storage, backup, maintenance, Performance
+      // Insights and other backfill members, AllocatedStorage and
+      // EngineVersion, go out only when changed, as CloudFormation sends them.
+      // AllocatedStorage used to be re-sent on every update, which RDS refuses
+      // as a shrink once autoscaling (MaxAllocatedStorage) has grown the
+      // instance past the template value; EngineVersion likewise, refused as
+      // a downgrade once AWS had auto-upgraded the minor version.
       let liveInstance: Promise<number | undefined> | undefined;
       const backfillMembers = await instanceModifyBackfillMembers(
         properties,
@@ -2221,10 +2292,6 @@ export class RDSProvider implements ResourceProvider {
                 ) && {
                   Engine: properties['Engine'] as string,
                 }),
-              ...(newEngineVersion !== undefined && {
-                EngineVersion: newEngineVersion,
-                ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
-              }),
               ...(properties['Port'] !== undefined && {
                 DBPortNumber: Number(properties['Port']),
               }),
@@ -3215,8 +3282,15 @@ export class RDSProvider implements ResourceProvider {
    * 2026-10-28). On the `observedProperties` baseline the comparator walks the
    * key UNION, so a record captured before this member was read would report
    * it as drift; the path is compared only where the template declares it.
+   *
+   * go-to-k/cdkd#2762: a DB instance's `AllowMajorVersionUpgrade` and
+   * `CertificateRotationRestart` are ModifyDBInstance flags RDS keeps nowhere,
+   * so DescribeDBInstances never returns them.
    */
   getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
+    if (resourceType === 'AWS::RDS::DBInstance') {
+      return ['AllowMajorVersionUpgrade', 'CertificateRotationRestart'];
+    }
     if (resourceType !== 'AWS::RDS::DBCluster') return [];
     // An absent or empty bag records nothing to scope by: compare.
     if (properties === undefined || Object.keys(properties).length === 0) return [];
@@ -3486,6 +3560,11 @@ export class RDSProvider implements ResourceProvider {
       'Iops',
       'StorageThroughput',
       'CACertificateIdentifier',
+      'NetworkType',
+      'LicenseModel',
+      'PromotionTier',
+      'DatabaseInsightsMode',
+      'DedicatedLogVolume',
     ] as const;
     for (const key of sameName) {
       if (inst[key] !== undefined) result[key] = inst[key];

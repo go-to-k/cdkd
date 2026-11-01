@@ -752,7 +752,7 @@ describe('RDSProvider', () => {
         expect(modifyCall.input.MasterUsername).toBeUndefined();
       });
 
-      it('adds AllowMajorVersionUpgrade when EngineVersion crosses a major boundary', async () => {
+      it('sends no AllowMajorVersionUpgrade the template does not declare, even across a major boundary (go-to-k/cdkd#2762)', async () => {
         // updateDBInstance does 2 sends: ModifyDBInstance + final describe.
         // (No waitForInstanceAvailable polling on the update path.)
         mockSend.mockResolvedValueOnce({});
@@ -776,8 +776,36 @@ describe('RDSProvider', () => {
 
         const modifyCall = mockSend.mock.calls[0][0];
         expect(modifyCall.input.EngineVersion).toBe('16.1');
-        // 15→16 crosses a major boundary; AllowMajorVersionUpgrade must be
-        // set so AWS accepts the upgrade without a separate template toggle.
+        // CloudFormation's handler sends the template's AllowMajorVersionUpgrade
+        // and nothing when it is absent, so RDS refuses the major upgrade; cdkd
+        // no longer infers the flag from the version numbers.
+        expect(modifyCall.input).not.toHaveProperty('AllowMajorVersionUpgrade');
+      });
+
+      it('sends the declared AllowMajorVersionUpgrade beside a changed EngineVersion (go-to-k/cdkd#2762)', async () => {
+        mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({ DBInstances: [{}] });
+
+        await provider.update(
+          'MyInstance',
+          'my-instance',
+          'AWS::RDS::DBInstance',
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '16.1',
+            AllowMajorVersionUpgrade: true,
+          },
+          {
+            DBInstanceClass: 'db.t3.micro',
+            Engine: 'postgres',
+            EngineVersion: '15.4',
+            AllowMajorVersionUpgrade: true,
+          }
+        );
+
+        const modifyCall = mockSend.mock.calls[0][0];
+        expect(modifyCall.input.EngineVersion).toBe('16.1');
         expect(modifyCall.input.AllowMajorVersionUpgrade).toBe(true);
       });
 

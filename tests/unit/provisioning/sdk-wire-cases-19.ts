@@ -359,7 +359,13 @@ const INSTANCE_CASE: TypeCase = {
   physicalId: INSTANCE_ID,
   createOnly: createOnlyOf('AWS::RDS::DBInstance'),
   arm: (physicalId, bag) => armInstance(physicalId, bag),
-  exempt: {},
+  exempt: {
+    // go-to-k/cdkd#2762: not a CreateDBInstance member, and ModifyDBInstance
+    // carries it only beside a changed CACertificateIdentifier, as CloudFormation's
+    // handler sends it, a pair no single-key bag probe changes. Pinned by
+    // rds-dbinstance-engine-version-backfill-2762.test.ts.
+    CertificateRotationRestart: `sent only beside a changed CACertificateIdentifier (instanceModifyBackfillMembers in ${SRC}), which no single-key probe makes`,
+  },
   nestedExempt: {
     'MasterUserSecret.SecretArn': SECRET_ARN_READ_ONLY,
   },
@@ -490,6 +496,36 @@ const INSTANCE_CASE: TypeCase = {
             'PerformanceInsightsRetentionPeriod',
             'OptionGroupName',
             'CACertificateIdentifier',
+          ].map((key) => [`update-remove:${key}`, CFN_DIFF_KEPT(key)])
+        ),
+      },
+    },
+    {
+      name: 'network type, license, promotion tier, Database Insights, log volume and the major-version flag (go-to-k/cdkd#2762)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.m6g.large',
+        Engine: 'postgres',
+        NetworkType: 'DUAL',
+        LicenseModel: 'postgresql-license',
+        PromotionTier: 3,
+        DatabaseInsightsMode: 'advanced',
+        DedicatedLogVolume: true,
+        AllowMajorVersionUpgrade: true,
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'create:AllowMajorVersionUpgrade': `not a CreateDBInstance member; CloudFormation's create sends none either (${SRC} createDBInstance)`,
+        'create-vary:AllowMajorVersionUpgrade': `not a CreateDBInstance member; CloudFormation's create sends none either (${SRC} createDBInstance)`,
+        ...Object.fromEntries(
+          [
+            'NetworkType',
+            'LicenseModel',
+            'PromotionTier',
+            'DatabaseInsightsMode',
+            'DedicatedLogVolume',
+            'AllowMajorVersionUpgrade',
           ].map((key) => [`update-remove:${key}`, CFN_DIFF_KEPT(key)])
         ),
       },
