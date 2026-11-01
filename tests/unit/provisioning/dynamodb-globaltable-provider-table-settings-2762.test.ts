@@ -630,7 +630,16 @@ describe('update', () => {
       if (name === 'UpdateTableCommand' && command.input['VectorIndexUpdates']) order.push('op');
       return Promise.resolve({ Tags: [] });
     });
-    await update({ ...BASE, VectorIndexes: [VEC('vec1')] }, BASE);
+    // The poll's 1s sleeps, run at once.
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void) => {
+      fn();
+      return 0;
+    }) as unknown as typeof setTimeout);
+    try {
+      await update({ ...BASE, VectorIndexes: [VEC('vec1')] }, BASE);
+    } finally {
+      timers.mockRestore();
+    }
     expect(order[order.indexOf('op') - 1]).toBe('ACTIVE');
   });
 
