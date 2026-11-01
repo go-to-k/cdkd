@@ -297,7 +297,11 @@ cleanup() {
   # to delete while the cluster still uses it, so after the cluster is gone.
   # Best effort: a no-op once state destroy deleted it.
   if [ -n "${PARAMS_NAME}" ]; then
-    if [ -n "${DB_CLUSTER_ID}" ]; then
+    # Wait only for a cluster already `deleting`: one a refused delete left
+    # `available` would hold the waiter for its full 30 minutes.
+    if [ -n "${DB_CLUSTER_ID}" ] && [ "$(aws rds describe-db-clusters \
+      --db-cluster-identifier "${DB_CLUSTER_ID}" --region "${REGION}" \
+      --query 'DBClusters[0].Status' --output text 2>/dev/null)" = "deleting" ]; then
       aws rds wait db-cluster-deleted --db-cluster-identifier "${DB_CLUSTER_ID}" \
         --region "${REGION}" >/dev/null 2>&1 || true
     fi
