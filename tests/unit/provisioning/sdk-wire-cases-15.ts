@@ -623,6 +623,7 @@ function neptuneArmCluster(_physicalId: string, bag: Bag): void {
     ...role,
     Status: 'ACTIVE',
   }));
+  let logTypes = (bag['EnableCloudwatchLogsExports'] as string[] | undefined) ?? [];
   setOutputOverrides({
     AddRoleToDBClusterCommand: (input) => {
       roles.push({ ...input, Status: 'ACTIVE' });
@@ -635,12 +636,19 @@ function neptuneArmCluster(_physicalId: string, bag: Bag): void {
     ModifyDBClusterCommand: (input) => {
       const sent = input['VpcSecurityGroupIds'] as string[] | undefined;
       if (sent !== undefined) groups = sent;
+      const logs = input['CloudwatchLogsExportConfiguration'] as
+        | { EnableLogTypes?: string[]; DisableLogTypes?: string[] }
+        | undefined;
+      logTypes = [...logTypes, ...(logs?.EnableLogTypes ?? [])].filter(
+        (type) => !logs?.DisableLogTypes?.includes(type)
+      );
       return {};
     },
     DescribeDBClustersCommand: () => ({
       DBClusters: [
         {
           DBClusterIdentifier: NEPTUNE_CLUSTER_ID,
+          EnabledCloudwatchLogsExports: logTypes,
           DBClusterArn: NEPTUNE_CLUSTER_ARN,
           Status: 'available',
           DBSubnetGroup: NEPTUNE_SUBNET_GROUP,
@@ -818,13 +826,19 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
 
 /** DescribeDBInstances answers the instance available with its ARN: the create wait settles at once. */
 function neptuneArmInstance(): void {
+  let publiclyAccessible: unknown;
   setOutputOverrides({
+    ModifyDBInstanceCommand: (input) => {
+      publiclyAccessible = input['PubliclyAccessible'];
+      return {};
+    },
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
         {
           DBInstanceIdentifier: NEPTUNE_INSTANCE_ID,
           DBInstanceArn: INSTANCE_ARN,
           DBInstanceStatus: 'available',
+          PubliclyAccessible: publiclyAccessible,
         },
       ],
     }),
@@ -865,7 +879,6 @@ const NEPTUNE_INSTANCE_CASE: TypeCase = {
         'update-remove:DeletionProtection': `not a CloudFormation property of AWS::Neptune::DBInstance (#5004), so never reset on removal; the pass-through is kept as is (${NEPTUNE_SRC}, removalHandledInUpdate)`,
         'update-remove:DBParameterGroupName': KEPT_5544('DBParameterGroupName'),
         'update-remove:PreferredMaintenanceWindow': KEPT_5544('PreferredMaintenanceWindow'),
-        'update-remove:PubliclyAccessible': KEPT_UNMEASURED('PubliclyAccessible'),
         'create:AllowMajorVersionUpgrade': INSTANCE_MODIFY_ONLY,
         'create-vary:AllowMajorVersionUpgrade': INSTANCE_MODIFY_ONLY,
         'update-remove:AllowMajorVersionUpgrade': INSTANCE_MODIFY_ONLY,

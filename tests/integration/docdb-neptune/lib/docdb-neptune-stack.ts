@@ -18,7 +18,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * Resources:
  *  - 1 VPC + 2 public subnets in 2 AZs (DocDB / Neptune both require ≥ 2
  *    subnets in distinct AZs via a DBSubnetGroup; no NAT keeps it cheap, and
- *    the IGW is what lets the Neptune instance turn `PubliclyAccessible` on
+ *    the IGW is what lets the Neptune instance start `PubliclyAccessible`
  *    for go-to-k/cdkd#2762).
  *  - 1 DocDB DBSubnetGroup
  *  - 1 DocDB DBCluster (1 instance, db.t3.medium, MasterUsername=admin,
@@ -36,8 +36,9 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * `DBInstanceParameterGroupName`, the instance `AllowMajorVersionUpgrade` and
  * `PubliclyAccessible`. Before the backfill each one routed the resource
  * through Cloud Control, so verify.sh asserts the SDK route first; the
- * `CDKD_TEST_REMOVAL=true` redeploy CHANGES the updatable ones (it does not
- * drop them), and verify.sh reads each from AWS after both deploys.
+ * `CDKD_TEST_REMOVAL=true` redeploy CHANGES the updatable ones and DROPS
+ * `PubliclyAccessible`, which cdkd turns off, and verify.sh reads each from
+ * AWS after both deploys.
  *
  * #1160 / #5004 (removal) phases: the BASELINE deploy sets non-default
  * values for the removable ModifyDBCluster fields on both clusters
@@ -82,8 +83,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
 
     // VPC: 2 AZs, public subnets, no NAT. DocDB and Neptune are not reached
     // at all (a deploy-then-destroy test never connects). The IGW exists only
-    // for the Neptune instance's PubliclyAccessible flip (#2762): no security
-    // group here admits inbound traffic.
+    // for the Neptune instance's PubliclyAccessible baseline (#2762): no
+    // security group here admits traffic from the internet.
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
       natGateways: 0,
@@ -236,8 +237,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
       enableCloudwatchLogsExports: isRemoval ? ['slowquery'] : ['audit'],
       networkType: 'IPV4',
       serverlessScalingConfiguration: { minCapacity: 1, maxCapacity: isRemoval ? 16 : 8 },
-      // A per-call flag of a major upgrade: this redeploy has none, so it
-      // must be accepted and sent nowhere. Dropped without a warning.
+      // A per-call flag of a major upgrade, and this run has none: declared
+      // only so the cluster keeps the SDK route. Dropped without a warning.
       dbInstanceParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
       // Issue #1160: DROPPED in the CDKD_TEST_REMOVAL redeploy. CloudFormation
       // moves a Neptune cluster to the VPC's `default` security group on
@@ -291,8 +292,9 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // Issue #5544: DROPPED in the CDKD_TEST_REMOVAL redeploy; CloudFormation
       // keeps it attached (real A/B), so verify.sh asserts it still is.
       dbParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
-      // Issue #2762: the update path turns it on (IAM auth stays on: #5004).
-      publiclyAccessible: isRemoval ? true : false,
+      // Issue #2762: on from the create (needs IAM auth, on in the baseline).
+      // DROPPED in the redeploy, and cdkd turns it off.
+      publiclyAccessible: isRemoval ? undefined : true,
       // Issue #2762: write-only, ModifyDBInstance only; nothing to read back.
       allowMajorVersionUpgrade: true,
     });

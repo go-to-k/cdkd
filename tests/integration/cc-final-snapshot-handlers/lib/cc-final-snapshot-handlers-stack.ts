@@ -15,8 +15,8 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
  *     `AWS::RDS::GlobalCluster` (`GlobalClusterIdentifier` is a silent drop for
  *     cdkd's SDK provider, so the cluster is Cloud Control-routed). cdkd must
  *     detach it from the global cluster and delete it without a snapshot.
- *   - An `AWS::Neptune::DBCluster` (`CopyTagsToSnapshot` routes it through
- *     Cloud Control).
+ *   - An `AWS::Neptune::DBCluster` (moved onto Cloud Control by verify.sh's
+ *     `--recreate-via-cc-api` phase).
  *   - A Redis `AWS::ElastiCache::CacheCluster` (moved onto Cloud Control by
  *     verify.sh's `--recreate-via-cc-api` phase).
  *
@@ -95,10 +95,13 @@ export class CcFinalSnapshotHandlersStack extends cdk.Stack {
 
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbClusterIdentifier: 'cdkd-ccfs-neptune',
-      copyTagsToSnapshot: true,
       dbSubnetGroupName: neptuneSubnets.ref,
       vpcSecurityGroupIds: [securityGroup.securityGroupId],
       deletionProtection: false,
+      // As the cache below: `--recreate-via-cc-api` needs a change to act on.
+      ...(process.env.CDKD_TEST_UPDATE === 'true'
+        ? { tags: [{ key: 'cdkd-phase', value: 'cloud-control' }] }
+        : {}),
     });
     neptuneCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 

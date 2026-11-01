@@ -10,9 +10,9 @@
 #   - AuroraMember: an Aurora cluster that is a member of a global cluster.
 #     The handler detached it and took `rds-snapshot-<random>`; cdkd now
 #     detaches it through RDS and deletes it without a snapshot.
-#   - NeptuneCluster: a Neptune cluster (CopyTagsToSnapshot routes it through
-#     Cloud Control). The handler took `<logical id>-snapshot-<random>`; cdkd
-#     now deletes it through Neptune.
+#   - NeptuneCluster: a Neptune cluster, moved onto Cloud Control in phase 2
+#     with --recreate-via-cc-api. The handler took
+#     `<logical id>-snapshot-<random>`; cdkd now deletes it through Neptune.
 #   - Cache: a Redis cache cluster, moved onto Cloud Control in phase 2 with
 #     --recreate-via-cc-api. Its handler took no snapshot; this arm guards
 #     that it stays so.
@@ -212,10 +212,8 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes
 
 # Premises: without these the no-snapshot assertions test nothing.
-for id in AuroraMember NeptuneCluster; do
-  BY=$(record "${id}" '.provisionedBy')
-  [ "${BY}" = "cc-api" ] || { echo "FAIL: premise: ${id} is routed via '${BY}', expected cc-api" >&2; exit 1; }
-done
+BY=$(record AuroraMember '.provisionedBy')
+[ "${BY}" = "cc-api" ] || { echo "FAIL: premise: AuroraMember is routed via '${BY}', expected cc-api" >&2; exit 1; }
 for id in AuroraMember NeptuneCluster Cache; do
   POLICY=$(record "${id}" '.deletionPolicy')
   [ "${POLICY}" = "Delete" ] || { echo "FAIL: premise: ${id} records DeletionPolicy '${POLICY}', expected Delete" >&2; exit 1; }
@@ -226,19 +224,22 @@ case " ${MEMBERS} " in
   *" ${AURORA_ARN} "*) ;;
   *) echo "FAIL: premise: ${AURORA_ID} is not a member of ${GLOBAL_ID} (members: ${MEMBERS})" >&2; exit 1 ;;
 esac
-echo "    OK: AuroraMember and NeptuneCluster are provisionedBy=cc-api; ${AURORA_ID} is a member of ${GLOBAL_ID}; all three record DeletionPolicy: Delete"
+echo "    OK: AuroraMember is provisionedBy=cc-api; ${AURORA_ID} is a member of ${GLOBAL_ID}; all three record DeletionPolicy: Delete"
 
-# --- Phase 2: move the cache onto Cloud Control ------------------------
-echo "==> Phase 2: recreate the cache via Cloud Control (--recreate-via-cc-api)"
+# --- Phase 2: move the cache and the Neptune cluster onto Cloud Control -
+echo "==> Phase 2: recreate the cache and the Neptune cluster via Cloud Control (--recreate-via-cc-api)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-cc-api Cache \
+  --recreate-via-cc-api NeptuneCluster \
   --force-stateful-recreation \
   --yes
-CACHE_BY=$(record Cache '.provisionedBy')
-[ "${CACHE_BY}" = "cc-api" ] || { echo "FAIL: premise: after --recreate-via-cc-api the cache is routed via '${CACHE_BY}', expected cc-api" >&2; exit 1; }
-echo "    OK: Cache is provisionedBy=cc-api"
+for id in Cache NeptuneCluster; do
+  BY=$(record "${id}" '.provisionedBy')
+  [ "${BY}" = "cc-api" ] || { echo "FAIL: premise: after --recreate-via-cc-api ${id} is routed via '${BY}', expected cc-api" >&2; exit 1; }
+done
+echo "    OK: Cache and NeptuneCluster are provisionedBy=cc-api"
 
 # --- Phase 3: destroy --------------------------------------------------
 echo "==> Phase 3: destroy"

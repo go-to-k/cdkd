@@ -26,8 +26,8 @@
 #       redeploy changes the DocDB subnet group description, an in-place
 #       update through the provider's update() (issue #2613).
 #       Step 3c also CHANGES the go-to-k/cdkd#2762 properties (role swap, log
-#       type, CopyTagsToSnapshot, ServerlessScalingConfiguration,
-#       PubliclyAccessible).
+#       type, CopyTagsToSnapshot, ServerlessScalingConfiguration) and drops
+#       PubliclyAccessible, which cdkd turns off.
 #   3d. wait for both clusters to be available, then assert the baseline
 #       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
 #       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
@@ -444,7 +444,7 @@ neptune_backfill_view() { # usage: neptune_backfill_view <cluster json> <instanc
   local cluster instance
   cluster=$(echo "$1" | jq -r '[([.AssociatedRoles[]? | ((.RoleArn | split("/") | last) + ":" + .Status)] | join(",")),
     (.CopyTagsToSnapshot | tostring), ((.EnabledCloudwatchLogsExports // []) | join(",")), (.NetworkType // "null"),
-    (.ServerlessV2ScalingConfiguration.MinCapacity | tostring), (.ServerlessV2ScalingConfiguration.MaxCapacity | tostring)] | join(" ")') || return 1
+    ((.ServerlessV2ScalingConfiguration.MinCapacity + 0) | tostring), ((.ServerlessV2ScalingConfiguration.MaxCapacity + 0) | tostring)] | join(" ")') || return 1
   instance=$(echo "$2" | jq -r '.PubliclyAccessible | tostring') || return 1
   echo "${cluster} ${instance}"
 }
@@ -458,7 +458,7 @@ fi
 NEPTUNE_BASE_INST=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
   --region "${REGION}" --query 'DBInstances[0]' --output json)
 NEPTUNE_2762_BASE=$(neptune_backfill_view "${NEPTUNE_BASE}" "${NEPTUNE_BASE_INST}")
-NEPTUNE_2762_WANT="${NEPTUNE_ROLE_A}:ACTIVE true audit IPV4 1 8 false"
+NEPTUNE_2762_WANT="${NEPTUNE_ROLE_A}:ACTIVE true audit IPV4 1 8 true"
 if [ "${NEPTUNE_2762_BASE}" != "${NEPTUNE_2762_WANT}" ]; then
   echo "[verify] FAIL: #2762: Neptune baseline reads '${NEPTUNE_2762_BASE}', want '${NEPTUNE_2762_WANT}'" >&2
   exit 1
@@ -786,7 +786,7 @@ echo "[verify] step 3d ok: Neptune engine, backup window and both parameter grou
 # go-to-k/cdkd#2762: the update path. The role swap settled inside the deploy; a
 # log type or PubliclyAccessible can lag ModifyDB*, so poll a bounded while.
 assert_neptune_sdk_route "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
-NEPTUNE_2762_WANT="${NEPTUNE_ROLE_B}:ACTIVE false slowquery IPV4 1 16 true"
+NEPTUNE_2762_WANT="${NEPTUNE_ROLE_B}:ACTIVE false slowquery IPV4 1 16 false"
 NEPTUNE_2762_NOW=""
 for _ in $(seq 1 40); do
   NEPTUNE_2762_C=$(aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
@@ -804,12 +804,15 @@ fi
 # readCurrentState against the live shape (AWS's order, its empty FeatureName):
 # none of these keys may report drift. Other keys are not this arm's business.
 DRIFT_2762_JSON=$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)
-# A crashed drift prints nothing, which must not read as "no drift".
-DRIFT_2762_SEEN=$(echo "${DRIFT_2762_JSON}" | jq -r '[.[] | ((.clean // []) + (.drifted // []) + (.notCompared // []))[] | select(.logicalId == "NeptuneCluster")] | length' || echo 0)
-if [ "${DRIFT_2762_SEEN}" != "1" ]; then
-  echo "[verify] FAIL: #2762: cdkd drift did not report NeptuneCluster (seen '${DRIFT_2762_SEEN}'): ${DRIFT_2762_JSON}" >&2
-  exit 1
-fi
+# Compared only: a failed read lands in `notCompared`, and a crashed drift prints
+# nothing; neither may read as "no drift".
+for logical in NeptuneCluster NeptuneInstance; do
+  DRIFT_2762_SEEN=$(echo "${DRIFT_2762_JSON}" | jq -r --arg l "${logical}" '[.[] | ((.clean // []) + (.drifted // []))[] | select(.logicalId == $l)] | length > 0' || echo false)
+  if [ "${DRIFT_2762_SEEN}" != "true" ]; then
+    echo "[verify] FAIL: #2762: cdkd drift did not compare ${logical}: ${DRIFT_2762_JSON}" >&2
+    exit 1
+  fi
+done
 DRIFT_2762=$(echo "${DRIFT_2762_JSON}" | jq -r '[.[].drifted[] | select(.logicalId == "NeptuneCluster" or .logicalId == "NeptuneInstance")
   | .changes[]?.path | select(test("^(AssociatedRoles|AvailabilityZones|CopyTagsToSnapshot|EnableCloudwatchLogsExports|NetworkType|ServerlessScalingConfiguration|PubliclyAccessible|AllowMajorVersionUpgrade)"))] | join(",")')
 if [ -n "${DRIFT_2762}" ]; then
