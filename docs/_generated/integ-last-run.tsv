@@ -221,7 +221,7 @@ lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#424
 lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105
 lambda-versioning	2026-08-10T11:50:46Z	PASS	53	standard	0810 P0/P1 sweep b1; Version/Alias delete order ok, 4 del/0 err
 lambda-web-function-revision-replace	2026-10-20T19:58:09Z	PASS	452	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
-launchtemplate-asg-inplace	2026-10-22T09:31:39Z	PASS	166	verify.sh	PR #5173 (#1160): AvailabilityZoneImpairmentPolicy resets to defaults on removal, as CloudFormation does; rc ok, destroy 0 errors, orph clean
+launchtemplate-asg-inplace	2026-11-01T07:58:39Z	PASS	195	verify.sh	rc ok, orph clean; #2762 ASG PlacementGroup/InstanceLifecyclePolicy/AvailabilityZoneIds, PR 5595
 legacy-bucket-name-fallback	2026-07-26T18:10:48Z	PASS	22	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 legacy-state-migration	2026-07-26T18:10:48Z	PASS	23	standard	0727b sweep-b2 staleness re-run (rc=0); account clean
 list-parameters	2026-10-07T19:50:43Z	PASS	105	verify.sh	rc ok, orph clean (PR #4661 NoEcho v11)
