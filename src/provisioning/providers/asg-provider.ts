@@ -28,6 +28,7 @@ import {
   type AvailabilityZoneImpairmentPolicy,
   type CapacityReservationSpecification,
   type DeletionProtection,
+  type InstanceLifecyclePolicy,
   type InstanceMaintenancePolicy,
 } from '@aws-sdk/client-auto-scaling';
 import { DescribeInstancesCommand, EC2Client } from '@aws-sdk/client-ec2';
@@ -304,6 +305,54 @@ function itemsOf(read: ListRead): unknown[] {
   return read.kind === 'list' ? read.items : [];
 }
 
+type ZoneMembers = { AvailabilityZones?: string[]; AvailabilityZoneIds?: string[] };
+
+/** A subnet list the group launches into: a non-empty list or comma-joined string. */
+function declaresSubnets(value: unknown): boolean {
+  return Array.isArray(value) ? value.length > 0 : typeof value === 'string' && value !== '';
+}
+
+/**
+ * The zone members a create or update sends (go-to-k/cdkd#2762).
+ *
+ * AWS refuses `AvailabilityZones` and `AvailabilityZoneIds` in one request, and
+ * `readCurrentState` reports BOTH (AWS answers both whichever member created
+ * the group). So a bag built from a readback (`drift --revert`) or a state
+ * record (a rollback replay, where an imported record can hold the readback)
+ * that carries both sends at most one:
+ *   - none when it also carries subnets: the zones follow `VPCZoneIdentifier`,
+ *     and subnets beside zone ids are an unmeasured combination there;
+ *   - else on update the one that changed against the previous side, the zone
+ *     ids first, and neither when neither changed; on create (`previous`
+ *     absent) the zone ids, or the names when the id list is empty.
+ * An empty zone-id list (an unreported member) is never sent from such a bag.
+ * A template bag is passed through as declared: AWS refuses a template
+ * declaring both, as it refuses CloudFormation's request.
+ */
+function zoneMembers(
+  properties: Record<string, unknown>,
+  stateBorne: boolean,
+  previousProperties?: Record<string, unknown>
+): ZoneMembers {
+  const names = properties['AvailabilityZones'] as string[] | undefined;
+  const ids = properties['AvailabilityZoneIds'] as string[] | undefined;
+  if (!stateBorne || names === undefined || ids === undefined) {
+    return {
+      ...(names !== undefined && { AvailabilityZones: names }),
+      ...(ids !== undefined && { AvailabilityZoneIds: ids }),
+    };
+  }
+  if (declaresSubnets(properties['VPCZoneIdentifier'])) return {};
+  const changed = (key: string): boolean =>
+    previousProperties === undefined ||
+    JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
+  if (Array.isArray(ids) && ids.length > 0 && changed('AvailabilityZoneIds')) {
+    return { AvailabilityZoneIds: ids };
+  }
+  if (changed('AvailabilityZones')) return { AvailabilityZones: names };
+  return {};
+}
+
 /**
  * AWS Auto Scaling Provider
  *
@@ -330,23 +379,25 @@ function itemsOf(read: ListRead): unknown[] {
  * DefaultCooldown / Cooldown / NewInstancesProtectedFromScaleIn /
  * MaxInstanceLifetime / TerminationPolicies / CapacityRebalance /
  * ServiceLinkedRoleARN / Context / DesiredCapacityType /
- * DefaultInstanceWarmup / AvailabilityZones / AvailabilityZoneDistribution
- * / AvailabilityZoneImpairmentPolicy / SkipZonalShiftValidation /
- * CapacityReservationSpecification / InstanceMaintenancePolicy /
- * DeletionProtection / MixedInstancesPolicy / LaunchTemplate.
+ * DefaultInstanceWarmup / AvailabilityZones / AvailabilityZoneIds /
+ * AvailabilityZoneDistribution / AvailabilityZoneImpairmentPolicy /
+ * SkipZonalShiftValidation / CapacityReservationSpecification /
+ * InstanceMaintenancePolicy / DeletionProtection / MixedInstancesPolicy /
+ * LaunchTemplate / PlacementGroup / InstanceLifecyclePolicy.
  *
  * `UpdateAutoScalingGroup` has merge semantics (absent input field = "no
  * change"). Per the real CloudFormation A/B in go-to-k/cdkd#5004, a property
  * REMOVED from the template is reset by CloudFormation for only four members
  * (InstanceMaintenancePolicy, MaxInstanceLifetime,
  * CapacityReservationSpecification, AvailabilityZoneDistribution), plus
- * AvailabilityZoneImpairmentPolicy per the #1160 A/B — those get a removal
- * reset here, declared in `removalDefaults` or a local
- * `clearOnUpdateRemoval`. Every other optional member (HealthCheckType,
- * HealthCheckGracePeriod, Cooldown, TerminationPolicies,
- * NewInstancesProtectedFromScaleIn, CapacityRebalance, DesiredCapacityType,
- * DefaultInstanceWarmup, DeletionProtection) is KEPT at its live value by
- * CloudFormation, so a removal sends nothing for it (issues #1160, #5004).
+ * AvailabilityZoneImpairmentPolicy per the #1160 A/B and PlacementGroup per
+ * the #2762 A/B — those get a removal reset here, declared in
+ * `removalDefaults` or a local `clearOnUpdateRemoval`. Every other optional
+ * member (HealthCheckType, HealthCheckGracePeriod, Cooldown,
+ * TerminationPolicies, NewInstancesProtectedFromScaleIn, CapacityRebalance,
+ * DesiredCapacityType, DefaultInstanceWarmup, DeletionProtection,
+ * InstanceLifecyclePolicy) is KEPT at its live value by CloudFormation, so a
+ * removal sends nothing for it (issues #1160, #5004, #2762).
  *
  * Sub-shape diffs are applied via dedicated AWS APIs before the main
  * `UpdateAutoScalingGroup` call:
@@ -650,6 +701,9 @@ export class ASGProvider implements ResourceProvider {
         'DesiredCapacity',
         'VPCZoneIdentifier',
         'AvailabilityZones',
+        'AvailabilityZoneIds',
+        'PlacementGroup',
+        'InstanceLifecyclePolicy',
         'HealthCheckType',
         'HealthCheckGracePeriod',
         'Cooldown',
@@ -691,6 +745,10 @@ export class ASGProvider implements ResourceProvider {
         [
           'NotificationConfiguration',
           'Legacy singular form; use NotificationConfigurations (plural) which cdkd already wires',
+        ],
+        [
+          'InstanceId',
+          'CreateAutoScalingGroup derives a new launch configuration from the instance, and AWS Launch Configurations are end-of-life 2024-10 like LaunchConfigurationName; use LaunchTemplate instead',
         ],
       ]),
     ],
@@ -886,6 +944,8 @@ export class ASGProvider implements ResourceProvider {
       const launchTemplate = this.buildLaunchTemplate(properties);
       const tags = this.buildTags(groupName, properties);
       const vpcZoneIdentifier = this.joinVpcZoneIdentifier(properties['VPCZoneIdentifier']);
+      // A rollback re-create from a record holding both zone members (#2762).
+      const createZones = zoneMembers(properties, context?.replayingState === true);
 
       const minSize = properties['MinSize'] != null ? Number(properties['MinSize']) : 0;
       const maxSize = properties['MaxSize'] != null ? Number(properties['MaxSize']) : minSize;
@@ -903,8 +963,19 @@ export class ASGProvider implements ResourceProvider {
             MixedInstancesPolicy: properties['MixedInstancesPolicy'] as never,
           }),
           ...(vpcZoneIdentifier !== undefined && { VPCZoneIdentifier: vpcZoneIdentifier }),
-          ...(properties['AvailabilityZones'] !== undefined && {
-            AvailabilityZones: properties['AvailabilityZones'] as string[],
+          ...(createZones.AvailabilityZones !== undefined && {
+            AvailabilityZones: createZones.AvailabilityZones,
+          }),
+          ...(createZones.AvailabilityZoneIds !== undefined && {
+            AvailabilityZoneIds: createZones.AvailabilityZoneIds,
+          }),
+          ...(properties['PlacementGroup'] !== undefined && {
+            PlacementGroup: properties['PlacementGroup'] as string,
+          }),
+          ...(properties['InstanceLifecyclePolicy'] !== undefined && {
+            InstanceLifecyclePolicy: properties[
+              'InstanceLifecyclePolicy'
+            ] as InstanceLifecyclePolicy,
           }),
           ...(properties['HealthCheckType'] !== undefined && {
             HealthCheckType: properties['HealthCheckType'] as string,
@@ -1360,8 +1431,9 @@ export class ASGProvider implements ResourceProvider {
       // input field means "no change". Per the #5004 CloudFormation A/B,
       // CloudFormation resets only InstanceMaintenancePolicy, MaxInstanceLifetime,
       // CapacityReservationSpecification and AvailabilityZoneDistribution when
-      // removed, plus AvailabilityZoneImpairmentPolicy per the #1160 A/B (the
-      // rest keep the live value; see below). A constant reset arrives in
+      // removed, plus AvailabilityZoneImpairmentPolicy per the #1160 A/B and
+      // PlacementGroup per the #2762 A/B (the rest keep the live value; see
+      // below). A constant reset arrives in
       // `properties` from `removalDefaults` (see its declaration for each
       // value's doc basis); the coerced / aliased fields below resolve theirs
       // locally through `clearOnUpdateRemoval`.
@@ -1380,6 +1452,9 @@ export class ASGProvider implements ResourceProvider {
       //     template now declares, exactly as cdkd does. AWS then drops the
       //     other launch member, but KEEPS the subnets on a switch to
       //     AvailabilityZones — parity either way.
+      //   - AvailabilityZoneIds <-> AvailabilityZones (go-to-k/cdkd#2762 A/B):
+      //     CloudFormation sends only the zone member the template now
+      //     declares (AWS refuses both in one request), exactly as cdkd does.
       //   - SkipZonalShiftValidation: write-only in the CloudFormation schema
       //     (a per-request flag, never read back) — nothing to reset.
       //   - Context: "Reserved." AWS refuses any value an account sets ("is
@@ -1447,6 +1522,25 @@ export class ASGProvider implements ResourceProvider {
       const deletionProtectionInput = properties['DeletionProtection'] as
         | DeletionProtection
         | undefined;
+      // go-to-k/cdkd#2762 (real CloudFormation A/B, us-east-1, the
+      // UpdateAutoScalingGroup input read from CloudTrail): a removed
+      // PlacementGroup is RESET — CloudFormation sends `PlacementGroup: ""` and
+      // AWS then reports no placement group — while a removed
+      // InstanceLifecyclePolicy is KEPT: CloudFormation sends nothing and the
+      // live retention trigger stays.
+      const placementGroupInput = clearOnUpdateRemoval(
+        properties['PlacementGroup'] as string | undefined,
+        previousProperties['PlacementGroup'] as string | undefined,
+        ''
+      );
+      const instanceLifecyclePolicyInput = properties['InstanceLifecyclePolicy'] as
+        | InstanceLifecyclePolicy
+        | undefined;
+      const zones = zoneMembers(
+        properties,
+        context?.desiredFromAwsReadback === true || context?.replayingState === true,
+        previousProperties
+      );
       // RESET by CloudFormation (#1160 A/B): zonal shift off, the previous
       // health-check behavior re-sent (the CloudFormation schema requires
       // both members; AWS then reports no policy).
@@ -1483,8 +1577,15 @@ export class ASGProvider implements ResourceProvider {
             MixedInstancesPolicy: properties['MixedInstancesPolicy'] as never,
           }),
           ...(vpcZoneIdentifier !== undefined && { VPCZoneIdentifier: vpcZoneIdentifier }),
-          ...(properties['AvailabilityZones'] !== undefined && {
-            AvailabilityZones: properties['AvailabilityZones'] as string[],
+          ...(zones.AvailabilityZones !== undefined && {
+            AvailabilityZones: zones.AvailabilityZones,
+          }),
+          ...(zones.AvailabilityZoneIds !== undefined && {
+            AvailabilityZoneIds: zones.AvailabilityZoneIds,
+          }),
+          ...(placementGroupInput !== undefined && { PlacementGroup: placementGroupInput }),
+          ...(instanceLifecyclePolicyInput !== undefined && {
+            InstanceLifecyclePolicy: instanceLifecyclePolicyInput,
           }),
           ...(healthCheckTypeInput !== undefined && {
             HealthCheckType: healthCheckTypeInput,
@@ -2074,6 +2175,15 @@ export class ASGProvider implements ResourceProvider {
       result['VPCZoneIdentifier'] = [];
     }
     result['AvailabilityZones'] = group.AvailabilityZones ?? [];
+    // AWS reports the zone ids beside the names whichever member the group
+    // was created with; drift compares only the keys the baseline holds.
+    result['AvailabilityZoneIds'] = group.AvailabilityZoneIds ?? [];
+    if (group.PlacementGroup !== undefined && group.PlacementGroup !== '') {
+      result['PlacementGroup'] = group.PlacementGroup;
+    }
+    if (group.InstanceLifecyclePolicy !== undefined) {
+      result['InstanceLifecyclePolicy'] = group.InstanceLifecyclePolicy;
+    }
     if (group.HealthCheckType !== undefined) result['HealthCheckType'] = group.HealthCheckType;
     if (group.HealthCheckGracePeriod !== undefined) {
       result['HealthCheckGracePeriod'] = group.HealthCheckGracePeriod;

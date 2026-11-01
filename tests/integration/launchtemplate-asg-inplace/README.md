@@ -1,6 +1,6 @@
 # launchtemplate-asg-inplace
 
-Regression integ for three bugs:
+Regression integ for these bugs:
 
 - **Issue #985**: an in-place UPDATE that changes a `Fn::GetAtt`-consumed
   derived attribute must propagate to a dependent that the diff would
@@ -13,6 +13,13 @@ Regression integ for three bugs:
   `CreateAutoScalingGroup` members, and pre-fix `create()` never sent
   `EnableMetricsCollection` / `PutNotificationConfiguration`, so CDK
   `groupMetrics` / `notifications` were missing after the FIRST deploy.
+- **Issue #2762** (SDK-route backfill): `PlacementGroup`,
+  `InstanceLifecyclePolicy` and `AvailabilityZoneIds` were silent drops, which
+  routed the whole group through Cloud Control. The fixture adds a spread
+  `AWS::EC2::PlacementGroup`; phases 1-2 set `PlacementGroup` and
+  `InstanceLifecyclePolicy` (`TerminateHookAbandon: retain`), and the removal
+  phase drops both and adds `AvailabilityZoneIds` (the subnets' zone ids, read
+  off the live group after phase 1 and passed in `CDKD_ASG_AZ_IDS`).
 
 The fixture is a VPC + `ec2.LaunchTemplate` + `autoscaling.AutoScalingGroup`.
 CDK renders the ASG's `LaunchTemplate.Version` as
@@ -64,7 +71,13 @@ deploy is cheap and the destroy is fast (no instance teardown wait).
    entry and sent nothing); drift must then be clean on the original record.
    Every planted state record is restored, by the cleanup trap on a failure
    too.
-4. Clean destroy (ASG gone, LaunchTemplate gone, state gone).
+   Issue #2762: phases 1-2 have the placement group and `retain` trigger live;
+   this phase clears the placement group, keeps the policy (a real
+   CloudFormation A/B: it sends `PlacementGroup: ""` and nothing for the
+   policy), and has `AvailabilityZoneIds` live and recorded. The `Asg` record
+   is `provisionedBy=sdk` after phases 1 and 3.
+4. Clean destroy (ASG gone, LaunchTemplate gone, placement group gone, state
+   gone).
 
 ## Run
 

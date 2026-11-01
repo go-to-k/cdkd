@@ -2174,7 +2174,7 @@ export class CloudControlProvider implements ResourceProvider {
 
     // `--remove-protection` for an `AWS::AutoScaling::AutoScalingGroup` routed
     // through Cloud Control (its template set a silent-drop property such as
-    // `AvailabilityZoneIds`, so the #614 routing rule sent the whole resource
+    // `InstanceId`, so the #614 routing rule sent the whole resource
     // via Cloud Control instead of the SDK ASGProvider). Cloud Control's
     // DeleteResource cannot ForceDelete the group, clear its
     // `DeletionProtection`, or terminate the EC2-level termination-protected

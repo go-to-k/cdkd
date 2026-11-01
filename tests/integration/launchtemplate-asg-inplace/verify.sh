@@ -33,6 +33,12 @@
 #      (CloudFormation resets both, issue #1160), while
 #      HealthCheckGracePeriod stays 90 and TerminationPolicies stays
 #      ['OldestInstance'] (CloudFormation keeps them, issue #5004).
+#   4. Issue #2762 (each property was a silent drop routing the group through
+#      Cloud Control): phases 1-2 have the spread PlacementGroup and
+#      InstanceLifecyclePolicy TerminateHookAbandon=retain live; the removal
+#      phase clears the placement group, keeps the policy (CloudFormation A/B)
+#      and adds AvailabilityZoneIds (the subnets' zone ids, live and recorded);
+#      the Asg record is provisionedBy=sdk after phases 1 and 3.
 # Then destroys and confirms a clean teardown.
 #
 # desiredCapacity is 0 so no EC2 instances launch (cheap deploy, fast destroy).
@@ -189,6 +195,45 @@ assert_nondefault_props() {
   echo "    OK: ${phase}: AvailabilityZoneImpairmentPolicy live (zonal shift on, ReplaceUnhealthy)"
 }
 
+# Issue #2762: the live PlacementGroup and InstanceLifecyclePolicy
+# TerminateHookAbandon as "<group> <trigger>" ("None" for an absent field).
+asg_2762_props() {
+  aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "$1" --region "${REGION}" \
+    --query 'AutoScalingGroups[0].[PlacementGroup, InstanceLifecyclePolicy.RetentionTriggers.TerminateHookAbandon]' \
+    --output text
+}
+# The live AvailabilityZoneIds, sorted and comma-joined.
+asg_zone_ids() {
+  aws autoscaling describe-auto-scaling-groups \
+    --auto-scaling-group-names "$1" --region "${REGION}" \
+    --query "join(',', sort(AutoScalingGroups[0].AvailabilityZoneIds || \`[]\`))" --output text
+}
+# Issue #2762 routing guard: the ASG record (logical id Asg) must stay on the
+# SDK provider. Pre-fix each of the three properties was a silent drop, which
+# routes the whole group through Cloud Control.
+assert_asg_sdk_route() { # $1 = label
+  local state route
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}") || return 1
+  route=$(echo "${state}" | jq -r '.resources.Asg.provisionedBy // "absent"')
+  if [ "${route}" != "sdk" ]; then
+    echo "FAIL: $1: the Asg record's provisionedBy is '${route}', expected 'sdk' (issue #2762: PlacementGroup / InstanceLifecyclePolicy / AvailabilityZoneIds must not route the group through Cloud Control)" >&2
+    exit 1
+  fi
+  echo "    OK: $1: the Asg record is provisionedBy=sdk (issue #2762)"
+}
+# Phases 1-2: the placement group and the retain trigger are live.
+assert_2762_props_live() { # $1 = label
+  local props pg trigger
+  props=$(asg_2762_props "${ASG_NAME}") || { echo "FAIL: $1: could not read the ASG's PlacementGroup / InstanceLifecyclePolicy" >&2; exit 1; }
+  read -r pg trigger <<<"${props}"
+  if [ "${pg}" != "${PG_NAME}" ] || [ "${trigger}" != "retain" ]; then
+    echo "FAIL: $1: expected PlacementGroup '${PG_NAME}' and InstanceLifecyclePolicy TerminateHookAbandon 'retain', got '${pg}' / '${trigger}' (issue #2762)" >&2
+    exit 1
+  fi
+  echo "    OK: $1: PlacementGroup ${PG_NAME} and TerminateHookAbandon=retain live (issue #2762)"
+}
+
 # The ASG's enabled metrics, sorted and space-joined (order-insensitive).
 enabled_metrics() {
   aws autoscaling describe-auto-scaling-groups \
@@ -296,6 +341,24 @@ if [ "${NOTIFICATION_TYPES}" != "autoscaling:EC2_INSTANCE_LAUNCH autoscaling:EC2
 fi
 echo "    OK: Phase 1: notifications live for EC2_INSTANCE_LAUNCH / EC2_INSTANCE_TERMINATE (issue #3995)"
 
+# Issue #2762: PlacementGroup and InstanceLifecyclePolicy reach
+# CreateAutoScalingGroup on the SDK route (Phase 1 is a pure create).
+PG_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::PlacementGroup") | .value.physicalId] | first')
+if [ -z "${PG_NAME}" ] || [ "${PG_NAME}" = "null" ]; then
+  echo "FAIL: could not resolve the placement group name from state" >&2
+  exit 1
+fi
+assert_asg_sdk_route "Phase 1"
+assert_2762_props_live "Phase 1"
+# The zone ids of the group's own subnets, which the removal phase declares as
+# AvailabilityZoneIds (they must match VPCZoneIdentifier's zones).
+ASG_AZ_IDS=$(asg_zone_ids "${ASG_NAME}")
+if [ "$(printf '%s' "${ASG_AZ_IDS}" | tr ',' '\n' | grep -c .)" != "2" ]; then
+  echo "FAIL: Phase 1: expected the group's two subnet zone ids, got '${ASG_AZ_IDS}' (issue #2762)" >&2
+  exit 1
+fi
+echo "    resolved ASG zone ids: ${ASG_AZ_IDS}"
+
 # --- Phase 2: UPDATE (change only instanceType -> LT v2) --------------
 echo "==> Phase 2: UPDATE (instanceType t3.micro -> t3.small; LT v1 -> v2)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
@@ -325,14 +388,17 @@ echo "    OK: ASG LaunchTemplate.Version == 2 in the SAME deploy (issue #985 fix
 # The four non-default properties are still templated in Phase 2 — they must
 # pass through unchanged (kept fields are never spuriously reset).
 assert_nondefault_props "Phase 2 (props kept)" "${ASG_NAME}"
+assert_2762_props_live "Phase 2 (props kept)"
 
 # --- Phase 3: REMOVAL (drop the four ASG props) ------
 # Issue #1160: UpdateAutoScalingGroup has merge semantics, so pre-fix the
 # removed properties silently kept their old live values. The removal phase
-# keeps the Phase-2 instance type, so the ONLY template delta is the four
-# dropped ASG properties.
-echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies / AvailabilityZoneImpairmentPolicy; MaxInstanceLifetime and the policy reset)"
-CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" deploy "${STACK}" \
+# keeps the Phase-2 instance type, so the template delta is the four dropped
+# ASG properties, the dropped first GroupMetrics member (#4013), and the
+# #2762 leg: PlacementGroup and InstanceLifecyclePolicy dropped,
+# AvailabilityZoneIds added.
+echo "==> Phase 3: REMOVAL (drop HealthCheckGracePeriod / MaxInstanceLifetime / TerminationPolicies / AvailabilityZoneImpairmentPolicy / PlacementGroup / InstanceLifecyclePolicy; add AvailabilityZoneIds)"
+CDKD_TEST_REMOVAL=true CDKD_ASG_AZ_IDS="${ASG_AZ_IDS}" node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
@@ -382,6 +448,39 @@ if [ "${ENABLED_METRICS_R}" != "GroupDesiredCapacity GroupMinSize" ]; then
   exit 1
 fi
 echo "    OK: Phase 3: EnabledMetrics == GroupDesiredCapacity GroupMinSize (issue #4013)"
+
+# Issue #2762 (real CloudFormation A/B): a removed PlacementGroup is cleared
+# (CloudFormation sends PlacementGroup ""), a removed InstanceLifecyclePolicy is
+# KEPT (CloudFormation sends nothing). Phases 1-2 asserted both live.
+PROPS_R=$(asg_2762_props "${ASG_NAME}") || { echo "FAIL: Phase 3: could not read the ASG's PlacementGroup / InstanceLifecyclePolicy" >&2; exit 1; }
+read -r PG_R TRIGGER_R <<<"${PROPS_R}"
+if [ "${PG_R}" != "None" ]; then
+  echo "FAIL: Phase 3: PlacementGroup is '${PG_R}' after removal, expected cleared (CloudFormation resets it, issue #2762)" >&2
+  exit 1
+fi
+echo "    OK: Phase 3: PlacementGroup cleared (issue #2762)"
+if [ "${TRIGGER_R}" != "retain" ]; then
+  echo "FAIL: Phase 3: InstanceLifecyclePolicy TerminateHookAbandon is '${TRIGGER_R}' after removal, expected the live 'retain' RETAINED (CloudFormation keeps it, issue #2762)" >&2
+  exit 1
+fi
+echo "    OK: Phase 3: InstanceLifecyclePolicy retained (issue #2762)"
+# NOTE: AWS reports the subnets' zone ids whether or not AvailabilityZoneIds
+# was sent, so this readback alone cannot prove delivery (the unit sdk-wire
+# cases do). It proves AWS accepted the SDK-route update sending
+# AvailabilityZoneIds beside VPCZoneIdentifier, and the record and route below.
+AZ_IDS_R=$(asg_zone_ids "${ASG_NAME}")
+if [ "${AZ_IDS_R}" != "${ASG_AZ_IDS}" ]; then
+  echo "FAIL: Phase 3: AvailabilityZoneIds is '${AZ_IDS_R}', expected '${ASG_AZ_IDS}' (issue #2762)" >&2
+  exit 1
+fi
+STATE_R=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")
+RECORDED_AZ_IDS=$(echo "${STATE_R}" | jq -r '(.resources.Asg.properties.AvailabilityZoneIds // []) | sort | join(",")')
+if [ "${RECORDED_AZ_IDS}" != "${ASG_AZ_IDS}" ]; then
+  echo "FAIL: Phase 3: the Asg record holds AvailabilityZoneIds '${RECORDED_AZ_IDS}', expected '${ASG_AZ_IDS}' (issue #2762)" >&2
+  exit 1
+fi
+echo "    OK: Phase 3: AvailabilityZoneIds ${AZ_IDS_R} live and recorded (issue #2762)"
+assert_asg_sdk_route "Phase 3"
 
 DRIFT_JSON="$(mktemp)"
 DRIFT_ERR="$(mktemp)"
@@ -509,6 +608,14 @@ echo "    OK: AutoScalingGroup is gone"
 assert_gone "LaunchTemplate ${LT_NAME} still exists after destroy" aws ec2 describe-launch-templates --launch-template-names "${LT_NAME}" --region "${REGION}"
 echo "    OK: LaunchTemplate is gone"
 
+PG_LEFT=$(aws ec2 describe-placement-groups --filters "Name=group-name,Values=${PG_NAME}" \
+  --region "${REGION}" --query 'length(PlacementGroups[?State != `deleted`])' --output text)
+if [ "${PG_LEFT}" != "0" ]; then
+  echo "FAIL: placement group ${PG_NAME} still exists after destroy" >&2
+  exit 1
+fi
+echo "    OK: placement group is gone"
+
 assert_gone "notification SNS topic ${TOPIC_ARN} still exists after destroy" aws sns get-topic-attributes --topic-arn "${TOPIC_ARN}" --region "${REGION}"
 echo "    OK: notification SNS topic is gone"
 
@@ -516,4 +623,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults; issue #3995: group metrics and notifications live after the first deploy; issue #4013: two GroupMetrics entries applied as one set on update, drift clean + clean destroy)"
+echo "==> launchtemplate-asg-inplace test passed (issue #985: in-place GetAtt value change propagated to the ASG in the same deploy; issue #1160: removed ASG properties reset to CFn defaults; issue #3995: group metrics and notifications live after the first deploy; issue #4013: two GroupMetrics entries applied as one set on update; issue #2762: PlacementGroup / InstanceLifecyclePolicy / AvailabilityZoneIds on the SDK route, drift clean + clean destroy)"

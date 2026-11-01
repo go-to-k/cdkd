@@ -23,12 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::AutoScaling::AutoScalingGroup": [
-      "AvailabilityZoneIds",
-      "InstanceId",
-      "InstanceLifecyclePolicy",
-      "PlacementGroup"
-    ],
     "AWS::CodeBuild::Project": [
       "Triggers"
     ],
