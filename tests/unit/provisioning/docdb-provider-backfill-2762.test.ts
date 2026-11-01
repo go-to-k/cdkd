@@ -291,6 +291,7 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       it('refuses a password change before any call, printing no value', async () => {
         armCluster();
         const error = (await updateCluster(next, previous).catch((e: unknown) => e)) as Error;
+        expect(error.message).toMatch(/^DocDB DBCluster L: MasterUserPassword cannot change/);
         expect(error.message).toMatch(/declare ManageMasterUserPassword: false beside it/);
         expect(error.message).not.toContain(PASSWORD);
         expect(isMarkedNonRetryable(error)).toBe(true);
