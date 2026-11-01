@@ -613,6 +613,49 @@ describe('update', () => {
     expect(order[second - 1]).toBe('ACTIVE');
   });
 
+  it('waits out a vector index already building before the first vector op', async () => {
+    const order: string[] = [];
+    let reads = 0;
+    mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+      const name = command.constructor.name;
+      if (name === 'DescribeTableCommand') {
+        reads += 1;
+        const status = reads < 4 ? 'CREATING' : 'ACTIVE';
+        order.push(status);
+        return Promise.resolve({
+          Table: { ...live, VectorIndexes: [{ IndexName: 'other', IndexStatus: status }] },
+        });
+      }
+      if (name === 'UpdateTableCommand' && command.input['VectorIndexUpdates']) order.push('op');
+      return Promise.resolve({ Tags: [] });
+    });
+    await update({ ...BASE, VectorIndexes: [VEC('vec1')] }, BASE);
+    expect(order[order.indexOf('op') - 1]).toBe('ACTIVE');
+  });
+
+  it('holds the wait after an UpdateTable while a vector index is in transition', async () => {
+    const afterSend: string[] = [];
+    let building = 0;
+    mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+      const name = command.constructor.name;
+      if (name === 'DescribeTableCommand') {
+        const status = building > 0 ? 'UPDATING' : 'ACTIVE';
+        if (building > 0) building -= 1;
+        afterSend.push(status);
+        return Promise.resolve({
+          Table: { ...live, VectorIndexes: [{ IndexName: 'other', IndexStatus: status }] },
+        });
+      }
+      if (name === 'UpdateTableCommand') {
+        afterSend.length = 0;
+        building = 2;
+      }
+      return Promise.resolve({ Tags: [] });
+    });
+    await update({ ...BASE, WarmThroughput: { ReadUnitsPerSecond: 13000 } }, BASE);
+    expect(afterSend).toEqual(['UPDATING', 'UPDATING', 'ACTIVE', 'ACTIVE']);
+  });
+
   it('reports a changed unusable WarmThroughput once, and an unchanged one not at all', async () => {
     live = { ...live, WarmThroughput: { ReadUnitsPerSecond: 12000 } };
     const bad = { ...BASE, WarmThroughput: { ReadUnitsPerSecond: 'many' } };
