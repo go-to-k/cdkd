@@ -1140,14 +1140,14 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
     it('proves a repeated role or log type and an empty FeatureName settled', async () => {
       liveCluster({
         AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: '' }],
-        EnabledCloudwatchLogsExports: ['audit'],
+        EnabledCloudwatchLogsExports: ['audit', 'audit'],
       });
       const desired = {
         AssociatedRoles: [
           { RoleArn: ROLE_A, FeatureName: '' },
           { RoleArn: ROLE_A },
         ],
-        EnableCloudwatchLogsExports: ['audit', 'audit'],
+        EnableCloudwatchLogsExports: ['audit'],
       };
       expect(
         await unsettledAfterUpdate({

@@ -282,7 +282,6 @@ function isMajorEngineChange(previous: unknown, desired: unknown): boolean {
  */
 function holdsPendingValue(value: unknown): boolean {
   if (value === undefined || value === null) return false;
-  if (Array.isArray(value)) return value.some(holdsPendingValue);
   if (typeof value === 'object') return Object.values(value).some(holdsPendingValue);
   return true;
 }
