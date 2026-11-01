@@ -301,8 +301,8 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-10-13T14:31:12Z	PASS	155	verify.sh	rc ok, orph clean, own state bucket, after §8-d probe; PR #4864 06b838511
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-09-07T17:55:55Z	PASS	105	verify.sh	2740 lane: diff/deploy condition parity regression net; rc ok, orph clean
-rds-aurora	2026-11-01T18:51:59Z	PASS	5129	verify.sh	rc ok, orph clean
-rds-dbinstance-backfill	2026-11-01T01:49:02Z	PASS	1098	verify.sh	rc ok, orph clean; #2762 DBInstance 15 props phase1+2, PR 5593
+rds-aurora	2026-11-01T21:59:29Z	PASS	5443	verify.sh	rc ok, orph clean; PR 5612 final HEAD 2c87a7a7e
+rds-dbinstance-backfill	2026-11-01T21:59:29Z	PASS	1522	verify.sh	rc ok, orph clean; PR 5612 final HEAD 2c87a7a7e
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 recreate-mixed-direction	2026-10-17T05:11:06Z	PASS	130	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
