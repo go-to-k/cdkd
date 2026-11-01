@@ -98,7 +98,7 @@ git fetch origin && git switch -c "$B" origin/main
 - **Merge it before the wrap report, then remove the worktree**
   (`git worktree remove .claude/worktrees/<name> && git worktree prune`). An
   IN-PLACE run keeps its launch tree and runs §9's cleanup arm HERE, last of the
-  whole run: its `git -C <LANE_TREE>` block `-D`s every branch this run
-  created in this tree, the retro included, AS-IS — no pull, no rebase.
+  whole run: switch back to `<LAUNCH_BRANCH>` AS-IS (no pull, no rebase) and
+  `-D` every branch this run created in this tree, the retro included.
 
 Report it in one wrap line: what changed where, or "no skill change".

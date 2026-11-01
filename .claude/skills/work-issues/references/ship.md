@@ -225,20 +225,20 @@ git branch --list '<your prefix>*'  # ...and so is every branch it added
 
 IN-PLACE — run THIS block INSTEAD for the launch tree, **never removing the tree
 it runs in** (a concurrent lane's sibling takes the block above with `git -C
-<MAIN_CHECKOUT>`, and is not in this `-D` list). `<...>` are PLACEHOLDERS for
-`launch-mode.md`'s probe values, and every line is `git -C <LANE_TREE>`: a
-bare switch batched in parallel with the pull above moved the main checkout off
-`main` (#5595).
+<MAIN_CHECKOUT>`, and is not in this `-D` list). Every `<...>` is a pasted
+literal (`<LANE_TREE>`, `<LAUNCH_BRANCH>`: `launch-mode.md`'s probe), and every
+`git` here and in the Fallback is `git -C "<LANE_TREE>"`: a bare switch batched
+in parallel with the pull above moved the main checkout off `main` (#5595).
 
 ```bash
-git -C <LANE_TREE> show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
-DIRTY=$(git -C <LANE_TREE> status --porcelain)
+git -C "<LANE_TREE>" show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
+DIRTY=$(git -C "<LANE_TREE>" status --porcelain)
 [ -z "$DIRTY" ] || echo 'dirty -> commit or stash first, then re-run this block'
 [ -z "$DIRTY" ] \
-  && git -C <LANE_TREE> switch --no-guess <LAUNCH_BRANCH> \
-  && git -C <LANE_TREE> branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
-git -C <LANE_TREE> branch --show-current  # must print <LAUNCH_BRANCH>
-git -C <LANE_TREE> branch --list '<your prefix>*'  # ...and every branch this run added is gone
+  && git -C "<LANE_TREE>" switch --no-guess <LAUNCH_BRANCH> \
+  && git -C "<LANE_TREE>" branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
+git -C "<LANE_TREE>" branch --show-current  # must print <LAUNCH_BRANCH>
+git -C "<LANE_TREE>" branch --list '<your prefix>*'  # ...and every branch this run added is gone
 ```
 
 `--no-guess`: plain `git switch` re-creates a gone branch from `origin` and
@@ -253,9 +253,9 @@ probe time (launched detached) or is now gone. Keep it chained: after a failed
 `fetch`, `switch --detach` lands on a STALE `origin/main`.
 
 ```bash
-git fetch origin \
-  && git switch --detach origin/main \
-  && git branch -D <each branch this run created in THIS tree>
+git -C "<LANE_TREE>" fetch origin \
+  && git -C "<LANE_TREE>" switch --detach origin/main \
+  && git -C "<LANE_TREE>" branch -D <each branch this run created in THIS tree>
 ```
 
 ### Release the claims
