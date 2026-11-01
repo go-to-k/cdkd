@@ -223,6 +223,16 @@ describe('RDSProvider DBCluster backfill (go-to-k/cdkd#2762)', () => {
       expect((state as Input)['StorageType']).toBe('aurora');
     });
 
+    it('reads a pending StorageType change as the storage type the cluster is moving to', async () => {
+      armLive({
+        Engine: 'aurora-postgresql',
+        StorageType: 'aurora',
+        PendingModifiedValues: { StorageType: 'aurora-iopt1' },
+      });
+      const state = await provider.readCurrentState('cluster-1', 'Cluster', 'AWS::RDS::DBCluster');
+      expect((state as Input)['StorageType']).toBe('aurora-iopt1');
+    });
+
     it('reads no StorageType for a non-Aurora cluster that reports none', async () => {
       armLive({ Engine: 'postgres' });
       const state = await provider.readCurrentState('cluster-1', 'Cluster', 'AWS::RDS::DBCluster');

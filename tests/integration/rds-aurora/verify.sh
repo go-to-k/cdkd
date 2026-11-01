@@ -161,6 +161,8 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Auto-generated physical name; resolved from cdkd state after deploy.
 DB_CLUSTER_ID=""
+# go-to-k/cdkd#2762: the SecurityCluster's parameter group, for the cleanup below.
+PARAMS_NAME=""
 # Phase 2b's out-of-band cluster member (issue #2204). Not in cdkd state, so no
 # cdkd destroy removes it: cleanup deletes it FIRST, or the SecurityCluster
 # (and the VPC under it) cannot be deleted. Set just before the create.
@@ -290,6 +292,20 @@ cleanup() {
       --db-cluster-identifier "${DB_CLUSTER_ID}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
+  fi
+  # go-to-k/cdkd#2762: the SecurityCluster's parameter group, which RDS refuses
+  # to delete while the cluster still uses it, so after the cluster is gone.
+  # Best effort: a no-op once state destroy deleted it.
+  if [ -n "${PARAMS_NAME}" ]; then
+    if [ -n "${DB_CLUSTER_ID}" ]; then
+      aws rds wait db-cluster-deleted --db-cluster-identifier "${DB_CLUSTER_ID}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+    if ! PARAMS_DELETE_OUT=$(aws rds delete-db-cluster-parameter-group \
+      --db-cluster-parameter-group-name "${PARAMS_NAME}" --region "${REGION}" 2>&1); then
+      printf '%s' "${PARAMS_DELETE_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+        || echo "WARN: cleanup could not delete the #2762 parameter group ${PARAMS_NAME}: ${PARAMS_DELETE_OUT}" >&2
+    fi
   fi
   # Issue #5467: the EngineCluster (DeletionPolicy Delete, no instance), both
   # before and after phase 2c's replacement; a no-op once destroyed. A forced
@@ -568,7 +584,7 @@ echo "    OK: base SecurityCluster SecondsUntilAutoPause == 600 (#5466)"
 # StorageType aurora-iopt1, each a non-default. Before #2762 each routed the
 # cluster to Cloud Control (the provisionedBy=sdk guard above); here each must
 # be live. RDS stores a parameter group name in lower case.
-PARAMS_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBClusterParameterGroup" and (.key | test("^SecurityClusterParams"))) | .value.physicalId] | first // ""')
+PARAMS_NAME=$(echo "${STATE}" | jq -r '.resources.SecurityClusterParams.physicalId // ""')
 if [ -z "${PARAMS_NAME}" ]; then
   echo "FAIL: #2762: could not resolve SecurityClusterParams' name from state" >&2
   exit 1

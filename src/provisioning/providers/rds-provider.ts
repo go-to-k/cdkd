@@ -3573,7 +3573,12 @@ export class RDSProvider implements ResourceProvider {
     if (cluster.CopyTagsToSnapshot !== undefined) {
       result['CopyTagsToSnapshot'] = cluster.CopyTagsToSnapshot;
     }
+    // A storage type change can sit in `PendingModifiedValues` after
+    // ModifyDBCluster returns (CloudFormation's handler waits for it to clear),
+    // so the pending one is what the cluster is moving to: read it first, or
+    // the capture right after the update records the old type.
     const storageType =
+      cluster.PendingModifiedValues?.StorageType ??
       cluster.StorageType ??
       (cluster.Engine?.toLowerCase().startsWith('aurora') ? 'aurora' : undefined);
     if (storageType !== undefined) result['StorageType'] = storageType;
