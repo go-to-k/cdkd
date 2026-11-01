@@ -4877,9 +4877,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // describe this method already made rather than a second call, and built
       // ONCE so the three sites cannot end up comparing against differently
       // aged snapshots of the same table. `Status` is deliberately not carried:
-      // the guard compares NUMBERS, and a `WarmThroughput` still `UPDATING`
-      // reports the value it is moving to, which is the right thing to be at-
-      // or-below.
+      // the guard compares NUMBERS. A `WarmThroughput` still `UPDATING` reports
+      // the OLD value (see `readCurrentState`), so a request below the raise in
+      // flight passes it; AWS accepted one on a single-region table (measured,
+      // us-east-1, 2026-11-01).
       const liveWarmByIndexName = new Map<string, WarmThroughputSpec>();
       for (const liveGsi of describeResp.Table?.GlobalSecondaryIndexes ?? []) {
         const name = liveGsi.IndexName;

@@ -20,6 +20,14 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *                       one Create, on the same table. Both read the same
  *                       `embedding` attribute, which AWS allows only at one
  *                       dimension count, so the Delete must settle first.
+ *   Phase V3m (CDKD_TEST_VECTOR_MALFORMED=true, on top of the update):
+ *                       the entry loses its `IndexName`, which reads as "no
+ *                       index declared": refused, `vec2` stays
+ *                       (go-to-k/cdkd#5606).
+ *   Phase V3w (CDKD_TEST_WARM_RAISE=true, on top of the update):
+ *                       a table-level and a per-index WarmThroughput above the
+ *                       12000/4000 AWS holds. Billed pre-warming, per run
+ *                       (go-to-k/cdkd#5606).
  *
  * L1 overrides rather than an L2 prop: aws-cdk-lib's `Table` has no vector
  * index API, and the fixture does not pin a minimum aws-cdk-lib version.
@@ -35,6 +43,11 @@ export class DynamodbVectorIndexStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    table.addGlobalSecondaryIndex({
+      indexName: 'warmGsi',
+      partitionKey: { name: 'tenant', type: dynamodb.AttributeType.STRING },
+    });
+
     const cfnTable = table.node.defaultChild as dynamodb.CfnTable;
     cfnTable.addPropertyOverride('AttributeDefinitions', [
       { AttributeName: 'pk', AttributeType: 'S' },
@@ -46,7 +59,7 @@ export class DynamodbVectorIndexStack extends cdk.Stack {
       process.env.CDKD_TEST_UPDATE === 'true'
         ? [
             {
-              IndexName: 'vec2',
+              ...(process.env.CDKD_TEST_VECTOR_MALFORMED === 'true' ? {} : { IndexName: 'vec2' }),
               VectorAttribute: { AttributeName: 'embedding' },
               Dimensions: 4,
               DistanceFunction: 'EUCLIDEAN',
@@ -65,5 +78,10 @@ export class DynamodbVectorIndexStack extends cdk.Stack {
             },
           ]
     );
+    if (process.env.CDKD_TEST_WARM_RAISE === 'true') {
+      const raised = { ReadUnitsPerSecond: 14000, WriteUnitsPerSecond: 6000 };
+      cfnTable.addPropertyOverride('WarmThroughput', raised);
+      cfnTable.addPropertyOverride('GlobalSecondaryIndexes.0.WarmThroughput', raised);
+    }
   }
 }

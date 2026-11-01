@@ -177,6 +177,7 @@ import {
   readbackVectorIndexes,
   vectorIndexesForCreate,
   vectorIndexesSettled,
+  vectorIndexesShapeDetail,
   type VectorIndexPlan,
 } from '../dynamodb-vector-indexes.js';
 
@@ -1318,13 +1319,22 @@ function wasSentWarmThroughput(value: unknown): boolean {
  */
 function readbackWarmThroughput(
   live: WarmThroughputUnits,
-  members: ReadonlySet<string> | undefined
+  members: ReadonlySet<string> | undefined,
+  declared?: unknown
 ): Record<string, unknown> | undefined {
+  // go-to-k/cdkd#5606: after a raise on an existing table or index, AWS keeps
+  // reporting the OLD value until `Status` leaves `UPDATING`, and the post-deploy
+  // baseline is read in that window: it froze the old value, and the next drift
+  // reported the raise. The value only rises, so the declared one is where it is
+  // moving. Measured on a single-region table and a GSI, us-east-1, 2026-11-01.
+  const moving = live.Status === 'UPDATING' ? coerceWarmThroughput(declared)?.spec : undefined;
   const out: Record<string, unknown> = {};
   for (const member of WARM_THROUGHPUT_MEMBERS) {
-    if (live[member] === undefined) continue;
+    const value = live[member];
+    if (value === undefined) continue;
     if (members !== undefined && !members.has(member)) continue;
-    out[member] = live[member];
+    const target = moving?.[member];
+    out[member] = target === undefined ? value : Math.max(value, target);
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
@@ -1433,12 +1443,13 @@ function declaresWarmThroughput(properties?: Record<string, unknown>): boolean {
  * The two user-settable members of a warm-throughput description, spelled
  * structurally so the same predicate serves the table-level
  * `TableWarmThroughputDescription` and the per-index
- * `GlobalSecondaryIndexWarmThroughputDescription` (both add an AWS-managed
- * `Status` this never reads).
+ * `GlobalSecondaryIndexWarmThroughputDescription`. Both add an AWS-managed
+ * `Status`, read only by {@link readbackWarmThroughput}.
  */
 interface WarmThroughputUnits {
   ReadUnitsPerSecond?: number | undefined;
   WriteUnitsPerSecond?: number | undefined;
+  Status?: string | undefined;
 }
 
 // `isWarmThroughputDecrease` — the measured `decreasing WarmThroughput is not
@@ -1633,7 +1644,8 @@ function reverseMapSecondaryIndex(
     // Per member, as at the table level (issue #3777).
     const wt = readbackWarmThroughput(
       live.WarmThroughput,
-      bagInformative ? sentWarmThroughputMembers(desired?.['WarmThroughput']) : undefined
+      bagInformative ? sentWarmThroughputMembers(desired?.['WarmThroughput']) : undefined,
+      bagInformative ? desired?.['WarmThroughput'] : undefined
     );
     if (wt !== undefined) out['WarmThroughput'] = wt;
   }
@@ -2973,16 +2985,37 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // VectorIndexes needs no extra trigger: the engine's previous side is
       // then `readUnsettled`'s projected live list, so this comparison is
       // already against what AWS holds.
+      //
+      // go-to-k/cdkd#5606: an unreadable list reads as "no index declared" and
+      // would delete every recorded one, so a changed one gets no plan: refused
+      // on the template path, warned on the state-borne callers, leaving the
+      // indexes as they are.
       const vectorIndexesChanged =
         JSON.stringify(properties['VectorIndexes']) !==
         JSON.stringify(previousProperties['VectorIndexes']);
-      const vectorIndexPlan = vectorIndexesChanged
-        ? planVectorIndexUpdates(
-            previousProperties['VectorIndexes'],
-            properties['VectorIndexes'],
-            table?.VectorIndexes ?? (table === undefined ? undefined : [])
-          )
+      const vectorIndexShape = vectorIndexesChanged
+        ? vectorIndexesShapeDetail(properties['VectorIndexes'])
         : undefined;
+      if (vectorIndexShape !== undefined) {
+        const shapeMessage = `AWS::DynamoDB::Table ${logicalId}: ${vectorIndexShape}`;
+        if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+          throw new ProvisioningError(
+            `${maskSecrets(shapeMessage)}. Nothing was applied to the table; fix the template value`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        warn(`${shapeMessage}; the VectorIndexes change was not applied`);
+      }
+      const vectorIndexPlan =
+        vectorIndexesChanged && vectorIndexShape === undefined
+          ? planVectorIndexUpdates(
+              previousProperties['VectorIndexes'],
+              properties['VectorIndexes'],
+              table?.VectorIndexes ?? (table === undefined ? undefined : [])
+            )
+          : undefined;
       if (vectorIndexPlan !== undefined && vectorIndexPlan.changed.length > 0) {
         // Each name masked on its own (the WHOLE-VALUE arm, at any length),
         // not only inside the finished sentence, as `indexScopeAt` does.
@@ -8763,11 +8796,11 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // Surface ONLY the user-settable sub-fields — Status is AWS-managed —
       // and of those only the members cdkd SENT (issue #3777).
       if (table.WarmThroughput && declaresWarmThroughput(properties)) {
+        const informative = properties !== undefined && desiredBagIsInformative(properties);
         const wt = readbackWarmThroughput(
           table.WarmThroughput,
-          properties !== undefined && desiredBagIsInformative(properties)
-            ? sentWarmThroughputMembers(properties['WarmThroughput'])
-            : undefined
+          informative ? sentWarmThroughputMembers(properties['WarmThroughput']) : undefined,
+          informative ? properties['WarmThroughput'] : undefined
         );
         if (wt !== undefined) result['WarmThroughput'] = wt;
       }
