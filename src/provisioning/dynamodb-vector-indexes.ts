@@ -49,7 +49,9 @@ export function vectorIndexesByName(value: unknown): Map<string, Entry> {
  */
 export function vectorIndexesShapeDetail(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value)) return `VectorIndexes must be a list, got ${typeof value}`;
+  if (!Array.isArray(value)) {
+    return `VectorIndexes must be a list, got ${value === null ? 'null' : typeof value}`;
+  }
   const named = (value as unknown[]).every(
     (entry) =>
       typeof entry === 'object' &&

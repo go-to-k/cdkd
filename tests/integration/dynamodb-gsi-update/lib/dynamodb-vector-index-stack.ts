@@ -21,9 +21,10 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
  *                       `embedding` attribute, which AWS allows only at one
  *                       dimension count, so the Delete must settle first.
  *   Phase V3m (CDKD_TEST_VECTOR_MALFORMED=true, on top of the update):
- *                       the entry loses its `IndexName`, which reads as "no
- *                       index declared": refused, `vec2` stays
- *                       (go-to-k/cdkd#5606).
+ *                       the entry's `IndexName` is no string, which reads as
+ *                       "no index declared": refused, `vec2` stays
+ *                       (go-to-k/cdkd#5606). A MISSING one never reaches the
+ *                       provider: the pre-flight required-member check refuses it.
  *   Phase V3w (CDKD_TEST_WARM_RAISE=true, on top of the update):
  *                       a table-level and a per-index WarmThroughput above the
  *                       12000/4000 AWS holds. Billed pre-warming, per run
@@ -59,7 +60,7 @@ export class DynamodbVectorIndexStack extends cdk.Stack {
       process.env.CDKD_TEST_UPDATE === 'true'
         ? [
             {
-              ...(process.env.CDKD_TEST_VECTOR_MALFORMED === 'true' ? {} : { IndexName: 'vec2' }),
+              IndexName: process.env.CDKD_TEST_VECTOR_MALFORMED === 'true' ? 7 : 'vec2',
               VectorAttribute: { AttributeName: 'embedding' },
               Dimensions: 4,
               DistanceFunction: 'EUCLIDEAN',

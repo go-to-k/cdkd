@@ -1099,7 +1099,7 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 #       `vec1` in its CFn shape (no AWS-managed IndexStatus / Backfilling).
 #   V3. update: `vec1` removed, `vec2` added — the SAME table (CreationDateTime
 #       unchanged), AWS holds exactly `vec2` as declared, ACTIVE; drift clean.
-#   V3m. go-to-k/cdkd#5606: an entry with no `IndexName` read as "no index
+#   V3m. go-to-k/cdkd#5606: an entry whose `IndexName` is no string read as "no index
 #       declared" and deleted `vec2`; it is refused and `vec2` stays.
 #   V3w. go-to-k/cdkd#5606: a table-level and a per-index WarmThroughput raise.
 #       AWS reports the OLD value while UPDATING, and the capture read there
@@ -1179,7 +1179,7 @@ fi
 echo "    vector indexes: ${VECTOR_SHAPE_V3} (same table)"
 assert_vector_drift_clean "after the update"
 
-echo "==> Phase V3m (go-to-k/cdkd#5606): a VectorIndexes entry with no IndexName is refused and vec2 stays"
+echo "==> Phase V3m (go-to-k/cdkd#5606): a VectorIndexes entry with a non-string IndexName is refused and vec2 stays"
 set +e
 CDKD_TEST_UPDATE=true CDKD_TEST_VECTOR_MALFORMED=true node "${LOCAL_DIST}" deploy "${VECTOR_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${VECTOR_MALFORMED_LOG}" 2>&1

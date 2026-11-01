@@ -236,6 +236,7 @@ describe('DynamoDB table VectorIndexes (go-to-k/cdkd#2762)', () => {
     it.each([
       ['a value that is no list', 'nonsense', /VectorIndexes must be a list, got string/],
       ['a single entry, unlisted', vector('v2'), /VectorIndexes must be a list, got object/],
+      ['null', null, /VectorIndexes must be a list, got null/],
       [
         'an entry with no string IndexName',
         [vector('v1'), { ...vector('v2'), IndexName: 7 }],
