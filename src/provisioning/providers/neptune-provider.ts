@@ -267,9 +267,11 @@ function isMajorEngineChange(previous: unknown, desired: unknown): boolean {
 /** How long an accepted change (a role, a log type, ...) is waited on before a warning. */
 const SETTLE_MAX_WAIT_MS = 300_000;
 
-/** Whether two lists of log types name the same set. */
-function sameLogTypes(a: readonly string[], b: readonly string[]): boolean {
-  return [...a].sort().join(' ') === [...b].sort().join(' ');
+/** A CFn boolean, which may arrive as a string; anything else passes through. */
+function cfnBoolean(value: unknown): unknown {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
 }
 
 /**
@@ -1035,12 +1037,15 @@ export class NeptuneProvider implements ResourceProvider {
       const described = await this.describeDBCluster(physicalId);
 
       if (logExportConfig !== undefined && process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForApplied(logicalId, 'EnableCloudwatchLogsExports', async () =>
-          sameLogTypes(
-            (await this.describeDBCluster(physicalId))?.EnabledCloudwatchLogsExports ?? [],
-            logTypes
-          )
-        );
+        // The delta, not the whole list: a type enabled out of band is not ours.
+        const { EnableLogTypes: enabled = [], DisableLogTypes: disabled = [] } = logExportConfig;
+        await this.waitForApplied(logicalId, 'EnableCloudwatchLogsExports', async () => {
+          const live = (await this.describeDBCluster(physicalId))?.EnabledCloudwatchLogsExports;
+          return (
+            enabled.every((type) => live?.includes(type)) &&
+            !disabled.some((type) => live?.includes(type))
+          );
+        });
       }
 
       await this.applyClusterRoles(
@@ -1406,12 +1411,10 @@ export class NeptuneProvider implements ResourceProvider {
     // is the one side of this choice that is not safe, whatever CloudFormation
     // does (no A/B has measured it, go-to-k/cdkd#2762). A readback declares
     // the live value, so nothing there was removed.
-    const declaredPublic = properties['PubliclyAccessible'] as boolean | undefined;
-    const previousPublic = previousProperties['PubliclyAccessible'];
+    const declaredPublic = cfnBoolean(properties['PubliclyAccessible']) as boolean | undefined;
+    const previousPublic = cfnBoolean(previousProperties['PubliclyAccessible']);
     const closesPublicAccess =
-      declaredPublic == null &&
-      (previousPublic === true || previousPublic === 'true') &&
-      context?.desiredFromAwsReadback !== true;
+      declaredPublic == null && previousPublic === true && context?.desiredFromAwsReadback !== true;
     const publiclyAccessible = closesPublicAccess ? false : declaredPublic;
 
     try {
@@ -1420,7 +1423,9 @@ export class NeptuneProvider implements ResourceProvider {
       // the template is sent as an explicit reset only where CloudFormation
       // resets it. Every property in INSTANCE_KEPT_ON_REMOVAL was measured as
       // KEPT (#5004, #5544), so a removed one is passed through as absent and
-      // named in the warning below.
+      // named in the warning below. `PubliclyAccessible` is the one exception:
+      // unmeasured, and reset above because an exposure must not outlive its
+      // declaration.
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
       await modifyDbInstanceWhenAvailable({
@@ -1972,6 +1977,7 @@ export class NeptuneProvider implements ResourceProvider {
         sleep: (ms) => this.sleep(ms),
         logger: this.logger,
         label: 'Neptune DBCluster',
+        subject: 'cluster',
         logicalId,
         remainingMs: enclosingDeadlineRemainingMs(),
       });

@@ -395,6 +395,25 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       );
     });
 
+    it('calls the resource a cluster when a role call runs out of budget', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'AddRoleToDBClusterCommand'
+          ? Promise.reject(
+              Object.assign(new Error('DB cluster is not in available state.'), {
+                name: 'InvalidDBClusterStateFault',
+              })
+            )
+          : answer(command)
+      );
+      const failure = await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}).catch(
+        (error: unknown) => error
+      );
+      expect(String((failure as Error).cause ?? failure)).toContain('the cluster is');
+      expect(String((failure as Error).cause ?? failure)).not.toContain('instance');
+    });
+
     it('--no-wait skips the settle poll', async () => {
       process.env['CDKD_NO_WAIT'] = 'true';
       const wire = armCluster();
@@ -500,6 +519,12 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       const wire = armCluster({ logs: [], logsAfter: 4 });
       await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
       expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(4);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('settles on the delta: a type enabled out of band does not hold the wait', async () => {
+      armCluster({ logs: ['slowquery'] });
+      await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
       expect(warn).not.toHaveBeenCalled();
     });
 
@@ -744,6 +769,12 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
     ])('sends no reset for %s', async (_label, previous, context) => {
       await update({}, previous, INSTANCE, context);
       expect(sentAs('ModifyDBInstanceCommand')).not.toHaveProperty('PubliclyAccessible', false);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('reads a string value as the boolean it means, on the wire and in the wait', async () => {
+      await update({ PubliclyAccessible: 'true' }, { PubliclyAccessible: 'false' }, INSTANCE);
+      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: true });
       expect(warn).not.toHaveBeenCalled();
     });
 
