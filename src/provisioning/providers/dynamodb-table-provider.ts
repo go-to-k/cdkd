@@ -1325,8 +1325,10 @@ function readbackWarmThroughput(
   // go-to-k/cdkd#5606: after a raise on an existing table or index, AWS keeps
   // reporting the OLD value until `Status` leaves `UPDATING`, and the post-deploy
   // baseline is read in that window: it froze the old value, and the next drift
-  // reported the raise. The value only rises, so the declared one is where it is
-  // moving. Measured on a single-region table and a GSI, us-east-1, 2026-11-01.
+  // reported the raise. So the declared value is read as where it is moving, and
+  // a live value above it stands. AWS also accepted a request below a raise in
+  // flight; where that settles is unmeasured, and the settled read reports it.
+  // Measured on a single-region table and a GSI, us-east-1, 2026-11-01.
   const moving = live.Status === 'UPDATING' ? coerceWarmThroughput(declared)?.spec : undefined;
   const out: Record<string, unknown> = {};
   for (const member of WARM_THROUGHPUT_MEMBERS) {
@@ -8605,6 +8607,14 @@ export class DynamoDBTableProvider implements ResourceProvider {
    * `KinesisStreamSpecification`. A status at rest — an inaccessible key, an
    * archived table — is not moving: the update runs and AWS's error names it.
    * A failed read keeps every name, which the engine reports as unconfirmed.
+   *
+   * `WarmThroughput` is deliberately NOT a moving name here, though its `Status`
+   * reads `UPDATING` and `AWS::DynamoDB::GlobalTable` lists it (go-to-k/cdkd#5606).
+   * A first raise holds that status for about 10 minutes, so listing it would
+   * refuse every retry of a failed deploy for that long, while AWS accepts the
+   * re-sent value inside the window (measured, go-to-k/cdkd#5607). The cost: a
+   * template reverted inside the window lands on the higher value, which drift
+   * reports once settled.
    */
   async unsettledInTransition(
     physicalId: string,

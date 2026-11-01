@@ -1104,7 +1104,9 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 #   V3w. go-to-k/cdkd#5606: a table-level and a per-index WarmThroughput raise.
 #       AWS reports the OLD value while UPDATING, and the capture read there
 #       froze it, so drift reported the raise; the capture holds the declared
-#       value and drift is clean.
+#       value. Drift inside the window compares old with old, so it is clean
+#       either way: the arm waits for AWS to settle (about 11 minutes, measured)
+#       and asserts drift clean THERE, where a frozen baseline reports.
 #   V3b. go-to-k/cdkd#5574: a vector index raced into CREATING before the
 #       destroy; AWS refuses DeleteTable and cdkd waits it out.
 #   V4. destroy: table gone (or DELETING), state removed.
@@ -1220,7 +1222,26 @@ if [ "${OBSERVED_WARM}" != "14000/6000 14000/6000" ]; then
   exit 1
 fi
 echo "    AWS reads ${VECTOR_WARM_LIVE}; the capture holds ${OBSERVED_WARM}"
-assert_vector_drift_clean "after the warm throughput raise"
+assert_vector_drift_clean "inside the warm throughput window"
+vector_warm_settled() { # -> "<status>:<read>/<write>" for the table and warmGsi
+  aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" --output json \
+    | jq -r '[.Table.WarmThroughput, (.Table.GlobalSecondaryIndexes[] | select(.IndexName == "warmGsi") | .WarmThroughput)]
+        | map("\(.Status):\(.ReadUnitsPerSecond)/\(.WriteUnitsPerSecond)") | join(" ")'
+}
+echo "    waiting for AWS to settle both raises"
+VECTOR_WARM_SETTLED=""
+for _ in $(seq 1 100); do
+  # `|| true`: a failed describe is retried, never fatal under `set -e`.
+  VECTOR_WARM_SETTLED="$(vector_warm_settled || true)"
+  [ "${VECTOR_WARM_SETTLED}" = "ACTIVE:14000/6000 ACTIVE:14000/6000" ] && break
+  sleep 15
+done
+if [ "${VECTOR_WARM_SETTLED}" != "ACTIVE:14000/6000 ACTIVE:14000/6000" ]; then
+  echo "FAIL (go-to-k/cdkd#5606): the raise did not settle at 14000/6000 on the table and warmGsi within 25 minutes, last read '${VECTOR_WARM_SETTLED}'" >&2
+  exit 1
+fi
+echo "    settled: ${VECTOR_WARM_SETTLED}"
+assert_vector_drift_clean "after the warm throughput settled"
 
 # --- Phase V3b: a vector index still building when the destroy lands ---------
 # go-to-k/cdkd#5574: the index-busy DeleteTable retry's settle wait read only
