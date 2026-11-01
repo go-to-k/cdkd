@@ -36,6 +36,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import {
   DescribeDeliveryStreamCommand,
+  ListTagsForDeliveryStreamCommand,
   TagDeliveryStreamCommand,
   UntagDeliveryStreamCommand,
   UpdateDestinationCommand,
@@ -165,6 +166,45 @@ describe('FirehoseProvider read-update round-trip', () => {
         c[0] instanceof UpdateDestinationCommand
     );
     expect(mutatingCommands).toHaveLength(0);
+  });
+
+  it('round-trip: a read-back DirectPutSourceConfiguration reaches no update call (#2762)', async () => {
+    // Create-only: the hint has no update API, so a drift --revert of the
+    // observed bag must neither send it nor refuse it.
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: PHYSICAL_ID,
+            DeliveryStreamARN: `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`,
+            DeliveryStreamType: 'DirectPut',
+            VersionId: '1',
+            Source: { DirectPutSourceDescription: { ThroughputHintInMBs: 7 } },
+            Destinations: [{ DestinationId: 'destinationId-000000000001' }],
+          },
+        });
+      }
+      if (command instanceof ListTagsForDeliveryStreamCommand) {
+        return Promise.resolve({ Tags: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<
+      string,
+      unknown
+    >;
+    expect(observed['DirectPutSourceConfiguration']).toEqual({ ThroughputHintInMBs: 7 });
+
+    mockSend.mockClear();
+    const result = await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, observed);
+    expect(result.wasReplaced).toBe(false);
+    expect(mockSend.mock.calls.length).toBeGreaterThan(0);
+    for (const [command] of mockSend.mock.calls) {
+      expect(JSON.stringify((command as { input: unknown }).input)).not.toContain(
+        'ThroughputHintInMBs'
+      );
+    }
   });
 });
 

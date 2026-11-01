@@ -184,6 +184,52 @@ describe('FirehoseProvider', () => {
         'arn:aws:iam::123456789012:role/kinesis-role'
       );
     });
+
+    it('sends DirectPutSourceConfiguration on CreateDeliveryStream (#2762)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/direct-put',
+        })
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: { DeliveryStreamStatus: 'ACTIVE' },
+        });
+
+      await provider.create('MyDirectPut', 'AWS::KinesisFirehose::DeliveryStream', {
+        DeliveryStreamName: 'direct-put',
+        DeliveryStreamType: 'DirectPut',
+        DirectPutSourceConfiguration: { ThroughputHintInMBs: 7 },
+        ExtendedS3DestinationConfiguration: {
+          BucketARN: 'arn:aws:s3:::b',
+          RoleARN: 'arn:aws:iam::123456789012:role/r',
+        },
+      });
+
+      const cmd = mockSend.mock.calls[0][0];
+      expect(cmd.constructor.name).toBe('CreateDeliveryStreamCommand');
+      expect(cmd.input.DirectPutSourceConfiguration).toEqual({ ThroughputHintInMBs: 7 });
+    });
+
+    it('sends no DirectPutSourceConfiguration when the template declares none (#2762)', async () => {
+      mockSend
+        .mockResolvedValueOnce({
+          DeliveryStreamARN: 'arn:aws:firehose:us-east-1:123456789012:deliverystream/direct-put',
+        })
+        .mockResolvedValueOnce({
+          DeliveryStreamDescription: { DeliveryStreamStatus: 'ACTIVE' },
+        });
+
+      await provider.create('MyDirectPut', 'AWS::KinesisFirehose::DeliveryStream', {
+        DeliveryStreamName: 'direct-put',
+        ExtendedS3DestinationConfiguration: {
+          BucketARN: 'arn:aws:s3:::b',
+          RoleARN: 'arn:aws:iam::123456789012:role/r',
+        },
+      });
+
+      const cmd = mockSend.mock.calls[0][0];
+      expect(cmd.constructor.name).toBe('CreateDeliveryStreamCommand');
+      expect(cmd.input).not.toHaveProperty('DirectPutSourceConfiguration');
+    });
   });
 
   describe('create: the wait for ACTIVE (#5509)', () => {

@@ -88,6 +88,47 @@ describe('FirehoseProvider.readCurrentState', () => {
     });
   });
 
+  it('reads DirectPutSourceConfiguration back from Source.DirectPutSourceDescription (#2762)', async () => {
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: {
+          DeliveryStreamName: 'mystream',
+          DeliveryStreamType: 'DirectPut',
+          Source: { DirectPutSourceDescription: { ThroughputHintInMBs: 7 } },
+        },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    )) as Record<string, unknown> | undefined;
+
+    expect(result?.DirectPutSourceConfiguration).toEqual({ ThroughputHintInMBs: 7 });
+    expect(result).not.toHaveProperty('KinesisStreamSourceConfiguration');
+  });
+
+  it('emits no DirectPutSourceConfiguration for a DirectPut stream AWS reads back without a Source (#2762)', async () => {
+    // Measured 2026-11-01: a DirectPut stream created without a hint has no
+    // `Source` in DescribeDeliveryStream. The property is create-only, so no
+    // placeholder stands in for it.
+    mockSend
+      .mockResolvedValueOnce({
+        DeliveryStreamDescription: { DeliveryStreamName: 'mystream', DeliveryStreamType: 'DirectPut' },
+      })
+      .mockResolvedValueOnce({ Tags: [] });
+
+    const result = (await provider.readCurrentState(
+      'mystream',
+      'L',
+      'AWS::KinesisFirehose::DeliveryStream'
+    )) as Record<string, unknown> | undefined;
+
+    expect(result).toBeDefined();
+    expect(result).not.toHaveProperty('DirectPutSourceConfiguration');
+  });
+
   it('returns RESOURCE_NOT_FOUND when stream is gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })

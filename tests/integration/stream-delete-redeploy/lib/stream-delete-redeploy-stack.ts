@@ -39,6 +39,12 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * AWS-owned key; dropping it again is a removal, which CloudFormation answers
  * with `StopDeliveryStreamEncryption` (issue #5357).
  *
+ * The delivery stream declares `DirectPutSourceConfiguration`, whose
+ * `ThroughputHintInMBs` `CDKD_SRD_HINT` sets (default 7). Before go-to-k/cdkd#2762
+ * the SDK provider did not handle it, so the stream was routed through Cloud
+ * Control. The property is create-only: verify.sh only DIFFS a changed hint,
+ * since a replacement of this named stream would collide with its own name.
+ *
  * A second delivery stream uses the legacy `S3DestinationConfiguration`.
  * `CDKD_SRD_LEGACY_V2=1` changes its BufferingHints, Prefix and
  * CompressionFormat, which CloudFormation applies in place (issue #5439).
@@ -53,6 +59,7 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
     const fileExtension = process.env.CDKD_SRD_FILE_EXT ?? '.json';
     const trim = process.env.CDKD_SRD_TRIM === '1';
     const encrypt = process.env.CDKD_SRD_ENC === '1';
+    const throughputHint = Number(process.env.CDKD_SRD_HINT ?? '7');
 
     const stream = new kinesis.Stream(this, 'Stream', {
       streamName: `cdkd-stream-redeploy-${runId}`,
@@ -79,6 +86,7 @@ export class StreamDeleteRedeployStack extends cdk.Stack {
 
     const deliveryStream = new firehose.CfnDeliveryStream(this, 'DeliveryStream', {
       deliveryStreamName: `cdkd-stream-redeploy-${runId}`,
+      directPutSourceConfiguration: { throughputHintInMBs: throughputHint },
       extendedS3DestinationConfiguration: {
         bucketArn: bucket.bucketArn,
         roleArn: role.roleArn,
