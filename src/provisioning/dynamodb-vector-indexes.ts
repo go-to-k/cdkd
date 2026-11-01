@@ -44,12 +44,14 @@ export function vectorIndexesByName(value: unknown): Map<string, Entry> {
  * Why a declared `VectorIndexes` value cannot be planned, or `undefined`: a
  * value that is no list, or an entry with no string `IndexName`.
  * {@link vectorIndexesByName} reads either as "not declared", so a plan built on
- * it would delete every recorded index. `AWS::DynamoDB::GlobalTable`'s `update()`
- * refuses on it; `AWS::DynamoDB::Table` does not call it.
+ * it would delete every recorded index. Both providers' `update()` refuse on it
+ * on the template path and warn with no plan on a state-borne bag.
  */
 export function vectorIndexesShapeDetail(value: unknown): string | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value)) return `VectorIndexes must be a list, got ${typeof value}`;
+  if (!Array.isArray(value)) {
+    return `VectorIndexes must be a list, got ${value === null ? 'null' : typeof value}`;
+  }
   const named = (value as unknown[]).every(
     (entry) =>
       typeof entry === 'object' &&

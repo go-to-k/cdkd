@@ -226,6 +226,68 @@ describe('DynamoDB table VectorIndexes (go-to-k/cdkd#2762)', () => {
     expect(warnSpy.mock.calls.flat().join('\n')).toMatch(/v1 changed definition.*that change was not applied/);
   });
 
+  describe('a malformed VectorIndexes (go-to-k/cdkd#5606)', () => {
+    const mutating = (): string[] =>
+      mockSend.mock.calls
+        .map((c) => (c[0] as Cmd).constructor.name)
+        .filter((n) => !/^(Describe|List|Get)/.test(n));
+    const withVectors = (value: unknown): Record<string, unknown> => ({ ...props(), VectorIndexes: value });
+
+    it.each([
+      ['a value that is no list', 'nonsense', /VectorIndexes must be a list, got string/],
+      ['a single entry, unlisted', vector('v2'), /VectorIndexes must be a list, got object/],
+      ['null', null, /VectorIndexes must be a list, got null/],
+      [
+        'an entry with no string IndexName',
+        [vector('v1'), { ...vector('v2'), IndexName: 7 }],
+        /every VectorIndexes entry must carry a string IndexName/,
+      ],
+      ['an entry that is no object', [vector('v1'), 'v2'], /every VectorIndexes entry must carry a string IndexName/],
+    ])('refuses %s on the template path before any mutating call', async (_label, value, message) => {
+      serve([vector('v1')]);
+      const error = await provider
+        .update('L', 't', TYPE, withVectors(value), props(vector('v1')))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toMatch(message);
+      expect((error as Error).message).toMatch(/Nothing was applied to the table; fix the template value/);
+      expect(mutating()).toEqual([]);
+    });
+
+    it.each([
+      ['a state replay', { replayingState: true }],
+      ['a drift --revert readback', { desiredFromAwsReadback: true }],
+    ])('warns with no plan on %s, deleting nothing', async (_label, context) => {
+      serve([vector('v1')]);
+      await provider.update('L', 't', TYPE, withVectors('nonsense'), props(vector('v1')), context);
+      expect(vectorOps()).toEqual([]);
+      expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+        /VectorIndexes must be a list, got string; the VectorIndexes change was not applied/
+      );
+    });
+
+    it('applies a state-borne bag\'s other changes around the skipped list', async () => {
+      serve([vector('v1')]);
+      await provider.update(
+        'L',
+        't',
+        TYPE,
+        { ...withVectors('nonsense'), DeletionProtectionEnabled: true },
+        props(vector('v1')),
+        { replayingState: true }
+      );
+      expect(vectorOps()).toEqual([]);
+      expect(sent('UpdateTableCommand').map((c) => c.input['DeletionProtectionEnabled'])).toContain(true);
+    });
+
+    it('leaves an unchanged malformed list alone: it is no pending operation', async () => {
+      serve([vector('v1')]);
+      await provider.update('L', 't', TYPE, withVectors('nonsense'), withVectors('nonsense'));
+      expect(vectorOps()).toEqual([]);
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toMatch(/VectorIndexes/);
+    });
+  });
+
   it('skips the Create of an index AWS already holds as declared, with a warning', async () => {
     serve([vector('v1')]);
     await provider.update('L', 't', TYPE, props(vector('v1')), props());

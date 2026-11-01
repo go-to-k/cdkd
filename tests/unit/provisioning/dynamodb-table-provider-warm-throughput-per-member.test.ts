@@ -142,6 +142,84 @@ describe('DynamoDBTableProvider WarmThroughput per-member readback (issue #3777)
     }).map((d) => d.path);
   }
 
+  // go-to-k/cdkd#5606: a raise reads the OLD value until `Status` leaves
+  // `UPDATING`, and the post-deploy baseline is read in that window.
+  describe('readCurrentState while AWS is still UPDATING', () => {
+    const OLD = { ReadUnitsPerSecond: 12000, WriteUnitsPerSecond: 4000 };
+    const RAISED = { ReadUnitsPerSecond: 14000, WriteUnitsPerSecond: 6000 };
+    const tableLevel = async (
+      declared: unknown,
+      live: Record<string, unknown>
+    ): Promise<unknown> =>
+      (await readback({ TableName: TABLE_NAME, WarmThroughput: declared }, { WarmThroughput: live }))[
+        'WarmThroughput'
+      ];
+    const indexLevel = async (
+      declared: unknown,
+      live: Record<string, unknown>
+    ): Promise<unknown> => {
+      const result = await readback(
+        { TableName: TABLE_NAME, GlobalSecondaryIndexes: [gsiTemplate(declared)] },
+        { GlobalSecondaryIndexes: [gsiDescription(live)] }
+      );
+      return (result['GlobalSecondaryIndexes'] as Record<string, unknown>[])[0]?.['WarmThroughput'];
+    };
+
+    describe.each([
+      ['table level', tableLevel],
+      ['per GSI', indexLevel],
+    ])('%s', (_label, read) => {
+      it('reads a raise as the declared value', async () => {
+        expect(await read(RAISED, { ...OLD, Status: 'UPDATING' })).toEqual(RAISED);
+      });
+
+      it('reads the larger value per member: a live one already above stays', async () => {
+        expect(
+          await read(RAISED, {
+            ReadUnitsPerSecond: 20000,
+            WriteUnitsPerSecond: 4000,
+            Status: 'UPDATING',
+          })
+        ).toEqual({ ReadUnitsPerSecond: 20000, WriteUnitsPerSecond: 6000 });
+      });
+
+      it('reads a numeric-string declaration as a number', async () => {
+        expect(
+          await read(
+            { ReadUnitsPerSecond: '14000', WriteUnitsPerSecond: 4000 },
+            { ...OLD, Status: 'UPDATING' }
+          )
+        ).toEqual({ ReadUnitsPerSecond: 14000, WriteUnitsPerSecond: 4000 });
+      });
+
+      it('keeps reading the undeclared member out, and an unusable one as live', async () => {
+        expect(
+          await read({ ReadUnitsPerSecond: 14000 }, { ...OLD, Status: 'UPDATING' })
+        ).toEqual({ ReadUnitsPerSecond: 14000 });
+        expect(
+          await read(
+            { ReadUnitsPerSecond: 14000, WriteUnitsPerSecond: 'abc' },
+            { ...OLD, Status: 'UPDATING' }
+          )
+        ).toEqual({ ReadUnitsPerSecond: 14000 });
+      });
+
+      it('reads the live value once the status settles: a real difference still reports', async () => {
+        expect(await read(RAISED, { ...OLD, Status: 'ACTIVE' })).toEqual(OLD);
+      });
+    });
+
+    it('leaves an uninformative bag on the live value: nothing was declared', async () => {
+      const result = await readback(undefined, {
+        WarmThroughput: { ...OLD, Status: 'UPDATING' },
+        GlobalSecondaryIndexes: [gsiDescription({ ...OLD, Status: 'UPDATING' })],
+      });
+      expect(result['WarmThroughput']).toEqual(OLD);
+      const [gsi] = result['GlobalSecondaryIndexes'] as Record<string, unknown>[];
+      expect(gsi?.['WarmThroughput']).toEqual(OLD);
+    });
+  });
+
   describe('readCurrentState, table level', () => {
     it('emits only the member cdkd sends when the other does not resolve', async () => {
       const result = await readback(

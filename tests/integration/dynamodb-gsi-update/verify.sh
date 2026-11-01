@@ -58,8 +58,10 @@
 #      reverted, removal + enable-with-Mode on update, destroy. See that block.
 #   V1-V4. VectorIndexes (go-to-k/cdkd#2762) on their OWN stack and table —
 #      created with the table on the SDK route, no phantom drift, one index
-#      removed and another added in one update, a destroy racing a building
-#      vector index (go-to-k/cdkd#5574), destroy. See that block.
+#      removed and another added in one update, a malformed list refused and a
+#      warm throughput raise read as declared while UPDATING (go-to-k/cdkd#5606),
+#      a destroy racing a building vector index (go-to-k/cdkd#5574), destroy.
+#      See that block.
 #   3a. Race an out-of-band GSI CREATE into the table immediately before the
 #      destroy (issue #1931), so AWS refuses the DeleteTable with
 #      `Cannot delete table while indexes are being created, updated, or
@@ -148,6 +150,8 @@ DRIFT_JSON="${TMPDIR:-/tmp}/cdkd-1767-drift.$$.json"
 DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-1931-destroy.$$.log"
 # The Phase V4 destroy log, read by the go-to-k/cdkd#5574 assertions; removed by cleanup().
 VECTOR_DESTROY_LOG="${TMPDIR:-/tmp}/cdkd-5574-vector-destroy.$$.log"
+# The Phase V3m deploy log, read by the go-to-k/cdkd#5606 assertion; removed by cleanup().
+VECTOR_MALFORMED_LOG="${TMPDIR:-/tmp}/cdkd-5606-vector-malformed.$$.log"
 
 # Re-entrancy guard for `cleanup`. The INT / TERM traps run `cleanup` and then
 # `exit`, and that `exit` re-fires the EXIT trap — so without this flag every
@@ -212,7 +216,7 @@ cleanup() {
   CLEANED_UP=1
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}" "${VECTOR_DESTROY_LOG}"
+  rm -f "${DEPLOY_LOG}" "${P1C_CONVERGE_LOG}" "${P1C_RETRY_LOG}" "${P1D_LOG}" "${STATE_JSON}" "${STATE_JSON}.stripped" "${STATE_JSON}.stale" "${STATE_JSON}.warm" "${DRIFT_JSON}" "${DESTROY_LOG}" "${VECTOR_DESTROY_LOG}" "${VECTOR_MALFORMED_LOG}"
   # The tables are swept BY NAME first and the state records dropped second, so
   # a `state destroy` that dies half way is never the only thing standing
   # between a table and a leak. (`state destroy` then finds the table already
@@ -1095,6 +1099,14 @@ rm -f "${STATE_JSON}" "${STATE_JSON}.stripped" "${DRIFT_JSON}"
 #       `vec1` in its CFn shape (no AWS-managed IndexStatus / Backfilling).
 #   V3. update: `vec1` removed, `vec2` added — the SAME table (CreationDateTime
 #       unchanged), AWS holds exactly `vec2` as declared, ACTIVE; drift clean.
+#   V3m. go-to-k/cdkd#5606: an entry whose `IndexName` is no string read as "no index
+#       declared" and deleted `vec2`; it is refused and `vec2` stays.
+#   V3w. go-to-k/cdkd#5606: a table-level and a per-index WarmThroughput raise.
+#       AWS reports the OLD value while UPDATING, and the capture read there
+#       froze it, so drift reported the raise; the capture holds the declared
+#       value. Drift inside the window compares old with old, so it is clean
+#       either way: the arm waits for AWS to settle (about 11 minutes, measured)
+#       and asserts drift clean THERE, where a frozen baseline reports.
 #   V3b. go-to-k/cdkd#5574: a vector index raced into CREATING before the
 #       destroy; AWS refuses DeleteTable and cdkd waits it out.
 #   V4. destroy: table gone (or DELETING), state removed.
@@ -1168,6 +1180,68 @@ if [ "${VECTOR_SHAPE_V3}" != "vec2:embedding:4:EUCLIDEAN:INCLUDE+title:tenant=HA
 fi
 echo "    vector indexes: ${VECTOR_SHAPE_V3} (same table)"
 assert_vector_drift_clean "after the update"
+
+echo "==> Phase V3m (go-to-k/cdkd#5606): a VectorIndexes entry with a non-string IndexName is refused and vec2 stays"
+set +e
+CDKD_TEST_UPDATE=true CDKD_TEST_VECTOR_MALFORMED=true node "${LOCAL_DIST}" deploy "${VECTOR_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${VECTOR_MALFORMED_LOG}" 2>&1
+VECTOR_MALFORMED_EXIT=$?
+set -e
+cat "${VECTOR_MALFORMED_LOG}"
+VECTOR_SHAPE_V3M="$(vector_index_shape "${VECTOR_TABLE}")"
+if [ "${VECTOR_SHAPE_V3M}" != "${VECTOR_SHAPE_V3}" ]; then
+  echo "FAIL (go-to-k/cdkd#5606): the malformed VectorIndexes changed the live indexes: '${VECTOR_SHAPE_V3}' -> '${VECTOR_SHAPE_V3M}'" >&2
+  exit 1
+fi
+if [ "${VECTOR_MALFORMED_EXIT}" -eq 0 ] \
+  || ! grep -qF "every VectorIndexes entry must carry a string IndexName" "${VECTOR_MALFORMED_LOG}"; then
+  echo "FAIL (go-to-k/cdkd#5606): the malformed VectorIndexes was not refused by name (exit ${VECTOR_MALFORMED_EXIT})" >&2
+  exit 1
+fi
+echo "    refused; vector indexes: ${VECTOR_SHAPE_V3M}"
+
+echo "==> Phase V3w (go-to-k/cdkd#5606): raise WarmThroughput on the table and on warmGsi"
+CDKD_TEST_UPDATE=true CDKD_TEST_WARM_RAISE=true node "${LOCAL_DIST}" deploy "${VECTOR_STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+# Vacuity guard: only a read inside the UPDATING window, still answering the old
+# value, could freeze it. A settled status or a target value means the arm
+# proved nothing, whatever the assertions below say.
+VECTOR_WARM_LIVE="$(aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" --output json \
+  | jq -r '[.Table.WarmThroughput, (.Table.GlobalSecondaryIndexes[] | select(.IndexName == "warmGsi") | .WarmThroughput)]
+      | map("\(.Status):\(.ReadUnitsPerSecond)/\(.WriteUnitsPerSecond)") | join(" ")')"
+if [ "${VECTOR_WARM_LIVE}" != "UPDATING:12000/4000 UPDATING:12000/4000" ]; then
+  echo "FAIL (go-to-k/cdkd#5606): the arm needs the table and warmGsi UPDATING at the old 12000/4000 right after the deploy, got '${VECTOR_WARM_LIVE}': it cannot discriminate" >&2
+  exit 1
+fi
+aws s3 cp "s3://${STATE_BUCKET}/${VECTOR_STATE_KEY}" "${STATE_JSON}" --region "${REGION}" >/dev/null
+OBSERVED_WARM="$(jq -r --arg l "${VECTOR_LID}" '.resources[$l].observedProperties
+  | [.WarmThroughput, ((.GlobalSecondaryIndexes // [])[] | select(.IndexName == "warmGsi") | .WarmThroughput)]
+  | map("\(.ReadUnitsPerSecond)/\(.WriteUnitsPerSecond)") | join(" ")' "${STATE_JSON}")"
+if [ "${OBSERVED_WARM}" != "14000/6000 14000/6000" ]; then
+  echo "FAIL (go-to-k/cdkd#5606): the deploy-time capture holds WarmThroughput '${OBSERVED_WARM}', expected the declared '14000/6000 14000/6000' (AWS read ${VECTOR_WARM_LIVE})" >&2
+  exit 1
+fi
+echo "    AWS reads ${VECTOR_WARM_LIVE}; the capture holds ${OBSERVED_WARM}"
+assert_vector_drift_clean "inside the warm throughput window"
+vector_warm_settled() { # -> "<status>:<read>/<write>" for the table and warmGsi
+  aws dynamodb describe-table --table-name "${VECTOR_TABLE}" --region "${REGION}" --output json \
+    | jq -r '[.Table.WarmThroughput, (.Table.GlobalSecondaryIndexes[] | select(.IndexName == "warmGsi") | .WarmThroughput)]
+        | map("\(.Status):\(.ReadUnitsPerSecond)/\(.WriteUnitsPerSecond)") | join(" ")'
+}
+echo "    waiting for AWS to settle both raises"
+VECTOR_WARM_SETTLED=""
+for _ in $(seq 1 100); do
+  # `|| true`: a failed describe is retried, never fatal under `set -e`.
+  VECTOR_WARM_SETTLED="$(vector_warm_settled || true)"
+  [ "${VECTOR_WARM_SETTLED}" = "ACTIVE:14000/6000 ACTIVE:14000/6000" ] && break
+  sleep 15
+done
+if [ "${VECTOR_WARM_SETTLED}" != "ACTIVE:14000/6000 ACTIVE:14000/6000" ]; then
+  echo "FAIL (go-to-k/cdkd#5606): the raise did not settle at 14000/6000 on the table and warmGsi within 25 minutes, last read '${VECTOR_WARM_SETTLED}'" >&2
+  exit 1
+fi
+echo "    settled: ${VECTOR_WARM_SETTLED}"
+assert_vector_drift_clean "after the warm throughput settled"
 
 # --- Phase V3b: a vector index still building when the destroy lands ---------
 # go-to-k/cdkd#5574: the index-busy DeleteTable retry's settle wait read only

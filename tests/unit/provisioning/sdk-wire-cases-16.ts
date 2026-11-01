@@ -339,12 +339,16 @@ const VECTOR_SHAPE_REFUSED: Throw = {
   why: `update() refuses a changed definition of a same-name vector index before any call: UpdateTable's VectorIndexUpdates has Create and Delete only (go-to-k/cdkd#2762)`,
   says: /VectorIndexes vec changed definition, which DynamoDB cannot modify in place/,
 };
+const VECTOR_NAME_REFUSED: Throw = {
+  why: `an entry with no string IndexName reads as "no index declared", which would delete the recorded one, so update() refuses it before any call (go-to-k/cdkd#5606)`,
+  says: /every VectorIndexes entry must carry a string IndexName/,
+};
 const VECTOR_SHAPE_VARY =
   `the varied vector index member's parent is removed on the base side, so both sides change the index's definition and are refused (go-to-k/cdkd#2762), so the vary sees no wire; a direct member's vary re-creates the index and is observed`;
 
 /**
- * The removal throws of every member of a vector index but its name, and the
- * vary entries of the leaves nested below a member.
+ * The removal throws of every member of a vector index, and the vary entries of
+ * the leaves nested below a member.
  */
 function vectorShape(bag: Bag): { throws: Record<string, Throw>; silent: Record<string, string> } {
   const index = (bag['VectorIndexes'] as Record<string, unknown>[])[0]!;
@@ -357,7 +361,10 @@ function vectorShape(bag: Bag): { throws: Record<string, Throw>; silent: Record<
     return label.split('.').length > 3 && (v === null || typeof v !== 'object');
   };
   return {
-    throws: Object.fromEntries(labels.flatMap((l) => UPDATE.map((d) => [`${d}:${l}`, VECTOR_SHAPE_REFUSED]))),
+    throws: {
+      ...Object.fromEntries(labels.flatMap((l) => UPDATE.map((d) => [`${d}:${l}`, VECTOR_SHAPE_REFUSED]))),
+      'update-remove:VectorIndexes.0.IndexName': VECTOR_NAME_REFUSED,
+    },
     silent: Object.fromEntries(labels.filter(leafBelowMember).map((l) => [`update-vary:${l}`, VECTOR_SHAPE_VARY])),
   };
 }
