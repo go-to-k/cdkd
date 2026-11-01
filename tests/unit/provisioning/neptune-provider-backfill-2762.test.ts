@@ -6,6 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 const mockSend = vi.fn();
 const warn = vi.hoisted(() => vi.fn());
+const deadline = vi.hoisted(() => ({ remainingMs: Number.POSITIVE_INFINITY }));
+
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  enclosingDeadlineRemainingMs: () => deadline.remainingMs,
+}));
 
 vi.mock('@aws-sdk/client-neptune', async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;
@@ -51,10 +57,13 @@ function armCluster(
   options: {
     roles?: LiveRole[];
     statuses?: string[];
-    /** The live log types; a Modify's EnableLogTypes land after `logsAfter` reads. */
+    /** The live log types; a Modify's delta lands at read `logsAfter` (default: at once). */
     logs?: string[];
     logsAfter?: number;
     engineVersion?: string;
+    networkType?: string;
+    /** The Modify's NetworkType lands at this read (default: at once). */
+    networkAfter?: number;
   } = {}
 ): {
   sent: (command: string) => Record<string, unknown>[];
@@ -62,8 +71,17 @@ function armCluster(
   const roles = [...(options.roles ?? [])];
   const statuses = [...(options.statuses ?? [])];
   let logs = [...(options.logs ?? [])];
-  let logsPending: string[] = [];
-  let logReads = 0;
+  let pendingLogs: LogConfig = {};
+  let networkType = options.networkType;
+  let pendingNetwork: string | undefined;
+  let reads = 0;
+  const applyLogs = (): void => {
+    logs = [
+      ...logs.filter((type) => !pendingLogs.DisableLogTypes?.includes(type)),
+      ...(pendingLogs.EnableLogTypes ?? []),
+    ];
+    pendingLogs = {};
+  };
   mockSend.mockImplementation((command: { constructor: { name: string }; input: LiveRole }) => {
     const name = command.constructor.name;
     if (name === 'CreateDBClusterCommand') return Promise.resolve({ DBCluster: {} });
@@ -77,15 +95,19 @@ function armCluster(
       );
     }
     if (name === 'ModifyDBClusterCommand') {
-      const config = (command.input as { CloudwatchLogsExportConfiguration?: LogConfig })
-        .CloudwatchLogsExportConfiguration;
-      logs = logs.filter((type) => !config?.DisableLogTypes?.includes(type));
-      logsPending = config?.EnableLogTypes ?? [];
-      if ((options.logsAfter ?? 0) === 0) logs.push(...logsPending);
+      const input = command.input as {
+        CloudwatchLogsExportConfiguration?: LogConfig;
+        NetworkType?: string;
+      };
+      pendingLogs = input.CloudwatchLogsExportConfiguration ?? {};
+      if (options.logsAfter === undefined) applyLogs();
+      pendingNetwork = input.NetworkType;
+      if (options.networkAfter === undefined) networkType = pendingNetwork ?? networkType;
     }
     if (name === 'DescribeDBClustersCommand') {
-      logReads += 1;
-      if (logReads === options.logsAfter) logs.push(...logsPending);
+      reads += 1;
+      if (reads === options.logsAfter) applyLogs();
+      if (reads === options.networkAfter) networkType = pendingNetwork ?? networkType;
       return Promise.resolve({
         DBClusters: [
           {
@@ -93,6 +115,7 @@ function armCluster(
             AssociatedRoles: roles.map((r) => ({ ...r })),
             EnabledCloudwatchLogsExports: logs,
             EngineVersion: options.engineVersion,
+            NetworkType: networkType,
           },
         ],
       });
@@ -114,6 +137,7 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSend.mockReset();
+    deadline.remainingMs = Number.POSITIVE_INFINITY;
     provider = new NeptuneProvider();
     // A fake clock the sleeps advance, so a wait's cap is reached at once.
     let now = 0;
@@ -251,6 +275,77 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {});
       expect(refused).toBe(true);
       expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(2);
+    });
+
+    it('resends a detach refused the same way', async () => {
+      const wire = armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
+      const answer = mockSend.getMockImplementation()!;
+      let refused = false;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'RemoveRoleFromDBClusterCommand' && !refused) {
+          refused = true;
+          return Promise.reject(
+            Object.assign(new Error('DB cluster is not in available state.'), {
+              name: 'InvalidDBClusterStateFault',
+            })
+          );
+        }
+        return answer(command);
+      });
+      await update({}, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
+      expect(wire.sent('RemoveRoleFromDBClusterCommand')).toHaveLength(2);
+    });
+
+    it('writes nothing when the resource deadline leaves no room to wait', async () => {
+      const wire = armCluster();
+      deadline.remainingMs = 30_000;
+      await expect(update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {})).rejects.toThrow(
+        'no more time to change the roles'
+      );
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('bounds the available wait by the resource deadline, before any write', async () => {
+      const wire = armCluster({ statuses: Array<string>(50).fill('modifying') });
+      deadline.remainingMs = 60_000;
+      await expect(update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {})).rejects.toThrow(
+        'Timed out waiting'
+      );
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('marks AssociatedRoles unsettled only once a write is about to go out', async () => {
+      armCluster();
+      const marks: string[] = [];
+      deadline.remainingMs = 30_000;
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}, CLUSTER, {
+        markUnsettled: (key: string) => marks.push(key),
+      }).catch(() => undefined);
+      expect(marks).not.toContain('AssociatedRoles');
+      deadline.remainingMs = Number.POSITIVE_INFINITY;
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}, CLUSTER, {
+        markUnsettled: (key: string) => marks.push(key),
+      });
+      expect(marks).toContain('AssociatedRoles');
+    });
+
+    it('stops a settle wait at the resource deadline, as a warning', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      let added = false;
+      let reads = 0;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'AddRoleToDBClusterCommand') added = true;
+        if (added && command.constructor.name === 'DescribeDBClustersCommand') {
+          reads += 1;
+          return Promise.resolve({ DBClusters: [{ Status: 'available', AssociatedRoles: [] }] });
+        }
+        return answer(command);
+      });
+      deadline.remainingMs = 31_000;
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {});
+      expect(reads).toBe(1);
+      expect(warn.mock.calls[0]![0]).toContain('had not settled');
     });
 
     it('keeps polling while a detached role lingers, its attach already settled', async () => {
@@ -438,6 +533,21 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       ['EnableCloudwatchLogsExports', 'audit', /EnableCloudwatchLogsExports must be/],
       ['EnableCloudwatchLogsExports', [1], /EnableCloudwatchLogsExports must be/],
       ['ServerlessScalingConfiguration', 'big', /ServerlessScalingConfiguration must be/],
+      ['ServerlessScalingConfiguration', {}, /ServerlessScalingConfiguration must be/],
+      ...[
+        { MinCapacity: 1 },
+        { MaxCapacity: 8 },
+        { MinCapacity: '', MaxCapacity: 8 },
+        { MinCapacity: 1, MaxCapacity: true },
+        { MinCapacity: 1, MaxCapacity: Number.POSITIVE_INFINITY },
+      ].map(
+        (block) =>
+          ['ServerlessScalingConfiguration', block, /ServerlessScalingConfiguration must be/] as [
+            string,
+            unknown,
+            RegExp,
+          ]
+      ),
       [
         'ServerlessScalingConfiguration',
         { MinCapacity: 'x', MaxCapacity: 8 },
@@ -522,6 +632,21 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
+    it('waits out a delayed disable, and reads the delta landing', async () => {
+      const wire = armCluster({ logs: ['audit'], logsAfter: 3 });
+      await update({}, { EnableCloudwatchLogsExports: ['audit'] });
+      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(3);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('--no-wait skips the log wait', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      const wire = armCluster({ logs: [], logsAfter: Number.POSITIVE_INFINITY });
+      await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
+      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
     it('settles on the delta: a type enabled out of band does not hold the wait', async () => {
       armCluster({ logs: ['slowquery'] });
       await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
@@ -563,10 +688,60 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
 
     it('names an unmeasured removal without claiming CloudFormation parity', async () => {
       armCluster();
-      await update({}, { CopyTagsToSnapshot: true, NetworkType: 'DUAL' });
+      await update({}, {
+        NetworkType: 'DUAL',
+        ServerlessScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
+      });
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0]![0]).toContain('properties CopyTagsToSnapshot, NetworkType were');
+      expect(warn.mock.calls[0]![0]).toContain(
+        'properties NetworkType, ServerlessScalingConfiguration were'
+      );
       expect(warn.mock.calls[0]![0]).not.toContain('CloudFormation');
+    });
+
+    it('claims parity for CopyTagsToSnapshot, which the A/B measured kept', async () => {
+      const wire = armCluster();
+      await update({}, { CopyTagsToSnapshot: true });
+      expect(wire.sent('ModifyDBClusterCommand')[0]!['CopyTagsToSnapshot']).toBeUndefined();
+      expect(warn.mock.calls[0]![0]).toContain('property CopyTagsToSnapshot was');
+      expect(warn.mock.calls[0]![0]).toContain('as CloudFormation does');
+    });
+
+    it('compares a newly declared NetworkType with the live one', async () => {
+      const wire = armCluster({ networkType: 'IPV4' });
+      await update({ NetworkType: 'IPV4' }, {});
+      await update({ NetworkType: 'DUAL' }, {});
+      expect(wire.sent('ModifyDBClusterCommand')[0]).not.toHaveProperty('NetworkType');
+      expect(wire.sent('ModifyDBClusterCommand')[1]).toMatchObject({ NetworkType: 'DUAL' });
+    });
+
+    it('waits for a changed NetworkType to read back, unless --no-wait', async () => {
+      const wire = armCluster({ networkType: 'IPV4', networkAfter: 4 });
+      await update({ NetworkType: 'DUAL' }, { NetworkType: 'IPV4' });
+      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(4);
+      mockSend.mockClear();
+      process.env['CDKD_NO_WAIT'] = 'true';
+      armCluster({ networkType: 'IPV4', networkAfter: Number.POSITIVE_INFINITY });
+      await update({ NetworkType: 'DUAL' }, { NetworkType: 'IPV4' });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('marks what the Modify changes unsettled, before it is sent', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      const marks: string[] = [];
+      let marksAtModify: string[] = [];
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'ModifyDBClusterCommand') marksAtModify = [...marks];
+        return answer(command);
+      });
+      await update(
+        { CopyTagsToSnapshot: true, BackupRetentionPeriod: 7 },
+        { BackupRetentionPeriod: 7 },
+        CLUSTER,
+        { markUnsettled: (key: string) => marks.push(key) }
+      );
+      expect(marksAtModify).toEqual(['CopyTagsToSnapshot']);
     });
 
     it('sends NetworkType only on a change', async () => {
@@ -754,40 +929,106 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
     });
 
     it.each([
-      ['a template removal', undefined],
-      ['a rollback to a record without it', { replayingState: true }],
-    ])('turns a removed PubliclyAccessible: true off, with a warning (%s)', async (_label, context) => {
-      await update({}, { PubliclyAccessible: true }, INSTANCE, context);
-      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: false });
-      expect(warn.mock.calls[0]![0]).toContain('turned public access off');
+      ['true', true],
+      ['True', true],
+      ['false', false],
+      ['False', false],
+    ])('reads %s as the boolean it means, on the wire and in the wait', async (raw, value) => {
+      await update(
+        { PubliclyAccessible: raw },
+        { PubliclyAccessible: value ? 'false' : 'true' },
+        INSTANCE
+      );
+      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: value });
+      expect(warn).not.toHaveBeenCalled();
+      mockSend.mockClear();
+      await provider.create('L', INSTANCE, { PubliclyAccessible: raw });
+      expect(sentAs('CreateDBInstanceCommand')).toMatchObject({ PubliclyAccessible: value });
+    });
+
+    it('waits for a delayed readback of a changed value, and not for an unchanged one', async () => {
+      let reads = 0;
+      mockSend.mockImplementation((command: { constructor: { name: string }; input: object }) => {
+        if (command.constructor.name === 'ModifyDBInstanceCommand') {
+          live = (command.input as { PubliclyAccessible?: boolean }).PubliclyAccessible;
+        }
+        if (command.constructor.name === 'DescribeDBInstancesCommand') reads += 1;
+        return Promise.resolve({
+          DBInstances: [
+            { DBInstanceStatus: 'available', PubliclyAccessible: reads < 3 ? undefined : live },
+          ],
+        });
+      });
+      await update({ PubliclyAccessible: true }, { PubliclyAccessible: false }, INSTANCE);
+      // Two stale reads, the matching third, then update()'s attribute read.
+      expect(reads).toBe(4);
+      expect(warn).not.toHaveBeenCalled();
+      reads = 10;
+      await update({ PubliclyAccessible: true }, { PubliclyAccessible: true }, INSTANCE);
+      expect(reads).toBe(11);
+    });
+
+    it('--no-wait skips the public-access wait', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      mockSend.mockResolvedValue({ DBInstances: [{ DBInstanceStatus: 'available' }] });
+      await update({ PubliclyAccessible: true }, { PubliclyAccessible: false }, INSTANCE);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('marks a changed property unsettled before the Modify, and Tags before their write', async () => {
+      const marks: string[] = [];
+      let marksAtModify: string[] = [];
+      mockSend.mockImplementation((command: { constructor: { name: string }; input: object }) => {
+        const name = command.constructor.name;
+        if (name === 'ModifyDBInstanceCommand') marksAtModify = [...marks];
+        if (name === 'ListTagsForResourceCommand' || name === 'AddTagsToResourceCommand') {
+          return Promise.reject(new Error('tag write refused'));
+        }
+        return Promise.resolve({
+          TagList: [],
+          DBInstances: [
+            { DBInstanceStatus: 'available', DBInstanceArn: 'arn', PubliclyAccessible: true },
+          ],
+        });
+      });
+      await update(
+        { PubliclyAccessible: true, Tags: [{ Key: 'k', Value: 'v' }] },
+        { PubliclyAccessible: false },
+        INSTANCE,
+        { markUnsettled: (key: string) => marks.push(key) }
+      ).catch(() => undefined);
+      expect(marksAtModify).toEqual(['PubliclyAccessible']);
+      expect(marks).toEqual(['PubliclyAccessible', 'Tags']);
+    });
+
+    it.each([
+      ['true', true],
+      ['the string true', 'true'],
+      ['the string True', 'True'],
+    ])('keeps a removed %s, sends no reset and says the instance stays public', async (_l, was) => {
+      await update({}, { PubliclyAccessible: was }, INSTANCE);
+      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: undefined });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain(
+        'the instance stays publicly accessible, as CloudFormation leaves it'
+      );
+    });
+
+    it('says the same on a rollback, claiming no CloudFormation parity', async () => {
+      await update({}, { PubliclyAccessible: true }, INSTANCE, { replayingState: true });
+      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: undefined });
+      expect(warn.mock.calls[0]![0]).toContain('stays publicly accessible after this rollback');
+      expect(warn.mock.calls[0]![0]).toContain('not measured');
     });
 
     it.each([
       ['a readback', { PubliclyAccessible: true }, { desiredFromAwsReadback: true }],
       ['a false record', { PubliclyAccessible: false }, undefined],
       ['no record', {}, undefined],
-    ])('sends no reset for %s', async (_label, previous, context) => {
+    ])('stays silent for %s', async (_label, previous, context) => {
       await update({}, previous, INSTANCE, context);
-      expect(sentAs('ModifyDBInstanceCommand')).not.toHaveProperty('PubliclyAccessible', false);
+      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: undefined });
       expect(warn).not.toHaveBeenCalled();
-    });
-
-    it('reads a string value as the boolean it means, on the wire and in the wait', async () => {
-      await update({ PubliclyAccessible: 'true' }, { PubliclyAccessible: 'false' }, INSTANCE);
-      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: true });
-      expect(warn).not.toHaveBeenCalled();
-    });
-
-    it('waits for a changed value to read back, and only then', async () => {
-      const reads = () =>
-        mockSend.mock.calls.filter(
-          ([call]) => (call as object).constructor.name === 'DescribeDBInstancesCommand'
-        ).length;
-      await update({ PubliclyAccessible: true }, { PubliclyAccessible: true }, INSTANCE);
-      const unchanged = reads();
-      mockSend.mockClear();
-      await update({ PubliclyAccessible: false }, { PubliclyAccessible: true }, INSTANCE);
-      expect(reads()).toBe(unchanged + 1);
     });
   });
 

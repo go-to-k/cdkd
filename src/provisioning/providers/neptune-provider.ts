@@ -21,6 +21,7 @@ import {
   type DBClusterRole,
 } from '@aws-sdk/client-neptune';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
+import { isDeepStrictEqual } from 'node:util';
 import { getLogger } from '../../utils/logger.js';
 import { markNotGone } from '../not-gone.js';
 import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
@@ -68,6 +69,7 @@ import {
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
+import { coerceCfnBoolean } from '../config-shape.js';
 
 /**
  * The attribute map a Neptune DB cluster records (issue #3650), under
@@ -144,6 +146,8 @@ function isDbIdentifier(id: string): boolean {
  *   `BackupRetentionPeriod` 7 -> 8 change: every one read back unchanged for
  *   nine minutes (the version not upgraded, the group not moved back to
  *   `default.neptune1.4`), while the companion change applied.
+ * - #2762: `CopyTagsToSnapshot` (true stayed true, read at once and after four
+ *   minutes).
  */
 const CLUSTER_KEPT_ON_REMOVAL = [
   'EngineVersion',
@@ -155,6 +159,7 @@ const CLUSTER_KEPT_ON_REMOVAL = [
   'BackupRetentionPeriod',
   'DBPort',
   'Port',
+  'CopyTagsToSnapshot',
 ] as const;
 
 /**
@@ -238,20 +243,25 @@ function logExportChange(
 /**
  * The SDK's `ServerlessV2ScalingConfiguration` for the template's
  * `ServerlessScalingConfiguration`: `undefined` when absent, `null` when the
- * block or a capacity is unusable. CFn numbers may arrive as strings.
+ * block is unusable. The schema requires both capacities, and a CFn number may
+ * arrive as a numeric string; anything else is no capacity (`Number` would read
+ * `''` as 0 and `true` as 1, and send a value nobody declared).
  */
 function serverlessScalingToSend(
   value: unknown
-): { MinCapacity?: number; MaxCapacity?: number } | null | undefined {
+): { MinCapacity: number; MaxCapacity: number } | null | undefined {
   if (value == null) return undefined;
   if (!isPlainObject(value)) return null;
-  const min = value['MinCapacity'] != null ? Number(value['MinCapacity']) : undefined;
-  const max = value['MaxCapacity'] != null ? Number(value['MaxCapacity']) : undefined;
-  if (Number.isNaN(min) || Number.isNaN(max)) return null;
-  return {
-    ...(min !== undefined && { MinCapacity: min }),
-    ...(max !== undefined && { MaxCapacity: max }),
-  };
+  const min = cfnCapacity(value['MinCapacity']);
+  const max = cfnCapacity(value['MaxCapacity']);
+  if (min === undefined || max === undefined) return null;
+  return { MinCapacity: min, MaxCapacity: max };
+}
+
+function cfnCapacity(value: unknown): number | undefined {
+  const usable = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '');
+  const capacity = usable ? Number(value) : Number.NaN;
+  return Number.isFinite(capacity) ? capacity : undefined;
 }
 
 /**
@@ -267,11 +277,53 @@ function isMajorEngineChange(previous: unknown, desired: unknown): boolean {
 /** How long an accepted change (a role, a log type, ...) is waited on before a warning. */
 const SETTLE_MAX_WAIT_MS = 300_000;
 
-/** A CFn boolean, which may arrive as a string; anything else passes through. */
-function cfnBoolean(value: unknown): unknown {
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  return value;
+/** The longest role changes wait for the cluster to read `available`. */
+const ROLE_AVAILABLE_MAX_WAIT_MS = 1_800_000;
+
+/** Budget kept back from the enclosing resource deadline. */
+const DEADLINE_MARGIN_MS = 30_000;
+
+/**
+ * The top-level properties a ModifyDBCluster / ModifyDBInstance carries: a
+ * change to one is in flight once the call is accepted, whatever fails later.
+ */
+const CLUSTER_MODIFY_KEYS = [
+  'EngineVersion',
+  'DeletionProtection',
+  'BackupRetentionPeriod',
+  'PreferredBackupWindow',
+  'PreferredMaintenanceWindow',
+  'DBClusterParameterGroupName',
+  'IamAuthEnabled',
+  'VpcSecurityGroupIds',
+  'DBPort',
+  'Port',
+  'CopyTagsToSnapshot',
+  'NetworkType',
+  'ServerlessScalingConfiguration',
+  'EnableCloudwatchLogsExports',
+] as const;
+const INSTANCE_MODIFY_KEYS = [
+  'DBInstanceClass',
+  'DBParameterGroupName',
+  'PreferredMaintenanceWindow',
+  'AutoMinorVersionUpgrade',
+  'DeletionProtection',
+  'PubliclyAccessible',
+] as const;
+
+/** go-to-k/cdkd#5380: mark each of `keys` the update changes, just before the call. */
+function markChangedUnsettled(
+  keys: readonly string[],
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): void {
+  for (const key of keys) {
+    if (!isDeepStrictEqual(properties[key], previousProperties[key])) {
+      context?.markUnsettled?.(key);
+    }
+  }
 }
 
 /**
@@ -280,11 +332,7 @@ function cfnBoolean(value: unknown): unknown {
  * behaviour no A/B has measured yet (go-to-k/cdkd#2762), so the warning names
  * them without claiming parity.
  */
-const CLUSTER_UNMEASURED_ON_REMOVAL = [
-  'CopyTagsToSnapshot',
-  'NetworkType',
-  'ServerlessScalingConfiguration',
-] as const;
+const CLUSTER_UNMEASURED_ON_REMOVAL = ['NetworkType', 'ServerlessScalingConfiguration'] as const;
 
 /**
  * AWS Neptune Provider
@@ -421,9 +469,9 @@ export class NeptuneProvider implements ResourceProvider {
    * (measured, see {@link CLUSTER_KEPT_ON_REMOVAL}), and named in `update()`'s
    * own warning. The instance's `DeletionProtection` is not a CloudFormation
    * property, so no CloudFormation template removes it. The UNMEASURED list is
-   * left in place and warned about too, without the parity claim. A removed
-   * `PubliclyAccessible: true` is the exception: it is turned off, see
-   * `updateDBInstance`.
+   * left in place and warned about too, without the parity claim.
+   * `PubliclyAccessible` is left too (#2762 A/B: KEPT), under a warning of its
+   * own ({@link warnPublicAccessKept}).
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
     [
@@ -884,7 +932,15 @@ export class NeptuneProvider implements ResourceProvider {
         await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
       }
       try {
-        await this.applyClusterRoles(logicalId, dbClusterIdentifier, roles, [], [], mask);
+        await this.applyClusterRoles(
+          logicalId,
+          dbClusterIdentifier,
+          roles,
+          [],
+          [],
+          mask,
+          undefined
+        );
       } catch (error) {
         // The cluster itself was created: a role's "already exists" is not
         // this name's collision (#3826).
@@ -961,12 +1017,22 @@ export class NeptuneProvider implements ResourceProvider {
       // the cluster schema has no such flag: as the RDS provider, the raised
       // version is the request. DBInstanceParameterGroupName is valid only
       // beside the flag. A version newly declared compares with the live one.
-      const fromVersion =
-        previousProperties['EngineVersion'] ??
-        (properties['EngineVersion'] != null
-          ? (await this.describeDBCluster(physicalId))?.EngineVersion
-          : undefined);
-      const majorUpgrade = isMajorEngineChange(fromVersion, properties['EngineVersion']);
+      // NetworkType compares the same way: the live value is what it changes.
+      const unrecorded = (key: string): boolean =>
+        properties[key] != null && previousProperties[key] == null;
+      const live =
+        unrecorded('EngineVersion') || unrecorded('NetworkType')
+          ? await this.describeDBCluster(physicalId)
+          : undefined;
+      const majorUpgrade = isMajorEngineChange(
+        previousProperties['EngineVersion'] ?? live?.EngineVersion,
+        properties['EngineVersion']
+      );
+      const networkType = properties['NetworkType'] as string | undefined;
+      const networkChange =
+        networkType != null &&
+        networkType !== (previousProperties['NetworkType'] ?? live?.NetworkType);
+      markChangedUnsettled(CLUSTER_MODIFY_KEYS, properties, previousProperties, context);
       // Its own ProvisioningError names the cause; the catch passes it through.
       const vpcSgIds = await this.dbClusterSecurityGroupsToSend(
         logicalId,
@@ -1015,11 +1081,9 @@ export class NeptuneProvider implements ResourceProvider {
                 ? Number(properties['Port'])
                 : undefined,
           CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
-          // Sent only when the declared value changes: re-sending one asks
-          // AWS for a network change on every update.
-          ...(properties['NetworkType'] !== previousProperties['NetworkType'] && {
-            NetworkType: properties['NetworkType'] as string | undefined,
-          }),
+          // Sent only on a change: re-sending one asks AWS for a network
+          // change on every update.
+          ...(networkChange && { NetworkType: networkType }),
           ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
           ...(logExportConfig !== undefined && {
             CloudwatchLogsExportConfiguration: logExportConfig,
@@ -1048,6 +1112,14 @@ export class NeptuneProvider implements ResourceProvider {
         });
       }
 
+      if (networkChange && process.env['CDKD_NO_WAIT'] !== 'true') {
+        await this.waitForApplied(
+          logicalId,
+          'NetworkType',
+          async () => (await this.describeDBCluster(physicalId))?.NetworkType === networkType
+        );
+      }
+
       await this.applyClusterRoles(
         logicalId,
         physicalId,
@@ -1056,7 +1128,8 @@ export class NeptuneProvider implements ResourceProvider {
         // what is live, so an attached role is not attached twice.
         clusterRoleList(previousProperties['AssociatedRoles']) ?? [],
         described?.AssociatedRoles ?? [],
-        context?.maskSecrets
+        context?.maskSecrets,
+        () => context?.markUnsettled?.('AssociatedRoles')
       );
 
       // A changed VpcSecurityGroupIds also moves every member instance to
@@ -1082,6 +1155,7 @@ export class NeptuneProvider implements ResourceProvider {
       }
 
       if (described?.DBClusterArn) {
+        markChangedUnsettled(['Tags'], properties, previousProperties, context);
         await this.applyTagDiff(
           described.DBClusterArn,
           resourceType,
@@ -1334,7 +1408,7 @@ export class NeptuneProvider implements ResourceProvider {
             | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
+          PubliclyAccessible: coerceCfnBoolean(properties['PubliclyAccessible']),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1406,16 +1480,7 @@ export class NeptuneProvider implements ResourceProvider {
     this.logger.debug(`Updating Neptune DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    // A public endpoint nothing declares any more is turned off, by a template
-    // removal and by a rollback to a record without it: leaving an exposure on
-    // is the one side of this choice that is not safe, whatever CloudFormation
-    // does (no A/B has measured it, go-to-k/cdkd#2762). A readback declares
-    // the live value, so nothing there was removed.
-    const declaredPublic = cfnBoolean(properties['PubliclyAccessible']) as boolean | undefined;
-    const previousPublic = cfnBoolean(previousProperties['PubliclyAccessible']);
-    const closesPublicAccess =
-      declaredPublic == null && previousPublic === true && context?.desiredFromAwsReadback !== true;
-    const publiclyAccessible = closesPublicAccess ? false : declaredPublic;
+    const publiclyAccessible = coerceCfnBoolean(properties['PubliclyAccessible']);
 
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
@@ -1423,11 +1488,11 @@ export class NeptuneProvider implements ResourceProvider {
       // the template is sent as an explicit reset only where CloudFormation
       // resets it. Every property in INSTANCE_KEPT_ON_REMOVAL was measured as
       // KEPT (#5004, #5544), so a removed one is passed through as absent and
-      // named in the warning below. `PubliclyAccessible` is the one exception:
-      // unmeasured, and reset above because an exposure must not outlive its
-      // declaration.
+      // named in the warning below. A removed `PubliclyAccessible` is KEPT
+      // too (#2762 A/B), and warned about on its own.
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
+      markChangedUnsettled(INSTANCE_MODIFY_KEYS, properties, previousProperties, context);
       await modifyDbInstanceWhenAvailable({
         send: () =>
           this.getClient().send(
@@ -1460,14 +1525,9 @@ export class NeptuneProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully updated Neptune DBInstance ${logicalId}`);
-      if (closesPublicAccess) {
-        this.logger.warn(
-          safeMsg`${logicalId} (${resourceType}): PubliclyAccessible is no longer declared, so cdkd turned public access off.`
-        );
-      }
       if (
-        publiclyAccessible != null &&
-        publiclyAccessible !== previousPublic &&
+        publiclyAccessible !== undefined &&
+        publiclyAccessible !== coerceCfnBoolean(previousProperties['PubliclyAccessible']) &&
         process.env['CDKD_NO_WAIT'] !== 'true'
       ) {
         await this.waitForApplied(
@@ -1480,6 +1540,7 @@ export class NeptuneProvider implements ResourceProvider {
       const described = await this.describeDBInstance(physicalId);
 
       if (described?.DBInstanceArn) {
+        markChangedUnsettled(['Tags'], properties, previousProperties, context);
         await this.applyTagDiff(
           described.DBInstanceArn,
           resourceType,
@@ -1497,6 +1558,7 @@ export class NeptuneProvider implements ResourceProvider {
         INSTANCE_KEPT_ON_REMOVAL,
         context
       );
+      this.warnPublicAccessKept(logicalId, resourceType, properties, previousProperties, context);
 
       return {
         physicalId,
@@ -1902,7 +1964,7 @@ export class NeptuneProvider implements ResourceProvider {
   ): {
     roles: ClusterRole[];
     logTypes: string[];
-    scaling: { MinCapacity?: number; MaxCapacity?: number } | null | undefined;
+    scaling: { MinCapacity: number; MaxCapacity: number } | null | undefined;
   } {
     const refuse = (key: string, expected: string): never => {
       throw markNonRetryable(
@@ -1935,7 +1997,7 @@ export class NeptuneProvider implements ResourceProvider {
       if (!origin.stateBorne) {
         return refuse(
           'ServerlessScalingConfiguration',
-          'an object with numeric MinCapacity and MaxCapacity'
+          'an object with both a numeric MinCapacity and a numeric MaxCapacity'
         );
       }
       leaveOut('ServerlessScalingConfiguration');
@@ -1958,7 +2020,8 @@ export class NeptuneProvider implements ResourceProvider {
     desired: readonly ClusterRole[],
     previous: readonly ClusterRole[],
     live: readonly DBClusterRole[],
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    beforeWrite: (() => void) | undefined
   ): Promise<void> {
     const liveKeys = new Set(live.map(clusterRoleKey));
     const desiredKeys = new Set(desired.map(clusterRoleKey));
@@ -1969,7 +2032,19 @@ export class NeptuneProvider implements ResourceProvider {
     });
     if (toAdd.length === 0 && toRemove.length === 0) return;
 
-    await this.waitForClusterAvailable(logicalId, physicalId, 'changing its roles');
+    // Bounded by the resource deadline, which does not cancel this operation:
+    // a wait that outlives it would attach after the engine gave up.
+    const waitBudgetMs = Math.min(
+      ROLE_AVAILABLE_MAX_WAIT_MS,
+      enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS
+    );
+    if (waitBudgetMs <= 0) {
+      throw new Error(
+        'the resource timeout leaves no more time to change the roles of the cluster; re-run the deploy, or with a longer --resource-timeout'
+      );
+    }
+    await this.waitForClusterAvailable(logicalId, physicalId, 'changing its roles', waitBudgetMs);
+    beforeWrite?.();
     const whenAvailable = (send: () => Promise<unknown>): Promise<void> =>
       modifyDbInstanceWhenAvailable({
         send,
@@ -2021,31 +2096,28 @@ export class NeptuneProvider implements ResourceProvider {
   ): Promise<void> {
     const shown = (keys: readonly string[]): string =>
       maskerOrIdentity(mask)(keys.map((key) => key.split('\n')[0] ?? '').join(', '));
-    const startTime = Date.now();
-    let delay = 2_000;
     let unsettled: string[] = [];
-    while (Date.now() - startTime < SETTLE_MAX_WAIT_MS) {
+    const settled = await this.pollUntilSettled(async () => {
       const roles = (await this.describeDBCluster(physicalId))?.AssociatedRoles ?? [];
       const byKey = new Map(roles.map((role) => [clusterRoleKey(role), role]));
       unsettled = [
         ...[...attached].filter((key) => (byKey.get(key)?.Status ?? 'PENDING') === 'PENDING'),
         ...[...detached].filter((key) => byKey.has(key)),
       ];
-      if (unsettled.length === 0) {
-        const invalid = [...attached].filter((key) => byKey.get(key)?.Status === 'INVALID');
-        if (invalid.length > 0) {
-          this.logger.warn(
-            safeMsg`${logicalId}: Neptune reports ${shown(invalid)} as INVALID: the role is attached, but the cluster cannot assume it. Check the role's trust policy.`
-          );
-        }
-        return;
+      if (unsettled.length > 0) return false;
+      const invalid = [...attached].filter((key) => byKey.get(key)?.Status === 'INVALID');
+      if (invalid.length > 0) {
+        this.logger.warn(
+          safeMsg`${logicalId}: Neptune reports ${shown(invalid)} as INVALID: the role is attached, but the cluster cannot assume it. Check the role's trust policy.`
+        );
       }
-      await this.sleep(delay);
-      delay = Math.min(delay * 2, 10_000);
+      return true;
+    });
+    if (!settled) {
+      this.logger.warn(
+        safeMsg`${logicalId}: the IAM roles of the Neptune cluster had not settled when cdkd stopped waiting (${shown(unsettled)}).`
+      );
     }
-    this.logger.warn(
-      safeMsg`${logicalId}: the IAM roles of the Neptune cluster had not settled after ${String(SETTLE_MAX_WAIT_MS / 60_000)} minutes (${shown(unsettled)}).`
-    );
   }
 
   /**
@@ -2058,16 +2130,27 @@ export class NeptuneProvider implements ResourceProvider {
     what: string,
     applied: () => Promise<boolean>
   ): Promise<void> {
+    if (await this.pollUntilSettled(applied)) return;
+    this.logger.warn(
+      safeMsg`${logicalId}: the new ${what} did not read back when cdkd stopped waiting; AWS accepted it, so a drift check may report it until it applies.`
+    );
+  }
+
+  /**
+   * Read at least once, then poll until `settled` answers true or the cap, the
+   * tighter of {@link SETTLE_MAX_WAIT_MS} and what the resource deadline
+   * leaves, so a cap stays a warning instead of the deadline's failure.
+   */
+  private async pollUntilSettled(settled: () => Promise<boolean>): Promise<boolean> {
+    const capMs = Math.min(SETTLE_MAX_WAIT_MS, enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS);
     const startTime = Date.now();
     let delay = 2_000;
-    while (Date.now() - startTime < SETTLE_MAX_WAIT_MS) {
-      if (await applied()) return;
+    for (;;) {
+      if (await settled()) return true;
+      if (Date.now() - startTime + delay >= capMs) return false;
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
-    this.logger.warn(
-      safeMsg`${logicalId}: the new ${what} did not read back within ${String(SETTLE_MAX_WAIT_MS / 60_000)} minutes; AWS accepted it, so a drift check may report it until it applies.`
-    );
   }
 
   private async describeDBCluster(dbClusterIdentifier: string) {
@@ -2114,6 +2197,34 @@ export class NeptuneProvider implements ResourceProvider {
       context?.replayingState === true
         ? safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'is' : 'are'} absent from the state being restored; ${modify} keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
         : safeMsg`${logicalId} (${resourceType}): ${one ? 'property' : 'properties'} ${names.join(', ')} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place${measured ? ', as CloudFormation does' : ''}. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`
+    );
+  }
+
+  /**
+   * go-to-k/cdkd#2762: a removed `PubliclyAccessible: true` KEEPS the instance
+   * public, as a real CloudFormation A/B measured for a template removal
+   * (IamAuthEnabled on), so the warning says so outright. On a rollback the
+   * record lacks the key because the failed deploy added it: nothing has
+   * measured what CloudFormation's rollback does there, and cdkd sends no
+   * reset, so the line claims no parity. A `drift --revert` baseline is a
+   * readback, so nothing there was removed.
+   */
+  private warnPublicAccessKept(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): void {
+    if (context?.desiredFromAwsReadback === true) return;
+    const removed =
+      context?.removedProperties ?? new Set(removedTemplateKeys(previousProperties, properties));
+    if (!removed.has('PubliclyAccessible')) return;
+    if (coerceCfnBoolean(previousProperties['PubliclyAccessible']) !== true) return;
+    this.logger.warn(
+      context?.replayingState === true
+        ? safeMsg`${logicalId} (${resourceType}): PubliclyAccessible is absent from the state being restored, and ModifyDBInstance keeps a setting it is not sent, so the instance stays publicly accessible after this rollback. What CloudFormation does here is not measured. Set PubliclyAccessible: false to close it.`
+        : safeMsg`${logicalId} (${resourceType}): PubliclyAccessible was removed from the template; the instance stays publicly accessible, as CloudFormation leaves it. Set PubliclyAccessible: false to close it.`
     );
   }
 

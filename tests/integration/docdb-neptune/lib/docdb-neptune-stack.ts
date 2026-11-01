@@ -35,10 +35,13 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * `NetworkType`, `ServerlessScalingConfiguration` and
  * `DBInstanceParameterGroupName`, the instance `AllowMajorVersionUpgrade` and
  * `PubliclyAccessible`. Before the backfill each one routed the resource
- * through Cloud Control, so verify.sh asserts the SDK route first; the
- * `CDKD_TEST_REMOVAL=true` redeploy CHANGES the updatable ones and DROPS
- * `PubliclyAccessible`, which cdkd turns off, and verify.sh reads each from
- * AWS after both deploys.
+ * through Cloud Control, so verify.sh asserts the SDK route first. The
+ * `CDKD_TEST_BACKFILL_UPDATE=true` redeploy CHANGES the updatable ones (a role
+ * swap, a log type, the scaling cap). The `CDKD_TEST_REMOVAL=true` redeploy
+ * DROPS them all: a real CloudFormation A/B resets `AssociatedRoles` and
+ * `EnableCloudwatchLogsExports` and keeps `CopyTagsToSnapshot` and
+ * `PubliclyAccessible`; `ServerlessScalingConfiguration` and `NetworkType` are
+ * unmeasured and stay live. verify.sh reads each from AWS after every deploy.
  *
  * #1160 / #5004 (removal) phases: the BASELINE deploy sets non-default
  * values for the removable ModifyDBCluster fields on both clusters
@@ -80,6 +83,8 @@ export class DocdbNeptuneStack extends cdk.Stack {
     // file header). `undefined` removes the property from the synthesized
     // template entirely — the removal shape, not a value change.
     const isRemoval = process.env.CDKD_TEST_REMOVAL === 'true';
+    // Issue #2762: CHANGES the backfilled Neptune properties (see the header).
+    const isBackfillUpdate = process.env.CDKD_TEST_BACKFILL_UPDATE === 'true';
 
     // VPC: 2 AZs, public subnets, no NAT. DocDB and Neptune are not reached
     // at all (a deploy-then-destroy test never connects). The IGW exists only
@@ -230,13 +235,21 @@ export class DocdbNeptuneStack extends cdk.Stack {
     const neptuneCluster = new neptune.CfnDBCluster(this, 'NeptuneCluster', {
       dbSubnetGroupName: neptuneSubnetGroup.ref,
       // Issue #2762: each one routed the cluster through Cloud Control before
-      // the backfill. The updatable ones CHANGE in the removal redeploy.
-      associatedRoles: [{ roleArn: (isRemoval ? neptuneRoleB : neptuneRoleA).roleArn }],
+      // the backfill. Changed by the update redeploy, dropped by the removal.
+      associatedRoles: isRemoval
+        ? undefined
+        : [{ roleArn: (isBackfillUpdate ? neptuneRoleB : neptuneRoleA).roleArn }],
       availabilityZones: vpc.availabilityZones,
-      copyTagsToSnapshot: isRemoval ? false : true,
-      enableCloudwatchLogsExports: isRemoval ? ['slowquery'] : ['audit'],
-      networkType: 'IPV4',
-      serverlessScalingConfiguration: { minCapacity: 1, maxCapacity: isRemoval ? 16 : 8 },
+      copyTagsToSnapshot: isRemoval ? undefined : true,
+      enableCloudwatchLogsExports: isRemoval
+        ? undefined
+        : isBackfillUpdate
+          ? ['slowquery']
+          : ['audit'],
+      networkType: isRemoval ? undefined : 'IPV4',
+      serverlessScalingConfiguration: isRemoval
+        ? undefined
+        : { minCapacity: 1, maxCapacity: isBackfillUpdate ? 16 : 8 },
       // A per-call flag of a major upgrade, and this run has none: declared
       // only so the cluster keeps the SDK route. Dropped without a warning.
       dbInstanceParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
@@ -293,7 +306,7 @@ export class DocdbNeptuneStack extends cdk.Stack {
       // keeps it attached (real A/B), so verify.sh asserts it still is.
       dbParameterGroupName: isRemoval ? undefined : neptuneInstanceParams.ref,
       // Issue #2762: on from the create (needs IAM auth, on in the baseline).
-      // DROPPED in the redeploy, and cdkd turns it off.
+      // DROPPED in the removal: CloudFormation keeps it on (real A/B).
       publiclyAccessible: isRemoval ? undefined : true,
       // Issue #2762: write-only, ModifyDBInstance only; nothing to read back.
       allowMajorVersionUpgrade: true,
