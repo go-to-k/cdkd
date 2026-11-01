@@ -223,22 +223,22 @@ git worktree list  # every worktree THIS run added is gone
 git branch --list '<your prefix>*'  # ...and so is every branch it added
 ```
 
-IN-PLACE — run THIS block INSTEAD for the launch tree. **It must not remove the
-tree it runs in** (a concurrent lane's sibling under `<MAIN_CHECKOUT>` takes the
-block above, every `git` line prefixed with `-C <MAIN_CHECKOUT>`, and so is
-not in this block's `-D` list).
-`<LAUNCH_BRANCH>` and `<each branch this run created in THIS tree>` are
-PLACEHOLDERS, not shell variables (`<LAUNCH_BRANCH>`: `launch-mode.md`'s probe):
+IN-PLACE — run THIS block INSTEAD for the launch tree, **never removing the tree
+it runs in** (a concurrent lane's sibling takes the block above with `git -C
+<MAIN_CHECKOUT>`, and is not in this `-D` list). `<...>` are PLACEHOLDERS for
+`launch-mode.md`'s probe values, and every line is `git -C <LANE_TREE>`: a
+bare switch batched in parallel with the pull above moved the main checkout off
+`main` (#5595).
 
 ```bash
-git show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
-DIRTY=$(git status --porcelain)
+git -C <LANE_TREE> show-ref --verify --quiet refs/heads/<LAUNCH_BRANCH> || echo 'gone -> use the fallback'
+DIRTY=$(git -C <LANE_TREE> status --porcelain)
 [ -z "$DIRTY" ] || echo 'dirty -> commit or stash first, then re-run this block'
 [ -z "$DIRTY" ] \
-  && git switch --no-guess <LAUNCH_BRANCH> \
-  && git branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
-git branch --show-current  # must print <LAUNCH_BRANCH>
-git branch --list '<your prefix>*'  # ...and every branch this run added is gone
+  && git -C <LANE_TREE> switch --no-guess <LAUNCH_BRANCH> \
+  && git -C <LANE_TREE> branch -D <each branch this run created in THIS tree>  # AS-IS: no pull, no rebase, no fast-forward
+git -C <LANE_TREE> branch --show-current  # must print <LAUNCH_BRANCH>
+git -C <LANE_TREE> branch --list '<your prefix>*'  # ...and every branch this run added is gone
 ```
 
 `--no-guess`: plain `git switch` re-creates a gone branch from `origin` and
