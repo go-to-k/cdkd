@@ -470,6 +470,12 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         expect(input['MasterUserSecretKmsKeyId']).toBeUndefined();
       });
 
+      it('the flag alone re-declared as it stands sends nothing', async () => {
+        armCluster(managed);
+        await updateCluster({ ManageMasterUserPassword: true }, {});
+        expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
+      });
+
       it('a changed key alone reads the live side, and goes out on a managed cluster', async () => {
         armCluster(managed);
         await updateCluster(
