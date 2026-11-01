@@ -45,6 +45,14 @@ const CLUSTER = 'AWS::Neptune::DBCluster';
 const INSTANCE = 'AWS::Neptune::DBInstance';
 const ROLE_A = 'arn:aws:iam::123456789012:role/a';
 const ROLE_B = 'arn:aws:iam::123456789012:role/b';
+// The real refusal, from the integ run that found it.
+const ROLE_CALL_BUSY = () =>
+  Object.assign(
+    new Error(
+      'DB Cluster cluster-1 is not available for IAM role association, disassociation, or updates. Current DB cluster status: modifying'
+    ),
+    { name: 'InvalidDBClusterStateFault' }
+  );
 
 interface LiveRole {
   RoleArn: string;
@@ -262,43 +270,60 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(1);
     });
 
-    it('resends a role call refused because a Modify started after the wait', async () => {
-      const wire = armCluster();
+    const refuseOnce = (command: string, error: Error): (() => boolean) => {
       const answer = mockSend.getMockImplementation()!;
       let refused = false;
-      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
-        if (command.constructor.name === 'AddRoleToDBClusterCommand' && !refused) {
+      mockSend.mockImplementation((call: { constructor: { name: string } }) => {
+        if (call.constructor.name === command && !refused) {
           refused = true;
-          return Promise.reject(
-            Object.assign(new Error('DB cluster is not in available state.'), {
-              name: 'InvalidDBClusterStateFault',
-            })
-          );
+          return Promise.reject(error);
         }
-        return answer(command);
+        return answer(call);
       });
+      return () => refused;
+    };
+
+    it('resends an attach refused because a Modify started after the wait', async () => {
+      const wire = armCluster();
+      const refused = refuseOnce('AddRoleToDBClusterCommand', ROLE_CALL_BUSY());
       await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {});
-      expect(refused).toBe(true);
+      expect(refused()).toBe(true);
       expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(2);
     });
 
     it('resends a detach refused the same way', async () => {
       const wire = armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
-      const answer = mockSend.getMockImplementation()!;
-      let refused = false;
-      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
-        if (command.constructor.name === 'RemoveRoleFromDBClusterCommand' && !refused) {
-          refused = true;
-          return Promise.reject(
-            Object.assign(new Error('DB cluster is not in available state.'), {
-              name: 'InvalidDBClusterStateFault',
-            })
-          );
-        }
-        return answer(command);
-      });
+      refuseOnce('RemoveRoleFromDBClusterCommand', ROLE_CALL_BUSY());
       await update({}, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
       expect(wire.sent('RemoveRoleFromDBClusterCommand')).toHaveLength(2);
+    });
+
+    it('resends an attach refused the same way on a create', async () => {
+      const wire = armCluster();
+      refuseOnce('AddRoleToDBClusterCommand', ROLE_CALL_BUSY());
+      await provider.create('L', CLUSTER, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
+      expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(2);
+    });
+
+    it.each([
+      [
+        'another refusal of the same class',
+        Object.assign(new Error('The role is already associated elsewhere.'), {
+          name: 'InvalidDBClusterStateFault',
+        }),
+      ],
+      ['the wording under another class', Object.assign(ROLE_CALL_BUSY(), { name: 'OtherFault' })],
+      [
+        'the Modify wording, which is not these calls',
+        Object.assign(new Error('DB cluster is not in available state.'), {
+          name: 'InvalidDBClusterStateFault',
+        }),
+      ],
+    ])('does not resend %s', async (_label, error) => {
+      const wire = armCluster();
+      refuseOnce('AddRoleToDBClusterCommand', error);
+      await expect(update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {})).rejects.toThrow();
+      expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(1);
     });
 
     it('writes nothing when the resource deadline leaves no room to wait', async () => {
@@ -521,11 +546,7 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       const answer = mockSend.getMockImplementation()!;
       mockSend.mockImplementation((command: { constructor: { name: string } }) =>
         command.constructor.name === 'AddRoleToDBClusterCommand'
-          ? Promise.reject(
-              Object.assign(new Error('DB cluster is not in available state.'), {
-                name: 'InvalidDBClusterStateFault',
-              })
-            )
+          ? Promise.reject(ROLE_CALL_BUSY())
           : answer(command)
       );
       const failure = await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}).catch(

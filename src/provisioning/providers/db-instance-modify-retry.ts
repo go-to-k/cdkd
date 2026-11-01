@@ -43,6 +43,8 @@ export interface InstanceModifyRetryOptions {
   readonly label: string;
   /** What a failure calls the resource: `instance` unless the caller is a cluster call. */
   readonly subject?: 'instance' | 'cluster';
+  /** Which refusal is waited out: {@link isModifyNotAvailableRefusal} unless a call words its own. */
+  readonly isRefusal?: (error: unknown) => boolean;
   readonly logicalId: string;
   /** What the engine's per-resource deadline leaves (`enclosingDeadlineRemainingMs()`). */
   readonly remainingMs: number;
@@ -92,7 +94,7 @@ export async function modifyDbInstanceWhenAvailable(
       await opts.send();
       return;
     } catch (error) {
-      if (!isModifyNotAvailableRefusal(error)) throw error;
+      if (!(opts.isRefusal ?? isModifyNotAvailableRefusal)(error)) throw error;
       const subject =
         noun === 'cluster'
           ? 'the cluster is'

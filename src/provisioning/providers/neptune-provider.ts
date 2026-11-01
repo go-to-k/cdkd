@@ -295,6 +295,21 @@ function isUnmovingDbStatus(status: string | undefined): boolean {
   return isProceedDbStatus(status) || status === 'backing-up';
 }
 
+/**
+ * Whether `error` is AWS refusing AddRoleToDBCluster / RemoveRoleFromDBCluster
+ * because the cluster is busy: a cluster that read `available` can go back to
+ * `modifying` a moment later (measured, go-to-k/cdkd#2762). The wording is
+ * these calls' own, so the shared not-`available` match does not cover it. The
+ * class alone is not enough: anything else it carries stays terminal.
+ */
+function isRoleCallNotAvailableRefusal(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === 'InvalidDBClusterStateFault' &&
+    /is not available for IAM role association, disassociation, or updates/i.test(error.message)
+  );
+}
+
 /** How long an accepted change (a role, a log type, ...) is waited on before a warning. */
 const SETTLE_MAX_WAIT_MS = 300_000;
 
@@ -2105,6 +2120,7 @@ export class NeptuneProvider implements ResourceProvider {
         logger: this.logger,
         label: 'Neptune DBCluster',
         subject: 'cluster',
+        isRefusal: isRoleCallNotAvailableRefusal,
         logicalId,
         remainingMs: enclosingDeadlineRemainingMs(),
       });
