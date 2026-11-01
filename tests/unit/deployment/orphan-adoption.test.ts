@@ -627,6 +627,18 @@ describe('templateStillDeclares (#2934)', () => {
     expect(templateStillDeclares(declaringTemplate, rec, ['RoleName'])).toBe(true);
   });
 
+  it('false when a bucket prefix fixes the name (go-to-k/cdkd#2762)', () => {
+    const bucket = record({ logicalId: 'B', state: { resourceType: 'AWS::S3::Bucket' } } as never);
+    const template = (properties: Record<string, unknown>): CloudFormationTemplate =>
+      ({
+        Resources: { B: { Type: 'AWS::S3::Bucket', Properties: properties } },
+      }) as CloudFormationTemplate;
+    expect(templateStillDeclares(template({}), bucket, ['BucketName'])).toBe(true);
+    expect(templateStillDeclares(template({ BucketNamePrefix: 'p' }), bucket, ['BucketName'])).toBe(
+      false
+    );
+  });
+
   it('false when the logical id is absent', () => {
     expect(templateStillDeclares({ Resources: {} } as CloudFormationTemplate, rec, [])).toBe(false);
   });

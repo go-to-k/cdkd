@@ -13,6 +13,13 @@ and `cdkd drift` reported `no drift` — no command surfaced the difference.
 
 - `AWS::S3::Bucket`
 
+A second bucket (go-to-k/cdkd#2762) takes the same phases on the SDK route with
+`BucketNamePrefix`, `BucketNamespace`, `AbacStatus` and `MetadataConfiguration`:
+a prefix-derived name, tags changed while ABAC is on, table updates, the removal
+of both properties, drift over each, and a re-add over the tables S3 kept, which
+warns and completes. It leaves three tables in the account's
+AWS managed `aws-s3` table bucket, which `verify.sh` deletes.
+
 ## Why the expectations are not uniform
 
 CloudFormation resets a removed property to its type default, but "the default"

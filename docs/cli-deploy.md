@@ -196,6 +196,13 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
+- **`AWS::S3::Bucket` waits for each S3 Metadata table it turns on, in every
+  mode**, up to five minutes: the table ARNs are `Fn::GetAtt` values. A table
+  that S3 reports `FAILED`, or one still unsettled at the limit, gets a warning
+  and the deploy continues. CloudFormation also completes over a table an
+  earlier bucket of the same name left behind, the one failure measured, and S3
+  kept the ARN of each table failed that way. A table with no ARN when the wait
+  ends fails an `Fn::GetAtt` on it, and the warning says so.
 - **`AWS::Route53::HostedZone` waits for accelerated recovery to settle in
   every mode**, `--no-wait` included, on create and on update, whenever a
   deploy turns `HostedZoneFeatures.EnableAcceleratedRecovery` on or off: the

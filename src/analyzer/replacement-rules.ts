@@ -776,8 +776,14 @@ export class ReplacementRulesRegistry {
     this.rules.set('AWS::S3::Bucket', {
       replacementProperties: new Set([
         'BucketName', // Changing bucket name requires replacement
+        // Create-only in the CFn registry schema: S3 fixes a bucket's name and
+        // namespace at CreateBucket (go-to-k/cdkd#2762).
+        'BucketNamePrefix',
+        'BucketNamespace',
       ]),
       updateableProperties: new Set([
+        'AbacStatus',
+        'MetadataConfiguration',
         'Tags',
         'VersioningConfiguration',
         'LifecycleConfiguration',

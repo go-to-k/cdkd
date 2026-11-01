@@ -34,6 +34,7 @@
  * decision can be tested without an engine.
  */
 
+import { alternateNamePropertiesFor } from '../provisioning/resource-name.js';
 import type { CloudFormationTemplate, ResourceProvider } from '../types/resource.js';
 import { isReadableBag, type ResourceState, type StackOrphanRecord } from '../types/state.js';
 import {
@@ -109,7 +110,9 @@ export function templateStillDeclares(
   // unresolved intrinsic, which cannot be compared here and is treated as a
   // mismatch. Falling through to CREATE is the safe direction: it either
   // succeeds (no collision) or fails with the go-to-k/cdkd#2916 diagnosis.
-  return !nameProperties.some((p) => properties[p] !== undefined && properties[p] !== null);
+  return ![...nameProperties, ...alternateNamePropertiesFor(declared.Type)].some(
+    (p) => properties[p] !== undefined && properties[p] !== null
+  );
 }
 
 /**

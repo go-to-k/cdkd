@@ -403,6 +403,7 @@ describe('pasteable provider commands sanitize and suppress their id (#3136)', (
       // withheld (a listed-free name would prove the bucket this create's).
       mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets
       mockSend.mockResolvedValueOnce({}); // CreateBucket
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
       await expect(
         new S3BucketProvider().create(

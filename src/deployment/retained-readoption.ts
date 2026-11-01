@@ -9,7 +9,10 @@ import type { RetainedResource, S3StateBackend } from '../state/s3-state-backend
 import { RetainedTimeUnconfirmedError } from '../state/retained-time.js';
 import type { ResourceState } from '../types/state.js';
 import { replacementCreateAdoptsName } from './replacement-name-holder.js';
-import { explicitNamePropertyFor } from '../provisioning/resource-name.js';
+import {
+  explicitNamePropertyFor,
+  alternateNamePropertiesFor,
+} from '../provisioning/resource-name.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { displayStackName, safeMsg } from '../utils/display-safe.js';
 
@@ -24,6 +27,7 @@ function keptUnderGeneratedName(resource: ResourceState): resource is ResourceSt
   if (typeof resource.physicalId !== 'string' || resource.physicalId === '') return false;
   const property = explicitNamePropertyFor(resource.resourceType);
   const properties = resource.properties as Record<string, unknown> | undefined;
+  if (alternateNamePropertiesFor(resource.resourceType).some((p) => properties?.[p])) return false;
   return property === undefined || !properties?.[property];
 }
 

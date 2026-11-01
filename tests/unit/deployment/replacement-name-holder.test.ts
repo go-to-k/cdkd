@@ -811,6 +811,23 @@ describe('the parent review round of #3979 (helper)', () => {
     expect(verdict.holds).toBe(false);
   });
 
+  it('a prefix-named create proves no generated-name holder (go-to-k/cdkd#2762)', () => {
+    const nameless = { createType: 'AWS::S3::Bucket', holderType: 'AWS::S3::Bucket' };
+    const ask = (requested: Record<string, unknown>) =>
+      withStackScope({ stackName: 'MyStack', stackInstanceId: undefined, nameGenerations: new Map() }, () =>
+        holds({
+          ...nameless,
+          requested,
+          recorded: {},
+          physicalId: 'mystack-lg',
+          logicalId: 'Lg',
+          createdVia: 'sdk',
+        })
+      );
+    expect(ask({}).holds).toBe(true);
+    expect(ask({ BucketNamePrefix: 'p' }).holds).toBe(false);
+  });
+
   it('the older-record hint is given only for that shape', () => {
     const UNKEYED = 'AWS::S3::AccessPoint';
     expect(reverseReplacementNameKeyKind(UNKEYED)).toBe('unknown');

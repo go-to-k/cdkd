@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
 
@@ -79,5 +80,91 @@ export class S3SubconfigRemovalStack extends cdk.Stack {
     bucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.ref });
+
+    // go-to-k/cdkd#2762: the SDK route of a name prefix, its namespace, ABAC and
+    // S3 Metadata. The overrides keep the fixture independent of which of these
+    // the installed CfnBucket types. Each phase's expectation was pinned by a
+    // CloudFormation A/B on these same properties.
+    const metadataRemoved = process.env['CDKD_TEST_METADATA_REMOVED'] === 'true';
+    const metadataBucket = new s3.CfnBucket(this, 'MetadataBucket', {
+      tags: metadataRemoved
+        ? [{ key: 'cdkd-2762', value: 'abac-off' }]
+        : removed
+        ? [
+            { key: 'cdkd-2762', value: 'updated' },
+            { key: 'cdkd-2762-added', value: 'added' },
+          ]
+        : [
+            { key: 'cdkd-2762', value: 'base' },
+            { key: 'cdkd-2762-dropped', value: 'base' },
+          ],
+    });
+    metadataBucket.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    metadataBucket.addPropertyOverride('BucketNamePrefix', 'cdkd-2762-metadata');
+    metadataBucket.addPropertyOverride('BucketNamespace', 'account-regional');
+    // The name, not a Ref: the bucket refers to the role.
+    const metadataBucketArn = cdk.Fn.sub(
+      'arn:aws:s3:::cdkd-2762-metadata-${AWS::AccountId}-${AWS::Region}-an'
+    );
+    const annotationRole = (id: string): iam.CfnRole =>
+      new iam.CfnRole(this, id, {
+        assumeRolePolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Principal: { Service: 'metadata.s3.amazonaws.com' },
+              Action: 'sts:AssumeRole',
+            },
+          ],
+        },
+        policies: [
+          {
+            policyName: 'annotations',
+            policyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                {
+                  Effect: 'Allow',
+                  Action: [
+                    's3:GetObjectAnnotation',
+                    's3:GetObjectVersionAnnotation',
+                    's3:ListBucket',
+                    's3:ListBucketVersions',
+                  ],
+                  Resource: [metadataBucketArn, cdk.Fn.join('', [metadataBucketArn, '/*'])],
+                },
+              ],
+            },
+          },
+        ],
+      });
+    const annotationRoles = [annotationRole('AnnotationRoleA'), annotationRole('AnnotationRoleB')];
+    if (!metadataRemoved) {
+      metadataBucket.addPropertyOverride('AbacStatus', 'Enabled');
+      metadataBucket.addPropertyOverride('MetadataConfiguration', {
+        JournalTableConfiguration: {
+          RecordExpiration: { Expiration: 'ENABLED', Days: removed ? 8 : 7 },
+          EncryptionConfiguration: { SseAlgorithm: 'AES256' },
+        },
+        InventoryTableConfiguration: { ConfigurationState: removed ? 'ENABLED' : 'DISABLED' },
+        // After the roles exist and have propagated: see verify.sh Phase 1a.
+        ...(removed || process.env['CDKD_TEST_ANNOTATION'] === 'true'
+          ? {
+              AnnotationTableConfiguration: {
+                ConfigurationState: 'ENABLED',
+                Role: annotationRoles[removed ? 1 : 0]!.attrArn,
+              },
+            }
+          : {}),
+      });
+      new cdk.CfnOutput(this, 'JournalTableArn', {
+        value: metadataBucket.getAtt('MetadataConfiguration.JournalTableConfiguration.TableArn')
+          .toString(),
+      });
+    }
+    new cdk.CfnOutput(this, 'MetadataBucketName', { value: metadataBucket.ref });
+    new cdk.CfnOutput(this, 'AnnotationRoleAArn', { value: annotationRoles[0]!.attrArn });
+    new cdk.CfnOutput(this, 'AnnotationRoleBArn', { value: annotationRoles[1]!.attrArn });
   }
 }

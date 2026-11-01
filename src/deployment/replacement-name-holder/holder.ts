@@ -1,3 +1,4 @@
+import { alternateNamePropertiesFor } from '../../provisioning/resource-name.js';
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
 import { generateResourceNameWithFallback } from '../../provisioning/resource-name.js';
 import { displayIdent, STACK_REF_MAX_CODE_POINTS } from '../../utils/display-safe.js';
@@ -370,6 +371,8 @@ function holderVerdict(
     namePath === undefined &&
     v.derivedNames &&
     derived !== undefined &&
+    // A template-fixed name is no generated one: nothing is proven from a derivation.
+    !alternateNamePropertiesFor(oldResourceType).some((p) => input.requested[p] !== undefined) &&
     input.createdVia !== 'cc-api' &&
     typeof input.logicalId === 'string' &&
     input.logicalId !== ''

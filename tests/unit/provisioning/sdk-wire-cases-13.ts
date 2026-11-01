@@ -1180,6 +1180,74 @@ const ALT: Bag = {
   },
 };
 
+const S3_METADATA_READ_ONLY =
+  'read-only in the CFn schema: no create or update call takes it, and the provider serves it as a Fn::GetAtt attribute';
+
+const S3_PREFIX_REFUSED =
+  'BucketNamePrefix needs BucketNamespace: account-regional, and CloudFormation refuses it otherwise (measured go-to-k/cdkd#2762)';
+
+const S3_METADATA_TABLES = [
+  'JournalTableConfiguration',
+  'InventoryTableConfiguration',
+  'AnnotationTableConfiguration',
+];
+
+const S3_METADATA_ENCRYPTION_FIXED =
+  "S3 has no call that changes a table's encryption once the table exists, and CloudFormation refuses the change in the same words (measured go-to-k/cdkd#2762), so the update pre-flight refuses it before any call";
+
+const S3_METADATA_REQUIRED_THROW: Throw = {
+  why: 'CloudFormation-required: a template without it is refused before any call rather than read as a removal, which would delete the live configuration',
+  says: /must be/,
+};
+
+const S3_METADATA_ENCRYPTION_THROW: Throw = {
+  why: S3_METADATA_ENCRYPTION_FIXED,
+  says: /is not supported once the table exists|must be an object/,
+};
+
+/** go-to-k/cdkd#2762: FULL's Tags take the plain tag calls, which ABAC would refuse. */
+const S3_METADATA: Bag = {
+  BucketName: S3_BUCKET,
+  AbacStatus: 'Enabled',
+  MetadataConfiguration: {
+    JournalTableConfiguration: {
+      RecordExpiration: { Expiration: 'ENABLED', Days: 7 },
+      EncryptionConfiguration: { SseAlgorithm: 'aws:kms', KmsKeyArn: 'arn:aws:kms:eu-west-1:1:key/j' },
+    },
+    InventoryTableConfiguration: {
+      ConfigurationState: 'ENABLED',
+      EncryptionConfiguration: { SseAlgorithm: 'aws:kms', KmsKeyArn: 'arn:aws:kms:eu-west-1:1:key/i' },
+    },
+    AnnotationTableConfiguration: {
+      ConfigurationState: 'ENABLED',
+      Role: `arn:aws:iam::${ACCOUNT}:role/annotation`,
+      EncryptionConfiguration: { SseAlgorithm: 'aws:kms', KmsKeyArn: 'arn:aws:kms:eu-west-1:1:key/a' },
+    },
+  },
+};
+
+/** Every table already has its ARN, so `waitForMetadataTables` returns at once. */
+const s3MetadataArm = (physicalId: string, bag: Bag): void => {
+  s3Arm(physicalId, bag);
+  const table = (name: string): Record<string, unknown> => ({
+    TableStatus: 'ACTIVE',
+    TableName: name,
+    TableArn: `arn:aws:s3tables:eu-west-1:1:bucket/aws-s3/table/${name}`,
+  });
+  setOutputOverrides({
+    GetBucketLocationCommand: () => ({ LocationConstraint: S3_REGION }),
+    GetBucketMetadataConfigurationCommand: () => ({
+      GetBucketMetadataConfigurationResult: {
+        MetadataConfigurationResult: {
+          JournalTableConfigurationResult: table('journal'),
+          InventoryTableConfigurationResult: table('inventory'),
+          AnnotationTableConfigurationResult: table('annotation'),
+        },
+      },
+    }),
+  });
+};
+
 /** The nested-lock constant's three probes, on every bag declaring the block. */
 const S3_NESTED_LOCK_SILENT = {
   'create:ObjectLockConfiguration.ObjectLockEnabled': S3_NESTED_LOCK_CONSTANT,
@@ -1208,6 +1276,20 @@ const BUCKET_CASE: TypeCase = {
   arm: s3Arm,
   wholeFromNext: { keys: (key) => key === 'PublicAccessBlockConfiguration', reason: S3_PAB_KEPT },
   exempt: {},
+  nestedExempt: Object.fromEntries(
+    [
+      'AnnotationTableConfiguration.TableArn',
+      'AnnotationTableConfiguration.TableName',
+      'Destination',
+      'Destination.TableBucketArn',
+      'Destination.TableBucketType',
+      'Destination.TableNamespace',
+      'InventoryTableConfiguration.TableArn',
+      'InventoryTableConfiguration.TableName',
+      'JournalTableConfiguration.TableArn',
+      'JournalTableConfiguration.TableName',
+    ].map((path) => [`MetadataConfiguration.${path}`, S3_METADATA_READ_ONLY])
+  ),
   schemaExempt: {
     'LifecycleConfiguration.Rules.0.ObjectSizeGreaterThan': S3_OBJECT_SIZE_NUMBER,
     'LifecycleConfiguration.Rules.0.ObjectSizeLessThan': S3_OBJECT_SIZE_NUMBER,
@@ -1340,6 +1422,52 @@ const BUCKET_CASE: TypeCase = {
       // No Object Lock declared, so removing the versioning block suspends it.
       name: 'versioning without object lock',
       bag: { BucketName: S3_BUCKET, VersioningConfiguration: { Status: 'Enabled' } },
+    },
+    {
+      name: 'ABAC and S3 Metadata',
+      bag: fresh(S3_METADATA),
+      arm: s3MetadataArm,
+      expectedSilent: Object.fromEntries(
+        S3_METADATA_TABLES.flatMap((table) =>
+          ['KmsKeyArn', 'SseAlgorithm'].map((leaf) => [
+            `update-vary:MetadataConfiguration.${table}.EncryptionConfiguration.${leaf}`,
+            S3_METADATA_ENCRYPTION_FIXED,
+          ])
+        )
+      ),
+      expectedRemovalThrows: Object.fromEntries([
+        ...['update-add', 'update-remove'].flatMap((d) =>
+          S3_METADATA_TABLES.flatMap((table) =>
+            ['', '.KmsKeyArn', '.SseAlgorithm'].map((leaf) => [
+              `${d}:MetadataConfiguration.${table}.EncryptionConfiguration${leaf}`,
+              S3_METADATA_ENCRYPTION_THROW,
+            ])
+          )
+        ),
+        ['update-add:MetadataConfiguration.JournalTableConfiguration', S3_METADATA_ENCRYPTION_THROW],
+        ...['create', 'update-remove'].flatMap((d) =>
+          [
+            'JournalTableConfiguration',
+            'JournalTableConfiguration.RecordExpiration',
+            'JournalTableConfiguration.RecordExpiration.Expiration',
+            'InventoryTableConfiguration.ConfigurationState',
+            'AnnotationTableConfiguration.ConfigurationState',
+          ].map((path) => [`${d}:MetadataConfiguration.${path}`, S3_METADATA_REQUIRED_THROW])
+        ),
+        ...S3_METADATA_TABLES.map((table) => [
+          `create:MetadataConfiguration.${table}.EncryptionConfiguration.SseAlgorithm`,
+          S3_METADATA_REQUIRED_THROW,
+        ]),
+      ]),
+    },
+    {
+      name: 'an account-regional name prefix',
+      bag: { BucketNamePrefix: 'prefix', BucketNamespace: 'account-regional' },
+      // Any other namespace refuses the prefix before CreateBucket.
+      expectedSilent: { 'create-vary:BucketNamespace': S3_PREFIX_REFUSED },
+      expectedRemovalThrows: {
+        'create:BucketNamespace': { why: S3_PREFIX_REFUSED, says: /only supported with BucketNamespace/ },
+      },
     },
     {
       name: 'the alternative shapes',

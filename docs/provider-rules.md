@@ -2246,7 +2246,7 @@ the small additional call is reasonable to add.
 | Resource | Unsupported attribute | Why deferred |
 | --- | --- | --- |
 | `AWS::SQS::Queue` | (none) | All three CFn return values are covered. |
-| `AWS::S3::Bucket` | (none) | All five CFn return values are covered. |
+| `AWS::S3::Bucket` | (none) | All five CFn return values are covered, plus the `MetadataConfiguration.*` names, read live. |
 
 ## `readCurrentState()` for drift detection
 

@@ -13,11 +13,11 @@ For every SDK provider that forwards a nested CFn config blob, compares the SHAP
 ## Summary
 
 - Audited targets: **28**
-- Nested CFn key paths under handled top-levels: **1471**
+- Nested CFn key paths under handled top-levels: **1499**
 - Paths delivered whole by a generic hand-off: **607**
 - Bare-array pairs clean: **182**
-- Explicitly handled in provider: **49**
-- Allow-listed (does NOT block CI): **9**
+- Explicitly handled in provider: **50**
+- Allow-listed (does NOT block CI): **8**
 - **Array-vs-wrapper divergences (blocks CI): 0**
 - **Definition-member-missing divergences (blocks CI): 0**
 - Ambiguous (visible, non-blocking): **0**
@@ -31,14 +31,13 @@ None. Every audited shape divergence is explicitly re-shaped by its provider or 
 | Resource type | CFn definition | Member | Rationale |
 | --- | --- | --- | --- |
 | `AWS::CloudFront::Distribution` | `DistributionConfig` | `S3Origin` | Legacy pre-2012 single-origin form (LegacyS3Origin definition), sibling of CustomOrigin; superseded by Origins[] and absent from the modern CreateDistribution/UpdateDistribution API. The StreamingDistribution API still has a same-spelled S3Origin member, which is why the definition pass (issue #1378) reports it. |
-| `AWS::S3::Bucket` | `JournalTableConfiguration` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `JournalTableConfiguration` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `S3TablesDestination` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `S3TablesDestination` | `TableNamespace` | Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `InventoryTableConfiguration` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `InventoryTableConfiguration` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `AnnotationTableConfiguration` | `TableName` | Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
-| `AWS::S3::Bucket` | `AnnotationTableConfiguration` | `TableArn` | Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430). |
+| `AWS::S3::Bucket` | `JournalTableConfiguration` | `TableName` | Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no table name); under MetadataTableConfiguration it is reachable only from a top-level the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430). |
+| `AWS::S3::Bucket` | `JournalTableConfiguration` | `TableArn` | Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430). |
+| `AWS::S3::Bucket` | `S3TablesDestination` | `TableArn` | Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430). |
+| `AWS::S3::Bucket` | `InventoryTableConfiguration` | `TableName` | Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no table name); under MetadataTableConfiguration it is reachable only from a top-level the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430). |
+| `AWS::S3::Bucket` | `InventoryTableConfiguration` | `TableArn` | Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430). |
+| `AWS::S3::Bucket` | `AnnotationTableConfiguration` | `TableName` | Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no table name); under MetadataTableConfiguration it is reachable only from a top-level the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430). |
+| `AWS::S3::Bucket` | `AnnotationTableConfiguration` | `TableArn` | Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430). |
 
 ## Shape pass — provider-handled re-shapings
 
@@ -81,6 +80,7 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Pipes::Pipe` | `EcsResourceRequirement` | `Value` | definition | SDK interface `EcsResourceRequirement` has no `Value` member |
 | `AWS::Pipes::Pipe` | `PlacementConstraint` | `Type` | definition | SDK interface `PlacementConstraint` has no `Type` member |
 | `AWS::Pipes::Pipe` | `PlacementStrategy` | `Type` | definition | SDK interface `PlacementStrategy` has no `Type` member |
+| `AWS::S3::Bucket` | `S3TablesDestination` | `TableNamespace` | definition | SDK interface `S3TablesDestination` has no `TableNamespace` member |
 | `AWS::S3::Bucket` | `ReplicationRule` | `Id` | definition | SDK interface `ReplicationRule` has no `Id` member |
 | `AWS::S3::Bucket` | `S3KeyFilter` | `Rules` | definition | SDK interface `S3KeyFilter` has no `Rules` member |
 | `AWS::S3::Bucket` | `AnalyticsConfiguration` | `Prefix` | definition | SDK interface `AnalyticsConfiguration` has no `Prefix` member |
@@ -126,6 +126,6 @@ CFn members whose SHAPE diverges from the same-spelled SDK member (bare array vs
 | `AWS::Lambda::WebFunctionEndpoint` | `lambda-web-function-endpoint-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 4 | 0 | 0 |
 | `AWS::Lambda::WebFunctionRevision` | `lambda-web-function-revision-provider.ts` | `@aws-sdk/client-lambda-web` | lower-first | 17 | 0 | 0 |
 | `AWS::Pipes::Pipe` | `pipes-provider.ts` | `@aws-sdk/client-pipes` | exact | 208 | 2 | 0 |
-| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | 193 | 12 | 15 |
+| `AWS::S3::Bucket` | `s3-bucket-provider.ts` | `@aws-sdk/client-s3` | exact | 221 | 12 | 15 |
 | `AWS::Scheduler::Schedule` | `scheduler-schedule-provider.ts` | `@aws-sdk/client-scheduler` | exact | 47 | 39 | 0 |
 

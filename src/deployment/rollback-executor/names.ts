@@ -335,6 +335,7 @@ export function createOpMasker(
  * table does not list are not read: a known bound, recorded on #4099.
  */
 const OTHER_SPELLED_NAME_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::S3::Bucket': ['BucketNamePrefix'],
   'AWS::Cognito::UserPoolDomain': ['Domain'],
   'AWS::Cognito::UserPoolUser': ['Username'],
   'AWS::ECS::TaskDefinition': ['Family'],

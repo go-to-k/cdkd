@@ -153,7 +153,11 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
 
       const created = mockSend.mock.calls[0]![0] as { input: { Bucket: string } };
       expect(result.physicalId).toBe(created.input.Bucket);
-      expect(sent()).toEqual(['CreateBucketCommand', 'PutBucketVersioningCommand']);
+      expect(sent()).toEqual([
+        'CreateBucketCommand',
+        'GetBucketAbacCommand',
+        'PutBucketVersioningCommand',
+      ]);
     });
 
     it('keeps the foreign-region refusal ahead of it', async () => {
@@ -212,6 +216,7 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
       expect(sent()).toEqual([
         'GetBucketLocationCommand',
         'CreateBucketCommand',
+        'GetBucketAbacCommand',
         'PutBucketVersioningCommand',
       ]);
       expect(String(warn.mock.calls[0]?.[0])).toContain('was ADOPTED, not created');
@@ -409,6 +414,10 @@ describe('S3BucketProvider explicit BucketName already held (go-to-k/cdkd#4684)'
     const result = await provider.create('MyBucket', TYPE, { ...EXPLICIT, BucketName: '' });
 
     expect(result.physicalId).not.toBe('');
-    expect(sent()).toEqual(['CreateBucketCommand', 'PutBucketVersioningCommand']);
+    expect(sent()).toEqual([
+      'CreateBucketCommand',
+      'GetBucketAbacCommand',
+      'PutBucketVersioningCommand',
+    ]);
   });
 });

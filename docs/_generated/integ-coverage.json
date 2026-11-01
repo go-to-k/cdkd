@@ -4945,6 +4945,7 @@
         "rollback-failure-injection",
         "rollback-replay-cc-generated-name",
         "s3-replication-and-filter",
+        "s3-subconfig-removal",
         "scheduler-custom-group",
         "sdk-ccapi-crossref",
         "secret-derived-immutable-names",
@@ -5271,6 +5272,9 @@
         "s3-replication-and-filter": [
           "l2",
           "literal"
+        ],
+        "s3-subconfig-removal": [
+          "l1"
         ],
         "scheduler-custom-group": [
           "l2"

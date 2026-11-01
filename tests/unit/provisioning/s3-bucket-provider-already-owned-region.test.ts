@@ -345,7 +345,7 @@ describe('S3BucketProvider BucketAlreadyOwnedByYou region guard (issue #2227)', 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, {})).resolves.toMatchObject({
         physicalId: expect.any(String),
       });
-      expect(sentCommands()).toEqual(['CreateBucketCommand']);
+      expect(sentCommands()).toEqual(['CreateBucketCommand', 'GetBucketAbacCommand']);
     });
 
     it('adds NO readback call when CreateBucket simply succeeds', async () => {
