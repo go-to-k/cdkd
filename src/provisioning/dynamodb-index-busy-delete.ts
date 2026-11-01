@@ -151,11 +151,10 @@ export function hasTransitionalTableIndex(
 }
 
 /**
- * How cdkd's own index-busy lines name the busy index. `AWS::DynamoDB::Table`
- * can hold vector indexes (go-to-k/cdkd#2762), `AWS::DynamoDB::GlobalTable`
- * cannot, so each provider passes its own noun and neither line names an index
- * kind its type cannot have. The default is the `GlobalTable` one, which keeps
- * that provider's text as it was.
+ * How cdkd's own index-busy lines name the busy index. Either DynamoDB type can
+ * hold vector indexes (go-to-k/cdkd#2762). `AWS::DynamoDB::Table` passes the
+ * longer noun; `AWS::DynamoDB::GlobalTable` passes it only for a table that has
+ * one, so the default keeps every other table's text as it was.
  */
 export const GSI_INDEX_NOUN = 'a global secondary index';
 export const TABLE_INDEX_NOUN = 'a global secondary index or vector index';

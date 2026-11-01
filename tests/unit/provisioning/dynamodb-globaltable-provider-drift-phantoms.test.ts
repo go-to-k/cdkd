@@ -347,7 +347,9 @@ describe('DynamoDBGlobalTableProvider drift phantoms (issue #1742)', () => {
       // remove / capacity change.
       const paths = provider.getDriftUnknownPaths(RESOURCE_TYPE);
       expect(paths).not.toContain('GlobalSecondaryIndexes');
-      expect(paths.some((p) => p.includes('WarmThroughput'))).toBe(false);
+      // The per-index member stays comparable; only the table-level block is
+      // unknown, and only while no usable one is declared (go-to-k/cdkd#2762).
+      expect(paths.some((p) => p.includes('GlobalSecondaryIndexes'))).toBe(false);
     });
   });
 

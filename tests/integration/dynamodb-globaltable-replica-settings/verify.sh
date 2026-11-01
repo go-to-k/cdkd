@@ -140,6 +140,10 @@ TABLE="${STACK}-table"
 TABLE2="${STACK}-table2"
 # Issue #5489's single-region ModeTable (`idx`).
 TABLE3="${STACK}-table3"
+# go-to-k/cdkd#2762's tables (`ts`): vector indexes and warm throughput, and the
+# table-level read ceiling.
+TABLE4="${STACK}-table4"
+TABLE5="${STACK}-table5"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
 # Phase 5b's out-of-band key for ${TABLE2} in ${REGION}: fixture-owned, NOT the
@@ -513,13 +517,15 @@ cleanup() {
   teardown_table "${TABLE}"
   teardown_table "${TABLE2}"
   teardown_table "${TABLE3}"
+  teardown_table "${TABLE4}"
+  teardown_table "${TABLE5}"
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
   # Every fixture table, before ANY fixture key: the stack's local keys, the
   # replica keys and Phase 5b's out-of-band key below.
   local t
-  for t in "${TABLE}" "${TABLE2}" "${TABLE3}"; do
+  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}"; do
     case " ${stuck} " in *" ${t} "*) continue ;; esac
     await_table_gone "${t}" || stuck="${stuck:+${stuck} }${t}"
   done
@@ -1238,6 +1244,87 @@ deploy "tag,removed,protect,ssetable,idx" "${LOG_DIR}/phase6.log"
 wait_settled
 await_settings "${SECOND_REGION}" "	True$" "Phase 6: the replica was not protected again (issue #5355)"
 
+# --- Phase 6b: the table-level settings (go-to-k/cdkd#2762) ----------------
+# A pre-fix binary routes both tables to Cloud Control: the record's
+# `provisionedBy` is the assertion that can pass only with the fix. Each value
+# is then read from AWS in both regions, and an update adds to what the create
+# sent.
+TS_BASE="tag,removed,protect,ssetable,idx,ts"
+record_of() { # usage: record_of <logical id prefix> -- prints the state record's provisionedBy
+  aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" |
+    node -e '
+      const state = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const hit = Object.entries(state.resources).find(([id]) => id.startsWith(process.argv[1]));
+      if (!hit) { console.error(`no record for ${process.argv[1]}`); process.exit(1); }
+      console.log(hit[1].provisionedBy ?? "sdk");
+    ' "$1"
+}
+vector_indexes() { # usage: vector_indexes <region> -- sorted ACTIVE names
+  aws dynamodb describe-table --table-name "${TABLE4}" --region "$1" \
+    --query 'sort(Table.VectorIndexes[?IndexStatus==`ACTIVE`].IndexName)' --output text
+}
+await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message>
+  local got=""
+  for _ in $(seq 1 90); do
+    got="$(vector_indexes "$1")"
+    [ "${got}" = "$2" ] && return 0
+    sleep 10
+  done
+  echo "FAIL: $3: ${TABLE4} in $1 holds '${got}', not '$2'" >&2
+  exit 1
+}
+expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <message>
+  local got
+  got="$(aws dynamodb describe-table --table-name "$1" --region "${REGION}" --query "$2" --output text)"
+  if [ "${got}" != "$3" ]; then
+    echo "FAIL: $4: ${1} reads '${got}' at $2, not '$3'" >&2
+    exit 1
+  fi
+}
+
+echo "==> Phase 6b: vector indexes, warm throughput, TableType and the table-level read ceiling"
+deploy "${TS_BASE}" "${LOG_DIR}/phase6b.log"
+for logical in VectorTable TableLevelReadTable; do
+  by="$(record_of "${logical}")"
+  if [ "${by}" = "cc-api" ]; then
+    echo "FAIL: Phase 6b: ${logical} went through Cloud Control (go-to-k/cdkd#2762)" >&2
+    exit 1
+  fi
+done
+await_vector_indexes "${REGION}" "vec1" "Phase 6b"
+await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6b"
+expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 13000 "Phase 6b"
+expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50 "Phase 6b"
+echo "    OK: the SDK route sent every setting (vec1 in both regions)"
+
+echo "==> Phase 6c: an update adds a vector index and raises both values"
+deploy "${TS_BASE},ts2" "${LOG_DIR}/phase6c.log"
+await_vector_indexes "${REGION}" "vec1	vec2" "Phase 6c"
+await_vector_indexes "${SECOND_REGION}" "vec1	vec2" "Phase 6c"
+expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 14000 "Phase 6c"
+expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 55 "Phase 6c"
+run_drift 0 "Phase 6c"
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: Phase 6c: drift reports a table just deployed (go-to-k/cdkd#2762)" >&2
+  exit 1
+fi
+echo "    OK: vec2 in both regions, both values raised, no drift"
+
+echo "==> Phase 6d: the refusals (go-to-k/cdkd#2762)"
+deploy_refused "${TS_BASE},ts2,tsshape" "${LOG_DIR}/phase6d-shape.log" \
+  "VectorIndexes vec1 changed definition, which DynamoDB cannot modify in place" \
+  "Phase 6d (tsshape)"
+deploy_refused "${TS_BASE},ts2,tsregional" "${LOG_DIR}/phase6d-regional.log" \
+  "TableType Regional cannot be declared with more than one replica" \
+  "Phase 6d (tsregional)"
+await_vector_indexes "${REGION}" "vec1	vec2" "Phase 6d"
+
+echo "==> Phase 6e: a vector index removed"
+deploy "${TS_BASE}" "${LOG_DIR}/phase6e.log"
+await_vector_indexes "${REGION}" "vec1" "Phase 6e"
+await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6e"
+echo "    OK: vec2 removed in both regions"
+
 # --- Phase 7: destroy --remove-protection ---------------------------------
 echo "==> Phase 7: destroy --remove-protection"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
@@ -1260,6 +1347,16 @@ done
 echo "    the Phase 5b table deleted in both regions"
 assert_gone "table ${TABLE3} still exists in ${REGION} after destroy" aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}"
 echo "    the Phase 1b ModeTable deleted"
+for t in "${TABLE4}" "${TABLE5}"; do
+  for r in "${REGION}" "${SECOND_REGION}"; do
+    for _ in $(seq 1 30); do
+      gone_probe aws dynamodb describe-table --table-name "${t}" --region "${r}" && break
+      sleep 10
+    done
+    assert_gone "table ${t} still exists in ${r} after destroy" aws dynamodb describe-table --table-name "${t}" --region "${r}"
+  done
+done
+echo "    the Phase 6b tables deleted"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"

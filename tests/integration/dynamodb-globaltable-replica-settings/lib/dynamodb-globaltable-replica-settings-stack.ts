@@ -59,7 +59,17 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *   - `ssetable`: a second two-region table on the AWS owned key, for the
  *                `drift --revert` phase of issue #5399. The first table has
  *                switched encryption four times by then, and DynamoDB refused a
- *                further switch on it with LimitExceededException.
+ *                further switch on it with LimitExceededException;
+ *   - `ts`:      go-to-k/cdkd#2762: a two-region `table4` declaring
+ *                `VectorIndexes`, `WarmThroughput` and `TableType`, and a
+ *                single-region `table5` with settings replication ENABLED and a
+ *                table-level `ReadOnDemandThroughputSettings`;
+ *   - `ts2`:     with `ts`, add a second vector index, raise the warm
+ *                throughput and the read ceiling;
+ *   - `tsshape`: with `ts`, change `vec1`'s dimensions, which DynamoDB cannot
+ *                do in place (the deploy must be refused);
+ *   - `tsregional`: with `ts`, `TableType: Regional` on the two-replica table,
+ *                which CloudFormation refuses (so must the deploy).
  *
  * verify.sh gives the stack a per-run name, which the table name and the key
  * aliases follow, so a run never meets another run's table or alias.
@@ -207,6 +217,48 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.DESTROY,
         replicas: [{ region: props.secondRegion }],
       });
+    }
+
+    // go-to-k/cdkd#2762: L1 overrides, as `TableV2` has no prop for these. None
+    // of them may route the table to Cloud Control; verify.sh reads the record.
+    if (modes.has('ts')) {
+      const update2 = modes.has('ts2');
+      const vectorTable = new ddb.TableV2(this, 'VectorTable', {
+        tableName: `${this.stackName}-table4`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+        replicas: [{ region: props.secondRegion }],
+      });
+      const cfnVector = vectorTable.node.defaultChild as ddb.CfnGlobalTable;
+      const vectorIndex = (indexName: string, attribute: string, dimensions: number): object => ({
+        IndexName: indexName,
+        VectorAttribute: { AttributeName: attribute },
+        Dimensions: dimensions,
+        DistanceFunction: 'COSINE',
+        Projection: { ProjectionType: 'KEYS_ONLY' },
+      });
+      cfnVector.addPropertyOverride('VectorIndexes', [
+        vectorIndex('vec1', 'embedding', modes.has('tsshape') ? 4 : 3),
+        ...(update2 ? [vectorIndex('vec2', 'embedding2', 4)] : []),
+      ]);
+      cfnVector.addPropertyOverride('WarmThroughput', {
+        ReadUnitsPerSecond: update2 ? 14000 : 13000,
+      });
+      cfnVector.addPropertyOverride(
+        'TableType',
+        modes.has('tsregional') ? 'Regional' : 'GlobalTableReplica'
+      );
+      const readTable = new ddb.TableV2(this, 'TableLevelReadTable', {
+        tableName: `${this.stackName}-table5`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      const cfnRead = readTable.node.defaultChild as ddb.CfnGlobalTable;
+      cfnRead.addPropertyOverride('Replicas.0.GlobalTableSettingsReplicationMode', 'ENABLED');
+      cfnRead.addPropertyOverride('ReadOnDemandThroughputSettings', {
+        MaxReadRequestUnits: update2 ? 55 : 50,
+      });
+      cfnRead.addPropertyOverride('TableType', 'Regional');
     }
 
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });

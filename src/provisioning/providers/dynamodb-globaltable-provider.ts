@@ -107,6 +107,13 @@ import {
   type WarmThroughputCoercion,
   type WarmThroughputSpec,
 } from '../dynamodb-warm-throughput.js';
+import {
+  planVectorIndexUpdates,
+  readbackVectorIndexes,
+  vectorIndexesForCreate,
+  vectorIndexesSettled,
+  type VectorIndexPlan,
+} from '../dynamodb-vector-indexes.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
 import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
@@ -123,8 +130,10 @@ import {
   GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
   INDEX_SETTLE_POLL_INTERVAL_MS,
   DELETE_INDEX_WAIT_PROCEED_NOTE,
+  TABLE_INDEX_NOUN,
+  VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
   deleteTableWithIndexBusyRetry,
-  hasTransitionalIndex,
+  hasTransitionalTableIndex,
   waitForIndexesSettled,
   maskedLogger,
   relayedIndexBusyDelete,
@@ -139,12 +148,13 @@ import {
   autoScalingRetriesWithinDeleteBudget,
   beginDeleteWait,
   compensateRemovedDeletionProtection,
+  DYNAMODB_DELETE_DEADLINE_MARGIN_MS,
   deleteBudgetKey,
   isTerminalDeleteFailure,
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
-import { type ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
+import { ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import {
   createMaskedLogSinks,
   maskDeep,
@@ -653,9 +663,29 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         'WriteProvisionedThroughputSettings',
         'WriteOnDemandThroughputSettings',
         'DeletionProtectionEnabled',
+        'ReadOnDemandThroughputSettings',
+        'ReadProvisionedThroughputSettings',
+        'TableType',
+        'VectorIndexes',
+        'WarmThroughput',
         // Note: `AWS::DynamoDB::GlobalTable` has NO top-level `Tags`
         // property. Tags live inside `Replicas[].Tags`, which is
         // already covered by the `Replicas` entry above.
+        //
+        // go-to-k/cdkd#2762: three properties stay on the Cloud Control route.
+        // `MultiRegionConsistency` and `GlobalTableWitnesses` (MRSC) do not fit
+        // the per-replica serial paths here. Measured us-east-1 / us-east-2 /
+        // us-west-2, 2026-11-01: the replica and witness Creates must go out in
+        // ONE `UpdateTable` with the mode; a lone replica Delete is refused
+        // ("does not include all witnesses"), so the update and delete paths
+        // and the partial-create cleanup would each need a one-call shape;
+        // `DeleteTable` is refused until they are gone; TTL is refused on such
+        // a table; and it carries no stream, which `create()`'s `needsStream`
+        // arm would enable. `GlobalTableSourceArn` creates a multi-account
+        // replica: CDK's `TableV2MultiAccountReplica` renders no `KeySchema`
+        // (which `create()` requires), and DynamoDB asks for a `ResourcePolicy`
+        // on the `CreateTable` (measured, same day), a cross-account path this
+        // provider has no way to exercise.
       ]),
     ],
   ]);
@@ -863,7 +893,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private wrapMaskedError(
     log: MaskedLogSinks,
     error: unknown,
-    build: (maskedText: string) => ProvisioningError
+    build: (maskedText: string) => ProvisioningError,
+    // go-to-k/cdkd#2762: how the index-busy relay names the index on a table
+    // with vector indexes; omitted, {@link relayedIndexBusyDelete}'s default.
+    indexNoun?: string
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(log.mask, error, build);
@@ -872,7 +905,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // as this resource.
     const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
     const wrapped = build(
-      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail)}` +
+      `${log.mask(failure.summary)}${relay}${relayedIndexBusyDelete(failure.detail, indexNoun)}` +
         relayedEncryptionChangeLimit(failure.detail)
     );
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
@@ -902,9 +935,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   private wrapDeleteError(
     log: MaskedLogSinks,
     error: unknown,
-    build: (maskedText: string) => ProvisioningError
+    build: (maskedText: string) => ProvisioningError,
+    indexNoun?: string
   ): ProvisioningError {
-    const thrown = this.wrapMaskedError(log, error, build);
+    const thrown = this.wrapMaskedError(log, error, build, indexNoun);
     return error instanceof Error && error.name.includes('NotFound') ? markNotGone(thrown) : thrown;
   }
 
@@ -1513,6 +1547,21 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         'LocalSecondaryIndexes'
       ] as LocalSecondaryIndex[];
     }
+    // go-to-k/cdkd#2762: vector indexes ride `CreateTable` (member names shared
+    // with CFn, `Dimensions` on the Integer grammar). Every replica added below
+    // inherits them (measured, us-east-1 + us-east-2, 2026-11-01).
+    const createVectorIndexes = vectorIndexesForCreate(properties['VectorIndexes']);
+    if (createVectorIndexes !== undefined) createParams.VectorIndexes = createVectorIndexes;
+    // go-to-k/cdkd#2762: so does the table's warm throughput, on either billing
+    // mode. An unusable block is reported below and not sent.
+    const warmCoercion = coerceWarmThroughput(properties['WarmThroughput']);
+    if (warmCoercion.spec) createParams.WarmThroughput = warmCoercion.spec;
+    const warmDiagnostic = warmThroughputDiagnostic(
+      properties['WarmThroughput'],
+      warmCoercion,
+      undefined
+    );
+    if (warmDiagnostic) diagnostics.push(warmDiagnostic);
     // go-to-k/cdkd#5489: the settings replication mode rides `CreateTable`, as
     // CloudFormation sends it; a mode on a table with more than one replica is
     // refused below (`replicaSettingsRefusal`) before anything is created.
@@ -1691,6 +1740,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // with no cdkd state record (PR #374 pattern).
     try {
       const tableInfo = await this.waitForTableActive(tableName, logicalId, undefined, maskSecrets);
+      // go-to-k/cdkd#2762: a vector index created WITH the table may still be
+      // building when the table reads ACTIVE; a replica add must not meet it.
+      if (createVectorIndexes !== undefined) {
+        await this.waitForVectorIndexesSettled(tableName, logicalId, maskSecrets);
+      }
 
       // Replica adds: one UpdateTable per region (AWS rejects multiple
       // ReplicaUpdates in a single call). Each call must complete before
@@ -1952,7 +2006,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             );
           }
         }
-        await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+        // go-to-k/cdkd#2762: a vector index may still be building when the
+        // failure arrives (the wait for it can be what failed), and AWS refuses
+        // `DeleteTable` during a build.
+        if (createVectorIndexes !== undefined) {
+          await this.rollBackCreatedVectorTable(logicalId, tableName, maskSecrets);
+        } else {
+          await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+        }
         retractCreatedResource(logicalId, resourceType, tableName);
       } catch (cleanupErr) {
         tableLeftBehind = true;
@@ -1996,6 +2057,58 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
       throw thrown;
     }
+  }
+
+  /**
+   * `create()`'s rollback `DeleteTable` for a table declaring vector indexes
+   * (go-to-k/cdkd#2762), retrying ONLY the index-busy refusal: the
+   * `AWS::DynamoDB::Table` provider's `rollBackCreatedTable` (go-to-k/cdkd#5574).
+   * Bounded by what the enclosing per-resource deadline has left; with no room
+   * left the first refusal is terminal, since that deadline does not cancel.
+   * Throws what the last `DeleteTable` threw; the caller reports the table left
+   * behind.
+   */
+  private async rollBackCreatedVectorTable(
+    logicalId: string,
+    tableName: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const logger = maskedLogger(this.logger, maskSecrets, tableName);
+    const allowanceMs = Math.min(
+      resolveDynamoDbDeleteBudgetMs(),
+      enclosingDeadlineRemainingMs() - DYNAMODB_DELETE_DEADLINE_MARGIN_MS
+    );
+    const budget =
+      allowanceMs > 0
+        ? new ElapsedBudget(allowanceMs, resolveDynamoDbDeleteBudgetClock())
+        : undefined;
+    await deleteTableWithIndexBusyRetry({
+      logicalId,
+      physicalId: tableName,
+      typeLabel: 'GlobalTable',
+      indexNoun: TABLE_INDEX_NOUN,
+      maxRetries: GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES,
+      logger,
+      deleteTable: async () => {
+        await this.dynamoDBClient.send(new DeleteTableCommand({ TableName: tableName }));
+      },
+      reArm: () =>
+        this.waitForIndexesActive(tableName, logicalId, {
+          maxAttempts: VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+          shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+          proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
+          ...(budget !== undefined && { budget }),
+          maskSecrets,
+        }),
+      shouldKeepRetrying: () => budget !== undefined && !budget.isExhausted(),
+      retryWarning: () =>
+        `DynamoDB GlobalTable ${logicalId}: AWS refused the DeleteTable rolling back the ` +
+        `partially-created table ${tableName} because ${TABLE_INDEX_NOUN} is still being ` +
+        `created, updated or deleted. Waiting for the indexes to settle and retrying (up to ` +
+        `${GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES} retries in all, within ~` +
+        `${Math.max(1, Math.round((budget?.totalMs ?? 0) / 60_000))} minutes).`,
+      sleepSeam: deleteTableRetryDelays,
+    });
   }
 
   /**
@@ -2096,6 +2209,122 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         `applied normally.`
     );
     return undefined;
+  }
+
+  /**
+   * The table-level `WarmThroughput` to send, or `undefined` when none must go
+   * out (go-to-k/cdkd#2762): the {@link warmThroughputForSend} rule one level
+   * up. A block AWS already reports needs no call; one below it is reported and
+   * not sent, because warm throughput only rises with a table's traffic. The
+   * `desired` argument is already coerced.
+   */
+  private tableWarmThroughputForSend(
+    desired: WarmThroughputSpec | undefined,
+    live: WarmThroughputSpec | undefined,
+    logicalId: string,
+    physicalId: string,
+    maskSecrets: SecretMasker
+  ): WarmThroughputSpec | undefined {
+    if (!desired) return undefined;
+    const declared = WARM_THROUGHPUT_MEMBERS.filter((m) => desired[m] !== undefined);
+    if (declared.every((m) => desired[m] === live?.[m])) return undefined;
+    if (!isWarmThroughputDecrease(desired, live)) return desired;
+    const format = (spec: WarmThroughputSpec | undefined): string =>
+      declared.map((m) => `${m}=${spec?.[m]}`).join(', ');
+    // `format` renders numeric members only; the sink masks the table name.
+    this.logger.warn(
+      maskSecrets(
+        `DynamoDB GlobalTable ${logicalId}: table ${physicalId}: WarmThroughput was NOT sent — ` +
+          `the template asks for ${format(desired)} while AWS reports ${format(live)}, and ` +
+          `DynamoDB rejects a decrease. Raise it to at least the live value, or remove it. ` +
+          `Every other change to this table is applied normally.`
+      )
+    );
+    return undefined;
+  }
+
+  /**
+   * Apply a {@link planVectorIndexUpdates} plan (go-to-k/cdkd#2762): each op in
+   * its own `UpdateTable` (AWS takes one vector index add or remove per call),
+   * with the table and every index settled before and after. A Create carries
+   * the desired `AttributeDefinitions`, as a GSI Create does. A replica follows
+   * the deploy region's table (measured, us-east-1 + us-east-2, 2026-11-01), so
+   * no region is addressed separately.
+   */
+  private async applyVectorIndexUpdates(
+    physicalId: string,
+    logicalId: string,
+    plan: VectorIndexPlan,
+    desiredAttributeDefinitions: AttributeDefinition[] | undefined,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const scope = (name: unknown): string =>
+      `vector index ${typeof name === 'string' ? maskSecrets(name) : '<unnamed>'} on DynamoDB ` +
+      `GlobalTable ${maskSecrets(physicalId)}`;
+    for (const name of plan.alreadyGone) {
+      this.logger.debug(
+        maskSecrets(`${scope(name)} is recorded but not live; skipping its Delete`)
+      );
+    }
+    for (const name of plan.adopted) {
+      this.logger.warn(
+        maskSecrets(
+          `${scope(name)} already exists in AWS with the declared definition but is absent ` +
+            `from cdkd's recorded previous state, so its Create is being skipped. This usually ` +
+            `means an earlier deploy created the index and then failed before state was written.`
+        )
+      );
+    }
+    if (plan.ops.length === 0) return;
+    await this.waitForVectorIndexesSettled(physicalId, logicalId, maskSecrets);
+    markUnsettled('VectorIndexes');
+    for (const op of plan.ops) {
+      const input: UpdateTableCommandInput = { TableName: physicalId, VectorIndexUpdates: [op] };
+      if (op.Create && desiredAttributeDefinitions) {
+        input.AttributeDefinitions = desiredAttributeDefinitions;
+      }
+      await this.dynamoDBClient.send(new UpdateTableCommand(input));
+      if (op.Create?.IndexName !== undefined) {
+        markAttemptedItems('VectorIndexes', [op.Create.IndexName]);
+      }
+      await this.waitForVectorIndexesSettled(physicalId, logicalId, maskSecrets);
+      this.logger.debug(
+        maskSecrets(
+          `${op.Create ? 'created' : 'deleted'} ` +
+            scope(op.Create?.IndexName ?? op.Delete?.IndexName)
+        )
+      );
+    }
+  }
+
+  /**
+   * Wait until the table and every vector index are settled. An index building
+   * or being removed refuses the next index op and a replica add, as a GSI does.
+   */
+  private async waitForVectorIndexesSettled(
+    tableName: string,
+    logicalId: string,
+    maskSecrets: SecretMasker
+  ): Promise<void> {
+    const watch = startInterruptWatch(maskSecrets(`DynamoDB vector indexes on ${tableName}`));
+    try {
+      for (let attempt = 1; attempt <= VECTOR_INDEX_SETTLE_ATTEMPTS; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const table = (
+          await this.dynamoDBClient.send(new DescribeTableCommand({ TableName: tableName }))
+        ).Table;
+        if (table?.TableStatus === 'ACTIVE' && vectorIndexesSettled(table.VectorIndexes)) return;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    } finally {
+      watch.dispose();
+    }
+    throw new Error(
+      maskSecrets(
+        `DynamoDB GlobalTable ${logicalId}: table ${maskSecrets(tableName)} and its vector ` +
+          `indexes did not settle within ${VECTOR_INDEX_SETTLE_ATTEMPTS} polls`
+      )
+    );
   }
 
   /**
@@ -4569,6 +4798,40 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new DescribeTableCommand({ TableName: physicalId })
       );
       const tableArn = describeResp.Table?.TableArn;
+      // go-to-k/cdkd#2762: VectorIndexes. `UpdateTable` creates or deletes a
+      // vector index and has no in-place modify, so a same-name index whose
+      // definition changed is refused here, before any mutating call. Planned
+      // against the LIVE list too, so a record that lags AWS converges instead
+      // of re-sending a Create AWS refuses. A state-borne bag warns and skips
+      // that change (no template-side remedy). An UNSETTLED VectorIndexes needs
+      // no extra trigger: the previous side is then `readUnsettled`'s live list.
+      const vectorIndexPlan = !deepEqual(
+        properties['VectorIndexes'],
+        previousProperties['VectorIndexes']
+      )
+        ? planVectorIndexUpdates(
+            previousProperties['VectorIndexes'],
+            properties['VectorIndexes'],
+            describeResp.Table === undefined ? undefined : (describeResp.Table.VectorIndexes ?? [])
+          )
+        : undefined;
+      if (vectorIndexPlan !== undefined && vectorIndexPlan.changed.length > 0) {
+        // Each name masked on its own (the WHOLE-VALUE arm, at any length).
+        const vectorMessage =
+          `AWS::DynamoDB::GlobalTable ${logicalId}: VectorIndexes ` +
+          `${vectorIndexPlan.changed.map((name) => maskSecrets(name)).join(', ')} changed ` +
+          `definition, which DynamoDB cannot modify in place`;
+        if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+          throw new ProvisioningError(
+            `${maskSecrets(vectorMessage)}. Nothing was applied to the table; rename the index ` +
+              `(so it is dropped and re-created) or revert the change`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        warn(`${vectorMessage}; that change was not applied`);
+      }
       const extractLocalTags = (props: Record<string, unknown>): unknown => {
         // The SHARED predicate, not a second spelling of it: this reader is
         // the one that throws FIRST on the apply path, and it kept the
@@ -4828,6 +5091,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // never wrote (issue #1428's "asymmetric between the desired side and
       // the previous side").
       const diagnostics: ThroughputDiagnostic[] = [];
+      const warmUpdateDiagnostic = warmThroughputDiagnostic(
+        properties['WarmThroughput'],
+        coerceWarmThroughput(properties['WarmThroughput']),
+        undefined
+      );
+      if (warmUpdateDiagnostic) diagnostics.push(warmUpdateDiagnostic);
       const desiredCeilings = collectTableOnDemandCeilings(
         properties,
         currentRegion,
@@ -5447,7 +5716,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         if (flatUpdate.DeletionProtectionEnabled !== undefined) markUnsettled('Replicas');
         if (flatUpdate.StreamSpecification !== undefined) markUnsettled('StreamSpecification');
         if (flatUpdate.OnDemandThroughput !== undefined) {
-          markUnsettled('WriteOnDemandThroughputSettings');
+          markUnsettled('WriteOnDemandThroughputSettings', 'ReadOnDemandThroughputSettings');
         }
         await this.dynamoDBClient.send(new UpdateTableCommand(flatUpdate));
         await this.waitForTableActiveAfterUpdate(
@@ -5702,7 +5971,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // wants the flip call to carry the flip, and the well-probed payload
       // shape here is the same one step 3 sends on a non-flip deploy.
       if (deferCeilingsPastFlip) {
-        markUnsettled('WriteOnDemandThroughputSettings');
+        markUnsettled('WriteOnDemandThroughputSettings', 'ReadOnDemandThroughputSettings');
         await this.dynamoDBClient.send(
           new UpdateTableCommand({ TableName: physicalId, OnDemandThroughput: onDemandPayload })
         );
@@ -5713,6 +5982,48 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           maskSecrets
         );
+      }
+
+      // 4a'. go-to-k/cdkd#2762: a change to the table-level
+      // `ReadProvisionedThroughputSettings`. `ProvisionedThroughput` takes both
+      // members, so the write side goes out as AWS holds it; a flip carried the
+      // read capacity already. A value AWS holds is not sent: DynamoDB refuses
+      // a call that changes nothing.
+      if (
+        oldBilling === 'PROVISIONED' &&
+        newBilling === 'PROVISIONED' &&
+        !deepEqual(
+          properties[TABLE_READ_PROVISIONED_KEY],
+          previousProperties[TABLE_READ_PROVISIONED_KEY]
+        )
+      ) {
+        const wantRead = coerceCfnInteger(
+          asRecord(properties[TABLE_READ_PROVISIONED_KEY])?.['ReadCapacityUnits']
+        );
+        const liveThroughput = describeResp.Table?.ProvisionedThroughput;
+        if (
+          wantRead !== undefined &&
+          liveThroughput?.WriteCapacityUnits !== undefined &&
+          wantRead !== liveThroughput.ReadCapacityUnits
+        ) {
+          markUnsettled(TABLE_READ_PROVISIONED_KEY);
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({
+              TableName: physicalId,
+              ProvisionedThroughput: {
+                ReadCapacityUnits: wantRead,
+                WriteCapacityUnits: liveThroughput.WriteCapacityUnits,
+              },
+            })
+          );
+          await this.waitForTableActiveAfterUpdate(
+            physicalId,
+            logicalId,
+            undefined,
+            undefined,
+            maskSecrets
+          );
+        }
       }
 
       // 4b. Table-level write auto-scaling diff (Issue #402 / closes #395
@@ -6566,6 +6877,45 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           undefined,
           maskSecrets
         );
+      }
+
+      // 6a. go-to-k/cdkd#2762: VectorIndexes, planned and refused above. After
+      // the GSI ops, each in its own `UpdateTable`.
+      if (vectorIndexPlan !== undefined) {
+        await this.applyVectorIndexUpdates(
+          physicalId,
+          logicalId,
+          vectorIndexPlan,
+          properties['AttributeDefinitions'] as AttributeDefinition[] | undefined,
+          maskSecrets
+        );
+      }
+
+      // 6a'. go-to-k/cdkd#2762: the table's WarmThroughput. A removal sends
+      // nothing (the API has no such call, and AWS keeps the value), as on
+      // `AWS::DynamoDB::Table`. The diagnostics report an unusable block.
+      if (!deepEqual(properties['WarmThroughput'], previousProperties['WarmThroughput'])) {
+        const warmCoercion = coerceWarmThroughput(properties['WarmThroughput']);
+        const warmToSend = this.tableWarmThroughputForSend(
+          warmCoercion.spec,
+          describeResp.Table?.WarmThroughput,
+          logicalId,
+          physicalId,
+          maskSecrets
+        );
+        if (warmToSend) {
+          markUnsettled('WarmThroughput');
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand({ TableName: physicalId, WarmThroughput: warmToSend })
+          );
+          await this.waitForTableActiveAfterUpdate(
+            physicalId,
+            logicalId,
+            undefined,
+            undefined,
+            maskSecrets
+          );
+        }
       }
 
       // 6b. Auto-scaling reconciliation across ALL FOUR scalable dimensions
@@ -7985,7 +8335,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // target silently. PR #403 code-reviewer caught this as a blocker.
     // Captured from the pre-delete describe so the #1521 index-settled gate
     // below needs no second call.
-    let preDeleteIndexes: ReadonlyArray<{ readonly IndexStatus?: string | undefined }> | undefined;
+    let preDeleteTable:
+      | {
+          readonly GlobalSecondaryIndexes?:
+            | ReadonlyArray<{ readonly IndexStatus?: string | undefined }>
+            | undefined;
+          readonly VectorIndexes?:
+            | ReadonlyArray<{ readonly IndexStatus?: string | undefined }>
+            | undefined;
+        }
+      | undefined;
+    // go-to-k/cdkd#2762: the index-busy lines name a vector index only on a
+    // table that has one, so every other table's text stays as it was.
+    let indexNoun: string | undefined;
     try {
       const describe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -7994,7 +8356,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // Index names come from AWS, not from the template: `delete()` may be
       // running against state whose properties are stale, and an orphaned
       // scalable target is only findable by the index that actually exists.
-      preDeleteIndexes = describe.Table?.GlobalSecondaryIndexes;
+      preDeleteTable = describe.Table;
+      if ((describe.Table?.VectorIndexes ?? []).length > 0) indexNoun = TABLE_INDEX_NOUN;
       const tableIndexNames = (describe.Table?.GlobalSecondaryIndexes ?? [])
         .map((gsi) => gsi.IndexName)
         .filter((name): name is string => typeof name === 'string');
@@ -8185,7 +8548,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // flight) costs no extra call at all; only a table that really is
       // mid-transition pays for the poll. Best-effort — on timeout the delete
       // goes ahead and AWS's own error stays the backstop.
-      if (hasTransitionalIndex(preDeleteIndexes)) {
+      if (hasTransitionalTableIndex(preDeleteTable)) {
         this.logger.debug(`Waiting for indexes on ${physicalId} to settle before DeleteTable`);
         await this.waitForIndexesActive(physicalId, logicalId, {
           proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
@@ -8215,6 +8578,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         logicalId,
         physicalId,
         typeLabel: 'GlobalTable',
+        ...(indexNoun !== undefined && { indexNoun }),
         // THIS type's budget, deliberately UNCHANGED at 8 while issue #1950
         // raised the sibling `AWS::DynamoDB::Table` to 14 — see the comment on
         // the re-arm below, and the derivation on
@@ -8274,7 +8638,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // figure rather than the first one.
         reArm: () =>
           this.waitForIndexesActive(physicalId, logicalId, {
-            maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+            // go-to-k/cdkd#2762: the LONG cap serves a vector index building
+            // alone (a build outlasts the short re-arm, go-to-k/cdkd#5574); a
+            // GSI still stops at the short one.
+            maxAttempts: VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+            shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
             proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
             budget,
             ...(context?.maskSecrets && { maskSecrets: context.maskSecrets }),
@@ -8369,7 +8737,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             logicalId,
             physicalId,
             cause
-          )
+          ),
+        indexNoun
       );
     }
   }
@@ -8577,7 +8946,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * it is moving through count: a table CREATING / UPDATING / DELETING moves
    * every name but `TimeToLiveSpecification`; a replica in one of those states
    * moves `Replicas`; an index in one moves `GlobalSecondaryIndexes`; SSE
-   * ENABLING / DISABLING / UPDATING moves `SSESpecification`; TTL ENABLING
+   * ENABLING / DISABLING / UPDATING moves `SSESpecification`; a vector index in
+   * one moves `VectorIndexes`; a warm throughput UPDATING moves `WarmThroughput`
+   * (go-to-k/cdkd#2762); TTL ENABLING
    * moves `TimeToLiveSpecification` (DISABLING reads as its destination). A
    * state at rest (an inaccessible key, an archived or disabled region) lets
    * the update run, so AWS's error names it. A failed read keeps every name.
@@ -8612,6 +8983,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         )
       ) {
         moving.add('GlobalSecondaryIndexes');
+      }
+      if (
+        names.has('VectorIndexes') &&
+        (table?.VectorIndexes ?? []).some(
+          (index) => index.IndexStatus !== undefined && MOVING.has(index.IndexStatus)
+        )
+      ) {
+        moving.add('VectorIndexes');
+      }
+      if (names.has('WarmThroughput') && table?.WarmThroughput?.Status === 'UPDATING') {
+        moving.add('WarmThroughput');
       }
       const sse = table?.SSEDescription?.Status;
       if (
@@ -9153,6 +9535,43 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         result['WriteProvisionedThroughputSettings'] = {};
       }
 
+      // go-to-k/cdkd#2762: VectorIndexes in their CFn shape, only when AWS
+      // reports any. A replica inherits the deploy region's list.
+      const liveVectorIndexes = readbackVectorIndexes(table.VectorIndexes);
+      if (liveVectorIndexes !== undefined) result['VectorIndexes'] = liveVectorIndexes;
+      // go-to-k/cdkd#2762: AWS reports a warm throughput for EVERY table, so
+      // only a declared block is read back, and only its declared members.
+      const declaredWarm = coerceWarmThroughput(properties?.['WarmThroughput']).spec;
+      if (declaredWarm && table.WarmThroughput) {
+        const warm: Record<string, unknown> = {};
+        for (const member of WARM_THROUGHPUT_MEMBERS) {
+          const value = table.WarmThroughput[member];
+          if (declaredWarm[member] !== undefined && value !== undefined) warm[member] = value;
+        }
+        if (Object.keys(warm).length > 0) result['WarmThroughput'] = warm;
+      }
+      // go-to-k/cdkd#2762: the table-level read settings, where the record
+      // keeps them: DynamoDB holds one value, which the local replica's entry
+      // also reports, and the comparison descends only into a recorded key.
+      // A PROVISIONED table created without a mode reports no billing summary.
+      if (
+        properties?.[TABLE_READ_ON_DEMAND_KEY] !== undefined &&
+        table.OnDemandThroughput?.MaxReadRequestUnits !== undefined
+      ) {
+        result[TABLE_READ_ON_DEMAND_KEY] = {
+          MaxReadRequestUnits: table.OnDemandThroughput.MaxReadRequestUnits,
+        };
+      }
+      if (
+        properties?.[TABLE_READ_PROVISIONED_KEY] !== undefined &&
+        billingMode !== 'PAY_PER_REQUEST' &&
+        table.ProvisionedThroughput?.ReadCapacityUnits !== undefined
+      ) {
+        result[TABLE_READ_PROVISIONED_KEY] = {
+          ReadCapacityUnits: table.ProvisionedThroughput.ReadCapacityUnits,
+        };
+      }
+
       // TimeToLiveSpecification: separate API call. Race-tolerant — when
       // AWS reports a transient `UPDATING` / `DISABLING` status, omit
       // the key rather than surface a transient state as drift.
@@ -9586,12 +10005,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *    `Replicas[local].ReadOnDemandThroughputSettings`, the CFn location it
    *    is authored at.
    *
-   * Returning an empty list is the canonical "no known-unknown paths"
-   * shape — keeping the method present (rather than removing it) for
-   * future additions and for backward compat on test reflection.
+   * go-to-k/cdkd#2762 added the members no AWS read answers:
+   *  - `TableType` is no API member. CloudFormation validates it and sends
+   *    nothing (`GlobalTableReplica` on a one-replica table reads back
+   *    `Regional`, measured us-east-1, 2026-11-01).
+   *  - `ReadProvisionedThroughputSettings` on an on-demand table, which
+   *    CloudFormation accepts and ignores (measured, same day).
+   *  - A `WarmThroughput` that was not sent: AWS's value is its own, and only a
+   *    usable declaration is read back.
    */
-  getDriftUnknownPaths(_resourceType: string): string[] {
-    return [];
+  getDriftUnknownPaths(_resourceType: string, properties?: Record<string, unknown>): string[] {
+    const paths = ['TableType'];
+    if (properties?.['BillingMode'] !== 'PROVISIONED') paths.push(TABLE_READ_PROVISIONED_KEY);
+    if (!coerceWarmThroughput(properties?.['WarmThroughput']).spec) paths.push('WarmThroughput');
+    return paths;
   }
 
   /**
@@ -9624,9 +10051,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * after the replicas `DescribeTable` lists, so one of the two always
    * compared positionally unequal on a `properties` baseline. Declared
    * LEAF-ONLY (`[]`) so the arrays inside each entry keep their own rules.
+   *
+   * `VectorIndexes` (go-to-k/cdkd#2762) is a SUBTREE entry: keyed by
+   * `IndexName`, with no order-significant list inside an element, as on
+   * `AWS::DynamoDB::Table`.
    */
   getDriftUnorderedPaths(_resourceType: string): string[] {
-    return ['AttributeDefinitions', 'Replicas[]'];
+    return ['AttributeDefinitions', 'Replicas[]', 'VectorIndexes'];
   }
 
   /**
@@ -9697,19 +10128,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * registration, not because anything routes a foreign type here.
    *
    * UNCOVERED POPULATION, stated because the fix does NOT reach it: a
-   * cc-api-routed GlobalTable gets neither half. Top-level `WarmThroughput` is
-   * a `silentDrop` property for this type, so a template declaring it
-   * auto-routes the whole resource through Cloud Control (the #614 routing)
-   * and the route is STICKY — `drift.ts` then resolves `provider` to
+   * cc-api-routed GlobalTable gets neither half. A record created while
+   * top-level `WarmThroughput` was a `silentDrop` property (before
+   * go-to-k/cdkd#2762), or a template declaring a property that still is, sits
+   * on the STICKY Cloud Control route — `drift.ts` then resolves `provider` to
    * `CloudControlProvider`, this hook is never invoked, and the AWS side comes
    * from CC's `GetResource`. So the `properties`-only-baseline phantom drift
-   * this closes survives there. Pre-existing, not introduced here.
-   *
-   * Note the trigger is the TOP-LEVEL `WarmThroughput`, NOT the per-index
-   * member this strips: a template declaring only the per-index member keeps
-   * `GlobalSecondaryIndexes` (a handled property), stays SDK-routed, and IS
-   * covered. Do not read this bound as "warm-throughput templates are
-   * uncovered" — an earlier draft of this comment said so and was wrong.
+   * this closes survives there.
    *
    * Pure, non-mutating, and identity-returning when nothing applies: the input
    * bag is the caller's state record / readback, an unaffected table pays
@@ -10021,7 +10446,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       );
       if (response.Table?.TableStatus === 'ACTIVE') {
         tableReachedActive = true;
-        if (!hasTransitionalIndex(response.Table?.GlobalSecondaryIndexes)) return;
+        if (!hasTransitionalTableIndex(response.Table)) return;
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
@@ -10097,6 +10522,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     logicalId: string,
     opts?: {
       maxAttempts?: number;
+      shortCapUnlessVectorBusy?: number;
       proceedNote?: string;
       budget?: ElapsedBudget;
       // The update caller's masker: the table name can be secret-derived, and
@@ -10126,6 +10552,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // shared delete budget can still afford (issue #1955) — an absent budget
       // (every CREATE / UPDATE caller) leaves the constant untouched.
       maxAttempts: gateWait.grantedPolls,
+      ...(opts?.shortCapUnlessVectorBusy !== undefined && {
+        shortCapUnlessVectorBusy: opts.shortCapUnlessVectorBusy,
+      }),
       // ...and the loop re-checks the allowance on every iteration, so a poll
       // that costs more than the grant assumed cannot run the wait past it.
       // The wait also owns its own give-up wording, so a budget-ended exit
@@ -10751,6 +11180,9 @@ const REPLICA_SETTING_MEMBERS = [
 ] as const;
 
 const REPLICATION_MODE_KEY = 'GlobalTableSettingsReplicationMode';
+/** The table-level read settings (go-to-k/cdkd#2762), beside each replica's own. */
+const TABLE_READ_ON_DEMAND_KEY = 'ReadOnDemandThroughputSettings';
+const TABLE_READ_PROVISIONED_KEY = 'ReadProvisionedThroughputSettings';
 
 /** One read of the declared `Replicas[].GlobalTableSettingsReplicationMode`. */
 export type ReplicationModeRead =
@@ -10845,6 +11277,65 @@ export function replicationModeCorrection(
 }
 
 /**
+ * What CloudFormation's handler refuses of the table-level settings
+ * go-to-k/cdkd#2762 wires, or `undefined` (measured us-east-1, 2026-11-01). The
+ * refusals are the handler's, not DynamoDB's: `CreateTable` takes these values.
+ *
+ *  - `TableType: Regional` on more than one replica. `GlobalTableReplica` is
+ *    accepted on one replica, where it reads back `Regional`: nothing is sent.
+ *  - A table-level read block without settings replication ENABLED on a
+ *    replica, or beside the same block on a replica.
+ *  - `ReadOnDemandThroughputSettings` on a PROVISIONED table.
+ */
+function tableLevelSettingsRefusal(properties: Record<string, unknown>): string | undefined {
+  const replicas = Array.isArray(properties['Replicas'])
+    ? (properties['Replicas'] as unknown[])
+    : [];
+  if (properties['TableType'] === 'Regional' && replicas.length > 1) {
+    return (
+      `TableType Regional cannot be declared with more than one replica, as CloudFormation ` +
+      `refuses it; declare TableType GlobalTableReplica or omit TableType`
+    );
+  }
+  const mode = readReplicationMode(properties);
+  for (const key of [TABLE_READ_ON_DEMAND_KEY, TABLE_READ_PROVISIONED_KEY]) {
+    if (properties[key] === undefined || properties[key] === null) continue;
+    if (mode.kind !== 'usable' || mode.mode !== 'ENABLED') {
+      return (
+        `${key} at the table level needs Replicas[].${REPLICATION_MODE_KEY} ENABLED, as ` +
+        `CloudFormation refuses it otherwise; enable it on the replica, or move the block to ` +
+        `the replica`
+      );
+    }
+    if (replicas.some((entry) => asRecord(entry)?.[key] !== undefined)) {
+      return (
+        `${key} cannot be declared at both the table level and a replica, as CloudFormation ` +
+        `refuses it; keep one`
+      );
+    }
+  }
+  if (
+    properties[TABLE_READ_ON_DEMAND_KEY] !== undefined &&
+    properties[TABLE_READ_ON_DEMAND_KEY] !== null &&
+    properties['BillingMode'] === 'PROVISIONED'
+  ) {
+    return (
+      `${TABLE_READ_ON_DEMAND_KEY} cannot be declared on a PROVISIONED table, as CloudFormation ` +
+      `refuses it; remove it, or set BillingMode to PAY_PER_REQUEST`
+    );
+  }
+  return undefined;
+}
+
+/** The inputs of {@link tableLevelSettingsRefusal}. */
+const TABLE_LEVEL_SETTING_INPUTS = [
+  'TableType',
+  'BillingMode',
+  TABLE_READ_ON_DEMAND_KEY,
+  TABLE_READ_PROVISIONED_KEY,
+] as const;
+
+/**
  * The template-path refusal for the per-replica settings go-to-k/cdkd#5365
  * wires, or `undefined`. `previousProperties` is `undefined` on a create.
  *
@@ -10870,12 +11361,17 @@ export function replicaSettingsRefusal(
   // go-to-k/cdkd#5489: refused only when the mode or the replica list changed
   // (an unchanged one is not a pending operation).
   const mode = readReplicationMode(properties);
+  const modeShapeChanged =
+    previousProperties === undefined ||
+    !deepEqual(replicationModeShape(properties), replicationModeShape(previousProperties));
+  if (mode.kind === 'unusable' && modeShapeChanged) return mode.reason;
+  // go-to-k/cdkd#2762: the same bound.
   if (
-    mode.kind === 'unusable' &&
-    (previousProperties === undefined ||
-      !deepEqual(replicationModeShape(properties), replicationModeShape(previousProperties)))
+    modeShapeChanged ||
+    TABLE_LEVEL_SETTING_INPUTS.some((key) => !deepEqual(properties[key], previousProperties?.[key]))
   ) {
-    return mode.reason;
+    const tableLevelRefusal = tableLevelSettingsRefusal(properties);
+    if (tableLevelRefusal !== undefined) return tableLevelRefusal;
   }
   const desired = Array.isArray(properties['Replicas'])
     ? (properties['Replicas'] as unknown[])
@@ -11136,11 +11632,12 @@ export function derivePerCallProvisionedThroughput(
     | Record<string, unknown>
     | undefined;
   // Read capacity is per-replica on a GlobalTable; the deploy region's
-  // replica is the one `CreateTable` / `UpdateTable` provisions. (The
-  // schema also has a TOP-LEVEL `ReadProvisionedThroughputSettings`, but
-  // cdkd's pre-flight property-coverage check rejects that spelling as
-  // unsupported, so it can never reach here — do not read it.)
-  const rawRead = localReplica?.['ReadProvisionedThroughputSettings'];
+  // replica is the one `CreateTable` / `UpdateTable` provisions.
+  // go-to-k/cdkd#2762: the table-level block takes its place on a table with
+  // settings replication ENABLED (CloudFormation refuses it otherwise, and
+  // refuses both at once).
+  const rawRead =
+    localReplica?.['ReadProvisionedThroughputSettings'] ?? properties[TABLE_READ_PROVISIONED_KEY];
   const rawWrite = properties['WriteProvisionedThroughputSettings'];
   const read = deriveReadCapacityUnits(asRecord(rawRead), source);
   const write = deriveWriteCapacityUnits(asRecord(rawWrite), source);
@@ -11153,7 +11650,12 @@ export function derivePerCallProvisionedThroughput(
       source,
       { appliedUnits: DEFAULT_CAPACITY_UNITS },
       diagnostics,
-      { blockName: 'Replicas[local].ReadProvisionedThroughputSettings' },
+      {
+        blockName:
+          localReplica?.['ReadProvisionedThroughputSettings'] !== undefined
+            ? 'Replicas[local].ReadProvisionedThroughputSettings'
+            : TABLE_READ_PROVISIONED_KEY,
+      },
       maskSecrets
     );
   }
@@ -11274,6 +11776,12 @@ const REPLICA_GONE_WAIT_ATTEMPTS = 600;
  * arithmetic was twice found asserting a cap the provider no longer had.
  */
 export const GLOBAL_TABLE_ACTIVE_WAIT_ATTEMPTS = 600;
+
+/**
+ * Polls (1s apart) a vector index gets to settle: the `AWS::DynamoDB::Table`
+ * index wait's budget, since a backfill runs as long there as here.
+ */
+const VECTOR_INDEX_SETTLE_ATTEMPTS = 1800;
 
 /**
  * Polls `waitForTableGone` spends confirming the table is actually gone.
@@ -11620,6 +12128,12 @@ export function collectDesiredKeyAttributeNames(
     for (const index of indexes) {
       addKeySchema(asRecord(index)?.['KeySchema']);
     }
+  }
+  // go-to-k/cdkd#2762: a vector index's `SearchSchema` keys on a defined
+  // attribute too, and no caller's narrowing omits the vector indexes.
+  const vectorIndexes = properties['VectorIndexes'];
+  if (Array.isArray(vectorIndexes)) {
+    for (const index of vectorIndexes) addKeySchema(asRecord(index)?.['SearchSchema']);
   }
   return names;
 }
@@ -12498,6 +13012,7 @@ export function stripProvisionedCapacityKeys(
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...properties };
   delete result['WriteProvisionedThroughputSettings'];
+  delete result[TABLE_READ_PROVISIONED_KEY];
   // Note the deliberate asymmetry with the replica-index husk pruning below: a
   // top-level array is left as-is (even when empty), while an ALREADY-empty
   // `Replicas[].GlobalSecondaryIndexes` is removed along with the husks.
@@ -12577,7 +13092,7 @@ export function stripProvisionedCapacityKeys(
  * the same reason — a state replay is exactly that population.
  */
 const PROVISIONED_ONLY_CAPACITY_KEYS = {
-  table: ['WriteProvisionedThroughputSettings'],
+  table: ['WriteProvisionedThroughputSettings', 'ReadProvisionedThroughputSettings'],
   index: [
     'WriteProvisionedThroughputSettings',
     'ReadProvisionedThroughputSettings',
@@ -12598,7 +13113,7 @@ const PROVISIONED_ONLY_CAPACITY_KEYS = {
  * never leaves the process.
  */
 const ON_DEMAND_ONLY_CAPACITY_KEYS = {
-  table: ['WriteOnDemandThroughputSettings'],
+  table: ['WriteOnDemandThroughputSettings', 'ReadOnDemandThroughputSettings'],
   index: [
     'WriteOnDemandThroughputSettings',
     'ReadOnDemandThroughputSettings',
@@ -13385,14 +13900,20 @@ export function collectTableOnDemandCeilings(
   const localReplica = Array.isArray(replicas)
     ? replicas.find((r) => asRecord(r)?.['Region'] === region)
     : undefined;
-  const readBlock = asRecord(localReplica)?.['ReadOnDemandThroughputSettings'];
+  // go-to-k/cdkd#2762: the table-level block takes the replica's place on a
+  // table with settings replication ENABLED (CloudFormation refuses both at once).
+  const replicaReadBlock = asRecord(localReplica)?.['ReadOnDemandThroughputSettings'];
+  const readBlock = replicaReadBlock ?? properties[TABLE_READ_ON_DEMAND_KEY];
   const rawRead = asRecord(readBlock)?.['MaxReadRequestUnits'];
   const rawWrite = asRecord(writeBlock)?.['MaxWriteRequestUnits'];
   reportUnresolvedRawMember(
     rawRead,
     diagnostics,
     {
-      blockName: 'Replicas[local].ReadOnDemandThroughputSettings',
+      blockName:
+        replicaReadBlock !== undefined
+          ? 'Replicas[local].ReadOnDemandThroughputSettings'
+          : TABLE_READ_ON_DEMAND_KEY,
       member: 'MaxReadRequestUnits',
     },
     maskSecrets

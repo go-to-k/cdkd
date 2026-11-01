@@ -91,9 +91,22 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
         BillingModeSummary: { BillingMode: bag['BillingMode'] ?? 'PAY_PER_REQUEST' },
         TableClassSummary: { TableClass: local['TableClass'] ?? 'STANDARD' },
         OnDemandThroughput: onDemand(
-          local['ReadOnDemandThroughputSettings'],
+          local['ReadOnDemandThroughputSettings'] ?? bag['ReadOnDemandThroughputSettings'],
           bag['WriteOnDemandThroughputSettings']
         ),
+        ...(bag['WarmThroughput'] ? { WarmThroughput: { ...rec(bag['WarmThroughput']), Status: 'ACTIVE' } } : {}),
+        ...(bag['BillingMode'] === 'PROVISIONED' && local['GlobalTableSettingsReplicationMode'] !== undefined
+          ? {
+              // A capacity no bag declares: an update sends a read capacity
+              // AWS does not already hold.
+              ProvisionedThroughput: { ReadCapacityUnits: 1, WriteCapacityUnits: 1 },
+            }
+          : {}),
+        ...(bag['VectorIndexes']
+          ? {
+              VectorIndexes: (bag['VectorIndexes'] as Rec[]).map((v) => ({ ...v, IndexStatus: 'ACTIVE' })),
+            }
+          : {}),
         SSEDescription:
           sse['SSEEnabled'] === true
             ? { Status: 'ENABLED', SSEType: 'KMS', KMSMasterKeyArn: keyOf(local) }
@@ -365,6 +378,40 @@ const SINGLE_REGION_BAG: Bag = {
   ],
 };
 
+/**
+ * The table-level settings of go-to-k/cdkd#2762. The read blocks need settings
+ * replication ENABLED, so these are single-region tables too; each billing mode
+ * takes one block (CloudFormation refuses the on-demand one on PROVISIONED).
+ */
+const TABLE_LEVEL_BAG: Bag = {
+  TableName: TABLE,
+  KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+  BillingMode: 'PAY_PER_REQUEST',
+  Replicas: [{ Region: 'us-east-1', GlobalTableSettingsReplicationMode: 'ENABLED' }],
+  ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 50 },
+  WarmThroughput: { ReadUnitsPerSecond: 13000, WriteUnitsPerSecond: 5000 },
+  VectorIndexes: [
+    {
+      IndexName: 'vec',
+      VectorAttribute: { AttributeName: 'embedding' },
+      Dimensions: 3,
+      DistanceFunction: 'COSINE',
+      Projection: { ProjectionType: 'INCLUDE', NonKeyAttributes: ['title'] },
+      SearchSchema: [{ AttributeName: 'pk', SearchSchemaElementType: 'HASH' }],
+    },
+  ],
+};
+const TABLE_LEVEL_PROVISIONED_BAG: Bag = {
+  TableName: TABLE,
+  KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+  BillingMode: 'PROVISIONED',
+  Replicas: [{ Region: 'us-east-1', GlobalTableSettingsReplicationMode: 'ENABLED' }],
+  ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 },
+  WriteProvisionedThroughputSettings: { WriteCapacityUnits: 3 },
+};
+
 const S = 'dynamodb-globaltable-provider.ts';
 const RS = 'dynamodb-replica-settings.ts';
 
@@ -550,6 +597,55 @@ const SINGLE_REGION_SILENT: Record<string, string> = {
   ]),
 };
 
+const TABLE_LEVEL_READ_NEEDS_MODE: Throw = {
+  why: `a table-level read block without settings replication ENABLED is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#2762)`,
+  says: /at the table level needs Replicas\[\]\.GlobalTableSettingsReplicationMode ENABLED/,
+};
+const VECTOR_SHAPE_REFUSED: Throw = {
+  why: `update() refuses a changed definition of a same-name vector index before any call: UpdateTable's VectorIndexUpdates has Create and Delete only (go-to-k/cdkd#2762)`,
+  says: /VectorIndexes vec changed definition, which DynamoDB cannot modify in place/,
+};
+const VECTOR_SHAPE_VARY = `the varied vector index member's parent is removed on the base side, so both sides change the index's definition and are refused (go-to-k/cdkd#2762), so the vary sees no wire`;
+const MODE_VARY = `any other mode refuses the table-level read block (go-to-k/cdkd#2762), so the vary sees no wire; the single-region bag shows the mode reaching CreateTable`;
+const NO_REGION_ENTRY = `the entry without its Region is the only replica of the bag, so the update sees one replica on each side and no change of its mode`;
+const READ_CAPACITY_KEPT = `a PROVISIONED table needs a read capacity, so a removed block sends nothing and the table keeps the one it has; CFn unmeasured`;
+const WRITE_CAPACITY_FLIP_ONLY = `a literal table-level write capacity goes out only on a billing flip (${S}, derivePerCallProvisionedThroughput); auto-scaling owns the dimension otherwise`;
+const WARM_KEPT = `a removed WarmThroughput sends nothing: DynamoDB refuses a decrease and has no unset, so the live value stays, as on AWS::DynamoDB::Table (go-to-k/cdkd#2762)`;
+
+const TABLE_LEVEL_THROWS: Record<string, Throw> = {
+  ...keyThrows(TABLE_LEVEL_BAG),
+  ...pick(TABLE_LEVEL_BAG, [
+    [/^(create|update-remove)$/, /^Replicas(\.0(\.GlobalTableSettingsReplicationMode)?)?$/, TABLE_LEVEL_READ_NEEDS_MODE],
+    [UPD, /^VectorIndexes\.0\.(?!IndexName)/, VECTOR_SHAPE_REFUSED],
+  ]),
+};
+const TABLE_LEVEL_SILENT: Record<string, string> = {
+  ...keySilent(TABLE_LEVEL_BAG),
+  ...pick(TABLE_LEVEL_BAG, [
+    [/^(create|update-add|update-remove)$/, /^BillingMode$/, BILLING_DEFAULT],
+    [/vary$/, /^Replicas\.0\.GlobalTableSettingsReplicationMode$/, MODE_VARY],
+    [UPD, /^Replicas\.0\.Region$/, NO_REGION_ENTRY],
+    [REMOVE, /^WarmThroughput(\..*)?$/, WARM_KEPT],
+    [VARY_ON_UPDATE, /^VectorIndexes\.0\.(VectorAttribute|Projection|SearchSchema)\./, VECTOR_SHAPE_VARY],
+  ]),
+};
+const TABLE_LEVEL_PROVISIONED_THROWS: Record<string, Throw> = {
+  ...keyThrows(TABLE_LEVEL_PROVISIONED_BAG),
+  ...pick(TABLE_LEVEL_PROVISIONED_BAG, [
+    [/^(create|update-remove)$/, /^Replicas(\.0(\.GlobalTableSettingsReplicationMode)?)?$/, TABLE_LEVEL_READ_NEEDS_MODE],
+  ]),
+};
+const TABLE_LEVEL_PROVISIONED_SILENT: Record<string, string> = {
+  ...keySilent(TABLE_LEVEL_PROVISIONED_BAG),
+  ...pick(TABLE_LEVEL_PROVISIONED_BAG, [
+    [/vary$/, /^Replicas\.0\.GlobalTableSettingsReplicationMode$/, MODE_VARY],
+    [UPD, /^Replicas\.0\.Region$/, NO_REGION_ENTRY],
+    [REMOVE, /^ReadProvisionedThroughputSettings(\..*)?$/, READ_CAPACITY_KEPT],
+    [UPD, /^WriteProvisionedThroughputSettings(\..*)?$/, WRITE_CAPACITY_FLIP_ONLY],
+    [VARY_ON_UPDATE, /^WriteProvisionedThroughputSettings\./, WRITE_CAPACITY_FLIP_ONLY],
+  ]),
+};
+
 const GLOBAL_TABLE_CASE: TypeCase = {
   resourceType: 'AWS::DynamoDB::GlobalTable',
   provider: () => new DynamoDBGlobalTableProvider(),
@@ -557,6 +653,8 @@ const GLOBAL_TABLE_CASE: TypeCase = {
   createOnly: createOnlyOf('AWS::DynamoDB::GlobalTable'),
   arm: armGlobalTable,
   exempt: {
+    TableType:
+      'no API member: CloudFormation validates it and sends nothing, and a one-replica table declaring GlobalTableReplica reads back Regional (measured, go-to-k/cdkd#2762)',
     TableClass:
       'not an AWS::DynamoDB::GlobalTable property (CloudFormation refuses it, measured on go-to-k/cdkd#5355): the provider reads it only as the fallback of the deploy-region Replicas[].TableClass, which the provisioned bag carries (dynamodb-globaltable-provider.ts, 9524-9541)',
   },
@@ -582,6 +680,18 @@ const GLOBAL_TABLE_CASE: TypeCase = {
       bag: fresh(SINGLE_REGION_BAG),
       expectedSilent: SINGLE_REGION_SILENT,
       expectedRemovalThrows: SINGLE_REGION_THROWS,
+    },
+    {
+      name: 'table-level',
+      bag: fresh(TABLE_LEVEL_BAG),
+      expectedSilent: TABLE_LEVEL_SILENT,
+      expectedRemovalThrows: TABLE_LEVEL_THROWS,
+    },
+    {
+      name: 'table-level provisioned',
+      bag: fresh(TABLE_LEVEL_PROVISIONED_BAG),
+      expectedSilent: TABLE_LEVEL_PROVISIONED_SILENT,
+      expectedRemovalThrows: TABLE_LEVEL_PROVISIONED_THROWS,
     },
   ],
 };

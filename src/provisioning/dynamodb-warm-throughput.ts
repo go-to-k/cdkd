@@ -46,9 +46,9 @@
  * Deliberately NOT here: everything only ONE provider has. The `Table` side's
  * `isSendableWarmThroughput` / `isRefusedWarmThroughput` /
  * `declaresWarmThroughput` / `warmThroughputAlreadyMatches` are its drift-side
- * and already-matches gates, which `GlobalTable` has no counterpart to (issue
- * #1742 strips the per-index `WarmThroughput` from BOTH of its drift
- * comparison sides unconditionally, so drift never asks the question there);
+ * and already-matches gates (issue #1742 strips `GlobalTable`'s per-index
+ * `WarmThroughput` from BOTH of its drift comparison sides unconditionally, so
+ * drift never asks the question for an index there);
  * the `GlobalTable` side's `warmThroughputDiagnostic` builds a
  * `ThroughputDiagnostic` that only that provider's collector understands.
  * Moving a helper with one caller here would buy nothing and cost a hop.
@@ -106,8 +106,7 @@ export interface WarmThroughputCoercion {
    * `coerceWarmThroughput(value) !== undefined` — i.e. the same rule, not a
    * competing one. It earns its name there because the drift side asks the
    * question too (`declaresWarmThroughput`), so the two must provably answer
-   * alike; `GlobalTable` has no drift-side asker and therefore no second
-   * caller to align with.
+   * alike; `GlobalTable` tests `spec` directly at each of its callers.
    */
   readonly spec?: WarmThroughputSpec;
   /** DECLARED members that did not coerce to a finite number, in member order. */

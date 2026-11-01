@@ -51,12 +51,7 @@
     "AWS::DynamoDB::GlobalTable": [
       "GlobalTableSourceArn",
       "GlobalTableWitnesses",
-      "MultiRegionConsistency",
-      "ReadOnDemandThroughputSettings",
-      "ReadProvisionedThroughputSettings",
-      "TableType",
-      "VectorIndexes",
-      "WarmThroughput"
+      "MultiRegionConsistency"
     ],
     "AWS::EC2::Instance": [
       "AdditionalInfo",

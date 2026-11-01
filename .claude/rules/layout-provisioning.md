@@ -65,7 +65,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **dynamodb-stream-members.ts** - `StreamSpecification.ResourcePolicy` / `.Tags` are NOT SDK `StreamSpecification` members: they go to the STREAM arn, re-applied to the re-read `LatestStreamArn` after a `StreamViewType` change mints a new one. The plan's ORDER is a contract (policy delete first, put last); an unreadable member is REFUSED on a template-path update: it is an access grant (#3458).
 
-- **dynamodb-vector-indexes.ts** - `AWS::DynamoDB::Table.VectorIndexes` (#2762): `UpdateTable` has Create / Delete only, one per call: a same-name definition change is REFUSED pre-flight. Planned against the LIVE list.
+- **dynamodb-vector-indexes.ts** - `VectorIndexes`, both DynamoDB types (#2762): `UpdateTable` has Create / Delete only, one per call: a same-name definition change is REFUSED pre-flight. Planned against the LIVE list.
 
 - **dynamodb-index-busy-delete.ts** - The index-busy `DeleteTable` rule BOTH DynamoDB providers read; it is TRANSIENT. The classifier is keyed on the MESSAGE: AWS reports a plain `ResourceInUseException` for terminal conflicts too. The settle poll warns and RETURNS on timeout (a throw would STRAND the resource), and **it runs PER RETRY**, so the budget is PER CALLING TYPE.
 

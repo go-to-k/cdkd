@@ -1,7 +1,8 @@
 /**
- * `AWS::DynamoDB::Table.VectorIndexes` (go-to-k/cdkd#2762): the CFn entry's
- * wire shape, the comparison that decides whether a same-name index changed,
- * the per-`UpdateTable` plan, and the readback.
+ * `VectorIndexes` on `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable`
+ * (go-to-k/cdkd#2762): the CFn entry's wire shape, the comparison that decides
+ * whether a same-name index changed, the per-`UpdateTable` plan, and the
+ * readback.
  *
  * The CFn `VectorIndex` and the SDK's `VectorIndex` / `CreateVectorIndexAction`
  * share every member name (`IndexName`, `VectorAttribute.AttributeName`,
