@@ -88,7 +88,7 @@ property in the template is sent.
 A type with an SDK provider that Cloud Control cannot serve, such as
 `AWS::CodeBuild::Project`, has no route to move to. If the template sets a
 property that provider does not write and the bundled schema knows, cdkd
-refuses the deploy before it touches any resource. The error names the type,
+refuses the deploy before it touches any resource in that stack. The error names the type,
 the property and the reason. Remove the property, or pass
 [`--prefer-sdk-route`](#prefer-sdk-route-deploy) to stay on the SDK provider
 without it. A property the schema does not know stays on the SDK provider with
@@ -145,7 +145,7 @@ route, leave the flag off, because the default already gets the property to
 AWS.
 
 cdkd does not store the flag. Pass it on every deploy for as long as you want
-the override. A deploy without it moves the resource to Cloud Control.
+the override. A deploy without it moves the resource to Cloud Control, unless Cloud Control cannot manage the type, where the deploy is refused.
 
 ### What state records, and what `cdkd diff` shows
 
@@ -162,10 +162,10 @@ A deploy that passes the flag reports no change for that property.
 
 ### When the flag does not do what you expect
 
-In the first two cases below the property you named reaches AWS after all,
+On a type Cloud Control can serve, in the first two cases below the property you named reaches AWS after all,
 and cdkd warns that `--prefer-sdk-route had no effect` for it.
 
-- **The resource has a second such property that you did not name.** One
+- **The resource has a second such property that you did not name.** On a type Cloud Control can serve, one
   uncovered property moves the whole resource to Cloud Control, which writes
   every property. The warning names the entry to add.
 - **The resource is already recorded on Cloud Control.** The flag changes
@@ -177,7 +177,7 @@ and cdkd warns that `--prefer-sdk-route had no effect` for it.
   apply the property in place. See
   [`CREATE_ONLY_DROP_NEEDS_REPLACEMENT`](cli-deploy-safety-recreate.md#create-only-drop-needs-replacement).
 - **Cloud Control cannot manage the type at all.** Removing the flag later
-  makes the deploy refuse before it touches anything. The warning says so when
+  makes the deploy refuse before it touches anything in that stack. The warning says so when
   you first pass the flag.
 
 ## `--pin-cc-api` (deploy)

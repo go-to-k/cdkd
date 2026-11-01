@@ -133,8 +133,8 @@ Some types have an SDK provider but no working Cloud Control route:
 `AWS::CodeBuild::Project` is one. Cloud Control has no handlers for it, or
 its SDK provider opts out of the fallback. If the template sets a property
 that provider does not write and the schema knows, cdkd refuses the deploy
-before it touches any resource. It does not route the resource, because the
-Cloud Control call would fail part way through the deploy. The error names
+before it touches any resource in that stack. It does not route the resource, because Cloud Control
+cannot serve the type. The error names
 the type, each property and why the provider does not write it.
 
 Remove the property, or keep the resource on the SDK provider and give up
