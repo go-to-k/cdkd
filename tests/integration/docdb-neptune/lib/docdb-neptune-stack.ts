@@ -27,8 +27,9 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *    8–100 chars, no `/`, `"`, or `@`).
  *  - 1 DocDB DBInstance (db.r6g.large: Performance Insights needs more than a
  *    db.t3.medium)
- *  - 1 DocDB DBCluster with no instance, whose password AWS manages under a
- *    KMS key the stack creates (go-to-k/cdkd#2762)
+ *  - 1 more DocDB DBCluster + DBInstance (db.r6g.large) on a dual-stack VPC of
+ *    their own, whose password AWS manages under a KMS key the stack creates
+ *    (go-to-k/cdkd#2762). The shared VPC stays IPv4, so Neptune is not disturbed.
  *  - 1 Neptune DBSubnetGroup
  *  - 1 Neptune DBCluster (Neptune uses IAM auth so no Master credentials)
  *  - 1 Neptune DBInstance (db.t3.medium)
@@ -52,7 +53,11 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * `NetworkType`, `ServerlessV2ScalingConfiguration` and `StorageType`,
  * `DocdbInstance` `CACertificateIdentifier` and `EnablePerformanceInsights`,
  * and `DocdbManagedCluster` `ManageMasterUserPassword` and
- * `MasterUserSecretKmsKeyId`. The `CDKD_TEST_BACKFILL_UPDATE=true` redeploy
+ * `MasterUserSecretKmsKeyId`. `DocdbManagedCluster` / `DocdbManagedInstance`
+ * declare, for the whole run, the values no default can stand in for on a create:
+ * `CopyTagsToSnapshot: true`, `StorageType: iopt1`, `NetworkType: DUAL`,
+ * `EnablePerformanceInsights: true`. `DocdbCluster` starts on the defaults so the
+ * update can move them. The `CDKD_TEST_BACKFILL_UPDATE=true` redeploy
  * changes the updatable ones in the direction AWS allows right after a create
  * (a StorageType change is limited per 30 days, so `standard` -> `iopt1` once)
  * and adds `RotateMasterUserPassword` and `CertificateRotationRestart`. The
@@ -210,8 +215,26 @@ export class DocdbNeptuneStack extends cdk.Stack {
       });
     }
 
-    // go-to-k/cdkd#2762: no instance, so it costs storage only, and DESTROY so
-    // the snapshot assertions keep reading `DocdbCluster` alone.
+    // go-to-k/cdkd#2762: a VPC of its own, because `NetworkType: DUAL` needs a
+    // dual-stack subnet group and Neptune shares the IPv4 one. DESTROY so the
+    // snapshot assertions keep reading `DocdbCluster` alone.
+    const docdbDualVpc = new ec2.Vpc(this, 'DocdbDualVpc', {
+      ipProtocol: ec2.IpProtocol.DUAL_STACK,
+      maxAzs: 2,
+      natGateways: 0,
+      subnetConfiguration: [
+        {
+          cidrMask: 24,
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+      ],
+    });
+    const docdbDualSubnetGroup = new docdb.CfnDBSubnetGroup(this, 'DocdbDualSubnetGroup', {
+      dbSubnetGroupDescription: 'cdkd integ docdb dual-stack subnet group',
+      subnetIds: docdbDualVpc.selectSubnets({ subnetType: ec2.SubnetType.PUBLIC }).subnetIds,
+    });
+    docdbDualSubnetGroup.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
     const docdbSecretKey = new kms.Key(this, 'DocdbSecretKey', {
       description: 'cdkd integ docdb managed master password',
       pendingWindow: cdk.Duration.days(7),
@@ -219,22 +242,31 @@ export class DocdbNeptuneStack extends cdk.Stack {
     });
     const docdbManagedCluster = new docdb.CfnDBCluster(this, 'DocdbManagedCluster', {
       masterUsername: 'cdkdadmin',
-      dbSubnetGroupName: docdbSubnetGroup.ref,
-      vpcSecurityGroupIds: [sg.securityGroupId],
+      dbSubnetGroupName: docdbDualSubnetGroup.ref,
       storageEncrypted: true,
       preferredMaintenanceWindow: isRemoval ? 'wed:05:00-wed:05:30' : 'tue:05:00-tue:05:30',
     });
     docdbManagedCluster.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
-    docdbManagedCluster.addDependency(docdbSubnetGroup);
+    docdbManagedCluster.addDependency(docdbDualSubnetGroup);
     // Keeps the key deleted AFTER the cluster once the removal drops the Ref.
     docdbManagedCluster.node.addDependency(docdbSecretKey);
     docdbManagedCluster.addPropertyOverride('ManageMasterUserPassword', true);
+    docdbManagedCluster.addPropertyOverride('CopyTagsToSnapshot', true);
+    docdbManagedCluster.addPropertyOverride('NetworkType', 'DUAL');
+    docdbManagedCluster.addPropertyOverride('StorageType', 'iopt1');
     if (!isRemoval) {
       docdbManagedCluster.addPropertyOverride('MasterUserSecretKmsKeyId', docdbSecretKey.keyArn);
     }
     if (isBackfillUpdate || isRemoval) {
       docdbManagedCluster.addPropertyOverride('RotateMasterUserPassword', true);
     }
+    const docdbManagedInstance = new docdb.CfnDBInstance(this, 'DocdbManagedInstance', {
+      dbClusterIdentifier: docdbManagedCluster.ref,
+      dbInstanceClass: 'db.r6g.large',
+    });
+    docdbManagedInstance.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    docdbManagedInstance.addDependency(docdbManagedCluster);
+    docdbManagedInstance.addPropertyOverride('EnablePerformanceInsights', true);
 
     const docdbInstance = new docdb.CfnDBInstance(this, 'DocdbInstance', {
       dbClusterIdentifier: docdbCluster.ref,

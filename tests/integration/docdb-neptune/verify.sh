@@ -528,7 +528,7 @@ cluster_sgs() {
   echo "${out}" | jq -r '[(. // [])[] | "\(.VpcSecurityGroupId):\(.Status)"] | sort | join(" ")'
 }
 CUSTOM_SG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and (.key | test("^Sg"))) | .value.physicalId] | first // ""')
-VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // ""')
+VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC" and (.key | test("^Vpc"))) | .value.physicalId] | first // ""')
 DEFAULT_SG_ID=""
 if [ -n "${VPC_ID}" ]; then
   DEFAULT_SG_ID=$(aws ec2 describe-security-groups --region "${REGION}" \
@@ -559,7 +559,7 @@ check_endpoints() { # usage: check_endpoints <step label>
   local state docdb_cluster neptune_cluster docdb_instance_id neptune_instance_id
   local docdb_instance_endpoint neptune_instance_endpoint
   state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
-  docdb_instance_id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DocDB::DBInstance") | .value.physicalId] | first // ""') || return 1
+  docdb_instance_id=$(echo "${state}" | jq -r '.resources.DocdbInstance.physicalId // ""') || return 1
   neptune_instance_id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBInstance") | .value.physicalId] | first // ""') || return 1
   if [ -z "${docdb_instance_id}" ] || [ -z "${neptune_instance_id}" ]; then
     echo "[verify] FAIL: could not resolve instance identifiers from state (docdb='${docdb_instance_id}', neptune='${neptune_instance_id}')" >&2
@@ -692,11 +692,15 @@ wait_neptune_log_types() { # usage: wait_neptune_log_types <want>
 # go-to-k/cdkd#2762: the DocDB properties. One line: CopyTagsToSnapshot, log
 # types, NetworkType, StorageType, both capacities, the instance's certificate
 # and Performance Insights. AWS reports no StorageType for `standard`.
+# DocdbCluster starts on the defaults so its update can move them;
+# DocdbManagedCluster holds the non-default values a create must deliver.
 DOCDB_INSTANCE_ID=$(echo "${STATE}" | jq -r '.resources.DocdbInstance.physicalId // ""')
 DOCDB_MANAGED_ID=$(echo "${STATE}" | jq -r '.resources.DocdbManagedCluster.physicalId // ""')
-DOCDB_SECRET_KEY_ARN=$(echo "${STATE}" | jq -r '[.resources[] | select(.resourceType == "AWS::KMS::Key") | .attributes.Arn] | first // ""')
-if [ -z "${DOCDB_INSTANCE_ID}" ] || [ -z "${DOCDB_MANAGED_ID}" ] || [ -z "${DOCDB_SECRET_KEY_ARN}" ]; then
-  echo "[verify] FAIL: #2762: could not resolve the DocDB resources from state (instance='${DOCDB_INSTANCE_ID}', managed='${DOCDB_MANAGED_ID}', key='${DOCDB_SECRET_KEY_ARN}')" >&2
+DOCDB_MANAGED_INSTANCE_ID=$(echo "${STATE}" | jq -r '.resources.DocdbManagedInstance.physicalId // ""')
+# The L2 key's logical id carries CDK's hash suffix.
+DOCDB_SECRET_KEY_ARN=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.key | startswith("DocdbSecretKey")) | .value.attributes.Arn] | first // ""')
+if [ -z "${DOCDB_INSTANCE_ID}" ] || [ -z "${DOCDB_MANAGED_ID}" ] || [ -z "${DOCDB_MANAGED_INSTANCE_ID}" ] || [ -z "${DOCDB_SECRET_KEY_ARN}" ]; then
+  echo "[verify] FAIL: #2762: could not resolve the DocDB resources from state (instance='${DOCDB_INSTANCE_ID}', managed='${DOCDB_MANAGED_ID}', managed instance='${DOCDB_MANAGED_INSTANCE_ID}', key='${DOCDB_SECRET_KEY_ARN}')" >&2
   exit 1
 fi
 docdb_view() {
@@ -720,16 +724,35 @@ assert_docdb_view() { # usage: assert_docdb_view <want> <when>
   echo "[verify] FAIL: #2762: the live DocDB values $2 read '${now}', want '$1'" >&2
   exit 1
 }
+# One line for the managed pair: CopyTagsToSnapshot, StorageType, NetworkType,
+# Performance Insights. None of these is what a create without them leaves.
+docdb_managed_view() {
+  local cluster instance
+  cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_MANAGED_ID}" --region "${REGION}" \
+    --query 'DBClusters[0]' --output json | jq -r '[(.CopyTagsToSnapshot // false | tostring), (.StorageType // "standard"), (.NetworkType // "null")] | join(" ")') || return 1
+  instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_MANAGED_INSTANCE_ID}" --region "${REGION}" \
+    --query 'DBInstances[0]' --output json | jq -r '.PerformanceInsightsEnabled // false | tostring') || return 1
+  echo "${cluster} ${instance}"
+}
+assert_docdb_managed_view() { # usage: assert_docdb_managed_view <when>
+  local now
+  now=$(docdb_managed_view) || exit 1
+  if [ "${now}" != "true iopt1 DUAL true" ]; then
+    echo "[verify] FAIL: #2762: the managed DocDB pair $1 reads '${now}', want 'true iopt1 DUAL true'" >&2
+    exit 1
+  fi
+}
 docdb_settled() {
-  local cluster managed instance i
+  local cluster managed instance managed_instance i
   for i in $(seq 1 60); do
     cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_CLUSTER_ID}" --region "${REGION}" --query 'DBClusters[0].Status' --output text) || return 1
     managed=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_MANAGED_ID}" --region "${REGION}" --query 'DBClusters[0].Status' --output text) || return 1
     instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_INSTANCE_ID}" --region "${REGION}" --query 'DBInstances[0].DBInstanceStatus' --output text) || return 1
-    [ "${cluster}/${managed}/${instance}" = "available/available/available" ] && return 0
+    managed_instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_MANAGED_INSTANCE_ID}" --region "${REGION}" --query 'DBInstances[0].DBInstanceStatus' --output text) || return 1
+    [ "${cluster}/${managed}/${instance}/${managed_instance}" = "available/available/available/available" ] && return 0
     [ "${i}" -lt 60 ] && sleep 15
   done
-  echo "[verify] FAIL: #2762: the DocDB resources read '${cluster}/${managed}/${instance}', want all available" >&2
+  echo "[verify] FAIL: #2762: the DocDB resources read '${cluster}/${managed}/${instance}/${managed_instance}', want all available" >&2
   exit 1
 }
 # The managed secret, by metadata only: the value is never read. One line: its
@@ -745,6 +768,11 @@ docdb_secret_view() {
   echo "${current} $(echo "${cluster}" | jq -r '.SecretStatus // "none"') $(echo "${cluster}" | jq -r '.KmsKeyId // "none"')"
 }
 assert_docdb_view "false audit IPV4 standard 0.5 2 rds-ca-rsa4096-g1 false" "after the create"
+assert_docdb_managed_view "after the create"
+# A subset, not equality: DocumentDB may report more zones than the declared
+# list, and the subnet group alone may put these in it. The wire is the unit
+# suite's; this reads the record. The live list is printed for the next reader.
+echo "[verify] DocDB live AvailabilityZones: $(echo "${DOCDB_BASE}" | jq -c '.AvailabilityZones')"
 DOCDB_AZ_MISSING=$(jq -nr --argjson state "${STATE}" --argjson live "${DOCDB_BASE}" \
   '($state.resources.DocdbCluster.properties.AvailabilityZones // ["<none recorded>"]) - $live.AvailabilityZones | join(",")')
 if [ -n "${DOCDB_AZ_MISSING}" ]; then
@@ -827,7 +855,7 @@ if [ -z "${DOCDB_ROTATED}" ]; then
 fi
 docdb_settled
 DOCDB_DRIFT_JSON=$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)
-for logical in DocdbCluster DocdbInstance DocdbManagedCluster; do
+for logical in DocdbCluster DocdbInstance DocdbManagedCluster DocdbManagedInstance; do
   if [ "$(echo "${DOCDB_DRIFT_JSON}" | jq -r --arg l "${logical}" '[.[] | (.clean // [])[] | select(.logicalId == $l)] | length')" != "1" ]; then
     echo "[verify] FAIL: #2762: cdkd drift does not read ${logical} clean right after a deploy: ${DOCDB_DRIFT_JSON}" >&2
     exit 1
@@ -1047,12 +1075,18 @@ if [ "${DOCDB_MANAGED_MW}" != "wed:05:00-wed:05:30" ]; then
   echo "[verify] FAIL: #2762: the managed cluster's companion change is not live ('${DOCDB_MANAGED_MW}')" >&2
   exit 1
 fi
-DOCDB_SECRET_AFTER=$(docdb_secret_view) || exit 1
-read -r DOCDB_VERSION_AFTER _ DOCDB_KMS_AFTER <<<"${DOCDB_SECRET_AFTER}"
-if [ "${DOCDB_VERSION_AFTER}" != "${DOCDB_ROTATED}" ]; then
-  echo "[verify] FAIL: #2762: a kept RotateMasterUserPassword: true rotated the secret again" >&2
-  exit 1
-fi
+assert_docdb_managed_view "after the removal redeploy"
+# A rotation is asynchronous, so one read cannot show its absence: watch for as
+# long as the positive poll above was allowed to take.
+for i in $(seq 1 40); do
+  DOCDB_SECRET_AFTER=$(docdb_secret_view) || exit 1
+  read -r DOCDB_VERSION_AFTER _ DOCDB_KMS_AFTER <<<"${DOCDB_SECRET_AFTER}"
+  if [ "${DOCDB_VERSION_AFTER}" != "${DOCDB_ROTATED}" ]; then
+    echo "[verify] FAIL: #2762: a kept RotateMasterUserPassword: true rotated the secret again" >&2
+    exit 1
+  fi
+  [ "${i}" -lt 40 ] && sleep 15
+done
 if [ "${DOCDB_KMS_AFTER##*/}" != "${DOCDB_SECRET_KEY_ARN##*/}" ]; then
   echo "[verify] FAIL: #2762: a removed MasterUserSecretKmsKeyId moved the secret to '${DOCDB_KMS_AFTER}'" >&2
   exit 1

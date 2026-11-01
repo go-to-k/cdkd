@@ -572,7 +572,7 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       });
       const answer = mockSend.getMockImplementation()!;
       const lags: Bag[] = [
-        { EnabledCloudwatchLogsExports: ['audit'] },
+        { EnabledCloudwatchLogsExports: [] },
         { EnabledCloudwatchLogsExports: ['profiler', 'audit'] },
         { ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 4 } },
         { ServerlessV2ScalingConfiguration: { MinCapacity: 1, MaxCapacity: 2 } },
@@ -864,6 +864,16 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining('recorded EnablePerformanceInsights is unusable')
       );
+    });
+
+    it('a drift --revert update leaves it out too', async () => {
+      armInstance();
+      await updateInstance(
+        { EnablePerformanceInsights: 'yes' },
+        {},
+        { desiredFromAwsReadback: true }
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
     });
 
     it('a replayed create leaves it out with a warning too', async () => {
