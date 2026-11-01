@@ -100,7 +100,7 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3850)', (
     ['StartingPositionTimestamp', { StartingPositionTimestamp: 1700000000 }],
     ['MaximumBatchingWindowInSeconds', { MaximumBatchingWindowInSeconds: 0 }],
   ])('replays an old Queue record beside %s without the mode', async (_label, extra) => {
-    await provider.create(
+    const result = await provider.create(
       'Esm',
       TYPE,
       { ...kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: 'Queue' }), ...extra },
@@ -109,6 +109,10 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3850)', (
     expect(mockWarn).toHaveBeenCalledTimes(1);
     const command = mockSend.mock.calls[0]![0] as CreateEventSourceMappingCommand;
     expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumerGroupId: 'g' });
+    expect(result.effectiveProperties).toEqual({
+      ...kafkaProps({ ConsumerGroupId: 'g' }),
+      ...extra,
+    });
   });
 
   it('replays a Stream record beside a StartingPosition as it is', async () => {

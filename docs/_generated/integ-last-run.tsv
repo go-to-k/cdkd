@@ -209,7 +209,7 @@ lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
 lambda-esm-documentdb	2026-10-27T17:54:34Z	PASS	1048	verify.sh	rc ok, orph clean; #1160 ESM removal audit, DocDB update/removal arms
-lambda-esm-self-managed-kafka	2026-10-28T01:22:04Z	PASS	165	verify.sh	rc ok, orph clean; #1160 kept-wording arm red pre-fix at sentinel
+lambda-esm-self-managed-kafka	2026-11-01T00:07:49Z	PASS	201	verify.sh	rc ok, orph clean; #3850 Queue create/update, mode refusal, collision, --replace
 lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok, orph clean
 lambda-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	142	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
 lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph clean

@@ -905,6 +905,13 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
           // this the resolver's shape guard hard-fails the deploy.
           EventSourceMappingArn: response.EventSourceMappingArn,
         },
+        // The record keeps what was sent: Lambda holds no mode for this mapping.
+        ...(replayableKafka !== undefined && {
+          effectiveProperties: {
+            ...properties,
+            SelfManagedKafkaEventSourceConfig: replayableKafka,
+          },
+        }),
       };
     } catch (error) {
       const cause = error instanceof Error ? error : undefined;
@@ -1715,20 +1722,6 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
   }
 
   /**
-   * Adopt an existing Lambda event source mapping into cdkd state.
-   *
-   * **Explicit override only.** Event source mappings are identified by a
-   * UUID returned at create time. While Lambda event source mappings ARE
-   * taggable since 2020, CDK does NOT propagate the `aws:cdk:path` tag to
-   * them by default (the `Tags` property must be explicitly opted into),
-   * and the natural lookup is by `(FunctionName, EventSourceArn)` — which
-   * the user already knows.
-   *
-   * Users adopting an existing event source mapping should pass
-   * `--resource <logicalId>=<UUID>` (matching the physical id format
-   * returned by `create()`).
-   */
-  /**
    * An `observedProperties` baseline a cdkd older than #3850 wrote lacks
    * `ConsumptionMode`, because the SDK dropped it from the readback, while the
    * live block now carries it. Complete such a baseline from the readback when
@@ -1763,6 +1756,20 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
     };
   }
 
+  /**
+   * Adopt an existing Lambda event source mapping into cdkd state.
+   *
+   * **Explicit override only.** Event source mappings are identified by a
+   * UUID returned at create time. While Lambda event source mappings ARE
+   * taggable since 2020, CDK does NOT propagate the `aws:cdk:path` tag to
+   * them by default (the `Tags` property must be explicitly opted into),
+   * and the natural lookup is by `(FunctionName, EventSourceArn)` — which
+   * the user already knows.
+   *
+   * Users adopting an existing event source mapping should pass
+   * `--resource <logicalId>=<UUID>` (matching the physical id format
+   * returned by `create()`).
+   */
   async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
     if (!input.knownPhysicalId) return null;
     // Issue #3627: read back `EventSourceMappingArn`, which `create()` records
