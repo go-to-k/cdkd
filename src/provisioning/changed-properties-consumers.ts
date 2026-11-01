@@ -13,9 +13,13 @@
  *
  * A provider that starts reading `changedProperties` joins this set when its
  * readback returns the keys it reads. Without it the provider still gets a
- * correct set, only a wider one: the DocDB / RDS DB cluster and RDS DB
- * instance read it for `MasterUserPassword` alone, which AWS never returns, so
- * a readback could not confirm it and they stay out (#5153). A LEAF: the
+ * correct set, only a wider one: the DocDB / RDS DB cluster read it for
+ * `MasterUserPassword` alone, and the RDS DB instance for it plus its
+ * go-to-k/cdkd#2762 storage, backup and Performance Insights keys. AWS never
+ * returns the password, so a readback could not confirm it and they stay out
+ * (#5153); a `NoEcho`-fed #2762 key is re-sent, the safe direction, except
+ * a `NoEcho`-fed `AllocatedStorage` on an instance autoscaling has grown past
+ * it, which RDS refuses as a shrink on every deploy that re-sends it. A LEAF: the
  * deploy engine imports it, never a provider module.
  */
 export const CHANGED_PROPERTIES_CONSUMER_TYPES: ReadonlySet<string> = new Set([

@@ -40,8 +40,22 @@ import * as rds from 'aws-cdk-lib/aws-rds';
  * (verifying that the SDK code path's silent-drop is closed). The L1
  * lets us assert exactly which CFn properties reach the template.
  *
- * Minimum-cost shape: db.t3.micro / 20 GiB gp2 / 2 isolated subnets /
- * no NAT.
+ * go-to-k/cdkd#2762 storage / backup / maintenance / certificate /
+ * Performance Insights props, each set to a non-default value so a silent drop
+ * reads back differently:
+ *   StorageType gp3 + Iops + StorageThroughput (above the gp3 baseline, which
+ *   needs >= 400 GiB on Postgres) / MaxAllocatedStorage / BackupRetentionPeriod /
+ *   PreferredBackupWindow / PreferredMaintenanceWindow / AutoMinorVersionUpgrade /
+ *   CopyTagsToSnapshot / CACertificateIdentifier / EnablePerformanceInsights +
+ *   PerformanceInsightsRetentionPeriod.
+ * Not set here, unit-tested only: MultiAZ (a standby doubles the create and
+ * delete time and rides the same update path as AutoMinorVersionUpgrade),
+ * OptionGroupName (a custom group is held by the #4030 final snapshot, so the
+ * destroy could not delete it) and PerformanceInsightsKMSKeyId (only the
+ * account's default key would keep the fixture self-contained, and that is
+ * what AWS picks anyway).
+ *
+ * Shape: db.t3.micro / 400 GiB gp3 / 2 isolated subnets / no NAT.
  */
 export class RdsDbInstanceBackfillStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -96,7 +110,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     // no L2-injected defaults that would trip the silent-drop routing.
     // Each prop the #609 backfill closes is set explicitly so verify.sh
     // can prove it reached AWS:
-    //   * AllocatedStorage: '20' (CFn string-typed) — AWS-required for
+    //   * AllocatedStorage: '400' (CFn string-typed) — AWS-required for
     //     standalone Postgres.
     //   * DeletionProtection: true in phase 1 — the strong #1160 signal:
     //     phase 2 (CDKD_TEST_UPDATE=true) DROPS the property; CloudFormation
@@ -134,7 +148,6 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     new rds.CfnDBInstance(this, 'BackfillInstance', {
       dbInstanceClass: 'db.t3.micro',
       engine: 'postgres',
-      allocatedStorage: '20',
       masterUsername: 'postgres',
       // ManageMasterUserPassword is mutually exclusive with
       // MasterUserPassword — set neither password literal.
@@ -155,6 +168,27 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       ...(isUpdate ? {} : { vpcSecurityGroups: [securityGroup.securityGroupId] }),
       dbSubnetGroupName: subnetGroup.subnetGroupName,
       publiclyAccessible: false,
+      // go-to-k/cdkd#2762. Phase 2 CHANGES BackupRetentionPeriod,
+      // PreferredMaintenanceWindow and PerformanceInsightsRetentionPeriod (sent
+      // by ModifyDBInstance), DROPS AutoMinorVersionUpgrade (CloudFormation keeps
+      // it: its handler sends diff(previous, desired), nothing for a removal) and
+      // DROPS MaxAllocatedStorage (CloudFormation turns storage autoscaling off,
+      // setting the maximum to the allocated storage). The storage itself stays
+      // unchanged: a storage change starts an hours-long storage optimization.
+      storageType: 'gp3',
+      allocatedStorage: '400',
+      iops: 13000,
+      storageThroughput: 600,
+      ...(isUpdate ? {} : { maxAllocatedStorage: 500 }),
+      backupRetentionPeriod: isUpdate ? 5 : 3,
+      preferredBackupWindow: '03:00-03:30',
+      preferredMaintenanceWindow: isUpdate ? 'mon:05:00-mon:05:30' : 'sun:05:00-sun:05:30',
+      ...(isUpdate ? {} : { autoMinorVersionUpgrade: false }),
+      copyTagsToSnapshot: true,
+      caCertificateIdentifier: 'rds-ca-rsa4096-g1',
+      enablePerformanceInsights: true,
+      // 31 is not the default (7), so a dropped create value reads back 7.
+      performanceInsightsRetentionPeriod: isUpdate ? 7 : 31,
     });
   }
 }
