@@ -674,8 +674,7 @@ export class LambdaNetworkConnectorProvider implements ResourceProvider {
  * `@aws-sdk/client-lambda-core` release yet (installed 3.1159.0, latest
  * published 3.1160.0). The request below is built from explicit fields, so a
  * declared value would never reach Lambda Core and the deploy would report
- * success without it. It is refused on the template path instead, the
- * `ConsumptionMode` mechanism of `lambda-eventsource-provider.ts` (#3848).
+ * success without it. It is refused on the template path instead.
  * `tests/unit/provisioning/sdk-pending-members.test.ts` goes red once the
  * installed client sends the member: then forward it on create AND update,
  * read it back, and drop this refusal.

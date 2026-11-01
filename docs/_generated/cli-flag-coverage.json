@@ -1361,6 +1361,7 @@
         "glue-update-hardening",
         "iam-role-prefixed-name-update",
         "lambda-durable-replacement",
+        "lambda-esm-self-managed-kafka",
         "lambda-layer-version-update",
         "loggroup-class-guard",
         "nested-stack-replace-guard",

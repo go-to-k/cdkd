@@ -3,11 +3,12 @@ import {
   CreateEventSourceMappingCommand,
   UpdateEventSourceMappingCommand,
 } from '@aws-sdk/client-lambda';
-import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 
-// Issue #3848: `SelfManagedKafkaEventSourceConfig.ConsumptionMode` is not modelled
-// by `@aws-sdk/client-lambda`, whose serializer drops it, so the provider refuses
-// it on the template path and warns on a replay.
+// Issue #3850: `SelfManagedKafkaEventSourceConfig.ConsumptionMode` goes to
+// CreateEventSourceMapping, and UpdateEventSourceMapping refuses a change, so the
+// provider never names it on update, refuses a change on the template path and
+// warns on a replay.
 
 const { mockSend, mockWarn } = vi.hoisted(() => ({ mockSend: vi.fn(), mockWarn: vi.fn() }));
 
@@ -42,9 +43,7 @@ import { LambdaEventSourceMappingProvider } from '../../../src/provisioning/prov
 
 const TYPE = 'AWS::Lambda::EventSourceMapping';
 const UUID = 'abcdef12-3456-7890-abcd-ef1234567890';
-const REFUSAL_PREFIX =
-  'AWS::Lambda::EventSourceMapping Esm: SelfManagedKafkaEventSourceConfig.ConsumptionMode ' +
-  'cannot be sent by cdkd yet';
+const REFUSAL = 'SelfManagedKafkaEventSourceConfig.ConsumptionMode cannot be changed';
 
 function kafkaProps(config: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -64,7 +63,7 @@ async function captureError(p: Promise<unknown>): Promise<unknown> {
   throw new Error('expected a rejection');
 }
 
-describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3848)', () => {
+describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3850)', () => {
   let provider: LambdaEventSourceMappingProvider;
 
   beforeEach(() => {
@@ -73,82 +72,144 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3848)', (
     mockSend.mockResolvedValue({ UUID, EventSourceMappingArn: `arn:esm:${UUID}` });
   });
 
-  describe('create', () => {
-    it('refuses a template-path create before any AWS call, unwrapped', async () => {
-      const error = await captureError(
-        provider.create('Esm', TYPE, kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: 'Queue' }))
-      );
-      expect(error).toBeInstanceOf(ProvisioningError);
-      // A raw prefix and no cause: the refusal is not re-labelled by the
-      // create() wrapper, which would prepend "Failed to create ...".
-      expect((error as ProvisioningError).message.startsWith(REFUSAL_PREFIX)).toBe(true);
-      expect((error as ProvisioningError).cause).toBeUndefined();
-      expect((error as ProvisioningError).message).toContain('Remove ConsumptionMode');
-      expect(mockSend).not.toHaveBeenCalled();
+  it.each(['Stream', 'Queue'])('sends a declared %s on create', async (mode) => {
+    await provider.create('Esm', TYPE, kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: mode }));
+    expect(mockWarn).not.toHaveBeenCalled();
+    const command = mockSend.mock.calls[0]![0] as CreateEventSourceMappingCommand;
+    expect(command).toBeInstanceOf(CreateEventSourceMappingCommand);
+    expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({
+      ConsumerGroupId: 'g',
+      ConsumptionMode: mode,
+    });
+  });
+
+  it('reads the mode back from AWS', async () => {
+    mockSend.mockResolvedValue({
+      UUID,
+      SelfManagedEventSource: { Endpoints: { KAFKA_BOOTSTRAP_SERVERS: ['broker:9092'] } },
+      SelfManagedKafkaEventSourceConfig: { ConsumerGroupId: 'g', ConsumptionMode: 'Queue' },
+    });
+    const state = await provider.readCurrentState(UUID, 'Esm', TYPE);
+    expect(state).toMatchObject({
+      SelfManagedKafkaEventSourceConfig: { ConsumerGroupId: 'g', ConsumptionMode: 'Queue' },
+    });
+  });
+
+  it.each([
+    ['StartingPosition', { StartingPosition: 'TRIM_HORIZON' }],
+    ['StartingPositionTimestamp', { StartingPositionTimestamp: 1700000000 }],
+    ['MaximumBatchingWindowInSeconds', { MaximumBatchingWindowInSeconds: 0 }],
+  ])('replays an old Queue record beside %s without the mode', async (_label, extra) => {
+    const result = await provider.create(
+      'Esm',
+      TYPE,
+      { ...kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: 'Queue' }), ...extra },
+      { replayingState: true }
+    );
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    const command = mockSend.mock.calls[0]![0] as CreateEventSourceMappingCommand;
+    expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumerGroupId: 'g' });
+    expect(result.effectiveProperties).toEqual({
+      ...kafkaProps({ ConsumerGroupId: 'g' }),
+      ...extra,
+    });
+  });
+
+  it('replays a Stream record beside a StartingPosition as it is', async () => {
+    await provider.create(
+      'Esm',
+      TYPE,
+      { ...kafkaProps({ ConsumptionMode: 'Stream' }), StartingPosition: 'TRIM_HORIZON' },
+      { replayingState: true }
+    );
+    expect(mockWarn).not.toHaveBeenCalled();
+    const command = mockSend.mock.calls[0]![0] as CreateEventSourceMappingCommand;
+    expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumptionMode: 'Stream' });
+  });
+
+  it('keeps the mode on a replay of a sendable Queue record, and off the replay path', async () => {
+    const sendable = kafkaProps({ ConsumptionMode: 'Queue' });
+    await provider.create('Esm', TYPE, sendable, { replayingState: true });
+    await provider.create('Esm', TYPE, { ...sendable, StartingPosition: 'TRIM_HORIZON' });
+    expect(mockWarn).not.toHaveBeenCalled();
+    for (const call of mockSend.mock.calls) {
+      const command = call[0] as CreateEventSourceMappingCommand;
+      expect(command.input.SelfManagedKafkaEventSourceConfig).toEqual({ ConsumptionMode: 'Queue' });
+    }
+  });
+
+  describe('canonicalizeDriftPair', () => {
+    const oldBaseline = kafkaProps({ ConsumerGroupId: 'g' });
+    const live = (mode: string) => kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: mode });
+
+    it('completes a baseline that predates the member, without mutating it', async () => {
+      const aws = live('Stream');
+      const result = await provider.canonicalizeDriftPair(TYPE, oldBaseline, aws, oldBaseline);
+      expect(result.baseline).toEqual(aws);
+      expect(result.aws).toBe(aws);
+      expect(oldBaseline['SelfManagedKafkaEventSourceConfig']).toEqual({ ConsumerGroupId: 'g' });
     });
 
-    it('warns and creates on a state replay', async () => {
-      const result = await provider.create(
-        'Esm',
-        TYPE,
-        kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: 'Queue' }),
-        { replayingState: true }
-      );
-      expect(result.physicalId).toBe(UUID);
-      expect(mockWarn).toHaveBeenCalledTimes(1);
-      expect(mockWarn.mock.calls[0]![0]).toContain(REFUSAL_PREFIX);
-      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(CreateEventSourceMappingCommand);
-    });
-
-    it('creates without a warning when the member is absent', async () => {
-      await provider.create('Esm', TYPE, kafkaProps({ ConsumerGroupId: 'g' }));
-      expect(mockWarn).not.toHaveBeenCalled();
-      expect(mockSend).toHaveBeenCalledTimes(1);
+    it.each([
+      ['a live Queue', oldBaseline, live('Queue'), oldBaseline],
+      ['a template asking for Queue', oldBaseline, live('Stream'), live('Queue')],
+      ['a baseline holding the member', live('Stream'), live('Stream'), oldBaseline],
+      ['a readback without the member', oldBaseline, oldBaseline, oldBaseline],
+      ['a mapping without the block', { FunctionName: 'fn' }, { FunctionName: 'fn' }, {}],
+    ])('leaves %s alone', async (_label, baseline, aws, properties) => {
+      const result = await provider.canonicalizeDriftPair(TYPE, baseline, aws, properties);
+      expect(result.baseline).toBe(baseline);
+      expect(result.aws).toBe(aws);
     });
   });
 
   describe('update', () => {
-    it('refuses an added ConsumptionMode on the template path before any AWS call', async () => {
+    it.each([
+      ['Stream to Queue', { ConsumptionMode: 'Queue' }, { ConsumptionMode: 'Stream' }],
+      ['Queue to Stream', { ConsumptionMode: 'Stream' }, { ConsumptionMode: 'Queue' }],
+      ['an omitted mode to Queue', { ConsumptionMode: 'Queue' }, {}],
+      ['a removed Queue', {}, { ConsumptionMode: 'Queue' }],
+    ])('refuses %s before any AWS call', async (_label, desired, previous) => {
       const error = await captureError(
-        provider.update(
-          'Esm',
-          UUID,
-          TYPE,
-          kafkaProps({ ConsumerGroupId: 'g', ConsumptionMode: 'Queue' }),
-          kafkaProps({ ConsumerGroupId: 'g' })
-        )
+        provider.update('Esm', UUID, TYPE, kafkaProps(desired), kafkaProps(previous))
       );
-      expect(error).toBeInstanceOf(ProvisioningError);
-      expect((error as ProvisioningError).message.startsWith(REFUSAL_PREFIX)).toBe(true);
-      expect((error as ProvisioningError).message).toContain('UpdateEventSourceMapping');
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+      expect((error as Error).message).toContain(REFUSAL);
+      expect((error as Error).message).toContain('--replace');
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('refuses a changed ConsumptionMode on the template path', async () => {
+    it('refuses a removed block that held Queue', async () => {
+      const { SelfManagedKafkaEventSourceConfig: _block, ...desired } = kafkaProps({});
       const error = await captureError(
-        provider.update(
-          'Esm',
-          UUID,
-          TYPE,
-          kafkaProps({ ConsumptionMode: 'Queue' }),
-          kafkaProps({ ConsumptionMode: 'Stream' })
-        )
+        provider.update('Esm', UUID, TYPE, desired, kafkaProps({ ConsumptionMode: 'Queue' }))
       );
-      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('updates an unchanged ConsumptionMode without a warning', async () => {
-      const props = kafkaProps({ ConsumptionMode: 'Queue' });
-      await provider.update('Esm', UUID, TYPE, { ...props, BatchSize: 50 }, props);
+    it.each([
+      ['an unchanged Queue', { ConsumptionMode: 'Queue' }, { ConsumptionMode: 'Queue' }],
+      ['an omitted mode made an explicit Stream', { ConsumptionMode: 'Stream' }, {}],
+      ['an explicit Stream removed', {}, { ConsumptionMode: 'Stream' }],
+    ])('updates %s without naming the member', async (_label, desired, previous) => {
+      await provider.update(
+        'Esm',
+        UUID,
+        TYPE,
+        { ...kafkaProps(desired), BatchSize: 50 },
+        kafkaProps(previous)
+      );
       expect(mockWarn).not.toHaveBeenCalled();
-      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateEventSourceMappingCommand);
+      const command = mockSend.mock.calls[0]![0] as UpdateEventSourceMappingCommand;
+      expect(command).toBeInstanceOf(UpdateEventSourceMappingCommand);
+      expect(JSON.stringify(command.input)).not.toContain('ConsumptionMode');
     });
 
     it.each([
       ['a rollback state replay', { replayingState: true }],
       ['a drift --revert readback', { desiredFromAwsReadback: true }],
-    ])('warns and updates on %s', async (_label, context) => {
+    ])('warns and updates without the member on %s', async (_label, context) => {
       await provider.update(
         'Esm',
         UUID,
@@ -158,8 +219,10 @@ describe('LambdaEventSourceMappingProvider — ConsumptionMode (issue #3848)', (
         context
       );
       expect(mockWarn).toHaveBeenCalledTimes(1);
-      expect(mockWarn.mock.calls[0]![0]).toContain(REFUSAL_PREFIX);
-      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateEventSourceMappingCommand);
+      expect(mockWarn.mock.calls[0]![0]).toContain(REFUSAL);
+      const command = mockSend.mock.calls[0]![0] as UpdateEventSourceMappingCommand;
+      expect(command).toBeInstanceOf(UpdateEventSourceMappingCommand);
+      expect(JSON.stringify(command.input)).not.toContain('ConsumptionMode');
     });
   });
 });

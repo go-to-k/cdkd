@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { CreateEventSourceMappingCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { CreateNetworkConnectorCommand, LambdaCoreClient } from '@aws-sdk/client-lambda-core';
 
 /**
@@ -38,16 +37,6 @@ function captureBody(onBody: (body: string) => void) {
 
 const CAPTURE_STEP = { step: 'build', priority: 'low' } as const;
 
-async function lambdaRequestBody(command: CreateEventSourceMappingCommand): Promise<string> {
-  const client = new LambdaClient(CLIENT_CONFIG);
-  let body: string | undefined;
-  client.middlewareStack.add(captureBody((b) => (body = b)) as never, CAPTURE_STEP);
-  await client.send(command).catch(() => undefined);
-  client.destroy();
-  if (body === undefined) throw new Error('the request body was never captured');
-  return body;
-}
-
 async function lambdaCoreRequestBody(command: CreateNetworkConnectorCommand): Promise<string> {
   const client = new LambdaCoreClient(CLIENT_CONFIG);
   let body: string | undefined;
@@ -59,23 +48,6 @@ async function lambdaCoreRequestBody(command: CreateNetworkConnectorCommand): Pr
 }
 
 const PENDING_MEMBERS: readonly PendingMember[] = [
-  {
-    cfnPath: 'AWS::Lambda::EventSourceMapping SelfManagedKafkaEventSourceConfig.ConsumptionMode',
-    refusedBy:
-      'src/provisioning/providers/lambda-eventsource-provider.ts (issue #3848; forward it per #3850, on create and in kafkaConfigForUpdate)',
-    member: 'ConsumptionMode',
-    sentinel: 'group-sentinel',
-    serialize: () =>
-      lambdaRequestBody(
-        new CreateEventSourceMappingCommand({
-          FunctionName: 'fn',
-          SelfManagedKafkaEventSourceConfig: {
-            ConsumerGroupId: 'group-sentinel',
-            ConsumptionMode: 'Queue',
-          } as never,
-        })
-      ),
-  },
   {
     cfnPath:
       'AWS::Lambda::NetworkConnector Configuration.VpcEgressConfiguration.ElasticIpConfiguration',

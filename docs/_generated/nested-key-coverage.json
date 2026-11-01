@@ -2,7 +2,7 @@
   "summary": {
     "targetCount": 28,
     "nestedKeyCount": 1471,
-    "wholeDeliveredPathCount": 606,
+    "wholeDeliveredPathCount": 607,
     "shapeClean": 182,
     "shapeHandled": 49,
     "shapeAllowListed": 9,
@@ -1090,6 +1090,7 @@
         "ScalingConfig.MaximumConcurrency",
         "SelfManagedEventSource.Endpoints",
         "SelfManagedKafkaEventSourceConfig.ConsumerGroupId",
+        "SelfManagedKafkaEventSourceConfig.ConsumptionMode",
         "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig",
         "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs",
         "SelfManagedKafkaEventSourceConfig.SchemaRegistryConfig.AccessConfigs.Type",
