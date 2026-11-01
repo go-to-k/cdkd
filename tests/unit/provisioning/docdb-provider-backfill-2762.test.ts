@@ -28,6 +28,13 @@ vi.mock('../../../src/utils/logger.js', () => {
 import { DocDBProvider } from '../../../src/provisioning/providers/docdb-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+import {
+  docdbLogExportChange,
+  docdbServerlessScaling,
+  docdbStringList,
+  holdsDocDBPendingValue,
+} from '../../../src/provisioning/providers/docdb-shared.js';
 
 const CLUSTER = 'AWS::DocDB::DBCluster';
 const INSTANCE = 'AWS::DocDB::DBInstance';
@@ -234,6 +241,146 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
     });
 
+    it('turning management off never sends the key held beside it (AWS takes one only when on)', async () => {
+      armCluster();
+      await updateCluster(
+        {
+          ManageMasterUserPassword: false,
+          MasterUserSecretKmsKeyId: KEY_ARN,
+          MasterUserPassword: PASSWORD,
+        },
+        { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: KEY_ARN }
+      );
+      const input = sent('ModifyDBClusterCommand')[0]!;
+      expect(input).toMatchObject({
+        ManageMasterUserPassword: false,
+        MasterUserPassword: PASSWORD,
+      });
+      expect(input['MasterUserSecretKmsKeyId']).toBeUndefined();
+    });
+
+    it('a key changed beside turning management off stays unsent too', async () => {
+      armCluster();
+      await updateCluster(
+        {
+          ManageMasterUserPassword: false,
+          MasterUserSecretKmsKeyId: KEY_ARN,
+          MasterUserPassword: PASSWORD,
+        },
+        { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: 'alias/old' }
+      );
+      expect(sent('ModifyDBClusterCommand')[0]!['MasterUserSecretKmsKeyId']).toBeUndefined();
+    });
+
+    it('a key held through false -> true goes out with the flag', async () => {
+      armCluster();
+      await updateCluster(
+        { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: KEY_ARN },
+        { ManageMasterUserPassword: false, MasterUserSecretKmsKeyId: KEY_ARN }
+      );
+      expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({
+        ManageMasterUserPassword: true,
+        MasterUserSecretKmsKeyId: KEY_ARN,
+      });
+    });
+
+    describe('the flag gone from the template while the record is managed', () => {
+      const next = { MasterUserPassword: PASSWORD };
+      const previous = { ManageMasterUserPassword: true };
+
+      it('refuses a password change before any call, printing no value', async () => {
+        armCluster();
+        const error = (await updateCluster(next, previous).catch((e: unknown) => e)) as Error;
+        expect(error.message).toMatch(/declare ManageMasterUserPassword: false beside it/);
+        expect(error.message).not.toContain(PASSWORD);
+        expect(isMarkedNonRetryable(error)).toBe(true);
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('a rollback leaves the password and the flag out, and warns by key name', async () => {
+        armCluster();
+        await updateCluster(next, previous, { replayingState: true });
+        const input = sent('ModifyDBClusterCommand')[0]!;
+        expect(input['MasterUserPassword']).toBeUndefined();
+        expect(input['ManageMasterUserPassword']).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('the cluster stays managed'));
+        expect(JSON.stringify(warn.mock.calls)).not.toContain(PASSWORD);
+      });
+
+      it('a plain removal keeps management, with the warning that claims no parity', async () => {
+        armCluster();
+        await updateCluster({}, previous);
+        expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('ManageMasterUserPassword was removed')
+        );
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('as CloudFormation does'));
+      });
+
+      it('an explicit false beside the password still leaves managed mode', async () => {
+        armCluster();
+        await updateCluster({ ...next, ManageMasterUserPassword: false }, previous);
+        expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({
+          ManageMasterUserPassword: false,
+          MasterUserPassword: PASSWORD,
+        });
+      });
+    });
+
+    it('a {{resolve: password kept beside an added true is neither sent nor refused', async () => {
+      armCluster();
+      await updateCluster(
+        { ManageMasterUserPassword: true, MasterUserPassword: PASSWORD },
+        { MasterUserPassword: '{{resolve:secretsmanager:s:SecretString:p}}' },
+        { changedProperties: new Set(['ManageMasterUserPassword']) }
+      );
+      const input = sent('ModifyDBClusterCommand')[0]!;
+      expect(input['ManageMasterUserPassword']).toBe(true);
+      expect(input['MasterUserPassword']).toBeUndefined();
+    });
+
+    it('drift --revert toward false sends no false, which would need a password', async () => {
+      armCluster();
+      await updateCluster(
+        { ManageMasterUserPassword: false },
+        { ManageMasterUserPassword: true },
+        { desiredFromAwsReadback: true }
+      );
+      expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('ManageMasterUserPassword stays true')
+      );
+    });
+
+    it('drift --revert toward true sends it', async () => {
+      armCluster();
+      await updateCluster(
+        { ManageMasterUserPassword: true },
+        { ManageMasterUserPassword: false },
+        { desiredFromAwsReadback: true }
+      );
+      expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('a drift --revert unusable flag warns instead of refusing', async () => {
+      armCluster();
+      await updateCluster({ ManageMasterUserPassword: 'yes' }, {}, { desiredFromAwsReadback: true });
+      expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('recorded ManageMasterUserPassword is unusable')
+      );
+    });
+
+    it('a replayed create warns about an unusable flag instead of refusing', async () => {
+      armCluster();
+      await provider.create('L', CLUSTER, { ManageMasterUserPassword: 'yes' }, {
+        replayingState: true,
+      } as never);
+      expect(sent('CreateDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
     it('refuses a ManageMasterUserPassword that is no boolean, before any call', async () => {
       armCluster();
       await expect(updateCluster({ ManageMasterUserPassword: 'yes' }, {})).rejects.toThrow(
@@ -354,6 +501,35 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(warn).toHaveBeenCalledTimes(1);
     });
 
+    it('a create with an empty list sends none', async () => {
+      armCluster();
+      await provider.create('L', CLUSTER, { EnableCloudwatchLogsExports: [] });
+      expect(sent('CreateDBClusterCommand')[0]!['EnableCloudwatchLogsExports']).toBeUndefined();
+    });
+
+    it('a replayed create leaves a malformed list out, warned; a template create refuses', async () => {
+      armCluster();
+      await provider.create('L', CLUSTER, { EnableCloudwatchLogsExports: 'audit' }, {
+        replayingState: true,
+      } as never);
+      expect(sent('CreateDBClusterCommand')[0]!['EnableCloudwatchLogsExports']).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      await expect(
+        provider.create('L', CLUSTER, { EnableCloudwatchLogsExports: 'audit' })
+      ).rejects.toThrow(/must be a list of strings/);
+    });
+
+    it('a drift --revert malformed block is state-borne: left out, warned', async () => {
+      armCluster();
+      await updateCluster(
+        { ServerlessV2ScalingConfiguration: 'junk' },
+        {},
+        { desiredFromAwsReadback: true }
+      );
+      expect(sent('ModifyDBClusterCommand')[0]!['ServerlessV2ScalingConfiguration']).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
     it('sends the log delta, and only what is on the two sides', async () => {
       armCluster({ EnabledCloudwatchLogsExports: ['audit', 'oob'] });
       await updateCluster(
@@ -387,6 +563,40 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         )
       ).rejects.toThrow(/EnableCloudwatchLogsExports must be a list/);
       expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('waits for each cluster change alone to read back', async () => {
+      const cluster = armCluster({
+        EnabledCloudwatchLogsExports: ['audit'],
+        ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 2 },
+      });
+      const answer = mockSend.getMockImplementation()!;
+      const lags: Bag[] = [
+        { EnabledCloudwatchLogsExports: ['audit'] },
+        { EnabledCloudwatchLogsExports: ['profiler', 'audit'] },
+        { ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 4 } },
+        { ServerlessV2ScalingConfiguration: { MinCapacity: 1, MaxCapacity: 2 } },
+      ];
+      let reads = 0;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name !== 'DescribeDBClustersCommand') return answer(cmd);
+        reads += 1;
+        // Read 1 is the live read, 2 the attributes read, then the wait.
+        const lag = reads >= 3 ? lags[reads - 3] : undefined;
+        return Promise.resolve({ DBClusters: [{ ...cluster, ...lag }] });
+      });
+      await updateCluster(
+        {
+          EnableCloudwatchLogsExports: ['profiler'],
+          ServerlessV2ScalingConfiguration: { MinCapacity: 1, MaxCapacity: 4 },
+        },
+        {
+          EnableCloudwatchLogsExports: ['audit'],
+          ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 2 },
+        }
+      );
+      expect(reads).toBe(7);
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('warns instead of failing when a change never reads back', async () => {
@@ -553,16 +763,119 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(sent('ModifyDBInstanceCommand')).toHaveLength(2);
     });
 
-    it('does not retry a cluster refused as being stopped', async () => {
+    it('does not retry a member refused because its cluster is being stopped', async () => {
       mockSend.mockRejectedValue(
         Object.assign(new Error('DB cluster c-zr6jidsdpumw is being stopped.'), {
           name: 'InvalidDBClusterStateFault',
         })
       );
-      await expect(updateCluster({ CopyTagsToSnapshot: true }, {})).rejects.toThrow(
-        /Failed to update DocDB DBCluster/
+      await expect(
+        updateInstance({ EnablePerformanceInsights: true }, { EnablePerformanceInsights: false })
+      ).rejects.toThrow(/Failed to update DocDB DBInstance/);
+      expect(sent('ModifyDBInstanceCommand')).toHaveLength(1);
+    });
+
+    it('waits for a changed certificate and insights to read back, each alone', async () => {
+      const instance = armInstance({
+        CACertificateIdentifier: 'rds-ca-rsa4096-g1',
+        PerformanceInsightsEnabled: false,
+      });
+      const answer = mockSend.getMockImplementation()!;
+      let lagging = 2;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name === 'DescribeDBInstancesCommand' && lagging > 0) {
+          lagging -= 1;
+          return Promise.resolve({
+            DBInstances: [
+              {
+                ...instance,
+                // First read: the certificate alone lags. Second: insights alone.
+                ...(lagging === 1 && { CACertificateIdentifier: 'rds-ca-rsa4096-g1' }),
+                ...(lagging === 0 && { PerformanceInsightsEnabled: false }),
+              },
+            ],
+          });
+        }
+        return answer(cmd);
+      });
+      await updateInstance(
+        { CACertificateIdentifier: 'rds-ca-rsa2048-g1', EnablePerformanceInsights: true },
+        { CACertificateIdentifier: 'rds-ca-rsa4096-g1', EnablePerformanceInsights: false }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      // Two lagging reads, the settled one, and the attributes read.
+      expect(sent('DescribeDBInstancesCommand')).toHaveLength(4);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('makes no read-back wait under --no-wait, nor without a change', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      armInstance();
+      await updateInstance(
+        { CACertificateIdentifier: 'rds-ca-rsa2048-g1' },
+        { CACertificateIdentifier: 'rds-ca-rsa4096-g1' }
+      );
+      expect(sent('DescribeDBInstancesCommand')).toHaveLength(1);
+      delete process.env['CDKD_NO_WAIT'];
+      mockSend.mockClear();
+      armInstance();
+      await updateInstance({ DBInstanceClass: 'db.r6g.xlarge' }, {});
+      expect(sent('DescribeDBInstancesCommand')).toHaveLength(1);
+    });
+
+    it('sends a string true as the boolean, and compares it with the record', async () => {
+      armInstance();
+      await updateInstance(
+        { EnablePerformanceInsights: 'true' },
+        { EnablePerformanceInsights: false }
+      );
+      expect(sent('ModifyDBInstanceCommand')[0]!['EnablePerformanceInsights']).toBe(true);
+      mockSend.mockClear();
+      armInstance();
+      await updateInstance(
+        { EnablePerformanceInsights: 'true' },
+        { EnablePerformanceInsights: true }
+      );
+      expect(sent('ModifyDBInstanceCommand')[0]!['EnablePerformanceInsights']).toBeUndefined();
+    });
+
+    it.each([
+      ['update', () => updateInstance({ EnablePerformanceInsights: 'yes' }, {})],
+      [
+        'create',
+        () =>
+          provider.create('L', INSTANCE, {
+            DBInstanceClass: 'db.r6g.large',
+            DBClusterIdentifier: 'c',
+            EnablePerformanceInsights: 'yes',
+          }),
+      ],
+    ])('refuses an EnablePerformanceInsights that is no boolean on %s', async (_name, call) => {
+      armInstance();
+      await expect(call()).rejects.toThrow(
+        /DocDB DBInstance L: EnablePerformanceInsights must be a boolean/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('a state-borne update leaves an unusable EnablePerformanceInsights out, warned', async () => {
+      armInstance();
+      await updateInstance({ EnablePerformanceInsights: 'yes' }, {}, { replayingState: true });
+      expect(sent('ModifyDBInstanceCommand')[0]!['EnablePerformanceInsights']).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('recorded EnablePerformanceInsights is unusable')
+      );
+    });
+
+    it('a replayed create leaves it out with a warning too', async () => {
+      armInstance();
+      await provider.create(
+        'L',
+        INSTANCE,
+        { DBClusterIdentifier: 'c', DBInstanceClass: 'x', EnablePerformanceInsights: 'yes' },
+        { replayingState: true } as never
+      );
+      expect(sent('CreateDBInstanceCommand')[0]!['EnablePerformanceInsights']).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -606,6 +919,27 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(marked).toEqual(['StorageType']);
     });
 
+    it('marks a sent instance key unsettled', async () => {
+      armInstance();
+      const marked: string[] = [];
+      await updateInstance(
+        { CACertificateIdentifier: 'rds-ca-rsa2048-g1' },
+        { CACertificateIdentifier: 'rds-ca-rsa4096-g1' },
+        { markUnsettled: (key: string) => marked.push(key) }
+      );
+      expect(marked).toEqual(['CACertificateIdentifier']);
+    });
+
+    it('reads a reordered log list as no drift', () => {
+      expect(
+        calculateResourceDrift(
+          { EnableCloudwatchLogsExports: ['audit', 'profiler'] },
+          { EnableCloudwatchLogsExports: ['profiler', 'audit'] },
+          { unorderedPaths: provider.getDriftUnorderedPaths(CLUSTER) }
+        )
+      ).toEqual([]);
+    });
+
     it('marks a type this call added, not one AWS already held', async () => {
       armCluster({ EnabledCloudwatchLogsExports: ['audit'] });
       const markAttempted = vi.fn();
@@ -632,6 +966,21 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       ).toMatchObject({ EnableCloudwatchLogsExports: ['audit'] });
     });
 
+    it('readUnsettled keeps what the template or an earlier attempt names', async () => {
+      armCluster({ EnabledCloudwatchLogsExports: ['audit', 'profiler', 'attempted', 'oob'] });
+      expect(
+        await provider.readUnsettled(
+          'c',
+          'L',
+          CLUSTER,
+          new Set(['EnableCloudwatchLogsExports']),
+          { EnableCloudwatchLogsExports: ['audit'] },
+          { EnableCloudwatchLogsExports: ['profiler'] },
+          new Map([['EnableCloudwatchLogsExports', new Set(['attempted'])]])
+        )
+      ).toMatchObject({ EnableCloudwatchLogsExports: ['audit', 'profiler', 'attempted'] });
+    });
+
     it('a gone cluster reads as gone', async () => {
       mockSend.mockRejectedValue(
         Object.assign(new Error('gone'), { name: 'DBClusterNotFoundFault' })
@@ -654,6 +1003,35 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect((await provider.unsettledInTransition('i', 'L', INSTANCE, names)).size).toBe(0);
       mockSend.mockRejectedValue(new Error('throttled'));
       expect(await provider.unsettledInTransition('c', 'L', CLUSTER, names)).toBe(names);
+    });
+
+    it('reads a nested-empty PendingCloudwatchLogsExports as idle, and a held one as moving', () => {
+      expect(
+        holdsDocDBPendingValue({
+          PendingCloudwatchLogsExports: { LogTypesToEnable: [], LogTypesToDisable: [] },
+        })
+      ).toBe(false);
+      expect(
+        holdsDocDBPendingValue({
+          PendingCloudwatchLogsExports: { LogTypesToEnable: ['audit'] },
+        })
+      ).toBe(true);
+    });
+
+    it('reads no list out of a non-string member, and an absent one as empty', () => {
+      expect(docdbStringList(['audit', 1])).toBeUndefined();
+      expect(docdbStringList(null)).toEqual([]);
+    });
+
+    it.each([[''], ['  '], [true], [null]])('reads capacity %j as none', (value) => {
+      expect(docdbServerlessScaling({ MinCapacity: value, MaxCapacity: 2 })).toBeNull();
+    });
+
+    it('dedupes both sides of a log delta', () => {
+      expect(docdbLogExportChange(['audit', 'audit'], ['profiler', 'profiler'])).toEqual({
+        EnableLogTypes: ['audit'],
+        DisableLogTypes: ['profiler'],
+      });
     });
 
     it('compares a repeated log type and a capacity string as what they mean', () => {

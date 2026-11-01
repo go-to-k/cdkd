@@ -1675,8 +1675,13 @@ Checklist when writing or reviewing an `update()`:
   `CACertificateIdentifier` and `EnablePerformanceInsights`. After a failed
   update rolled back, `CopyTagsToSnapshot` and `EnableCloudwatchLogsExports`
   still held their values. Not measured: `NetworkType` and a removed
-  `ManageMasterUserPassword`; `update()` sends nothing for them and warns
-  without claiming parity. `RotateMasterUserPassword` is a request, not a
+  `ManageMasterUserPassword`; `update()` leaves them in place and warns without
+  claiming parity. A removed `ManageMasterUserPassword` beside a changed
+  `MasterUserPassword` is refused: sending `false` would delete the AWS secret
+  on that unmeasured path, so leaving managed mode takes an explicit `false`
+  plus the password. A rollback leaves the password out with a warning, and a
+  `drift --revert` toward `false`, which holds no password, sends nothing and
+  warns. `RotateMasterUserPassword` is a request, not a
   setting: cdkd sends it when the template turns it to `true`, never again while
   it stays `true`, and never from a rollback or `drift --revert`. To rotate
   again, deploy `false`, then `true`.

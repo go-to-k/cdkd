@@ -160,7 +160,7 @@ function declaredChange(
  * Issues #5004 / #1160 / #5543 / #2762: the `AWS::DocDB::DBCluster` properties a
  * removal leaves at their live value, because a real CloudFormation A/B showed
  * CloudFormation leaves them: `DeletionProtection` / `BackupRetentionPeriod`
- * (#5004), `VpcSecurityGroupIds` (#1160), and the last four (us-east-1,
+ * (#5004), `VpcSecurityGroupIds` (#1160), then four more (us-east-1,
  * 2026-10-30, #5543). That A/B created a cluster with `EngineVersion: 5.0.0`
  * (the default is 8.0.2), `PreferredBackupWindow: 07:00-08:00`,
  * `PreferredMaintenanceWindow: sun:10:00-sun:10:30` and a custom
@@ -211,9 +211,10 @@ const DOCDB_INSTANCE_KEPT_ON_REMOVAL = [
 /**
  * go-to-k/cdkd#5380: the keys an accepted Modify may leave half-applied when a
  * later step of the update fails. Only the #2762 ones: `update()` compares each
- * with the previous side before sending it. The credential keys stay out:
- * a key sent while the password stays managed is refused, so a live value on
- * the previous side would turn a resend into a failure.
+ * but `CopyTagsToSnapshot`, which goes out on every update, with the previous
+ * side before sending it. The credential keys stay out: a key sent while the
+ * password stays managed is refused, so a live value on the previous side would
+ * turn a resend into a failure.
  */
 const CLUSTER_MODIFY_UNSETTLED_KEYS = [
   'CopyTagsToSnapshot',
@@ -407,7 +408,7 @@ export class DocDBProvider implements ResourceProvider {
    * showed CloudFormation KEEPS the live value of every removal listed under
    * `*_KEPT_ON_REMOVAL`, which `update()` names in its own warning. The one
    * DocDB reset CloudFormation was measured to make, a removed cluster `Port`,
-   * is computed locally (`clusterPortToSend`). Two entries are listed without
+   * is computed locally (`clusterPortToSend`). Four entries are listed without
    * an A/B, because no reset value exists: a removed `MasterUserPassword` (a
    * secret with no default), the per-call `RotateMasterUserPassword` and
    * `CertificateRotationRestart`, and the instance `AutoMinorVersionUpgrade`
@@ -570,7 +571,13 @@ export class DocDBProvider implements ResourceProvider {
           context?.replayingState === true
         );
       case 'AWS::DocDB::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties, mask);
+        return this.createDBInstance(
+          logicalId,
+          resourceType,
+          properties,
+          mask,
+          context?.replayingState === true
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -690,9 +697,16 @@ export class DocDBProvider implements ResourceProvider {
       origin,
       true
     );
-    const managedPassword = this.readManagedPassword(properties, resourceType, logicalId, origin);
+    const managedPassword = this.readBooleanProperty(
+      'ManageMasterUserPassword',
+      properties,
+      resourceType,
+      logicalId,
+      origin
+    );
     const password = this.passwordBesideManaged(
       managedPassword,
+      false,
       properties['MasterUserPassword'] as string | undefined,
       resourceType,
       logicalId,
@@ -825,19 +839,35 @@ export class DocDBProvider implements ResourceProvider {
       origin,
       false
     );
-    const managedPassword = this.readManagedPassword(properties, resourceType, logicalId, origin);
+    const managedPassword = this.readBooleanProperty(
+      'ManageMasterUserPassword',
+      properties,
+      resourceType,
+      logicalId,
+      origin
+    );
     // Unset is a password cdkd manages by value, whatever a removal leaves.
     const recordedManaged =
       coerceCfnBoolean(previousProperties['ManageMasterUserPassword']) ?? false;
     const secretKmsKey = properties['MasterUserSecretKmsKeyId'] as string | undefined;
-    const managedChange = managedPassword !== undefined && managedPassword !== recordedManaged;
-    // The key rides only a change of the two: AWS takes one only while the
-    // managed password is turned on, and answers a later change itself.
+    // `drift --revert` holds no password (its bags are readbacks), and AWS
+    // refuses turning management off without one: said in a warning below.
+    const revertOffNeedsPassword =
+      context?.desiredFromAwsReadback === true && managedPassword === false && recordedManaged;
+    const managedChange =
+      managedPassword !== undefined &&
+      managedPassword !== recordedManaged &&
+      !revertOffNeedsPassword;
+    // The key rides only turning management on or a change while it stays on:
+    // AWS takes one only then, answers the second itself, and never beside false.
     const sendSecretKey =
       secretKmsKey != null &&
-      (managedChange || secretKmsKey !== previousProperties['MasterUserSecretKmsKeyId']);
+      ((managedChange && managedPassword === true) ||
+        (secretKmsKey !== previousProperties['MasterUserSecretKmsKeyId'] &&
+          (managedPassword ?? recordedManaged)));
     const passwordToSend = this.passwordBesideManaged(
       managedPassword,
+      managedPassword === undefined && recordedManaged,
       masterUserPasswordToSend(properties, previousProperties, context),
       resourceType,
       logicalId,
@@ -1097,6 +1127,11 @@ export class DocDBProvider implements ResourceProvider {
         false
       );
       if (unmeasuredWarning !== undefined) this.logger.warn(unmeasuredWarning);
+      if (revertOffNeedsPassword) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): ManageMasterUserPassword stays true: turning it off needs a MasterUserPassword, which the revert does not hold. Declare both in the template and deploy.`
+        );
+      }
 
       return {
         physicalId,
@@ -1297,11 +1332,19 @@ export class DocDBProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replayingState: boolean
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const insights = this.readBooleanProperty(
+      'EnablePerformanceInsights',
+      properties,
+      resourceType,
+      logicalId,
+      { stateBorne: replayingState }
+    );
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
@@ -1326,7 +1369,7 @@ export class DocDBProvider implements ResourceProvider {
             | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           CACertificateIdentifier: properties['CACertificateIdentifier'] as string | undefined,
-          EnablePerformanceInsights: properties['EnablePerformanceInsights'] as boolean | undefined,
+          EnablePerformanceInsights: insights,
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1398,6 +1441,16 @@ export class DocDBProvider implements ResourceProvider {
     const mask = context?.maskSecrets;
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const insights = this.readBooleanProperty(
+      'EnablePerformanceInsights',
+      properties,
+      resourceType,
+      logicalId,
+      {
+        stateBorne: context?.replayingState === true || context?.desiredFromAwsReadback === true,
+        physicalId,
+      }
+    );
 
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics, but
@@ -1416,7 +1469,6 @@ export class DocDBProvider implements ResourceProvider {
       //     CertificateRotationRestart rides a certificate change, the one
       //     call it applies to; CreateDBInstance has no such member.
       const certificate = properties['CACertificateIdentifier'] as string | undefined;
-      const insights = coerceCfnBoolean(properties['EnablePerformanceInsights']);
       const live =
         (certificate != null && previousProperties['CACertificateIdentifier'] == null) ||
         (insights !== undefined && previousProperties['EnablePerformanceInsights'] == null)
@@ -1621,7 +1673,7 @@ export class DocDBProvider implements ResourceProvider {
   ): never {
     throw markNonRetryable(
       new ProvisioningError(
-        safeMsg`DocDB DBCluster ${logicalId}: ${text}; nothing was changed.`,
+        safeMsg`${resourceType === 'AWS::DocDB::DBInstance' ? 'DocDB DBInstance' : 'DocDB DBCluster'} ${logicalId}: ${text}; nothing was changed.`,
         resourceType,
         logicalId,
         physicalId
@@ -1683,30 +1735,26 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * `ManageMasterUserPassword` as the boolean it means, `undefined` when absent.
-   * It decides whether a password goes out, so a value that is no boolean is
-   * refused before any call, except from a state-borne bag: left out, warned.
+   * A boolean property as what it means, `undefined` when absent. Sending or
+   * skipping a call hangs on it, so a value that is no boolean is refused before
+   * any call, except from a state-borne bag: left out, with a warning.
    */
-  private readManagedPassword(
+  private readBooleanProperty(
+    key: 'ManageMasterUserPassword' | 'EnablePerformanceInsights',
     properties: Record<string, unknown>,
     resourceType: string,
     logicalId: string,
     origin: { stateBorne: boolean; physicalId?: string }
   ): boolean | undefined {
-    const value = properties['ManageMasterUserPassword'];
+    const value = properties[key];
     if (value == null) return undefined;
-    const managed = coerceCfnBoolean(value);
-    if (managed !== undefined) return managed;
+    const flag = coerceCfnBoolean(value);
+    if (flag !== undefined) return flag;
     if (!origin.stateBorne) {
-      this.refuseBlock(
-        logicalId,
-        resourceType,
-        origin.physicalId,
-        'ManageMasterUserPassword must be a boolean'
-      );
+      this.refuseBlock(logicalId, resourceType, origin.physicalId, `${key} must be a boolean`);
     }
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the recorded ManageMasterUserPassword is unusable, so it is not sent.`
+      safeMsg`${logicalId} (${resourceType}): the recorded ${key} is unusable, so it is not sent.`
     );
     return undefined;
   }
@@ -1716,27 +1764,35 @@ export class DocDBProvider implements ResourceProvider {
    * `ManageMasterUserPassword`. AWS manages that password, so a call asking for
    * both is never sent: refused before any call rather than dropping a password
    * the template spelled, and from a state-borne bag the password is left out.
-   * An unchanged password on an update is already `undefined` here. The value
-   * is never printed.
+   * `removedFromManaged` is the same conflict with the flag gone from the
+   * template and the record managed: sending `false` too would delete the AWS
+   * secret on a path no A/B measured, so leaving takes an explicit `false`. An
+   * unchanged password on an update is already `undefined` here. The value is
+   * never printed.
    */
   private passwordBesideManaged(
     managed: boolean | undefined,
+    removedFromManaged: boolean,
     password: string | undefined,
     resourceType: string,
     logicalId: string,
     origin: { stateBorne: boolean; physicalId?: string }
   ): string | undefined {
-    if (managed !== true || password == null) return password;
+    if ((managed !== true && !removedFromManaged) || password == null) return password;
     if (!origin.stateBorne) {
       this.refuseBlock(
         logicalId,
         resourceType,
         origin.physicalId,
-        'MasterUserPassword cannot be set while ManageMasterUserPassword is true, because AWS manages that password'
+        removedFromManaged
+          ? 'MasterUserPassword cannot change while AWS manages the password; declare ManageMasterUserPassword: false beside it to leave managed mode'
+          : 'MasterUserPassword cannot be set while ManageMasterUserPassword is true, because AWS manages that password'
       );
     }
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the recorded MasterUserPassword is not sent, because ManageMasterUserPassword is true.`
+      removedFromManaged
+        ? safeMsg`${logicalId} (${resourceType}): the recorded MasterUserPassword is not sent: the cluster stays managed, because the recorded ManageMasterUserPassword is absent.`
+        : safeMsg`${logicalId} (${resourceType}): the recorded MasterUserPassword is not sent, because ManageMasterUserPassword is true.`
     );
     return undefined;
   }

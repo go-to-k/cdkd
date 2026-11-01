@@ -73,8 +73,8 @@ export function docdbLogExportChange(
   desired: readonly string[],
   previous: readonly string[]
 ): { EnableLogTypes?: string[]; DisableLogTypes?: string[] } | undefined {
-  const enable = desired.filter((type) => !previous.includes(type));
-  const disable = previous.filter((type) => !desired.includes(type));
+  const enable = [...new Set(desired)].filter((type) => !previous.includes(type));
+  const disable = [...new Set(previous)].filter((type) => !desired.includes(type));
   if (enable.length === 0 && disable.length === 0) return undefined;
   return {
     ...(enable.length > 0 && { EnableLogTypes: enable }),
