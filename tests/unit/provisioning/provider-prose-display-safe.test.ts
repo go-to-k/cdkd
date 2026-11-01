@@ -231,6 +231,7 @@ describe('provider prose renders resolved values display-safe (#3269)', () => {
       // withheld (a listed-free name would prove the bucket this create's).
       mockSend.mockRejectedValueOnce(denied); // ListBuckets
       mockSend.mockResolvedValueOnce({}); // CreateBucket
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
       await expect(
         new S3BucketProvider().create(

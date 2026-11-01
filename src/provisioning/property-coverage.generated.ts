@@ -3004,15 +3004,19 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::S3::Bucket',
     {
       handled: new Set<string>([
+        'AbacStatus',
         'AccelerateConfiguration',
         'AnalyticsConfigurations',
         'BucketEncryption',
         'BucketName',
+        'BucketNamePrefix',
+        'BucketNamespace',
         'CorsConfiguration',
         'IntelligentTieringConfigurations',
         'InventoryConfigurations',
         'LifecycleConfiguration',
         'LoggingConfiguration',
+        'MetadataConfiguration',
         'MetricsConfigurations',
         'NotificationConfiguration',
         'ObjectLockConfiguration',
@@ -3025,17 +3029,16 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'WebsiteConfiguration',
       ]),
       silentDrop: new Map<string, string>([
-        ['AbacStatus', 'not yet implemented by cdkd'],
         [
           'AccessControl',
           'Legacy canned ACL; AWS disables ACLs by default since 2023-04 — use BucketOwnershipControls + BucketPolicy / PublicAccessBlockConfiguration instead',
         ],
-        ['BucketNamePrefix', 'not yet implemented by cdkd'],
-        ['BucketNamespace', 'not yet implemented by cdkd'],
-        ['MetadataConfiguration', 'not yet implemented by cdkd'],
-        ['MetadataTableConfiguration', 'not yet implemented by cdkd'],
+        [
+          'MetadataTableConfiguration',
+          'V1 S3 Metadata, which the schema says to replace with MetadataConfiguration; S3 answered V1APIsNotAllowed where it was probed, so an SDK path could not be verified. Stays on Cloud Control',
+        ],
       ]),
-      createOnlyDrops: new Set<string>(['BucketNamePrefix', 'BucketNamespace']),
+      createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'Arn',
         'DomainName',

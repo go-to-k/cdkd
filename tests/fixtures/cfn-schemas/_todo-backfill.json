@@ -223,13 +223,6 @@
       "Timezone",
       "UseDefaultProcessorFeatures",
       "UseLatestRestorableTime"
-    ],
-    "AWS::S3::Bucket": [
-      "AbacStatus",
-      "BucketNamePrefix",
-      "BucketNamespace",
-      "MetadataConfiguration",
-      "MetadataTableConfiguration"
     ]
   },
   "bogusTolerated": {

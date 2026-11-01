@@ -645,44 +645,27 @@ export const NESTED_KEY_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Ma
         '#1378) reports it.',
     },
   ],
-  // The three S3 Metadata-Tables members below are the unreachable-definition
-  // false positive `classifyTargetShapes` documents: the shape pass audits the
-  // whole `definitionShapes` map rather than pruning to definitions reachable
-  // from the provider's handled top-levels. All three live only under
-  // `MetadataConfiguration` / `MetadataTableConfiguration`, which
-  // `S3BucketProvider` does NOT declare in `handledProperties`, so a template
-  // using them is pre-flight-rejected and auto-routed through Cloud Control,
-  // which forwards the property map whole. Remove these entries if the provider
-  // ever implements those top-levels.
+  // The two S3 Metadata-Tables members below are read-only in the CFn schema
+  // under `MetadataConfiguration`, whose writable members `S3BucketProvider`
+  // spells by hand, or live only under `MetadataTableConfiguration`, which it
+  // declares `unhandledByDesign` so a template using it is auto-routed through
+  // Cloud Control, which forwards the property map whole.
   [
     allowKey('AWS::S3::Bucket', 'TableName'),
     {
       rationale:
-        'Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, ' +
-        'reachable only from the MetadataConfiguration / MetadataTableConfiguration ' +
-        'top-levels the provider declares as silent-drop (Cloud-Control-routed), so no ' +
-        'SDK forwarding path exists to drop it (issue #1430).',
+        'Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no ' +
+        'table name); under MetadataTableConfiguration it is reachable only from a top-level ' +
+        'the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430).',
     },
   ],
   [
     allowKey('AWS::S3::Bucket', 'TableArn'),
     {
       rationale:
-        'Member of the S3TablesDestination / JournalTableConfiguration / ' +
-        'InventoryTableConfiguration definitions, reachable only from the ' +
-        'MetadataConfiguration / MetadataTableConfiguration top-levels the provider ' +
-        'declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path ' +
-        'exists to drop it (issue #1430).',
-    },
-  ],
-  [
-    allowKey('AWS::S3::Bucket', 'TableNamespace'),
-    {
-      rationale:
-        'Member of the S3TablesDestination definition, reachable only from the ' +
-        'MetadataTableConfiguration top-level the provider declares as silent-drop ' +
-        '(Cloud-Control-routed), so no SDK forwarding path exists to drop it ' +
-        '(issue #1430).',
+        'Read-only in every definition that holds it; the provider serves the MetadataConfiguration ' +
+        'ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level ' +
+        'declared unhandled-by-design (Cloud-Control-routed) (issue #1430).',
     },
   ],
 ]);

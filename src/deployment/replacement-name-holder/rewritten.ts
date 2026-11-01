@@ -1,4 +1,5 @@
 import type { ProvisionedBy } from '../../provisioning/provider-registry.js';
+import { alternateNamePropertiesFor } from '../../provisioning/resource-name.js';
 import {
   applyDefaultNameForFallback,
   explicitNamePropertyFor,
@@ -218,6 +219,8 @@ function generatedReplacementName(
     const value = desired?.[property];
     return value !== undefined && value !== null && value !== '';
   };
+  // A template-fixed name is no generated one, whatever the route.
+  if (alternateNamePropertiesFor(resourceType).some(declared)) return undefined;
   const fallbackProperty = fallbackNamePropertyFor(resourceType);
   if (createdVia === 'cc-api' || GENERATED_NAME_VERBATIM.has(resourceType)) {
     if (fallbackProperty === undefined || declared(fallbackProperty)) return undefined;

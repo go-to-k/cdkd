@@ -1331,3 +1331,13 @@ export function explicitNamePropertyFor(resourceType: string): string | undefine
 const ADOPTION_ONLY_NAME_PROPERTIES: Record<string, string> = {
   'AWS::Events::EventBus': 'Name',
 };
+
+/**
+ * go-to-k/cdkd#2762: properties that fix a resource's name without being its
+ * name property, so a template declaring one names the resource as
+ * `explicitNamePropertyFor`'s does. `BucketNamePrefix` sends exactly
+ * `<prefix>-<account>-<region>-an`.
+ */
+export function alternateNamePropertiesFor(resourceType: string): readonly string[] {
+  return resourceType === 'AWS::S3::Bucket' ? ['BucketNamePrefix'] : [];
+}

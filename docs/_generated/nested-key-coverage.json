@@ -1,11 +1,11 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1471,
+    "nestedKeyCount": 1499,
     "wholeDeliveredPathCount": 607,
     "shapeClean": 182,
-    "shapeHandled": 49,
-    "shapeAllowListed": 9,
+    "shapeHandled": 50,
+    "shapeAllowListed": 8,
     "arrayVsWrapper": 0,
     "definitionMemberMissing": 0,
     "shapeAmbiguous": 0
@@ -1255,7 +1255,7 @@
       "providerFile": "s3-bucket-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-s3",
       "keyStyle": "exact",
-      "nestedKeyCount": 193,
+      "nestedKeyCount": 221,
       "wholeDeliveredPaths": [
         "AnalyticsConfigurations.TagFilters.Key",
         "AnalyticsConfigurations.TagFilters.Value",
@@ -1278,7 +1278,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `JournalTableConfiguration` has no `TableName` member",
-          "rationale": "Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no table name); under MetadataTableConfiguration it is reachable only from a top-level the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableName"
         },
         {
@@ -1288,7 +1288,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `JournalTableConfiguration` has no `TableArn` member",
-          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableArn"
         },
         {
@@ -1298,7 +1298,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `S3TablesDestination` has no `TableArn` member",
-          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableArn"
         },
         {
@@ -1306,10 +1306,8 @@
           "nestedKey": "TableNamespace",
           "definition": "S3TablesDestination",
           "pass": "definition",
-          "bucket": "allow-listed",
-          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableNamespace` member",
-          "rationale": "Member of the S3TablesDestination definition, reachable only from the MetadataTableConfiguration top-level the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
-          "allowMatchKey": "AWS::S3::Bucket#TableNamespace"
+          "bucket": "provider-handled",
+          "sdkDetail": "SDK interface `S3TablesDestination` has no `TableNamespace` member"
         },
         {
           "resourceType": "AWS::S3::Bucket",
@@ -1326,7 +1324,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `InventoryTableConfiguration` has no `TableName` member",
-          "rationale": "Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no table name); under MetadataTableConfiguration it is reachable only from a top-level the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableName"
         },
         {
@@ -1336,7 +1334,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `InventoryTableConfiguration` has no `TableArn` member",
-          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableArn"
         },
         {
@@ -1346,7 +1344,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `AnnotationTableConfiguration` has no `TableName` member",
-          "rationale": "Member of the JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only under MetadataConfiguration (CreateBucketMetadataConfiguration takes no table name); under MetadataTableConfiguration it is reachable only from a top-level the provider declares unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableName"
         },
         {
@@ -1356,7 +1354,7 @@
           "pass": "definition",
           "bucket": "allow-listed",
           "sdkDetail": "SDK interface `AnnotationTableConfiguration` has no `TableArn` member",
-          "rationale": "Member of the S3TablesDestination / JournalTableConfiguration / InventoryTableConfiguration definitions, reachable only from the MetadataConfiguration / MetadataTableConfiguration top-levels the provider declares as silent-drop (Cloud-Control-routed), so no SDK forwarding path exists to drop it (issue #1430).",
+          "rationale": "Read-only in every definition that holds it; the provider serves the MetadataConfiguration ones as Fn::GetAtt attributes, and the S3TablesDestination one belongs to a top-level declared unhandled-by-design (Cloud-Control-routed) (issue #1430).",
           "allowMatchKey": "AWS::S3::Bucket#TableArn"
         },
         {

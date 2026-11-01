@@ -162,6 +162,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
     it('does NOT delete a PRE-EXISTING us-east-1 bucket when a sub-config call then fails', async () => {
       mockSend.mockResolvedValueOnce({}); // pre-flight GetBucketLocation: it exists, in us-east-1
       mockSend.mockResolvedValueOnce({}); // CreateBucket: the legacy 200 over that same bucket
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS)).rejects.toThrow(
@@ -176,6 +177,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       expect(names).toEqual([
         'GetBucketLocationCommand',
         'CreateBucketCommand',
+        'GetBucketAbacCommand',
         'PutBucketVersioningCommand',
       ]);
     });
@@ -210,6 +212,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       it(`reads ${label} as "already in us-east-1" and withholds the cleanup`, async () => {
         mockSend.mockResolvedValueOnce(response);
         mockSend.mockResolvedValueOnce({});
+        mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
         mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
         await expect(provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS)).rejects.toThrow(
@@ -340,6 +343,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockRejectedValueOnce(accessDenied());
       mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
@@ -353,6 +357,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockRejectedValueOnce(accessDenied());
       mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
@@ -497,6 +502,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       // own warning is held to the same rule.
       mockSend.mockRejectedValueOnce(accessDeniedNamingTheCaller()); // ListBuckets
       mockSend.mockResolvedValueOnce({}); // CreateBucket
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
@@ -519,6 +525,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockRejectedValueOnce(accessDeniedNamingTheCaller());
       mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, CREATE_PROPS)).rejects.toThrow(
@@ -626,6 +633,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       clientRegion.value = 'US-EAST-1';
       mockSend.mockResolvedValueOnce({}); // pre-flight: the bucket is already there
       mockSend.mockResolvedValueOnce({}); // legacy 200
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       await expect(provider.create('MyBucket', RESOURCE_TYPE, GENERATED_PROPS)).rejects.toThrow(
@@ -660,6 +668,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
     it('does not mark a pre-existing bucket adopted through the legacy 200', async () => {
       mockSend.mockResolvedValueOnce({}); // pre-flight: it exists, in us-east-1
       mockSend.mockResolvedValueOnce({}); // CreateBucket: legacy 200
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       // A generated name, the only one the legacy 200 still adopts (go-to-k/cdkd#4684).
@@ -669,6 +678,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       expect(sentCommands()).toEqual([
         'GetBucketLocationCommand',
         'CreateBucketCommand',
+        'GetBucketAbacCommand',
         'PutBucketVersioningCommand',
       ]);
       expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();
@@ -678,6 +688,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
       mockSend.mockRejectedValueOnce(accessDenied());
       mockSend.mockRejectedValueOnce(accessDenied()); // ListBuckets cannot answer either (go-to-k/cdkd#4684)
       mockSend.mockResolvedValueOnce({});
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
       const error = await failure();
@@ -686,6 +697,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
         'GetBucketLocationCommand',
         'ListBucketsCommand',
         'CreateBucketCommand',
+        'GetBucketAbacCommand',
         'PutBucketVersioningCommand',
       ]);
       expect(createdBeforeFailure(error, 'MyBucket', RESOURCE_TYPE)).toBeUndefined();

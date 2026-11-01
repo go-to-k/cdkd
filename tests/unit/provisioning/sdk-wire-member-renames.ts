@@ -640,9 +640,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::S3::Bucket': {
     members: {
+      AbacStatus: ['AbacStatus.Status'],
       'AccelerateConfiguration.AccelerationStatus': ['Status'],
       'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination.BucketArn': ['Bucket'],
       BucketName: ['Bucket'],
+      BucketNamePrefix: ['Bucket'],
       'CorsConfiguration.CorsRules.ExposedHeaders': ['ExposeHeaders'],
       'CorsConfiguration.CorsRules.MaxAge': ['MaxAgeSeconds'],
       'InventoryConfigurations.Destination.BucketAccountId': ['AccountId'],
@@ -677,6 +679,11 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'WebsiteConfiguration.IndexDocument': ['IndexDocument.Suffix'],
     },
     containers: {
+      MetadataConfiguration: [
+        'UpdateBucketMetadataAnnotationTableConfigurationCommand',
+        'UpdateBucketMetadataInventoryTableConfigurationCommand',
+        'UpdateBucketMetadataJournalTableConfigurationCommand',
+      ],
       AnalyticsConfigurations: ['AnalyticsConfiguration', 'And'],
       'AnalyticsConfigurations.StorageClassAnalysis.DataExport.Destination': ['Destination.S3BucketDestination'],
       'AnalyticsConfigurations.TagFilters': ['Tags'],

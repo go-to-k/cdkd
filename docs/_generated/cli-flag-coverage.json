@@ -2248,6 +2248,7 @@
     "--strict"
   ],
   "unknownFlagsInIntegs": [
+    "--abac-status",
     "--accept",
     "--accept-refused",
     "--access-key-id",
@@ -2451,6 +2452,7 @@
     "--ip-permissions",
     "--item",
     "--job-name",
+    "--journal-table-configuration",
     "--json",
     "--key",
     "--key-id",
@@ -2482,6 +2484,7 @@
     "--message",
     "--message-body",
     "--message-group-id",
+    "--metadata-configuration",
     "--metric-name",
     "--metrics",
     "--migrate-from-cloudformation",

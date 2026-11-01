@@ -122,6 +122,7 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
     // configuration this gate guards.
     mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
     mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' }); // GetBucketLocation readback
+    mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
     mockSend.mockRejectedValueOnce(new Error('applyConfiguration boom'));
 
     await expect(
@@ -208,6 +209,7 @@ describe('S3BucketProvider partial-create cleanup (Issue #376)', () => {
       // A generated name, the only one still adopted (go-to-k/cdkd#4684).
       mockSend.mockRejectedValueOnce(new BucketAlreadyOwnedByYou('you already own it'));
       mockSend.mockResolvedValueOnce({ LocationConstraint: 'eu-west-1' });
+      mockSend.mockResolvedValueOnce({}); // GetBucketAbac: a bucket this create did not make
       mockSend.mockRejectedValueOnce(new Error('wiring boom'));
       const error = await provider
         .create('MyBucket', RESOURCE_TYPE, { VersioningConfiguration: { Status: 'Enabled' } })

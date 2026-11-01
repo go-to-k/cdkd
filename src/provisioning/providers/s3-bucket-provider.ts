@@ -2,6 +2,14 @@
 import {
   S3Client,
   CreateBucketCommand,
+  CreateBucketMetadataConfigurationCommand,
+  DeleteBucketMetadataConfigurationCommand,
+  GetBucketAbacCommand,
+  GetBucketMetadataConfigurationCommand,
+  PutBucketAbacCommand,
+  UpdateBucketMetadataAnnotationTableConfigurationCommand,
+  UpdateBucketMetadataInventoryTableConfigurationCommand,
+  UpdateBucketMetadataJournalTableConfigurationCommand,
   DeleteBucketCommand,
   GetBucketLocationCommand,
   HeadBucketCommand,
@@ -58,7 +66,16 @@ import {
   type BucketLocationConstraint,
   type ObjectOwnership,
   type CORSRule,
+  type BucketNamespace,
+  type MetadataConfiguration,
+  type MetadataConfigurationResult,
+  type MetadataTableEncryptionConfiguration,
 } from '@aws-sdk/client-s3';
+import {
+  S3ControlClient,
+  TagResourceCommand,
+  UntagResourceCommand,
+} from '@aws-sdk/client-s3-control';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
 import { getLogger } from '../../utils/logger.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
@@ -70,6 +87,7 @@ import {
   s3BucketWebsiteUrl,
 } from '../../utils/s3-endpoints.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
+import { getAccountInfo } from '../../deployment/intrinsic-function-resolver.js';
 import {
   explicitDenyPolicyKind,
   isExplicitDenyError,
@@ -81,7 +99,7 @@ import {
 import { markNotGone } from '../not-gone.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
-import { describeAwsFailure } from '../../utils/aws-failure-text.js';
+import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
 import { displayIdent, displaySafe, safeMsg } from '../../utils/display-safe.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
@@ -867,6 +885,229 @@ function foldEventBridgeConfiguration(config: Record<string, unknown>): Record<s
     return config;
   }
   return { ...config, [EVENTBRIDGE_CONFIG_KEY]: { EventBridgeEnabled: enabled } };
+}
+
+/**
+ * go-to-k/cdkd#2762: S3 reads a bucket that never set ABAC as `Disabled`, and
+ * CloudFormation sends `Disabled` when a template drops `AbacStatus` (measured
+ * 2026-11-01), so an undeclared value is that one.
+ */
+const ABAC_DISABLED = 'Disabled';
+const ABAC_ENABLED = 'Enabled';
+
+/** The table states of a CFn `MetadataConfiguration`; an undeclared one is off. */
+const METADATA_TABLE_DISABLED = 'DISABLED';
+const METADATA_TABLE_ENABLED = 'ENABLED';
+/**
+ * CloudFormation took 33 seconds over a journal and an inventory table
+ * (measured 2026-11-01); the budget only bounds a table that never settles.
+ */
+const METADATA_TABLE_POLL_MS = 2_000;
+const METADATA_TABLE_BUDGET_MS = 5 * 60_000;
+
+function abacStatusOf(properties: Record<string, unknown>): unknown {
+  return properties['AbacStatus'] ?? ABAC_DISABLED;
+}
+
+function metadataBag(value: unknown): Record<string, unknown> | undefined {
+  return isPlainObject(value) ? value : undefined;
+}
+
+/**
+ * Why a declared `MetadataConfiguration` cannot be sent, or `undefined`. It runs
+ * before anything reads the value, because a non-object would otherwise read
+ * as a removal and delete the live configuration
+ * (docs/provider-rules.md, "Never infer a default from a possibly-malformed value").
+ */
+function metadataConfigurationRefusal(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const root = 'MetadataConfiguration';
+  if (!isPlainObject(value)) return `${root} must be an object`;
+  const journal = value['JournalTableConfiguration'];
+  if (!isPlainObject(journal)) return `${root}.JournalTableConfiguration must be an object`;
+  const expiration = journal['RecordExpiration'];
+  if (!isPlainObject(expiration)) {
+    return `${root}.JournalTableConfiguration.RecordExpiration must be an object`;
+  }
+  if (typeof expiration['Expiration'] !== 'string') {
+    return `${root}.JournalTableConfiguration.RecordExpiration.Expiration must be a string`;
+  }
+  const days = expiration['Days'];
+  if (days !== undefined && (days === '' || days === null || !Number.isInteger(Number(days)))) {
+    return `${root}.JournalTableConfiguration.RecordExpiration.Days must be an integer`;
+  }
+  const tables = [
+    ['JournalTableConfiguration', journal],
+    ['InventoryTableConfiguration', value['InventoryTableConfiguration']],
+    ['AnnotationTableConfiguration', value['AnnotationTableConfiguration']],
+  ] as const;
+  for (const [member, table] of tables) {
+    if (table === undefined) continue;
+    if (!isPlainObject(table)) return `${root}.${member} must be an object`;
+    if (member !== 'JournalTableConfiguration' && typeof table['ConfigurationState'] !== 'string') {
+      return `${root}.${member}.ConfigurationState must be a string`;
+    }
+    const encryption = table['EncryptionConfiguration'];
+    if (encryption === undefined) continue;
+    if (!isPlainObject(encryption) || typeof encryption['SseAlgorithm'] !== 'string') {
+      return `${root}.${member}.EncryptionConfiguration must be an object with an SseAlgorithm`;
+    }
+  }
+  return undefined;
+}
+
+function metadataEncryptionToSdk(
+  table: Record<string, unknown>
+): MetadataTableEncryptionConfiguration | undefined {
+  const encryption = metadataBag(table['EncryptionConfiguration']);
+  if (encryption === undefined) return undefined;
+  return {
+    SseAlgorithm: encryption[
+      'SseAlgorithm'
+    ] as MetadataTableEncryptionConfiguration['SseAlgorithm'],
+    ...(encryption['KmsKeyArn'] !== undefined
+      ? { KmsKeyArn: encryption['KmsKeyArn'] as string }
+      : {}),
+  };
+}
+
+/**
+ * CFn `MetadataConfiguration` -> the SDK's, carrying only what a caller can
+ * set: the CFn schema marks `Destination` and every `TableName` / `TableArn`
+ * read-only. A declared `Days` may arrive as a string through a parameter.
+ */
+function metadataConfigurationToSdk(config: Record<string, unknown>): MetadataConfiguration {
+  const journal = metadataBag(config['JournalTableConfiguration']) ?? {};
+  const expiration = metadataBag(journal['RecordExpiration']) ?? {};
+  const days = expiration['Days'];
+  const journalEncryption = metadataEncryptionToSdk(journal);
+  const inventory = metadataBag(config['InventoryTableConfiguration']);
+  const inventoryEncryption = inventory && metadataEncryptionToSdk(inventory);
+  const annotation = metadataBag(config['AnnotationTableConfiguration']);
+  const annotationEncryption = annotation && metadataEncryptionToSdk(annotation);
+  type Sdk = MetadataConfiguration;
+  type Inventory = NonNullable<Sdk['InventoryTableConfiguration']>;
+  type Annotation = NonNullable<Sdk['AnnotationTableConfiguration']>;
+  return {
+    JournalTableConfiguration: {
+      RecordExpiration: {
+        Expiration: expiration['Expiration'] as NonNullable<
+          NonNullable<Sdk['JournalTableConfiguration']>['RecordExpiration']
+        >['Expiration'],
+        ...(days !== undefined
+          ? { Days: typeof days === 'string' ? Number(days) : (days as number) }
+          : {}),
+      },
+      ...(journalEncryption ? { EncryptionConfiguration: journalEncryption } : {}),
+    },
+    ...(inventory
+      ? {
+          InventoryTableConfiguration: {
+            ConfigurationState: inventory['ConfigurationState'] as Inventory['ConfigurationState'],
+            ...(inventoryEncryption ? { EncryptionConfiguration: inventoryEncryption } : {}),
+          },
+        }
+      : {}),
+    ...(annotation
+      ? {
+          AnnotationTableConfiguration: {
+            ConfigurationState: annotation[
+              'ConfigurationState'
+            ] as Annotation['ConfigurationState'],
+            ...(annotationEncryption ? { EncryptionConfiguration: annotationEncryption } : {}),
+            ...(annotation['Role'] !== undefined ? { Role: annotation['Role'] as string } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * The SDK's readback -> the CFn writable shape, with what
+ * `metadataConfigurationToSdk` sends. S3 never returns `EncryptionConfiguration`
+ * (write-only in the CFn schema), and the read-only members are attributes.
+ */
+function metadataConfigurationFromSdk(
+  result: MetadataConfigurationResult
+): Record<string, unknown> {
+  const journal = result.JournalTableConfigurationResult;
+  const inventory = result.InventoryTableConfigurationResult;
+  const annotation = result.AnnotationTableConfigurationResult;
+  return {
+    ...(journal
+      ? {
+          JournalTableConfiguration: {
+            RecordExpiration: {
+              Expiration: journal.RecordExpiration?.Expiration,
+              ...(journal.RecordExpiration?.Days !== undefined
+                ? { Days: journal.RecordExpiration.Days }
+                : {}),
+            },
+          },
+        }
+      : {}),
+    ...(inventory
+      ? { InventoryTableConfiguration: { ConfigurationState: inventory.ConfigurationState } }
+      : {}),
+    ...(annotation
+      ? {
+          AnnotationTableConfiguration: {
+            ConfigurationState: annotation.ConfigurationState,
+            ...(annotation.Role !== undefined ? { Role: annotation.Role } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/** The `Fn::GetAtt` names CloudFormation serves from a metadata readback. */
+function metadataAttributesFromSdk(result: MetadataConfigurationResult): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  const destination = result.DestinationResult;
+  if (destination) {
+    const path = 'MetadataConfiguration.Destination';
+    attributes[path] = {
+      TableBucketArn: destination.TableBucketArn,
+      TableBucketType: destination.TableBucketType,
+      TableNamespace: destination.TableNamespace,
+    };
+    attributes[`${path}.TableBucketArn`] = destination.TableBucketArn;
+    attributes[`${path}.TableBucketType`] = destination.TableBucketType;
+    attributes[`${path}.TableNamespace`] = destination.TableNamespace;
+  }
+  for (const [member, table] of [
+    ['JournalTableConfiguration', result.JournalTableConfigurationResult],
+    ['InventoryTableConfiguration', result.InventoryTableConfigurationResult],
+    ['AnnotationTableConfiguration', result.AnnotationTableConfigurationResult],
+  ] as const) {
+    if (table?.TableName !== undefined) {
+      attributes[`MetadataConfiguration.${member}.TableName`] = table.TableName;
+    }
+    if (table?.TableArn !== undefined) {
+      attributes[`MetadataConfiguration.${member}.TableArn`] = table.TableArn;
+    }
+  }
+  return attributes;
+}
+
+/**
+ * The bucket-naming combinations CloudFormation refuses (measured 2026-11-01).
+ * `BucketNamespace: account-regional` with neither name stays S3's to refuse:
+ * its message names the `-<account>-<region>-an` suffix a name must carry.
+ */
+function bucketNameRefusal(properties: Record<string, unknown>): string | undefined {
+  const prefix = properties['BucketNamePrefix'];
+  if (prefix === undefined) return undefined;
+  if (typeof prefix !== 'string' || prefix === '') {
+    return 'sets a BucketNamePrefix that is not a non-empty string';
+  }
+  if (properties['BucketName'] !== undefined) {
+    return 'specifies both BucketName and BucketNamePrefix; only one of them is accepted';
+  }
+  if (properties['BucketNamespace'] !== 'account-regional') {
+    return 'sets BucketNamePrefix, which is only supported with BucketNamespace: account-regional';
+  }
+  return undefined;
 }
 
 /** The refusal paths the lifecycle applier and its fold SHARE (issue #1755). */
@@ -2160,6 +2401,11 @@ export class S3BucketProvider implements ResourceProvider {
         'ReplicationConfiguration',
         'ObjectLockConfiguration',
         'ObjectLockEnabled',
+        // go-to-k/cdkd#2762.
+        'AbacStatus',
+        'BucketNamePrefix',
+        'BucketNamespace',
+        'MetadataConfiguration',
       ]),
     ],
   ]);
@@ -2171,6 +2417,10 @@ export class S3BucketProvider implements ResourceProvider {
         [
           'AccessControl',
           'Legacy canned ACL; AWS disables ACLs by default since 2023-04 — use BucketOwnershipControls + BucketPolicy / PublicAccessBlockConfiguration instead',
+        ],
+        [
+          'MetadataTableConfiguration',
+          'V1 S3 Metadata, which the schema says to replace with MetadataConfiguration; S3 answered V1APIsNotAllowed where it was probed, so an SDK path could not be verified. Stays on Cloud Control',
         ],
       ]),
     ],
@@ -2557,6 +2807,9 @@ export class S3BucketProvider implements ResourceProvider {
     _resourceType: string,
     attributeName: string
   ): Promise<unknown> {
+    if (attributeName.startsWith('MetadataConfiguration.')) {
+      return (await this.readMetadataAttributes(physicalId))[attributeName];
+    }
     const attrs = await this.buildAttributes(physicalId);
     return attrs[attributeName];
   }
@@ -2669,7 +2922,8 @@ export class S3BucketProvider implements ResourceProvider {
     resourceType: string,
     logicalId: string,
     oldTagsRaw: unknown,
-    newTagsRaw: unknown
+    newTagsRaw: unknown,
+    abacEnabled = false
   ): Promise<void> {
     const plan = planTagDiff(oldTagsRaw, newTagsRaw);
     const desiredRead = readTagList(newTagsRaw, 'desired');
@@ -2705,6 +2959,11 @@ export class S3BucketProvider implements ResourceProvider {
       tagSet = desired;
     }
 
+    if (abacEnabled) {
+      await this.replaceAbacBucketTags(bucketName, tagSet);
+      return;
+    }
+
     if (tagSet.length === 0) {
       // Clear tags. Use PutBucketTaggingCommand with empty TagSet — S3
       // does not have a public `DeleteBucketTagging` parity for the SDK
@@ -2734,6 +2993,405 @@ export class S3BucketProvider implements ResourceProvider {
     this.logger.debug(
       `Replaced tag set on bucket ${this.shown(bucketName)} (${tagSet.length} tags)`
     );
+  }
+
+  /**
+   * go-to-k/cdkd#2762: S3 answers `PutBucketTagging` and `DeleteBucketTagging`
+   * with `BadRequest` while ABAC is on and points at S3 Control (measured
+   * 2026-11-01), so the full replace `applyTagDiff` plans is spelled as a
+   * `TagResource` plus an `UntagResource` of every other live key. `readTags`
+   * already leaves out `aws:` keys, which neither call accepts.
+   */
+  private async replaceAbacBucketTags(bucketName: string, tagSet: CfnTagEntry[]): Promise<void> {
+    const keep = new Set(tagSet.map((t) => t.Key));
+    const stale = (await this.readTags(bucketName))
+      .map((t) => t.Key)
+      .filter((key) => !keep.has(key));
+    // Per call, in the shared client's region and with its credentials: only
+    // an ABAC bucket's tag change needs S3 Control, and a client held on the
+    // provider would escape `noWriteProbe`.
+    const client = new S3ControlClient({
+      ...clientDefaultsFor(this.credentialConfig),
+      region: await this.getRegion(),
+    });
+    try {
+      const AccountId = (await getAccountInfo()).accountId;
+      const ResourceArn = s3BucketArn(bucketName, await this.getRegion());
+      // Untag first: a swap of keys near S3's tag limit must not overflow it.
+      if (stale.length > 0) {
+        await client.send(new UntagResourceCommand({ AccountId, ResourceArn, TagKeys: stale }));
+      }
+      if (tagSet.length > 0) {
+        await client.send(new TagResourceCommand({ AccountId, ResourceArn, Tags: tagSet }));
+      }
+    } finally {
+      client.destroy();
+    }
+    this.logger.debug(safeMsg`Replaced tag set on ABAC bucket ${this.shown(bucketName)}`);
+  }
+
+  private async applyAbacStatus(bucketName: string, status: unknown): Promise<void> {
+    await this.s3Client.send(
+      new PutBucketAbacCommand({
+        Bucket: bucketName,
+        AbacStatus: { Status: status as 'Enabled' | 'Disabled' },
+      })
+    );
+    this.logger.debug(safeMsg`Applied AbacStatus to bucket ${this.shown(bucketName)}`);
+  }
+
+  private async accountRegionalBucketName(prefix: string): Promise<string> {
+    const account = (await getAccountInfo()).accountId;
+    return `${prefix}-${account}-${canonicalizeRegion(await this.getRegion())}-an`;
+  }
+
+  /**
+   * @returns whether a table was turned on. S3 answers a second create with
+   * `MetadataConfigurationAlreadyExists` (measured 2026-11-01): a retry after a
+   * crash, or a state that never recorded this configuration, finds the bucket
+   * ahead of the record, so that converges from what S3 holds.
+   */
+  private async createMetadataConfiguration(
+    bucketName: string,
+    desired: Record<string, unknown>,
+    stateBorne: boolean
+  ): Promise<boolean> {
+    const MetadataConfiguration = metadataConfigurationToSdk(desired);
+    try {
+      await this.s3Client.send(
+        new CreateBucketMetadataConfigurationCommand({
+          Bucket: bucketName,
+          MetadataConfiguration,
+        })
+      );
+    } catch (err) {
+      if ((err as { name?: string }).name !== 'MetadataConfigurationAlreadyExists') throw err;
+      const live = await this.readMetadataConfigurationResult(bucketName).catch(() => undefined);
+      if (live === undefined) throw err;
+      return this.convergeMetadataConfiguration(bucketName, desired, live, stateBorne);
+    }
+    await this.waitForMetadataTables(bucketName, MetadataConfiguration, stateBorne);
+    return true;
+  }
+
+  /**
+   * Bring a configuration S3 already holds to `desired`. Its tables may still be
+   * settling, or have failed, so this waits whatever the diff sent. S3 never
+   * returns a table's encryption, so a declared one cannot be compared.
+   */
+  private async convergeMetadataConfiguration(
+    bucketName: string,
+    desired: Record<string, unknown>,
+    live: MetadataConfigurationResult,
+    stateBorne: boolean
+  ): Promise<boolean> {
+    const sent = metadataConfigurationToSdk(desired);
+    if (
+      sent.JournalTableConfiguration?.EncryptionConfiguration ||
+      sent.InventoryTableConfiguration?.EncryptionConfiguration ||
+      sent.AnnotationTableConfiguration?.EncryptionConfiguration
+    ) {
+      this.logger.warn(
+        safeMsg`Bucket ${this.shown(bucketName)} already holds an S3 Metadata configuration, and S3 never returns a table's encryption, so the declared EncryptionConfiguration is unverified and may not be the one in effect`
+      );
+    }
+    const enabledATable = await this.applyMetadataConfigurationDiff(
+      bucketName,
+      desired,
+      metadataConfigurationFromSdk(live),
+      true,
+      true
+    );
+    await this.waitForMetadataTables(bucketName, sent, stateBorne);
+    return enabledATable;
+  }
+
+  /**
+   * Bring the bucket's S3 Metadata configuration from `previous` to `desired`.
+   * Each table has its own update call.
+   *
+   * A table's encryption cannot change once the table exists, on any shape
+   * (probed in us-east-1 on 2026-11-01, a deliberate pre-flight refusal per
+   * docs/provider-rules.md): the journal update takes no encryption; the
+   * inventory update answers `already enabled` to ANY call on an enabled table;
+   * the annotation update answers `You can't update the encryption
+   * configuration`. CloudFormation refuses it too, also for a block merely
+   * added or dropped. The state-borne callers carry no `EncryptionConfiguration`
+   * the readback could supply, so for them a difference is not a request.
+   *
+   * @param refuseOnly the {@link noWriteProbe} pre-flight: nothing was written,
+   *   so there is no table to wait for.
+   * @returns whether a table was turned on or a configuration created.
+   */
+  private async applyMetadataConfigurationDiff(
+    bucketName: string,
+    desiredRaw: unknown,
+    previousRaw: unknown,
+    stateBorne: boolean,
+    refuseOnly: boolean
+  ): Promise<boolean> {
+    const desired = metadataBag(desiredRaw);
+    const previous = metadataBag(previousRaw);
+    if (desired === undefined) {
+      if (previous === undefined) return false;
+      try {
+        await this.s3Client.send(
+          new DeleteBucketMetadataConfigurationCommand({ Bucket: bucketName })
+        );
+      } catch (err) {
+        if ((err as { name?: string }).name !== 'MetadataConfigurationNotFound') throw err;
+      }
+      return false;
+    }
+    if (previous === undefined) {
+      if (refuseOnly) return false;
+      return this.createMetadataConfiguration(bucketName, desired, stateBorne);
+    }
+
+    const next = metadataConfigurationToSdk(desired);
+    const prev = metadataConfigurationToSdk(previous);
+    const differs = (a: unknown, b: unknown): boolean => JSON.stringify(a) !== JSON.stringify(b);
+    const refuseEncryptionChange = (member: string, a: unknown, b: unknown): void => {
+      if (!stateBorne && differs(a, b)) {
+        throw new Error(
+          `Bucket ${this.shown(bucketName)}: changing MetadataConfiguration.${member}.EncryptionConfiguration ` +
+            `is not supported once the table exists. Revert it, or re-create the table: remove ` +
+            `MetadataConfiguration, deploy, delete the table with aws s3tables delete-table, then add ` +
+            `it back with the new encryption`
+        );
+      }
+    };
+
+    const nextJournal = next.JournalTableConfiguration;
+    const prevJournal = prev.JournalTableConfiguration;
+    refuseEncryptionChange(
+      'JournalTableConfiguration',
+      prevJournal?.EncryptionConfiguration,
+      nextJournal?.EncryptionConfiguration
+    );
+
+    const nextInventory = next.InventoryTableConfiguration;
+    const prevInventory = prev.InventoryTableConfiguration;
+    const nextInventoryState = nextInventory?.ConfigurationState ?? METADATA_TABLE_DISABLED;
+    const prevInventoryState = prevInventory?.ConfigurationState ?? METADATA_TABLE_DISABLED;
+    if (
+      nextInventoryState === METADATA_TABLE_ENABLED &&
+      prevInventoryState === METADATA_TABLE_ENABLED
+    ) {
+      refuseEncryptionChange(
+        'InventoryTableConfiguration',
+        prevInventory?.EncryptionConfiguration,
+        nextInventory?.EncryptionConfiguration
+      );
+    }
+
+    const nextAnnotation = next.AnnotationTableConfiguration;
+    const prevAnnotation = prev.AnnotationTableConfiguration;
+    const nextAnnotationState = nextAnnotation?.ConfigurationState ?? METADATA_TABLE_DISABLED;
+    const prevAnnotationState = prevAnnotation?.ConfigurationState ?? METADATA_TABLE_DISABLED;
+    const annotationStaysOn =
+      nextAnnotationState === METADATA_TABLE_ENABLED &&
+      prevAnnotationState === METADATA_TABLE_ENABLED;
+    if (annotationStaysOn) {
+      refuseEncryptionChange(
+        'AnnotationTableConfiguration',
+        prevAnnotation?.EncryptionConfiguration,
+        nextAnnotation?.EncryptionConfiguration
+      );
+    }
+
+    let enabledATable = false;
+    if (differs(prevJournal?.RecordExpiration, nextJournal?.RecordExpiration)) {
+      await this.s3Client.send(
+        new UpdateBucketMetadataJournalTableConfigurationCommand({
+          Bucket: bucketName,
+          JournalTableConfiguration: { RecordExpiration: nextJournal?.RecordExpiration },
+        })
+      );
+    }
+    if (nextInventoryState !== prevInventoryState) {
+      const on = nextInventoryState === METADATA_TABLE_ENABLED;
+      await this.s3Client.send(
+        new UpdateBucketMetadataInventoryTableConfigurationCommand({
+          Bucket: bucketName,
+          InventoryTableConfiguration: {
+            ConfigurationState: nextInventoryState,
+            ...(on && nextInventory?.EncryptionConfiguration
+              ? { EncryptionConfiguration: nextInventory.EncryptionConfiguration }
+              : {}),
+          },
+        })
+      );
+      enabledATable ||= on;
+    }
+    if (
+      nextAnnotationState !== prevAnnotationState ||
+      (annotationStaysOn && nextAnnotation?.Role !== prevAnnotation?.Role)
+    ) {
+      const on = nextAnnotationState === METADATA_TABLE_ENABLED;
+      await this.s3Client.send(
+        new UpdateBucketMetadataAnnotationTableConfigurationCommand({
+          Bucket: bucketName,
+          AnnotationTableConfiguration: {
+            ConfigurationState: nextAnnotationState,
+            ...(on && nextAnnotation?.EncryptionConfiguration
+              ? { EncryptionConfiguration: nextAnnotation.EncryptionConfiguration }
+              : {}),
+            ...(on && nextAnnotation?.Role !== undefined ? { Role: nextAnnotation.Role } : {}),
+          },
+        })
+      );
+      enabledATable ||= on;
+    }
+    if (enabledATable && !refuseOnly) {
+      await this.waitForMetadataTables(bucketName, next, stateBorne);
+    }
+    return enabledATable;
+  }
+
+  /**
+   * Wait, in every wait mode, until each table the configuration turns on has
+   * an ARN or has failed, as CloudFormation does. The ARNs are `Fn::GetAtt`
+   * values. A failed or unsettled table only warns: S3 accepts a configuration
+   * over a table an earlier one left behind and the new table turns
+   * `JournalTableAlreadyExists`, which CloudFormation completes over on a create
+   * and on an update (measured 2026-11-01). Tables outlive the bucket, so a
+   * destroy and redeploy of one name reaches this, and failing there would
+   * also delete the bucket in the partial-create cleanup. S3 kept the ARN on
+   * every table it failed this way (measured for all three). A state-borne
+   * caller warns on an unread status too: a rollback must not stop here.
+   */
+  private async waitForMetadataTables(
+    bucketName: string,
+    sent: MetadataConfiguration,
+    stateBorne: boolean
+  ): Promise<void> {
+    const deadline = Date.now() + METADATA_TABLE_BUDGET_MS;
+    const warned = new Set<string>();
+    for (;;) {
+      let result: MetadataConfigurationResult | undefined;
+      try {
+        result = await this.readMetadataConfigurationResult(bucketName);
+      } catch (err) {
+        if (!stateBorne) throw err;
+        this.logger.warn(
+          safeMsg`Could not read the S3 Metadata tables of ${this.shown(bucketName)} (${caughtErrorName(err)}); not waiting for them`
+        );
+        return;
+      }
+      const tables = [
+        ['journal', true, result?.JournalTableConfigurationResult],
+        [
+          'inventory',
+          sent.InventoryTableConfiguration?.ConfigurationState === METADATA_TABLE_ENABLED,
+          result?.InventoryTableConfigurationResult,
+        ],
+        [
+          'annotation',
+          sent.AnnotationTableConfiguration?.ConfigurationState === METADATA_TABLE_ENABLED,
+          result?.AnnotationTableConfigurationResult,
+        ],
+      ] as const;
+      let pending: string | undefined;
+      for (const [name, wanted, table] of tables) {
+        if (!wanted) continue;
+        if (table?.TableStatus === 'FAILED') {
+          if (!warned.has(name)) {
+            warned.add(name);
+            this.warnMetadataTableFailed(bucketName, name, table);
+          }
+          continue;
+        }
+        if (table?.TableArn === undefined) pending = `the ${name} table`;
+      }
+      if (pending === undefined) return;
+      if (Date.now() >= deadline) {
+        this.logger.warn(
+          safeMsg`Gave up waiting for ${pending} of bucket ${this.shown(bucketName)}'s S3 Metadata configuration; it may still finish, and an Fn::GetAtt on its ARN fails until then. Read it with aws s3api get-bucket-metadata-configuration`
+        );
+        return;
+      }
+      await new Promise((r) => setTimeout(r, METADATA_TABLE_POLL_MS));
+    }
+  }
+
+  /** AWS's own text goes to debug only: a status reason may name a role ARN. */
+  private warnMetadataTableFailed(
+    bucketName: string,
+    name: string,
+    table: {
+      TableArn?: string | undefined;
+      Error?: { ErrorCode?: string | undefined; ErrorMessage?: string | undefined } | undefined;
+    }
+  ): void {
+    const reason = describeAwsStatusReason(
+      { code: table.Error?.ErrorCode, message: table.Error?.ErrorMessage },
+      'S3 gave no reason.'
+    );
+    const noArn =
+      table.TableArn === undefined ? ' It has no ARN, so an Fn::GetAtt on its TableArn fails.' : '';
+    this.logger.debug(safeMsg`S3 Metadata ${name} table: ${this.maskRaw(reason.detail)}`);
+    this.logger.warn(
+      safeMsg`The S3 Metadata ${name} table of bucket ${this.shown(bucketName)} FAILED: ${reason.summary} The deploy continues, but this table records nothing.${noArn} When a table left by an earlier bucket of this name is the cause, delete it with aws s3tables delete-table --table-bucket-arn <the account's aws-s3 table bucket> --namespace b_${this.shown(bucketName)} --name ${name}, then deploy without MetadataConfiguration and add it back`
+    );
+  }
+
+  /** `undefined` when the bucket has no configuration; any other failure throws. */
+  private async readMetadataConfigurationResult(
+    bucket: string
+  ): Promise<MetadataConfigurationResult | undefined> {
+    try {
+      const resp = await this.s3Client.send(
+        new GetBucketMetadataConfigurationCommand({ Bucket: bucket })
+      );
+      return resp.GetBucketMetadataConfigurationResult?.MetadataConfigurationResult;
+    } catch (err) {
+      if ((err as { name?: string }).name === 'MetadataConfigurationNotFound') return undefined;
+      throw err;
+    }
+  }
+
+  /** `'unread'` on a failed read, for the same reason as {@link readAbacStatus}. */
+  private async readMetadataForDrift(
+    bucket: string
+  ): Promise<MetadataConfigurationResult | undefined | 'unread'> {
+    try {
+      return await this.readMetadataConfigurationResult(bucket);
+    } catch (err) {
+      this.logger.debug(
+        safeMsg`Could not read S3 Metadata of ${this.shown(bucket)} (${caughtErrorName(err)})`
+      );
+      return 'unread';
+    }
+  }
+
+  /**
+   * Every write has landed by now. A template deploy fails on an unread
+   * attribute, since state would lose the ARNs; a rollback or revert must not
+   * stop here, so it warns and the next deploy records them.
+   */
+  private async readMetadataAttributesAfterWrites(
+    bucket: string,
+    context: CreateContext | UpdateContext | undefined
+  ): Promise<Record<string, unknown>> {
+    try {
+      return await this.readMetadataAttributes(bucket);
+    } catch (err) {
+      const readback =
+        context !== undefined && 'desiredFromAwsReadback' in context
+          ? context.desiredFromAwsReadback
+          : undefined;
+      if (context?.replayingState !== true && readback !== true) throw err;
+      this.logger.warn(
+        safeMsg`Could not read the S3 Metadata attributes of ${this.shown(bucket)} (${caughtErrorName(err)}); an Fn::GetAtt on them fails until the next deploy records them`
+      );
+      return {};
+    }
+  }
+
+  private async readMetadataAttributes(bucket: string): Promise<Record<string, unknown>> {
+    const result = await this.readMetadataConfigurationResult(bucket);
+    return result ? metadataAttributesFromSdk(result) : {};
   }
 
   /**
@@ -6232,6 +6890,34 @@ export class S3BucketProvider implements ResourceProvider {
         await this.applyVersioning(bucketName, { Status: 'Suspended' });
       }
     }
+    const desiredMetadata = properties['MetadataConfiguration'];
+    const previousMetadata = previousProperties['MetadataConfiguration'];
+    const metadataStateBorne =
+      context?.replayingState === true || context?.desiredFromAwsReadback === true;
+    const metadataRefusal = metadataConfigurationRefusal(desiredMetadata);
+    if (
+      metadataRefusal !== undefined &&
+      JSON.stringify(desiredMetadata) !== JSON.stringify(previousMetadata)
+    ) {
+      if (!metadataStateBorne) throw new Error(metadataRefusal);
+      this.logger.warn(
+        safeMsg`Bucket ${this.shown(bucketName)}: ${metadataRefusal}; its S3 Metadata configuration was left as it is`
+      );
+      retainPrevious('MetadataConfiguration');
+    } else if (metadataRefusal === undefined) {
+      const madeTable = await this.applyMetadataConfigurationDiff(
+        bucketName,
+        desiredMetadata,
+        previousMetadata,
+        metadataStateBorne,
+        refuseUnusable
+      );
+      if (madeTable && context?.desiredFromAwsReadback === true) {
+        this.logger.warn(
+          safeMsg`Bucket ${this.shown(bucketName)}: S3 never returns a table's EncryptionConfiguration, so a table this revert turned on took S3's default encryption, whatever the template declares`
+        );
+      }
+    }
     return overrides;
   }
 
@@ -6941,21 +7627,58 @@ export class S3BucketProvider implements ResourceProvider {
     // the bag is used VERBATIM (never rewritten the way `generateResourceName`
     // rewrites a logical id), so the base masker already recognises it.
     if (this.opMask === undefined) {
-      return this.maskedView(createMaskedLogSinks(this.logger, context?.maskSecrets)).create(
-        logicalId,
-        resourceType,
-        properties,
-        context
-      );
+      const sinks = createMaskedLogSinks(this.logger, context?.maskSecrets);
+      // A prefix is NOT used verbatim: the name only contains it, and a secret
+      // too short for the masker's substring floor would print.
+      const prefix = properties['BucketNamePrefix'];
+      const derivedName =
+        typeof prefix === 'string' && prefix !== '' && bucketNameRefusal(properties) === undefined
+          ? await this.accountRegionalBucketName(prefix)
+          : undefined;
+      const view = withDerivedNameMasks(this.logger, sinks, [[prefix, derivedName]]);
+      return this.maskedView(view).create(logicalId, resourceType, properties, context);
     }
     this.logger.debug(`Creating S3 bucket ${displaySafe(logicalId)}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
+    const nameRefusal = bucketNameRefusal(properties);
+    if (nameRefusal !== undefined) {
+      if (context?.replayingState !== true) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `S3 bucket ${displaySafe(logicalId)} ${nameRefusal}; fix the template`,
+            resourceType,
+            logicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`S3 bucket ${displaySafe(logicalId)} ${nameRefusal}; restoring it anyway`
+      );
+    }
+    const metadataRefusal = metadataConfigurationRefusal(properties['MetadataConfiguration']);
+    if (metadataRefusal !== undefined && context?.replayingState !== true) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `S3 bucket ${displaySafe(logicalId)}: ${metadataRefusal}; fix the template`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+
     // go-to-k/cdkd#4684: the same truthiness as the `||` below, so "explicit"
     // means exactly "the name sent is the template's, not a generated one".
-    const explicitBucketName = Boolean(properties['BucketName']);
+    // A `BucketNamePrefix` is that too: CloudFormation sends exactly
+    // `<prefix>-<account>-<region>-an` (measured 2026-11-01), which any run
+    // over the same template repeats.
+    const declaredPrefix = properties['BucketNamePrefix'];
+    const namePrefix = typeof declaredPrefix === 'string' ? declaredPrefix : undefined;
+    const explicitBucketName = Boolean(properties['BucketName'] || namePrefix);
+    const prefixedName = namePrefix ? await this.accountRegionalBucketName(namePrefix) : undefined;
     const bucketName =
+      prefixedName ||
       (properties['BucketName'] as string | undefined) ||
       (this.generatedCreateName(resourceType, logicalId, properties) as string);
     // go-to-k/cdkd#4583: true while a bucket THIS call created (`createdNewBucket`)
@@ -6976,8 +7699,12 @@ export class S3BucketProvider implements ResourceProvider {
           Tags?: CfnTagEntry[];
         };
         ObjectLockEnabledForBucket?: boolean;
+        BucketNamespace?: BucketNamespace;
       } = {
         Bucket: bucketName,
+        ...(properties['BucketNamespace'] !== undefined
+          ? { BucketNamespace: properties['BucketNamespace'] as BucketNamespace }
+          : {}),
       };
 
       // Add LocationConstraint for non-us-east-1 regions.
@@ -7512,13 +8239,38 @@ export class S3BucketProvider implements ResourceProvider {
       // is gated on `createdNewBucket` so we never delete a pre-existing
       // bucket. See Issue #376 for the cross-provider sweep.
       let effectiveOverrides: Map<string, unknown>;
+      // go-to-k/cdkd#2762: a bucket this call did not make, or its own leftover,
+      // can already hold what the steps below write. Reached by a crash during
+      // the metadata wait or a retained.json re-adoption, so a plain create
+      // reads nothing here. `PutBucketTagging` is refused while ABAC is on, and
+      // the metadata goes through the diff from what S3 holds. ABAC is read
+      // whatever the template says, since it decides how tags are written here
+      // and a later Tags change is refused while it is on. An undeclared live metadata
+      // configuration stays, and the readback enters the observed baseline, so
+      // `cdkd drift` will not report it.
+      const bucketPredates = !createdNewBucket || adoptedOwnLeftover;
+      const desiredAbac = abacStatusOf(properties);
+      const liveAbacOn = bucketPredates && (await this.readAbacStatus(bucketName)) === ABAC_ENABLED;
       try {
+        // Only a declared `Disabled` turns it off: ABAC decides how `aws:ResourceTag`
+        // conditions evaluate, so an undeclared value is the owner's to keep.
+        const turnAbacOff = liveAbacOn && properties['AbacStatus'] === ABAC_DISABLED;
+        if (turnAbacOff) {
+          await this.applyAbacStatus(bucketName, ABAC_DISABLED);
+        } else if (liveAbacOn && properties['AbacStatus'] === undefined) {
+          this.logger.warn(
+            safeMsg`Bucket ${this.shown(bucketName)} already existed with ABAC on, which the template does not declare; it stays on, and a later Tags change fails with BadRequest until the template declares AbacStatus`
+          );
+        }
+        const tagsThroughControl = liveAbacOn && !turnAbacOff;
         effectiveOverrides = await this.applyConfiguration(bucketName, properties, {
           ...(context ? { context } : {}),
           // go-to-k/cdkd#4969: tags `CreateBucket` already set need no Put.
           // An adopted bucket (our own leftover, or `BucketAlreadyOwnedByYou`)
           // got none from this call, so it still takes the Put.
-          ...(tagsAppliedOnCreate ? { skipTags: true as const } : { desiredTags }),
+          ...(tagsAppliedOnCreate || tagsThroughControl
+            ? { skipTags: true as const }
+            : { desiredTags }),
         });
         for (const [key, value] of await this.applyAllSubConfigsForCreate(
           bucketName,
@@ -7526,6 +8278,29 @@ export class S3BucketProvider implements ResourceProvider {
           context
         )) {
           effectiveOverrides.set(key, value);
+        }
+        if (tagsThroughControl && desiredTags.length > 0) {
+          await this.replaceAbacBucketTags(bucketName, desiredTags);
+        }
+        // go-to-k/cdkd#2762: after the tags above, which `PutBucketTagging`
+        // refuses once ABAC is on.
+        if (desiredAbac !== ABAC_DISABLED) {
+          await this.applyAbacStatus(bucketName, desiredAbac);
+        }
+        const metadata = metadataBag(properties['MetadataConfiguration']);
+        const replaying = context?.replayingState === true;
+        if (metadataRefusal !== undefined) {
+          this.logger.warn(
+            safeMsg`Bucket ${this.shown(bucketName)}: ${metadataRefusal}; no S3 Metadata configuration was restored`
+          );
+        } else if (metadata !== undefined && bucketPredates) {
+          // Tolerant: an unread configuration still converges through the create.
+          const live = await this.readMetadataForDrift(bucketName);
+          await (live === 'unread' || live === undefined
+            ? this.createMetadataConfiguration(bucketName, metadata, true)
+            : this.convergeMetadataConfiguration(bucketName, metadata, live, replaying));
+        } else if (metadata !== undefined) {
+          await this.createMetadataConfiguration(bucketName, metadata, replaying);
         }
       } catch (innerError) {
         if (createdNewBucket) {
@@ -7597,6 +8372,12 @@ export class S3BucketProvider implements ResourceProvider {
       }
 
       const attributes = await this.buildAttributes(bucketName);
+      if (metadataBag(properties['MetadataConfiguration'])) {
+        Object.assign(
+          attributes,
+          await this.readMetadataAttributesAfterWrites(bucketName, context)
+        );
+      }
 
       this.logger.debug(
         `Successfully created S3 bucket ${displaySafe(logicalId)}: ${this.shown(bucketName)}`
@@ -7657,7 +8438,10 @@ export class S3BucketProvider implements ResourceProvider {
       const sinks = withDerivedNameMasks(
         this.logger,
         createMaskedLogSinks(this.logger, context?.maskSecrets),
-        [[previousProperties['BucketName'], physicalId]]
+        [
+          [previousProperties['BucketName'], physicalId],
+          [previousProperties['BucketNamePrefix'], physicalId],
+        ]
       );
       return this.maskedView(sinks).update(
         logicalId,
@@ -7798,6 +8582,15 @@ export class S3BucketProvider implements ResourceProvider {
         effectiveOverrides.set(key, value);
       }
 
+      // go-to-k/cdkd#2762: with ABAC on S3 refuses the two tag calls below, so
+      // a turn-off goes first, a turn-on last, and a bucket staying on tags
+      // through S3 Control.
+      const previousAbac = abacStatusOf(previousProperties);
+      const desiredAbac = abacStatusOf(properties);
+      if (previousAbac !== desiredAbac && desiredAbac === ABAC_DISABLED) {
+        await this.applyAbacStatus(physicalId, desiredAbac);
+      }
+
       // Apply tag diff. S3 uses PutBucketTagging (full-replace) and
       // DeleteBucketTagging when the new tag set is empty.
       await this.applyTagDiff(
@@ -7805,8 +8598,13 @@ export class S3BucketProvider implements ResourceProvider {
         resourceType,
         logicalId,
         previousProperties['Tags'],
-        properties['Tags']
+        properties['Tags'],
+        previousAbac === ABAC_ENABLED && desiredAbac === ABAC_ENABLED
       );
+
+      if (previousAbac !== desiredAbac && desiredAbac !== ABAC_DISABLED) {
+        await this.applyAbacStatus(physicalId, desiredAbac);
+      }
 
       // go-to-k/cdkd#5395: named once every write above has succeeded.
       await this.warnUnappliedBucketObjectLock(
@@ -7818,6 +8616,12 @@ export class S3BucketProvider implements ResourceProvider {
       );
 
       const attributes = await this.buildAttributes(physicalId);
+      if (metadataBag(properties['MetadataConfiguration'])) {
+        Object.assign(
+          attributes,
+          await this.readMetadataAttributesAfterWrites(physicalId, context)
+        );
+      }
 
       this.logger.debug(`Successfully updated S3 bucket ${displaySafe(logicalId)}`);
 
@@ -8269,7 +9073,7 @@ export class S3BucketProvider implements ResourceProvider {
       }
     }
 
-    // Fire all 16 GET / List calls in parallel. Each helper handles its own
+    // Fire all 18 GET / List calls in parallel. Each helper handles its own
     // "feature not configured" → placeholder fallback.
     const [
       versioning,
@@ -8289,6 +9093,8 @@ export class S3BucketProvider implements ResourceProvider {
       analytics,
       intelligentTier,
       inventory,
+      abac,
+      metadata,
     ] = await Promise.all([
       this.readVersioning(physicalId),
       this.readEncryption(physicalId),
@@ -8307,6 +9113,8 @@ export class S3BucketProvider implements ResourceProvider {
       this.readAnalyticsList(physicalId),
       this.readIntelligentTieringList(physicalId),
       this.readInventoryList(physicalId),
+      this.readAbacStatus(physicalId),
+      this.readMetadataForDrift(physicalId),
     ]);
 
     return {
@@ -8328,7 +9136,48 @@ export class S3BucketProvider implements ResourceProvider {
       AnalyticsConfigurations: analytics,
       IntelligentTieringConfigurations: intelligentTier,
       InventoryConfigurations: inventory,
+      // Only while away from the default, so a baseline an older cdkd captured
+      // stays clean: `getDriftAbsentMeansDefaultKeys` still compares both.
+      ...(abac === ABAC_ENABLED || _properties?.['AbacStatus'] !== undefined
+        ? { AbacStatus: abac ?? _properties?.['AbacStatus'] }
+        : {}),
+      ...(metadata === 'unread'
+        ? _properties?.['MetadataConfiguration'] !== undefined
+          ? { MetadataConfiguration: _properties['MetadataConfiguration'] }
+          : {}
+        : metadata
+          ? { MetadataConfiguration: metadataConfigurationFromSdk(metadata) }
+          : {}),
     };
+  }
+
+  /**
+   * `AbacStatus` and `MetadataConfiguration` are read back only while away from
+   * their defaults, and `update()` resets each on removal
+   * (docs/provider-rules.md, "getDriftAbsentMeansDefaultKeys()").
+   */
+  getDriftAbsentMeansDefaultKeys(
+    _resourceType: string,
+    properties: Record<string, unknown>
+  ): readonly string[] {
+    return [
+      ...(abacStatusOf(properties) === ABAC_DISABLED ? ['AbacStatus'] : []),
+      ...(properties['MetadataConfiguration'] === undefined ? ['MetadataConfiguration'] : []),
+    ];
+  }
+
+  /**
+   * The write-only members of the CFn schema: S3 returns none of them, so with
+   * no observed baseline a declared value has nothing to compare with.
+   */
+  getDriftUnknownPaths(): string[] {
+    return [
+      'BucketNamePrefix',
+      'BucketNamespace',
+      'MetadataConfiguration.JournalTableConfiguration.EncryptionConfiguration',
+      'MetadataConfiguration.InventoryTableConfiguration.EncryptionConfiguration',
+      'MetadataConfiguration.AnnotationTableConfiguration.EncryptionConfiguration',
+    ];
   }
 
   // -------------------------------------------------------------------
@@ -8949,6 +9798,23 @@ export class S3BucketProvider implements ResourceProvider {
     }
   }
 
+  /**
+   * `undefined` on a failed read: a narrow drift role must not lose every
+   * other readback of the bucket to a permission only ABAC users need. A
+   * declared value then answers for the read, so it reports no phantom drift.
+   */
+  private async readAbacStatus(bucket: string): Promise<string | undefined> {
+    try {
+      const resp = await this.s3Client.send(new GetBucketAbacCommand({ Bucket: bucket }));
+      return resp.AbacStatus?.Status ?? ABAC_DISABLED;
+    } catch (err) {
+      this.logger.debug(
+        safeMsg`Could not read AbacStatus of ${this.shown(bucket)} (${caughtErrorName(err)})`
+      );
+      return undefined;
+    }
+  }
+
   private async readAccelerate(bucket: string): Promise<Record<string, unknown>> {
     const resp = await this.s3Client.send(
       new GetBucketAccelerateConfigurationCommand({ Bucket: bucket })
@@ -9273,7 +10139,7 @@ export class S3BucketProvider implements ResourceProvider {
     logicalId: string,
     properties: Record<string, unknown>
   ): string | undefined {
-    if (properties['BucketName']) return undefined;
+    if (properties['BucketNamePrefix'] || properties['BucketName']) return undefined;
     return generatedNameFor('AWS::S3::Bucket', logicalId);
   }
 
