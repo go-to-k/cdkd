@@ -78,6 +78,35 @@ const backend = (states: Record<string, StackState>): S3StateBackend =>
 
 const warnings = (): string[] => warn.mock.calls.map(([message]) => String(message));
 
+const DOCDB = 'AWS::DocDB::DBCluster';
+const docDbState = {
+  R: {
+    physicalId: 'p',
+    resourceType: DOCDB,
+    properties: { SnapshotIdentifier: 'same' },
+    acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
+  },
+} as unknown as StackState['resources'];
+const docDbRow = new Map([
+  [
+    'R',
+    {
+      logicalId: 'R',
+      changeType: 'UPDATE',
+      resourceType: DOCDB,
+      desiredProperties: { SnapshotIdentifier: 'same' },
+      propertyChanges: [
+        {
+          path: 'SnapshotIdentifier',
+          oldValue: undefined,
+          newValue: 'same',
+          requiresReplacement: true,
+        },
+      ],
+    },
+  ],
+]) as unknown as Map<string, ResourceChange>;
+
 describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -148,35 +177,10 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
   });
 
   it('offers no Cloud Control opt-in on a create-only row of such a type', () => {
-    const type = 'AWS::DocDB::DBCluster';
-    const state = {
-      R: {
-        physicalId: 'p',
-        resourceType: type,
-        properties: { SnapshotIdentifier: 'same' },
-        acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
-      },
-    } as unknown as StackState['resources'];
-    const changes = new Map([
-      [
-        'R',
-        {
-          logicalId: 'R',
-          changeType: 'UPDATE',
-          resourceType: type,
-          propertyChanges: [
-            {
-              path: 'SnapshotIdentifier',
-              oldValue: undefined,
-              newValue: 'same',
-              requiresReplacement: true,
-            },
-          ],
-        },
-      ],
-    ]) as unknown as ReadonlyMap<string, ResourceChange>;
-    expect(findUnwrittenCreateOnlyRefusals(changes, state)[0]).toContain('--recreate-via-cc-api');
-    const [text, ...rest] = findUnwrittenCreateOnlyRefusals(changes, state, reasonOf);
+    expect(findUnwrittenCreateOnlyRefusals(docDbRow, docDbState)[0]).toContain(
+      '--recreate-via-cc-api'
+    );
+    const [text, ...rest] = findUnwrittenCreateOnlyRefusals(docDbRow, docDbState, reasonOf);
     expect(rest).toEqual([]);
     expect(text).not.toContain('--recreate-via-cc-api');
     expect(text).toContain('--prefer-sdk-route');
@@ -219,6 +223,16 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
       expect((await diff(served)).ccApiRoutes.get('R')).toEqual(['Body']);
       const node = await diff(served, { ccRouteUnavailableReason: () => 'opted out' });
       expect(node.ccApiRoutes.has('R')).toBe(false);
+    });
+
+    it('passes the predicate to the create-only warning', async () => {
+      await diff(template(DOCDB, { SnapshotIdentifier: 'same' }), {
+        stateBackend: backend({ [STACK]: stateOf(docDbState) }),
+        diffCalculator: { calculateDiff: async () => docDbRow },
+      });
+      const text = warnings().filter((m) => m.includes('previews a replacement'));
+      expect(text).toHaveLength(1);
+      expect(text[0]).not.toContain('--recreate-via-cc-api');
     });
 
     it('hedges over a condition the diff cannot settle, which the deploy may prune', async () => {
