@@ -90,7 +90,7 @@ A type with an SDK provider that Cloud Control cannot serve, such as
 property that provider does not write and the bundled schema knows, cdkd
 refuses the deploy before it touches any resource. The error names the type,
 the property and the reason. Remove the property, or pass
-[`--prefer-sdk-route`](#--prefer-sdk-route-deploy) to stay on the SDK provider
+[`--prefer-sdk-route`](#prefer-sdk-route-deploy) to stay on the SDK provider
 without it. A property the schema does not know stays on the SDK provider with
 a warning, as listed below. The diagram leaves this case out.
 
