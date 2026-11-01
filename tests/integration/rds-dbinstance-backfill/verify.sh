@@ -48,6 +48,14 @@
 # AutoMinorVersionUpgrade was KEPT, and a removed MaxAllocatedStorage turned
 # storage autoscaling off (both per CloudFormation's handler source).
 #
+# go-to-k/cdkd#2762 (DBInstance NetworkType / LicenseModel /
+# DatabaseInsightsMode / AllowMajorVersionUpgrade): phase 1 declares all four;
+# the provisionedBy=sdk guard is what a pre-fix cdkd fails. Phase 1d upgrades
+# the minor engine version out of band (as AutoMinorVersionUpgrade would) while
+# the template keeps the old one; the phase-2 deploy must succeed and leave the
+# upgraded version live. A cdkd re-sending the unchanged EngineVersion fails
+# that deploy: RDS refuses it as a downgrade.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -417,6 +425,15 @@ assert_instance_field '.CopyTagsToSnapshot' 'true' 'CopyTagsToSnapshot' 'phase 1
 assert_instance_field '.CACertificateIdentifier' 'rds-ca-rsa4096-g1' 'CACertificateIdentifier' 'phase 1'
 assert_instance_field '.PerformanceInsightsEnabled' 'true' 'EnablePerformanceInsights' 'phase 1'
 assert_instance_field '.PerformanceInsightsRetentionPeriod' '31' 'PerformanceInsightsRetentionPeriod' 'phase 1'
+# go-to-k/cdkd#2762: NetworkType / LicenseModel / DatabaseInsightsMode /
+# AllowMajorVersionUpgrade. Each value is the one RDS would pick anyway (no
+# other is available to this instance without IPv6 subnets or a paid
+# Performance Insights tier), so the discriminator is the provisionedBy=sdk
+# guard above: any one of them unhandled routes the instance to Cloud Control.
+# AllowMajorVersionUpgrade is a ModifyDBInstance flag RDS never reads back.
+assert_instance_field '.NetworkType' 'IPV4' 'NetworkType' 'phase 1'
+assert_instance_field '.LicenseModel' 'postgresql-license' 'LicenseModel' 'phase 1'
+assert_instance_field '.DatabaseInsightsMode' 'standard' 'DatabaseInsightsMode' 'phase 1'
 
 # #5542 premise: the VPC's `default` group, which the phase-2 removal of
 # VPCSecurityGroups must attach. Resolved through the instance's own subnet
@@ -435,6 +452,45 @@ if [ -z "${DEFAULT_SG}" ] || [ "${DEFAULT_SG}" = "None" ] || [ "${DEFAULT_SG}" =
   exit 1
 fi
 echo "    VPC ${INSTANCE_VPC} default security group: ${DEFAULT_SG} (#5542)"
+
+# --- Phase 1d: an out-of-band minor engine upgrade (go-to-k/cdkd#2762) --------
+# What AWS does on its own under AutoMinorVersionUpgrade (the CFn default):
+# the live version moves past the template's ${EXPECTED_ENGINE_VERSION}. The
+# phase-2 template keeps ${EXPECTED_ENGINE_VERSION}, so EngineVersion is
+# unchanged there. A cdkd that re-sends an unchanged EngineVersion on every
+# ModifyDBInstance asks RDS to downgrade, and the phase-2 deploy fails with
+# InvalidParameterCombination; CloudFormation sends EngineVersion only when the
+# template changed it.
+UPGRADE_TARGET=$(aws rds describe-db-engine-versions --engine postgres \
+  --engine-version "${EXPECTED_ENGINE_VERSION}" --region "${REGION}" \
+  --query 'DBEngineVersions[0].ValidUpgradeTarget[?IsMajorVersionUpgrade==`false`].EngineVersion' \
+  --output json | jq -r 'first // ""')
+if [ -z "${UPGRADE_TARGET}" ]; then
+  echo "FAIL: #2762 premise: postgres ${EXPECTED_ENGINE_VERSION} lists no minor upgrade target in ${REGION}" >&2
+  exit 1
+fi
+echo "==> Phase 1d: upgrade the instance out of band, ${EXPECTED_ENGINE_VERSION} -> ${UPGRADE_TARGET} (go-to-k/cdkd#2762)"
+aws rds modify-db-instance --db-instance-identifier "${DB_INSTANCE_ID}" \
+  --engine-version "${UPGRADE_TARGET}" --apply-immediately \
+  --region "${REGION}" >/dev/null
+UPGRADED=""
+for _ in $(seq 1 240); do
+  UPGRADE_READ=$(aws rds describe-db-instances \
+    --db-instance-identifier "${DB_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'DBInstances[0]' --output json |
+    jq -r '"\(.DBInstanceStatus // "null") \(.EngineVersion // "null")"')
+  if [ "${UPGRADE_READ}" = "available ${UPGRADE_TARGET}" ]; then
+    UPGRADED="yes"
+    break
+  fi
+  sleep 15
+done
+if [ -z "${UPGRADED}" ]; then
+  echo "FAIL: #2762 premise: the out-of-band upgrade to ${UPGRADE_TARGET} did not settle (last read: '${UPGRADE_READ}')" >&2
+  exit 1
+fi
+echo "    OK: the instance runs ${UPGRADE_TARGET}; the template still says ${EXPECTED_ENGINE_VERSION}"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps the value, #5542 resets) -------
 echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval, which must be KEPT, and VPCSecurityGroups, which must move to the VPC default group; move Port 5433 -> 5434)"
@@ -492,6 +548,10 @@ assert_instance_field '.PerformanceInsightsEnabled' 'true' 'EnablePerformanceIns
 assert_instance_field '.AutoMinorVersionUpgrade' 'false' 'a removed AutoMinorVersionUpgrade is KEPT, as CloudFormation keeps it' 'phase 2'
 assert_instance_field '.AllocatedStorage' '400' 'unchanged AllocatedStorage' 'phase 2'
 assert_instance_field '.Iops' '13000' 'unchanged Iops' 'phase 2'
+# Phase 1d moved the version out of band and the template kept the old one: the
+# phase-2 deploy above succeeding is the main signal (a re-sent EngineVersion is
+# refused as a downgrade); the live version must also still be the upgraded one.
+assert_instance_field '.EngineVersion' "${UPGRADE_TARGET}" 'an unchanged EngineVersion is not re-sent' 'phase 2'
 
 # A removed MaxAllocatedStorage turns storage autoscaling OFF, as
 # CloudFormation's handler does by setting the maximum to the allocated
