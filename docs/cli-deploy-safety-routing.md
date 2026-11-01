@@ -157,8 +157,9 @@ sees the property as an addition, moves the resource to Cloud Control, and
 updates it in place.
 
 `cdkd diff` has no `--prefer-sdk-route`, so it previews the deploy without the
-flag. It shows the property as a pending change marked `[via CC API: <Prop>]`.
-A deploy that passes the flag reports no change for that property.
+flag. It shows the property as a pending change marked `[via CC API: <Prop>]`,
+or warns on a type Cloud Control cannot serve. A deploy that passes the flag
+reports no change for that property.
 
 ### When the flag does not do what you expect
 

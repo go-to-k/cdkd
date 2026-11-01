@@ -577,6 +577,9 @@ async function diffCommand(
           // Issue #1591: the preview must narrow exactly like the apply, or
           // `cdkd diff` forecasts a change `cdkd deploy` will never make.
           canonicalizeProperties,
+          // Issue #5600: the predicate the deploy's pre-flight refusal reads.
+          ccRouteUnavailableReason: (resourceType) =>
+            diffProviderRegistry.ccRouteUnavailableReason(resourceType),
           ...(assetRedirect && { assetRedirect }),
           // Issue #1697: the diff's best-effort resolvers honor the same
           // CloudFormation fallback opt-out as deploy, so preview and apply

@@ -132,6 +132,7 @@ vi.mock('../../../src/provisioning/provider-registry.js', () => ({
     return {
       builtIn,
       getProvider: vi.fn(),
+      ccRouteUnavailableReason: vi.fn(),
       getProviderFor: vi.fn((routed: unknown) => ({
         provisionedBy: 'sdk',
         provider: {

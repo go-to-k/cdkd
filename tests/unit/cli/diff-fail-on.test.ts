@@ -15,6 +15,7 @@ import type { StackState } from '../../../src/types/state.js';
 const mockLoggerError = vi.hoisted(() => vi.fn());
 const mockLoggerInfo = vi.hoisted(() => vi.fn());
 const mockLoggerWarn = vi.hoisted(() => vi.fn());
+const mockCcRouteUnavailableReason = vi.hoisted(() => vi.fn());
 const stateForDiff = vi.hoisted(() => ({
   value: null as StackState | null,
   // Per state stack name, for a nested child's record; `value` otherwise.
@@ -77,7 +78,10 @@ vi.mock('../../../src/provisioning/register-providers.js', () => ({
 }));
 
 vi.mock('../../../src/provisioning/provider-registry.js', () => ({
-  ProviderRegistry: vi.fn().mockImplementation(() => ({ getProvider: vi.fn() })),
+  ProviderRegistry: vi.fn().mockImplementation(() => ({
+    getProvider: vi.fn(),
+    ccRouteUnavailableReason: mockCcRouteUnavailableReason,
+  })),
 }));
 
 import {
@@ -416,6 +420,25 @@ describe('cdkd diff --fail-on', () => {
     synthTemplate({ Q: QUEUE_TEMPLATE });
     const { code } = await runDiff(['S', '--fail-on', 'destructive']);
     expect(code).toBeUndefined();
+  }, 30_000);
+
+  it('passes the registry its predicate, which alone knows a provider opt-out (#5600)', async () => {
+    // A type Cloud Control serves, so only this mock can make the row unroutable.
+    stateForDiff.value = stateWith({});
+    synthTemplate({ A: { Type: 'AWS::ApiGatewayV2::Api', Properties: { Body: {} } } });
+    const printed = (): string =>
+      mockLoggerInfo.mock.calls.map(([message]) => String(message)).join('\n');
+    await runDiff(['S']);
+    expect(printed()).toContain('[via CC API: Body]');
+    mockLoggerInfo.mockClear();
+    mockCcRouteUnavailableReason.mockReturnValue('opted out');
+    try {
+      await runDiff(['S']);
+      expect(printed()).toContain('[+] A (AWS::ApiGatewayV2::Api)');
+      expect(printed()).not.toContain('[via CC API');
+    } finally {
+      mockCcRouteUnavailableReason.mockReset();
+    }
   }, 30_000);
 
   describe('refusals', () => {
