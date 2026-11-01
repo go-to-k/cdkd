@@ -41,6 +41,13 @@
 # VPC's `default` security group on that removal, so phase 2 asserts the
 # instance ends up on exactly that group, no longer on the custom one.
 #
+# go-to-k/cdkd#2762: phase 1 asserts the storage / backup / maintenance /
+# certificate / Performance Insights props reached AWS. Phase 2 asserts the
+# changed BackupRetentionPeriod, PreferredMaintenanceWindow and
+# PerformanceInsightsRetentionPeriod reached AWS, a removed
+# AutoMinorVersionUpgrade was KEPT, and a removed MaxAllocatedStorage turned
+# storage autoscaling off (both per CloudFormation's handler source).
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -252,7 +259,8 @@ echo "    expected VPC security group: ${EXPECTED_SG}"
 # If any set prop were still a silent-drop, #614 routing would flip the
 # resource to the Cloud Control path (provisionedBy=cc-api) and the
 # SDK-provider assertions below would prove nothing.
-INST_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy] | first // "sdk"')
+# An absent provisionedBy is a legacy SDK record; an absent RECORD is not.
+INST_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy // "sdk"] | first // "<no DBInstance record>"')
 if [ "${INST_PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: DBInstance routed via '${INST_PROVISIONED_BY}', expected 'sdk' (a set prop is still a silent-drop → CC-API routing)" >&2
   exit 1
@@ -383,6 +391,33 @@ if [ "${ACTUAL_SECRET}" = "null" ] || [ -z "${ACTUAL_SECRET}" ]; then
 fi
 echo "    OK: MasterUserSecret populated (${ACTUAL_SECRET}); ManageMasterUserPassword + MasterUserSecret CLOSED by #609"
 
+# --- Assertions: go-to-k/cdkd#2762 props reached AWS ----------------------
+# Each is the template's NON-default value, so a silent drop reads back the
+# AWS default instead. `tostring` with `has()` keeps an explicit false.
+# usage: assert_instance_field <jq path> <expected> <property> <phase>
+assert_instance_field() {
+  local actual
+  actual=$(echo "${INSTANCE}" | jq -r "if (${1}) == null then \"null\" else (${1}) | tostring end")
+  if [ "${actual}" != "${2}" ]; then
+    echo "FAIL: ${4}: ${1} is '${actual}', expected '${2}' (${3} did not reach AWS, go-to-k/cdkd#2762)" >&2
+    exit 1
+  fi
+  echo "    OK: ${4}: ${1} == ${2} on AWS (${3}, go-to-k/cdkd#2762)"
+}
+assert_instance_field '.StorageType' 'gp3' 'StorageType' 'phase 1'
+assert_instance_field '.AllocatedStorage' '400' 'AllocatedStorage' 'phase 1'
+assert_instance_field '.Iops' '13000' 'Iops' 'phase 1'
+assert_instance_field '.StorageThroughput' '600' 'StorageThroughput' 'phase 1'
+assert_instance_field '.MaxAllocatedStorage' '500' 'MaxAllocatedStorage' 'phase 1'
+assert_instance_field '.BackupRetentionPeriod' '3' 'BackupRetentionPeriod' 'phase 1'
+assert_instance_field '.PreferredBackupWindow' '03:00-03:30' 'PreferredBackupWindow' 'phase 1'
+assert_instance_field '.PreferredMaintenanceWindow' 'sun:05:00-sun:05:30' 'PreferredMaintenanceWindow' 'phase 1'
+assert_instance_field '.AutoMinorVersionUpgrade' 'false' 'AutoMinorVersionUpgrade' 'phase 1'
+assert_instance_field '.CopyTagsToSnapshot' 'true' 'CopyTagsToSnapshot' 'phase 1'
+assert_instance_field '.CACertificateIdentifier' 'rds-ca-rsa4096-g1' 'CACertificateIdentifier' 'phase 1'
+assert_instance_field '.PerformanceInsightsEnabled' 'true' 'EnablePerformanceInsights' 'phase 1'
+assert_instance_field '.PerformanceInsightsRetentionPeriod' '31' 'PerformanceInsightsRetentionPeriod' 'phase 1'
+
 # #5542 premise: the VPC's `default` group, which the phase-2 removal of
 # VPCSecurityGroups must attach. Resolved through the instance's own subnet
 # group VPC, and it must differ from the custom group phase 1 asserted.
@@ -445,6 +480,29 @@ if [ -z "${SETTLED}" ] || [ "${AFTER_PROTECTION}" != "true" ] || [ "${AFTER_IAM}
   exit 1
 fi
 echo "    OK: after removal, AWS kept DeletionProtection=true + IAMDatabaseAuthenticationEnabled=true + MonitoringInterval=${EXPECTED_MONITORING_INTERVAL} (#5004, matches CloudFormation)"
+
+# go-to-k/cdkd#2762 on update: the changed values reached AWS through
+# ModifyDBInstance, the removed AutoMinorVersionUpgrade was KEPT (phase 1
+# asserted the non-default false), and the storage was left alone.
+INSTANCE="${AFTER}"
+assert_instance_field '.BackupRetentionPeriod' '5' 'BackupRetentionPeriod change' 'phase 2'
+assert_instance_field '.PreferredMaintenanceWindow' 'mon:05:00-mon:05:30' 'PreferredMaintenanceWindow change' 'phase 2'
+assert_instance_field '.PerformanceInsightsRetentionPeriod' '7' 'PerformanceInsightsRetentionPeriod change' 'phase 2'
+assert_instance_field '.PerformanceInsightsEnabled' 'true' 'EnablePerformanceInsights beside the retention change' 'phase 2'
+assert_instance_field '.AutoMinorVersionUpgrade' 'false' 'a removed AutoMinorVersionUpgrade is KEPT, as CloudFormation keeps it' 'phase 2'
+assert_instance_field '.AllocatedStorage' '400' 'unchanged AllocatedStorage' 'phase 2'
+assert_instance_field '.Iops' '13000' 'unchanged Iops' 'phase 2'
+
+# A removed MaxAllocatedStorage turns storage autoscaling OFF, as
+# CloudFormation's handler does by setting the maximum to the allocated
+# storage. Phase 1 asserted 500; the readback now reports the allocated
+# storage, or no maximum at all.
+AFTER_MAX_STORAGE=$(echo "${AFTER}" | jq -r '.MaxAllocatedStorage // "null"')
+if [ "${AFTER_MAX_STORAGE}" != "400" ] && [ "${AFTER_MAX_STORAGE}" != "null" ]; then
+  echo "FAIL: phase 2: a removed MaxAllocatedStorage left it at '${AFTER_MAX_STORAGE}', expected autoscaling off (400 or absent) -- go-to-k/cdkd#2762: CloudFormation sets it to the allocated storage" >&2
+  exit 1
+fi
+echo "    OK: phase 2: removed MaxAllocatedStorage turned autoscaling off (MaxAllocatedStorage=${AFTER_MAX_STORAGE}, go-to-k/cdkd#2762)"
 
 # #5542: the removed VPCSecurityGroups RESETS to the VPC's default group, as
 # CloudFormation does. The swap can trail 'available', so poll for it; a cdkd

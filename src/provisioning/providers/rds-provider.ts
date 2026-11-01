@@ -19,6 +19,7 @@ import {
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
   type DBCluster,
+  type ModifyDBInstanceCommandInput,
 } from '@aws-sdk/client-rds';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
@@ -217,6 +218,201 @@ const CLUSTER_REMOVED_PORT: ReadonlyMap<string, number> = new Map([
 /** A template number (CFn numbers may arrive as strings), or `undefined` when absent. */
 function numberOrUndefined(value: unknown): number | undefined {
   return value == null ? undefined : Number(value);
+}
+
+/** The ModifyDBInstance members that change the storage itself. */
+const STORAGE_MEMBERS: ReadonlySet<string> = new Set([
+  'AllocatedStorage',
+  'Iops',
+  'StorageType',
+  'StorageThroughput',
+]);
+
+/**
+ * go-to-k/cdkd#2762: CloudFormation's `AWS::RDS::DBInstance` handler builds
+ * ModifyDBInstance from `diff(previous, desired)`, which is the desired value
+ * when the two differ and nothing otherwise. A removed property is therefore
+ * never sent and RDS keeps the live value. `changedProperties`, when the caller
+ * supplies it, decides, since the record holds a value from a dynamic reference
+ * or a `NoEcho` parameter as its token or `***`, never the resolved desired
+ * value. Otherwise the scalar is compared through its string form, since a
+ * CFn number may arrive as a string on either side; a recorded stand-in never
+ * equals the resolved value, so it counts as changed.
+ */
+function instanceValueChanged(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  key: string,
+  context: UpdateContext | undefined
+): boolean {
+  const desired = properties[key];
+  if (desired == null) return false;
+  const previous = previousProperties[key];
+  if (previous == null) return true;
+  const differs =
+    typeof desired === 'object' || typeof previous === 'object'
+      ? !isDeepStrictEqual(desired, previous)
+      : String(desired as string | number | boolean) !==
+        String(previous as string | number | boolean);
+  // A storage member recorded as the same plain value is never re-sent, even
+  // when the engine forces an update that names every key (a `reput`,
+  // go-to-k/cdkd#4411): RDS refuses an AllocatedStorage below an autoscaled
+  // size, and any storage change starts a storage optimization that blocks
+  // the next one for hours. A recorded stand-in equals only a desired stand-in,
+  // which is never sent either.
+  if (STORAGE_MEMBERS.has(key) && !differs) return false;
+  if (context?.changedProperties !== undefined) return context.changedProperties.has(key);
+  return differs;
+}
+
+/** A storage size in GiB, or 0 when absent or unreadable (a recorded stand-in). */
+function sizeOrZero(value: unknown): number {
+  const size = Number(value);
+  return value != null && Number.isFinite(size) ? size : 0;
+}
+
+/**
+ * The storage types whose ModifyDBInstance carries `AllocatedStorage` and
+ * `Iops` together, as CloudFormation's handler sends them (`io1`, `io2`,
+ * `gp3`, or an undeclared type beside a declared `Iops`, which RDS reads as
+ * `io1`).
+ */
+function isProvisionedIoStorage(properties: Record<string, unknown>): boolean {
+  const storageType = properties['StorageType'];
+  if (typeof storageType === 'string' && storageType !== '') {
+    return ['io1', 'io2', 'gp3'].includes(storageType.toLowerCase());
+  }
+  return properties['Iops'] != null;
+}
+
+/**
+ * go-to-k/cdkd#2762: the ModifyDBInstance members for the storage, backup,
+ * maintenance, option group, certificate and Performance Insights properties,
+ * plus `AllocatedStorage`. Each follows the handler's update translation (the
+ * archived `aws-cloudformation-resource-providers-rds` `Translator.
+ * modifyDbInstanceRequest` and `UpdateHandler`):
+ *
+ * - Each is sent only when the template changed it; a removal sends nothing,
+ *   so RDS keeps the live value, as CloudFormation does.
+ * - A removed `MaxAllocatedStorage` turns storage autoscaling off, the one
+ *   reset: the handler sends the live `AllocatedStorage` as the maximum
+ *   (`unsetMaxAllocatedStorage`), the documented way to turn it off. cdkd
+ *   sends the declared size instead when this update raises it past the live
+ *   one, which the handler does not.
+ * - On provisioned-IOPS storage `AllocatedStorage` and `Iops` travel together:
+ *   a changed `AllocatedStorage`, `Iops`, `StorageThroughput` or `StorageType`
+ *   sends the declared `Iops`, and the changed `AllocatedStorage` or else the
+ *   larger of the live and declared one, so an autoscaled instance is never
+ *   asked to shrink. The handler sends that pair on every update of such
+ *   storage; cdkd only on a storage change, the rest being no-ops.
+ * - A rollback replay (`replayingState`) takes the handler's rollback arm for
+ *   the storage size: it never sends a smaller one.
+ * - `EnablePerformanceInsights`, `PerformanceInsightsKMSKeyId` and
+ *   `PerformanceInsightsRetentionPeriod` are coupled: a changed flag or key
+ *   sends both changes, an enabled flag sends the declared key, a changed key
+ *   sends the declared flag, and a changed retention sends the declared flag
+ *   and key beside it.
+ *
+ * `liveAllocatedStorage` reads the instance; it is called only when a member
+ * needs it.
+ */
+async function instanceModifyBackfillMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  liveAllocatedStorage: () => Promise<number | undefined>,
+  logicalId: string,
+  context: UpdateContext | undefined
+): Promise<Partial<ModifyDBInstanceCommandInput>> {
+  const changed = (key: string): boolean =>
+    instanceValueChanged(properties, previousProperties, key, context);
+  const desiredAllocated = numberOrUndefined(properties['AllocatedStorage']);
+  const members: Partial<ModifyDBInstanceCommandInput> = {};
+
+  if (changed('BackupRetentionPeriod')) {
+    members.BackupRetentionPeriod = Number(properties['BackupRetentionPeriod']);
+  }
+  for (const key of [
+    'PreferredBackupWindow',
+    'PreferredMaintenanceWindow',
+    'StorageType',
+    'OptionGroupName',
+    'CACertificateIdentifier',
+  ] as const) {
+    if (changed(key)) members[key] = properties[key] as string;
+  }
+  for (const key of ['MultiAZ', 'AutoMinorVersionUpgrade', 'CopyTagsToSnapshot'] as const) {
+    if (changed(key)) members[key] = properties[key] as boolean;
+  }
+  if (changed('StorageThroughput')) {
+    members.StorageThroughput = Number(properties['StorageThroughput']);
+  }
+
+  if (changed('MaxAllocatedStorage')) {
+    members.MaxAllocatedStorage = Number(properties['MaxAllocatedStorage']);
+  } else if (
+    properties['MaxAllocatedStorage'] == null &&
+    previousProperties['MaxAllocatedStorage'] != null
+  ) {
+    const live = await liveAllocatedStorage();
+    if (live === undefined) {
+      throw new Error(
+        safeMsg`DBInstance ${logicalId}: MaxAllocatedStorage was removed from the template, which turns storage autoscaling off by setting it to the allocated storage, but DescribeDBInstances did not report the allocated storage`
+      );
+    }
+    // Never below a storage size this same update raises it to: RDS refuses a
+    // maximum under the allocated storage.
+    members.MaxAllocatedStorage = Math.max(live, sizeOrZero(desiredAllocated));
+  }
+
+  // A rollback replay (`replayingState`) mirrors the handler's rollback arm:
+  // storage cannot shrink, so off provisioned-IOPS storage it sends neither
+  // AllocatedStorage nor Iops, and on it the largest of the live, previous and
+  // declared sizes.
+  const rollback = context?.replayingState === true;
+  if (changed('AllocatedStorage') && !rollback) members.AllocatedStorage = desiredAllocated;
+  if (isProvisionedIoStorage(properties)) {
+    if (
+      changed('AllocatedStorage') ||
+      changed('Iops') ||
+      changed('StorageThroughput') ||
+      changed('StorageType')
+    ) {
+      if (members.AllocatedStorage === undefined) {
+        const live = await liveAllocatedStorage();
+        const larger = Math.max(
+          sizeOrZero(live),
+          sizeOrZero(desiredAllocated),
+          rollback ? sizeOrZero(previousProperties['AllocatedStorage']) : 0
+        );
+        if (larger > 0) members.AllocatedStorage = larger;
+      }
+      if (properties['Iops'] != null) members.Iops = Number(properties['Iops']);
+    }
+  } else if (changed('Iops') && !rollback) {
+    members.Iops = Number(properties['Iops']);
+  }
+
+  const enableChanged = changed('EnablePerformanceInsights');
+  const keyChanged = changed('PerformanceInsightsKMSKeyId');
+  const enableDesired = properties['EnablePerformanceInsights'] as boolean | undefined;
+  const keyDesired = properties['PerformanceInsightsKMSKeyId'] as string | undefined;
+  if (enableChanged || keyChanged) {
+    members.EnablePerformanceInsights = enableDesired;
+    if (keyChanged || String(enableDesired) === 'true') {
+      members.PerformanceInsightsKMSKeyId = keyDesired;
+    }
+  }
+  if (changed('PerformanceInsightsRetentionPeriod')) {
+    members.PerformanceInsightsRetentionPeriod = Number(
+      properties['PerformanceInsightsRetentionPeriod']
+    );
+    members.EnablePerformanceInsights = enableDesired;
+    members.PerformanceInsightsKMSKeyId = keyDesired;
+  }
+
+  return Object.fromEntries(
+    Object.entries(members).filter(([, value]) => value !== undefined)
+  ) as Partial<ModifyDBInstanceCommandInput>;
 }
 
 /** The template's `AWS::RDS::DBCluster` `ServerlessV2ScalingConfiguration`. */
@@ -470,6 +666,25 @@ export class RDSProvider implements ResourceProvider {
         'MonitoringRoleArn',
         'MonitoringInterval',
         'EnableIAMDatabaseAuthentication',
+        // go-to-k/cdkd#2762: storage, backup, maintenance, option group,
+        // certificate and Performance Insights settings. Each rides
+        // CreateDBInstance and, when changed, ModifyDBInstance under the same
+        // name (`instanceModifyBackfillMembers`).
+        'BackupRetentionPeriod',
+        'PreferredBackupWindow',
+        'PreferredMaintenanceWindow',
+        'StorageType',
+        'MultiAZ',
+        'MaxAllocatedStorage',
+        'AutoMinorVersionUpgrade',
+        'CopyTagsToSnapshot',
+        'EnablePerformanceInsights',
+        'PerformanceInsightsKMSKeyId',
+        'PerformanceInsightsRetentionPeriod',
+        'Iops',
+        'StorageThroughput',
+        'OptionGroupName',
+        'CACertificateIdentifier',
       ]),
     ],
   ]);
@@ -1653,6 +1868,54 @@ export class RDSProvider implements ResourceProvider {
               'EnableIAMDatabaseAuthentication'
             ] as boolean,
           }),
+          // go-to-k/cdkd#2762: the same names on the wire; CFn integers may
+          // arrive as strings, so they go through Number().
+          ...(properties['BackupRetentionPeriod'] != null && {
+            BackupRetentionPeriod: Number(properties['BackupRetentionPeriod']),
+          }),
+          ...(properties['PreferredBackupWindow'] != null && {
+            PreferredBackupWindow: properties['PreferredBackupWindow'] as string,
+          }),
+          ...(properties['PreferredMaintenanceWindow'] != null && {
+            PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as string,
+          }),
+          ...(properties['StorageType'] != null && {
+            StorageType: properties['StorageType'] as string,
+          }),
+          ...(properties['Iops'] != null && { Iops: Number(properties['Iops']) }),
+          ...(properties['StorageThroughput'] != null && {
+            StorageThroughput: Number(properties['StorageThroughput']),
+          }),
+          ...(properties['MaxAllocatedStorage'] != null && {
+            MaxAllocatedStorage: Number(properties['MaxAllocatedStorage']),
+          }),
+          ...(properties['MultiAZ'] != null && { MultiAZ: properties['MultiAZ'] as boolean }),
+          ...(properties['AutoMinorVersionUpgrade'] != null && {
+            AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean,
+          }),
+          ...(properties['CopyTagsToSnapshot'] != null && {
+            CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean,
+          }),
+          ...(properties['OptionGroupName'] != null && {
+            OptionGroupName: properties['OptionGroupName'] as string,
+          }),
+          ...(properties['CACertificateIdentifier'] != null && {
+            CACertificateIdentifier: properties['CACertificateIdentifier'] as string,
+          }),
+          // As CloudFormation's create translation does, the flag and the
+          // key go out only when Performance Insights is enabled; the
+          // retention period always does.
+          ...(String(properties['EnablePerformanceInsights']) === 'true' && {
+            EnablePerformanceInsights: true,
+            ...(properties['PerformanceInsightsKMSKeyId'] != null && {
+              PerformanceInsightsKMSKeyId: properties['PerformanceInsightsKMSKeyId'] as string,
+            }),
+          }),
+          ...(properties['PerformanceInsightsRetentionPeriod'] != null && {
+            PerformanceInsightsRetentionPeriod: Number(
+              properties['PerformanceInsightsRetentionPeriod']
+            ),
+          }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1773,9 +2036,14 @@ export class RDSProvider implements ResourceProvider {
       // sent as its CFn reset value only where CloudFormation resets it, per
       // real A/Bs (#5004, #1160 comment 6401151077):
       //   * RESET: ManageMasterUserPassword (to false, `managedPasswordOnRemoval`).
+      //     MaxAllocatedStorage (to the live allocated storage, which turns
+      //     autoscaling off) is reset per the handler source, not an A/B
+      //     (`instanceModifyBackfillMembers`, go-to-k/cdkd#2762).
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, MonitoringInterval, EngineVersion,
-      //     Port, PubliclyAccessible, AllocatedStorage, MonitoringRoleArn.
+      //     Port, PubliclyAccessible, AllocatedStorage, MonitoringRoleArn. The
+      //     #2762 members are kept too, per the handler's `diff(previous,
+      //     desired)`.
       // MasterUserSecret removed while the managed password stays on: the
       // credential gate re-sends ManageMasterUserPassword=true with no key.
       // CloudFormation sends neither, and the secret stays on its customer key
@@ -1787,6 +2055,22 @@ export class RDSProvider implements ResourceProvider {
       // `required`), and a removal sends nothing: CloudFormation sends no class
       // either, and the update keeps the live one (same comment).
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
+      // go-to-k/cdkd#2762: the storage, backup, maintenance and Performance
+      // Insights members, and AllocatedStorage, go out only when changed, as
+      // CloudFormation sends them. AllocatedStorage used to be re-sent on
+      // every update, which RDS refuses as a shrink once autoscaling
+      // (MaxAllocatedStorage) has grown the instance past the template value.
+      let liveInstance: Promise<number | undefined> | undefined;
+      const backfillMembers = await instanceModifyBackfillMembers(
+        properties,
+        previousProperties,
+        () =>
+          (liveInstance ??= this.describeDBInstance(physicalId).then(
+            (instance) => instance?.AllocatedStorage
+          )),
+        logicalId,
+        context
+      );
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
       await modifyDbInstanceWhenAvailable({
@@ -1797,12 +2081,10 @@ export class RDSProvider implements ResourceProvider {
               DBInstanceClass: properties['DBInstanceClass'] as string | undefined,
               PubliclyAccessible: properties['PubliclyAccessible'] as boolean | undefined,
               ApplyImmediately: true,
-              // AllocatedStorage is mutable on ModifyDBInstance (scale-up).
-              // AWS rejects scale-down except in narrow cases; cdkd forwards the
-              // user's value and lets AWS surface the rejection if any.
-              ...(properties['AllocatedStorage'] !== undefined && {
-                AllocatedStorage: Number(properties['AllocatedStorage']),
-              }),
+              // AllocatedStorage is mutable on ModifyDBInstance (scale-up). AWS
+              // rejects scale-down except in narrow cases; a changed value is
+              // forwarded and AWS surfaces the rejection if any.
+              ...backfillMembers,
               // Removal keeps the live value, as CFn does (#5004 A/B).
               DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
               // #5467: an Engine change CloudFormation's handler applies in place
@@ -3066,6 +3348,37 @@ export class RDSProvider implements ResourceProvider {
     if (inst.MasterUserSecret?.KmsKeyId !== undefined) {
       result['MasterUserSecret'] = { KmsKeyId: inst.MasterUserSecret.KmsKeyId };
     }
+    // go-to-k/cdkd#2762: same names on the Describe shape, except
+    // `PerformanceInsightsEnabled` and the option group membership.
+    const sameName = [
+      'BackupRetentionPeriod',
+      'PreferredBackupWindow',
+      'PreferredMaintenanceWindow',
+      'StorageType',
+      'MultiAZ',
+      'MaxAllocatedStorage',
+      'AutoMinorVersionUpgrade',
+      'CopyTagsToSnapshot',
+      'PerformanceInsightsKMSKeyId',
+      'PerformanceInsightsRetentionPeriod',
+      'Iops',
+      'StorageThroughput',
+      'CACertificateIdentifier',
+    ] as const;
+    for (const key of sameName) {
+      if (inst[key] !== undefined) result[key] = inst[key];
+    }
+    if (inst.PerformanceInsightsEnabled !== undefined) {
+      result['EnablePerformanceInsights'] = inst.PerformanceInsightsEnabled;
+    }
+    // During an option group change the old membership is listed beside the
+    // new one; the new one is `pending-apply`, then `in-sync`.
+    const memberships = inst.OptionGroupMemberships ?? [];
+    const optionGroupName = (
+      memberships.find((m) => m.Status === 'in-sync' || m.Status === 'pending-apply') ??
+      memberships[0]
+    )?.OptionGroupName;
+    if (optionGroupName !== undefined) result['OptionGroupName'] = optionGroupName;
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }

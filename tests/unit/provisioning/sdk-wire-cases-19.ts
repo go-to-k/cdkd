@@ -287,9 +287,11 @@ const CLUSTER_CASE: TypeCase = {
 /**
  * DescribeDBInstances answers the instance available with its ARN: the create
  * wait settles at once. Its subnet group's VPC and that VPC's `default` group
- * serve a removed VPCSecurityGroups (go-to-k/cdkd#5542).
+ * serve a removed VPCSecurityGroups (go-to-k/cdkd#5542). The live allocated
+ * storage is the previous bag's, which a removed MaxAllocatedStorage sends
+ * (go-to-k/cdkd#2762).
  */
-function armInstance(): void {
+function armInstance(_physicalId?: string, live: Bag = {}): void {
   setOutputOverrides({
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
@@ -298,6 +300,9 @@ function armInstance(): void {
           DBInstanceArn: INSTANCE_ARN,
           DBInstanceStatus: 'available',
           DBSubnetGroup: { DBSubnetGroupName: SUBNET_GROUP, VpcId: 'vpc-1' },
+          ...(live['AllocatedStorage'] != null && {
+            AllocatedStorage: Number(live['AllocatedStorage']),
+          }),
         },
       ],
     }),
@@ -317,12 +322,19 @@ const INSTANCE_ENGINE_SILENT = Object.fromEntries(
  */
 const INSTANCE_CLASS_REMOVED = `update() sends only a declared DBInstanceClass (${SRC}:1777), and ModifyDBInstance keeps the live class when none is sent, as CloudFormation does (A/B on go-to-k/cdkd#1160; ${SRC}:1766-1768)`;
 
+/**
+ * go-to-k/cdkd#2762: CloudFormation's DBInstance handler sends each of these as
+ * `diff(previous, desired)`, nothing for a removal, so RDS keeps the live value.
+ */
+const CFN_DIFF_KEPT = (key: string): string =>
+  `left in place on removal: update() sends ${key} only when the template changed it (instanceModifyBackfillMembers in ${SRC}), as CloudFormation's handler sends diff(previous, desired), which is null for a removal (go-to-k/cdkd#2762)`;
+
 const INSTANCE_CASE: TypeCase = {
   resourceType: 'AWS::RDS::DBInstance',
   provider: () => new RDSProvider(),
   physicalId: INSTANCE_ID,
   createOnly: createOnlyOf('AWS::RDS::DBInstance'),
-  arm: () => armInstance(),
+  arm: (physicalId, bag) => armInstance(physicalId, bag),
   exempt: {},
   nestedExempt: {
     'MasterUserSecret.SecretArn': SECRET_ARN_READ_ONLY,
@@ -408,6 +420,54 @@ const INSTANCE_CASE: TypeCase = {
       expectedSilent: {
         ...INSTANCE_ENGINE_SILENT,
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+      },
+    },
+    {
+      name: 'gp3 storage, backups, maintenance and Performance Insights (go-to-k/cdkd#2762)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.m6g.large',
+        Engine: 'postgres',
+        AllocatedStorage: '400',
+        MasterUsername: 'admin',
+        StorageType: 'gp3',
+        Iops: 12000,
+        StorageThroughput: 500,
+        MaxAllocatedStorage: 1000,
+        BackupRetentionPeriod: 7,
+        PreferredBackupWindow: '03:00-04:00',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        MultiAZ: true,
+        AutoMinorVersionUpgrade: false,
+        CopyTagsToSnapshot: true,
+        EnablePerformanceInsights: true,
+        PerformanceInsightsKMSKeyId: KMS,
+        PerformanceInsightsRetentionPeriod: 7,
+        OptionGroupName: 'og-1',
+        CACertificateIdentifier: 'rds-ca-rsa2048-g1',
+      },
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        ...Object.fromEntries(
+          [
+            'AllocatedStorage',
+            'StorageType',
+            'Iops',
+            'StorageThroughput',
+            'BackupRetentionPeriod',
+            'PreferredBackupWindow',
+            'PreferredMaintenanceWindow',
+            'MultiAZ',
+            'AutoMinorVersionUpgrade',
+            'CopyTagsToSnapshot',
+            'EnablePerformanceInsights',
+            'PerformanceInsightsKMSKeyId',
+            'PerformanceInsightsRetentionPeriod',
+            'OptionGroupName',
+            'CACertificateIdentifier',
+          ].map((key) => [`update-remove:${key}`, CFN_DIFF_KEPT(key)])
+        ),
       },
     },
   ],
