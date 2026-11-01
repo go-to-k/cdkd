@@ -145,6 +145,12 @@ TABLE3="${STACK}-table3"
 TABLE4="${STACK}-table4"
 TABLE5="${STACK}-table5"
 TABLE6="${STACK}-table6"
+# go-to-k/cdkd#5604: flat capacity on a single-region table, literal and auto-scaled
+# write.
+TABLE7="${STACK}-table7"
+TABLE8="${STACK}-table8"
+# Two regions, each with its own read capacity.
+TABLE9="${STACK}-table9"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
 # Phase 5b's out-of-band key for ${TABLE2} in ${REGION}: fixture-owned, NOT the
@@ -521,13 +527,16 @@ cleanup() {
   teardown_table "${TABLE4}"
   teardown_table "${TABLE5}"
   teardown_table "${TABLE6}"
+  teardown_table "${TABLE7}"
+  teardown_table "${TABLE8}"
+  teardown_table "${TABLE9}"
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
   # Every fixture table, before ANY fixture key: the stack's local keys, the
   # replica keys and Phase 5b's out-of-band key below.
   local t
-  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}" "${TABLE6}"; do
+  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}"; do
     case " ${stuck} " in *" ${t} "*) continue ;; esac
     await_table_gone "${t}" || stuck="${stuck:+${stuck} }${t}"
   done
@@ -1275,20 +1284,20 @@ await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message
   echo "FAIL: $3: ${TABLE4} in $1 holds '${got}', not '$2'" >&2
   exit 1
 }
-table6_write_targets() { # prints the count of ${TABLE6}'s write scalable targets
+write_targets() { # usage: write_targets <table>; prints the count of its write scalable targets
   aws application-autoscaling describe-scalable-targets --service-namespace dynamodb \
-    --resource-ids "table/${TABLE6}" --scalable-dimension dynamodb:table:WriteCapacityUnits \
+    --resource-ids "table/$1" --scalable-dimension dynamodb:table:WriteCapacityUnits \
     --region "${REGION}" --query 'length(ScalableTargets)' --output text
 }
-await_table6_write_target() { # usage: await_table6_write_target <count> <message>
+await_write_target() { # usage: await_write_target <table> <count> <message>
   local got=""
   for _ in $(seq 1 30); do
-    if got="$(table6_write_targets)" && [ "${got}" = "$1" ]; then
+    if got="$(write_targets "$1")" && [ "${got}" = "$2" ]; then
       return 0
     fi
     sleep 2
   done
-  echo "FAIL: $2 (read '${got}', not '$1')" >&2
+  echo "FAIL: $3 (read '${got}', not '$2')" >&2
   exit 1
 }
 expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <message>
@@ -1300,9 +1309,24 @@ expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <m
   fi
 }
 
+expect_capacity() { # usage: expect_capacity <table> <read> <write> <message>
+  expect_table_field "$1" 'Table.ProvisionedThroughput.ReadCapacityUnits' "$2" "$4"
+  expect_table_field "$1" 'Table.ProvisionedThroughput.WriteCapacityUnits' "$3" "$4"
+}
+expect_replica_read() { # usage: expect_replica_read <table> <local read> <second region read> <message>
+  local got
+  expect_table_field "$1" 'Table.ProvisionedThroughput.ReadCapacityUnits' "$2" "$4"
+  got="$(aws dynamodb describe-table --table-name "$1" --region "${SECOND_REGION}" \
+    --query 'Table.ProvisionedThroughput.ReadCapacityUnits' --output text)" || return 1
+  if [ "${got}" != "$3" ]; then
+    echo "FAIL: $4: $1 reads '${got}' in ${SECOND_REGION}, not '$3'" >&2
+    exit 1
+  fi
+}
+
 echo "==> Phase 6b: vector indexes, warm throughput, TableType and the table-level read ceiling"
 deploy "${TS_BASE}" "${LOG_DIR}/phase6b.log"
-for logical in VectorTable TableLevelReadTable TableLevelCapacityTable; do
+for logical in VectorTable TableLevelReadTable TableLevelCapacityTable LocalCapacityTable AutoScaledWriteTable ReplicaOverrideTable; do
   by="$(record_of "${logical}")"
   if [ "${by}" != "sdk" ]; then
     echo "FAIL: Phase 6b: ${logical} records provisionedBy '${by}', not sdk (go-to-k/cdkd#2762)" >&2
@@ -1314,8 +1338,12 @@ await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6b"
 expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 13000 "Phase 6b"
 expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50 "Phase 6b"
 expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7 "Phase 6b"
+expect_capacity "${TABLE7}" 3 3 "Phase 6b"
+expect_capacity "${TABLE8}" 3 1 "Phase 6b"
+expect_replica_read "${TABLE9}" 3 2 "Phase 6b"
 # Application Auto Scaling is eventually consistent, so the read polls.
-await_table6_write_target 1 "Phase 6b: ${TABLE6} has no write scalable target"
+await_write_target "${TABLE6}" 1 "Phase 6b: ${TABLE6} has no write scalable target"
+await_write_target "${TABLE8}" 1 "Phase 6b: ${TABLE8} has no write scalable target"
 echo "    OK: the SDK route sent every setting (vec1 in both regions)"
 
 echo "==> Phase 6c: an update adds a vector index and raises both values"
@@ -1325,6 +1353,15 @@ await_vector_indexes "${SECOND_REGION}" "vec1	vec2" "Phase 6c"
 expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 14000 "Phase 6c"
 expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 55 "Phase 6c"
 expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 8 "Phase 6c"
+# go-to-k/cdkd#5604: a read and a write change in one deploy, with no billing flip.
+expect_capacity "${TABLE7}" 4 4 "Phase 6c (go-to-k/cdkd#5604)"
+# A flat read change on the local replica; the auto-scaled write side keeps its
+# capacity and its scalable target.
+expect_capacity "${TABLE8}" 4 1 "Phase 6c (go-to-k/cdkd#5604)"
+await_write_target "${TABLE8}" 1 "Phase 6c: ${TABLE8} lost its write scalable target"
+# The local read moves; the second region keeps the capacity it declares, which
+# a `ProvisionedThroughput` send would have cleared.
+expect_replica_read "${TABLE9}" 4 2 "Phase 6c (go-to-k/cdkd#5604)"
 run_drift 0 "Phase 6c"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
   echo "FAIL: Phase 6c: drift reports a table just deployed (go-to-k/cdkd#2762)" >&2
@@ -1342,7 +1379,7 @@ deploy_refused "${TS_BASE},ts2,tsregional" "${LOG_DIR}/phase6d-regional.log" \
 await_vector_indexes "${REGION}" "vec1	vec2" "Phase 6d"
 
 echo "==> Phase 6e: a vector index removed"
-deploy "${TS_BASE}" "${LOG_DIR}/phase6e.log"
+deploy "${TS_BASE},ts3" "${LOG_DIR}/phase6e.log"
 await_vector_indexes "${REGION}" "vec1" "Phase 6e"
 await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6e"
 # A warm throughput below the live value is warned about and not sent; the
@@ -1350,6 +1387,10 @@ await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6e"
 expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 14000 "Phase 6e"
 expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50 "Phase 6e"
 expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7 "Phase 6e"
+# go-to-k/cdkd#5604: the write literal alone moves; the read side stays.
+expect_capacity "${TABLE7}" 4 3 "Phase 6e (go-to-k/cdkd#5604)"
+expect_capacity "${TABLE8}" 3 1 "Phase 6e (go-to-k/cdkd#5604)"
+expect_replica_read "${TABLE9}" 3 2 "Phase 6e (go-to-k/cdkd#5604)"
 echo "    OK: vec2 removed in both regions, warm throughput kept, ceiling and capacity back"
 
 # --- Phase 7: destroy --remove-protection ---------------------------------
@@ -1374,7 +1415,7 @@ done
 echo "    the Phase 5b table deleted in both regions"
 assert_gone "table ${TABLE3} still exists in ${REGION} after destroy" aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}"
 echo "    the Phase 1b ModeTable deleted"
-for t in "${TABLE4}" "${TABLE5}" "${TABLE6}"; do
+for t in "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}"; do
   for r in "${REGION}" "${SECOND_REGION}"; do
     for _ in $(seq 1 30); do
       gone_probe aws dynamodb describe-table --table-name "${t}" --region "${r}" && break
@@ -1383,7 +1424,8 @@ for t in "${TABLE4}" "${TABLE5}" "${TABLE6}"; do
     assert_gone "table ${t} still exists in ${r} after destroy" aws dynamodb describe-table --table-name "${t}" --region "${r}"
   done
 done
-await_table6_write_target 0 "Phase 7: ${TABLE6}'s write scalable target outlived the table"
+await_write_target "${TABLE6}" 0 "Phase 7: ${TABLE6}'s write scalable target outlived the table"
+await_write_target "${TABLE8}" 0 "Phase 7: ${TABLE8}'s write scalable target outlived the table"
 echo "    the Phase 6b tables deleted, and ${TABLE6}'s scalable target with them"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
