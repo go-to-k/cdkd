@@ -231,10 +231,16 @@ describe('RDSProvider DBCluster backfill (go-to-k/cdkd#2762)', () => {
       expect(input['PreferredBackupWindow']).toBe('03:00-03:30');
     });
 
-    it('a template update still sends an unchanged EngineVersion, as before', async () => {
+    it('an unchanged EngineVersion beside another change is not sent: AWS may have auto-upgraded the minor version, and re-sending it reads as a downgrade', async () => {
       armLive({});
-      await update({ ...BASE, EngineVersion: '17.9' }, { ...BASE, EngineVersion: '17.9' });
-      expect(modify()['EngineVersion']).toBe('17.9');
+      await update(
+        { ...BASE, EngineVersion: '17.4', PreferredBackupWindow: '05:00-05:30' },
+        { ...BASE, EngineVersion: '17.4', PreferredBackupWindow: '03:00-03:30' }
+      );
+      const input = modify();
+      expect(input).not.toHaveProperty('EngineVersion');
+      expect(input).not.toHaveProperty('AllowMajorVersionUpgrade');
+      expect(input['PreferredBackupWindow']).toBe('05:00-05:30');
     });
 
     it.each([

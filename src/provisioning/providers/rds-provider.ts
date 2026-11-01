@@ -1506,14 +1506,14 @@ export class RDSProvider implements ResourceProvider {
       // the stack update completes in place and the live user stays the old one.
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       const portToSend = clusterPortToSend(properties, previousProperties);
-      // go-to-k/cdkd#2762: a changed EngineVersion goes out with
-      // AllowMajorVersionUpgrade, as CloudFormation's handler sends it
+      // go-to-k/cdkd#2762: EngineVersion goes out only when changed, with
+      // AllowMajorVersionUpgrade, as CloudFormation's handler sends both
       // (`Translator.modifyDbClusterRequest`: any EngineVersion change outside
       // a rollback). Without it RDS refuses a major upgrade, such as the one
       // CDK's L2 cluster emits with its default parameter group's family, which
       // CloudFormation applies in place. DBCluster has no template
       // `AllowMajorVersionUpgrade` property to read.
-      const allowMajorVersionUpgrade = clusterEngineVersionChanged(
+      const engineVersionChanged = clusterEngineVersionChanged(
         properties,
         previousProperties,
         context
@@ -1521,12 +1521,14 @@ export class RDSProvider implements ResourceProvider {
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
-          // A rollback replay sends no EngineVersion, as the handler's rollback
-          // arm: RDS refuses the downgrade, failing every other reverted member.
-          ...(context?.replayingState !== true && {
-            EngineVersion: properties['EngineVersion'] as string | undefined,
+          // Only a changed EngineVersion, with the flag, as the handler sends
+          // it: an unchanged one re-sent after AWS auto-upgraded the minor
+          // version reads as a downgrade, and a rollback replay sends none (RDS
+          // refuses the downgrade, failing every other reverted member).
+          ...(engineVersionChanged && {
+            EngineVersion: properties['EngineVersion'] as string,
+            AllowMajorVersionUpgrade: true,
           }),
-          ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
           // Removal keeps the live value, as CFn does (#5004 A/B).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           // CFn resets a removed BackupRetentionPeriod to 1 (#5004 A/B).
