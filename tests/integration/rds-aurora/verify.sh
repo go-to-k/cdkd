@@ -69,6 +69,11 @@
 # that destroy only passes the failure-set check if the target group is deleted
 # through the SDK provider.
 #
+# #2762 (DBCluster parameter group, windows, CopyTagsToSnapshot, StorageType):
+# phase 1 declares all five on the SecurityCluster and asserts each live
+# (the provisionedBy=sdk guard is what a pre-fix cdkd fails). Phase 2 changes
+# the maintenance window and drops the other four, which must be kept.
+#
 # #2762 (DBProxyEndpoint EndpointNetworkType): the reader endpoint declares
 # EndpointNetworkType=IPV4. Before #2762 the key was a silent drop, which routed
 # the endpoint to Cloud Control; phase 1 asserts provisionedBy=sdk, the recorded
@@ -557,6 +562,26 @@ if [ "${ACTUAL_AUTO_PAUSE}" != "600" ]; then
 fi
 echo "    OK: base SecurityCluster SecondsUntilAutoPause == 600 (#5466)"
 
+# go-to-k/cdkd#2762: phase 1 declares DBClusterParameterGroupName (this stack's
+# SecurityClusterParams), PreferredBackupWindow 03:00-03:30,
+# PreferredMaintenanceWindow sun:05:00-sun:05:30, CopyTagsToSnapshot true and
+# StorageType aurora-iopt1, each a non-default. Before #2762 each routed the
+# cluster to Cloud Control (the provisionedBy=sdk guard above); here each must
+# be live. RDS stores a parameter group name in lower case.
+PARAMS_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBClusterParameterGroup" and (.key | test("^SecurityClusterParams"))) | .value.physicalId] | first // ""')
+if [ -z "${PARAMS_NAME}" ]; then
+  echo "FAIL: #2762: could not resolve SecurityClusterParams' name from state" >&2
+  exit 1
+fi
+PARAMS_NAME=$(printf '%s' "${PARAMS_NAME}" | tr '[:upper:]' '[:lower:]')
+BASE_2762=$(echo "${CLUSTER}" | jq -r '[.DBClusterParameterGroup, .PreferredBackupWindow, .PreferredMaintenanceWindow, (.CopyTagsToSnapshot | tostring), (.StorageType // "absent")] | join(" ")')
+WANT_2762="${PARAMS_NAME} 03:00-03:30 sun:05:00-sun:05:30 true aurora-iopt1"
+if [ "${BASE_2762}" != "${WANT_2762}" ]; then
+  echo "FAIL: #2762: base SecurityCluster [parameter group, backup window, maintenance window, CopyTagsToSnapshot, StorageType] is '${BASE_2762}', want '${WANT_2762}' (CreateDBCluster did not send them)" >&2
+  exit 1
+fi
+echo "    OK: base SecurityCluster carries the declared parameter group, windows, CopyTagsToSnapshot and StorageType (#2762)"
+
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
 TG_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${TG_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
@@ -745,7 +770,7 @@ fi
 echo "    OK: #2762: ${EP_LOGICAL} (sdk) records and holds EndpointNetworkType=IPV4"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (SecondsUntilAutoPause 600 -> 1800; DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (SecondsUntilAutoPause 600 -> 1800; DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; change PreferredMaintenanceWindow, DROP the parameter group / backup window / CopyTagsToSnapshot / StorageType, all KEPT (#2762); drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
 DEPLOY_2_LOG="$(mktemp)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -891,6 +916,30 @@ if [ "${AFTER_SECRET}" != "null" ]; then
   exit 1
 fi
 echo "    OK: after ManageMasterUserPassword removal, the managed master password is off (#1160, matches CloudFormation)"
+
+# go-to-k/cdkd#2762: phase 2 changed PreferredMaintenanceWindow to
+# mon:06:00-mon:06:30 and dropped the parameter group, the backup window,
+# CopyTagsToSnapshot and StorageType. The new window proves ModifyDBCluster
+# sent the change; CloudFormation's handler sends nothing for the four removed
+# ones, so each must still hold its phase-1 value. Polled for the window.
+AFTER_2762=""
+for i in $(seq 1 12); do
+  AFTER_2762_JSON=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0]' --output json)
+  AFTER_2762=$(echo "${AFTER_2762_JSON}" | jq -r '[.DBClusterParameterGroup, .PreferredBackupWindow, .PreferredMaintenanceWindow, (.CopyTagsToSnapshot | tostring), (.StorageType // "absent")] | join(" ")')
+  [ "$(echo "${AFTER_2762_JSON}" | jq -r '.PreferredMaintenanceWindow // "null"')" = "mon:06:00-mon:06:30" ] && break
+  if [ "${i}" -lt 12 ]; then
+    sleep 10
+  fi
+done
+WANT_AFTER_2762="${PARAMS_NAME} 03:00-03:30 mon:06:00-mon:06:30 true aurora-iopt1"
+if [ "${AFTER_2762}" != "${WANT_AFTER_2762}" ]; then
+  echo "FAIL: #2762: after phase 2, the SecurityCluster [parameter group, backup window, maintenance window, CopyTagsToSnapshot, StorageType] is '${AFTER_2762}', want '${WANT_AFTER_2762}' (the changed window must be live; the four removed members must be KEPT, as CloudFormation keeps them)" >&2
+  exit 1
+fi
+echo "    OK: after phase 2, the maintenance window changed and the removed parameter group, backup window, CopyTagsToSnapshot and StorageType were kept (#2762)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")

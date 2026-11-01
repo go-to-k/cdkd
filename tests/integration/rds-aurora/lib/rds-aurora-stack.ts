@@ -219,9 +219,39 @@ export class RdsAuroraStack extends cdk.Stack {
     //     default: verify.sh asserts 5432.
     //   * MonitoringInterval + MonitoringRoleArn. CloudFormation KEEPS both:
     //     verify.sh asserts the interval is still 60 and the role still set.
+    // go-to-k/cdkd#2762: a custom cluster parameter group for the
+    // SecurityCluster's DBClusterParameterGroupName. Its family pins the
+    // cluster's major version, hence the cluster's pinned EngineVersion.
+    const securityClusterParams = new rds.CfnDBClusterParameterGroup(
+      this,
+      'SecurityClusterParams',
+      {
+        family: 'aurora-postgresql17',
+        description: 'cdkd #2762 SecurityCluster parameter group',
+        parameters: { log_min_duration_statement: '1000' },
+      }
+    );
+    // go-to-k/cdkd#2762: phase 1 declares DBClusterParameterGroupName,
+    // PreferredBackupWindow, PreferredMaintenanceWindow, CopyTagsToSnapshot and
+    // StorageType, each a non-default. Before #2762 each was a silent drop that
+    // routed the SecurityCluster to Cloud Control, which the provisionedBy=sdk
+    // guard in verify.sh catches. Phase 2 CHANGES PreferredMaintenanceWindow
+    // and DROPS the other four; CloudFormation's handler sends nothing for a
+    // removed one, so verify.sh asserts the new window and the four kept.
+    const backfill2762 = isUpdate
+      ? { preferredMaintenanceWindow: 'mon:06:00-mon:06:30' }
+      : {
+          dbClusterParameterGroupName: securityClusterParams.ref,
+          preferredBackupWindow: '03:00-03:30',
+          preferredMaintenanceWindow: 'sun:05:00-sun:05:30',
+          copyTagsToSnapshot: true,
+          storageType: 'aurora-iopt1',
+        };
     const securityCluster = new rds.CfnDBCluster(this, 'SecurityCluster', {
       engine: 'aurora-postgresql',
+      engineVersion: '17.9',
       masterUsername: 'postgres',
+      ...backfill2762,
       ...(isUpdate
         ? {
             masterUserPassword: cluster
@@ -259,6 +289,9 @@ export class RdsAuroraStack extends cdk.Stack {
     // Issue #1160: once phase 2 drops the Ref, this keeps the security group
     // deleted AFTER the cluster that may still hold it.
     securityCluster.node.addDependency(securityGroup);
+    // go-to-k/cdkd#2762: likewise for the parameter group once phase 2 drops
+    // the Ref: RDS refuses to delete a group a cluster still uses.
+    securityCluster.node.addDependency(securityClusterParams);
 
     // Issue #5467: a cluster with NO instance whose Engine phase 2c swaps
     // (CDKD_TEST_ENGINE_SWAP=true), aurora-mysql -> aurora-postgresql.

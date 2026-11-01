@@ -13,9 +13,11 @@
  *
  * A provider that starts reading `changedProperties` joins this set when its
  * readback returns the keys it reads. Without it the provider still gets a
- * correct set, only a wider one: the DocDB / RDS DB cluster read it for
- * `MasterUserPassword` alone, and the RDS DB instance for it plus its
- * go-to-k/cdkd#2762 storage, backup and Performance Insights keys. AWS never
+ * correct set, only a wider one: the DocDB DB cluster reads it for
+ * `MasterUserPassword` alone, the RDS DB cluster for it plus its
+ * go-to-k/cdkd#2762 parameter group, window, tag-copy and storage type keys,
+ * and the RDS DB instance for it plus its #2762 storage, backup and
+ * Performance Insights keys. AWS never
  * returns the password, so a readback could not confirm it and they stay out
  * (#5153); a `NoEcho`-fed #2762 key is re-sent, the safe direction, except
  * a `NoEcho`-fed `AllocatedStorage` on an instance autoscaling has grown past
