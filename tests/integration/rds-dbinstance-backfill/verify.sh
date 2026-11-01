@@ -474,18 +474,23 @@ aws rds modify-db-instance --db-instance-identifier "${DB_INSTANCE_ID}" \
   --engine-version "${UPGRADE_TARGET}" --apply-immediately \
   --region "${REGION}" >/dev/null
 UPGRADED=""
+UPGRADE_ERR=$(mktemp)
 for _ in $(seq 1 240); do
+  # A failed read (a throttle mid-upgrade) is retried, not fatal; the last
+  # read and its stderr are printed if the loop gives up.
   UPGRADE_READ=$(aws rds describe-db-instances \
     --db-instance-identifier "${DB_INSTANCE_ID}" \
     --region "${REGION}" \
-    --query 'DBInstances[0]' --output json |
-    jq -r '"\(.DBInstanceStatus // "null") \(.EngineVersion // "null")"')
+    --query 'DBInstances[0]' --output json 2>"${UPGRADE_ERR}" |
+    jq -r '"\(.DBInstanceStatus // "null") \(.EngineVersion // "null")"') ||
+    UPGRADE_READ="describe-failed: $(tail -c 300 "${UPGRADE_ERR}")"
   if [ "${UPGRADE_READ}" = "available ${UPGRADE_TARGET}" ]; then
     UPGRADED="yes"
     break
   fi
   sleep 15
 done
+rm -f "${UPGRADE_ERR}"
 if [ -z "${UPGRADED}" ]; then
   echo "FAIL: #2762 premise: the out-of-band upgrade to ${UPGRADE_TARGET} did not settle (last read: '${UPGRADE_READ}')" >&2
   exit 1
