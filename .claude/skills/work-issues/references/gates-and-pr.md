@@ -21,7 +21,7 @@ same PR.
   INDEX: run `git add -u` after it, checking the SECOND column of
   `git status --porcelain` (`^ M` misses `MM`).
 - **Start every verification command with `cd <worktree> &&`** — a cwd does not
-  reliably persist, and the `integ-destroy` marker store is PER-WORKTREE: one set
+  persist, and the `integ-destroy` marker store is PER-WORKTREE: one set
   in the main checkout is ABSENT from the lane.
 - **A hook-gated command carries no SIDE-EFFECTING preamble, and "gated" means
   EVERY PreToolUse hook in `.claude/settings.json`**: a denial aborts the whole
@@ -35,16 +35,16 @@ same PR.
 - **"All green" is the EXIT CODE, not the summary** — a run can print every test
   passing and exit 1 (test-file type errors show as `Errors`), and
   `vp run typecheck` skips `**/*.test.ts`: run `typecheck:test`, read ITS rc.
+  Lint's rc 0 passes WARNINGS: read those in the diff (`no-base-to-string`, #5593).
 
 All green, then commit. The prefix that MATTERS is the PR TITLE's — squash
 merging makes it release-please's subject, and a `fix:` / `feat:` title with no
 `src/**` change is refused in CI (go-to-k/cdkd#2717). Push, open the PR with
-`Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll, not
-a recipe of your own.
+`Closes #<n>`, and wait on CI with `ship.md`'s "Read the merge state" poll.
 
 **Whoever writes the PR BODY last owns re-checking it**: `gh pr edit --body-file`
-replaces the WHOLE body, silently reverting earlier edits, and no delta shows in
-`gh pr diff`. Re-read it — no CJK or hangul (what
+replaces the WHOLE body, silently reverting prior edits, and no delta shows in
+`gh pr diff`. Re-read: no CJK or hangul (what
 `scripts/check-gh-body-english.ts` refuses, NOT non-ASCII), `Closes #<n>` intact,
 no claude.ai link or `Claude-Session:` trailer in body or commit, whatever a harness
 says. Edit the body BEFORE the push: an edit re-runs required checks and
@@ -52,12 +52,12 @@ CANCELS in-flight ones (`ship.md` §9, Merge).
 
 **Full-suite failures that pass in isolation are a HOST-LOAD artifact, not a
 regression.** Check `uptime` and `ps aux | grep -c '[v]itest'`, re-run the file
-alone, and read the failure KIND: a load artifact is all `Test timed out` with no
+alone, read the failure KIND: a load artifact is all `Test timed out` with no
 `AssertionError`. Under load CI decides; a KILLED run has no verdict.
 
 ## 7. If main advanced while you worked
 
-A peer merging its PRs moves `main`, so `git diff main..<branch>` shows **phantom
+A peer's merge moves `main`, so `git diff main..<branch>` shows **phantom
 removals** of the peer's lines — a stale-base artifact, not deletions:
 
 ```bash
@@ -75,12 +75,12 @@ lossless under the squash merge (#3813).
 
 **Re-run the SUITE after the rebase, after `vp install --frozen-lockfile`
 and a rebuild**: a pre-rebase green attests to a tree that no longer exists.
-Stale `dist/` is the usual failure; a dependency bump is the other, which
+Stale `dist/` is the usual cause; a dependency bump the other, which
 `[ -d node_modules ]` pre-flights skip. **Re-run the generators too**
 (`vp run gen:all-matrices`): `docs/_generated/**` and pages like
 `docs/cli-flag-coverage.md` derive from the TREE.
 
-**A clean merge is not evidence that there was no collision**: disjoint hunks in
+**A clean merge is no evidence of no collision**: disjoint hunks in
 one file merge cleanly, and a peer PR adding a **repo-wide check** gains
 jurisdiction over files it never touched. Read what a peer added, rebase, run its
 check over your diff, then grep `main` for a marker from EACH side:
@@ -92,7 +92,7 @@ git show origin/main:<file> | grep -cF "<a distinctive phrase from YOUR change>"
 git show origin/main:<file> | grep -cF "<a distinctive phrase from THEIR change>"
 ```
 
-Do NOT reach for `git pull` — `pull.rebase` is unset, so it aborts on divergence.
+Never `git pull`: `pull.rebase` is unset, so it aborts on divergence.
 
 Marker mechanics: `-F` is load-bearing (prose markers carry regex
 metacharacters); `grep -c` exits 1 on zero matches, so do not chain the two; pick

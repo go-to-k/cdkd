@@ -7,8 +7,7 @@ stay with the parent, so a lane stops at merge-ready.
 
 ### 5-a. The tree
 
-Never edit in the main checkout — it is shared across parallel agents. Per
-lane:
+Never edit in the main checkout (shared by parallel agents). Per lane:
 
 ```bash
 # MAIN-CHECKOUT only; an IN-PLACE lane in the launch tree skips these two lines,
@@ -25,7 +24,7 @@ LIFE, never absence: "someone is here" means STOP.
 
 ```bash
 # The FIRST line is the anchor: every probe under it describes THIS shell's
-# tree, so a silently reset cwd (gotchas.md) shows up IN THE OUTPUT.
+# tree, so a silently reset cwd (gotchas.md) shows IN THE OUTPUT.
 git rev-parse --show-toplevel   # STOP unless you meant to adopt this tree
 git status --porcelain          # non-empty: someone's uncommitted work
 git branch --show-current
@@ -33,7 +32,7 @@ git log --oneline -3
 cat "$(git rev-parse --git-dir)/session-owner" 2>/dev/null   # owner sentinel
 ```
 
-Also read the issue thread for a claim naming this branch (the cross-clone
+Also read the issue thread for a claim naming this branch (cross-clone
 signal); a live lane's tree gets instructions, not edits.
 
 **Take a fresh branch here — ALWAYS, and WITHOUT leaving the tree.** The branch
@@ -42,7 +41,7 @@ branch, and §9 puts it back untouched (`references/launch-mode.md`).
 
 ```bash
 git status --porcelain   # must be empty FIRST -- `git switch` carries
-                         # uncommitted changes ACROSS onto your lane branch
+                         # uncommitted changes onto your branch
 git fetch origin && git switch -c <branch> origin/main   # unchained, a failed
                          # fetch still branches off a stale origin/main
 ```
@@ -139,10 +138,10 @@ if the fix needs a forbidden one or meets a design branch (options plus what
 CFn does, never a lenient pick of its own; #5107, #5109)", and **the REPORT
 SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
 never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
-mid-task report ends NOTHING: the lane goes on to its next step unless the
-parent SAYS stop.
-Never wait on a quiet lane: list the agents and resume any already `completed`
-with "REPORT ONLY". A subagent's Bash bypasses the PreToolUse hooks.
+mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
+Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
+`completed`, or running with a frozen tool count and its PR green (#5593).
+A subagent's Bash bypasses the PreToolUse hooks.
 
 **Guardrails every lane prompt must carry:**
 

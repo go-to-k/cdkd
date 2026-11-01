@@ -187,14 +187,14 @@ verify, clean up.
      If a fixture seeded a secret, grep the surviving versions for it.
    - Verify the AWS resources are gone, per stack name from synth output, for
      the types the test actually created — the per-service listing commands are
-     in `/cleanup` step 4; use the same ones with this run's stack prefix.
+     in `/cleanup` step 4; run them with this run's stack prefix. An
+     RDS `automated` snapshot outlives its instance: re-poll ~2 min (#5593).
    - FSx tests take an extra check: destroy keeps CFn parity, so
      `DeleteFileSystem` takes a chargeable FINAL BACKUP by default, and it
      usually carries NO tags, so a name scan reports clean over a live billing
      backup. Attribute by the persisted file-system id
      (`aws fsx describe-backups --region us-east-1 --query 'Backups[?FileSystem.FileSystemId==\`{fs-id}\`].[BackupId,Lifecycle]'`);
-     if the run's fs ids are unknown, list ALL backups and flag any unattributed
-     entry for manual review.
+     with no fs ids, list ALL backups and flag unattributed ones for review.
 
 7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)** —
    trigger when the destroy step reported errors, OR step 6 found leftover state
@@ -213,8 +213,8 @@ verify, clean up.
      (or `cdkd state orphan '<StackName>'`, which also handles the lock key).
      A record this binary cannot read (a newer schema) is a PEER's, never an
      orphan: STOP and report, delete nothing (#5116 purged one, every version).
-   - Other types: infer delete order from CFn dependency rules (children before
-     parents). Always pass `--region`. Re-run step 6 after cleanup.
+   - Other types: delete children before parents. Always pass `--region`.
+     Re-run step 6 after cleanup.
 
    **Never** end the run with orphans present. One that resists deletion after
    this pass is surfaced with its ID, region and what was tried.
