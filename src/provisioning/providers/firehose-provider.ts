@@ -454,8 +454,7 @@ export class FirehoseProvider implements ResourceProvider {
       }
 
       // go-to-k/cdkd#2762: create-only in the CloudFormation schema, so a
-      // change plans a replacement and update() never sends it. The hint is
-      // informational on AWS's side (it does not change the throughput limit).
+      // change plans a replacement and update() never sends it.
       if (properties['DirectPutSourceConfiguration'] !== undefined) {
         const directPut = properties['DirectPutSourceConfiguration'] as Record<string, unknown>;
         input.DirectPutSourceConfiguration = {

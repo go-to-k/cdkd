@@ -197,7 +197,9 @@ describe('FirehoseProvider read-update round-trip', () => {
     expect(observed['DirectPutSourceConfiguration']).toEqual({ ThroughputHintInMBs: 7 });
 
     mockSend.mockClear();
-    const result = await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, observed);
+    // A previous side holding another hint, so the bags differ in the block.
+    const previous = { ...observed, DirectPutSourceConfiguration: { ThroughputHintInMBs: 8 } };
+    const result = await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, previous);
     expect(result.wasReplaced).toBe(false);
     expect(mockSend.mock.calls.length).toBeGreaterThan(0);
     for (const [command] of mockSend.mock.calls) {
