@@ -481,12 +481,12 @@ export function findUnroutableDropRefusals(
     if (properties.length === 0) continue;
     const keep = properties.map((p) => displayIdent(`${resource.Type}:${p}`)).join(',');
     const condition = resource.Condition;
-    const unless =
+    const hedge =
       typeof condition === 'string' && !conditionSettled(condition)
         ? `if condition ${displayIdent(condition)} holds, `
         : '';
     reasons.push(
-      `${displayIdent(logicalId)} (${displayIdent(resource.Type)}): ${unless}a deploy of this ` +
+      `${displayIdent(logicalId)} (${displayIdent(resource.Type)}): ${hedge}a deploy of this ` +
         `stack without --prefer-sdk-route refuses ${properties.map((p) => displayIdent(p)).join(', ')}, ` +
         `because the SDK provider does not handle ${properties.length === 1 ? 'it' : 'them'} ` +
         `and this type cannot fall back to Cloud Control API (${reason}). Remove ` +
@@ -576,7 +576,13 @@ export function findUnwrittenCreateOnlyRefusals(
           `not write ${one ? 'it' : 'them'}, so AWS does not. This cdkd version's SDK provider ` +
           `writes ${nowWritten.map((k) => displayIdent(k)).join(', ')}, so a deploy refuses it ` +
           `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless ` +
-          `${unroutable ? '--replace opts' : '--recreate-via-cc-api or --replace opts'} ` +
+          `${
+            !unroutable
+              ? '--recreate-via-cc-api or --replace opts'
+              : keepKeys.length > 0
+                ? `--replace, with --prefer-sdk-route ${keep} for the pre-flight check, opts`
+                : '--replace opts'
+          } ` +
           `in, whatever --prefer-sdk-route names; a deploy with ` +
           `${nowWritten.map((k) => displayIdent(k)).join(', ')} removed from the template` +
           (keepKeys.length > 0 ? ` and --prefer-sdk-route ${keep}` : '') +
