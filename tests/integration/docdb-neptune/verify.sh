@@ -650,6 +650,28 @@ neptune_cluster_available() {
   echo "[verify] FAIL: #2762: the Neptune cluster is '${status}', want available" >&2
   exit 1
 }
+# Send a log-export change, waiting out the moment a cluster that read
+# `available` starts an earlier change and refuses the call (#5194's shape).
+modify_neptune_log_exports() { # usage: modify_neptune_log_exports <config json>
+  local err i
+  for i in $(seq 1 20); do
+    neptune_cluster_available
+    if err=$(aws neptune modify-db-cluster --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" \
+      --cloudwatch-logs-export-configuration "$1" --apply-immediately 2>&1 >/dev/null); then
+      return 0
+    fi
+    case "${err}" in
+      *InvalidDBClusterState*) ;;
+      *)
+        echo "[verify] FAIL: #2762: modify-db-cluster refused: ${err}" >&2
+        exit 1
+        ;;
+    esac
+    [ "${i}" -lt 20 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: the Neptune cluster kept refusing the log-export change: ${err}" >&2
+  exit 1
+}
 neptune_log_types() {
   aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" \
     --query 'DBClusters[0].EnabledCloudwatchLogsExports' --output json | jq -r '(. // []) | sort | join(",")'
@@ -702,9 +724,7 @@ if [ -n "${DRIFT_2762}" ]; then
   exit 1
 fi
 # What the clean read cannot show: an out-of-band change must read as drift.
-neptune_cluster_available
-aws neptune modify-db-cluster --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" \
-  --cloudwatch-logs-export-configuration '{"EnableLogTypes":["audit"]}' --apply-immediately >/dev/null
+modify_neptune_log_exports '{"EnableLogTypes":["audit"]}'
 wait_neptune_log_types "audit,slowquery"
 DRIFT_2762=$(drift_2762_paths) || exit 1
 case "${DRIFT_2762}" in
@@ -714,9 +734,7 @@ case "${DRIFT_2762}" in
     exit 1
     ;;
 esac
-neptune_cluster_available
-aws neptune modify-db-cluster --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" \
-  --cloudwatch-logs-export-configuration '{"DisableLogTypes":["audit"]}' --apply-immediately >/dev/null
+modify_neptune_log_exports '{"DisableLogTypes":["audit"]}'
 wait_neptune_log_types "slowquery"
 neptune_cluster_available
 echo "[verify] step 3b2 ok: the backfilled Neptune properties changed in place, and drift reads a stable baseline and an out-of-band log type (#2762)"

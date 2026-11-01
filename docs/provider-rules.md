@@ -1661,9 +1661,11 @@ Checklist when writing or reviewing an `update()`:
   `EnableCloudwatchLogsExports` (none exported), so `update()` diffs both, and
   KEEPS `CopyTagsToSnapshot`. A DBInstance KEEPS `PubliclyAccessible: true`
   (with `IamAuthEnabled` on, which a public Neptune instance needs), so cdkd
-  sends no reset and says the instance stays public. Not measured:
-  `ServerlessScalingConfiguration`, `NetworkType`, and what a CloudFormation
-  rollback does to a `PubliclyAccessible: true` the failed update added.
+  sends no reset and says the instance stays public. An update adding
+  `PubliclyAccessible: true` that then failed and rolled back left it true too
+  (read after UPDATE_ROLLBACK_COMPLETE and about four minutes later), so a
+  rollback sends no reset either. Not measured:
+  `ServerlessScalingConfiguration` and `NetworkType`.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

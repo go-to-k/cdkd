@@ -28,7 +28,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *  - 1 Neptune DBSubnetGroup
  *  - 1 Neptune DBCluster (Neptune uses IAM auth so no Master credentials)
  *  - 1 Neptune DBInstance (db.t3.medium)
- *  - 2 IAM roles, swapped on the Neptune cluster by the removal redeploy
+ *  - 2 IAM roles, swapped on the Neptune cluster by the update redeploy
  *
  * go-to-k/cdkd#2762 (backfill): the Neptune cluster declares `AssociatedRoles`,
  * `AvailabilityZones`, `CopyTagsToSnapshot`, `EnableCloudwatchLogsExports`,

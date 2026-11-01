@@ -31,6 +31,11 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 import {
+  settleUnsettledPrevious,
+  unsettledAfterUpdate,
+} from '../../../src/deployment/unsettled-convergence.js';
+import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import {
   createdBeforeFailure,
   isAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
@@ -329,6 +334,27 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(marks).toContain('AssociatedRoles');
     });
 
+    it('marks nothing when a terminal status fails the wait before the write', async () => {
+      const wire = armCluster({ statuses: ['available', 'incompatible-parameters'] });
+      const marks: string[] = [];
+      await expect(
+        update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}, CLUSTER, {
+          markUnsettled: (key: string) => marks.push(key),
+        })
+      ).rejects.toThrow('incompatible-parameters');
+      expect(marks).not.toContain('AssociatedRoles');
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('marks what each attach added as attempted, after the call', async () => {
+      armCluster();
+      const attempted: [string, readonly string[]][] = [];
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 'f' }] }, {}, CLUSTER, {
+        markAttempted: (path: string, items: readonly string[]) => attempted.push([path, items]),
+      });
+      expect(attempted).toEqual([['AssociatedRoles', [`${ROLE_A}\nf`]]]);
+    });
+
     it('stops a settle wait at the resource deadline, as a warning', async () => {
       armCluster();
       const answer = mockSend.getMockImplementation()!;
@@ -625,10 +651,19 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       ).toEqual({ EnableLogTypes: ['audit'] });
     });
 
+    it('marks only the log types AWS did not hold as attempted', async () => {
+      armCluster({ logs: ['slowquery'] });
+      const attempted: [string, readonly string[]][] = [];
+      await update({ EnableCloudwatchLogsExports: ['audit', 'slowquery'] }, {}, CLUSTER, {
+        markAttempted: (path: string, items: readonly string[]) => attempted.push([path, items]),
+      });
+      expect(attempted).toEqual([['EnableCloudwatchLogsExports', ['audit']]]);
+    });
+
     it('waits for a changed log list to read back', async () => {
-      const wire = armCluster({ logs: [], logsAfter: 4 });
+      const wire = armCluster({ logs: [], logsAfter: 5 });
       await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
-      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(4);
+      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(5);
       expect(warn).not.toHaveBeenCalled();
     });
 
@@ -643,7 +678,7 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       process.env['CDKD_NO_WAIT'] = 'true';
       const wire = armCluster({ logs: [], logsAfter: Number.POSITIVE_INFINITY });
       await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
-      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(1);
+      expect(wire.sent('DescribeDBClustersCommand')).toHaveLength(2);
       expect(warn).not.toHaveBeenCalled();
     });
 
@@ -871,12 +906,6 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       ).not.toHaveProperty('MinCapacity');
     });
 
-    it('adds neither list to a bag that has none', () => {
-      expect(provider.canonicalizeDriftProperties(CLUSTER, { CopyTagsToSnapshot: true })).toEqual({
-        CopyTagsToSnapshot: true,
-      });
-    });
-
     it('reads the instance PubliclyAccessible', async () => {
       mockSend.mockResolvedValue({ DBInstances: [{ PubliclyAccessible: false }] });
       expect(await provider.readCurrentState('instance-1', 'L', INSTANCE)).toMatchObject({
@@ -893,18 +922,181 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(provider.getDriftUnknownPaths('AWS::Neptune::DBSubnetGroup')).toEqual([]);
     });
 
-    it('compares both lists as sets, and leaves a malformed side alone', () => {
-      const a = provider.canonicalizeDriftProperties(CLUSTER, {
-        AssociatedRoles: [{ RoleArn: ROLE_B }, { RoleArn: ROLE_A, FeatureName: 'f' }],
-        EnableCloudwatchLogsExports: ['slowquery', 'audit'],
+    it('declares the three sets unordered, on the cluster only', () => {
+      expect(provider.getDriftUnorderedPaths(CLUSTER)).toEqual([
+        'AssociatedRoles',
+        'EnableCloudwatchLogsExports',
+        'VpcSecurityGroupIds',
+      ]);
+      expect(provider.getDriftUnorderedPaths(INSTANCE)).toEqual([]);
+    });
+  });
+
+  describe('unsettled convergence', () => {
+    const identity = (recordedProperties: Record<string, unknown>) => ({
+      provider,
+      logicalId: 'L',
+      physicalId: 'cluster-1',
+      resourceType: CLUSTER,
+      recordedProperties,
+    });
+    const liveCluster = (fields: Record<string, unknown>): void => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        Promise.resolve(
+          command.constructor.name === 'DescribeDBClustersCommand'
+            ? { DBClusters: [{ Status: 'available', ...fields }] }
+            : {}
+        )
+      );
+    };
+
+    // A deploy hands the record and the template; a rollback hands the failed
+    // update's bag as the record and the earlier record as the desired side.
+    it.each([
+      ['a deploy', { AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}],
+      ['a rollback', {}, { AssociatedRoles: [{ RoleArn: ROLE_A }] }],
+    ])('keeps an out-of-band role and log type off the previous side (%s)', async (_l, own, want) => {
+      const recorded = { ...own, EnableCloudwatchLogsExports: ['audit'] };
+      const desired = { ...want, EnableCloudwatchLogsExports: [] };
+      const live = {
+        AssociatedRoles: [
+          { RoleArn: ROLE_A, Status: 'ACTIVE' },
+          { RoleArn: ROLE_B, Status: 'ACTIVE' },
+        ],
+        EnabledCloudwatchLogsExports: ['audit', 'slowquery'],
+      };
+      liveCluster(live);
+      const previous = await settleUnsettledPrevious({
+        ...identity(recorded),
+        names: new Set(['AssociatedRoles', 'EnableCloudwatchLogsExports']),
+        previous: recorded,
+        desired,
       });
-      expect(a).toEqual({
-        AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 'f' }, { RoleArn: ROLE_B }],
+      expect(previous['AssociatedRoles']).toEqual([{ RoleArn: ROLE_A }]);
+      expect(previous['EnableCloudwatchLogsExports']).toEqual(['audit']);
+
+      const wire = armCluster({
+        roles: live.AssociatedRoles,
+        logs: live.EnabledCloudwatchLogsExports,
+      });
+      await update({ EnableCloudwatchLogsExports: [] }, previous);
+      expect(wire.sent('RemoveRoleFromDBClusterCommand')).toEqual([
+        { DBClusterIdentifier: 'cluster-1', RoleArn: ROLE_A },
+      ]);
+      expect(
+        wire.sent('ModifyDBClusterCommand')[0]!['CloudwatchLogsExportConfiguration']
+      ).toEqual({ DisableLogTypes: ['audit'] });
+    });
+
+    it('puts what an earlier attempt added on the previous side, and no redaction', async () => {
+      liveCluster({
+        AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }],
+        EnabledCloudwatchLogsExports: ['audit', 'slowquery'],
+      });
+      const read = await provider.readUnsettled(
+        'cluster-1',
+        'L',
+        CLUSTER,
+        new Set(['AssociatedRoles', 'EnableCloudwatchLogsExports']),
+        {},
+        {},
+        new Map([
+          ['AssociatedRoles', new Set([`${ROLE_A}\n`, `${ROLE_B}***`])],
+          ['EnableCloudwatchLogsExports', new Set(['audit', '{{resolve:x}}'])],
+        ])
+      );
+      expect(read).toMatchObject({
+        AssociatedRoles: [{ RoleArn: ROLE_A }],
+        EnableCloudwatchLogsExports: ['audit'],
+      });
+    });
+
+    it('leaves a name it was not asked for as read', async () => {
+      liveCluster({ AssociatedRoles: [{ RoleArn: ROLE_A }] });
+      const read = await provider.readUnsettled('cluster-1', 'L', CLUSTER, new Set(['Tags']));
+      expect(read).toMatchObject({ AssociatedRoles: [{ RoleArn: ROLE_A }] });
+    });
+
+    it('reports a gone cluster as gone', async () => {
+      mockSend.mockRejectedValue(
+        Object.assign(new Error('gone'), { name: 'DBClusterNotFoundFault' })
+      );
+      expect(
+        await provider.readUnsettled('cluster-1', 'L', CLUSTER, new Set(['AssociatedRoles']))
+      ).toBe(RESOURCE_NOT_FOUND);
+    });
+
+    it('settles a template ordering the three lists differently from AWS', async () => {
+      liveCluster({
+        AssociatedRoles: [{ RoleArn: ROLE_B }, { RoleArn: ROLE_A }],
+        EnabledCloudwatchLogsExports: ['slowquery', 'audit'],
+        VpcSecurityGroups: [{ VpcSecurityGroupId: 'sg-2' }, { VpcSecurityGroupId: 'sg-1' }],
+      });
+      const desired = {
+        AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }],
         EnableCloudwatchLogsExports: ['audit', 'slowquery'],
-      });
-      const junk = { AssociatedRoles: 'junk', EnableCloudwatchLogsExports: [1] };
-      expect(provider.canonicalizeDriftProperties(CLUSTER, junk)).toEqual(junk);
-      expect(provider.canonicalizeDriftProperties(INSTANCE, junk)).toBe(junk);
+        VpcSecurityGroupIds: ['sg-1', 'sg-2'],
+      };
+      expect(
+        await unsettledAfterUpdate({
+          ...identity(desired),
+          names: new Set(Object.keys(desired)),
+          desired,
+        })
+      ).toEqual([]);
+    });
+
+    const names = new Set(['AssociatedRoles', 'CopyTagsToSnapshot']);
+
+    it.each([
+      ['available, nothing pending', { Status: 'available' }, []],
+      ['an empty pending block', { Status: 'available', PendingModifiedValues: {} }, []],
+      ['upgrading', { Status: 'upgrading' }, [...names]],
+      [
+        'a pending change',
+        { Status: 'available', PendingModifiedValues: { EngineVersion: '1.4.1.0' } },
+        [...names],
+      ],
+    ])('cluster: %s', async (_label, fields, moving) => {
+      mockSend.mockResolvedValue({ DBClusters: [fields] });
+      expect([
+        ...(await provider.unsettledInTransition('cluster-1', 'L', CLUSTER, names)),
+      ]).toEqual(moving);
+    });
+
+    it.each([
+      ['available', { DBInstanceStatus: 'available' }, []],
+      ['modifying', { DBInstanceStatus: 'modifying' }, ['PubliclyAccessible']],
+      [
+        'a pending change',
+        { DBInstanceStatus: 'available', PendingModifiedValues: { DBInstanceClass: 'db.r5.large' } },
+        ['PubliclyAccessible'],
+      ],
+    ])('instance: %s', async (_label, fields, moving) => {
+      mockSend.mockResolvedValue({ DBInstances: [fields] });
+      const asked = new Set(['PubliclyAccessible']);
+      expect([
+        ...(await provider.unsettledInTransition('instance-1', 'L', INSTANCE, asked)),
+      ]).toEqual(moving);
+    });
+
+    it('keeps every name when the read fails or finds nothing', async () => {
+      mockSend.mockRejectedValue(new Error('throttled'));
+      expect(await provider.unsettledInTransition('cluster-1', 'L', CLUSTER, names)).toBe(names);
+      mockSend.mockReset();
+      mockSend.mockResolvedValue({ DBClusters: [] });
+      expect(await provider.unsettledInTransition('cluster-1', 'L', CLUSTER, names)).toBe(names);
+    });
+
+    it('has nothing to report for a subnet group', async () => {
+      const moving = await provider.unsettledInTransition(
+        'sg',
+        'L',
+        'AWS::Neptune::DBSubnetGroup',
+        names
+      );
+      expect(moving.size).toBe(0);
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 
@@ -959,6 +1151,33 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       mockSend.mockClear();
       await provider.create('L', INSTANCE, { PubliclyAccessible: raw });
       expect(sentAs('CreateDBInstanceCommand')).toMatchObject({ PubliclyAccessible: value });
+    });
+
+    it.each(['no', 'yes', 1, null])('refuses PubliclyAccessible %j before any call', async (raw) => {
+      for (const attempt of [
+        () => provider.create('L', INSTANCE, { PubliclyAccessible: raw }),
+        () => update({ PubliclyAccessible: raw }, {}, INSTANCE),
+      ]) {
+        const refusal = await attempt().catch((error: unknown) => error);
+        expect(String(refusal)).toContain('PubliclyAccessible must be a boolean');
+        expect(isMarkedNonRetryable(refusal)).toBe(true);
+      }
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a rollback', { replayingState: true }],
+      ['a readback', { desiredFromAwsReadback: true }],
+    ])('leaves an unusable value out with a warning on %s', async (_label, context) => {
+      await update({ PubliclyAccessible: 'no' }, {}, INSTANCE, context);
+      expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: undefined });
+      expect(warn.mock.calls[0]![0]).toContain('recorded PubliclyAccessible is unusable');
+    });
+
+    it('leaves an unusable value out of a replayed create, with a warning', async () => {
+      await provider.create('L', INSTANCE, { PubliclyAccessible: 'no' }, { replayingState: true });
+      expect(sentAs('CreateDBInstanceCommand')).toMatchObject({ PubliclyAccessible: undefined });
+      expect(warn).toHaveBeenCalledTimes(1);
     });
 
     it('waits for a delayed readback of a changed value, and not for an unchanged one', async () => {
@@ -1038,11 +1257,12 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       );
     });
 
-    it('says the same on a rollback, claiming no CloudFormation parity', async () => {
+    it('says the same on a rollback, where the A/B measured it too', async () => {
       await update({}, { PubliclyAccessible: true }, INSTANCE, { replayingState: true });
       expect(sentAs('ModifyDBInstanceCommand')).toMatchObject({ PubliclyAccessible: undefined });
-      expect(warn.mock.calls[0]![0]).toContain('stays publicly accessible after this rollback');
-      expect(warn.mock.calls[0]![0]).toContain('not measured');
+      expect(warn.mock.calls[0]![0]).toContain(
+        'stays publicly accessible after this rollback, as CloudFormation leaves it'
+      );
     });
 
     it.each([

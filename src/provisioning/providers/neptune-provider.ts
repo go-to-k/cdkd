@@ -69,7 +69,8 @@ import {
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
-import { coerceCfnBoolean } from '../config-shape.js';
+import { coerceCfnBoolean, configBooleanRefusal } from '../config-shape.js';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 
 /**
  * The attribute map a Neptune DB cluster records (issue #3650), under
@@ -587,7 +588,13 @@ export class NeptuneProvider implements ResourceProvider {
           context?.replayingState === true
         );
       case 'AWS::Neptune::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties, mask);
+        return this.createDBInstance(
+          logicalId,
+          resourceType,
+          properties,
+          mask,
+          context?.replayingState === true
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -1021,7 +1028,9 @@ export class NeptuneProvider implements ResourceProvider {
       const unrecorded = (key: string): boolean =>
         properties[key] != null && previousProperties[key] == null;
       const live =
-        unrecorded('EngineVersion') || unrecorded('NetworkType')
+        unrecorded('EngineVersion') ||
+        unrecorded('NetworkType') ||
+        logExportConfig?.EnableLogTypes !== undefined
           ? await this.describeDBCluster(physicalId)
           : undefined;
       const majorUpgrade = isMajorEngineChange(
@@ -1097,6 +1106,15 @@ export class NeptuneProvider implements ResourceProvider {
         })
       );
 
+      // go-to-k/cdkd#5498: what this call added, so a convergence after a
+      // later failure disables it, and nothing an out-of-band change enabled.
+      const addedLogTypes = (logExportConfig?.EnableLogTypes ?? []).filter(
+        (type) => !live?.EnabledCloudwatchLogsExports?.includes(type)
+      );
+      if (addedLogTypes.length > 0) {
+        context?.markAttempted?.('EnableCloudwatchLogsExports', addedLogTypes);
+      }
+
       this.logger.debug(`Successfully updated Neptune DBCluster ${logicalId}`);
       const described = await this.describeDBCluster(physicalId);
 
@@ -1129,7 +1147,7 @@ export class NeptuneProvider implements ResourceProvider {
         clusterRoleList(previousProperties['AssociatedRoles']) ?? [],
         described?.AssociatedRoles ?? [],
         context?.maskSecrets,
-        () => context?.markUnsettled?.('AssociatedRoles')
+        context
       );
 
       // A changed VpcSecurityGroupIds also moves every member instance to
@@ -1377,11 +1395,19 @@ export class NeptuneProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replayingState: boolean
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating Neptune DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const publiclyAccessible = this.readPublicAccess(
+      properties,
+      resourceType,
+      logicalId,
+      undefined,
+      replayingState
+    );
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
@@ -1408,7 +1434,7 @@ export class NeptuneProvider implements ResourceProvider {
             | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          PubliclyAccessible: coerceCfnBoolean(properties['PubliclyAccessible']),
+          PubliclyAccessible: publiclyAccessible,
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1480,7 +1506,13 @@ export class NeptuneProvider implements ResourceProvider {
     this.logger.debug(`Updating Neptune DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const publiclyAccessible = coerceCfnBoolean(properties['PubliclyAccessible']);
+    const publiclyAccessible = this.readPublicAccess(
+      properties,
+      resourceType,
+      logicalId,
+      physicalId,
+      context?.replayingState === true || context?.desiredFromAwsReadback === true
+    );
 
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics (an
@@ -2021,7 +2053,7 @@ export class NeptuneProvider implements ResourceProvider {
     previous: readonly ClusterRole[],
     live: readonly DBClusterRole[],
     mask: ((text: string) => string) | undefined,
-    beforeWrite: (() => void) | undefined
+    marks: Pick<UpdateContext, 'markUnsettled' | 'markAttempted'> | undefined
   ): Promise<void> {
     const liveKeys = new Set(live.map(clusterRoleKey));
     const desiredKeys = new Set(desired.map(clusterRoleKey));
@@ -2044,7 +2076,7 @@ export class NeptuneProvider implements ResourceProvider {
       );
     }
     await this.waitForClusterAvailable(logicalId, physicalId, 'changing its roles', waitBudgetMs);
-    beforeWrite?.();
+    marks?.markUnsettled?.('AssociatedRoles');
     const whenAvailable = (send: () => Promise<unknown>): Promise<void> =>
       modifyDbInstanceWhenAvailable({
         send,
@@ -2069,6 +2101,7 @@ export class NeptuneProvider implements ResourceProvider {
           new AddRoleToDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
         )
       );
+      marks?.markAttempted?.('AssociatedRoles', [clusterRoleKey(role)]);
     }
     if (process.env['CDKD_NO_WAIT'] !== 'true') {
       await this.waitForClusterRolesSettled(
@@ -2201,12 +2234,42 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
+   * `PubliclyAccessible` as the boolean it means. Coercion alone would drop
+   * `'no'` silently and leave the instance as it is, so a value that is no
+   * boolean is refused before any call, except from a state-borne bag, which
+   * the template cannot fix: left out, with a warning.
+   */
+  private readPublicAccess(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    stateBorne: boolean
+  ): boolean | undefined {
+    const refusal = configBooleanRefusal(properties, 'PubliclyAccessible', logicalId);
+    if (refusal === undefined) return coerceCfnBoolean(properties['PubliclyAccessible']);
+    if (!stateBorne) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          safeMsg`Neptune DBInstance ${refusal}; nothing was changed.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the recorded PubliclyAccessible is unusable, so it is not sent.`
+    );
+    return undefined;
+  }
+
+  /**
    * go-to-k/cdkd#2762: a removed `PubliclyAccessible: true` KEEPS the instance
-   * public, as a real CloudFormation A/B measured for a template removal
-   * (IamAuthEnabled on), so the warning says so outright. On a rollback the
-   * record lacks the key because the failed deploy added it: nothing has
-   * measured what CloudFormation's rollback does there, and cdkd sends no
-   * reset, so the line claims no parity. A `drift --revert` baseline is a
+   * public, so the warning says so outright. Real CloudFormation A/Bs measured
+   * both arms: a template removal (IamAuthEnabled on), and a rollback, where
+   * the record lacks the key because the failed update added it, and the
+   * rollback's keyless template left it true. A `drift --revert` baseline is a
    * readback, so nothing there was removed.
    */
   private warnPublicAccessKept(
@@ -2223,7 +2286,7 @@ export class NeptuneProvider implements ResourceProvider {
     if (coerceCfnBoolean(previousProperties['PubliclyAccessible']) !== true) return;
     this.logger.warn(
       context?.replayingState === true
-        ? safeMsg`${logicalId} (${resourceType}): PubliclyAccessible is absent from the state being restored, and ModifyDBInstance keeps a setting it is not sent, so the instance stays publicly accessible after this rollback. What CloudFormation does here is not measured. Set PubliclyAccessible: false to close it.`
+        ? safeMsg`${logicalId} (${resourceType}): PubliclyAccessible is absent from the state being restored, and ModifyDBInstance keeps a setting it is not sent, so the instance stays publicly accessible after this rollback, as CloudFormation leaves it. Set PubliclyAccessible: false to close it.`
         : safeMsg`${logicalId} (${resourceType}): PubliclyAccessible was removed from the template; the instance stays publicly accessible, as CloudFormation leaves it. Set PubliclyAccessible: false to close it.`
     );
   }
@@ -2615,26 +2678,92 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * `AssociatedRoles` and `EnableCloudwatchLogsExports` are sets to AWS, and
-   * it answers them in its own order: both sides sort.
+   * Sets to AWS, answered in its own order. Also what `unsettledAfterUpdate`
+   * compares by, so a template ordering them differently still settles.
    */
-  canonicalizeDriftProperties(
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::Neptune::DBCluster'
+      ? ['AssociatedRoles', 'EnableCloudwatchLogsExports', 'VpcSecurityGroupIds']
+      : [];
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the live values of a record's unsettled names. The two
+   * diffed lists keep only the entries the record, the template or an earlier
+   * attempt (#5498) names: the convergence puts this on the previous side, so
+   * a role or log type an out-of-band change added would otherwise read as
+   * dropped by the template, and be detached.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
     resourceType: string,
-    properties: Record<string, unknown>
-  ): Record<string, unknown> {
-    if (resourceType !== 'AWS::Neptune::DBCluster') return properties;
-    const out = { ...properties };
-    const roles = clusterRoleList(out['AssociatedRoles']);
-    if (Array.isArray(out['AssociatedRoles']) && roles !== undefined) {
-      out['AssociatedRoles'] = [...roles].sort((a, b) =>
-        clusterRoleKey(a).localeCompare(clusterRoleKey(b))
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (resourceType !== 'AWS::Neptune::DBCluster') return live;
+    if (live === undefined || live === RESOURCE_NOT_FOUND) return live;
+    const attempted = (key: string): string[] =>
+      [...(attemptedItems?.get(key) ?? [])].filter(isUsableAttemptedName);
+    const out = { ...live };
+    if (names.has('AssociatedRoles')) {
+      const named = new Set([
+        ...(clusterRoleList(recordedProperties?.['AssociatedRoles']) ?? []).map(clusterRoleKey),
+        ...(clusterRoleList(desiredProperties?.['AssociatedRoles']) ?? []).map(clusterRoleKey),
+        ...attempted('AssociatedRoles'),
+      ]);
+      out['AssociatedRoles'] = ((live['AssociatedRoles'] ?? []) as ClusterRole[]).filter((role) =>
+        named.has(clusterRoleKey(role))
       );
     }
-    const logs = stringList(out['EnableCloudwatchLogsExports']);
-    if (Array.isArray(out['EnableCloudwatchLogsExports']) && logs !== undefined) {
-      out['EnableCloudwatchLogsExports'] = [...logs].sort();
+    if (names.has('EnableCloudwatchLogsExports')) {
+      const named = new Set([
+        ...(stringList(recordedProperties?.['EnableCloudwatchLogsExports']) ?? []),
+        ...(stringList(desiredProperties?.['EnableCloudwatchLogsExports']) ?? []),
+        ...attempted('EnableCloudwatchLogsExports'),
+      ]);
+      out['EnableCloudwatchLogsExports'] = (
+        (live['EnableCloudwatchLogsExports'] ?? []) as string[]
+      ).filter((type) => named.has(type));
     }
     return out;
+  }
+
+  /**
+   * go-to-k/cdkd#5380: every name while AWS is still changing the resource: a
+   * status other than `available`, or a pending modification (a change waiting
+   * for its window, or a log export on its way). ModifyDBCluster is refused
+   * while `upgrading`, and a pending value is not yet the one a read reports.
+   * A failed read keeps every name.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    const hasPending = (pending: object | undefined): boolean =>
+      Object.values(pending ?? {}).some((value) => value !== undefined);
+    try {
+      if (resourceType === 'AWS::Neptune::DBCluster') {
+        const cluster = await this.describeDBCluster(physicalId);
+        const settled =
+          cluster?.Status === 'available' && !hasPending(cluster.PendingModifiedValues);
+        return settled ? new Set() : names;
+      }
+      if (resourceType === 'AWS::Neptune::DBInstance') {
+        const instance = await this.describeDBInstance(physicalId);
+        const settled =
+          instance?.DBInstanceStatus === 'available' && !hasPending(instance.PendingModifiedValues);
+        return settled ? new Set() : names;
+      }
+      return new Set();
+    } catch {
+      return names;
+    }
   }
 
   /**
