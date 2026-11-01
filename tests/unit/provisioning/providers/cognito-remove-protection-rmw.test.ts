@@ -391,6 +391,39 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     ).not.toHaveProperty('EmailConfiguration');
   });
 
+  it('echoes a CUSTOMER_MANAGED_KEY KeyConfiguration -- measured to RESET on omission (#2762) -- but not an AWS_OWNED_KEY one', () => {
+    const key = {
+      KeyType: 'CUSTOMER_MANAGED_KEY',
+      KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+    };
+    expect(
+      userPoolDeletionProtectionUpdate(POOL, { ...livePool('ACTIVE'), KeyConfiguration: key } as never, 'INACTIVE')
+        .KeyConfiguration
+    ).toEqual(key);
+    expect(
+      userPoolDeletionProtectionUpdate(POOL, livePool('ACTIVE') as never, 'INACTIVE')
+    ).not.toHaveProperty('KeyConfiguration');
+  });
+
+  it('keeps the customer-managed key on the SES-less re-send', () => {
+    const key = {
+      KeyType: 'CUSTOMER_MANAGED_KEY',
+      KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+    };
+    const input = userPoolDeletionProtectionUpdate(
+      POOL,
+      {
+        ...livePool('ACTIVE'),
+        KeyConfiguration: key,
+        EmailConfiguration: { EmailSendingAccount: 'DEVELOPER' },
+      } as never,
+      'INACTIVE',
+      { withoutDeveloperEmail: true }
+    );
+    expect(input).not.toHaveProperty('EmailConfiguration');
+    expect(input.KeyConfiguration).toEqual(key);
+  });
+
   it('the fallback set is exactly the validation refusals', () => {
     // Pinned literally: the it.each below iterates the set itself, so a name
     // dropped from it would only drop a case.
@@ -644,6 +677,82 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
         )
       )
     );
+  });
+
+  it('the flip-off carries a customer-managed key, so a failed delete leaves it in place (#2762)', async () => {
+    const key = { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k' };
+    script({ reads: [{ ...livePool('ACTIVE'), KeyConfiguration: key }] });
+    await del();
+    expect(updates()[0]!['KeyConfiguration']).toEqual(key);
+  });
+
+  it('the ERROR report names a customer-managed key the bare flip reset (#2762)', async () => {
+    const arn = 'arn:aws:kms:us-east-1:123456789012:key/k';
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: arn } }],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      dels: [domainRefusal()],
+    });
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
+    expect(childLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining(`KeyConfiguration.KmsKeyArn=${arn}`)
+    );
+  });
+
+  it('masks a key ARN that came from a dynamic reference, in the warn and the ERROR report (#2762)', async () => {
+    const arn = 'arn:aws:kms:us-east-1:123456789012:key/secret-key-id';
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: arn } }],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      dels: [domainRefusal()],
+    });
+    const maskSecrets = (text: string): string => text.replaceAll(arn, '***');
+    await expect(del({ removeProtection: true, maskSecrets } as never)).rejects.toBeDefined();
+    const lines = [...childLogger.error.mock.calls, ...childLogger.warn.mock.calls].map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('KeyConfiguration.KmsKeyArn=***'))).toBe(true);
+    expect(lines.some((l) => l.includes('and customer-managed key'))).toBe(true);
+    for (const line of lines) expect(line).not.toContain(arn);
+  });
+
+  it.each([
+    ['an unreadable pool', new Error('read failed')],
+    ['a read with no pool', null],
+  ])('masks the key ARN when the re-enable meets %s (#2762)', async (_label, secondRead) => {
+    const arn = 'arn:aws:kms:us-east-1:123456789012:key/secret-key-id';
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: arn } }, secondRead],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      dels: [domainRefusal()],
+    });
+    const maskSecrets = (text: string): string => text.replaceAll(arn, '***');
+    await expect(del({ removeProtection: true, maskSecrets } as never)).rejects.toBeDefined();
+    const errors = childLogger.error.mock.calls.map((c) => String(c[0]));
+    expect(errors.some((l) => l.includes('KeyConfiguration.KmsKeyArn=***'))).toBe(true);
+    for (const line of errors) expect(line).not.toContain(arn);
+  });
+
+  it('a bare flip with no clear answer names the customer-managed key it may have reset (#2762)', async () => {
+    const fiveHundred = Object.assign(new Error('internal'), {
+      name: 'InternalErrorException',
+      $fault: 'server',
+      $metadata: { httpStatusCode: 503 },
+    });
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k' } }],
+      echoError: { INACTIVE: echoRefusal() },
+      bareLandedError: { INACTIVE: fiveHundred },
+    });
+    await expect(del()).rejects.toThrow();
+    expect(childLogger.warn).toHaveBeenCalledWith(expect.stringMatching(/advanced security and customer-managed key were reset/));
+  });
+
+  it('the ERROR report stays silent about an AWS owned key', async () => {
+    script({ echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
+    await expect(del()).rejects.toSatisfy(says('domain configured'));
+    expect(childLogger.error).toHaveBeenCalled();
+    for (const [line] of childLogger.error.mock.calls) {
+      expect(String(line)).not.toContain('KeyConfiguration');
+    }
   });
 
   it('the ERROR report names a DEVELOPER EmailConfiguration the bare flip reset (#4149), without its SourceArn', async () => {

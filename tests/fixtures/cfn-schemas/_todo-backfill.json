@@ -26,10 +26,6 @@
     "AWS::CodeBuild::Project": [
       "Triggers"
     ],
-    "AWS::Cognito::UserPool": [
-      "IssuerConfiguration",
-      "KeyConfiguration"
-    ],
     "AWS::DocDB::DBCluster": [
       "AvailabilityZones",
       "CopyTagsToSnapshot",

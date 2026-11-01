@@ -38,6 +38,11 @@
 #     identical edit (measured us-east-1 2026-09-02), so the assertions are
 #     RETENTION of the live sign-in policy plus the announcement naming the
 #     sub-key -- the pre-fix behavior was the same no-op with no announcement.
+#   - KeyIssuerUserPool / KeyIssuerAddUserPool (issue #2762): KeyConfiguration
+#     and IssuerConfiguration land on create and on update on the SDK route,
+#     keep the pool id, and reach the drift baseline. Removing them resets the
+#     customer-managed key and keeps the issuer, announced, as CloudFormation
+#     does on the same edit.
 # Then asserts the destroy path removes the pools and the state file.
 #
 # All four properties route through the SDK CognitoUserPoolProvider (the
@@ -209,6 +214,7 @@ cleanup() {
     local stray
     for name in "cdkd-test-mfa-transition-${ACCOUNT_ID}" "cdkd-test-mfa-downgrade-${ACCOUNT_ID}" \
       "cdkd-test-policy-removal-${ACCOUNT_ID}" \
+      "cdkd-test-key-issuer-${ACCOUNT_ID}" "cdkd-test-key-issuer-add-${ACCOUNT_ID}" \
       "cdkd-test-mfa-preflight-off-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-signin-${ACCOUNT_ID}" \
       "cdkd-test-mfa-preflight-optional-${ACCOUNT_ID}" "cdkd-test-mfa-preflight-webauthn-${ACCOUNT_ID}" \
       "cdkd-test-mfa-preflight-webauthn-on-${ACCOUNT_ID}" \
@@ -217,6 +223,20 @@ cleanup() {
       stray="$(pool_id_by_name "${name}")"
       if [ -n "${stray}" ] && [ "${stray}" != "None" ]; then
         aws cognito-idp delete-user-pool --user-pool-id "${stray}" --region "${REGION}" >/dev/null 2>&1 || true
+      fi
+    done
+    # The #2762 fixture key, swept by tag for the same reason: an Enabled key
+    # outlives `state destroy`, and PendingDeletion is its normal end state.
+    local k
+    for k in $(aws resourcegroupstaggingapi get-resources --region "${REGION}" \
+      --resource-type-filters kms --tag-filters "Key=cdkd-cognito-integ,Values=${STACK}" \
+      --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
+      [ "${k}" = "None" ] && continue
+      if [ "$(aws kms describe-key --key-id "${k}" --region "${REGION}" \
+        --query 'KeyMetadata.KeyState' --output text 2>/dev/null)" = "Enabled" ]; then
+        aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 \
+          --region "${REGION}" >/dev/null 2>&1 ||
+          echo "WARN: cleanup could not schedule deletion of KMS key ${k}" >&2
       fi
     done
   fi
@@ -489,6 +509,45 @@ if [ -z "${POLICY_REMOVAL_POOL_ID}" ]; then
 fi
 echo "    Policy-removal UserPool id: ${POLICY_REMOVAL_POOL_ID}"
 
+# Issue #2762: the two pools under test, by name, plus their baselines.
+# `key_issuer_of` reads only the two members; `null` is what a CLI too old to
+# model them prints, which fails the comparison loudly instead of matching.
+key_issuer_of() { # usage: key_issuer_of <pool id>
+  local out
+  out="$(aws cognito-idp describe-user-pool --user-pool-id "$1" --region "${REGION}" --output json)" || return 1
+  printf '%s' "${out}" | jq -r '[.UserPool.KeyConfiguration.KeyType // "null", .UserPool.IssuerConfiguration.Type // "null"] | join(" ")'
+}
+key_arn_of() { # usage: key_arn_of <pool id>
+  local out
+  out="$(aws cognito-idp describe-user-pool --user-pool-id "$1" --region "${REGION}" --output json)" || return 1
+  printf '%s' "${out}" | jq -r '.UserPool.KeyConfiguration.KmsKeyArn // "null"'
+}
+KEY_ISSUER_POOL_ID="$(pool_id_by_name "cdkd-test-key-issuer-${ACCOUNT_ID}")"
+KEY_ISSUER_ADD_POOL_ID="$(pool_id_by_name "cdkd-test-key-issuer-add-${ACCOUNT_ID}")"
+if [ -z "${KEY_ISSUER_POOL_ID}" ] || [ -z "${KEY_ISSUER_ADD_POOL_ID}" ]; then
+  echo "FAIL: the #2762 pools were not both created ('${KEY_ISSUER_POOL_ID}', '${KEY_ISSUER_ADD_POOL_ID}')" >&2
+  exit 1
+fi
+KEY_ISSUER_BASE="$(key_issuer_of "${KEY_ISSUER_POOL_ID}")"
+if [ "${KEY_ISSUER_BASE}" != "CUSTOMER_MANAGED_KEY UPDATED" ]; then
+  echo "FAIL: key-issuer pool reads '${KEY_ISSUER_BASE}' after create, expected 'CUSTOMER_MANAGED_KEY UPDATED' (issue #2762)" >&2
+  exit 1
+fi
+POOL_KEY_ARN="$(key_arn_of "${KEY_ISSUER_POOL_ID}")"
+case "${POOL_KEY_ARN}" in
+  arn:aws*:kms:*) ;;
+  *)
+    echo "FAIL: key-issuer pool KmsKeyArn is '${POOL_KEY_ARN}', expected the fixture key's ARN (issue #2762)" >&2
+    exit 1
+    ;;
+esac
+KEY_ISSUER_ADD_BASE="$(key_issuer_of "${KEY_ISSUER_ADD_POOL_ID}")"
+if [ "${KEY_ISSUER_ADD_BASE}" != "AWS_OWNED_KEY ORIGINAL" ]; then
+  echo "FAIL: key-issuer-add pool reads '${KEY_ISSUER_ADD_BASE}' after create, expected the defaults 'AWS_OWNED_KEY ORIGINAL' (issue #2762)" >&2
+  exit 1
+fi
+echo "    OK: #2762 pools: ${KEY_ISSUER_POOL_ID} declared both, ${KEY_ISSUER_ADD_POOL_ID} holds the defaults"
+
 POLICY_REMOVAL_BEFORE=$(aws cognito-idp describe-user-pool \
   --user-pool-id "${POLICY_REMOVAL_POOL_ID}" --region "${REGION}" --output json)
 PR_FACTORS_BEFORE=$(echo "${POLICY_REMOVAL_BEFORE}" \
@@ -653,6 +712,66 @@ if [ "${PR_AUTOVERIFY_AFTER}" != '["email"]' ]; then
 fi
 echo "    OK: sign-in policy retained (PASSWORD + EMAIL_OTP), PasswordPolicy still forwarded, companion change landed"
 
+# --- Assertion 11d: KeyConfiguration + IssuerConfiguration (#2762) ----
+# In place: the same pools, by name, on the same ids.
+KEY_ISSUER_POOL_ID_AFTER="$(pool_id_by_name "cdkd-test-key-issuer-${ACCOUNT_ID}")"
+KEY_ISSUER_ADD_POOL_ID_AFTER="$(pool_id_by_name "cdkd-test-key-issuer-add-${ACCOUNT_ID}")"
+if [ "${KEY_ISSUER_POOL_ID_AFTER}" != "${KEY_ISSUER_POOL_ID}" ] || [ "${KEY_ISSUER_ADD_POOL_ID_AFTER}" != "${KEY_ISSUER_ADD_POOL_ID}" ]; then
+  echo "FAIL: the update replaced a #2762 pool (${KEY_ISSUER_POOL_ID} -> ${KEY_ISSUER_POOL_ID_AFTER}, ${KEY_ISSUER_ADD_POOL_ID} -> ${KEY_ISSUER_ADD_POOL_ID_AFTER}); neither member is create-only" >&2
+  exit 1
+fi
+KEY_ISSUER_AFTER="$(key_issuer_of "${KEY_ISSUER_POOL_ID}")"
+if [ "${KEY_ISSUER_AFTER}" != "AWS_OWNED_KEY UPDATED" ]; then
+  echo "FAIL: after the removal, key-issuer pool reads '${KEY_ISSUER_AFTER}', expected 'AWS_OWNED_KEY UPDATED' (the key resets and the issuer is kept, as on the same CloudFormation edit, issue #2762)" >&2
+  exit 1
+fi
+if ! grep -q "(${KEY_ISSUER_POOL_ID}): the template no longer declares IssuerConfiguration," "${UPDATE_LOG}"; then
+  echo "FAIL: the kept IssuerConfiguration was not announced for ${KEY_ISSUER_POOL_ID} (issue #2762)" >&2
+  grep -i "IssuerConfiguration" "${UPDATE_LOG}" >&2 || true
+  exit 1
+fi
+if grep -q "the template no longer declares KeyConfiguration" "${UPDATE_LOG}"; then
+  echo "FAIL: a removed KeyConfiguration was announced as kept; it resets (issue #2762)" >&2
+  exit 1
+fi
+KEY_ISSUER_ADD_AFTER="$(key_issuer_of "${KEY_ISSUER_ADD_POOL_ID}")"
+if [ "${KEY_ISSUER_ADD_AFTER}" != "CUSTOMER_MANAGED_KEY UPDATED" ]; then
+  echo "FAIL: after the update, key-issuer-add pool reads '${KEY_ISSUER_ADD_AFTER}', expected 'CUSTOMER_MANAGED_KEY UPDATED' (issue #2762)" >&2
+  exit 1
+fi
+KEY_ISSUER_ADD_ARN="$(key_arn_of "${KEY_ISSUER_ADD_POOL_ID}")"
+if [ "${KEY_ISSUER_ADD_ARN}" != "${POOL_KEY_ARN}" ]; then
+  echo "FAIL: key-issuer-add pool KmsKeyArn is '${KEY_ISSUER_ADD_ARN}', expected '${POOL_KEY_ARN}' (issue #2762)" >&2
+  exit 1
+fi
+# The SDK route is the only thing that could not pass before #2762: both
+# properties were silent drops, which sent these pools to Cloud Control. Beside
+# it, the drift baseline: readCurrentState must carry both members.
+KEY_ISSUER_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+for lid in KeyIssuerUserPool KeyIssuerAddUserPool; do
+  KI_ROUTE="$(printf '%s' "${KEY_ISSUER_STATE}" | jq -r --arg l "${lid}" 'if .resources[$l] == null then "missing" else (.resources[$l].provisionedBy // "sdk") end')"
+  if [ "${KI_ROUTE}" != "sdk" ]; then
+    echo "FAIL: ${lid} provisionedBy is '${KI_ROUTE}', expected 'sdk' (issue #2762)" >&2
+    exit 1
+  fi
+  KI_OBSERVED="$(printf '%s' "${KEY_ISSUER_STATE}" | jq -r --arg l "${lid}" '.resources[$l].observedProperties.IssuerConfiguration.Type // "null"')"
+  if [ "${KI_OBSERVED}" != "UPDATED" ]; then
+    echo "FAIL: ${lid} observedProperties.IssuerConfiguration.Type is '${KI_OBSERVED}', expected 'UPDATED' (issue #2762)" >&2
+    exit 1
+  fi
+done
+KI_OBSERVED_KEY="$(printf '%s' "${KEY_ISSUER_STATE}" | jq -r '.resources.KeyIssuerUserPool.observedProperties.KeyConfiguration.KeyType // "null"')"
+if [ "${KI_OBSERVED_KEY}" != "AWS_OWNED_KEY" ]; then
+  echo "FAIL: KeyIssuerUserPool observedProperties.KeyConfiguration.KeyType is '${KI_OBSERVED_KEY}', expected 'AWS_OWNED_KEY' (issue #2762)" >&2
+  exit 1
+fi
+KI_OBSERVED_ARN="$(printf '%s' "${KEY_ISSUER_STATE}" | jq -r '.resources.KeyIssuerAddUserPool.observedProperties.KeyConfiguration.KmsKeyArn // "null"')"
+if [ "${KI_OBSERVED_ARN}" != "${POOL_KEY_ARN}" ]; then
+  echo "FAIL: KeyIssuerAddUserPool observedProperties.KeyConfiguration.KmsKeyArn is '${KI_OBSERVED_ARN}', expected '${POOL_KEY_ARN}' (issue #2762)" >&2
+  exit 1
+fi
+echo "    OK: #2762 key reset + issuer kept and announced on removal, both added in place, SDK route, drift baseline carries them"
+
 rm -f "${UPDATE_LOG}"
 UPDATE_LOG=""
 
@@ -680,6 +799,15 @@ echo "    OK: MFA-downgrade UserPool is gone"
 
 assert_gone "Policy-removal UserPool ${POLICY_REMOVAL_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${POLICY_REMOVAL_POOL_ID}" --region "${REGION}"
 echo "    OK: Policy-removal UserPool is gone"
+
+assert_gone "Key-issuer UserPool ${KEY_ISSUER_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${KEY_ISSUER_POOL_ID}" --region "${REGION}"
+assert_gone "Key-issuer-add UserPool ${KEY_ISSUER_ADD_POOL_ID} still exists after destroy" aws cognito-idp describe-user-pool --user-pool-id "${KEY_ISSUER_ADD_POOL_ID}" --region "${REGION}"
+POOL_KEY_STATE="$(aws kms describe-key --key-id "${POOL_KEY_ARN}" --region "${REGION}" --query KeyMetadata.KeyState --output text)"
+if [ "${POOL_KEY_STATE}" != "PendingDeletion" ]; then
+  echo "FAIL: the fixture key is '${POOL_KEY_STATE}' after destroy, expected 'PendingDeletion'" >&2
+  exit 1
+fi
+echo "    OK: #2762 pools are gone and their key is pending deletion"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    OK: state file is gone"

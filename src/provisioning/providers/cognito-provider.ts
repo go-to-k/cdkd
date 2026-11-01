@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   CognitoIdentityProviderClient,
   CreateUserPoolCommand,
@@ -33,6 +34,8 @@ import {
   type DeviceConfigurationType,
   type UserPoolAddOnsType,
   type UserPoolTierType,
+  type KeyConfigurationType,
+  type IssuerConfigurationType,
   type UserVerificationType,
   type WebAuthnFactorConfigurationType,
   type CreateUserPoolCommandInput,
@@ -150,6 +153,11 @@ import {
  *   `AcrConfiguration` (added by a later SDK; the API reference says a level
  *   the write does not name gets its DEFAULT name, so omission could reset a
  *   custom one). Only its custom levels are echoed: see `customAcrLevels`.
+ * - RESET too, MEASURED us-east-1 2026-11-01 (issue #2762): a
+ *   `CUSTOMER_MANAGED_KEY` `KeyConfiguration` went to `AWS_OWNED_KEY`, its
+ *   `KmsKeyArn` dropped. Echoed apart from this list, like the SES
+ *   `EmailConfiguration`, because an `AWS_OWNED_KEY` one is what omission
+ *   leaves anyway (see {@link USER_POOL_KEPT_ON_OMISSION}).
  *
  * The echo was ACCEPTED on every pool measured, MFA `ON` with TOTP only and
  * no `SmsConfiguration` included, and left the pool byte-identical apart from
@@ -179,10 +187,13 @@ export const USER_POOL_ECHO_MEMBERS = [
  * write, and a refused echo is the path to the settings-resetting bare write.
  * `SmsConfiguration` (with an SNS role), `EmailConfiguration`
  * (`COGNITO_DEFAULT`) and `MfaConfiguration` (`OFF`, `OPTIONAL` and `ON`, the
- * factor configuration included) were each measured unchanged. One exception
- * is ECHOED: a `DEVELOPER` (SES) `EmailConfiguration`, measured to RESET to
- * `COGNITO_DEFAULT` on omission (issue #4149; see
- * {@link userPoolDeletionProtectionUpdate}).
+ * factor configuration included) were each measured unchanged, and
+ * `IssuerConfiguration` (`UPDATED`, us-east-1 2026-11-01, issue #2762). Two
+ * exceptions are ECHOED, each measured to RESET on omission (see
+ * {@link userPoolDeletionProtectionUpdate}): a `DEVELOPER` (SES)
+ * `EmailConfiguration` goes to `COGNITO_DEFAULT` (issue #4149), and a
+ * `CUSTOMER_MANAGED_KEY` `KeyConfiguration` goes to `AWS_OWNED_KEY` (issue
+ * #2762).
  */
 export const USER_POOL_KEPT_ON_OMISSION = [
   'Policies',
@@ -222,6 +233,9 @@ export function userPoolDeletionProtectionUpdate(
   if (echoesDeveloperEmail(pool) && opts.withoutDeveloperEmail !== true) {
     input.EmailConfiguration = pool.EmailConfiguration;
   }
+  // A customer-managed key RESETS to the AWS owned key when omitted (measured,
+  // #2762). The AWS owned key is what omission leaves, so it stays off the wire.
+  if (echoesCustomerManagedKey(pool)) input.KeyConfiguration = pool.KeyConfiguration;
   input.DeletionProtection = value;
   return input;
 }
@@ -303,6 +317,19 @@ function reportKind(record: {
 /** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's (SES) `EmailConfiguration`. */
 export function echoesDeveloperEmail(pool: UserPoolType): boolean {
   return pool.EmailConfiguration?.EmailSendingAccount === 'DEVELOPER';
+}
+
+/** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's `KeyConfiguration`. */
+function echoesCustomerManagedKey(pool: UserPoolType): boolean {
+  return pool.KeyConfiguration?.KeyType === 'CUSTOMER_MANAGED_KEY';
+}
+
+/** What a `DeletionProtection`-only write resets on `pool`, for the warn and the ERROR report. */
+function bareFlipResets(pool: UserPoolType): string {
+  const reset = ['self sign-up', 'Lambda triggers', 'advanced security'];
+  if (echoesDeveloperEmail(pool)) reset.push('SES email configuration');
+  if (echoesCustomerManagedKey(pool)) reset.push('customer-managed key');
+  return `${reset.slice(0, -1).join(', ')} and ${reset[reset.length - 1]}`;
 }
 
 /**
@@ -520,21 +547,22 @@ function isEmptyObjectPlaceholder(value: unknown): boolean {
  * each mapped to the value AWS reports for it when unset (`undefined` when
  * that is an empty object, which {@link declaresMember} already skips).
  */
-const KEPT_ON_REMOVAL_MEMBERS: Readonly<Record<string, string | undefined>> = {
+const KEPT_ON_REMOVAL_MEMBERS: Readonly<Record<string, unknown>> = {
   AccountRecoverySetting: undefined,
   SmsConfiguration: undefined,
   UserPoolTier: 'ESSENTIALS',
   DeletionProtection: 'INACTIVE',
+  IssuerConfiguration: { Type: 'ORIGINAL' },
 };
 
 /**
  * Does `value` declare something for a {@link KEPT_ON_REMOVAL_MEMBERS} entry?
  * Absent, `null`, `''`, `{}` and the member's `unset` value do not.
  */
-function declaresMember(value: unknown, unset: string | undefined): boolean {
+function declaresMember(value: unknown, unset: unknown): boolean {
   if (value === undefined || value === null || value === '') return false;
   if (isEmptyObjectPlaceholder(value)) return false;
-  return unset === undefined || value !== unset;
+  return unset === undefined || !isDeepStrictEqual(value, unset);
 }
 
 /**
@@ -1837,6 +1865,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         'SmsAuthenticationMessage',
         'SmsVerificationMessage',
         'UserPoolTier',
+        'KeyConfiguration',
+        'IssuerConfiguration',
         // Routed through the SetUserPoolMfaConfig control-plane API
         // (NOT CreateUserPool/UpdateUserPool) — see buildMfaConfigRequest.
         'EnabledMfas',
@@ -2234,6 +2264,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       if (properties['UserPoolTier']) {
         createParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
+      }
+      if (properties['KeyConfiguration']) {
+        createParams.KeyConfiguration = properties['KeyConfiguration'] as KeyConfigurationType;
+      }
+      if (properties['IssuerConfiguration']) {
+        createParams.IssuerConfiguration = properties[
+          'IssuerConfiguration'
+        ] as IssuerConfigurationType;
       }
 
       // Issue #2080: when an earlier attempt at this create ended ambiguous,
@@ -2687,6 +2725,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   `AdminCreateUserConfig.AllowAdminCreateUserOnly` — DO reset when omitted;
    *   `UserPoolTags`, `AccountRecoverySetting` and `EmailConfiguration` do NOT
    *   (2026-09-29, issue #4066; the full table is at `USER_POOL_ECHO_MEMBERS`).
+   * - `KeyConfiguration` — a customer-managed key DOES reset to `AWS_OWNED_KEY`;
+   *   `IssuerConfiguration` does NOT (2026-11-01, issue #2762). Both are
+   *   writable in either direction on `UpdateUserPool`.
    * - `DeletionProtection` — does NOT reset when omitted (2026-09-23, issue
    *   #2675): a pool created `ACTIVE` stayed `ACTIVE` through an
    *   `UpdateUserPool` omitting it, whose co-sent `AutoVerifiedAttributes`
@@ -2712,6 +2753,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * (`warnOnKeptRemovedMembers`); `MfaConfiguration` with its factors goes
    * OFF (`turnOffRemovedMfa`); a removed `UserPoolTags` key is untagged
    * (`untagRemovedUserPoolTags`, from the type schema's tagging contract).
+   * On the same edit (2026-11-01, issue #2762) `KeyConfiguration` resets to
+   * `AWS_OWNED_KEY` and `IssuerConfiguration` is kept.
    *
    * `SetUserPoolMfaConfig` — a DIFFERENT API with a DIFFERENT rule, kept in
    * its own section so neither list is read as evidence for the other:
@@ -3040,11 +3083,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * stack (PLUS tier) whose update removed all four at once, beside a
    * removed `AutoVerifiedAttributes` that DID reset (the control). Every
    * value was unchanged right after `UPDATE_COMPLETE` and three minutes later.
+   * `IssuerConfiguration` was measured the same way on its own stack
+   * (us-east-1 2026-11-01, issue #2762: `UPDATED` stayed).
    * So cdkd sends no reset, as with `Policies`; only the silence was wrong.
    *
    * A previous value equal to what AWS reports for an unset member (the
-   * `readCurrentState` placeholders: `{}`, `INACTIVE`, `ESSENTIALS`) is not
-   * announced, since keeping it changes nothing.
+   * `readCurrentState` placeholders: `{}`, `INACTIVE`, `ESSENTIALS`, and an
+   * `ORIGINAL` issuer) is not announced, since keeping it changes nothing.
    */
   private warnOnKeptRemovedMembers(
     logicalId: string,
@@ -3408,6 +3453,18 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       if (properties['UserPoolTier']) {
         updateParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
       }
+      // Omitting `KeyConfiguration` RESETS a customer-managed key to the AWS
+      // owned key, which is what CloudFormation does when a template drops it
+      // too (measured, issue #2762), so a removal needs no call of its own.
+      if (properties['KeyConfiguration']) {
+        updateParams.KeyConfiguration = properties['KeyConfiguration'] as KeyConfigurationType;
+      }
+      // Omitting `IssuerConfiguration` KEEPS it (`warnOnKeptRemovedMembers`).
+      if (properties['IssuerConfiguration']) {
+        updateParams.IssuerConfiguration = properties[
+          'IssuerConfiguration'
+        ] as IssuerConfigurationType;
+      }
 
       const mfaOptions = {
         ...(liveMfa?.value !== undefined ? { liveMfaConfiguration: liveMfa.value } : {}),
@@ -3757,7 +3814,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             // widened type by design. That is the cost of moving this fence
             // from a grep to the compiler, and it is worth paying.
             caveat:
-              'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
+              'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security, AutoVerifiedAttributes and a customer-managed KeyConfiguration among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
           },
         })
       : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
@@ -3827,12 +3884,22 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           } catch (readError) {
             // Cannot tell what landed: report a possible reset as recorded.
             if (bareFlip)
-              this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+              this.reportSettingsResetByBareFlip(
+                physicalId,
+                bareFlip.pool,
+                reportKind(bareFlip),
+                maskerOrIdentity(context?.maskSecrets)
+              );
             throw readError;
           }
           if (!pool) {
             if (bareFlip)
-              this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+              this.reportSettingsResetByBareFlip(
+                physicalId,
+                bareFlip.pool,
+                reportKind(bareFlip),
+                maskerOrIdentity(context?.maskSecrets)
+              );
             throw new Error(`DescribeUserPool returned no pool for ${physicalId}`);
           }
           // OFF after a bare attempt: the bare write landed (only a
@@ -3842,7 +3909,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           // Every bare attempt is reported. An unclear one whose pool reads ON
           // stays "MAY": a read can lag the write it is meant to reflect.
           if (bareFlip)
-            this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+            this.reportSettingsResetByBareFlip(
+              physicalId,
+              bareFlip.pool,
+              reportKind(bareFlip),
+              maskerOrIdentity(context?.maskSecrets)
+            );
           // A flip-off sent without the SES EmailConfiguration that the read
           // shows LANDED: the pool is live on Cognito's default sender. A
           // bare flip's own report already names it.
@@ -3915,8 +3987,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * advanced security were reset by that write, and nothing cdkd does
    * afterwards can bring them back -- a redeploy will not either, because the
    * recorded properties still match the template, so the diff is empty.
-   * Names what the pool held before the flip (none of it secret: a boolean,
-   * trigger ARNs, a mode) so the user can put it back.
+   * Names what the pool held before the flip (a boolean, trigger and key
+   * ARNs, a mode) so the user can put it back. An ARN is template-authored, so
+   * it can come from a dynamic reference: each value and the line are masked.
    */
   private reportSettingsResetByBareFlip(
     physicalId: string,
@@ -3926,7 +3999,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
      * `earlier` -- it landed, but an echo flip landed since, so the settings
      * may have been restored; `unclear` -- whether it landed is not known.
      */
-    kind: 'reset' | 'earlier' | 'unclear'
+    kind: 'reset' | 'earlier' | 'unclear',
+    mask: MaskerFn
   ): void {
     const held: string[] = [];
     const adminOnly = before.AdminCreateUserConfig?.AllowAdminCreateUserOnly;
@@ -3952,10 +4026,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // Named by its sending account only: the SourceArn embeds an address.
     if (echoesDeveloperEmail(before))
       held.push('EmailConfiguration.EmailSendingAccount=DEVELOPER (SES)');
-    const heldText = held.length > 0 ? held.join(', ') : 'none of these settings';
-    const what = echoesDeveloperEmail(before)
-      ? 'self sign-up, Lambda triggers, advanced security and SES email configuration'
-      : 'self sign-up, Lambda triggers and advanced security';
+    // The bare write omits it too, which resets it to the AWS owned key (#2762).
+    if (echoesCustomerManagedKey(before)) {
+      held.push(`KeyConfiguration.KmsKeyArn=${String(before.KeyConfiguration?.KmsKeyArn)}`);
+    }
+    const heldText =
+      held.length > 0 ? held.map((entry) => mask(entry)).join(', ') : 'none of these settings';
+    const what = bareFlipResets(before);
     const state =
       kind === 'unclear'
         ? safeMsg`is LIVE and its ${what} MAY have been reset: ` +
@@ -3971,11 +4048,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             safeMsg`--remove-protection had to turn DeletionProtection off with UpdateUserPool alone (the ` +
             safeMsg`pool's own configuration was refused), and the delete then failed.`;
     this.logger.error(
-      safeMsg`Cognito User Pool ${physicalId} ` +
-        state +
-        safeMsg` Before that write the pool held: ${heldText}. Put them back with ` +
-        safeMsg`aws cognito-idp update-user-pool, sending the pool's complete configuration -- a ` +
-        safeMsg`cdkd deploy will NOT restore them, because its recorded properties still match the template.`
+      mask(
+        safeMsg`Cognito User Pool ${physicalId} ` +
+          state +
+          safeMsg` Before that write the pool held: ${heldText}. Put them back with ` +
+          safeMsg`aws cognito-idp update-user-pool, sending the pool's complete configuration -- a ` +
+          safeMsg`cdkd deploy will NOT restore them, because its recorded properties still match the template.`
+      )
     );
   }
 
@@ -4259,7 +4338,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       // Retried by the caller before any DeleteUserPool; no warn here.
       if (isTransientCognitoFailure(echoError)) throw echoError;
       if (!isRefusedEcho(echoError)) {
-        this.warnGuardLeftOn(physicalId, mask, echoError);
+        this.warnGuardLeftOn(physicalId, pool, mask, echoError);
         throw echoError;
       }
       try {
@@ -4282,13 +4361,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             this.logger.warn(
               safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool with DeletionProtection alone ` +
                 safeMsg`(the pool's own configuration was refused) answered ${mask(describeAwsFailure(bareError).summary)}; ` +
-                safeMsg`if that write landed, the pool's self sign-up, Lambda triggers and advanced ` +
-                safeMsg`security were reset. Retrying the delete.`
+                safeMsg`if that write landed, the pool's ${bareFlipResets(pool)} were reset. Retrying the delete.`
             );
           }
           throw bareError;
         }
-        this.warnGuardLeftOn(physicalId, mask, bareError, echoError);
+        this.warnGuardLeftOn(physicalId, pool, mask, bareError, echoError);
         throw bareError;
       }
       const kept = this.preFlipPools.get(flip);
@@ -4307,8 +4385,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the pool's own configuration ` +
           safeMsg`echoed back (${mask(describeAwsFailure(echoError).summary)}), so DeletionProtection was ` +
-          safeMsg`turned off alone. That write resets the settings it omits -- self sign-up, Lambda ` +
-          safeMsg`triggers and advanced security among them -- which stays that way if the delete fails.`
+          safeMsg`turned off alone. That write resets the settings it omits -- ${bareFlipResets(pool)} ` +
+          safeMsg`among them -- which stays that way if the delete fails.`
       );
     }
   }
@@ -4325,6 +4403,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    */
   private warnGuardLeftOn(
     physicalId: string,
+    pool: UserPoolType,
     mask: MaskerFn,
     error: unknown,
     echoError?: unknown
@@ -4366,7 +4445,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
                 : safeMsg`, so whether DeletionProtection was turned off is unknown. Its other settings were ` +
                   safeMsg`not reset.`
               : safeMsg`, so whether DeletionProtection was turned off ALONE is unknown; if it was, the ` +
-                safeMsg`pool's self sign-up, Lambda triggers and advanced security were reset.`) +
+                safeMsg`pool's ${bareFlipResets(pool)} were reset.`) +
             safeMsg` If the delete then fails, cdkd turns the guard back on. Check the pool with ` +
             safeMsg`aws cognito-idp describe-user-pool.`
     );
@@ -4456,6 +4535,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     result['UserPoolTags'] = userTags;
     // UserPoolTier rides on DescribeUserPool; defaults to ESSENTIALS per AWS.
     result['UserPoolTier'] = pool.UserPoolTier ?? 'ESSENTIALS';
+    // Reported on every pool (measured 2026-11-01, issue #2762: `AWS_OWNED_KEY`
+    // and `ORIGINAL` when nothing was declared). Unlike its siblings no `{}`
+    // placeholder: `UpdateUserPool` refuses an empty block of either, so
+    // `drift --revert` could not send one back.
+    if (pool.KeyConfiguration) result['KeyConfiguration'] = pool.KeyConfiguration;
+    if (pool.IssuerConfiguration) result['IssuerConfiguration'] = pool.IssuerConfiguration;
 
     // EnabledMfas / email-OTP message+subject / WebAuthn config live on the
     // separate GetUserPoolMfaConfig API, not DescribeUserPool. Fetch them and

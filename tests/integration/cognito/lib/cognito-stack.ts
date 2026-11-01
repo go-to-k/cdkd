@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as kms from 'aws-cdk-lib/aws-kms';
 
 /**
  * Cognito example stack
@@ -20,6 +22,9 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
  *   CDKD_TEST_UPDATE=true: removing Policies.SignInPolicy from the template is
  *   inexpressible on the wire and a CloudFormation-measured no-op, so the
  *   deploy must succeed, retain the live value, and ANNOUNCE the removal
+ * - AWS::Cognito::UserPool KeyConfiguration + IssuerConfiguration (#2762), on
+ *   the SDK route: declared on create, added in place, and removed under
+ *   CDKD_TEST_UPDATE=true
  */
 export class CognitoStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -231,6 +236,66 @@ export class CognitoStack extends cdk.Stack {
       ...(isUpdate ? { autoVerifiedAttributes: ['email'] } : {}),
     });
     policyRemovalPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // Issue #2762 -- KeyConfiguration and IssuerConfiguration on the SDK route.
+    //
+    // Cognito needs both services on the key policy: a create or an update is
+    // refused until cognito-idp AND identitystore can use the key (measured
+    // 2026-11-01: the five actions below are the set AWS names, and both
+    // services accept the aws:SourceAccount condition).
+    const poolKey = new kms.Key(this, 'PoolKey', {
+      description: 'cdkd cognito integ: user pool customer-managed key',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      pendingWindow: cdk.Duration.days(7),
+    });
+    poolKey.addToResourcePolicy(
+      new iam.PolicyStatement({
+        principals: [
+          new iam.ServicePrincipal('cognito-idp.amazonaws.com'),
+          new iam.ServicePrincipal('identitystore.amazonaws.com'),
+        ],
+        actions: [
+          'kms:ReEncrypt*',
+          'kms:Encrypt',
+          'kms:Decrypt',
+          'kms:GenerateDataKeyWithoutPlaintext',
+          'kms:DescribeKey',
+        ],
+        resources: ['*'],
+        conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
+      })
+    );
+    // cdk.Tags reaches the key, so verify.sh can sweep it: `state destroy` only
+    // drops cdkd's record.
+    cdk.Tags.of(poolKey).add('cdkd-cognito-integ', this.stackName);
+    const customerManagedKey = {
+      KeyType: 'CUSTOMER_MANAGED_KEY',
+      KmsKeyArn: poolKey.keyArn,
+    };
+
+    // Base arm: both blocks declared with NON-default values, so create-time
+    // forwarding and the AWS defaults read differently.
+    // Update arm: both REMOVED. UpdateUserPool and CloudFormation reset the key
+    // to AWS_OWNED_KEY and keep the UPDATED issuer (measured 2026-11-01), and
+    // cdkd announces the kept issuer. The pool id must not change.
+    const keyIssuerPool = new cognito.CfnUserPool(this, 'KeyIssuerUserPool', {
+      userPoolName: `cdkd-test-key-issuer-${cdk.Aws.ACCOUNT_ID}`,
+    });
+    keyIssuerPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    if (!isUpdate) {
+      keyIssuerPool.addPropertyOverride('KeyConfiguration', customerManagedKey);
+      keyIssuerPool.addPropertyOverride('IssuerConfiguration', { Type: 'UPDATED' });
+    }
+
+    // The inverse: created with neither, both ADDED in place by the update.
+    const keyIssuerAddPool = new cognito.CfnUserPool(this, 'KeyIssuerAddUserPool', {
+      userPoolName: `cdkd-test-key-issuer-add-${cdk.Aws.ACCOUNT_ID}`,
+    });
+    keyIssuerAddPool.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+    if (isUpdate) {
+      keyIssuerAddPool.addPropertyOverride('KeyConfiguration', customerManagedKey);
+      keyIssuerAddPool.addPropertyOverride('IssuerConfiguration', { Type: 'UPDATED' });
+    }
 
     // Outputs
     new cdk.CfnOutput(this, 'UserPoolId', {

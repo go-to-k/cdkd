@@ -5426,6 +5426,7 @@
       "resourceType": "AWS::KMS::Key",
       "integs": [
         "cloudtrail-trail",
+        "cognito",
         "composite-stack",
         "cross-backend-same-stack",
         "drift-revert",
@@ -5445,6 +5446,9 @@
       ],
       "signals": {
         "cloudtrail-trail": [
+          "l2"
+        ],
+        "cognito": [
           "l2"
         ],
         "composite-stack": [
