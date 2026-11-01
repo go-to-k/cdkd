@@ -4818,13 +4818,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // no extra trigger: the previous side is then `readUnsettled`'s live list.
       // A state-borne bag with an unreadable list is refused nowhere (the guards
       // above are the template path's): it leaves the indexes as they are.
+      const vectorIndexesChanged = !deepEqual(
+        properties['VectorIndexes'],
+        previousProperties['VectorIndexes']
+      );
       const vectorIndexShape = vectorIndexesShapeDetail(properties['VectorIndexes']);
-      if (vectorIndexShape !== undefined) {
+      if (vectorIndexShape !== undefined && vectorIndexesChanged) {
         warn(`${vectorIndexShape}; the VectorIndexes change was not applied`);
       }
       const vectorIndexPlan =
-        vectorIndexShape === undefined &&
-        !deepEqual(properties['VectorIndexes'], previousProperties['VectorIndexes'])
+        vectorIndexShape === undefined && vectorIndexesChanged
           ? planVectorIndexUpdates(
               previousProperties['VectorIndexes'],
               properties['VectorIndexes'],
@@ -9575,7 +9578,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const warm: Record<string, unknown> = {};
         for (const member of WARM_THROUGHPUT_MEMBERS) {
           const value = table.WarmThroughput[member];
-          if (declaredWarm[member] !== undefined && value !== undefined) warm[member] = value;
+          const declared = declaredWarm[member];
+          if (declared === undefined || value === undefined) continue;
+          // While UPDATING, AWS still reports the old value (measured on a
+          // two-replica table, us-east-1 + us-east-2, 2026-11-01: minutes after
+          // a raise), and the post-deploy baseline is read in that window: it
+          // froze the old value, and the next drift reported the raise. The
+          // value only rises, so the declared one is where it is moving.
+          warm[member] =
+            table.WarmThroughput.Status === 'UPDATING' ? Math.max(value, declared) : value;
         }
         if (Object.keys(warm).length > 0) result['WarmThroughput'] = warm;
       }

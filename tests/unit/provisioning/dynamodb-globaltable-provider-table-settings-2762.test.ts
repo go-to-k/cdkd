@@ -850,6 +850,16 @@ describe('readCurrentState', () => {
     expect(await read(BASE)).not.toHaveProperty('WarmThroughput');
   });
 
+  it('reads a raised WarmThroughput as the declared value while AWS is still UPDATING', async () => {
+    const declared = { ...BASE, WarmThroughput: { ReadUnitsPerSecond: 14000 } };
+    live = { ...live, WarmThroughput: { ReadUnitsPerSecond: 13000, Status: 'UPDATING' } };
+    expect(((await read(declared)) as Rec)['WarmThroughput']).toEqual({ ReadUnitsPerSecond: 14000 });
+    live = { ...live, WarmThroughput: { ReadUnitsPerSecond: 13000, Status: 'ACTIVE' } };
+    expect(((await read(declared)) as Rec)['WarmThroughput']).toEqual({ ReadUnitsPerSecond: 13000 });
+    live = { ...live, WarmThroughput: { ReadUnitsPerSecond: 15000, Status: 'UPDATING' } };
+    expect(((await read(declared)) as Rec)['WarmThroughput']).toEqual({ ReadUnitsPerSecond: 15000 });
+  });
+
   it('reads a table-level read block back only where the record keeps it', async () => {
     live = { ...live, OnDemandThroughput: { MaxReadRequestUnits: 50 } };
     expect(
@@ -1167,6 +1177,12 @@ describe('the second review round', () => {
     );
     expect(updates().filter((u) => u['VectorIndexUpdates'])).toEqual([]);
     expect(warnSpy.mock.calls.flat().join('\n')).toContain('the VectorIndexes change was not applied');
+  });
+
+  it('does not warn about an unchanged unreadable list', async () => {
+    const bag = { ...BASE, VectorIndexes: 'nonsense' };
+    await update(bag, bag);
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('VectorIndexes');
   });
 
   it('compares by default on an empty bag', () => {
