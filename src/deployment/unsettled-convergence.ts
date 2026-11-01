@@ -272,7 +272,7 @@ export async function unsettledAfterUpdate(
     const ignorePaths = provider.getDriftUnknownPaths?.(args.resourceType) ?? [];
     const unorderedPaths = provider.getDriftUnorderedPaths?.(args.resourceType) ?? [];
     const canonical = (bag: Record<string, unknown>): Record<string, unknown> =>
-      provider.canonicalizeDriftProperties?.(args.resourceType, bag) ?? bag;
+      provider.canonicalizeUnsettledProperties?.(args.resourceType, bag) ?? bag;
     const kept: string[] = [];
     for (const name of names) {
       if (moving.has(name)) {

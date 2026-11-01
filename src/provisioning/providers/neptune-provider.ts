@@ -286,7 +286,11 @@ function holdsPendingValue(value: unknown): boolean {
   return true;
 }
 
-/** A status a Modify is accepted in: a backup does not hold one back. */
+/**
+ * A status no change of ours is moving through. `backing-up` counts: a nightly
+ * backup must not refuse a deploy, and if AWS refuses the Modify during one,
+ * that refusal names it. Whether it does is not measured.
+ */
 function isUnmovingDbStatus(status: string | undefined): boolean {
   return isProceedDbStatus(status) || status === 'backing-up';
 }
@@ -2722,6 +2726,14 @@ export class NeptuneProvider implements ResourceProvider {
       out['EnableCloudwatchLogsExports'] = [...new Set(logs as string[])];
     }
     return out;
+  }
+
+  /** The post-update proof compares through the same normalization. */
+  canonicalizeUnsettledProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return this.canonicalizeDriftProperties(resourceType, properties);
   }
 
   /**

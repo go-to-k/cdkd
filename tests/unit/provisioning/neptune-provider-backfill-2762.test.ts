@@ -1158,6 +1158,27 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       ).toEqual([]);
     });
 
+    it('never applies a drift canonicalizer in the proof: only the unsettled hook', async () => {
+      const stripWarm = vi.fn((_type: string, bag: Record<string, unknown>) => {
+        const { Warm: _stripped, ...rest } = bag;
+        return rest;
+      });
+      const prove = (hooks: Record<string, unknown>) =>
+        unsettledAfterUpdate({
+          ...identity({}),
+          provider: {
+            ...hooks,
+            canonicalizeDriftProperties: stripWarm,
+            readCurrentState: () => Promise.resolve({ Warm: 1 }),
+          } as unknown as NeptuneProvider,
+          names: new Set(['Warm']),
+          desired: { Warm: 2 },
+        });
+      expect(await prove({})).toEqual(['Warm']);
+      expect(stripWarm).not.toHaveBeenCalled();
+      expect(await prove({ canonicalizeUnsettledProperties: stripWarm })).toEqual([]);
+    });
+
     it('normalizes both lists for drift, and leaves a malformed side alone', () => {
       expect(
         provider.canonicalizeDriftProperties(CLUSTER, {
