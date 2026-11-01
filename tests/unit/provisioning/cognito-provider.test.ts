@@ -670,6 +670,62 @@ describe('CognitoUserPoolProvider', () => {
   // + EnabledMfas / EmailAuthenticationMessage+Subject / WebAuthn* (routed
   // through the SetUserPoolMfaConfig post-create control-plane API).
   describe('backfill properties (#609)', () => {
+    // Issue #2762. Both blocks travel on CreateUserPool and UpdateUserPool.
+    describe('KeyConfiguration and IssuerConfiguration', () => {
+      const KEY = {
+        KeyType: 'CUSTOMER_MANAGED_KEY',
+        KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+      };
+      const ISSUER = { Type: 'UPDATED' };
+
+      it('forwards both to CreateUserPool', async () => {
+        mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_kc', Arn: 'arn' } });
+
+        await provider.create('Pool', 'AWS::Cognito::UserPool', {
+          KeyConfiguration: KEY,
+          IssuerConfiguration: ISSUER,
+        });
+
+        const input = mockSend.mock.calls[0]![0].input;
+        expect(input.KeyConfiguration).toEqual(KEY);
+        expect(input.IssuerConfiguration).toEqual(ISSUER);
+      });
+
+      it('forwards both to UpdateUserPool', async () => {
+        mockSend
+          .mockResolvedValueOnce({})
+          .mockResolvedValueOnce({ UserPool: { Arn: 'arn' } });
+
+        await provider.update(
+          'Pool',
+          'us-east-1_kc',
+          'AWS::Cognito::UserPool',
+          { KeyConfiguration: KEY, IssuerConfiguration: ISSUER },
+          {}
+        );
+
+        const input = mockSend.mock.calls[0]![0].input;
+        expect(input.KeyConfiguration).toEqual(KEY);
+        expect(input.IssuerConfiguration).toEqual(ISSUER);
+      });
+
+      it('are not create-only: a changed block updates in place', async () => {
+        mockSend
+          .mockResolvedValueOnce({})
+          .mockResolvedValueOnce({ UserPool: { Arn: 'arn' } });
+
+        const result = await provider.update(
+          'Pool',
+          'us-east-1_kc',
+          'AWS::Cognito::UserPool',
+          { KeyConfiguration: { KeyType: 'AWS_OWNED_KEY' }, IssuerConfiguration: { Type: 'ORIGINAL' } },
+          { KeyConfiguration: KEY, IssuerConfiguration: ISSUER }
+        );
+
+        expect(result.wasReplaced).toBe(false);
+      });
+    });
+
     describe('UserPoolTier', () => {
       it('rides on CreateUserPool', async () => {
         mockSend.mockResolvedValueOnce({

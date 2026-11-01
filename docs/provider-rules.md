@@ -1607,7 +1607,9 @@ Checklist when writing or reviewing an `update()`:
   `UserPoolTier` and `DeletionProtection`, so `update()` sends nothing for
   them and warns. When `MfaConfiguration` and every MFA factor property are
   removed while MFA was on, MFA is set to `OFF`, with software-token MFA
-  disabled.
+  disabled. Measured the same way (issue #2762): removal KEEPS
+  `IssuerConfiguration`, which warns too, and RESETS a customer-managed
+  `KeyConfiguration` to `AWS_OWNED_KEY`, so omitting it is the removal.
   `AWS::AutoScaling::AutoScalingGroup` is the per-type split (real
   CloudFormation A/B, issue #5004): removal RESETS `InstanceMaintenancePolicy`,
   `MaxInstanceLifetime`, `CapacityReservationSpecification` and

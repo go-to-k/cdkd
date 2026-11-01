@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 // go-to-k/cdkd#1160: what a removed UpdateUserPool member does. A CloudFormation
 // A/B (us-east-1, 2026-10-27) kept AccountRecoverySetting, SmsConfiguration,
 // UserPoolTier and DeletionProtection, and turned MFA OFF when MfaConfiguration
-// and EnabledMfas were removed.
+// and EnabledMfas were removed. Another (2026-11-01, go-to-k/cdkd#2762) kept
+// IssuerConfiguration and reset KeyConfiguration to the AWS owned key.
 
 const mockSend = vi.fn();
 
@@ -83,6 +84,7 @@ describe('CognitoUserPoolProvider.update — removed members (#1160)', () => {
       ['SmsConfiguration', SMS],
       ['UserPoolTier', 'PLUS'],
       ['DeletionProtection', 'ACTIVE'],
+      ['IssuerConfiguration', { Type: 'UPDATED' }],
     ];
 
     it.each(cases)('removing %s warns and sends no reset', async (member, value) => {
@@ -115,9 +117,19 @@ describe('CognitoUserPoolProvider.update — removed members (#1160)', () => {
           SmsConfiguration: {},
           UserPoolTier: 'ESSENTIALS',
           DeletionProtection: 'INACTIVE',
+          IssuerConfiguration: { Type: 'ORIGINAL' },
         }
       );
 
+      expect(warnings().filter((w) => w.includes('no longer declares'))).toHaveLength(0);
+    });
+
+    it('a removed customer-managed KeyConfiguration is simply not sent: AWS and CloudFormation both reset it', async () => {
+      const key = { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k' };
+
+      await update({}, { KeyConfiguration: key });
+
+      expect(sent('UpdateUserPoolCommand')[0]!.input).not.toHaveProperty('KeyConfiguration');
       expect(warnings().filter((w) => w.includes('no longer declares'))).toHaveLength(0);
     });
 

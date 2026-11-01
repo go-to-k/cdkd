@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   CognitoIdentityProviderClient,
   CreateUserPoolCommand,
@@ -33,6 +34,8 @@ import {
   type DeviceConfigurationType,
   type UserPoolAddOnsType,
   type UserPoolTierType,
+  type KeyConfigurationType,
+  type IssuerConfigurationType,
   type UserVerificationType,
   type WebAuthnFactorConfigurationType,
   type CreateUserPoolCommandInput,
@@ -150,6 +153,11 @@ import {
  *   `AcrConfiguration` (added by a later SDK; the API reference says a level
  *   the write does not name gets its DEFAULT name, so omission could reset a
  *   custom one). Only its custom levels are echoed: see `customAcrLevels`.
+ * - RESET too, MEASURED us-east-1 2026-11-01 (issue #2762): a
+ *   `CUSTOMER_MANAGED_KEY` `KeyConfiguration` went to `AWS_OWNED_KEY`, its
+ *   `KmsKeyArn` dropped. Echoed apart from this list, like the SES
+ *   `EmailConfiguration`, because an `AWS_OWNED_KEY` one is what omission
+ *   leaves anyway (see {@link USER_POOL_KEPT_ON_OMISSION}).
  *
  * The echo was ACCEPTED on every pool measured, MFA `ON` with TOTP only and
  * no `SmsConfiguration` included, and left the pool byte-identical apart from
@@ -179,10 +187,13 @@ export const USER_POOL_ECHO_MEMBERS = [
  * write, and a refused echo is the path to the settings-resetting bare write.
  * `SmsConfiguration` (with an SNS role), `EmailConfiguration`
  * (`COGNITO_DEFAULT`) and `MfaConfiguration` (`OFF`, `OPTIONAL` and `ON`, the
- * factor configuration included) were each measured unchanged. One exception
- * is ECHOED: a `DEVELOPER` (SES) `EmailConfiguration`, measured to RESET to
- * `COGNITO_DEFAULT` on omission (issue #4149; see
- * {@link userPoolDeletionProtectionUpdate}).
+ * factor configuration included) were each measured unchanged, and
+ * `IssuerConfiguration` (`UPDATED`, us-east-1 2026-11-01, issue #2762). Two
+ * exceptions are ECHOED, each measured to RESET on omission (see
+ * {@link userPoolDeletionProtectionUpdate}): a `DEVELOPER` (SES)
+ * `EmailConfiguration` goes to `COGNITO_DEFAULT` (issue #4149), and a
+ * `CUSTOMER_MANAGED_KEY` `KeyConfiguration` goes to `AWS_OWNED_KEY` (issue
+ * #2762).
  */
 export const USER_POOL_KEPT_ON_OMISSION = [
   'Policies',
@@ -222,6 +233,9 @@ export function userPoolDeletionProtectionUpdate(
   if (echoesDeveloperEmail(pool) && opts.withoutDeveloperEmail !== true) {
     input.EmailConfiguration = pool.EmailConfiguration;
   }
+  // A customer-managed key RESETS to the AWS owned key when omitted (measured,
+  // #2762). The AWS owned key is what omission leaves, so it stays off the wire.
+  if (echoesCustomerManagedKey(pool)) input.KeyConfiguration = pool.KeyConfiguration;
   input.DeletionProtection = value;
   return input;
 }
@@ -303,6 +317,11 @@ function reportKind(record: {
 /** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's (SES) `EmailConfiguration`. */
 export function echoesDeveloperEmail(pool: UserPoolType): boolean {
   return pool.EmailConfiguration?.EmailSendingAccount === 'DEVELOPER';
+}
+
+/** Whether {@link userPoolDeletionProtectionUpdate} echoes the pool's `KeyConfiguration`. */
+function echoesCustomerManagedKey(pool: UserPoolType): boolean {
+  return pool.KeyConfiguration?.KeyType === 'CUSTOMER_MANAGED_KEY';
 }
 
 /**
@@ -520,21 +539,22 @@ function isEmptyObjectPlaceholder(value: unknown): boolean {
  * each mapped to the value AWS reports for it when unset (`undefined` when
  * that is an empty object, which {@link declaresMember} already skips).
  */
-const KEPT_ON_REMOVAL_MEMBERS: Readonly<Record<string, string | undefined>> = {
+const KEPT_ON_REMOVAL_MEMBERS: Readonly<Record<string, unknown>> = {
   AccountRecoverySetting: undefined,
   SmsConfiguration: undefined,
   UserPoolTier: 'ESSENTIALS',
   DeletionProtection: 'INACTIVE',
+  IssuerConfiguration: { Type: 'ORIGINAL' },
 };
 
 /**
  * Does `value` declare something for a {@link KEPT_ON_REMOVAL_MEMBERS} entry?
  * Absent, `null`, `''`, `{}` and the member's `unset` value do not.
  */
-function declaresMember(value: unknown, unset: string | undefined): boolean {
+function declaresMember(value: unknown, unset: unknown): boolean {
   if (value === undefined || value === null || value === '') return false;
   if (isEmptyObjectPlaceholder(value)) return false;
-  return unset === undefined || value !== unset;
+  return unset === undefined || !isDeepStrictEqual(value, unset);
 }
 
 /**
@@ -1837,6 +1857,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
         'SmsAuthenticationMessage',
         'SmsVerificationMessage',
         'UserPoolTier',
+        'KeyConfiguration',
+        'IssuerConfiguration',
         // Routed through the SetUserPoolMfaConfig control-plane API
         // (NOT CreateUserPool/UpdateUserPool) — see buildMfaConfigRequest.
         'EnabledMfas',
@@ -2234,6 +2256,14 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       if (properties['UserPoolTier']) {
         createParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
+      }
+      if (properties['KeyConfiguration']) {
+        createParams.KeyConfiguration = properties['KeyConfiguration'] as KeyConfigurationType;
+      }
+      if (properties['IssuerConfiguration']) {
+        createParams.IssuerConfiguration = properties[
+          'IssuerConfiguration'
+        ] as IssuerConfigurationType;
       }
 
       // Issue #2080: when an earlier attempt at this create ended ambiguous,
@@ -2687,6 +2717,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    *   `AdminCreateUserConfig.AllowAdminCreateUserOnly` — DO reset when omitted;
    *   `UserPoolTags`, `AccountRecoverySetting` and `EmailConfiguration` do NOT
    *   (2026-09-29, issue #4066; the full table is at `USER_POOL_ECHO_MEMBERS`).
+   * - `KeyConfiguration` — a customer-managed key DOES reset to `AWS_OWNED_KEY`;
+   *   `IssuerConfiguration` does NOT (2026-11-01, issue #2762). Both are
+   *   writable in either direction on `UpdateUserPool`.
    * - `DeletionProtection` — does NOT reset when omitted (2026-09-23, issue
    *   #2675): a pool created `ACTIVE` stayed `ACTIVE` through an
    *   `UpdateUserPool` omitting it, whose co-sent `AutoVerifiedAttributes`
@@ -2712,6 +2745,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * (`warnOnKeptRemovedMembers`); `MfaConfiguration` with its factors goes
    * OFF (`turnOffRemovedMfa`); a removed `UserPoolTags` key is untagged
    * (`untagRemovedUserPoolTags`, from the type schema's tagging contract).
+   * On the same edit (2026-11-01, issue #2762) `KeyConfiguration` resets to
+   * `AWS_OWNED_KEY` and `IssuerConfiguration` is kept.
    *
    * `SetUserPoolMfaConfig` — a DIFFERENT API with a DIFFERENT rule, kept in
    * its own section so neither list is read as evidence for the other:
@@ -3040,11 +3075,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * stack (PLUS tier) whose update removed all four at once, beside a
    * removed `AutoVerifiedAttributes` that DID reset (the control). Every
    * value was unchanged right after `UPDATE_COMPLETE` and three minutes later.
+   * `IssuerConfiguration` was measured the same way on its own stack
+   * (us-east-1 2026-11-01, issue #2762: `UPDATED` stayed).
    * So cdkd sends no reset, as with `Policies`; only the silence was wrong.
    *
    * A previous value equal to what AWS reports for an unset member (the
-   * `readCurrentState` placeholders: `{}`, `INACTIVE`, `ESSENTIALS`) is not
-   * announced, since keeping it changes nothing.
+   * `readCurrentState` placeholders: `{}`, `INACTIVE`, `ESSENTIALS`, and an
+   * `ORIGINAL` issuer) is not announced, since keeping it changes nothing.
    */
   private warnOnKeptRemovedMembers(
     logicalId: string,
@@ -3407,6 +3444,18 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       }
       if (properties['UserPoolTier']) {
         updateParams.UserPoolTier = properties['UserPoolTier'] as UserPoolTierType;
+      }
+      // Omitting `KeyConfiguration` RESETS a customer-managed key to the AWS
+      // owned key, which is what CloudFormation does when a template drops it
+      // too (measured, issue #2762), so a removal needs no call of its own.
+      if (properties['KeyConfiguration']) {
+        updateParams.KeyConfiguration = properties['KeyConfiguration'] as KeyConfigurationType;
+      }
+      // Omitting `IssuerConfiguration` KEEPS it (`warnOnKeptRemovedMembers`).
+      if (properties['IssuerConfiguration']) {
+        updateParams.IssuerConfiguration = properties[
+          'IssuerConfiguration'
+        ] as IssuerConfigurationType;
       }
 
       const mfaOptions = {
@@ -3952,6 +4001,10 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     // Named by its sending account only: the SourceArn embeds an address.
     if (echoesDeveloperEmail(before))
       held.push('EmailConfiguration.EmailSendingAccount=DEVELOPER (SES)');
+    // The bare write omits it too, which resets it to the AWS owned key (#2762).
+    if (echoesCustomerManagedKey(before)) {
+      held.push(`KeyConfiguration.KmsKeyArn=${String(before.KeyConfiguration?.KmsKeyArn)}`);
+    }
     const heldText = held.length > 0 ? held.join(', ') : 'none of these settings';
     const what = echoesDeveloperEmail(before)
       ? 'self sign-up, Lambda triggers, advanced security and SES email configuration'
@@ -4456,6 +4509,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     result['UserPoolTags'] = userTags;
     // UserPoolTier rides on DescribeUserPool; defaults to ESSENTIALS per AWS.
     result['UserPoolTier'] = pool.UserPoolTier ?? 'ESSENTIALS';
+    // Reported on every pool (measured 2026-11-01, issue #2762: `AWS_OWNED_KEY`
+    // and `ORIGINAL` when nothing was declared). Unlike its siblings no `{}`
+    // placeholder: `UpdateUserPool` refuses an empty block of either, so
+    // `drift --revert` could not send one back.
+    if (pool.KeyConfiguration) result['KeyConfiguration'] = pool.KeyConfiguration;
+    if (pool.IssuerConfiguration) result['IssuerConfiguration'] = pool.IssuerConfiguration;
 
     // EnabledMfas / email-OTP message+subject / WebAuthn config live on the
     // separate GetUserPoolMfaConfig API, not DescribeUserPool. Fetch them and

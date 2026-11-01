@@ -8,6 +8,7 @@ UserPool deployment example for cdkd with email sign-in and password policy.
 - **BackfillUserPool** - L1 `CfnUserPool` exercising the issue #609 backfill properties (`UserPoolTier` / `EnabledMfas` / `WebAuthn*`) with an explicit `MfaConfiguration: ON` (ON, not OPTIONAL, so the assertion can tell a threaded explicit value from a fired default)
 - **PasskeyOnlyUserPool** - L1 `CfnUserPool` with WebAuthn and NO `MfaConfiguration` (issue #1920) -> must land as `OFF`; the absence is the input under test, so do not add one
 - **FactorDefaultUserPool** - L1 `CfnUserPool` with an MFA factor and NO `MfaConfiguration` (issue #1920) -> must land as `OPTIONAL`; the inverse regression sends the declared factor under `MfaConfiguration: OFF`, which AWS REJECTS outright (measured 2026-08-19, issue #1968), so it surfaces as a FAILED deploy rather than as a silently MFA-disabled pool
+- **KeyIssuerUserPool** / **KeyIssuerAddUserPool** + **PoolKey** - L1 `CfnUserPool`s for issue #2762. The first declares a customer-managed `KeyConfiguration` and an `UPDATED` `IssuerConfiguration`, and `CDKD_TEST_UPDATE=true` removes both: the key resets to `AWS_OWNED_KEY`, the issuer is kept and announced, as on the same CloudFormation edit. The second adds both in place. Both must stay on the SDK route
 
 ### `CognitoPreflightStack` (issues #1975 / #1977 / #2064 / #2051 / #3562)
 

@@ -39,6 +39,26 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import { calculateResourceDrift } from '../../../src/analyzer/drift-calculator.js';
+
+describe('KeyConfiguration / IssuerConfiguration drift (#2762)', () => {
+  const readback = {
+    KeyConfiguration: { KeyType: 'AWS_OWNED_KEY' },
+    IssuerConfiguration: { Type: 'ORIGINAL' },
+  };
+
+  it('an observed baseline written before cdkd read them reports nothing on upgrade', () => {
+    expect(calculateResourceDrift({ UserPoolName: 'p' }, { UserPoolName: 'p', ...readback })).toEqual([]);
+  });
+
+  it('a baseline holding them reports a console change', () => {
+    const changes = calculateResourceDrift(readback, {
+      ...readback,
+      IssuerConfiguration: { Type: 'UPDATED' },
+    });
+    expect(changes.map((c) => c.path)).toEqual(['IssuerConfiguration.Type']);
+  });
+});
 
 describe('CognitoUserPoolProvider.readCurrentState', () => {
   let provider: CognitoUserPoolProvider;
@@ -116,6 +136,11 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
         Id: 'us-east-1_abcd',
         Name: 'my-pool',
         UserPoolTier: 'PLUS',
+        KeyConfiguration: {
+          KeyType: 'CUSTOMER_MANAGED_KEY',
+          KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+        },
+        IssuerConfiguration: { Type: 'UPDATED' },
       },
     });
     mockSend.mockResolvedValueOnce({
@@ -136,6 +161,11 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
     )) as Record<string, unknown>;
 
     expect(result['UserPoolTier']).toBe('PLUS');
+    expect(result['KeyConfiguration']).toEqual({
+      KeyType: 'CUSTOMER_MANAGED_KEY',
+      KmsKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+    });
+    expect(result['IssuerConfiguration']).toEqual({ Type: 'UPDATED' });
     expect(result['EnabledMfas']).toEqual(['SMS_MFA', 'SOFTWARE_TOKEN_MFA', 'EMAIL_OTP']);
     expect(result['EmailAuthenticationMessage']).toBe('code {####}');
     expect(result['EmailAuthenticationSubject']).toBe('Your code');
@@ -301,6 +331,8 @@ describe('CognitoUserPoolProvider.readCurrentState', () => {
       'AWS::Cognito::UserPool'
     )) as Record<string, unknown> | undefined;
 
+    // No `{}` placeholder for KeyConfiguration / IssuerConfiguration (#2762):
+    // UpdateUserPool refuses an empty block, so a revert could not send one.
     expect(Object.keys(result ?? {}).sort()).toEqual(
       [
         'AccountRecoverySetting',

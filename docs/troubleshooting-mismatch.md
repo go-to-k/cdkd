@@ -12,7 +12,7 @@ On this page:
 - [A property you set in the template never reaches AWS](#a-property-you-set-in-the-template-never-reaches-aws)
 - [`cdkd diff` shows `[returning to SDK provider]`](#cdkd-diff-shows-returning-to-sdk-provider)
 - [deleting a Cognito `Policies` sub-key changes nothing on the pool](#deleting-a-cognito-policies-sub-key-changes-nothing-on-the-pool)
-- [deleting a Cognito `AccountRecoverySetting`, `SmsConfiguration`, `UserPoolTier` or `DeletionProtection` changes nothing on the pool](#deleting-a-cognito-accountrecoverysetting-smsconfiguration-userpooltier-or-deletionprotection-changes-nothing-on-the-pool)
+- [deleting a Cognito `AccountRecoverySetting`, `SmsConfiguration`, `UserPoolTier`, `DeletionProtection` or `IssuerConfiguration` changes nothing on the pool](#deleting-a-cognito-accountrecoverysetting-smsconfiguration-userpooltier-deletionprotection-or-issuerconfiguration-changes-nothing-on-the-pool)
 
 ## A property you set in the template never reaches AWS
 
@@ -159,7 +159,7 @@ before it sends any change, with a message that names the pool's live
 `WebAuthnFactorConfiguration` is `MULTI_FACTOR_WITH_USER_VERIFICATION`. The
 fix is the same explicit declaration.
 
-## deleting a Cognito `AccountRecoverySetting`, `SmsConfiguration`, `UserPoolTier` or `DeletionProtection` changes nothing on the pool
+## deleting a Cognito `AccountRecoverySetting`, `SmsConfiguration`, `UserPoolTier`, `DeletionProtection` or `IssuerConfiguration` changes nothing on the pool
 
 You remove one of these from an `AWS::Cognito::UserPool`. The deploy
 succeeds, but the pool keeps its value. The deploy warns, naming the
@@ -171,13 +171,15 @@ AccountRecoverySetting, and UpdateUserPool keeps a member it omits
 ```
 
 `UpdateUserPool` keeps a member that the call leaves out, and CloudFormation
-keeps all four on the same edit, so cdkd sends no reset. To change the live
+keeps all five on the same edit, so cdkd sends no reset. To change the live
 value, declare the property with the value you want. For `DeletionProtection`
-that is `INACTIVE`, and for `UserPoolTier` it is `ESSENTIALS`, the default.
+that is `INACTIVE`, for `UserPoolTier` it is `ESSENTIALS`, the default, and for
+`IssuerConfiguration` it is `Type: ORIGINAL`.
 
 Removing `MfaConfiguration` together with every MFA factor property is
 different. CloudFormation turns MFA off, and cdkd does the same and warns. A
-removed `UserPoolTags` key is untagged.
+removed `UserPoolTags` key is untagged, and a removed `KeyConfiguration` puts
+the pool back on the AWS owned key, on CloudFormation too.
 
 ## Related
 
