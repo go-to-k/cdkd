@@ -6,9 +6,11 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
 
 - **VPC** - 1 AZ, no NAT gateways, isolated subnets only
 - **Security Group** - Allows MySQL (3306) access from within the VPC
-- **Aurora Serverless v2 Cluster** - MySQL 3.08.0, 0.5-1 ACU capacity. Routed
-  via Cloud Control; verify.sh asserts that route and that destroying it left no
-  manual snapshot (issue #3993)
+- **Aurora Serverless v2 Cluster** - MySQL 3.08.0, 0.5-1 ACU capacity. Created
+  on the SDK route (every key the L2 emits is handled since issue #2762), then
+  verify.sh rewrites its record to `provisionedBy: cc-api`, the Cloud Control
+  route the record keeps on later deploys, and asserts that route and that
+  destroying it left no manual snapshot (issue #3993)
 - **Secrets Manager Secret** - Auto-generated database credentials (created by CDK)
 - **RDS Proxy** (`AuroraProxy`) - sets `DebugLogging` in phase 1 and DROPS it in
   the `CDKD_TEST_UPDATE=true` phase; verify.sh asserts the live value stays
@@ -39,7 +41,11 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   declares no `DeletionPolicy`, so its destroy takes CloudFormation's default
   final snapshot, which verify.sh asserts and then deletes (issue #4030). Its
   `SecondsUntilAutoPause` is 600 in phase 1 and 1800 in phase 2, each asserted
-  live (issue #5466).
+  live (issue #5466). Phase 1 also declares a custom
+  `DBClusterParameterGroupName` (`SecurityClusterParams`), both windows,
+  `CopyTagsToSnapshot: true` and `StorageType: aurora-iopt1`, each asserted
+  live; phase 2 changes the maintenance window and drops the other four, which
+  verify.sh asserts KEPT, as CloudFormation keeps them (measured, issue #2762).
 - **EngineCluster** (L1 `CfnDBCluster`, no instance, `DeletionPolicy: Delete`) -
   phase 2c swaps its `Engine` from aurora-mysql to aurora-postgresql, which
   CloudFormation replaces: verify.sh asserts the deploy is refused without

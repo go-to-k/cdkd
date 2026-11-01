@@ -41,7 +41,9 @@
 # the warning naming DebugLogging as left in place, as CloudFormation leaves it.
 #
 # #3993 (no Cloud Control final snapshot): the L2 AuroraCluster is routed via
-# Cloud Control (asserted, so the arm cannot pass vacuously), whose registry
+# Cloud Control (its record is seeded to cc-api after phase 1, since #2762 the
+# deploy creates it on the SDK route; asserted, so the arm cannot pass
+# vacuously), whose registry
 # delete handler took an untagged `rds-snapshot-<random>` on every delete. The
 # run fails if any manual snapshot of that cluster was created after it began;
 # cleanup deletes any such snapshot either way.
@@ -68,6 +70,11 @@
 # removed). Before phase 2b's destroy the record is seeded to cc-api again, so
 # that destroy only passes the failure-set check if the target group is deleted
 # through the SDK provider.
+#
+# #2762 (DBCluster parameter group, windows, CopyTagsToSnapshot, StorageType):
+# phase 1 declares all five on the SecurityCluster and asserts each live
+# (the provisionedBy=sdk guard is what a pre-fix cdkd fails). Phase 2 changes
+# the maintenance window and drops the other four, which must be kept.
 #
 # #2762 (DBProxyEndpoint EndpointNetworkType): the reader endpoint declares
 # EndpointNetworkType=IPV4. Before #2762 the key was a silent drop, which routed
@@ -156,6 +163,8 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
 # Auto-generated physical name; resolved from cdkd state after deploy.
 DB_CLUSTER_ID=""
+# go-to-k/cdkd#2762: the SecurityCluster's parameter group, for the cleanup below.
+PARAMS_NAME=""
 # Phase 2b's out-of-band cluster member (issue #2204). Not in cdkd state, so no
 # cdkd destroy removes it: cleanup deletes it FIRST, or the SecurityCluster
 # (and the VPC under it) cannot be deleted. Set just before the create.
@@ -231,6 +240,23 @@ seed_tg_cc_api() {
   [ "$(tg_field .provisionedBy)" = "cc-api" ] || { echo "FAIL: seeding the target group record to cc-api did not stick" >&2; return 1; }
 }
 
+# Issue #3993 premise: rewrite the L2 AuroraCluster's record to
+# provisionedBy=cc-api, the record a binary that routed it through Cloud Control
+# wrote (every one before go-to-k/cdkd#2762 wired its last unhandled key). Both
+# routes record the DBClusterIdentifier as the physical id, and the record
+# stays cc-api on later deploys (AWS::RDS::DBCluster is not in
+# STICKY_CC_MIGRATION_EXEMPT), so the arm no longer depends on which DBCluster
+# properties the SDK provider handles.
+seed_aurora_cc_api() {
+  local state seeded by
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  seeded=$(echo "${state}" | jq '.resources |= with_entries(if .value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster")) then .value.provisionedBy = "cc-api" else . end)') || return 1
+  printf '%s\n' "${seeded}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || return 1
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  by=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.provisionedBy // "sdk"] | first // ""')
+  [ "${by}" = "cc-api" ] || { echo "FAIL: seeding the L2 AuroraCluster record to cc-api did not stick (got '${by}')" >&2; return 1; }
+}
+
 # This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
 # A failed listing returns non-zero, so a caller never reads an empty list as
 # "no new events".
@@ -285,6 +311,24 @@ cleanup() {
       --db-cluster-identifier "${DB_CLUSTER_ID}" \
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
+  fi
+  # go-to-k/cdkd#2762: the SecurityCluster's parameter group, which RDS refuses
+  # to delete while the cluster still uses it, so after the cluster is gone.
+  # Best effort: a no-op once state destroy deleted it.
+  if [ -n "${PARAMS_NAME}" ]; then
+    # Wait only for a cluster already `deleting`: one a refused delete left
+    # `available` would hold the waiter for its full 30 minutes.
+    if [ -n "${DB_CLUSTER_ID}" ] && [ "$(aws rds describe-db-clusters \
+      --db-cluster-identifier "${DB_CLUSTER_ID}" --region "${REGION}" \
+      --query 'DBClusters[0].Status' --output text 2>/dev/null)" = "deleting" ]; then
+      aws rds wait db-cluster-deleted --db-cluster-identifier "${DB_CLUSTER_ID}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+    if ! PARAMS_DELETE_OUT=$(aws rds delete-db-cluster-parameter-group \
+      --db-cluster-parameter-group-name "${PARAMS_NAME}" --region "${REGION}" 2>&1); then
+      printf '%s' "${PARAMS_DELETE_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+        || echo "WARN: cleanup could not delete the #2762 parameter group ${PARAMS_NAME}: ${PARAMS_DELETE_OUT}" >&2
+    fi
   fi
   # Issue #5467: the EngineCluster (DeletionPolicy Delete, no instance), both
   # before and after phase 2c's replacement; a no-op once destroyed. A forced
@@ -376,6 +420,10 @@ if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
 fi
+# Issue #3993: put the L2 AuroraCluster on the Cloud Control route (see
+# seed_aurora_cc_api) before the premise check below reads the record.
+seed_aurora_cc_api
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 
 # Resolve the security cluster's auto-generated identifier from cdkd state.
 # The L2 DatabaseCluster and the L1 EngineCluster (issue #5467) also produce
@@ -391,7 +439,9 @@ echo "    resolved SecurityCluster identifier: ${DB_CLUSTER_ID}"
 
 # Issue #3993 premise: the L2 AuroraCluster must be Cloud Control-routed, or
 # the no-snapshot assertion (after phase 3; phase 2b's destroy is the one that
-# deletes this cluster) tests the SDK path it always passed.
+# deletes this cluster) tests the SDK path it always passed. Its record is
+# seeded to cc-api above: since go-to-k/cdkd#2762 every key the L2 emits is
+# handled, so the deploy itself creates it on the SDK route.
 AURORA_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.physicalId] | first // ""')
 AURORA_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.provisionedBy // "sdk"] | first // ""')
 if [ -z "${AURORA_CLUSTER_ID}" ] || [ "${AURORA_CLUSTER_ID}" = "null" ]; then
@@ -556,6 +606,26 @@ if [ "${ACTUAL_AUTO_PAUSE}" != "600" ]; then
   exit 1
 fi
 echo "    OK: base SecurityCluster SecondsUntilAutoPause == 600 (#5466)"
+
+# go-to-k/cdkd#2762: phase 1 declares DBClusterParameterGroupName (this stack's
+# SecurityClusterParams), PreferredBackupWindow 03:00-03:30,
+# PreferredMaintenanceWindow sun:05:00-sun:05:30, CopyTagsToSnapshot true and
+# StorageType aurora-iopt1, each a non-default. Before #2762 each routed the
+# cluster to Cloud Control (the provisionedBy=sdk guard above); here each must
+# be live. RDS stores a parameter group name in lower case.
+PARAMS_NAME=$(echo "${STATE}" | jq -r '.resources.SecurityClusterParams.physicalId // ""')
+if [ -z "${PARAMS_NAME}" ]; then
+  echo "FAIL: #2762: could not resolve SecurityClusterParams' name from state" >&2
+  exit 1
+fi
+PARAMS_NAME=$(printf '%s' "${PARAMS_NAME}" | tr '[:upper:]' '[:lower:]')
+BASE_2762=$(echo "${CLUSTER}" | jq -r '[.DBClusterParameterGroup, .PreferredBackupWindow, .PreferredMaintenanceWindow, (.CopyTagsToSnapshot | tostring), (.StorageType // "absent")] | join(" ")')
+WANT_2762="${PARAMS_NAME} 03:00-03:30 sun:05:00-sun:05:30 true aurora-iopt1"
+if [ "${BASE_2762}" != "${WANT_2762}" ]; then
+  echo "FAIL: #2762: base SecurityCluster [parameter group, backup window, maintenance window, CopyTagsToSnapshot, StorageType] is '${BASE_2762}', want '${WANT_2762}' (CreateDBCluster did not send them)" >&2
+  exit 1
+fi
+echo "    OK: base SecurityCluster carries the declared parameter group, windows, CopyTagsToSnapshot and StorageType (#2762)"
 
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
@@ -745,7 +815,7 @@ fi
 echo "    OK: #2762: ${EP_LOGICAL} (sdk) records and holds EndpointNetworkType=IPV4"
 
 # --- Phase 2: UPDATE pass (#5004 removal keeps) --------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (SecondsUntilAutoPause 600 -> 1800; DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (SecondsUntilAutoPause 600 -> 1800; DROP DeletionProtection + EnableIAMDatabaseAuthentication + MonitoringInterval + MonitoringRoleArn, all KEPT; DROP Port, reset to 5432; DROP the managed password for a MasterUserPassword; change PreferredMaintenanceWindow, DROP the parameter group / backup window / CopyTagsToSnapshot / StorageType, all KEPT (#2762); drop proxy DebugLogging; set proxy MaxConnectionsPercent=90)"
 DEPLOY_2_LOG="$(mktemp)"
 if ! CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -891,6 +961,35 @@ if [ "${AFTER_SECRET}" != "null" ]; then
   exit 1
 fi
 echo "    OK: after ManageMasterUserPassword removal, the managed master password is off (#1160, matches CloudFormation)"
+
+# go-to-k/cdkd#2762: phase 2 changed PreferredMaintenanceWindow to
+# mon:06:00-mon:06:30 and dropped the parameter group, the backup window,
+# CopyTagsToSnapshot and StorageType. The new window proves ModifyDBCluster
+# sent the change; CloudFormation's handler sends nothing for the four removed
+# ones, so each must still hold its phase-1 value. Polled for the window.
+AFTER_2762=""
+for i in $(seq 1 12); do
+  # A transient AWS error is one more poll, not the end of the run; its
+  # stderr shows, and the last read is still what the check below asserts.
+  if ! AFTER_2762_JSON=$(aws rds describe-db-clusters \
+    --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" \
+    --query 'DBClusters[0]' --output json); then
+    sleep 10
+    continue
+  fi
+  AFTER_2762=$(echo "${AFTER_2762_JSON}" | jq -r '[.DBClusterParameterGroup, .PreferredBackupWindow, .PreferredMaintenanceWindow, (.CopyTagsToSnapshot | tostring), (.StorageType // "absent")] | join(" ")')
+  [ "$(echo "${AFTER_2762_JSON}" | jq -r '.PreferredMaintenanceWindow // "null"')" = "mon:06:00-mon:06:30" ] && break
+  if [ "${i}" -lt 12 ]; then
+    sleep 10
+  fi
+done
+WANT_AFTER_2762="${PARAMS_NAME} 03:00-03:30 mon:06:00-mon:06:30 true aurora-iopt1"
+if [ "${AFTER_2762}" != "${WANT_AFTER_2762}" ]; then
+  echo "FAIL: #2762: after phase 2, the SecurityCluster [parameter group, backup window, maintenance window, CopyTagsToSnapshot, StorageType] is '${AFTER_2762}', want '${WANT_AFTER_2762}' (the changed window must be live; the four removed members must be KEPT, as CloudFormation keeps them)" >&2
+  exit 1
+fi
+echo "    OK: after phase 2, the maintenance window changed and the removed parameter group, backup window, CopyTagsToSnapshot and StorageType were kept (#2762)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")
@@ -1113,15 +1212,17 @@ if ! grep -qE "Failed to delete DBCluster SecurityCluster: .*(still contains DB 
   exit 1
 fi
 # The FAILURE SET: the SecurityCluster, and nothing but it and what the
-# out-of-band member's ENI holds (its subnet group, the shared SG, the VPC and
-# its subnets). Anything else failing here would otherwise be absorbed silently
-# by phase 3's destroy.
+# surviving cluster and its out-of-band member hold: the cluster's subnet group
+# and its parameter group (SecurityClusterParams, go-to-k/cdkd#2762; RDS refuses
+# to delete a group a live cluster's members use), and what the member's ENI
+# holds (the shared SG, the VPC and its subnets). Anything else failing here
+# would otherwise be absorbed silently by phase 3's destroy.
 FAILED_2B="$(printf '%s\n' "${DESTROY_2B_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
 if ! printf '%s\n' "${FAILED_2B}" | grep -qx SecurityCluster; then
   echo "FAIL: phase 2b: SecurityCluster is not among the failed deletes (got: $(printf '%s ' ${FAILED_2B}))" >&2
   exit 1
 fi
-UNEXPECTED_2B="$(printf '%s\n' "${FAILED_2B}" | grep -vE '^(SecurityCluster|SecuritySubnetGroup|AuroraSecurityGroup[0-9A-F]{8}|AuroraVpc[A-Za-z0-9]*)$' || true)"
+UNEXPECTED_2B="$(printf '%s\n' "${FAILED_2B}" | grep -vE '^(SecurityCluster|SecuritySubnetGroup|SecurityClusterParams|AuroraSecurityGroup[0-9A-F]{8}|AuroraVpc[A-Za-z0-9]*)$' || true)"
 if [ -n "${UNEXPECTED_2B}" ]; then
   echo "FAIL: phase 2b: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_2B})" >&2
   exit 1

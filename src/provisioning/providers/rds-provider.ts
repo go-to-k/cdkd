@@ -19,6 +19,7 @@ import {
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
   type DBCluster,
+  type ModifyDBClusterCommandInput,
   type ModifyDBInstanceCommandInput,
 } from '@aws-sdk/client-rds';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
@@ -443,6 +444,94 @@ function serverlessV2ScalingToSend(config: ServerlessV2ScalingProps): {
   };
 }
 
+/**
+ * go-to-k/cdkd#2762: the `AWS::RDS::DBCluster` string members that ride
+ * CreateDBCluster and ModifyDBCluster under their CFn names. With
+ * `CopyTagsToSnapshot` (a boolean) they are the cluster backfill.
+ */
+const CLUSTER_BACKFILL_STRING_MEMBERS = [
+  'DBClusterParameterGroupName',
+  'PreferredBackupWindow',
+  'PreferredMaintenanceWindow',
+  'StorageType',
+] as const;
+
+/** The cluster backfill members, typed as both CreateDBCluster and ModifyDBCluster name them. */
+type ClusterBackfillMembers = Pick<
+  ModifyDBClusterCommandInput,
+  (typeof CLUSTER_BACKFILL_STRING_MEMBERS)[number] | 'CopyTagsToSnapshot'
+>;
+
+/** The cluster backfill members CreateDBCluster sends: each one the template declares. */
+function clusterCreateBackfillMembers(properties: Record<string, unknown>): ClusterBackfillMembers {
+  const members: ClusterBackfillMembers = {};
+  for (const key of CLUSTER_BACKFILL_STRING_MEMBERS) {
+    if (properties[key] != null) members[key] = properties[key] as string;
+  }
+  if (properties['CopyTagsToSnapshot'] != null) {
+    members.CopyTagsToSnapshot = properties['CopyTagsToSnapshot'] as boolean;
+  }
+  return members;
+}
+
+/**
+ * go-to-k/cdkd#2762: the ModifyDBCluster members for `DBClusterParameterGroupName`,
+ * `PreferredBackupWindow`, `PreferredMaintenanceWindow`, `CopyTagsToSnapshot`
+ * and `StorageType`, each sent only when the template changed it
+ * (`instanceValueChanged`, so a recorded stand-in compares through
+ * `changedProperties`, and an unchanged `StorageType` is never re-sent).
+ *
+ * A removal sends nothing and RDS keeps the live value, as CloudFormation
+ * does: measured against CloudFormation (us-east-1, 2026-11-01, an Aurora
+ * PostgreSQL Serverless v2 cluster with no instance), removing the parameter
+ * group, the backup window, `CopyTagsToSnapshot` true and `StorageType`
+ * `aurora-iopt1` in one update kept all four, read five minutes later. The
+ * handler source agrees: its update translation (the
+ * archived `aws-cloudformation-resource-providers-rds` `Translator.
+ * modifyDbClusterRequest`) sends the two windows as `diff(previous, desired)`
+ * and the other three as the desired value, which is `null` (unsent) for a
+ * removed key, and `ModelAdapter.setDefaults` fills none of the five (it
+ * fills `BackupRetentionPeriod` and `Port`, the measured resets).
+ * CloudFormation re-sends an unchanged parameter group, flag or storage type
+ * on every update; cdkd does not, those being no-ops. The handler does not
+ * reboot member instances after a parameter group change, and neither does
+ * cdkd.
+ */
+function clusterModifyBackfillMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): ClusterBackfillMembers {
+  const changed = (key: string): boolean =>
+    instanceValueChanged(properties, previousProperties, key, context);
+  const members: ClusterBackfillMembers = {};
+  for (const key of CLUSTER_BACKFILL_STRING_MEMBERS) {
+    if (changed(key)) members[key] = properties[key] as string;
+  }
+  if (changed('CopyTagsToSnapshot')) {
+    members.CopyTagsToSnapshot = properties['CopyTagsToSnapshot'] as boolean;
+  }
+  return members;
+}
+
+/**
+ * go-to-k/cdkd#2762: whether this cluster update changes `EngineVersion`, the
+ * condition CloudFormation's handler sends `EngineVersion` and
+ * `AllowMajorVersionUpgrade: true` under (`Translator.modifyDbClusterRequest`:
+ * desired differs from previous, outside a rollback). Compared as the backfill
+ * members are (`instanceValueChanged`), so a recorded stand-in defers to
+ * `changedProperties`. A rollback replay never counts: the handler's rollback
+ * arm sends neither, since RDS refuses an engine downgrade.
+ */
+function clusterEngineVersionChanged(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): boolean {
+  if (context?.replayingState === true) return false;
+  return instanceValueChanged(properties, previousProperties, 'EngineVersion', context);
+}
+
 /** Issue #1160: the member statuses a cluster change moves an instance through. */
 const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
 const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
@@ -621,6 +710,15 @@ export class RDSProvider implements ResourceProvider {
         'MonitoringInterval',
         'EnableIAMDatabaseAuthentication',
         'PubliclyAccessible',
+        // go-to-k/cdkd#2762: the parameter group, backup and maintenance
+        // windows, snapshot tag copying and storage type. Each rides
+        // CreateDBCluster and, when changed, ModifyDBCluster under the same
+        // name (`clusterModifyBackfillMembers`).
+        'DBClusterParameterGroupName',
+        'PreferredBackupWindow',
+        'PreferredMaintenanceWindow',
+        'CopyTagsToSnapshot',
+        'StorageType',
       ]),
     ],
     [
@@ -1171,6 +1269,8 @@ export class RDSProvider implements ResourceProvider {
           ...(serverlessV2Config && {
             ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
           }),
+          // go-to-k/cdkd#2762: parameter group, windows, tag copying, storage type.
+          ...clusterCreateBackfillMembers(properties),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1392,7 +1492,8 @@ export class RDSProvider implements ResourceProvider {
       //     VPC's default security group, `securityGroupsToSend`).
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
-      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration.
+      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration, and the
+      //     #2762 backfill members (`clusterModifyBackfillMembers`).
       // MasterUserSecret removed while the managed password stays on: the
       // credential gate re-sends ManageMasterUserPassword=true with no key, as
       // CloudFormation does, and the secret stays on its customer key
@@ -1405,10 +1506,29 @@ export class RDSProvider implements ResourceProvider {
       // the stack update completes in place and the live user stays the old one.
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       const portToSend = clusterPortToSend(properties, previousProperties);
+      // go-to-k/cdkd#2762: EngineVersion goes out only when changed, with
+      // AllowMajorVersionUpgrade, as CloudFormation's handler sends both
+      // (`Translator.modifyDbClusterRequest`: any EngineVersion change outside
+      // a rollback). Without it RDS refuses a major upgrade, such as the one
+      // CDK's L2 cluster emits with its default parameter group's family, which
+      // CloudFormation applies in place. DBCluster has no template
+      // `AllowMajorVersionUpgrade` property to read.
+      const engineVersionChanged = clusterEngineVersionChanged(
+        properties,
+        previousProperties,
+        context
+      );
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
-          EngineVersion: properties['EngineVersion'] as string | undefined,
+          // Only a changed EngineVersion, with the flag, as the handler sends
+          // it: an unchanged one re-sent after AWS auto-upgraded the minor
+          // version reads as a downgrade, and a rollback replay sends none (RDS
+          // refuses the downgrade, failing every other reverted member).
+          ...(engineVersionChanged && {
+            EngineVersion: properties['EngineVersion'] as string,
+            AllowMajorVersionUpgrade: true,
+          }),
           // Removal keeps the live value, as CFn does (#5004 A/B).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           // CFn resets a removed BackupRetentionPeriod to 1 (#5004 A/B).
@@ -1450,6 +1570,8 @@ export class RDSProvider implements ResourceProvider {
           ...(hasServerlessV2 && {
             ServerlessV2ScalingConfiguration: serverlessV2ScalingToSend(serverlessV2Config),
           }),
+          // go-to-k/cdkd#2762: only what changed; a removal keeps the live value.
+          ...clusterModifyBackfillMembers(properties, previousProperties, context),
           ApplyImmediately: true,
         })
       );
@@ -3472,6 +3594,31 @@ export class RDSProvider implements ResourceProvider {
       }
       result['ServerlessV2ScalingConfiguration'] = sc;
     }
+    // go-to-k/cdkd#2762: same names on the Describe shape, except the
+    // parameter group's. DescribeDBClusters omits `StorageType` on an Aurora
+    // Standard cluster (read us-east-1, 2026-11-01); CloudFormation's read
+    // handler reports `aurora` there, and so does this, on Aurora engines only.
+    if (cluster.DBClusterParameterGroup !== undefined) {
+      result['DBClusterParameterGroupName'] = cluster.DBClusterParameterGroup;
+    }
+    if (cluster.PreferredBackupWindow !== undefined) {
+      result['PreferredBackupWindow'] = cluster.PreferredBackupWindow;
+    }
+    if (cluster.PreferredMaintenanceWindow !== undefined) {
+      result['PreferredMaintenanceWindow'] = cluster.PreferredMaintenanceWindow;
+    }
+    if (cluster.CopyTagsToSnapshot !== undefined) {
+      result['CopyTagsToSnapshot'] = cluster.CopyTagsToSnapshot;
+    }
+    // A storage type change can sit in `PendingModifiedValues` after
+    // ModifyDBCluster returns (CloudFormation's handler waits for it to clear),
+    // so the pending one is what the cluster is moving to: read it first, or
+    // the capture right after the update records the old type.
+    const storageType =
+      cluster.PendingModifiedValues?.StorageType ??
+      cluster.StorageType ??
+      (cluster.Engine?.toLowerCase().startsWith('aurora') ? 'aurora' : undefined);
+    if (storageType !== undefined) result['StorageType'] = storageType;
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
   }

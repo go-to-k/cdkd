@@ -215,6 +215,9 @@ describe('RDSProvider.readCurrentState', () => {
       BackupRetentionPeriod: 7,
       DeletionProtection: true,
       ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 4 },
+      // go-to-k/cdkd#2762: an Aurora cluster reporting no StorageType reads as
+      // `aurora`, as CloudFormation's read handler reports it.
+      StorageType: 'aurora',
     });
   });
 

@@ -183,6 +183,24 @@ const CLUSTER_MASTER_USERNAME_SILENT = Object.fromEntries(
   ])
 );
 
+/**
+ * go-to-k/cdkd#2762: a removed backfill member sends nothing, and CloudFormation
+ * keeps each (measured us-east-1, 2026-11-01; its handler sends `null` for a
+ * removed key and `ModelAdapter.setDefaults` fills none of these).
+ */
+const CLUSTER_BACKFILL_KEPT = Object.fromEntries(
+  [
+    'DBClusterParameterGroupName',
+    'PreferredBackupWindow',
+    'PreferredMaintenanceWindow',
+    'CopyTagsToSnapshot',
+    'StorageType',
+  ].map((key) => [
+    `update-remove:${key}`,
+    `left in place on removal: ModifyDBCluster treats an absent member as "no change", and a real CloudFormation A/B (go-to-k/cdkd#2762) measured a removed ${key} KEPT (${SRC} clusterModifyBackfillMembers)`,
+  ])
+);
+
 const CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::RDS::DBCluster',
   provider: () => new RDSProvider(),
@@ -229,10 +247,16 @@ const CLUSTER_CASE: TypeCase = {
         MonitoringInterval: 60,
         EnableIAMDatabaseAuthentication: true,
         PubliclyAccessible: false,
+        DBClusterParameterGroupName: 'params-1',
+        PreferredBackupWindow: '03:00-03:30',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:05:30',
+        CopyTagsToSnapshot: true,
+        StorageType: 'aurora-iopt1',
         Tags: fresh(TAGS),
       },
       expectedSilent: {
         ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_BACKFILL_KEPT,
         ...CLUSTER_MASTER_USERNAME_SILENT,
         'update-remove:MasterUserPassword': PASSWORD_REMOVED,
         'update-remove:DeletionProtection': KEPT('DeletionProtection', '1192-1193'),
