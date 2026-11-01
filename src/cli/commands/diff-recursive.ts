@@ -580,7 +580,7 @@ export function findUnwrittenCreateOnlyRefusals(
             !unroutable
               ? '--recreate-via-cc-api or --replace opts'
               : keepKeys.length > 0
-                ? `--replace, with --prefer-sdk-route ${keep} for the pre-flight check, opts`
+                ? `--prefer-sdk-route ${keep} with the --replace flag opts`
                 : '--replace opts'
           } ` +
           `in, whatever --prefer-sdk-route names; a deploy with ` +
@@ -598,8 +598,8 @@ export function findUnwrittenCreateOnlyRefusals(
         (unroutable
           ? `A deploy passing --prefer-sdk-route ${keep} changes nothing.`
           : `A deploy without --prefer-sdk-route refuses it ` +
-            `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or --replace ` +
-            `opts in; a deploy passing --prefer-sdk-route ${keep} changes nothing.`)
+            `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or ` +
+            `--replace opts in; a deploy passing --prefer-sdk-route ${keep} changes nothing.`)
     );
   }
   return reasons;
