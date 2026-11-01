@@ -209,6 +209,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       GlobalSecondaryIndexes: ['GlobalSecondaryIndexUpdates.Create', 'GlobalSecondaryIndexUpdates.Update'],
       'GlobalSecondaryIndexes.WriteOnDemandThroughputSettings': ['OnDemandThroughput'],
       'GlobalSecondaryIndexes.WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': ['PutScalingPolicyCommand:index-index-write', 'RegisterScalableTargetCommand:index-index-write'],
+      ReadOnDemandThroughputSettings: ['OnDemandThroughput'],
+      ReadProvisionedThroughputSettings: ['ProvisionedThroughput'],
       Replicas: ['Create', 'CreateTableCommand', 'EnableKinesisStreamingDestinationCommand', 'GlobalSecondaryIndexUpdates', 'ReplicaUpdates', 'TagResourceCommand', 'Update', 'UpdateContinuousBackupsCommand', 'UpdateTableCommand'],
       'Replicas.ContributorInsightsSpecification': ['UpdateContributorInsightsCommand:table'],
       'Replicas.GlobalSecondaryIndexes': ['Update'],
@@ -227,7 +229,9 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'Replicas.ResourcePolicy.PolicyDocument': ['Policy'],
       'Replicas.SSESpecification': ['Create', 'Update'],
       SSESpecification: ['Update'],
+      VectorIndexes: ['VectorIndexUpdates.Create'],
       WriteOnDemandThroughputSettings: ['OnDemandThroughput'],
+      WriteProvisionedThroughputSettings: ['ProvisionedThroughput'],
       'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings': ['PutScalingPolicyCommand:table-table-write', 'RegisterScalableTargetCommand:table-table-write'],
     },
     transformed: {

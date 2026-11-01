@@ -1,7 +1,8 @@
 /**
- * `AWS::DynamoDB::Table.VectorIndexes` (go-to-k/cdkd#2762): the CFn entry's
- * wire shape, the comparison that decides whether a same-name index changed,
- * the per-`UpdateTable` plan, and the readback.
+ * `VectorIndexes` on `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable`
+ * (go-to-k/cdkd#2762): the CFn entry's wire shape, the comparison that decides
+ * whether a same-name index changed, the per-`UpdateTable` plan, and the
+ * readback.
  *
  * The CFn `VectorIndex` and the SDK's `VectorIndex` / `CreateVectorIndexAction`
  * share every member name (`IndexName`, `VectorAttribute.AttributeName`,
@@ -37,6 +38,26 @@ export function vectorIndexesByName(value: unknown): Map<string, Entry> {
     if (typeof name === 'string') out.set(name, entry as Entry);
   }
   return out;
+}
+
+/**
+ * Why a declared `VectorIndexes` value cannot be planned, or `undefined`: a
+ * value that is no list, or an entry with no string `IndexName`.
+ * {@link vectorIndexesByName} reads either as "not declared", so a plan built on
+ * it would delete every recorded index. `AWS::DynamoDB::GlobalTable`'s `update()`
+ * refuses on it; `AWS::DynamoDB::Table` does not call it.
+ */
+export function vectorIndexesShapeDetail(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return `VectorIndexes must be a list, got ${typeof value}`;
+  const named = (value as unknown[]).every(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      !Array.isArray(entry) &&
+      typeof (entry as Entry)['IndexName'] === 'string'
+  );
+  return named ? undefined : `every VectorIndexes entry must carry a string IndexName`;
 }
 
 /**

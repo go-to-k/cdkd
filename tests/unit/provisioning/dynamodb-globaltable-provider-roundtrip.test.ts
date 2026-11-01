@@ -3153,14 +3153,18 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
   });
 
   describe('getDriftUnknownPaths', () => {
-    it('is empty: throughput settings now round-trip; the deny list is empty (Issue #389)', () => {
-      const paths = provider.getDriftUnknownPaths(RESOURCE_TYPE);
+    it('holds no throughput setting that round-trips (Issue #389)', () => {
+      const paths = provider.getDriftUnknownPaths(RESOURCE_TYPE, {
+        BillingMode: 'PROVISIONED',
+        WarmThroughput: { ReadUnitsPerSecond: 13000 },
+      });
       // Pre-#389: ['WriteProvisionedThroughputSettings',
       // 'WriteOnDemandThroughputSettings']. Post-#389: empty — both
       // surfaces are reverse-mapped in `readCurrentState` (the auto-
       // scaling case emits an empty `{}` placeholder so the literal
-      // `WriteCapacityUnits` subtree doesn't false-fire).
-      expect(paths).toEqual([]);
+      // `WriteCapacityUnits` subtree doesn't false-fire). `TableType` has no
+      // API member to read (go-to-k/cdkd#2762).
+      expect(paths).toEqual(['TableType']);
       expect(paths).not.toContain('TimeToLiveSpecification');
     });
   });

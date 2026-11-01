@@ -151,11 +151,10 @@ export function hasTransitionalTableIndex(
 }
 
 /**
- * How cdkd's own index-busy lines name the busy index. `AWS::DynamoDB::Table`
- * can hold vector indexes (go-to-k/cdkd#2762), `AWS::DynamoDB::GlobalTable`
- * cannot, so each provider passes its own noun and neither line names an index
- * kind its type cannot have. The default is the `GlobalTable` one, which keeps
- * that provider's text as it was.
+ * How cdkd's own index-busy lines name the busy index. Either DynamoDB type can
+ * hold vector indexes (go-to-k/cdkd#2762). `AWS::DynamoDB::Table` passes the
+ * longer noun; `AWS::DynamoDB::GlobalTable` passes it only for a table that has
+ * one, so the default keeps every other table's text as it was.
  */
 export const GSI_INDEX_NOUN = 'a global secondary index';
 export const TABLE_INDEX_NOUN = 'a global secondary index or vector index';
@@ -378,8 +377,7 @@ export const DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS = 60;
 
 /**
  * The re-arm's bound while the busy index is a VECTOR index
- * (go-to-k/cdkd#5574), for the `AWS::DynamoDB::Table` callers that pass
- * `shortCapUnlessVectorBusy`.
+ * (go-to-k/cdkd#5574), for the callers that pass `shortCapUnlessVectorBusy`.
  *
  * MEASURED (`dynamodb-gsi-update` Phase V3b, us-east-1, 2026-10-30): AWS refused
  * `DeleteTable` with the same `Cannot delete table while indexes are being

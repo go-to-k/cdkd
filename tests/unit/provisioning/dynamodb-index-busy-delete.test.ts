@@ -954,10 +954,14 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     // A removed `reArm` must fail here, not merely fail to be observed.
     expect(settleSpy).toHaveBeenCalledTimes(1);
     const reArmCall = settleSpy.mock.calls.at(-1)?.[0];
-    expect(reArmCall).toMatchObject({ maxAttempts: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS });
+    // The short bound serves a GSI; the long grant only a vector index building
+    // alone (go-to-k/cdkd#2762, the `Table` rule of go-to-k/cdkd#5574).
+    expect(reArmCall).toMatchObject({
+      shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+    });
+    expect(reArmCall?.maxAttempts).toBeGreaterThan(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
     expect(reArmCall?.proceedNote).toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
     // The specific regression: collapsing onto this provider's own defaults.
-    expect(reArmCall?.maxAttempts).not.toBe(900);
     expect(reArmCall?.proceedNote).not.toMatch(/auto-scaling/i);
   });
 });

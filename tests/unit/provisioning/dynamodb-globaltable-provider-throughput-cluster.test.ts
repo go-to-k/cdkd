@@ -1219,11 +1219,13 @@ describe('DynamoDB GlobalTable throughput cluster', () => {
       });
     });
 
-    it('keeps getDriftUnknownPaths EMPTY rather than switching drift off for the subtree', () => {
+    it('keeps the GSI subtree out of getDriftUnknownPaths rather than switching drift off for it', () => {
       // #1420's option 2 (declare `GlobalSecondaryIndexes` here) was the
       // honest stopgap, not the fix: it trades phantom drift for NO drift
       // detection on any GSI.
-      expect(provider.getDriftUnknownPaths(RESOURCE_TYPE)).toEqual([]);
+      expect(
+        provider.getDriftUnknownPaths(RESOURCE_TYPE).filter((p) => p.includes('Secondary'))
+      ).toEqual([]);
     });
   });
 
