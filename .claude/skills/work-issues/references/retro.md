@@ -88,7 +88,7 @@ worktree:
 
 ```bash
 B=chore/work-issues-retro-$(date -u +%Y%m%d-%H%M)
-git fetch origin && git switch -c "$B" origin/main
+git -C "<LANE_TREE>" fetch origin && git -C "<LANE_TREE>" switch -c "$B" origin/main
 ```
 
 - `chore:` prefix — CI refuses a `fix:` / `feat:` PR TITLE with no `src/**`
