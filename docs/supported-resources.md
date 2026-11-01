@@ -106,7 +106,7 @@ An SDK provider writes the properties it was built for. AWS adds properties
 to existing resource types regularly, so a template can set one that the
 provider does not write yet. cdkd does not drop such a property. It deploys
 that one resource through Cloud Control instead, which sends every property
-to AWS.
+to AWS. The exception is a type Cloud Control cannot serve, covered below.
 
 cdkd makes this choice before the deploy starts, by checking every top-level
 property of a listed type against what its provider writes:
@@ -118,13 +118,28 @@ property of a listed type against what its provider writes:
 - **A property is missing from cdkd's copy of the CloudFormation schema.**
   This happens with a new property, a misspelled one, or a key added with
   `addPropertyOverride`. The resource also goes through Cloud Control, which
-  applies a real property and rejects a misspelled one.
+  applies a real property and rejects a misspelled one. On a type Cloud
+  Control cannot serve, the resource stays on the SDK provider and cdkd warns.
 - **A property is read-only**, such as an ARN or id that AWS assigns. It
   cannot be set from a template, so the resource stays on the SDK provider
   and cdkd warns.
 
 A type that always uses Cloud Control needs no such check, because Cloud
 Control sends the whole property map to AWS.
+
+### A type Cloud Control cannot serve
+
+Some types have an SDK provider but no working Cloud Control route:
+`AWS::CodeBuild::Project` is one. Cloud Control has no handlers for it, or
+its SDK provider opts out of the fallback. If the template sets a property
+that provider does not write and the schema knows, cdkd refuses the deploy
+before it touches any resource in that stack. It does not route the resource, because Cloud Control
+cannot serve the type. The error names
+the type, each property and why the provider does not write it.
+
+Remove the property, or keep the resource on the SDK provider and give up
+that property with `--prefer-sdk-route`, as in the next section. The provider
+may still reject the resource if the property is one it needs.
 
 ### Keep a resource on the SDK provider
 
