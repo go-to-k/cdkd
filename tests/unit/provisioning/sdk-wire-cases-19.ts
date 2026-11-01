@@ -184,10 +184,9 @@ const CLUSTER_MASTER_USERNAME_SILENT = Object.fromEntries(
 );
 
 /**
- * go-to-k/cdkd#2762: a removed backfill member sends nothing, as CloudFormation's
- * handler does (`Translator.modifyDbClusterRequest` sends `diff(previous, desired)`
- * or the desired value, `null` for a removed key, and `ModelAdapter.setDefaults`
- * fills none of these). Read from the handler source, not an A/B.
+ * go-to-k/cdkd#2762: a removed backfill member sends nothing, and CloudFormation
+ * keeps each (measured us-east-1, 2026-11-01; its handler sends `null` for a
+ * removed key and `ModelAdapter.setDefaults` fills none of these).
  */
 const CLUSTER_BACKFILL_KEPT = Object.fromEntries(
   [
@@ -198,7 +197,7 @@ const CLUSTER_BACKFILL_KEPT = Object.fromEntries(
     'StorageType',
   ].map((key) => [
     `update-remove:${key}`,
-    `left in place on removal: ModifyDBCluster treats an absent member as "no change", and CloudFormation's DBCluster handler sends nothing for a removed ${key} either (go-to-k/cdkd#2762, ${SRC} clusterModifyBackfillMembers)`,
+    `left in place on removal: ModifyDBCluster treats an absent member as "no change", and a real CloudFormation A/B (go-to-k/cdkd#2762) measured a removed ${key} KEPT (${SRC} clusterModifyBackfillMembers)`,
   ])
 );
 

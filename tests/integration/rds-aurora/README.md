@@ -43,7 +43,7 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   `DBClusterParameterGroupName` (`SecurityClusterParams`), both windows,
   `CopyTagsToSnapshot: true` and `StorageType: aurora-iopt1`, each asserted
   live; phase 2 changes the maintenance window and drops the other four, which
-  verify.sh asserts KEPT, as CloudFormation's handler keeps them (issue #2762).
+  verify.sh asserts KEPT, as CloudFormation keeps them (measured, issue #2762).
 - **EngineCluster** (L1 `CfnDBCluster`, no instance, `DeletionPolicy: Delete`) -
   phase 2c swaps its `Engine` from aurora-mysql to aurora-postgresql, which
   CloudFormation replaces: verify.sh asserts the deploy is refused without

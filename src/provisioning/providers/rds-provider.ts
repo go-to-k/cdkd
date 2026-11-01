@@ -481,8 +481,12 @@ function clusterCreateBackfillMembers(properties: Record<string, unknown>): Clus
  * (`instanceValueChanged`, so a recorded stand-in compares through
  * `changedProperties`, and an unchanged `StorageType` is never re-sent).
  *
- * A removal sends nothing and RDS keeps the live value. CloudFormation's
- * `AWS::RDS::DBCluster` handler does the same: its update translation (the
+ * A removal sends nothing and RDS keeps the live value, as CloudFormation
+ * does: measured against CloudFormation (us-east-1, 2026-11-01, an Aurora
+ * PostgreSQL Serverless v2 cluster with no instance), removing the parameter
+ * group, the backup window, `CopyTagsToSnapshot` true and `StorageType`
+ * `aurora-iopt1` in one update kept all four, read five minutes later. The
+ * handler source agrees: its update translation (the
  * archived `aws-cloudformation-resource-providers-rds` `Translator.
  * modifyDbClusterRequest`) sends the two windows as `diff(previous, desired)`
  * and the other three as the desired value, which is `null` (unsent) for a
@@ -1470,9 +1474,8 @@ export class RDSProvider implements ResourceProvider {
       //     VPC's default security group, `securityGroupsToSend`).
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
-      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration; and, from the
-      //     handler source rather than an A/B, the #2762 backfill members
-      //     (`clusterModifyBackfillMembers`).
+      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration, and the
+      //     #2762 backfill members (`clusterModifyBackfillMembers`).
       // MasterUserSecret removed while the managed password stays on: the
       // credential gate re-sends ManageMasterUserPassword=true with no key, as
       // CloudFormation does, and the secret stays on its customer key

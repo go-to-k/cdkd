@@ -236,8 +236,8 @@ export class RdsAuroraStack extends cdk.Stack {
     // StorageType, each a non-default. Before #2762 each was a silent drop that
     // routed the SecurityCluster to Cloud Control, which the provisionedBy=sdk
     // guard in verify.sh catches. Phase 2 CHANGES PreferredMaintenanceWindow
-    // and DROPS the other four; CloudFormation's handler sends nothing for a
-    // removed one, so verify.sh asserts the new window and the four kept.
+    // and DROPS the other four; CloudFormation keeps each (measured, #2762), so
+    // verify.sh asserts the new window and the four kept.
     const backfill2762 = isUpdate
       ? { preferredMaintenanceWindow: 'mon:06:00-mon:06:30' }
       : {
