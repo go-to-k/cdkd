@@ -516,10 +516,12 @@ function clusterModifyBackfillMembers(
 
 /**
  * go-to-k/cdkd#2762: whether this cluster update changes `EngineVersion`, the
- * condition CloudFormation's handler sends `AllowMajorVersionUpgrade: true`
- * under. Both sides must be declared and differ (as strings: CFn may write a
- * version as a number); a rollback replay never counts, as the handler's
- * rollback arm sends neither.
+ * condition CloudFormation's handler sends `EngineVersion` and
+ * `AllowMajorVersionUpgrade: true` under (`Translator.modifyDbClusterRequest`:
+ * desired differs from previous, outside a rollback). Compared as the backfill
+ * members are (`instanceValueChanged`), so a recorded stand-in defers to
+ * `changedProperties`. A rollback replay never counts: the handler's rollback
+ * arm sends neither, since RDS refuses an engine downgrade.
  */
 function clusterEngineVersionChanged(
   properties: Record<string, unknown>,
@@ -527,10 +529,7 @@ function clusterEngineVersionChanged(
   context: UpdateContext | undefined
 ): boolean {
   if (context?.replayingState === true) return false;
-  const desired = properties['EngineVersion'];
-  const previous = previousProperties['EngineVersion'];
-  if (desired == null || previous == null) return false;
-  return String(desired as string | number) !== String(previous as string | number);
+  return instanceValueChanged(properties, previousProperties, 'EngineVersion', context);
 }
 
 /** Issue #1160: the member statuses a cluster change moves an instance through. */
@@ -1522,7 +1521,11 @@ export class RDSProvider implements ResourceProvider {
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
-          EngineVersion: properties['EngineVersion'] as string | undefined,
+          // A rollback replay sends no EngineVersion, as the handler's rollback
+          // arm: RDS refuses the downgrade, failing every other reverted member.
+          ...(context?.replayingState !== true && {
+            EngineVersion: properties['EngineVersion'] as string | undefined,
+          }),
           ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
           // Removal keeps the live value, as CFn does (#5004 A/B).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,

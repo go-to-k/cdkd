@@ -415,15 +415,15 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes
 
-# Issue #3993: put the L2 AuroraCluster on the Cloud Control route (see
-# seed_aurora_cc_api) before the premise check below reads the record.
-seed_aurora_cc_api
-
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
   exit 1
 fi
+# Issue #3993: put the L2 AuroraCluster on the Cloud Control route (see
+# seed_aurora_cc_api) before the premise check below reads the record.
+seed_aurora_cc_api
+STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 
 # Resolve the security cluster's auto-generated identifier from cdkd state.
 # The L2 DatabaseCluster and the L1 EngineCluster (issue #5467) also produce

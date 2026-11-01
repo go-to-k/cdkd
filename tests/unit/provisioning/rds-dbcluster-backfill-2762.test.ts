@@ -208,6 +208,7 @@ describe('RDSProvider DBCluster backfill (go-to-k/cdkd#2762)', () => {
       ['a major upgrade with the parameter group family', '16.4', '17.9', { DBClusterParameterGroupName: 'default.aurora-postgresql17' }],
       ['a minor upgrade, as CloudFormation sends it on any change', '17.4', '17.9', {}],
       ['a version recorded as a number', 16, '17.9', {}],
+      ['an EngineVersion with none recorded, as CloudFormation compares null', undefined, '17.9', {}],
     ])('%s sends AllowMajorVersionUpgrade true', async (_label, previous, desired, extra) => {
       armLive({});
       await update(
@@ -217,11 +218,29 @@ describe('RDSProvider DBCluster backfill (go-to-k/cdkd#2762)', () => {
       expect(modify()).toMatchObject({ EngineVersion: desired, AllowMajorVersionUpgrade: true });
     });
 
+    it('a rollback replay sends no EngineVersion, as the handler rollback arm: RDS refuses the downgrade', async () => {
+      armLive({});
+      await update(
+        { ...BASE, EngineVersion: '16.4', PreferredBackupWindow: '03:00-03:30' },
+        { ...BASE, EngineVersion: '17.9', PreferredBackupWindow: '05:00-05:30' },
+        { replayingState: true }
+      );
+      const input = modify();
+      expect(input).not.toHaveProperty('EngineVersion');
+      expect(input).not.toHaveProperty('AllowMajorVersionUpgrade');
+      expect(input['PreferredBackupWindow']).toBe('03:00-03:30');
+    });
+
+    it('a template update still sends an unchanged EngineVersion, as before', async () => {
+      armLive({});
+      await update({ ...BASE, EngineVersion: '17.9' }, { ...BASE, EngineVersion: '17.9' });
+      expect(modify()['EngineVersion']).toBe('17.9');
+    });
+
     it.each([
       ['an unchanged EngineVersion', { EngineVersion: '17.9' }, { EngineVersion: '17.9' }, undefined],
       ['an unchanged EngineVersion recorded as a number', { EngineVersion: '17' }, { EngineVersion: 17 }, undefined],
       ['a removed EngineVersion', {}, { EngineVersion: '17.9' }, undefined],
-      ['an EngineVersion with none recorded', { EngineVersion: '17.9' }, {}, undefined],
       ['a rollback replay', { EngineVersion: '16.4' }, { EngineVersion: '17.9' }, { replayingState: true }],
     ])('%s sends no AllowMajorVersionUpgrade', async (_label, next, prev, context) => {
       armLive({});
