@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-30T10:59:41.806Z",
+  "generatedAt": "2026-10-31T10:32:02.066Z",
   "summary": {
     "tier1Count": 138,
-    "tier2Count": 1636,
+    "tier2Count": 1637,
     "tier3Count": 330,
-    "totalCount": 2104
+    "totalCount": 2105
   },
   "tier1": [
     "AWS::ApiGateway::Account",
@@ -277,6 +277,7 @@
     "AWS::BCM::Dashboard",
     "AWS::BCM::ScheduledReport",
     "AWS::BCMDataExports::Export",
+    "AWS::Backup::BackupAccessPoint",
     "AWS::Backup::BackupPlan",
     "AWS::Backup::BackupSelection",
     "AWS::Backup::BackupVault",
