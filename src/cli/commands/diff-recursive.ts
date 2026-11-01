@@ -578,12 +578,11 @@ export function findUnwrittenCreateOnlyRefusals(
           `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless ` +
           `${
             !unroutable
-              ? '--recreate-via-cc-api or --replace opts'
+              ? '--recreate-via-cc-api or --replace opts in, whatever --prefer-sdk-route names'
               : keepKeys.length > 0
-                ? `--prefer-sdk-route ${keep} with the --replace flag opts`
-                : '--replace opts'
-          } ` +
-          `in, whatever --prefer-sdk-route names; a deploy with ` +
+                ? `--prefer-sdk-route ${keep} with the --replace flag opts in`
+                : '--replace opts in'
+          }; a deploy with ` +
           `${nowWritten.map((k) => displayIdent(k)).join(', ')} removed from the template` +
           (keepKeys.length > 0 ? ` and --prefer-sdk-route ${keep}` : '') +
           ` changes nothing.`

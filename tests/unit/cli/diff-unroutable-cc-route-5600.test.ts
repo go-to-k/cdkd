@@ -186,6 +186,69 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
     expect(text).toContain('--prefer-sdk-route');
   });
 
+  describe('a create-only key this SDK provider now writes', () => {
+    const CODEBUILD = 'AWS::CodeBuild::Project';
+    const nowWrittenRow = (desiredProperties: Record<string, unknown>) =>
+      new Map([
+        [
+          'R',
+          {
+            logicalId: 'R',
+            changeType: 'UPDATE',
+            resourceType: CODEBUILD,
+            desiredProperties,
+            propertyChanges: [
+              { path: 'Name', oldValue: undefined, newValue: 'same', requiresReplacement: true },
+            ],
+          },
+        ],
+      ]) as unknown as Map<string, ResourceChange>;
+    const nowWrittenState = {
+      R: {
+        physicalId: 'p',
+        resourceType: CODEBUILD,
+        properties: { Name: 'same' },
+        acceptedCreateOnlyDrops: ['Name'],
+      },
+    } as unknown as StackState['resources'];
+
+    it('keeps the routable wording with no predicate', () => {
+      const [text] = findUnwrittenCreateOnlyRefusals(
+        nowWrittenRow({ Name: 'same' }),
+        nowWrittenState
+      );
+      expect(text).toContain(
+        'unless --recreate-via-cc-api or --replace opts in, whatever --prefer-sdk-route names; '
+      );
+    });
+
+    it('names only --replace when no other key drives the route', () => {
+      const [text, ...rest] = findUnwrittenCreateOnlyRefusals(
+        nowWrittenRow({ Name: 'same' }),
+        nowWrittenState,
+        reasonOf
+      );
+      expect(rest).toEqual([]);
+      expect(text).toContain('unless --replace opts in; a deploy with Name removed');
+      expect(text).not.toContain('--recreate-via-cc-api');
+      expect(text).not.toContain('whatever --prefer-sdk-route names');
+    });
+
+    it('names the flag the pre-flight check needs beside a sibling drop', () => {
+      const [text, ...rest] = findUnwrittenCreateOnlyRefusals(
+        nowWrittenRow({ Name: 'same', Triggers: {} }),
+        nowWrittenState,
+        reasonOf
+      );
+      expect(rest).toEqual([]);
+      expect(text).toContain(
+        `unless --prefer-sdk-route ${CODEBUILD}:Triggers with the --replace flag opts in; `
+      );
+      expect(text).not.toContain('--recreate-via-cc-api');
+      expect(text).not.toContain('whatever --prefer-sdk-route names');
+    });
+  });
+
   it('skips AWS::CDK::Metadata, which the deploy check filters out', () => {
     expect(
       findUnroutableDropRefusals(template('AWS::CDK::Metadata'), {}, () => 'no route')
