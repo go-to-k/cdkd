@@ -187,14 +187,14 @@ verify, clean up.
      If a fixture seeded a secret, grep the surviving versions for it.
    - Verify the AWS resources are gone, per stack name from synth output, for
      the types the test actually created — the per-service listing commands are
-     in `/cleanup` step 4; use the same ones with this run's stack prefix. An
-     RDS `automated` snapshot outlives its instance ~1 min: re-poll (#5593).
+     in `/cleanup` step 4; run them with this run's stack prefix. An
+     RDS `automated` snapshot outlives its instance: re-poll ~2 min (#5593).
    - FSx tests take an extra check: destroy keeps CFn parity, so
      `DeleteFileSystem` takes a chargeable FINAL BACKUP by default, and it
      usually carries NO tags, so a name scan reports clean over a live billing
      backup. Attribute by the persisted file-system id
      (`aws fsx describe-backups --region us-east-1 --query 'Backups[?FileSystem.FileSystemId==\`{fs-id}\`].[BackupId,Lifecycle]'`);
-     else list ALL backups and flag any unattributed one.
+     with no fs ids, list ALL backups and flag unattributed ones for review.
 
 7. **Auto-cleanup orphans (mandatory when destroy didn't fully succeed)** —
    trigger when the destroy step reported errors, OR step 6 found leftover state
