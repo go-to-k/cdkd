@@ -15,6 +15,10 @@
 #      (ExtendedS3 destination). Assert both are ACTIVE on AWS, and that the
 #      create applied FileExtension and CustomTimeZone (issue #1160). The
 #      legacy-S3 stream must read ACTIVE too: deploy waits for it (issue #5509).
+#   1b. The delivery stream's DirectPutSourceConfiguration (go-to-k/cdkd#2762):
+#      the record says the SDK provider made it (it used to route through Cloud
+#      Control), AWS and the recorded read-back both hold the hint, drift finds
+#      no change under it, and `cdkd diff` of a changed hint plans a replacement.
 #   2. Destroy. Record whether each stream is ALREADY gone the moment destroy
 #      returns (the fix's contract), then IMMEDIATELY redeploy the same stack
 #      -- the arm that failed before the fix. Fail if the redeploy failed or if
@@ -212,6 +216,47 @@ assert_eq "Firehose FileExtension after Phase 1 (issue #1160: the create dropped
 P1_TZ="$(firehose_dest CustomTimeZone)"
 assert_eq "Firehose CustomTimeZone after Phase 1 (issue #1160: the create dropped it)" "Asia/Tokyo" "${P1_TZ}"
 echo "    FileExtension and CustomTimeZone applied at create"
+
+# --- Phase 1b: DirectPutSourceConfiguration on the SDK route (go-to-k/cdkd#2762)
+# Before the fix the SDK provider did not handle the property, so the stream
+# was routed through Cloud Control, which applies the hint too: the record's
+# provisionedBy is what tells the two routes apart.
+P1B_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
+P1B_LOGICAL="$(jq -r --arg name "${NAME}" '[.resources | to_entries[]
+    | select(.value.resourceType == "AWS::KinesisFirehose::DeliveryStream" and .value.physicalId == $name)
+    | .key] | if length == 1 then .[0] else "<\(length) records>" end' <<<"${P1B_STATE}")"
+assert_eq "logical id of the delivery stream record after Phase 1" "DeliveryStream" "${P1B_LOGICAL}"
+P1B_BY="$(jq -r '.resources.DeliveryStream.provisionedBy // "<absent>"' <<<"${P1B_STATE}")"
+assert_eq "delivery stream provisionedBy after Phase 1 (go-to-k/cdkd#2762: DirectPutSourceConfiguration was unhandled, so the stream was routed through Cloud Control)" "sdk" "${P1B_BY}"
+P1B_HINT="$(aws firehose describe-delivery-stream --delivery-stream-name "${NAME}" --region "${REGION}" \
+  --query 'DeliveryStreamDescription.Source.DirectPutSourceDescription.ThroughputHintInMBs' --output text)"
+assert_eq "Firehose ThroughputHintInMBs after Phase 1 (go-to-k/cdkd#2762: the create must send DirectPutSourceConfiguration)" "7" "${P1B_HINT}"
+P1B_OBSERVED="$(jq -r '.resources.DeliveryStream.observedProperties.DirectPutSourceConfiguration.ThroughputHintInMBs // "<absent>"' <<<"${P1B_STATE}")"
+assert_eq "recorded read-back ThroughputHintInMBs after Phase 1 (go-to-k/cdkd#2762: readCurrentState must read Source.DirectPutSourceDescription)" "7" "${P1B_OBSERVED}"
+# Drift compares the stream and finds no change under the source block. Its
+# exit code reports the other resources too, so only the payload is read.
+P1B_DRIFT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)"
+P1B_COMPARED="$(printf '%s' "${P1B_DRIFT}" \
+  | jq -r '[.[] | (.clean[], .drifted[]) | select(.logicalId == "DeliveryStream")] | length')"
+assert_eq "cdkd drift compared the delivery stream after Phase 1" "1" "${P1B_COMPARED}"
+P1B_SOURCE_DRIFT="$(printf '%s' "${P1B_DRIFT}" \
+  | jq -c '[.[].drifted[] | select(.logicalId == "DeliveryStream") | .changes[]
+      | select(.path | startswith("DirectPutSourceConfiguration"))]')"
+assert_eq "cdkd drift changes under DirectPutSourceConfiguration after Phase 1 (go-to-k/cdkd#2762)" "[]" "${P1B_SOURCE_DRIFT}"
+# Create-only in the CloudFormation schema: a changed hint plans a
+# replacement. Diffed only: replacing this NAMED stream would collide with
+# its own name, as it would under CloudFormation.
+echo "==> Phase 1b: diff a changed ThroughputHintInMBs (create-only: must plan a replacement)"
+P1B_RC=0
+P1B_DIFF="$(CDKD_SRD_PHASE=a CDKD_SRD_HINT=8 node "${LOCAL_DIST}" diff "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --fail-on=destructive </dev/null 2>&1)" || P1B_RC=$?
+assert_eq "cdkd diff --fail-on=destructive exit code over a changed ThroughputHintInMBs" "1" "${P1B_RC}"
+if ! grep -qE 'AWS::KinesisFirehose::DeliveryStream [^ ]+ DeliveryStream will be replaced' <<<"${P1B_DIFF}"; then
+  printf '%s\n' "${P1B_DIFF}" >&2
+  echo "FAIL: cdkd diff did not plan a replacement of the delivery stream for a changed DirectPutSourceConfiguration (create-only)" >&2
+  exit 1
+fi
+echo "    DirectPutSourceConfiguration sent on the SDK route, read back, drift-clean, and a change plans a replacement (go-to-k/cdkd#2762)"
 
 # --- Phase 2: destroy, then IMMEDIATELY redeploy -------------------------
 echo "==> Phase 2: destroy"

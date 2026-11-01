@@ -1531,8 +1531,8 @@ const CASES_12_ELBV2: TypeCase[] = [LOAD_BALANCER_CASE, TARGET_GROUP_CASE, LISTE
  * alternatives (a KMS-encrypted bucket where the full bag declares
  * `NoEncryptionConfig`, a VPC, the other serializer / deserializer, a Secrets
  * Manager credential). `IcebergDestinationConfiguration`,
- * `SnowflakeDestinationConfiguration` and the source configurations other
- * than Kinesis are not handled, so no bag carries them.
+ * `SnowflakeDestinationConfiguration`, `MSKSourceConfiguration` and
+ * `DatabaseSourceConfiguration` are not handled, so no bag carries them.
  */
 
 const FIREHOSE_STREAM = 'stream';
@@ -1858,6 +1858,17 @@ const FIREHOSE_CASE: TypeCase = {
           KinesisStreamARN: `arn:aws:kinesis:us-east-1:${ACCOUNT}:stream/source`,
           RoleARN: FIREHOSE_ROLE,
         },
+        ExtendedS3DestinationConfiguration: {
+          BucketARN: 'arn:aws:s3:::dest',
+          RoleARN: FIREHOSE_ROLE,
+        },
+      },
+    },
+    {
+      name: 'Direct PUT source with a throughput hint',
+      bag: {
+        DeliveryStreamName: FIREHOSE_STREAM,
+        DirectPutSourceConfiguration: { ThroughputHintInMBs: 7 },
         ExtendedS3DestinationConfiguration: {
           BucketARN: 'arn:aws:s3:::dest',
           RoleARN: FIREHOSE_ROLE,

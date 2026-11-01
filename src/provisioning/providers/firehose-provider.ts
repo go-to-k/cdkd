@@ -332,6 +332,7 @@ export class FirehoseProvider implements ResourceProvider {
         'S3DestinationConfiguration',
         'ExtendedS3DestinationConfiguration',
         'KinesisStreamSourceConfiguration',
+        'DirectPutSourceConfiguration',
         'Tags',
         'HttpEndpointDestinationConfiguration',
         'RedshiftDestinationConfiguration',
@@ -449,6 +450,15 @@ export class FirehoseProvider implements ResourceProvider {
           KinesisStreamARN: (kinesisConfig['KinesisStreamArn'] ||
             kinesisConfig['KinesisStreamARN']) as string,
           RoleARN: (kinesisConfig['RoleArn'] || kinesisConfig['RoleARN']) as string,
+        };
+      }
+
+      // go-to-k/cdkd#2762: create-only in the CloudFormation schema, so a
+      // change plans a replacement and update() never sends it.
+      if (properties['DirectPutSourceConfiguration'] !== undefined) {
+        const directPut = properties['DirectPutSourceConfiguration'] as Record<string, unknown>;
+        input.DirectPutSourceConfiguration = {
+          ThroughputHintInMBs: directPut['ThroughputHintInMBs'] as number,
         };
       }
 
@@ -2788,7 +2798,8 @@ export class FirehoseProvider implements ResourceProvider {
    * Surfaces top-level configuration that has a clean 1:1 mapping back to
    * cdkd state — `DeliveryStreamName`, `DeliveryStreamType`, and the
    * `KinesisStreamSourceConfiguration` parent fields when present (the
-   * `DescribeDeliveryStream` response splits source under `Source.KinesisStreamSourceDescription`).
+   * `DescribeDeliveryStream` response splits source under `Source.KinesisStreamSourceDescription`),
+   * and `DirectPutSourceConfiguration` from `Source.DirectPutSourceDescription`.
    *
    * **Destination configurations**: full coverage for S3 / ExtendedS3.
    * AWS returns destination config under `Destinations[0].*DestinationDescription`
@@ -2858,7 +2869,8 @@ export class FirehoseProvider implements ResourceProvider {
       result['DeliveryStreamType'] = desc.DeliveryStreamType;
     }
 
-    // Source: only KinesisStreamSourceDescription has a clean CFn analogue.
+    // Source: the Kinesis and Direct PUT descriptions, the two sources cdkd
+    // sends (MSK and database sources route through Cloud Control).
     if (desc.Source?.KinesisStreamSourceDescription) {
       const src = desc.Source.KinesisStreamSourceDescription;
       const srcOut: Record<string, unknown> = {};
@@ -2867,6 +2879,16 @@ export class FirehoseProvider implements ResourceProvider {
       if (Object.keys(srcOut).length > 0) {
         result['KinesisStreamSourceConfiguration'] = srcOut;
       }
+    }
+    // go-to-k/cdkd#2762: AWS returns `DirectPutSourceDescription` only when the
+    // stream was created with a hint (measured 2026-11-01: a DirectPut stream
+    // created without one reads back no `Source`). Create-only, so no
+    // placeholder: a later add is a replacement, never an in-place change.
+    const directPut = desc.Source?.DirectPutSourceDescription;
+    if (directPut?.ThroughputHintInMBs !== undefined) {
+      result['DirectPutSourceConfiguration'] = {
+        ThroughputHintInMBs: directPut.ThroughputHintInMBs,
+      };
     }
 
     // Destinations: Firehose holds at most one destination on a delivery
