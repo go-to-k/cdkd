@@ -1064,6 +1064,20 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
     it.each([
       ['available, nothing pending', { Status: 'available' }, []],
       ['an empty pending block', { Status: 'available', PendingModifiedValues: {} }, []],
+      [
+        'an empty nested pending block',
+        {
+          Status: 'available',
+          PendingModifiedValues: { PendingCloudwatchLogsExports: { LogTypesToEnable: [] } },
+        },
+        [],
+      ],
+      ['a null pending block', { Status: 'available', PendingModifiedValues: null }, []],
+      ['a pending log type', {
+        Status: 'available',
+        PendingModifiedValues: { PendingCloudwatchLogsExports: { LogTypesToEnable: ['audit'] } },
+      }, [...names]],
+      ['backing-up', { Status: 'backing-up' }, []],
       ['upgrading', { Status: 'upgrading' }, [...names]],
       [
         'a pending change',
@@ -1079,6 +1093,8 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
 
     it.each([
       ['available', { DBInstanceStatus: 'available' }, []],
+      ['an empty pending block', { DBInstanceStatus: 'available', PendingModifiedValues: {} }, []],
+      ['backing-up', { DBInstanceStatus: 'backing-up' }, []],
       ['modifying', { DBInstanceStatus: 'modifying' }, ['PubliclyAccessible']],
       [
         'a pending change',
@@ -1091,6 +1107,70 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect([
         ...(await provider.unsettledInTransition('instance-1', 'L', INSTANCE, asked)),
       ]).toEqual(moving);
+    });
+
+    it('lets a value matching the template beat a moving cluster, after an update', async () => {
+      liveCluster({
+        Status: 'modifying',
+        CopyTagsToSnapshot: true,
+        NetworkType: 'IPV4',
+        PendingModifiedValues: { NetworkType: 'DUAL' },
+      });
+      const desired = { CopyTagsToSnapshot: true, NetworkType: 'DUAL' };
+      expect(
+        await unsettledAfterUpdate({
+          ...identity({}),
+          names: new Set(Object.keys(desired)),
+          desired,
+        })
+      ).toEqual(['NetworkType']);
+    });
+
+    it('still refuses to converge a moving cluster before an update', async () => {
+      liveCluster({ Status: 'modifying' });
+      await expect(
+        settleUnsettledPrevious({
+          ...identity({}),
+          names: new Set(['CopyTagsToSnapshot']),
+          previous: {},
+        })
+      ).rejects.toThrow('nothing was updated');
+    });
+
+    it('proves a repeated role or log type and an empty FeatureName settled', async () => {
+      liveCluster({
+        AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: '' }],
+        EnabledCloudwatchLogsExports: ['audit'],
+      });
+      const desired = {
+        AssociatedRoles: [
+          { RoleArn: ROLE_A, FeatureName: '' },
+          { RoleArn: ROLE_A },
+        ],
+        EnableCloudwatchLogsExports: ['audit', 'audit'],
+      };
+      expect(
+        await unsettledAfterUpdate({
+          ...identity({}),
+          names: new Set(Object.keys(desired)),
+          desired,
+        })
+      ).toEqual([]);
+    });
+
+    it('normalizes both lists for drift, and leaves a malformed side alone', () => {
+      expect(
+        provider.canonicalizeDriftProperties(CLUSTER, {
+          AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: '' }, { RoleArn: ROLE_A }],
+          EnableCloudwatchLogsExports: ['audit', 'audit'],
+        })
+      ).toEqual({
+        AssociatedRoles: [{ RoleArn: ROLE_A }],
+        EnableCloudwatchLogsExports: ['audit'],
+      });
+      const junk = { AssociatedRoles: [{ FeatureName: 'f' }], EnableCloudwatchLogsExports: [1] };
+      expect(provider.canonicalizeDriftProperties(CLUSTER, junk)).toEqual(junk);
+      expect(provider.canonicalizeDriftProperties(INSTANCE, junk)).toBe(junk);
     });
 
     it('keeps every name when the read fails or finds nothing', async () => {

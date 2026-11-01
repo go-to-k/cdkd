@@ -65,6 +65,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  isProceedDbStatus,
   isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
@@ -273,6 +274,22 @@ function isMajorEngineChange(previous: unknown, desired: unknown): boolean {
   if (typeof previous !== 'string' || typeof desired !== 'string') return false;
   const major = (version: string): string => version.split('.').slice(0, 2).join('.');
   return major(previous) !== major(desired);
+}
+
+/**
+ * Whether a `PendingModifiedValues` holds anything: AWS answers an idle
+ * resource with `{}` or with an empty `PendingCloudwatchLogsExports` inside.
+ */
+function holdsPendingValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.some(holdsPendingValue);
+  if (typeof value === 'object') return Object.values(value).some(holdsPendingValue);
+  return true;
+}
+
+/** A status a Modify is accepted in: a backup does not hold one back. */
+function isUnmovingDbStatus(status: string | undefined): boolean {
+  return isProceedDbStatus(status) || status === 'backing-up';
 }
 
 /** How long an accepted change (a role, a log type, ...) is waited on before a warning. */
@@ -2688,6 +2705,27 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
+   * What `unorderedPaths` cannot see: AWS holds one association per role and
+   * feature and no empty `FeatureName`, so a record with a repeated entry or
+   * `FeatureName: ''` reads as the same list. A malformed side is left alone.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::Neptune::DBCluster') return properties;
+    const out = { ...properties };
+    if (Array.isArray(out['AssociatedRoles'])) {
+      out['AssociatedRoles'] = clusterRoleList(out['AssociatedRoles']) ?? out['AssociatedRoles'];
+    }
+    const logs = out['EnableCloudwatchLogsExports'];
+    if (Array.isArray(logs) && stringList(logs) !== undefined) {
+      out['EnableCloudwatchLogsExports'] = [...new Set(logs as string[])];
+    }
+    return out;
+  }
+
+  /**
    * go-to-k/cdkd#5487: the live values of a record's unsettled names. The two
    * diffed lists keep only the entries the record, the template or an earlier
    * attempt (#5498) names: the convergence puts this on the previous side, so
@@ -2734,30 +2772,35 @@ export class NeptuneProvider implements ResourceProvider {
 
   /**
    * go-to-k/cdkd#5380: every name while AWS is still changing the resource: a
-   * status other than `available`, or a pending modification (a change waiting
-   * for its window, or a log export on its way). ModifyDBCluster is refused
-   * while `upgrading`, and a pending value is not yet the one a read reports.
-   * A failed read keeps every name.
+   * status a Modify is refused in (`upgrading`), or a pending modification (a
+   * change waiting for its window, or a log export on its way). A backup moves
+   * nothing, so it does not hold a deploy back. After a successful update
+   * (`desiredProperties` present) nothing is reported: a convergent Modify
+   * leaves the cluster `modifying`, and the caller's comparison of each value
+   * with the template is the proof, so a value not there yet stays unsettled
+   * and one that is does not. A failed read keeps every name.
    */
   async unsettledInTransition(
     physicalId: string,
     _logicalId: string,
     resourceType: string,
-    names: ReadonlySet<string>
+    names: ReadonlySet<string>,
+    _recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>
   ): Promise<ReadonlySet<string>> {
-    const hasPending = (pending: object | undefined): boolean =>
-      Object.values(pending ?? {}).some((value) => value !== undefined);
+    if (desiredProperties !== undefined) return new Set();
     try {
       if (resourceType === 'AWS::Neptune::DBCluster') {
         const cluster = await this.describeDBCluster(physicalId);
         const settled =
-          cluster?.Status === 'available' && !hasPending(cluster.PendingModifiedValues);
+          isUnmovingDbStatus(cluster?.Status) && !holdsPendingValue(cluster?.PendingModifiedValues);
         return settled ? new Set() : names;
       }
       if (resourceType === 'AWS::Neptune::DBInstance') {
         const instance = await this.describeDBInstance(physicalId);
         const settled =
-          instance?.DBInstanceStatus === 'available' && !hasPending(instance.PendingModifiedValues);
+          isUnmovingDbStatus(instance?.DBInstanceStatus) &&
+          !holdsPendingValue(instance?.PendingModifiedValues);
         return settled ? new Set() : names;
       }
       return new Set();

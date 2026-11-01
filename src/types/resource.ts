@@ -1446,7 +1446,13 @@ export interface ResourceProvider {
     resourceType: string,
     names: ReadonlySet<string>,
     /** The record's `properties`, for a read needing a parent id (an EMR group's `JobFlowId`). */
-    recordedProperties?: Record<string, unknown>
+    recordedProperties?: Record<string, unknown>,
+    /**
+     * The bag the update sent, present only on the proof after a successful
+     * `update()`: a provider whose resource reads as moving because of that
+     * update can leave the verdict to the value comparison.
+     */
+    desiredProperties?: Record<string, unknown>
   ): Promise<ReadonlySet<string>>;
 
   /**
