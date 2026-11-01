@@ -11419,6 +11419,25 @@ export function replicaSettingsRefusal(
     const tableLevelRefusal = tableLevelSettingsRefusal(properties);
     if (tableLevelRefusal !== undefined) return tableLevelRefusal;
   }
+  // go-to-k/cdkd#2762: removing the table-level block from a table that stays
+  // PROVISIONED, with no replica declaring its own, is refused by CloudFormation
+  // ("You must specify ReadCapacityUnits or ReadCapacityAutoScalingSettings for
+  // each global table replica", update rolled back and the capacity kept,
+  // measured us-east-1, 2026-11-01), so it is no silent keep here.
+  if (
+    previousProperties?.[TABLE_READ_PROVISIONED_KEY] != null &&
+    properties[TABLE_READ_PROVISIONED_KEY] == null &&
+    properties['BillingMode'] === 'PROVISIONED' &&
+    !(Array.isArray(properties['Replicas']) ? (properties['Replicas'] as unknown[]) : []).some(
+      (entry) => asRecord(entry)?.[TABLE_READ_PROVISIONED_KEY] != null
+    )
+  ) {
+    return (
+      `${TABLE_READ_PROVISIONED_KEY} cannot be removed from a PROVISIONED table with no replica ` +
+      `declaring its own, as CloudFormation refuses it; keep it, declare it on the replica, or ` +
+      `set BillingMode to PAY_PER_REQUEST`
+    );
+  }
   const desired = Array.isArray(properties['Replicas'])
     ? (properties['Replicas'] as unknown[])
     : [];

@@ -608,7 +608,10 @@ const VECTOR_SHAPE_REFUSED: Throw = {
 const VECTOR_SHAPE_VARY = `the varied vector index member's parent is removed on the base side, so both sides change the index's definition and are refused (go-to-k/cdkd#2762), so the vary sees no wire`;
 const MODE_VARY = `any other mode refuses the table-level read block (go-to-k/cdkd#2762), so the vary sees no wire; the single-region bag shows the mode reaching CreateTable`;
 const NO_REGION_ENTRY = `the entry without its Region is the only replica of the bag, so the update sees one replica on each side and no change of its mode`;
-const READ_CAPACITY_KEPT = `a PROVISIONED table needs a read capacity, so a removed block sends nothing and the table keeps the one it has; CFn unmeasured`;
+const READ_CAPACITY_REMOVED: Throw = {
+  why: `a PROVISIONED table needs a read capacity: removing the table-level block with no replica declaring one is refused before any call, as CloudFormation refuses it (measured 2026-11-01, go-to-k/cdkd#2762)`,
+  says: /cannot be removed from a PROVISIONED table with no replica declaring its own/,
+};
 const WRITE_CAPACITY_FLIP_ONLY = `a literal table-level write capacity goes out only on a billing flip (${S}, derivePerCallProvisionedThroughput); auto-scaling owns the dimension otherwise`;
 const WARM_KEPT = `a removed WarmThroughput sends nothing: DynamoDB refuses a decrease and has no unset, so the live value stays, as on AWS::DynamoDB::Table (go-to-k/cdkd#2762)`;
 
@@ -617,6 +620,10 @@ const TABLE_LEVEL_THROWS: Record<string, Throw> = {
   ...pick(TABLE_LEVEL_BAG, [
     [/^(create|update-remove)$/, /^Replicas(\.0(\.GlobalTableSettingsReplicationMode)?)?$/, TABLE_LEVEL_READ_NEEDS_MODE],
     [UPD, /^VectorIndexes\.0\.(?!IndexName)/, VECTOR_SHAPE_REFUSED],
+    [REMOVE, /^VectorIndexes\.0\.IndexName$/, {
+      why: `an entry with no IndexName is refused before any call: read as undeclared, it would delete the recorded index (go-to-k/cdkd#2762)`,
+      says: /every VectorIndexes entry must carry a string IndexName/,
+    }],
   ]),
 };
 const TABLE_LEVEL_SILENT: Record<string, string> = {
@@ -632,6 +639,7 @@ const TABLE_LEVEL_SILENT: Record<string, string> = {
 const TABLE_LEVEL_PROVISIONED_THROWS: Record<string, Throw> = {
   ...keyThrows(TABLE_LEVEL_PROVISIONED_BAG),
   ...pick(TABLE_LEVEL_PROVISIONED_BAG, [
+    [REMOVE, /^ReadProvisionedThroughputSettings$/, READ_CAPACITY_REMOVED],
     [/^(create|update-remove)$/, /^Replicas(\.0(\.GlobalTableSettingsReplicationMode)?)?$/, TABLE_LEVEL_READ_NEEDS_MODE],
   ]),
 };
@@ -640,7 +648,7 @@ const TABLE_LEVEL_PROVISIONED_SILENT: Record<string, string> = {
   ...pick(TABLE_LEVEL_PROVISIONED_BAG, [
     [/vary$/, /^Replicas\.0\.GlobalTableSettingsReplicationMode$/, MODE_VARY],
     [UPD, /^Replicas\.0\.Region$/, NO_REGION_ENTRY],
-    [REMOVE, /^ReadProvisionedThroughputSettings(\..*)?$/, READ_CAPACITY_KEPT],
+    [REMOVE, /^ReadProvisionedThroughputSettings\.ReadCapacityUnits$/, `the block stays declared with no capacity to read, so nothing is sent; the whole block's removal is refused`],
     [UPD, /^WriteProvisionedThroughputSettings(\..*)?$/, WRITE_CAPACITY_FLIP_ONLY],
     [VARY_ON_UPDATE, /^WriteProvisionedThroughputSettings\./, WRITE_CAPACITY_FLIP_ONLY],
   ]),

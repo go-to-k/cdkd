@@ -1098,6 +1098,35 @@ describe('the read-capacity and vector send paths', () => {
 });
 
 describe('the second review round', () => {
+  const capacity = {
+    ...BASE,
+    BillingMode: 'PROVISIONED',
+    Replicas: ENABLED_REPLICA,
+    ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 },
+  };
+  const { ReadProvisionedThroughputSettings: _removed, ...noCapacity } = capacity;
+
+  it('refuses removing the table-level capacity from a table that stays PROVISIONED', () => {
+    expect(replicaSettingsRefusal(noCapacity, capacity)).toMatch(/cannot be removed/);
+  });
+
+  it('takes the removal when a replica declares the block, or the table goes on-demand', () => {
+    expect(
+      replicaSettingsRefusal(
+        {
+          ...noCapacity,
+          Replicas: [
+            { ...ENABLED_REPLICA[0], ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 } },
+          ],
+        },
+        capacity
+      )
+    ).toBeUndefined();
+    expect(
+      replicaSettingsRefusal({ ...noCapacity, BillingMode: 'PAY_PER_REQUEST' }, capacity)
+    ).toBeUndefined();
+  });
+
   it('refuses an update adding the block to a replica beside the table-level one', () => {
     const before = {
       ...BASE,
