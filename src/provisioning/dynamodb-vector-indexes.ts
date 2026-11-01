@@ -41,6 +41,26 @@ export function vectorIndexesByName(value: unknown): Map<string, Entry> {
 }
 
 /**
+ * Why a declared `VectorIndexes` value cannot be planned, or `undefined`: a
+ * value that is no list, or an entry with no string `IndexName`.
+ * {@link vectorIndexesByName} reads either as "not declared", so a plan built on
+ * it would delete every recorded index. `AWS::DynamoDB::GlobalTable`'s `update()`
+ * refuses on it; `AWS::DynamoDB::Table` does not call it.
+ */
+export function vectorIndexesShapeDetail(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return `VectorIndexes must be a list, got ${typeof value}`;
+  const named = (value as unknown[]).every(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      !Array.isArray(entry) &&
+      typeof (entry as Entry)['IndexName'] === 'string'
+  );
+  return named ? undefined : `every VectorIndexes entry must carry a string IndexName`;
+}
+
+/**
  * The SDK shape of one CFn `VectorIndex` entry. Members are forwarded by name;
  * an absent optional one stays absent. `Dimensions` is coerced onto the
  * Integer grammar (a template may spell it `"1024"`); a value that is no

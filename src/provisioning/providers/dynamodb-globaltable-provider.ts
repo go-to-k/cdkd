@@ -112,6 +112,7 @@ import {
   readbackVectorIndexes,
   vectorIndexesForCreate,
   vectorIndexesSettled,
+  vectorIndexesShapeDetail,
   type VectorIndexPlan,
 } from '../dynamodb-vector-indexes.js';
 import { withRetry } from '../../deployment/retry.js';
@@ -1552,8 +1553,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // inherits them (measured, us-east-1 + us-east-2, 2026-11-01).
     const createVectorIndexes = vectorIndexesForCreate(properties['VectorIndexes']);
     if (createVectorIndexes !== undefined) createParams.VectorIndexes = createVectorIndexes;
-    // go-to-k/cdkd#2762: so does the table's warm throughput, on either billing
-    // mode. An unusable block is reported below and not sent.
+    // go-to-k/cdkd#2762: the table's warm throughput rides `CreateTable` too, on
+    // either billing mode. An unusable block is reported below and not sent.
     const warmCoercion = coerceWarmThroughput(properties['WarmThroughput']);
     if (warmCoercion.spec) createParams.WarmThroughput = warmCoercion.spec;
     const warmDiagnostic = warmThroughputDiagnostic(
@@ -2215,8 +2216,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * The table-level `WarmThroughput` to send, or `undefined` when none must go
    * out (go-to-k/cdkd#2762): the {@link warmThroughputForSend} rule one level
    * up. A block AWS already reports needs no call; one below it is reported and
-   * not sent, because warm throughput only rises with a table's traffic. The
-   * `desired` argument is already coerced.
+   * not sent, because warm throughput only rises with a table's traffic. This
+   * differs from CloudFormation, which fails the update ("decreasing
+   * WarmThroughput is not supported", measured 2026-11-01), and matches
+   * `AWS::DynamoDB::Table`. The `desired` argument is already coerced.
    */
   private tableWarmThroughputForSend(
     desired: WarmThroughputSpec | undefined,
@@ -4737,6 +4740,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           maskSecrets
         );
       }
+      // go-to-k/cdkd#2762: an unreadable list would read as "no index declared"
+      // and delete every recorded one.
+      if (refusal === undefined && changed('VectorIndexes')) {
+        refusal = vectorIndexesShapeDetail(properties['VectorIndexes']);
+      }
       // go-to-k/cdkd#5365: a replica's point-in-time recovery, Contributor
       // Insights, Kinesis destination and resource policies, each block read by
       // the reader the write plan uses — refused only for a replica whose
@@ -4808,16 +4816,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // of re-sending a Create AWS refuses. A state-borne bag warns and skips
       // that change (no template-side remedy). An UNSETTLED VectorIndexes needs
       // no extra trigger: the previous side is then `readUnsettled`'s live list.
-      const vectorIndexPlan = !deepEqual(
-        properties['VectorIndexes'],
-        previousProperties['VectorIndexes']
-      )
-        ? planVectorIndexUpdates(
-            previousProperties['VectorIndexes'],
-            properties['VectorIndexes'],
-            describeResp.Table === undefined ? undefined : (describeResp.Table.VectorIndexes ?? [])
-          )
-        : undefined;
+      // A state-borne bag with an unreadable list is refused nowhere (the guards
+      // above are the template path's): it leaves the indexes as they are.
+      const vectorIndexShape = vectorIndexesShapeDetail(properties['VectorIndexes']);
+      if (vectorIndexShape !== undefined) {
+        warn(`${vectorIndexShape}; the VectorIndexes change was not applied`);
+      }
+      const vectorIndexPlan =
+        vectorIndexShape === undefined &&
+        !deepEqual(properties['VectorIndexes'], previousProperties['VectorIndexes'])
+          ? planVectorIndexUpdates(
+              previousProperties['VectorIndexes'],
+              properties['VectorIndexes'],
+              describeResp.Table === undefined
+                ? undefined
+                : (describeResp.Table.VectorIndexes ?? [])
+            )
+          : undefined;
       if (vectorIndexPlan !== undefined && vectorIndexPlan.changed.length > 0) {
         // Each name masked on its own (the WHOLE-VALUE arm, at any length).
         const vectorMessage =
@@ -8563,7 +8578,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // mid-transition pays for the poll. Best-effort — on timeout the delete
       // goes ahead and AWS's own error stays the backstop.
       if (hasTransitionalTableIndex(preDeleteTable)) {
-        this.logger.debug(`Waiting for indexes on ${physicalId} to settle before DeleteTable`);
+        deleteLog.debug(`Waiting for indexes on ${physicalId} to settle before DeleteTable`);
         await this.waitForIndexesActive(physicalId, logicalId, {
           proceedNote: DELETE_INDEX_WAIT_PROCEED_NOTE,
           budget,
@@ -10031,8 +10046,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    */
   getDriftUnknownPaths(_resourceType: string, properties?: Record<string, unknown>): string[] {
     const paths = ['TableType'];
-    if (properties?.['BillingMode'] !== 'PROVISIONED') paths.push(TABLE_READ_PROVISIONED_KEY);
-    if (!coerceWarmThroughput(properties?.['WarmThroughput']).spec) paths.push('WarmThroughput');
+    // An absent or empty bag says nothing recorded, not that a key is absent
+    // (the `getDriftUnknownPaths` contract): compare by default.
+    if (properties === undefined || Object.keys(properties).length === 0) return paths;
+    if (properties['BillingMode'] !== 'PROVISIONED') paths.push(TABLE_READ_PROVISIONED_KEY);
+    if (!coerceWarmThroughput(properties['WarmThroughput']).spec) paths.push('WarmThroughput');
     return paths;
   }
 
@@ -11342,6 +11360,17 @@ function tableLevelSettingsRefusal(properties: Record<string, unknown>): string 
   return undefined;
 }
 
+/** A replica's own read blocks, which the table-level ones may not sit beside. */
+function replicaReadBlockShape(properties: Record<string, unknown>): unknown {
+  const replicas = Array.isArray(properties['Replicas'])
+    ? (properties['Replicas'] as unknown[])
+    : [];
+  return replicas.map((entry) => [
+    asRecord(entry)?.[TABLE_READ_ON_DEMAND_KEY],
+    asRecord(entry)?.[TABLE_READ_PROVISIONED_KEY],
+  ]);
+}
+
 /** The inputs of {@link tableLevelSettingsRefusal}. */
 const TABLE_LEVEL_SETTING_INPUTS = [
   'TableType',
@@ -11383,6 +11412,8 @@ export function replicaSettingsRefusal(
   // go-to-k/cdkd#2762: the same bound.
   if (
     modeShapeChanged ||
+    previousProperties === undefined ||
+    !deepEqual(replicaReadBlockShape(properties), replicaReadBlockShape(previousProperties)) ||
     TABLE_LEVEL_SETTING_INPUTS.some((key) => !deepEqual(properties[key], previousProperties?.[key]))
   ) {
     const tableLevelRefusal = tableLevelSettingsRefusal(properties);

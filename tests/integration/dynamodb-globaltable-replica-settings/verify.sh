@@ -1275,6 +1275,22 @@ await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message
   echo "FAIL: $3: ${TABLE4} in $1 holds '${got}', not '$2'" >&2
   exit 1
 }
+table6_write_targets() { # prints the count of ${TABLE6}'s write scalable targets
+  aws application-autoscaling describe-scalable-targets --service-namespace dynamodb \
+    --resource-ids "table/${TABLE6}" --scalable-dimension dynamodb:table:WriteCapacityUnits \
+    --region "${REGION}" --query 'length(ScalableTargets)' --output text
+}
+await_table6_write_target() { # usage: await_table6_write_target <count> <message>
+  local got=""
+  for _ in $(seq 1 30); do
+    if got="$(table6_write_targets)" && [ "${got}" = "$1" ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "FAIL: $2 (read '${got}', not '$1')" >&2
+  exit 1
+}
 expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <message>
   local got
   got="$(aws dynamodb describe-table --table-name "$1" --region "${REGION}" --query "$2" --output text)" || return 1
@@ -1298,6 +1314,8 @@ await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6b"
 expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 13000 "Phase 6b"
 expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50 "Phase 6b"
 expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7 "Phase 6b"
+# Application Auto Scaling is eventually consistent, so the read polls.
+await_table6_write_target 1 "Phase 6b: ${TABLE6} has no write scalable target"
 echo "    OK: the SDK route sent every setting (vec1 in both regions)"
 
 echo "==> Phase 6c: an update adds a vector index and raises both values"
@@ -1365,7 +1383,8 @@ for t in "${TABLE4}" "${TABLE5}" "${TABLE6}"; do
     assert_gone "table ${t} still exists in ${r} after destroy" aws dynamodb describe-table --table-name "${t}" --region "${r}"
   done
 done
-echo "    the Phase 6b tables deleted"
+await_table6_write_target 0 "Phase 7: ${TABLE6}'s write scalable target outlived the table"
+echo "    the Phase 6b tables deleted, and ${TABLE6}'s scalable target with them"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
