@@ -298,6 +298,16 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(wire.sent('RemoveRoleFromDBClusterCommand')).toHaveLength(2);
     });
 
+    it.each([
+      ['InvalidDBClusterStateFault', 'DB cluster is not in available state.'],
+      ['InvalidDBInstanceStateFault', 'Database instance is not in available state.'],
+    ])('resends through the Modify wording too: %s', async (name, message) => {
+      const wire = armCluster();
+      refuseOnce('AddRoleToDBClusterCommand', Object.assign(new Error(message), { name }));
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {});
+      expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(2);
+    });
+
     it('resends an attach refused the same way on a create', async () => {
       const wire = armCluster();
       refuseOnce('AddRoleToDBClusterCommand', ROLE_CALL_BUSY());
@@ -313,12 +323,6 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         }),
       ],
       ['the wording under another class', Object.assign(ROLE_CALL_BUSY(), { name: 'OtherFault' })],
-      [
-        'the Modify wording, which is not these calls',
-        Object.assign(new Error('DB cluster is not in available state.'), {
-          name: 'InvalidDBClusterStateFault',
-        }),
-      ],
     ])('does not resend %s', async (_label, error) => {
       const wire = armCluster();
       refuseOnce('AddRoleToDBClusterCommand', error);
@@ -552,8 +556,11 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       const failure = await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}).catch(
         (error: unknown) => error
       );
-      expect(String((failure as Error).cause ?? failure)).toContain('the cluster is');
-      expect(String((failure as Error).cause ?? failure)).not.toContain('instance');
+      const message = String((failure as Error).cause ?? failure);
+      expect(message).toContain('AWS kept refusing the update as the cluster being busy');
+      expect(message).toContain("it last read status 'available'");
+      expect(message).not.toContain('instance');
+      expect(message).not.toContain("not in the 'available' state");
     });
 
     it('--no-wait skips the settle poll', async () => {

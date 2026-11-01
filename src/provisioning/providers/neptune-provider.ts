@@ -68,7 +68,10 @@ import {
   isProceedDbStatus,
   isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
-import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
+import {
+  isModifyNotAvailableRefusal,
+  modifyDbInstanceWhenAvailable,
+} from './db-instance-modify-retry.js';
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { coerceCfnBoolean, configBooleanRefusal } from '../config-shape.js';
 import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
@@ -299,8 +302,9 @@ function isUnmovingDbStatus(status: string | undefined): boolean {
  * Whether `error` is AWS refusing AddRoleToDBCluster / RemoveRoleFromDBCluster
  * because the cluster is busy: a cluster that read `available` can go back to
  * `modifying` a moment later (measured, go-to-k/cdkd#2762). The wording is
- * these calls' own, so the shared not-`available` match does not cover it. The
- * class alone is not enough: anything else it carries stays terminal.
+ * these calls' own, so the shared not-`available` match does not cover it, and
+ * the role calls take both. The class alone is not enough: anything else it
+ * carries stays terminal.
  */
 function isRoleCallNotAvailableRefusal(error: unknown): boolean {
   return (
@@ -2120,7 +2124,8 @@ export class NeptuneProvider implements ResourceProvider {
         logger: this.logger,
         label: 'Neptune DBCluster',
         subject: 'cluster',
-        isRefusal: isRoleCallNotAvailableRefusal,
+        isRefusal: (error) =>
+          isRoleCallNotAvailableRefusal(error) || isModifyNotAvailableRefusal(error),
         logicalId,
         remainingMs: enclosingDeadlineRemainingMs(),
       });

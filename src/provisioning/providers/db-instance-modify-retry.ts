@@ -43,7 +43,11 @@ export interface InstanceModifyRetryOptions {
   readonly label: string;
   /** What a failure calls the resource: `instance` unless the caller is a cluster call. */
   readonly subject?: 'instance' | 'cluster';
-  /** Which refusal is waited out: {@link isModifyNotAvailableRefusal} unless a call words its own. */
+  /**
+   * Which refusal is waited out: {@link isModifyNotAvailableRefusal} unless a
+   * call words its own. Such a refusal need not mean the status is anything but
+   * `available`, so running out of budget then reports the last status read.
+   */
   readonly isRefusal?: (error: unknown) => boolean;
   readonly logicalId: string;
   /** What the engine's per-resource deadline leaves (`enclosingDeadlineRemainingMs()`). */
@@ -89,6 +93,7 @@ export async function modifyDbInstanceWhenAvailable(
   const startTime = Date.now();
   let delay = 5_000;
   let refusals = 0;
+  let lastStatus: string | undefined;
   for (;;) {
     try {
       await opts.send();
@@ -107,6 +112,12 @@ export async function modifyDbInstanceWhenAvailable(
       );
       for (;;) {
         if (Date.now() - startTime + delay >= budgetMs) {
+          if (opts.isRefusal !== undefined) {
+            throw new Error(
+              `AWS kept refusing the update as the ${noun} being busy, and cdkd stopped retrying after ${String(refusals)} ${refusals === 1 ? 'refusal' : 'refusals'}; it last read status '${lastStatus ?? 'unknown'}'. Re-run the deploy once the ${noun} has settled${deadlineBound ? ', or with a longer --resource-timeout' : ''}`,
+              { cause: error }
+            );
+          }
           throw new Error(
             deadlineBound
               ? `AWS refused the update because ${subject} not in the 'available' state, and the resource timeout leaves no more time to wait for it; re-run the deploy once the ${noun} is 'available', or with a longer --resource-timeout`
@@ -117,6 +128,7 @@ export async function modifyDbInstanceWhenAvailable(
         await opts.sleep(delay);
         delay = Math.min(delay * 2, 10_000);
         const status = await opts.readStatus();
+        lastStatus = status;
         if (status === undefined || isProceedDbStatus(status)) break;
         if (isTerminalDbWaitStatus(status)) {
           throw new Error(
