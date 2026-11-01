@@ -377,8 +377,7 @@ export const DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS = 60;
 
 /**
  * The re-arm's bound while the busy index is a VECTOR index
- * (go-to-k/cdkd#5574), for the `AWS::DynamoDB::Table` callers that pass
- * `shortCapUnlessVectorBusy`.
+ * (go-to-k/cdkd#5574), for the callers that pass `shortCapUnlessVectorBusy`.
  *
  * MEASURED (`dynamodb-gsi-update` Phase V3b, us-east-1, 2026-10-30): AWS refused
  * `DeleteTable` with the same `Cannot delete table while indexes are being

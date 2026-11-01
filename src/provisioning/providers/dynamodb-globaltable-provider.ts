@@ -2231,10 +2231,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     if (!isWarmThroughputDecrease(desired, live)) return desired;
     const format = (spec: WarmThroughputSpec | undefined): string =>
       declared.map((m) => `${m}=${spec?.[m]}`).join(', ');
-    // `format` renders numeric members only; the sink masks the table name.
+    // `format` renders numeric members only. The name is masked on its own too,
+    // for one below the masker's substring floor.
     this.logger.warn(
       maskSecrets(
-        `DynamoDB GlobalTable ${logicalId}: table ${physicalId}: WarmThroughput was NOT sent — ` +
+        `DynamoDB GlobalTable ${logicalId}: table ${maskSecrets(physicalId)}: WarmThroughput was NOT sent — ` +
           `the template asks for ${format(desired)} while AWS reports ${format(live)}, and ` +
           `DynamoDB rejects a decrease. Raise it to at least the live value, or remove it. ` +
           `Every other change to this table is applied normally.`
@@ -2306,7 +2307,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     logicalId: string,
     maskSecrets: SecretMasker
   ): Promise<void> {
-    const watch = startInterruptWatch(maskSecrets(`DynamoDB vector indexes on ${tableName}`));
+    const watch = startInterruptWatch(
+      maskSecrets(`DynamoDB vector indexes on ${maskSecrets(tableName)}`)
+    );
     try {
       for (let attempt = 1; attempt <= VECTOR_INDEX_SETTLE_ATTEMPTS; attempt++) {
         if (watch.isInterrupted()) throw watch.onInterrupted();
@@ -5091,12 +5094,16 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // never wrote (issue #1428's "asymmetric between the desired side and
       // the previous side").
       const diagnostics: ThroughputDiagnostic[] = [];
-      const warmUpdateDiagnostic = warmThroughputDiagnostic(
-        properties['WarmThroughput'],
-        coerceWarmThroughput(properties['WarmThroughput']),
-        undefined
-      );
-      if (warmUpdateDiagnostic) diagnostics.push(warmUpdateDiagnostic);
+      // Once per changed value, as on `AWS::DynamoDB::Table`: an unchanged block
+      // is not a pending operation.
+      if (!deepEqual(properties['WarmThroughput'], previousProperties['WarmThroughput'])) {
+        const warmUpdateDiagnostic = warmThroughputDiagnostic(
+          properties['WarmThroughput'],
+          coerceWarmThroughput(properties['WarmThroughput']),
+          undefined
+        );
+        if (warmUpdateDiagnostic) diagnostics.push(warmUpdateDiagnostic);
+      }
       const desiredCeilings = collectTableOnDemandCeilings(
         properties,
         currentRegion,
@@ -5944,7 +5951,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             billingUpdate.GlobalSecondaryIndexUpdates = indexUpdates;
           }
         }
-        markUnsettled('BillingMode', 'WriteProvisionedThroughputSettings');
+        markUnsettled(
+          'BillingMode',
+          'WriteProvisionedThroughputSettings',
+          TABLE_READ_PROVISIONED_KEY
+        );
         if (billingUpdate.GlobalSecondaryIndexUpdates !== undefined) {
           markUnsettled('GlobalSecondaryIndexes');
           for (const indexUpdate of billingUpdate.GlobalSecondaryIndexUpdates) {
@@ -5985,21 +5996,24 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       }
 
       // 4a'. go-to-k/cdkd#2762: a change to the table-level
-      // `ReadProvisionedThroughputSettings`. `ProvisionedThroughput` takes both
-      // members, so the write side goes out as AWS holds it; a flip carried the
-      // read capacity already. A value AWS holds is not sent: DynamoDB refuses
-      // a call that changes nothing.
+      // `ReadProvisionedThroughputSettings`, or a block moved to or from the
+      // local replica (the two spell one value). `ProvisionedThroughput` takes
+      // both members, so the write side goes out as AWS holds it; a flip carried
+      // the read capacity already. Gated on the LIVE mode too: a table turned
+      // on-demand out of band reports 0/0, which is no capacity to send back. A
+      // value AWS holds is not sent: DynamoDB refuses a call that changes nothing.
+      const readBlockOf = (bag: Record<string, unknown>): unknown =>
+        localReplicaEntry(bag, currentRegion)?.[TABLE_READ_PROVISIONED_KEY] ??
+        bag[TABLE_READ_PROVISIONED_KEY];
       if (
         oldBilling === 'PROVISIONED' &&
         newBilling === 'PROVISIONED' &&
-        !deepEqual(
-          properties[TABLE_READ_PROVISIONED_KEY],
-          previousProperties[TABLE_READ_PROVISIONED_KEY]
-        )
+        liveBillingMode === 'PROVISIONED' &&
+        (properties[TABLE_READ_PROVISIONED_KEY] !== undefined ||
+          previousProperties[TABLE_READ_PROVISIONED_KEY] !== undefined) &&
+        !deepEqual(readBlockOf(properties), readBlockOf(previousProperties))
       ) {
-        const wantRead = coerceCfnInteger(
-          asRecord(properties[TABLE_READ_PROVISIONED_KEY])?.['ReadCapacityUnits']
-        );
+        const wantRead = coerceCfnInteger(asRecord(readBlockOf(properties))?.['ReadCapacityUnits']);
         const liveThroughput = describeResp.Table?.ProvisionedThroughput;
         if (
           wantRead !== undefined &&
@@ -8600,7 +8614,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           // that table LIVE.
           flip.deleteAccepted = true;
         },
-        // The re-arm is BOUNDED, and deliberately far shorter than the
+        // The re-arm is BOUNDED, and for a GSI deliberately far shorter than the
         // 15-minute poll the #1521 gate above uses: that gate runs ONCE, ahead
         // of the retry loop, while this one runs per retry, so the LOOP's wall
         // clock is the product. See {@link DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS}
@@ -8935,7 +8949,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
     for (const entry of unnamed.filter((e) => e.ambiguous !== true)) {
       this.logger.warn(
-        safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS holds ${entry.identity} ${entry.value}, which neither the record nor the template declares, so cdkd leaves it in place. If the failed update added it and it should not be there, remove it by hand (for a replica: aws dynamodb update-table --replica-updates Delete; for an index: --global-secondary-index-updates Delete).`
+        safeMsg`${logicalId} (${resourceType}): ${entry.path} on AWS holds ${entry.identity} ${entry.value}, which neither the record nor the template declares, so cdkd leaves it in place. If the failed update added it and it should not be there, remove it by hand (for a replica: aws dynamodb update-table --replica-updates Delete; for an index: --global-secondary-index-updates Delete; for a vector index: --vector-index-updates Delete).`
       );
     }
     return out;
@@ -10003,7 +10017,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *    strictly worse trade than the phantom drift it removes.
    *  - The table-level on-demand READ ceiling is reverse-mapped onto
    *    `Replicas[local].ReadOnDemandThroughputSettings`, the CFn location it
-   *    is authored at.
+   *    is authored at, and onto the top-level block when the record keeps it
+   *    there (go-to-k/cdkd#2762).
    *
    * go-to-k/cdkd#2762 added the members no AWS read answers:
    *  - `TableType` is no API member. CloudFormation validates it and sends

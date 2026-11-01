@@ -63,9 +63,11 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *   - `ts`:      go-to-k/cdkd#2762: a two-region `table4` declaring
  *                `VectorIndexes`, `WarmThroughput` and `TableType`, and a
  *                single-region `table5` with settings replication ENABLED and a
- *                table-level `ReadOnDemandThroughputSettings`;
+ *                table-level `ReadOnDemandThroughputSettings`, and a PROVISIONED
+ *                single-region `table6` with the table-level
+ *                `ReadProvisionedThroughputSettings`;
  *   - `ts2`:     with `ts`, add a second vector index, raise the warm
- *                throughput and the read ceiling;
+ *                throughput, the read ceiling and the read capacity;
  *   - `tsshape`: with `ts`, change `vec1`'s dimensions, which DynamoDB cannot
  *                do in place (the deploy must be refused);
  *   - `tsregional`: with `ts`, `TableType: Regional` on the two-replica table,
@@ -259,6 +261,22 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
         MaxReadRequestUnits: update2 ? 55 : 50,
       });
       cfnRead.addPropertyOverride('TableType', 'Regional');
+      const capacityTable = new ddb.TableV2(this, 'TableLevelCapacityTable', {
+        tableName: `${this.stackName}-table6`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        billing: ddb.Billing.provisioned({
+          readCapacity: ddb.Capacity.fixed(7),
+          writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+        }),
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      const cfnCapacity = capacityTable.node.defaultChild as ddb.CfnGlobalTable;
+      cfnCapacity.addPropertyOverride('Replicas.0.GlobalTableSettingsReplicationMode', 'ENABLED');
+      // `TableV2` renders the read side on the replica; the table level holds it here.
+      cfnCapacity.addPropertyDeletionOverride('Replicas.0.ReadProvisionedThroughputSettings');
+      cfnCapacity.addPropertyOverride('ReadProvisionedThroughputSettings', {
+        ReadCapacityUnits: update2 ? 8 : 7,
+      });
     }
 
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });

@@ -959,6 +959,7 @@ describe('both DynamoDB providers route DeleteTable through the shared retry', (
     expect(reArmCall).toMatchObject({
       shortCapUnlessVectorBusy: DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
     });
+    expect(reArmCall?.maxAttempts).toBeGreaterThan(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
     expect(reArmCall?.proceedNote).toBe(DELETE_INDEX_WAIT_PROCEED_NOTE);
     // The specific regression: collapsing onto this provider's own defaults.
     expect(reArmCall?.proceedNote).not.toMatch(/auto-scaling/i);

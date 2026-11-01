@@ -144,6 +144,7 @@ TABLE3="${STACK}-table3"
 # table-level read ceiling.
 TABLE4="${STACK}-table4"
 TABLE5="${STACK}-table5"
+TABLE6="${STACK}-table6"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
 # Phase 5b's out-of-band key for ${TABLE2} in ${REGION}: fixture-owned, NOT the
@@ -519,13 +520,14 @@ cleanup() {
   teardown_table "${TABLE3}"
   teardown_table "${TABLE4}"
   teardown_table "${TABLE5}"
+  teardown_table "${TABLE6}"
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
   # Every fixture table, before ANY fixture key: the stack's local keys, the
   # replica keys and Phase 5b's out-of-band key below.
   local t
-  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}"; do
+  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}" "${TABLE6}"; do
     case " ${stuck} " in *" ${t} "*) continue ;; esac
     await_table_gone "${t}" || stuck="${stuck:+${stuck} }${t}"
   done
@@ -1256,18 +1258,18 @@ record_of() { # usage: record_of <logical id prefix> -- prints the state record'
       const state = JSON.parse(require("fs").readFileSync(0, "utf8"));
       const hit = Object.entries(state.resources).find(([id]) => id.startsWith(process.argv[1]));
       if (!hit) { console.error(`no record for ${process.argv[1]}`); process.exit(1); }
-      console.log(hit[1].provisionedBy ?? "sdk");
+      console.log(hit[1].provisionedBy);
     ' "$1"
 }
-vector_indexes() { # usage: vector_indexes <region> -- sorted ACTIVE names
-  aws dynamodb describe-table --table-name "${TABLE4}" --region "$1" \
-    --query 'sort(Table.VectorIndexes[?IndexStatus==`ACTIVE`].IndexName)' --output text
-}
+# The sorted ACTIVE names; a failed read (a throttle) polls again.
 await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message>
   local got=""
   for _ in $(seq 1 90); do
-    got="$(vector_indexes "$1")"
-    [ "${got}" = "$2" ] && return 0
+    if got="$(aws dynamodb describe-table --table-name "${TABLE4}" --region "$1" \
+      --query 'sort(Table.VectorIndexes[?IndexStatus==`ACTIVE`].IndexName || `[]`)' \
+      --output text)" && [ "${got}" = "$2" ]; then
+      return 0
+    fi
     sleep 10
   done
   echo "FAIL: $3: ${TABLE4} in $1 holds '${got}', not '$2'" >&2
@@ -1275,7 +1277,7 @@ await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message
 }
 expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <message>
   local got
-  got="$(aws dynamodb describe-table --table-name "$1" --region "${REGION}" --query "$2" --output text)"
+  got="$(aws dynamodb describe-table --table-name "$1" --region "${REGION}" --query "$2" --output text)" || return 1
   if [ "${got}" != "$3" ]; then
     echo "FAIL: $4: ${1} reads '${got}' at $2, not '$3'" >&2
     exit 1
@@ -1284,10 +1286,10 @@ expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <m
 
 echo "==> Phase 6b: vector indexes, warm throughput, TableType and the table-level read ceiling"
 deploy "${TS_BASE}" "${LOG_DIR}/phase6b.log"
-for logical in VectorTable TableLevelReadTable; do
+for logical in VectorTable TableLevelReadTable TableLevelCapacityTable; do
   by="$(record_of "${logical}")"
-  if [ "${by}" = "cc-api" ]; then
-    echo "FAIL: Phase 6b: ${logical} went through Cloud Control (go-to-k/cdkd#2762)" >&2
+  if [ "${by}" != "sdk" ]; then
+    echo "FAIL: Phase 6b: ${logical} records provisionedBy '${by}', not sdk (go-to-k/cdkd#2762)" >&2
     exit 1
   fi
 done
@@ -1295,6 +1297,7 @@ await_vector_indexes "${REGION}" "vec1" "Phase 6b"
 await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6b"
 expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 13000 "Phase 6b"
 expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50 "Phase 6b"
+expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7 "Phase 6b"
 echo "    OK: the SDK route sent every setting (vec1 in both regions)"
 
 echo "==> Phase 6c: an update adds a vector index and raises both values"
@@ -1303,6 +1306,7 @@ await_vector_indexes "${REGION}" "vec1	vec2" "Phase 6c"
 await_vector_indexes "${SECOND_REGION}" "vec1	vec2" "Phase 6c"
 expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 14000 "Phase 6c"
 expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 55 "Phase 6c"
+expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 8 "Phase 6c"
 run_drift 0 "Phase 6c"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
   echo "FAIL: Phase 6c: drift reports a table just deployed (go-to-k/cdkd#2762)" >&2
@@ -1323,7 +1327,12 @@ echo "==> Phase 6e: a vector index removed"
 deploy "${TS_BASE}" "${LOG_DIR}/phase6e.log"
 await_vector_indexes "${REGION}" "vec1" "Phase 6e"
 await_vector_indexes "${SECOND_REGION}" "vec1" "Phase 6e"
-echo "    OK: vec2 removed in both regions"
+# A warm throughput below the live value is warned about and not sent; the
+# ceiling and the capacity move back.
+expect_table_field "${TABLE4}" 'Table.WarmThroughput.ReadUnitsPerSecond' 14000 "Phase 6e"
+expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50 "Phase 6e"
+expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7 "Phase 6e"
+echo "    OK: vec2 removed in both regions, warm throughput kept, ceiling and capacity back"
 
 # --- Phase 7: destroy --remove-protection ---------------------------------
 echo "==> Phase 7: destroy --remove-protection"
@@ -1347,7 +1356,7 @@ done
 echo "    the Phase 5b table deleted in both regions"
 assert_gone "table ${TABLE3} still exists in ${REGION} after destroy" aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}"
 echo "    the Phase 1b ModeTable deleted"
-for t in "${TABLE4}" "${TABLE5}"; do
+for t in "${TABLE4}" "${TABLE5}" "${TABLE6}"; do
   for r in "${REGION}" "${SECOND_REGION}"; do
     for _ in $(seq 1 30); do
       gone_probe aws dynamodb describe-table --table-name "${t}" --region "${r}" && break

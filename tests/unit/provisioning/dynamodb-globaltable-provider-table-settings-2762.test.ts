@@ -3,6 +3,7 @@ import {
   CreateTableCommand,
   DeleteTableCommand,
   ResourceInUseException,
+  ResourceNotFoundException,
   UpdateTableCommand,
 } from '@aws-sdk/client-dynamodb';
 
@@ -20,11 +21,34 @@ import {
  *  - `TableType`: no API member; `Regional` on two replicas is refused.
  */
 
-const { mockSend, warnSpy, debugSpy } = vi.hoisted(() => ({
+const { mockSend, warnSpy, debugSpy, settleSpy, deadline } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   warnSpy: vi.fn(),
   debugSpy: vi.fn(),
+  settleSpy: vi.fn(),
+  deadline: { remainingMs: Number.POSITIVE_INFINITY },
 }));
+
+vi.mock('../../../src/deployment/resource-deadline.js', async () => ({
+  ...(await vi.importActual<typeof import('../../../src/deployment/resource-deadline.js')>(
+    '../../../src/deployment/resource-deadline.js'
+  )),
+  enclosingDeadlineRemainingMs: () => deadline.remainingMs,
+}));
+
+// The real settle wait, observed: its bounds are what a rollback re-arm decides.
+vi.mock('../../../src/provisioning/dynamodb-index-busy-delete.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../../src/provisioning/dynamodb-index-busy-delete.js')
+  >('../../../src/provisioning/dynamodb-index-busy-delete.js');
+  return {
+    ...actual,
+    waitForIndexesSettled: (opts: Parameters<typeof actual.waitForIndexesSettled>[0]) => {
+      settleSpy(opts);
+      return actual.waitForIndexesSettled(opts);
+    },
+  };
+});
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -79,10 +103,17 @@ import {
   DynamoDBGlobalTableProvider,
   collectDesiredKeyAttributeNames,
   collectTableOnDemandCeilings,
+  deleteTableRetryDelays,
   derivePerCallProvisionedThroughput,
   replicaSettingsRefusal,
+  retainUnsendableCapacityMembers,
   stripProvisionedCapacityKeys,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
+
+import {
+  DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+  VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS,
+} from '../../../src/provisioning/dynamodb-index-busy-delete.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
 const TABLE = 'gt-2762';
@@ -116,6 +147,8 @@ const updates = (): Rec[] => sent(UpdateTableCommand);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  deadline.remainingMs = Number.POSITIVE_INFINITY;
+  deleteTableRetryDelays.sleep = () => Promise.resolve();
   live = { TableName: TABLE, TableArn: TABLE_ARN, TableStatus: 'ACTIVE', TableId: 'tid' };
   mockSend.mockImplementation((command: { constructor: { name: string } }) => {
     switch (command.constructor.name) {
@@ -168,19 +201,20 @@ describe('create', () => {
 
   it('adds a replica only once a vector index created with the table has settled', async () => {
     const order: string[] = [];
-    let polls = 0;
+    let reads = 0;
     mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
       const name = command.constructor.name;
       if (name === 'CreateTableCommand') {
         return Promise.resolve({ TableDescription: { TableId: 'tid' } });
       }
       if (name === 'DescribeTableCommand') {
-        polls += 1;
-        order.push(polls < 3 ? 'building' : 'settled');
+        reads += 1;
+        const status = reads < 4 ? 'CREATING' : 'ACTIVE';
+        order.push(status);
         return Promise.resolve({
           Table: {
             ...live,
-            VectorIndexes: [{ IndexName: 'vec1', IndexStatus: polls < 3 ? 'CREATING' : 'ACTIVE' }],
+            VectorIndexes: [{ IndexName: 'vec1', IndexStatus: status }],
             Replicas: [{ RegionName: 'us-east-2', ReplicaStatus: 'ACTIVE' }],
           },
         });
@@ -194,10 +228,8 @@ describe('create', () => {
       Replicas: [{ Region: 'us-east-2' }, { Region: 'us-east-1' }],
       VectorIndexes: [VEC('vec1')],
     });
-    expect(order.indexOf('replica')).toBeGreaterThan(order.indexOf('settled'));
-    expect(order.lastIndexOf('building', order.indexOf('replica'))).toBeLessThan(
-      order.indexOf('replica')
-    );
+    expect(order.indexOf('ACTIVE')).toBeGreaterThan(-1);
+    expect(order.indexOf('ACTIVE')).toBeLessThan(order.indexOf('replica'));
   });
 
   it('retries the rollback DeleteTable a building vector index refuses', async () => {
@@ -219,10 +251,6 @@ describe('create', () => {
       }
       return Promise.resolve({});
     });
-    const { deleteTableRetryDelays } = await import(
-      '../../../src/provisioning/providers/dynamodb-globaltable-provider.js'
-    );
-    deleteTableRetryDelays.sleep = () => Promise.resolve();
     await expect(
       new DynamoDBGlobalTableProvider().create('T', RESOURCE_TYPE, {
         ...BASE,
@@ -230,8 +258,61 @@ describe('create', () => {
         TimeToLiveSpecification: { Enabled: true, AttributeName: 'ttl' },
       })
     ).rejects.toThrow(/ttl failed/);
-    delete deleteTableRetryDelays.sleep;
     expect(deletes).toBe(2);
+  });
+
+  it('re-arms the rollback on the long vector bound, the short one for anything else', async () => {
+    let deletes = 0;
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      const name = command.constructor.name;
+      if (name === 'CreateTableCommand') {
+        return Promise.resolve({ TableDescription: { TableId: 'tid' } });
+      }
+      if (name === 'DescribeTableCommand') return Promise.resolve({ Table: live });
+      if (name === 'UpdateTimeToLiveCommand') return Promise.reject(new Error('ttl failed'));
+      if (name === 'DeleteTableCommand' && ++deletes === 1) {
+        return Promise.reject(new Error('Cannot delete table while indexes are being created.'));
+      }
+      return Promise.resolve({});
+    });
+    await new DynamoDBGlobalTableProvider()
+      .create('T', RESOURCE_TYPE, {
+        ...BASE,
+        VectorIndexes: [VEC('vec1')],
+        TimeToLiveSpecification: { Enabled: true, AttributeName: 'ttl' },
+      })
+      .catch(() => undefined);
+    expect(settleSpy).toHaveBeenCalledTimes(1);
+    const opts = settleSpy.mock.calls[0]?.[0] as Rec;
+    expect(opts['shortCapUnlessVectorBusy']).toBe(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    expect(opts['maxAttempts']).toBeGreaterThan(DELETE_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+    expect(opts['maxAttempts']).toBeLessThanOrEqual(VECTOR_INDEX_BUSY_REARM_MAX_ATTEMPTS);
+  });
+
+  it('takes the first rollback refusal as terminal when the deadline leaves no room', async () => {
+    deadline.remainingMs = 0;
+    let deletes = 0;
+    mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+      const name = command.constructor.name;
+      if (name === 'CreateTableCommand') {
+        return Promise.resolve({ TableDescription: { TableId: 'tid' } });
+      }
+      if (name === 'DescribeTableCommand') return Promise.resolve({ Table: live });
+      if (name === 'UpdateTimeToLiveCommand') return Promise.reject(new Error('ttl failed'));
+      if (name === 'DeleteTableCommand') {
+        deletes += 1;
+        return Promise.reject(new Error('Cannot delete table while indexes are being created.'));
+      }
+      return Promise.resolve({});
+    });
+    await expect(
+      new DynamoDBGlobalTableProvider().create('T', RESOURCE_TYPE, {
+        ...BASE,
+        VectorIndexes: [VEC('vec1')],
+        TimeToLiveSpecification: { Enabled: true, AttributeName: 'ttl' },
+      })
+    ).rejects.toThrow(/ttl failed/);
+    expect(deletes).toBe(1);
   });
 
   it('a table with no vector index keeps its single rollback DeleteTable', async () => {
@@ -285,6 +366,23 @@ describe('the table-level read settings', () => {
     expect(sent(CreateTableCommand)[0]?.['OnDemandThroughput']).toEqual({
       MaxReadRequestUnits: 50,
     });
+  });
+
+  it('keeps the previous table-level block the kept billing mode cannot send', () => {
+    expect(
+      retainUnsendableCapacityMembers(
+        { ...props, ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 9 } },
+        { ...props, ReadOnDemandThroughputSettings: { MaxReadRequestUnits: 5 } },
+        'PROVISIONED'
+      )['ReadOnDemandThroughputSettings']
+    ).toEqual({ MaxReadRequestUnits: 5 });
+    expect(
+      retainUnsendableCapacityMembers(
+        { ...props, ReadProvisionedThroughputSettings: { ReadCapacityUnits: 9 } },
+        { ...props, ReadProvisionedThroughputSettings: { ReadCapacityUnits: 5 } },
+        'PAY_PER_REQUEST'
+      )['ReadProvisionedThroughputSettings']
+    ).toEqual({ ReadCapacityUnits: 5 });
   });
 
   it('strips the table-level provisioned block with the rest of the provisioned members', () => {
@@ -372,6 +470,32 @@ describe('replicaSettingsRefusal: what the CloudFormation handler refuses', () =
     ).toBeUndefined();
   });
 
+  it.each([
+    ['TableType', { ...BASE, Replicas: two, TableType: 'Regional' }, { ...BASE, Replicas: two }],
+    [
+      'BillingMode',
+      {
+        ...BASE,
+        BillingMode: 'PROVISIONED',
+        Replicas: ENABLED_REPLICA,
+        ReadOnDemandThroughputSettings: {},
+      },
+      { ...BASE, Replicas: ENABLED_REPLICA, ReadOnDemandThroughputSettings: {} },
+    ],
+    [
+      'ReadOnDemandThroughputSettings',
+      { ...BASE, ReadOnDemandThroughputSettings: {} },
+      BASE,
+    ],
+    [
+      'ReadProvisionedThroughputSettings',
+      { ...BASE, ReadProvisionedThroughputSettings: {} },
+      BASE,
+    ],
+  ])('refuses on an update that changes only %s', (_key, desired, previous) => {
+    expect(replicaSettingsRefusal(desired, previous)).toBeDefined();
+  });
+
   it('does not refuse an unchanged block on an update', () => {
     const recorded = { ...BASE, ReadOnDemandThroughputSettings: {} };
     expect(replicaSettingsRefusal(recorded, recorded)).toBeUndefined();
@@ -449,6 +573,70 @@ describe('update', () => {
     expect(warnSpy.mock.calls.flat().join('\n')).toContain('that change was not applied');
   });
 
+  it('warns the same way when the bag comes from a drift --revert read-back', async () => {
+    live = { ...live, VectorIndexes: [{ ...VEC('vec1'), IndexStatus: 'ACTIVE' }] };
+    await update(
+      { ...BASE, VectorIndexes: [VEC('vec1', 8)] },
+      { ...BASE, VectorIndexes: [VEC('vec1')] },
+      { desiredFromAwsReadback: true }
+    );
+    expect(warnSpy.mock.calls.flat().join('\n')).toContain('that change was not applied');
+  });
+
+  it('sends the next vector op only after the previous one has settled', async () => {
+    const order: string[] = [];
+    let building = 0;
+    mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+      const name = command.constructor.name;
+      if (name === 'DescribeTableCommand') {
+        const status = building > 0 ? 'CREATING' : 'ACTIVE';
+        order.push(status);
+        if (building > 0) building -= 1;
+        return Promise.resolve({
+          Table: { ...live, VectorIndexes: [{ IndexName: 'other', IndexStatus: status }] },
+        });
+      }
+      if (name === 'UpdateTableCommand' && command.input['VectorIndexUpdates']) {
+        order.push('op');
+        building = 1;
+      }
+      return Promise.resolve({ Tags: [] });
+    });
+    await update(
+      { ...BASE, VectorIndexes: [VEC('vec1'), VEC('vec2')] },
+      BASE
+    );
+    const first = order.indexOf('op');
+    const second = order.lastIndexOf('op');
+    expect(second).toBeGreaterThan(first);
+    expect(order.slice(first, second)).toContain('CREATING');
+    expect(order[second - 1]).toBe('ACTIVE');
+  });
+
+  it('reports a changed unusable WarmThroughput once, and an unchanged one not at all', async () => {
+    live = { ...live, WarmThroughput: { ReadUnitsPerSecond: 12000 } };
+    const bad = { ...BASE, WarmThroughput: { ReadUnitsPerSecond: 'many' } };
+    await update(bad, bad);
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('WarmThroughput');
+    await update(bad, BASE);
+    expect(warnSpy.mock.calls.flat().join('\n')).toContain('WarmThroughput');
+    expect(updates()).toEqual([]);
+  });
+
+  it('masks a table name below the substring floor in the decrease warning', async () => {
+    live = { ...live, TableName: 'abc', WarmThroughput: { ReadUnitsPerSecond: 13000 } };
+    await new DynamoDBGlobalTableProvider().update(
+      'T',
+      'abc',
+      RESOURCE_TYPE,
+      { ...BASE, TableName: 'abc', WarmThroughput: { ReadUnitsPerSecond: 12500 } },
+      { ...BASE, TableName: 'abc' },
+      { maskSecrets: (text: string) => (text === 'abc' ? '***' : text) }
+    );
+    const line = warnSpy.mock.calls.flat().join('\n');
+    expect(line).toContain('table ***: WarmThroughput was NOT sent');
+  });
+
   it('adopts a vector index AWS already holds, without a Create', async () => {
     live = { ...live, VectorIndexes: [{ ...VEC('vec1'), IndexStatus: 'ACTIVE' }] };
     await update({ ...BASE, VectorIndexes: [VEC('vec1')] }, BASE);
@@ -500,6 +688,50 @@ describe('update', () => {
         ProvisionedThroughput: { ReadCapacityUnits: 8, WriteCapacityUnits: 3 },
       },
     ]);
+  });
+
+  it('marks the read capacity unsettled before the call', async () => {
+    live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 } };
+    const markUnsettled = vi.fn();
+    await update(
+      { ...provisioned, ReadProvisionedThroughputSettings: { ReadCapacityUnits: 8 } },
+      provisioned,
+      { markUnsettled }
+    );
+    expect(markUnsettled).toHaveBeenCalledWith('ReadProvisionedThroughputSettings');
+  });
+
+  it('sends the capacity when the block moves from the table level to the local replica', async () => {
+    live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 } };
+    await update(
+      {
+        ...BASE,
+        BillingMode: 'PROVISIONED',
+        Replicas: [
+          { ...ENABLED_REPLICA[0], ReadProvisionedThroughputSettings: { ReadCapacityUnits: 8 } },
+        ],
+      },
+      provisioned
+    );
+    expect(updates().filter((u) => u['ProvisionedThroughput'])).toEqual([
+      {
+        TableName: TABLE,
+        ProvisionedThroughput: { ReadCapacityUnits: 8, WriteCapacityUnits: 3 },
+      },
+    ]);
+  });
+
+  it('sends no capacity to a table turned on-demand out of band', async () => {
+    live = {
+      ...live,
+      BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+      ProvisionedThroughput: { ReadCapacityUnits: 0, WriteCapacityUnits: 0 },
+    };
+    await update(
+      { ...provisioned, ReadProvisionedThroughputSettings: { ReadCapacityUnits: 8 } },
+      provisioned
+    );
+    expect(updates().filter((u) => u['ProvisionedThroughput'])).toEqual([]);
   });
 
   it('sends no read capacity AWS already holds', async () => {
@@ -688,39 +920,59 @@ describe('collectDesiredKeyAttributeNames', () => {
 });
 
 describe('delete with a vector index', () => {
-  it('waits out a building vector index before DeleteTable and names it on a refusal', async () => {
-    let polls = 0;
+  it('waits out a building vector index before the first DeleteTable', async () => {
+    let reads = 0;
+    let lastStatus = '';
+    let statusAtDelete: string | undefined;
     mockSend.mockImplementation((command: { constructor: { name: string } }) => {
       const name = command.constructor.name;
       if (name === 'DescribeTableCommand') {
-        polls += 1;
+        if (statusAtDelete !== undefined) {
+          return Promise.reject(
+            new ResourceNotFoundException({ message: 'gone', $metadata: {} })
+          );
+        }
+        reads += 1;
+        lastStatus = reads < 3 ? 'CREATING' : 'ACTIVE';
         return Promise.resolve({
-          Table: {
-            ...live,
-            VectorIndexes: [{ IndexName: 'vec1', IndexStatus: polls < 3 ? 'CREATING' : 'ACTIVE' }],
-          },
+          Table: { ...live, VectorIndexes: [{ IndexName: 'vec1', IndexStatus: lastStatus }] },
         });
       }
-      if (name === 'DeleteTableCommand') {
-        return Promise.reject(
-          new ResourceInUseException({
-            message:
-              'Attempt to change a resource which is still in use: Cannot delete table while indexes are being created, updated, or deleted.',
-            $metadata: {},
-          })
-        );
-      }
+      if (name === 'DeleteTableCommand') statusAtDelete = lastStatus;
       return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
     });
-    const { deleteTableRetryDelays } = await import(
-      '../../../src/provisioning/providers/dynamodb-globaltable-provider.js'
-    );
-    deleteTableRetryDelays.sleep = () => Promise.resolve();
-    const thrown = await new DynamoDBGlobalTableProvider()
+    await new DynamoDBGlobalTableProvider().delete('T', TABLE, RESOURCE_TYPE, BASE);
+    expect(statusAtDelete).toBe('ACTIVE');
+  });
+
+  it('names the vector index on a refusal, and keeps the GSI wording without one', async () => {
+    const refuseWith = (vectorIndexes: Rec[]): void => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        const name = command.constructor.name;
+        if (name === 'DescribeTableCommand') {
+          return Promise.resolve({ Table: { ...live, VectorIndexes: vectorIndexes } });
+        }
+        if (name === 'DeleteTableCommand') {
+          return Promise.reject(
+            new ResourceInUseException({
+              message:
+                'Attempt to change a resource which is still in use: Cannot delete table while indexes are being created, updated, or deleted.',
+              $metadata: {},
+            })
+          );
+        }
+        return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+      });
+    };
+    refuseWith([{ IndexName: 'vec1', IndexStatus: 'ACTIVE' }]);
+    const named = await new DynamoDBGlobalTableProvider()
       .delete('T', TABLE, RESOURCE_TYPE, BASE)
       .catch((error: unknown) => error as Error);
-    delete deleteTableRetryDelays.sleep;
-    expect(polls).toBeGreaterThanOrEqual(3);
-    expect((thrown as Error).message).toContain('a global secondary index or vector index');
-  });
+    expect((named as Error).message).toContain('a global secondary index or vector index');
+    refuseWith([]);
+    const plain = await new DynamoDBGlobalTableProvider()
+      .delete('T', TABLE, RESOURCE_TYPE, BASE)
+      .catch((error: unknown) => error as Error);
+    expect((plain as Error).message).toContain('a global secondary index is still');
+  }, 30_000);
 });
