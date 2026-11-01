@@ -643,7 +643,7 @@ neptune_cluster_available() {
   local status i
   for i in $(seq 1 40); do
     status=$(aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
-      --region "${REGION}" --query 'DBClusters[0].Status' --output text)
+      --region "${REGION}" --query 'DBClusters[0].Status' --output text) || return 1
     [ "${status}" = "available" ] && return 0
     [ "${i}" -lt 40 ] && sleep 15
   done
@@ -657,7 +657,7 @@ neptune_log_types() {
 wait_neptune_log_types() { # usage: wait_neptune_log_types <want>
   local now="" i
   for i in $(seq 1 40); do
-    now=$(neptune_log_types)
+    now=$(neptune_log_types) || return 1
     [ "${now}" = "$1" ] && return 0
     [ "${i}" -lt 40 ] && sleep 15
   done

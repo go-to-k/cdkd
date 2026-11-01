@@ -77,7 +77,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **providers/deletion-protection-compensation.ts** - Undoes a `--remove-protection` flip whose delete then failed TERMINALLY (#2204). A new flip site wraps its delete in `deleteWithProtectionCompensation`, flips through `observeThenDisableProtection` (a pre-flip readback, never state) and sets `flip.deleteAccepted` once AWS takes the delete (on Cloud Control, per attempt, once the handler may be deleting: an abandoned wait, an ambiguous handler code, or a conflict after such an attempt); otherwise a failed destroy leaves the guard silently stripped.
 
-- **providers/db-instance-modify-retry.ts** - Resends a `ModifyDBInstance` refused as not `available`; never a succeeded one, but once an SDK replay of a lost response (#5194).
+- **providers/db-instance-modify-retry.ts** - Resends a `ModifyDBInstance` or Neptune role call refused as not `available`; a succeeded one only on an SDK replay (#5194).
 
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`: the modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. The FIRST flip goes through `observeThenDisableInstanceApiTermination`, or the compensation (#2204) records nothing. A CC-routed protected ASG is delegated to `ASGProvider.delete`.
 
