@@ -990,8 +990,8 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
 
     it('puts what an earlier attempt added on the previous side, and no redaction', async () => {
       liveCluster({
-        AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }],
-        EnabledCloudwatchLogsExports: ['audit', 'slowquery'],
+        AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: `${ROLE_B}***` }],
+        EnabledCloudwatchLogsExports: ['audit', 'slowquery', '{{resolve:x}}'],
       });
       const read = await provider.readUnsettled(
         'cluster-1',
@@ -1009,6 +1009,19 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         AssociatedRoles: [{ RoleArn: ROLE_A }],
         EnableCloudwatchLogsExports: ['audit'],
       });
+    });
+
+    it('keeps the log types only the desired side names', async () => {
+      liveCluster({ EnabledCloudwatchLogsExports: ['audit', 'slowquery'] });
+      const read = await provider.readUnsettled(
+        'cluster-1',
+        'L',
+        CLUSTER,
+        new Set(['EnableCloudwatchLogsExports']),
+        {},
+        { EnableCloudwatchLogsExports: ['audit'] }
+      );
+      expect(read).toMatchObject({ EnableCloudwatchLogsExports: ['audit'] });
     });
 
     it('leaves a name it was not asked for as read', async () => {
