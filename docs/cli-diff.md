@@ -151,13 +151,9 @@ update, and its line reads `[via CC API: sticky]`. A resource the deploy
 replaces is routed like a new one, so its line never says `sticky`. Delete
 lines carry no routing note.
 
-A type Cloud Control cannot serve has no such route, so its line carries no
-routing note either. When the template sets a property on it that cdkd's SDK
-provider does not handle, the diff warns instead, because the deploy refuses
-the resource unless
-[`--prefer-sdk-route`](cli-deploy-safety-routing.md#prefer-sdk-route-deploy)
-accepts the drop. The diff still exits `0`, since a deploy with that flag goes
-through.
+On a type Cloud Control cannot serve, a property cdkd's SDK provider does not
+handle gets no routing note, because there is no such route. The diff warns
+instead: see [exit `3`](#exit-3-the-deploy-would-refuse).
 
 ### `[adopted from a rollback orphan]`
 
@@ -261,7 +257,7 @@ In CDK, a new logical ID means a new construct ID or a call to
 `overrideLogicalId`. The second and third rows are described under
 [cdkd diff: incomplete or malformed state](cli-diff-state-records.md#when-the-state-record-is-malformed).
 
-Two cases are warnings and do not exit `3`:
+Three cases are warnings and do not exit `3`:
 
 - A `ServiceToken` that refers to a resource this deploy creates or replaces
   is not known until that resource exists. The diff warns, and the deploy
@@ -270,6 +266,10 @@ Two cases are warnings and do not exit `3`:
 - A damaged state record on a nested stack gets a warning. A deploy skips a
   nested stack that did not change, so the damage does not always stop it.
   The other three conditions exit `3` on any stack the diff visits.
+- A property cdkd's SDK provider does not handle, on a type Cloud Control
+  cannot serve. A deploy refuses it unless
+  [`--prefer-sdk-route`](cli-deploy-safety-routing.md#prefer-sdk-route-deploy)
+  names it, and the diff does not take that flag.
 
 The full rules are in
 [cdkd diff internals](cli-diff-internals.md#exit-3-the-five-conditions-and-the-nodes-that-raise-them).

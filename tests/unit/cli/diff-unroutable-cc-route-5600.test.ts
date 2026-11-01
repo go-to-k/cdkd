@@ -35,6 +35,7 @@ import {
   computeStackDiff,
   countBlocking,
   findUnroutableDropRefusals,
+  findUnwrittenCreateOnlyRefusals,
 } from '../../../src/cli/commands/diff-recursive.js';
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
@@ -43,7 +44,7 @@ import {
   registerAllProviders,
 } from '../../../src/provisioning/register-providers.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
-import type { StackState } from '../../../src/types/state.js';
+import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 
 const TYPE = 'AWS::CodeBuild::Project';
@@ -136,6 +137,51 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
     expect(reason).toContain(`--prefer-sdk-route ${TYPE}:Triggers`);
   });
 
+  it('words the refusal conditionally over a condition it could not settle', () => {
+    const conditional = {
+      Resources: { R: { Type: TYPE, Condition: 'C', Properties: { Triggers: {} } } },
+    } as unknown as CloudFormationTemplate;
+    const [unsettled] = findUnroutableDropRefusals(conditional, {}, reasonOf, () => false);
+    expect(unsettled).toContain('if condition C holds, a deploy of this stack');
+    const [settled] = findUnroutableDropRefusals(conditional, {}, reasonOf, () => true);
+    expect(settled).not.toContain('if condition');
+  });
+
+  it('offers no Cloud Control opt-in on a create-only row of such a type', () => {
+    const type = 'AWS::DocDB::DBCluster';
+    const state = {
+      R: {
+        physicalId: 'p',
+        resourceType: type,
+        properties: { SnapshotIdentifier: 'same' },
+        acceptedCreateOnlyDrops: ['SnapshotIdentifier'],
+      },
+    } as unknown as StackState['resources'];
+    const changes = new Map([
+      [
+        'R',
+        {
+          logicalId: 'R',
+          changeType: 'UPDATE',
+          resourceType: type,
+          propertyChanges: [
+            {
+              path: 'SnapshotIdentifier',
+              oldValue: undefined,
+              newValue: 'same',
+              requiresReplacement: true,
+            },
+          ],
+        },
+      ],
+    ]) as unknown as ReadonlyMap<string, ResourceChange>;
+    expect(findUnwrittenCreateOnlyRefusals(changes, state)[0]).toContain('--recreate-via-cc-api');
+    const [text, ...rest] = findUnwrittenCreateOnlyRefusals(changes, state, reasonOf);
+    expect(rest).toEqual([]);
+    expect(text).not.toContain('--recreate-via-cc-api');
+    expect(text).toContain('--prefer-sdk-route');
+  });
+
   it('skips AWS::CDK::Metadata, which the deploy check filters out', () => {
     expect(
       findUnroutableDropRefusals(template('AWS::CDK::Metadata'), {}, () => 'no route')
@@ -175,9 +221,13 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
       expect(node.ccApiRoutes.has('R')).toBe(false);
     });
 
-    it('knows a type with no handlers with no registry passed', async () => {
-      const node = await diff(template(), { ccRouteUnavailableReason: undefined });
-      expect(node.ccApiRoutes.has('R')).toBe(false);
+    it('hedges over a condition the diff cannot settle, which the deploy may prune', async () => {
+      await diff({
+        Parameters: { P: { Type: 'String' } },
+        Conditions: { C: { 'Fn::Equals': [{ Ref: 'P' }, 'x'] } },
+        Resources: { R: { Type: TYPE, Condition: 'C', Properties: { Triggers: {} } } },
+      } as unknown as CloudFormationTemplate);
+      expect(warnings().filter((m) => m.includes('if condition C holds'))).toHaveLength(1);
     });
 
     describe('in a nested child', () => {

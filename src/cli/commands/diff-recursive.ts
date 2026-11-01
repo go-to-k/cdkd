@@ -124,10 +124,6 @@ import {
 } from '../../provisioning/property-coverage.js';
 import { wouldReturnToSdkProvider } from '../../provisioning/provider-registry.js';
 import {
-  hasNoCloudControlHandlers,
-  NO_CC_HANDLERS_REASON,
-} from '../../provisioning/unsupported-types.js';
-import {
   prefetchCreateOnlyPropertyPaths,
   templateResourceTypes,
 } from '../../provisioning/create-only-properties.js';
@@ -454,24 +450,22 @@ function nestedStackTypeChangeReason(tc: NestedStackTypeChange): string {
 export type CcRouteUnavailableReason = (resourceType: string) => string | undefined;
 
 /**
- * The registry-free half of {@link CcRouteUnavailableReason}, for a walk built
- * without a registry. `cdkd diff` always passes the registry's answer.
- */
-const ccRouteUnavailableWithoutRegistry: CcRouteUnavailableReason = (resourceType) =>
-  hasNoCloudControlHandlers(resourceType) ? NO_CC_HANDLERS_REASON : undefined;
-
-/**
- * One warning per resource the flag-less `cdkd deploy` refuses pre-flight
- * because its template drives a Cloud Control route the type does not have
- * (`ProviderRegistry.reportSilentDropDecisions`, issue #5600). Walks what that
- * check walks: every template resource but `AWS::CDK::Metadata`, unchanged rows
- * and `AWS::CloudFormation::Stack` included. Ids, types and property names are
- * template-chosen, so each takes `displayIdent`. Exported for its unit test.
+ * One warning per resource the flag-less `cdkd deploy` of this stack refuses
+ * pre-flight because its template drives a Cloud Control route the type does
+ * not have (`ProviderRegistry.reportSilentDropDecisions`, issue #5600). Walks
+ * what that check walks: every template resource but `AWS::CDK::Metadata`,
+ * unchanged rows and `AWS::CloudFormation::Stack` included. A deploy skips a
+ * nested stack whose row did not change, so the text says "of this stack". A
+ * resource this diff kept over a condition it could not settle
+ * (`conditionSettled`) may be pruned by the deploy, so its text is conditional.
+ * Ids, types and property names are template-chosen, so each takes
+ * `displayIdent`. Exported for its unit test.
  */
 export function findUnroutableDropRefusals(
   template: CloudFormationTemplate,
   stateResources: Record<string, ResourceState>,
-  ccRouteUnavailableReason: CcRouteUnavailableReason
+  ccRouteUnavailableReason: CcRouteUnavailableReason,
+  conditionSettled: (name: string) => boolean = () => true
 ): string[] {
   const reasons: string[] = [];
   for (const [logicalId, resource] of Object.entries(template.Resources ?? {})) {
@@ -486,13 +480,18 @@ export function findUnroutableDropRefusals(
     ).map(({ property }) => property);
     if (properties.length === 0) continue;
     const keep = properties.map((p) => displayIdent(`${resource.Type}:${p}`)).join(',');
+    const condition = resource.Condition;
+    const unless =
+      typeof condition === 'string' && !conditionSettled(condition)
+        ? `if condition ${displayIdent(condition)} holds, `
+        : '';
     reasons.push(
-      `${displayIdent(logicalId)} (${displayIdent(resource.Type)}): a deploy without ` +
-        `--prefer-sdk-route refuses ${properties.map((p) => displayIdent(p)).join(', ')}, ` +
+      `${displayIdent(logicalId)} (${displayIdent(resource.Type)}): ${unless}a deploy of this ` +
+        `stack without --prefer-sdk-route refuses ${properties.map((p) => displayIdent(p)).join(', ')}, ` +
         `because the SDK provider does not handle ${properties.length === 1 ? 'it' : 'them'} ` +
         `and this type cannot fall back to Cloud Control API (${reason}). Remove ` +
-        `${properties.length === 1 ? 'the property' : 'the properties'}, or accept the drop ` +
-        `with --prefer-sdk-route ${keep}.`
+        `${properties.length === 1 ? 'the property' : 'the properties'}, or deploy with ` +
+        `--prefer-sdk-route ${keep}.`
     );
   }
   return reasons;
@@ -508,7 +507,9 @@ export function findUnroutableDropRefusals(
  */
 export function findUnwrittenCreateOnlyRefusals(
   changes: ReadonlyMap<string, ResourceChange>,
-  stateResources: Record<string, ResourceState>
+  stateResources: Record<string, ResourceState>,
+  /** Omitted, every type counts as routable. See {@link CcRouteUnavailableReason}. */
+  ccRouteUnavailableReason?: CcRouteUnavailableReason
 ): string[] {
   const reasons: string[] = [];
   for (const [logicalId, change] of changes) {
@@ -563,6 +564,10 @@ export function findUnwrittenCreateOnlyRefusals(
       .map((property) => displayIdent(`${change.resourceType}:${property}`))
       .join(',');
     const one = keys.length === 1;
+    // Issue #5600: a type with no Cloud Control route has no such opt-in, and
+    // the pre-flight refusal, which `findUnroutableDropRefusals` words, comes
+    // first and reads neither flag.
+    const unroutable = ccRouteUnavailableReason?.(change.resourceType) !== undefined;
     if (nowWritten.length > 0) {
       reasons.push(
         `${displayIdent(logicalId)} (${displayIdent(change.resourceType)}): this previews a ` +
@@ -570,7 +575,8 @@ export function findUnwrittenCreateOnlyRefusals(
           `which the state record holds although the SDK provider that built the resource did ` +
           `not write ${one ? 'it' : 'them'}, so AWS does not. This cdkd version's SDK provider ` +
           `writes ${nowWritten.map((k) => displayIdent(k)).join(', ')}, so a deploy refuses it ` +
-          `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or --replace opts ` +
+          `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless ` +
+          `${unroutable ? '--replace opts' : '--recreate-via-cc-api or --replace opts'} ` +
           `in, whatever --prefer-sdk-route names; a deploy with ` +
           `${nowWritten.map((k) => displayIdent(k)).join(', ')} removed from the template` +
           (keepKeys.length > 0 ? ` and --prefer-sdk-route ${keep}` : '') +
@@ -582,9 +588,12 @@ export function findUnwrittenCreateOnlyRefusals(
       `${displayIdent(logicalId)} (${displayIdent(change.resourceType)}): this previews a ` +
         `replacement that would apply create-only ${keys.map((k) => displayIdent(k)).join(', ')}, ` +
         `which the state record holds although the SDK provider never wrote ` +
-        `${one ? 'it' : 'them'}, so AWS does not. A deploy without --prefer-sdk-route ` +
-        `refuses it (CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or ` +
-        `--replace opts in; a deploy passing --prefer-sdk-route ${keep} changes nothing.`
+        `${one ? 'it' : 'them'}, so AWS does not. ` +
+        (unroutable
+          ? `A deploy passing --prefer-sdk-route ${keep} changes nothing.`
+          : `A deploy without --prefer-sdk-route refuses it ` +
+            `(CREATE_ONLY_DROP_NEEDS_REPLACEMENT) unless --recreate-via-cc-api or --replace ` +
+            `opts in; a deploy passing --prefer-sdk-route ${keep} changes nothing.`)
     );
   }
   return reasons;
@@ -2534,7 +2543,11 @@ export async function computeStackDiff(
   // otherwise exit 3 on every `cdkd diff`. A key the SDK provider now writes
   // (#5572) is refused under any flag, but still only at the resource, after
   // other rows may have changed, so it is a warning too.
-  for (const reason of findUnwrittenCreateOnlyRefusals(changes, stateForDiff.resources)) {
+  for (const reason of findUnwrittenCreateOnlyRefusals(
+    changes,
+    stateForDiff.resources,
+    ccRouteUnavailableReason
+  )) {
     logger.warn(printing.mask(reason));
   }
 
@@ -2546,7 +2559,9 @@ export async function computeStackDiff(
     const refusals = findUnroutableDropRefusals(
       effectiveTemplate,
       stateForDiff.resources,
-      ccRouteUnavailableReason
+      ccRouteUnavailableReason,
+      (name) =>
+        conditions !== undefined && Object.hasOwn(conditions, name) && !stillUnknown.includes(name)
     );
     for (const reason of refusals) logger.warn(printing.mask(reason));
   }
@@ -3629,6 +3644,8 @@ export async function buildDiffTree(args: {
   /**
    * The registry's answer, threaded through the whole tree so a nested child's
    * rows read the deploy's refusal too; see {@link CcRouteUnavailableReason}.
+   * Optional only for hand-built walks, where every type counts as routable;
+   * `cdkd diff` always passes it.
    */
   ccRouteUnavailableReason?: CcRouteUnavailableReason;
   /**
@@ -3748,7 +3765,7 @@ export async function buildDiffTree(args: {
     parameters,
     parentUnresolvedParameters,
     canonicalizeProperties,
-    ccRouteUnavailableReason = ccRouteUnavailableWithoutRegistry,
+    ccRouteUnavailableReason,
     assetRedirect,
     cfnFallback,
     producerLookup,
@@ -3821,7 +3838,7 @@ export async function buildDiffTree(args: {
         ...(parameters && { parameters }),
         ...(parentUnresolvedParameters && { parentUnresolvedParameters }),
         ...(canonicalizeProperties && { canonicalizeProperties }),
-        ccRouteUnavailableReason,
+        ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(producerLookup && { producerLookup }),
         ...(consumerAccount && { consumerAccount }),
@@ -3876,7 +3893,7 @@ export async function buildDiffTree(args: {
     effectiveTemplate,
     stateAfterAdoption,
     changes,
-    ccRouteUnavailableReason
+    ccRouteUnavailableReason ?? (() => undefined)
   );
   const node: DiffTreeNode = {
     stackName,
@@ -4096,7 +4113,7 @@ export async function buildDiffTree(args: {
         parameters: childParameters,
         parentUnresolvedParameters: childUnresolvedParameters,
         ...(canonicalizeProperties && { canonicalizeProperties }),
-        ccRouteUnavailableReason,
+        ...(ccRouteUnavailableReason && { ccRouteUnavailableReason }),
         ...(assetRedirect && { assetRedirect }),
         ...(cfnFallback !== undefined && { cfnFallback }),
         ...(producerLookup && { producerLookup }),
@@ -4344,8 +4361,8 @@ function diffReplaces(change: ResourceChange | undefined, record: ResourceState)
  * the replacement reads the same template bag against the same baseline.
  *
  * A fresh hit on a type with no Cloud Control route gets no annotation at all
- * (go-to-k/cdkd#5600): the flag-less deploy refuses the resource, and one with
- * `--prefer-sdk-route` stays on the SDK provider, so neither takes that route.
+ * (go-to-k/cdkd#5600): the flag-less deploy this preview stands for refuses the
+ * resource, whatever its record's layer, so it takes no route at all.
  * {@link findUnroutableDropRefusals} warns about it instead.
  *
  * Excludes `AWS::CDK::Metadata` (filtered like the deploy pre-flight); also
