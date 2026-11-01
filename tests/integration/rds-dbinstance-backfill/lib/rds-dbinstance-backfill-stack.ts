@@ -192,8 +192,9 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // go-to-k/cdkd#2762, unchanged in phase 2. Each is the value RDS picks
       // anyway (IPv4-only subnets, Postgres's only license, the free Database
       // Insights tier); before #2762 any one of them routed the instance to
-      // Cloud Control, which the provisionedBy=sdk guard catches. Not set,
-      // unit-tested only: PromotionTier (rds-aurora's L2 writer carries it),
+      // Cloud Control, which the provisionedBy=sdk guard catches. Not set here:
+      // PromotionTier (RDS refuses it outside a DB cluster; rds-aurora's L2
+      // writer carries it). Unit-tested only:
       // DedicatedLogVolume (needs io1 / io2 storage) and
       // CertificateRotationRestart (rides only a CA change).
       networkType: 'IPV4',
