@@ -760,6 +760,16 @@ for lid in KeyIssuerUserPool KeyIssuerAddUserPool; do
     exit 1
   fi
 done
+KI_OBSERVED_KEY="$(printf '%s' "${KEY_ISSUER_STATE}" | jq -r '.resources.KeyIssuerUserPool.observedProperties.KeyConfiguration.KeyType // "null"')"
+if [ "${KI_OBSERVED_KEY}" != "AWS_OWNED_KEY" ]; then
+  echo "FAIL: KeyIssuerUserPool observedProperties.KeyConfiguration.KeyType is '${KI_OBSERVED_KEY}', expected 'AWS_OWNED_KEY' (issue #2762)" >&2
+  exit 1
+fi
+KI_OBSERVED_ARN="$(printf '%s' "${KEY_ISSUER_STATE}" | jq -r '.resources.KeyIssuerAddUserPool.observedProperties.KeyConfiguration.KmsKeyArn // "null"')"
+if [ "${KI_OBSERVED_ARN}" != "${POOL_KEY_ARN}" ]; then
+  echo "FAIL: KeyIssuerAddUserPool observedProperties.KeyConfiguration.KmsKeyArn is '${KI_OBSERVED_ARN}', expected '${POOL_KEY_ARN}' (issue #2762)" >&2
+  exit 1
+fi
 echo "    OK: #2762 key reset + issuer kept and announced on removal, both added in place, SDK route, drift baseline carries them"
 
 rm -f "${UPDATE_LOG}"
