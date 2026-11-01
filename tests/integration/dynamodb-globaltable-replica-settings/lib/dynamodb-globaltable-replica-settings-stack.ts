@@ -68,6 +68,8 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *                `ReadProvisionedThroughputSettings`;
  *   - `ts2`:     with `ts`, add a second vector index, raise the warm
  *                throughput, the read ceiling and the read capacity;
+ *   - `ts3`:     with `ts`, go-to-k/cdkd#5604: keep `table7`'s `ts2` read capacity
+ *                while its write capacity moves back;
  *   - `tsshape`: with `ts`, change `vec1`'s dimensions, which DynamoDB cannot
  *                do in place (the deploy must be refused);
  *   - `tsregional`: with `ts`, `TableType: Regional` on the two-replica table,
@@ -276,6 +278,46 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
       cfnCapacity.addPropertyDeletionOverride('Replicas.0.ReadProvisionedThroughputSettings');
       cfnCapacity.addPropertyOverride('ReadProvisionedThroughputSettings', {
         ReadCapacityUnits: update2 ? 8 : 7,
+      });
+      // go-to-k/cdkd#5604: `ts2` moves both sides at once, `ts3` the write side alone.
+      const localCapacityTable = new ddb.TableV2(this, 'LocalCapacityTable', {
+        tableName: `${this.stackName}-table7`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        billing: ddb.Billing.provisioned({
+          readCapacity: ddb.Capacity.fixed(update2 || modes.has('ts3') ? 4 : 3),
+          writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+        }),
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      // The literal CloudFormation refuses and cdkd honors (`deriveWriteCapacityUnits`);
+      // a block keeping the auto-scaling member stays auto-scaled, so it goes.
+      const cfnLocalCapacity = localCapacityTable.node.defaultChild as ddb.CfnGlobalTable;
+      cfnLocalCapacity.addPropertyDeletionOverride(
+        'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings'
+      );
+      cfnLocalCapacity.addPropertyOverride(
+        'WriteProvisionedThroughputSettings.WriteCapacityUnits',
+        update2 ? 4 : 3
+      );
+      // A second region with its own read capacity: `ProvisionedThroughput` would clear it.
+      new ddb.TableV2(this, 'ReplicaOverrideTable', {
+        tableName: `${this.stackName}-table9`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        billing: ddb.Billing.provisioned({
+          readCapacity: ddb.Capacity.fixed(update2 ? 4 : 3),
+          writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+        }),
+        replicas: [{ region: props.secondRegion, readCapacity: ddb.Capacity.fixed(2) }],
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
+      new ddb.TableV2(this, 'AutoScaledWriteTable', {
+        tableName: `${this.stackName}-table8`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        billing: ddb.Billing.provisioned({
+          readCapacity: ddb.Capacity.fixed(update2 ? 4 : 3),
+          writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+        }),
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
     }
 

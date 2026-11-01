@@ -784,6 +784,239 @@ describe('update', () => {
     expect(updates().filter((u) => u['ProvisionedThroughput'])).toEqual([]);
   });
 
+  describe('go-to-k/cdkd#5604: a capacity change with no billing flip', () => {
+    const scaling = (min: number): Rec => ({
+      WriteCapacityAutoScalingSettings: { MinCapacity: min, MaxCapacity: 9 },
+    });
+    const localRead = (read: unknown): Rec[] => [
+      { Region: 'us-east-1', ReadProvisionedThroughputSettings: read },
+    ];
+    const local = (read: unknown, write: Rec): Rec => ({
+      ...BASE,
+      BillingMode: 'PROVISIONED',
+      Replicas: localRead(read),
+      WriteProvisionedThroughputSettings: write,
+    });
+    const throughputs = (): Rec[] =>
+      updates()
+        .filter((u) => u['ProvisionedThroughput'])
+        .map((u) => u['ProvisionedThroughput'] as Rec);
+
+    beforeEach(() => {
+      live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 } };
+    });
+
+    it('sends a flat read change on the local replica with the write side AWS holds', async () => {
+      await update(
+        local({ ReadCapacityUnits: 8 }, scaling(3)),
+        local({ ReadCapacityUnits: 7 }, scaling(3))
+      );
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 3 }]);
+    });
+
+    it('marks a local read change unsettled on Replicas, the key it lives under', async () => {
+      const markUnsettled = vi.fn();
+      await update(
+        local({ ReadCapacityUnits: 8 }, scaling(3)),
+        local({ ReadCapacityUnits: 7 }, scaling(3)),
+        { markUnsettled }
+      );
+      expect(markUnsettled).toHaveBeenCalledWith('Replicas');
+    });
+
+    it('sends a literal write change with the read side AWS holds', async () => {
+      const markUnsettled = vi.fn();
+      await update(
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: '4' }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 }),
+        { markUnsettled }
+      );
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 7, WriteCapacityUnits: 4 }]);
+      expect(markUnsettled).toHaveBeenCalledWith('WriteProvisionedThroughputSettings');
+      expect(markUnsettled).not.toHaveBeenCalledWith('Replicas');
+    });
+
+    it('sends a read and a write change in ONE call', async () => {
+      await update(
+        local({ ReadCapacityUnits: 8 }, { WriteCapacityUnits: 4 }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 })
+      );
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 4 }]);
+    });
+
+    it('sends a table-level read and a write change in one call, too', async () => {
+      await update(
+        {
+          ...provisioned,
+          ReadProvisionedThroughputSettings: { ReadCapacityUnits: 8 },
+          WriteProvisionedThroughputSettings: { WriteCapacityUnits: 4 },
+        },
+        { ...provisioned, WriteProvisionedThroughputSettings: { WriteCapacityUnits: 3 } }
+      );
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 4 }]);
+    });
+
+    it('waits for the table to settle before the next step', async () => {
+      await update(
+        local({ ReadCapacityUnits: 8 }, { WriteCapacityUnits: 4 }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 })
+      );
+      const names = mockSend.mock.calls.map(
+        (call) => (call[0] as { constructor: { name: string } }).constructor.name
+      );
+      expect(names[names.indexOf('UpdateTableCommand') + 1]).toBe('DescribeTableCommand');
+    });
+
+    it('sends no literal for an auto-scaled side, whichever way it changes', async () => {
+      const read = { ReadCapacityUnits: 7 };
+      await update(local(read, scaling(4)), local(read, scaling(3)));
+      await update(local(read, scaling(3)), local(read, { WriteCapacityUnits: 3 }));
+      const autoRead = { ReadCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 9 } };
+      await update(local(autoRead, scaling(3)), local(read, scaling(3)));
+      expect(throughputs()).toEqual([]);
+    });
+
+    it('takes a block declaring a literal beside auto-scaling as auto-scaled', async () => {
+      await update(
+        local(
+          {
+            ReadCapacityUnits: 8,
+            ReadCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 9 },
+          },
+          scaling(3)
+        ),
+        local({ ReadCapacityUnits: 7 }, scaling(3))
+      );
+      expect(throughputs()).toEqual([]);
+    });
+
+    it('sends the literal a block moving off auto-scaling declares', async () => {
+      const autoRead = { ReadCapacityAutoScalingSettings: { MinCapacity: 2, MaxCapacity: 9 } };
+      await update(
+        local({ ReadCapacityUnits: 8 }, scaling(3)),
+        local(autoRead, scaling(3))
+      );
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 3 }]);
+    });
+
+    it('sends nothing for a changed spelling of what AWS holds', async () => {
+      await update(
+        local({ ReadCapacityUnits: '7' }, { WriteCapacityUnits: '3' }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 })
+      );
+      expect(throughputs()).toEqual([]);
+    });
+
+    it('sends nothing on a billing flip beyond the flip, nor to an out-of-band on-demand table', async () => {
+      live = {
+        ...live,
+        BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' },
+        ProvisionedThroughput: { ReadCapacityUnits: 0, WriteCapacityUnits: 0 },
+      };
+      await update(local({ ReadCapacityUnits: 8 }, { WriteCapacityUnits: 4 }), {
+        ...local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 }),
+        BillingMode: 'PAY_PER_REQUEST',
+      });
+      expect(updates().filter((u) => u['ProvisionedThroughput'])).toHaveLength(1);
+      expect(updates().find((u) => u['ProvisionedThroughput'])?.['BillingMode']).toBe('PROVISIONED');
+      mockSend.mockClear();
+      await update(
+        local({ ReadCapacityUnits: 8 }, { WriteCapacityUnits: 4 }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 })
+      );
+      expect(throughputs()).toEqual([]);
+    });
+
+    it('reports a changed literal it cannot read, and sends nothing for it', async () => {
+      await update(
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: { Ref: 'X' } }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 })
+      );
+      expect(throughputs()).toEqual([]);
+      expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+        /WriteProvisionedThroughputSettings\.WriteCapacityUnits is declared but did not resolve.*the old value stays on AWS/
+      );
+    });
+
+    it('does not report an unreadable block the update did not change', async () => {
+      const bag = local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: { Ref: 'X' } });
+      await update({ ...bag, Tags: [] }, bag);
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('did not resolve');
+    });
+
+    describe('with a cross-region replica, whose override ProvisionedThroughput clears', () => {
+      const replicated = (read: number, write: Rec): Rec => ({
+        ...local({ ReadCapacityUnits: read }, write),
+        StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+        Replicas: [
+          ...localRead({ ReadCapacityUnits: read }),
+          { Region: 'us-west-2', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 } },
+        ],
+      });
+      const override = { ReadCapacityUnits: 2 };
+      beforeEach(() => {
+        live = {
+          ...live,
+          StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_AND_OLD_IMAGES' },
+          Replicas: [
+            { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
+            {
+              RegionName: 'us-west-2',
+              ReplicaStatus: 'ACTIVE',
+              ProvisionedThroughputOverride: override,
+            },
+          ],
+        };
+      });
+      const replicaUpdates = (): unknown[] =>
+        updates().flatMap((u) => (u['ReplicaUpdates'] as unknown[] | undefined) ?? []);
+
+      it('sends a local read change as the local override', async () => {
+        await update(replicated(8, scaling(3)), replicated(7, scaling(3)));
+        expect(throughputs()).toEqual([]);
+        expect(replicaUpdates()).toContainEqual({
+          Update: {
+            RegionName: 'us-east-1',
+            ProvisionedThroughputOverride: { ReadCapacityUnits: 8 },
+          },
+        });
+      });
+
+      it('puts back the override AWS held after a write change, read change included', async () => {
+        await update(
+          replicated(8, { WriteCapacityUnits: 4 }),
+          replicated(7, { WriteCapacityUnits: 3 })
+        );
+        expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 4 }]);
+        expect(replicaUpdates()).toEqual([
+          { Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override } },
+        ]);
+        const calls = updates();
+        expect(calls.findIndex((u) => u['ProvisionedThroughput'])).toBeLessThan(
+          calls.findIndex((u) => u['ReplicaUpdates'])
+        );
+      });
+    });
+
+    it('sends a cross-region override with the replica, not ProvisionedThroughput', async () => {
+      const two = (read: number): Rec => ({
+        ...local({ ReadCapacityUnits: 7 }, scaling(3)),
+        StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+        Replicas: [
+          ...localRead({ ReadCapacityUnits: 7 }),
+          { Region: 'us-west-2', ReadProvisionedThroughputSettings: { ReadCapacityUnits: read } },
+        ],
+      });
+      live = { ...live, Replicas: ['us-east-1', 'us-west-2'].map((RegionName) => ({
+          RegionName,
+          ReplicaStatus: 'ACTIVE',
+        })) };
+      await update(two(6), two(5));
+      expect(throughputs()).toEqual([]);
+      expect(JSON.stringify(updates())).toContain('"ProvisionedThroughputOverride":{"ReadCapacityUnits":6}');
+    });
+  });
+
   const onDemand = {
     ...BASE,
     Replicas: ENABLED_REPLICA,
