@@ -2316,6 +2316,7 @@
     "--client-token",
     "--cloud-watch-logs-log-group-arn",
     "--cloud-watch-logs-role-arn",
+    "--cloudwatch-logs-export-configuration",
     "--cluster",
     "--cluster-id",
     "--cluster-identifier",

@@ -726,6 +726,21 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
+    it('marks changed Tags unsettled before their write', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'DescribeDBClustersCommand'
+          ? Promise.resolve({ DBClusters: [{ Status: 'available', DBClusterArn: 'arn' }] })
+          : answer(command)
+      );
+      const marks: string[] = [];
+      await update({ Tags: [{ Key: 'k', Value: 'v' }] }, {}, CLUSTER, {
+        markUnsettled: (key: string) => marks.push(key),
+      });
+      expect(marks).toEqual(['Tags']);
+    });
+
     it('marks what the Modify changes unsettled, before it is sent', async () => {
       armCluster();
       const answer = mockSend.getMockImplementation()!;
@@ -966,6 +981,15 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       reads = 10;
       await update({ PubliclyAccessible: true }, { PubliclyAccessible: true }, INSTANCE);
       expect(reads).toBe(11);
+    });
+
+    it('reads a string record as unchanged, so a same value does not wait', async () => {
+      const reads = () =>
+        mockSend.mock.calls.filter(
+          ([call]) => (call as object).constructor.name === 'DescribeDBInstancesCommand'
+        ).length;
+      await update({ PubliclyAccessible: true }, { PubliclyAccessible: 'True' }, INSTANCE);
+      expect(reads()).toBe(1);
     });
 
     it('--no-wait skips the public-access wait', async () => {
