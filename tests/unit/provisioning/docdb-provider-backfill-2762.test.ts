@@ -339,28 +339,121 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(input['MasterUserPassword']).toBeUndefined();
     });
 
-    it('drift --revert toward false sends no false, which would need a password', async () => {
-      armCluster();
-      await updateCluster(
+    describe('leaving managed mode sends the declared password', () => {
+      it('an unchanged password goes out beside false', async () => {
+        armCluster();
+        await updateCluster(
+          { ManageMasterUserPassword: false, MasterUserPassword: PASSWORD },
+          { ManageMasterUserPassword: true, MasterUserPassword: PASSWORD },
+          { changedProperties: new Set(['ManageMasterUserPassword']) }
+        );
+        expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({
+          ManageMasterUserPassword: false,
+          MasterUserPassword: PASSWORD,
+        });
+      });
+
+      it('a rollback of turning management on sends it too', async () => {
+        armCluster();
+        await updateCluster(
+          { ManageMasterUserPassword: false, MasterUserPassword: PASSWORD },
+          { ManageMasterUserPassword: true, MasterUserPassword: PASSWORD },
+          { replayingState: true }
+        );
+        expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({
+          ManageMasterUserPassword: false,
+          MasterUserPassword: PASSWORD,
+        });
+      });
+
+      it.each([
+        ['absent', {}],
+        ['a mask', { MasterUserPassword: '***' }],
+        ['a reference', { MasterUserPassword: '{{resolve:secretsmanager:s:SecretString:p}}' }],
+      ])('a rollback whose password is %s sends nothing and warns', async (_name, bag) => {
+        armCluster();
+        await updateCluster(
+          { ManageMasterUserPassword: false, ...bag },
+          { ManageMasterUserPassword: true },
+          { replayingState: true }
+        );
+        const input = sent('ModifyDBClusterCommand')[0]!;
+        expect(input['ManageMasterUserPassword']).toBeUndefined();
+        expect(input['MasterUserPassword']).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('ManageMasterUserPassword stays true')
+        );
+      });
+
+      it('a template false with no password still reaches AWS, which answers it', async () => {
+        armCluster();
+        await updateCluster({ ManageMasterUserPassword: false }, { ManageMasterUserPassword: true });
+        expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBe(false);
+      });
+    });
+
+    it.each([
+      ['false', { ManageMasterUserPassword: false }, { ManageMasterUserPassword: true }],
+      [
+        'true',
+        { ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: KEY_ARN },
         { ManageMasterUserPassword: false },
-        { ManageMasterUserPassword: true },
-        { desiredFromAwsReadback: true }
-      );
-      expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBeUndefined();
+      ],
+    ])('drift --revert toward %s changes nothing and warns', async (_name, next, previous) => {
+      armCluster();
+      await updateCluster(next, previous, { desiredFromAwsReadback: true });
+      const input = sent('ModifyDBClusterCommand')[0]!;
+      expect(input['ManageMasterUserPassword']).toBeUndefined();
+      expect(input['MasterUserSecretKmsKeyId']).toBeUndefined();
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('ManageMasterUserPassword stays true')
+        expect.stringContaining('drift --revert does not change ManageMasterUserPassword')
       );
     });
 
-    it('drift --revert toward true sends it', async () => {
-      armCluster();
-      await updateCluster(
-        { ManageMasterUserPassword: true },
-        { ManageMasterUserPassword: false },
-        { desiredFromAwsReadback: true }
-      );
-      expect(sent('ModifyDBClusterCommand')[0]!['ManageMasterUserPassword']).toBe(true);
-      expect(warn).not.toHaveBeenCalled();
+    describe('a record the flag was dropped from, on a cluster that stayed managed', () => {
+      const managed = {
+        MasterUserSecret: { SecretArn: 'arn:aws:secretsmanager:x:1:secret:s', KmsKeyId: KEY_ARN },
+      };
+
+      it('refuses a password from the live read, printing neither value nor ARN', async () => {
+        armCluster(managed);
+        const error = (await updateCluster({ MasterUserPassword: PASSWORD }, {}).catch(
+          (e: unknown) => e
+        )) as Error;
+        expect(error.message).toMatch(/declare ManageMasterUserPassword: false beside it/);
+        expect(error.message).not.toContain(PASSWORD);
+        expect(error.message).not.toContain('secretsmanager');
+        expect(sent('ModifyDBClusterCommand')).toHaveLength(0);
+      });
+
+      it('a flag and key re-declared as they stand send neither', async () => {
+        armCluster(managed);
+        await updateCluster({ ManageMasterUserPassword: true, MasterUserSecretKmsKeyId: 'k' }, {});
+        const input = sent('ModifyDBClusterCommand')[0]!;
+        expect(input['ManageMasterUserPassword']).toBeUndefined();
+        expect(input['MasterUserSecretKmsKeyId']).toBeUndefined();
+      });
+
+      it('leaving reads it too, and sends the declared password', async () => {
+        armCluster(managed);
+        await updateCluster({ ManageMasterUserPassword: false, MasterUserPassword: PASSWORD }, {});
+        expect(sent('ModifyDBClusterCommand')[0]).toMatchObject({
+          ManageMasterUserPassword: false,
+          MasterUserPassword: PASSWORD,
+        });
+      });
+
+      it('an update sending neither adds no read', async () => {
+        armCluster(managed);
+        await updateCluster({ BackupRetentionPeriod: 3 }, { BackupRetentionPeriod: 2 });
+        expect(sent('DescribeDBClustersCommand')).toHaveLength(1);
+      });
+
+      it('a password change on a cluster AWS does not manage still goes out', async () => {
+        armCluster();
+        await updateCluster({ MasterUserPassword: PASSWORD }, {});
+        expect(sent('ModifyDBClusterCommand')[0]!['MasterUserPassword']).toBe(PASSWORD);
+      });
     });
 
     it('a drift --revert unusable flag warns instead of refusing', async () => {
@@ -597,6 +690,53 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       );
       expect(reads).toBe(7);
       expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('waits past the five-minute cap for a StorageType, the slow change', async () => {
+      const cluster = armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      const realNow = Date.now;
+      let now = 0;
+      Date.now = () => (now += 60_000);
+      let reads = 0;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) => {
+        if (cmd.constructor.name !== 'DescribeDBClustersCommand') return answer(cmd);
+        reads += 1;
+        return Promise.resolve({
+          DBClusters: [{ ...cluster, ...(reads < 12 && { StorageType: undefined }) }],
+        });
+      });
+      try {
+        await updateCluster({ StorageType: 'iopt1' }, { StorageType: 'standard' });
+      } finally {
+        Date.now = realNow;
+      }
+      expect(reads).toBeGreaterThan(11);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('names only the key still old, and how to refresh the baseline', async () => {
+      const cluster = armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((cmd: { constructor: { name: string } }) =>
+        cmd.constructor.name === 'DescribeDBClustersCommand'
+          ? Promise.resolve({ DBClusters: [{ ...cluster, NetworkType: 'IPV4' }] })
+          : answer(cmd)
+      );
+      const realNow = Date.now;
+      let now = 0;
+      Date.now = () => (now += 60_000);
+      try {
+        await updateCluster(
+          { NetworkType: 'DUAL', EnableCloudwatchLogsExports: ['audit'] },
+          { NetworkType: 'IPV4' }
+        );
+      } finally {
+        Date.now = realNow;
+      }
+      expect(warn).toHaveBeenCalledWith(
+        'L: the new NetworkType did not read back when cdkd stopped waiting; AWS accepted the change, so cdkd drift may report the old value as the baseline. Once it applies, run cdkd drift --accept.'
+      );
     });
 
     it('warns instead of failing when a change never reads back', async () => {

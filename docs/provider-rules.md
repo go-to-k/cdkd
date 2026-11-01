@@ -1679,9 +1679,10 @@ Checklist when writing or reviewing an `update()`:
   claiming parity. A removed `ManageMasterUserPassword` beside a changed
   `MasterUserPassword` is refused: sending `false` would delete the AWS secret
   on that unmeasured path, so leaving managed mode takes an explicit `false`
-  plus the password. A rollback leaves the password out with a warning, and a
-  `drift --revert` toward `false`, which holds no password, sends nothing and
-  warns. `RotateMasterUserPassword` is a request, not a
+  plus the password. A rollback leaves the password out with a warning. `false`
+  beside a password sends that password whether or not it changed, since AWS
+  refuses `false` without one. A rollback with no password to send, and any
+  `drift --revert` changing `ManageMasterUserPassword`, send nothing and warn. `RotateMasterUserPassword` is a request, not a
   setting: cdkd sends it when the template turns it to `true`, never again while
   it stays `true`, and never from a rollback or `drift --revert`. To rotate
   again, deploy `false`, then `true`.

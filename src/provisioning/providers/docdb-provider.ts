@@ -10,6 +10,7 @@ import {
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
   type DBCluster,
+  type DBInstance,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { markNotGone } from '../not-gone.js';
@@ -143,6 +144,11 @@ function rotateMasterUserPassword(
   );
 }
 
+/** Whether two spellings name one KMS key: the same text, or an ARN and its bare id. */
+function sameKmsKey(a: string, b: string | undefined): boolean {
+  return b !== undefined && a.split('/').pop() === b.split('/').pop();
+}
+
 /**
  * Whether a declared scalar differs from what the cluster or instance holds,
  * read off the record, else the live value. `null`, or an equal one, sends
@@ -230,6 +236,14 @@ const INSTANCE_MODIFY_UNSETTLED_KEYS = [
 
 /** How long an accepted change is waited on before a warning. */
 const SETTLE_MAX_WAIT_MS = 300_000;
+
+/**
+ * The same for a `StorageType` change, the provisioned-cluster change that takes
+ * longest: a real run (go-to-k/cdkd#2762) was still `standard` after five minutes
+ * and the member instance was refused as not `available` for over a minute more.
+ * The bound the cluster's other update waits use.
+ */
+const STORAGE_SETTLE_MAX_WAIT_MS = 1_800_000;
 
 /** Budget kept back from the enclosing resource deadline. */
 const DEADLINE_MARGIN_MS = 30_000;
@@ -839,40 +853,6 @@ export class DocDBProvider implements ResourceProvider {
       origin,
       false
     );
-    const managedPassword = this.readBooleanProperty(
-      'ManageMasterUserPassword',
-      properties,
-      resourceType,
-      logicalId,
-      origin
-    );
-    // Unset is a password cdkd manages by value, whatever a removal leaves.
-    const recordedManaged =
-      coerceCfnBoolean(previousProperties['ManageMasterUserPassword']) ?? false;
-    const secretKmsKey = properties['MasterUserSecretKmsKeyId'] as string | undefined;
-    // `drift --revert` holds no password (its bags are readbacks), and AWS
-    // refuses turning management off without one: said in a warning below.
-    const revertOffNeedsPassword =
-      context?.desiredFromAwsReadback === true && managedPassword === false && recordedManaged;
-    const managedChange =
-      managedPassword !== undefined &&
-      managedPassword !== recordedManaged &&
-      !revertOffNeedsPassword;
-    // The key rides only turning management on or a change while it stays on:
-    // AWS takes one only then, answers the second itself, and never beside false.
-    const sendSecretKey =
-      secretKmsKey != null &&
-      ((managedChange && managedPassword === true) ||
-        (secretKmsKey !== previousProperties['MasterUserSecretKmsKeyId'] &&
-          (managedPassword ?? recordedManaged)));
-    const passwordToSend = this.passwordBesideManaged(
-      managedPassword,
-      managedPassword === undefined && recordedManaged,
-      masterUserPasswordToSend(properties, previousProperties, context),
-      resourceType,
-      logicalId,
-      origin
-    );
     // An absent list is a removal, which CloudFormation keeps (#2762 A/B); only
     // a declared one is a delta. A malformed record only misses disables.
     const logExportConfig =
@@ -884,6 +864,15 @@ export class DocDBProvider implements ResourceProvider {
           );
 
     try {
+      const credentials = await this.planMasterCredentials(
+        physicalId,
+        properties,
+        previousProperties,
+        resourceType,
+        logicalId,
+        context,
+        origin
+      );
       // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
       // cluster. readCurrentState always-emits `[]` for clusters that
       // legitimately have no VPC SGs; the round-trip must NOT translate
@@ -970,16 +959,19 @@ export class DocDBProvider implements ResourceProvider {
             | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           // #5153: only a changed password; any supplied one resets credentials.
-          MasterUserPassword: passwordToSend,
+          MasterUserPassword: credentials.password,
           Port: portToSend,
           CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
           // #2762: a request for this update, never a setting to repeat.
           ...(rotateMasterUserPassword(properties, previousProperties, context) && {
             RotateMasterUserPassword: true,
           }),
-          ...((managedChange || sendSecretKey) &&
-            managedPassword !== undefined && { ManageMasterUserPassword: managedPassword }),
-          ...(sendSecretKey && { MasterUserSecretKmsKeyId: secretKmsKey }),
+          ...(credentials.managed !== undefined && {
+            ManageMasterUserPassword: credentials.managed,
+          }),
+          ...(credentials.secretKmsKey !== undefined && {
+            MasterUserSecretKmsKeyId: credentials.secretKmsKey,
+          }),
           // Each sent only on a change: re-sending asks AWS for one every update.
           ...(networkChange && { NetworkType: networkType }),
           ...(storageChange && { StorageType: storageType }),
@@ -1024,29 +1016,39 @@ export class DocDBProvider implements ResourceProvider {
         // type enabled out of band is not ours.
         const { EnableLogTypes: enabled = [], DisableLogTypes: disabled = [] } =
           logExportConfig ?? {};
-        await this.waitForApplied(
-          logicalId,
-          [
-            ...(logExportConfig !== undefined ? ['EnableCloudwatchLogsExports'] : []),
-            ...(networkChange ? ['NetworkType'] : []),
-            ...(storageChange ? ['StorageType'] : []),
-            ...(scalingChange ? ['ServerlessV2ScalingConfiguration'] : []),
-          ],
-          async () => {
-            const cluster = await this.describeDBCluster(physicalId);
+        const applied = new Map<string, (cluster: DBCluster | undefined) => boolean>();
+        if (logExportConfig !== undefined) {
+          applied.set('EnableCloudwatchLogsExports', (cluster) => {
             const logs = cluster?.EnabledCloudwatchLogsExports;
-            const liveScaling = cluster?.ServerlessV2ScalingConfiguration;
             return (
               enabled.every((type) => logs?.includes(type)) &&
-              !disabled.some((type) => logs?.includes(type)) &&
-              (!networkChange || cluster?.NetworkType === networkType) &&
-              (!storageChange ||
-                (cluster?.StorageType ?? DOCDB_DEFAULT_STORAGE_TYPE) === storageType) &&
-              (!scalingChange ||
-                (liveScaling?.MinCapacity === scaling?.MinCapacity &&
-                  liveScaling?.MaxCapacity === scaling?.MaxCapacity))
+              !disabled.some((type) => logs?.includes(type))
             );
-          }
+          });
+        }
+        if (networkChange) {
+          applied.set('NetworkType', (cluster) => cluster?.NetworkType === networkType);
+        }
+        if (storageChange) {
+          applied.set(
+            'StorageType',
+            (cluster) => (cluster?.StorageType ?? DOCDB_DEFAULT_STORAGE_TYPE) === storageType
+          );
+        }
+        if (scalingChange) {
+          applied.set('ServerlessV2ScalingConfiguration', (cluster) => {
+            const live = cluster?.ServerlessV2ScalingConfiguration;
+            return (
+              live?.MinCapacity === scaling?.MinCapacity &&
+              live?.MaxCapacity === scaling?.MaxCapacity
+            );
+          });
+        }
+        await this.waitForApplied(
+          logicalId,
+          applied,
+          () => this.describeDBCluster(physicalId),
+          storageChange ? STORAGE_SETTLE_MAX_WAIT_MS : SETTLE_MAX_WAIT_MS
         );
       }
 
@@ -1127,11 +1129,7 @@ export class DocDBProvider implements ResourceProvider {
         false
       );
       if (unmeasuredWarning !== undefined) this.logger.warn(unmeasuredWarning);
-      if (revertOffNeedsPassword) {
-        this.logger.warn(
-          safeMsg`${logicalId} (${resourceType}): ManageMasterUserPassword stays true: turning it off needs a MasterUserPassword, which the revert does not hold. Declare both in the template and deploy.`
-        );
-      }
+      if (credentials.heldWarning !== undefined) this.logger.warn(credentials.heldWarning);
 
       return {
         physicalId,
@@ -1145,6 +1143,8 @@ export class DocDBProvider implements ResourceProvider {
         ),
       };
     } catch (error) {
+      // A refusal of ours names its own cause.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         context?.maskSecrets,
@@ -1522,20 +1522,20 @@ export class DocDBProvider implements ResourceProvider {
       this.logger.debug(`Successfully updated DocDB DBInstance ${logicalId}`);
 
       if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForApplied(
-          logicalId,
-          [
-            ...(certificateChange ? ['CACertificateIdentifier'] : []),
-            ...(insightsChange ? ['EnablePerformanceInsights'] : []),
-          ],
-          async () => {
-            const instance = await this.describeDBInstance(physicalId);
-            return (
-              (!certificateChange || instance?.CACertificateIdentifier === certificate) &&
-              (!insightsChange || instance?.PerformanceInsightsEnabled === insights)
-            );
-          }
-        );
+        const applied = new Map<string, (instance: DBInstance | undefined) => boolean>();
+        if (certificateChange) {
+          applied.set(
+            'CACertificateIdentifier',
+            (instance) => instance?.CACertificateIdentifier === certificate
+          );
+        }
+        if (insightsChange) {
+          applied.set(
+            'EnablePerformanceInsights',
+            (instance) => instance?.PerformanceInsightsEnabled === insights
+          );
+        }
+        await this.waitForApplied(logicalId, applied, () => this.describeDBInstance(physicalId));
       }
 
       const described = await this.describeDBInstance(physicalId);
@@ -1735,6 +1735,93 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#2762: what a cluster update sends for the master credentials.
+   *
+   * - The managed side is the record's flag. A record without one (never
+   *   declared, or a deploy dropped it and the cluster stayed managed) reads
+   *   `MasterUserSecret` when a password or the flag is about to go out, and only
+   *   then; its ARN is never kept.
+   * - The flag goes out on a change, or beside a key change.
+   * - Leaving managed mode sends the declared password whether it changed or
+   *   not: AWS refuses `false` without one.
+   * - `drift --revert` never changes the mode, either way: its bags hold no
+   *   password or key. A rollback turning management off with no password to
+   *   send sends nothing. Both leave a warning for after the update.
+   */
+  private async planMasterCredentials(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    context: UpdateContext | undefined,
+    origin: { stateBorne: boolean; physicalId?: string }
+  ): Promise<{
+    managed: boolean | undefined;
+    secretKmsKey: string | undefined;
+    password: string | undefined;
+    heldWarning: string | undefined;
+  }> {
+    const managed = this.readBooleanProperty(
+      'ManageMasterUserPassword',
+      properties,
+      resourceType,
+      logicalId,
+      origin
+    );
+    const changedPassword = masterUserPasswordToSend(properties, previousProperties, context);
+    const recordedFlag = coerceCfnBoolean(previousProperties['ManageMasterUserPassword']);
+    let managedSide = recordedFlag ?? false;
+    let heldKey = previousProperties['MasterUserSecretKmsKeyId'] as string | undefined;
+    if (recordedFlag === undefined && (changedPassword !== undefined || managed !== undefined)) {
+      const secret = (await this.describeDBCluster(physicalId))?.MasterUserSecret;
+      managedSide = secret !== undefined;
+      heldKey ??= secret?.KmsKeyId;
+    }
+    const leaving = managed === false && managedSide;
+    const declared = properties['MasterUserPassword'];
+    const declaredUsable =
+      typeof declared === 'string' &&
+      declared !== SECRET_MASK &&
+      dynamicReferenceTokens(declared).length === 0;
+    const password = leaving ? (declaredUsable ? declared : undefined) : changedPassword;
+    const modeChange = managed !== undefined && managed !== managedSide;
+    const held =
+      context?.desiredFromAwsReadback === true && modeChange
+        ? safeMsg`${logicalId} (${resourceType}): cdkd drift --revert does not change ManageMasterUserPassword, so it is left as it is. Declare it in the template and deploy to change it.`
+        : origin.stateBorne && leaving && password === undefined
+          ? safeMsg`${logicalId} (${resourceType}): ManageMasterUserPassword stays true: turning it off needs a MasterUserPassword, which the restored state does not hold. Declare both in the template and deploy.`
+          : undefined;
+    if (held !== undefined) {
+      return {
+        managed: undefined,
+        secretKmsKey: undefined,
+        password: undefined,
+        heldWarning: held,
+      };
+    }
+    const key = properties['MasterUserSecretKmsKeyId'] as string | undefined;
+    // The key rides only turning management on or a change while it stays on:
+    // AWS takes one only then, answers the second itself, and never beside false.
+    const sendKey =
+      key != null &&
+      ((modeChange && managed === true) || (!sameKmsKey(key, heldKey) && (managed ?? managedSide)));
+    return {
+      managed: modeChange || sendKey ? managed : undefined,
+      secretKmsKey: sendKey ? key : undefined,
+      password: this.passwordBesideManaged(
+        managed,
+        managed === undefined && managedSide,
+        password,
+        resourceType,
+        logicalId,
+        origin
+      ),
+      heldWarning: undefined,
+    };
+  }
+
+  /**
    * A boolean property as what it means, `undefined` when absent. Sending or
    * skipping a call hangs on it, so a value that is no boolean is refused before
    * any call, except from a state-borne bag: left out, with a warning.
@@ -1798,30 +1885,37 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * Poll until a change AWS accepted reads back, so the observed baseline the
+   * Poll until each change AWS accepted reads back, so the observed baseline the
    * engine captures after update() does not record the old value (phantom
    * drift). No key: no call. The change was accepted, so the cap (the tighter
-   * of {@link SETTLE_MAX_WAIT_MS} and what the resource deadline leaves) is a
-   * warning, not a failure.
+   * of `maxWaitMs` and what the resource deadline leaves) is a warning naming
+   * the keys still old, not a failure. The baseline then keeps that old value,
+   * which outlives the change landing, so the warning says how to refresh it.
    */
-  private async waitForApplied(
+  private async waitForApplied<T>(
     logicalId: string,
-    keys: readonly string[],
-    applied: () => Promise<boolean>
+    applied: ReadonlyMap<string, (live: T | undefined) => boolean>,
+    read: () => Promise<T | undefined>,
+    maxWaitMs = SETTLE_MAX_WAIT_MS
   ): Promise<void> {
-    if (keys.length === 0) return;
-    const capMs = Math.min(SETTLE_MAX_WAIT_MS, enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS);
+    if (applied.size === 0) return;
+    const capMs = Math.min(maxWaitMs, enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS);
     const startTime = Date.now();
     let delay = 2_000;
     for (;;) {
-      if (await applied()) return;
-      if (Date.now() - startTime + delay >= capMs) break;
+      const live = await read();
+      const pending = [...applied].filter(([, isApplied]) => !isApplied(live));
+      if (pending.length === 0) return;
+      if (Date.now() - startTime + delay >= capMs) {
+        const keys = pending.map(([key]) => key).join(', ');
+        this.logger.warn(
+          safeMsg`${logicalId}: the new ${keys} did not read back when cdkd stopped waiting; AWS accepted the change, so cdkd drift may report the old value as the baseline. Once it applies, run cdkd drift --accept.`
+        );
+        return;
+      }
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
-    this.logger.warn(
-      safeMsg`${logicalId}: the new ${keys.join(', ')} did not read back when cdkd stopped waiting; AWS accepted the change, so a drift check may report it until it applies.`
-    );
   }
 
   private async describeDBCluster(dbClusterIdentifier: string) {
