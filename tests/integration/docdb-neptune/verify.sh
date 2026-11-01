@@ -19,12 +19,18 @@
 #   3b. assert the baseline fields reached AWS (describe-db-clusters,
 #       describe-db-instances) — proves the step-3d retention assertions
 #       bind to a real, non-default value
+#   3b2. CDKD_TEST_BACKFILL_UPDATE=true redeploy (go-to-k/cdkd#2762): a role
+#       swap, a log type and the scaling cap change in place; drift reads them
+#       clean, then an out-of-band log type must read as drifted.
 #   3c. CDKD_TEST_REMOVAL=true redeploy — DROPS the step-2 fields so
 #       cdkd's Modify* calls see ABSENT fields (removal, issues #1160 /
 #       #5004). A real CloudFormation A/B (#5004) showed CloudFormation
 #       KEEPS the live value of each, so cdkd must send no reset. The same
 #       redeploy changes the DocDB subnet group description, an in-place
 #       update through the provider's update() (issue #2613).
+#       Step 3c also DROPS the go-to-k/cdkd#2762 properties: AssociatedRoles
+#       and EnableCloudwatchLogsExports reset, CopyTagsToSnapshot and
+#       PubliclyAccessible stay, as a real CloudFormation A/B measured.
 #   3d. wait for both clusters to be available, then assert the baseline
 #       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
 #       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
@@ -133,6 +139,8 @@ EVENTS_3G=""
 # Step 3c's captured deploy output (issues #5543's and #5544's warnings are
 # read from it).
 REMOVAL_3C_LOG=""
+# Step 3b2's captured deploy output (issue #2762).
+UPDATE_2762_LOG=""
 # Issue #5184: when this run began (UTC, second precision, the prefix AWS's
 # ClusterCreateTime is compared on). Set before anything is created, so
 # cleanup can delete every final snapshot of the clusters this run created.
@@ -255,6 +263,7 @@ cleanup() {
   [ -n "${EVENT_KEYS_3G}" ] && rm -f "${EVENT_KEYS_3G}"
   [ -n "${EVENTS_3G}" ] && rm -f "${EVENTS_3G}"
   [ -n "${REMOVAL_3C_LOG}" ] && rm -f "${REMOVAL_3C_LOG}"
+  [ -n "${UPDATE_2762_LOG}" ] && rm -f "${UPDATE_2762_LOG}"
   if [ "${rc}" -ne 0 ]; then
     echo "[verify] FAIL (exit ${rc}) — attempting cleanup destroy"
     # Step 3g's out-of-band members first: while one stands, its cluster's
@@ -423,6 +432,56 @@ if [ "${NEPTUNE_BASE_AMVU}" != "false" ]; then
   echo "[verify] FAIL: Neptune instance baseline AutoMinorVersionUpgrade='${NEPTUNE_BASE_AMVU}', expected false" >&2
   exit 1
 fi
+# go-to-k/cdkd#2762: each backfilled property used to route its resource through
+# Cloud Control, which applied it too, so the live values alone pass pre-fix.
+# The ROUTE is what only the backfill turns green.
+assert_neptune_sdk_route() { # usage: assert_neptune_sdk_route <state json>
+  local logical route
+  for logical in NeptuneCluster NeptuneInstance; do
+    route=$(echo "$1" | jq -r --arg l "${logical}" '.resources[$l].provisionedBy // "null"')
+    if [ "${route}" != "sdk" ]; then
+      echo "[verify] FAIL: #2762: ${logical} is provisionedBy '${route}', want 'sdk' (a property the provider does not handle moved it to Cloud Control)" >&2
+      exit 1
+    fi
+  done
+}
+# One line: "<RoleArn tail>:<Status>" of each attached role, CopyTagsToSnapshot,
+# log types, NetworkType, both capacities, PubliclyAccessible; `none` for an
+# empty list. NetworkType stays IPV4, the default: that field proves nothing
+# about the wire, only the route assertion above does.
+neptune_backfill_view() { # usage: neptune_backfill_view <cluster json> <instance json>
+  local cluster instance
+  cluster=$(echo "$1" | jq -r 'def listed: if length == 0 then "none" else join(",") end;
+    [([.AssociatedRoles[]? | ((.RoleArn | split("/") | last) + ":" + .Status)] | listed),
+    (.CopyTagsToSnapshot | tostring), ((.EnabledCloudwatchLogsExports // []) | listed), (.NetworkType // "null"),
+    ((.ServerlessV2ScalingConfiguration.MinCapacity + 0) | tostring), ((.ServerlessV2ScalingConfiguration.MaxCapacity + 0) | tostring)] | join(" ")') || return 1
+  instance=$(echo "$2" | jq -r '.PubliclyAccessible | tostring') || return 1
+  echo "${cluster} ${instance}"
+}
+assert_neptune_sdk_route "${STATE}"
+NEPTUNE_ROLE_A=$(echo "${STATE}" | jq -r '.resources.NeptuneRoleA.physicalId // ""')
+NEPTUNE_ROLE_B=$(echo "${STATE}" | jq -r '.resources.NeptuneRoleB.physicalId // ""')
+if [ -z "${NEPTUNE_ROLE_A}" ] || [ -z "${NEPTUNE_ROLE_B}" ]; then
+  echo "[verify] FAIL: #2762: could not resolve the Neptune roles from state (a='${NEPTUNE_ROLE_A}', b='${NEPTUNE_ROLE_B}')" >&2
+  exit 1
+fi
+NEPTUNE_BASE_INST=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+  --region "${REGION}" --query 'DBInstances[0]' --output json)
+NEPTUNE_2762_BASE=$(neptune_backfill_view "${NEPTUNE_BASE}" "${NEPTUNE_BASE_INST}")
+NEPTUNE_2762_WANT="${NEPTUNE_ROLE_A}:ACTIVE true audit IPV4 1 8 true"
+if [ "${NEPTUNE_2762_BASE}" != "${NEPTUNE_2762_WANT}" ]; then
+  echo "[verify] FAIL: #2762: the live Neptune values after the create read '${NEPTUNE_2762_BASE}', want '${NEPTUNE_2762_WANT}'" >&2
+  exit 1
+fi
+# AWS may report more zones than the declared list, and the subnet group alone
+# may put these in the list: the wire is the unit suite's, this reads the record.
+NEPTUNE_AZ_MISSING=$(jq -nr --argjson state "${STATE}" --argjson live "${NEPTUNE_BASE}" \
+  '($state.resources.NeptuneCluster.properties.AvailabilityZones // ["<none recorded>"]) - $live.AvailabilityZones | join(",")')
+if [ -n "${NEPTUNE_AZ_MISSING}" ]; then
+  echo "[verify] FAIL: #2762: the live cluster does not report the recorded AvailabilityZones '${NEPTUNE_AZ_MISSING}'" >&2
+  exit 1
+fi
+echo "[verify] step 3b ok: the backfilled Neptune properties read back, and both resources are on the SDK route (#2762)"
 # Issue #1160 Port removal arm: both clusters start on a non-default port.
 DOCDB_BASE_PORT=$(echo "${DOCDB_BASE}" | jq -r '.Port // "null"')
 NEPTUNE_BASE_PORT=$(echo "${NEPTUNE_BASE}" | jq -r '.Port // "null"')
@@ -558,6 +617,127 @@ if [ "${DOCDB_SG_DESC}" != "cdkd integ docdb subnet group" ]; then
   echo "[verify] FAIL: DocDB subnet group ${DOCDB_SG_NAME} description is '${DOCDB_SG_DESC}' after create, expected 'cdkd integ docdb subnet group'" >&2
   exit 1
 fi
+
+# go-to-k/cdkd#2762, step 3b2: change the backfilled properties in place.
+neptune_view_now() {
+  local cluster instance
+  cluster=$(aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0]' --output json) || return 1
+  instance=$(aws neptune describe-db-instances --db-instance-identifier "${NEPTUNE_INSTANCE_ID}" \
+    --region "${REGION}" --query 'DBInstances[0]' --output json) || return 1
+  neptune_backfill_view "${cluster}" "${instance}"
+}
+# Assert the view reads $1. cdkd waits for these before it reports, so the
+# bound is short: two minutes for AWS's own settling.
+assert_neptune_view() { # usage: assert_neptune_view <want> <step label>
+  local now="" i
+  for i in $(seq 1 8); do
+    now=$(neptune_view_now) || return 1
+    [ "${now}" = "$1" ] && return 0
+    [ "${i}" -lt 8 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: $2: the live Neptune values read '${now}', want '$1'" >&2
+  exit 1
+}
+neptune_cluster_available() {
+  local status i
+  for i in $(seq 1 40); do
+    status=$(aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" \
+      --region "${REGION}" --query 'DBClusters[0].Status' --output text) || return 1
+    [ "${status}" = "available" ] && return 0
+    [ "${i}" -lt 40 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: the Neptune cluster is '${status}', want available" >&2
+  exit 1
+}
+# Send a log-export change, waiting out the moment a cluster that read
+# `available` starts an earlier change and refuses the call (#5194's shape).
+modify_neptune_log_exports() { # usage: modify_neptune_log_exports <config json>
+  local err i
+  for i in $(seq 1 20); do
+    neptune_cluster_available
+    if err=$(aws neptune modify-db-cluster --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" \
+      --cloudwatch-logs-export-configuration "$1" --apply-immediately 2>&1 >/dev/null); then
+      return 0
+    fi
+    case "${err}" in
+      *InvalidDBClusterState*) ;;
+      *)
+        echo "[verify] FAIL: #2762: modify-db-cluster refused: ${err}" >&2
+        exit 1
+        ;;
+    esac
+    [ "${i}" -lt 20 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: the Neptune cluster kept refusing the log-export change: ${err}" >&2
+  exit 1
+}
+neptune_log_types() {
+  aws neptune describe-db-clusters --db-cluster-identifier "${NEPTUNE_CLUSTER_ID}" --region "${REGION}" \
+    --query 'DBClusters[0].EnabledCloudwatchLogsExports' --output json | jq -r '(. // []) | sort | join(",")'
+}
+wait_neptune_log_types() { # usage: wait_neptune_log_types <want>
+  local now="" i
+  for i in $(seq 1 40); do
+    now=$(neptune_log_types) || return 1
+    [ "${now}" = "$1" ] && return 0
+    [ "${i}" -lt 40 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: the Neptune log types read '${now}', want '$1'" >&2
+  exit 1
+}
+echo "[verify] step 3b2: CDKD_TEST_BACKFILL_UPDATE=true redeploy (#2762)"
+UPDATE_2762_LOG="$(mktemp)"
+if ! CDKD_TEST_BACKFILL_UPDATE=true ${CLI} deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --verbose \
+  "${TIMEOUT_OVERRIDES[@]}" 2>&1 | tee "${UPDATE_2762_LOG}"; then
+  echo "[verify] FAIL: step 3b2 update redeploy failed" >&2
+  exit 1
+fi
+UPDATE_2762_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${UPDATE_2762_LOG}")"
+rm -f "${UPDATE_2762_LOG}"
+UPDATE_2762_LOG=""
+assert_neptune_sdk_route "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+assert_neptune_view "${NEPTUNE_ROLE_B}:ACTIVE true slowquery IPV4 1 16 true" "after the update redeploy"
+# The drift baseline is the observedProperties the deploy captured from
+# readCurrentState, so this first read compares readCurrentState with itself:
+# it proves the read is stable, not that it matches the template.
+drift_2762_paths() { # prints the backfilled paths cdkd drift reports, comma-joined
+  local json logical seen
+  json=$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)
+  # Compared only: a failed read lands in `notCompared`, and a crashed drift
+  # prints nothing; neither may read as "no drift".
+  for logical in NeptuneCluster NeptuneInstance; do
+    seen=$(echo "${json}" | jq -r --arg l "${logical}" '[.[] | ((.clean // []) + (.drifted // []))[] | select(.logicalId == $l)] | length > 0' || echo false)
+    if [ "${seen}" != "true" ]; then
+      echo "[verify] FAIL: #2762: cdkd drift did not compare ${logical}: ${json}" >&2
+      return 1
+    fi
+  done
+  echo "${json}" | jq -r '[.[].drifted[] | select(.logicalId == "NeptuneCluster" or .logicalId == "NeptuneInstance")
+    | .changes[]?.path | select(test("^(AssociatedRoles|AvailabilityZones|CopyTagsToSnapshot|EnableCloudwatchLogsExports|NetworkType|ServerlessScalingConfiguration|PubliclyAccessible|AllowMajorVersionUpgrade)"))] | join(",")'
+}
+DRIFT_2762=$(drift_2762_paths) || exit 1
+if [ -n "${DRIFT_2762}" ]; then
+  echo "[verify] FAIL: #2762: cdkd drift reports the backfilled properties right after a deploy: '${DRIFT_2762}'" >&2
+  exit 1
+fi
+# What the clean read cannot show: an out-of-band change must read as drift.
+modify_neptune_log_exports '{"EnableLogTypes":["audit"]}'
+wait_neptune_log_types "audit,slowquery"
+DRIFT_2762=$(drift_2762_paths) || exit 1
+case "${DRIFT_2762}" in
+  *EnableCloudwatchLogsExports*) ;;
+  *)
+    echo "[verify] FAIL: #2762: an out-of-band log type did not read as drifted (paths '${DRIFT_2762}')" >&2
+    exit 1
+    ;;
+esac
+modify_neptune_log_exports '{"DisableLogTypes":["audit"]}'
+wait_neptune_log_types "slowquery"
+neptune_cluster_available
+echo "[verify] step 3b2 ok: the backfilled Neptune properties changed in place, and drift reads a stable baseline and an out-of-band log type (#2762)"
 
 echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 / #5004 fields)"
 REMOVAL_3C_LOG="$(mktemp)"
@@ -726,7 +906,9 @@ fi
 # The kept removals are named, one line per resource. Before #5544 cdkd kept
 # them silently, so this is #5544's only post-fix-only assertion.
 for needle in \
-  "NeptuneCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, DBClusterParameterGroupName, DeletionProtection, IamAuthEnabled, BackupRetentionPeriod, DBPort were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them." \
+  "NeptuneCluster (AWS::Neptune::DBCluster): properties EngineVersion, PreferredBackupWindow, DBClusterParameterGroupName, DeletionProtection, IamAuthEnabled, BackupRetentionPeriod, DBPort, CopyTagsToSnapshot were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them." \
+  "NeptuneCluster (AWS::Neptune::DBCluster): properties NetworkType, ServerlessScalingConfiguration were removed from the template; cdkd leaves the current AWS values in place. Declare them to change them." \
+  "NeptuneInstance (AWS::Neptune::DBInstance): PubliclyAccessible was removed from the template; the instance stays publicly accessible, as CloudFormation leaves it. Set PubliclyAccessible: false to close it." \
   "NeptuneInstance (AWS::Neptune::DBInstance): properties DBParameterGroupName, AutoMinorVersionUpgrade were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."; do
   if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
     echo "[verify] FAIL: #5544: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
@@ -734,6 +916,20 @@ for needle in \
   fi
 done
 echo "[verify] step 3d ok: Neptune engine, backup window and both parameter groups kept after removal and named in cdkd's warning (#5544, matches CloudFormation)"
+
+# go-to-k/cdkd#2762: the removal. A real CloudFormation A/B resets the roles and
+# log exports and keeps CopyTagsToSnapshot and PubliclyAccessible; the other two
+# are unmeasured and stay live.
+assert_neptune_sdk_route "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+assert_neptune_view "none true none IPV4 1 16 true" "after the removal redeploy"
+# cdkd's bounded waits must have settled, not timed out into a warning.
+for needle in "did not read back" "had not settled"; do
+  if grep -qF "${needle}" <<<"${UPDATE_2762_PLAIN}${REMOVAL_3C_PLAIN}"; then
+    echo "[verify] FAIL: #2762: a deploy gave up waiting: its output carries '${needle}'" >&2
+    exit 1
+  fi
+done
+echo "[verify] step 3d ok: roles and log exports cleared, CopyTagsToSnapshot and PubliclyAccessible kept, no settle wait gave up (#2762, matches CloudFormation)"
 
 # Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must
 # move to the VPC default group, as CloudFormation does; a pre-fix cdkd sends

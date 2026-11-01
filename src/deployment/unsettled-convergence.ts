@@ -263,13 +263,16 @@ export async function unsettledAfterUpdate(
             args.logicalId,
             args.resourceType,
             names,
-            args.recordedProperties
+            args.recordedProperties,
+            desired
           );
     const live = await readLive(args, names);
     if (live === undefined) return [...moving].sort();
     if (live === 'unreadable') return [...names].sort();
     const ignorePaths = provider.getDriftUnknownPaths?.(args.resourceType) ?? [];
     const unorderedPaths = provider.getDriftUnorderedPaths?.(args.resourceType) ?? [];
+    const canonical = (bag: Record<string, unknown>): Record<string, unknown> =>
+      provider.canonicalizeUnsettledProperties?.(args.resourceType, bag) ?? bag;
     const kept: string[] = [];
     for (const name of names) {
       if (moving.has(name)) {
@@ -282,8 +285,8 @@ export async function unsettledAfterUpdate(
       }
       if (!Object.hasOwn(live, name) || desired[name] === undefined) continue;
       const drift = calculateResourceDrift(
-        { [name]: desired[name] },
-        { [name]: live[name] },
+        canonical({ [name]: desired[name] }),
+        canonical({ [name]: live[name] }),
         { ignorePaths, unorderedPaths }
       );
       if (drift.length > 0) kept.push(name);

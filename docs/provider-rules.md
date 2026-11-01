@@ -1652,8 +1652,20 @@ Checklist when writing or reviewing an `update()`:
   `PreferredMaintenanceWindow` and `DBClusterParameterGroupName`, and a removed
   DBInstance `DBParameterGroupName` and `PreferredMaintenanceWindow` (neither
   group moves back to `default.neptune1.4`). Both Neptune types declare
-  `removalHandledInUpdate`, and `update()` names every kept removal in one
-  warning per resource.
+  `removalHandledInUpdate`. `update()` names the measured kept removals in one
+  warning, the ones no A/B has measured in a second that claims no parity, and
+  a removed `PubliclyAccessible: true` in its own.
+  Real CloudFormation A/B, go-to-k/cdkd#2762 (us-east-1, one update dropping
+  every key; read at once and after about four minutes, nothing pending): a
+  Neptune DBCluster RESETS a removed `AssociatedRoles` (detached) and
+  `EnableCloudwatchLogsExports` (none exported), so `update()` diffs both, and
+  KEEPS `CopyTagsToSnapshot`. A DBInstance KEEPS `PubliclyAccessible: true`
+  (with `IamAuthEnabled` on, which a public Neptune instance needs), so cdkd
+  sends no reset and says the instance stays public. An update adding
+  `PubliclyAccessible: true` that then failed and rolled back left it true too
+  (read after UPDATE_ROLLBACK_COMPLETE and about four minutes later), so a
+  rollback sends no reset either. Not measured:
+  `ServerlessScalingConfiguration` and `NetworkType`.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

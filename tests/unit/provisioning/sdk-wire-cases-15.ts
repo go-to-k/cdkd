@@ -618,21 +618,46 @@ const NEPTUNE_SUBNET_GROUP_CASE: TypeCase = {
  */
 function neptuneArmCluster(_physicalId: string, bag: Bag): void {
   let groups = (bag['VpcSecurityGroupIds'] as string[] | undefined) ?? [];
+  // The roles the live cluster holds: the bag's, then what the calls change.
+  let roles: Bag[] = ((bag['AssociatedRoles'] as Bag[] | undefined) ?? []).map((role) => ({
+    ...role,
+    Status: 'ACTIVE',
+  }));
+  let logTypes = (bag['EnableCloudwatchLogsExports'] as string[] | undefined) ?? [];
+  let networkType = bag['NetworkType'];
   setOutputOverrides({
+    AddRoleToDBClusterCommand: (input) => {
+      roles.push({ ...input, Status: 'ACTIVE' });
+      return {};
+    },
+    RemoveRoleFromDBClusterCommand: (input) => {
+      roles = roles.filter((role) => role['RoleArn'] !== input['RoleArn']);
+      return {};
+    },
     ModifyDBClusterCommand: (input) => {
       const sent = input['VpcSecurityGroupIds'] as string[] | undefined;
       if (sent !== undefined) groups = sent;
+      networkType = input['NetworkType'] ?? networkType;
+      const logs = input['CloudwatchLogsExportConfiguration'] as
+        | { EnableLogTypes?: string[]; DisableLogTypes?: string[] }
+        | undefined;
+      logTypes = [...logTypes, ...(logs?.EnableLogTypes ?? [])].filter(
+        (type) => !logs?.DisableLogTypes?.includes(type)
+      );
       return {};
     },
     DescribeDBClustersCommand: () => ({
       DBClusters: [
         {
           DBClusterIdentifier: NEPTUNE_CLUSTER_ID,
+          EnabledCloudwatchLogsExports: logTypes,
+          NetworkType: networkType,
           DBClusterArn: NEPTUNE_CLUSTER_ARN,
           Status: 'available',
           DBSubnetGroup: NEPTUNE_SUBNET_GROUP,
           DBClusterMembers: [],
           VpcSecurityGroups: groups.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
+          AssociatedRoles: roles,
         },
       ],
     }),
@@ -654,6 +679,32 @@ const PORT_SHADOWED = `DBPort wins when both are declared: Port is read-only in 
 /** A port removal sends nothing: CloudFormation keeps the live port (#1160 A/B, 8183 stayed 8183). */
 const PORT_KEPT = `left in place on removal: a CloudFormation A/B (#1160) showed a removed DBPort KEEPS the live port, so update() sends no reset and warns (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL)`;
 
+/** An entry without its RoleArn is refused before any call: the gap is what gets detached. */
+const ROLES_REFUSED: Throw = {
+  says: /AssociatedRoles must be a list of objects with a RoleArn/,
+  why: 'a malformed list never reads as empty, or an update would detach every role',
+};
+
+/** The schema requires both capacities, and AWS has no one-sided block to send. */
+const SCALING_REFUSED: Throw = {
+  says: /ServerlessScalingConfiguration must be/,
+  why: 'a block missing a capacity is refused before any call, not sent one-sided',
+};
+
+/** As {@link KEPT_5004}, measured by the #2762 A/B; update() also names it in a warning. */
+const KEPT_2762 = (key: string): string =>
+  `left in place on removal and warned about: Modify* treats an absent member as "no change", and a CloudFormation A/B (#2762) measured a removed ${key} KEPT (${NEPTUNE_SRC})`;
+
+/** Kept by ModifyDBCluster / ModifyDBInstance, and named in update()'s own warning. */
+const KEPT_UNMEASURED = (key: string): string =>
+  `left in place on removal and warned about: Modify* treats an absent member as "no change", and no CloudFormation A/B has measured ${key} yet (#2762), so the warning claims no parity (${NEPTUNE_SRC}, CLUSTER_UNMEASURED_ON_REMOVAL / INSTANCE_UNMEASURED_ON_REMOVAL)`;
+
+/** Valid only beside AllowMajorVersionUpgrade, on a major EngineVersion change. */
+const MAJOR_UPGRADE_ONLY = `sent only with a major EngineVersion change, which no bag spells; neptune-provider-backfill-2762.test.ts covers that arm. CreateDBCluster has no such member (${NEPTUNE_SRC}, updateDBCluster)`;
+
+/** No create member, and no live value to reset: ModifyDBInstance takes it per call. */
+const INSTANCE_MODIFY_ONLY = `CreateDBInstance has no such member, and the schema calls it write-only: it only reaches ModifyDBInstance (${NEPTUNE_SRC}, updateDBInstance)`;
+
 const NEPTUNE_CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::Neptune::DBCluster',
   provider: () => new NeptuneProvider(),
@@ -670,6 +721,25 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
       command: 'ModifyDBClusterCommand',
       names: '=sg-2',
       notNames: '=sg-1',
+    },
+    {
+      path: ['AssociatedRoles', 0],
+      command: 'RemoveRoleFromDBClusterCommand',
+      names: 'role-a',
+      notNames: 'role-b',
+    },
+    {
+      path: ['AssociatedRoles', 1],
+      command: 'RemoveRoleFromDBClusterCommand',
+      names: 'role-b',
+      notNames: 'role-a',
+    },
+    // ModifyDBCluster takes the delta: the dropped type goes in DisableLogTypes.
+    {
+      path: ['EnableCloudwatchLogsExports', 0],
+      command: 'ModifyDBClusterCommand',
+      names: '=audit',
+      notNames: '=slowquery',
     },
   ],
   bags: [
@@ -690,12 +760,32 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
         IamAuthEnabled: true,
         DeletionProtection: true,
         Tags: fresh(NEPTUNE_TAGS),
+        AssociatedRoles: [
+          { RoleArn: `arn:aws:iam::${ACCOUNT}:role/role-a`, FeatureName: 'feature-a' },
+          { RoleArn: `arn:aws:iam::${ACCOUNT}:role/role-b`, FeatureName: 'feature-b' },
+        ],
+        AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+        CopyTagsToSnapshot: true,
+        DBInstanceParameterGroupName: 'instance-params',
+        EnableCloudwatchLogsExports: ['audit', 'slowquery'],
+        NetworkType: 'DUAL',
+        ServerlessScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
       },
       expectedSilent: {
         'update-remove:DBPort': PORT_KEPT,
         'update-remove:BackupRetentionPeriod': KEPT_5004('BackupRetentionPeriod'),
         'update-remove:IamAuthEnabled': KEPT_5004('IamAuthEnabled'),
         'update-remove:DeletionProtection': KEPT_5004('DeletionProtection'),
+        'update-remove:CopyTagsToSnapshot': KEPT_2762('CopyTagsToSnapshot'),
+        'update-remove:NetworkType': KEPT_UNMEASURED('NetworkType'),
+        'update-remove:ServerlessScalingConfiguration': KEPT_UNMEASURED(
+          'ServerlessScalingConfiguration'
+        ),
+        ...Object.fromEntries(
+          ['create', 'create-vary', 'update-add', 'update-remove', 'update-vary'].map(
+            (direction) => [`${direction}:DBInstanceParameterGroupName`, MAJOR_UPGRADE_ONLY]
+          )
+        ),
         ...Object.fromEntries(
           [
             'EngineVersion',
@@ -711,7 +801,22 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
           ])
         ),
       },
-      expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
+      expectedRemovalThrows: {
+        ...TAG_THROWS(ALL_DIRECTIONS, 2),
+        ...Object.fromEntries(
+          ALL_DIRECTIONS.flatMap((direction) =>
+            [0, 1].map((i) => [`${direction}:AssociatedRoles.${i}.RoleArn`, ROLES_REFUSED])
+          )
+        ),
+        ...Object.fromEntries(
+          ALL_DIRECTIONS.flatMap((direction) =>
+            ['MinCapacity', 'MaxCapacity'].map((member) => [
+              `${direction}:ServerlessScalingConfiguration.${member}`,
+              SCALING_REFUSED,
+            ])
+          )
+        ),
+      },
     },
     {
       // The pair as one template could declare it: which one reaches the wire.
@@ -740,13 +845,19 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
 
 /** DescribeDBInstances answers the instance available with its ARN: the create wait settles at once. */
 function neptuneArmInstance(): void {
+  let publiclyAccessible: unknown;
   setOutputOverrides({
+    ModifyDBInstanceCommand: (input) => {
+      publiclyAccessible = input['PubliclyAccessible'];
+      return {};
+    },
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
         {
           DBInstanceIdentifier: NEPTUNE_INSTANCE_ID,
           DBInstanceArn: INSTANCE_ARN,
           DBInstanceStatus: 'available',
+          PubliclyAccessible: publiclyAccessible,
         },
       ],
     }),
@@ -778,6 +889,8 @@ const NEPTUNE_INSTANCE_CASE: TypeCase = {
         AutoMinorVersionUpgrade: true,
         DeletionProtection: true,
         Tags: fresh(NEPTUNE_TAGS),
+        PubliclyAccessible: true,
+        AllowMajorVersionUpgrade: true,
       },
       expectedSilent: {
         'update-remove:DBInstanceClass': `DBInstanceClass is required by the schema (#top required), so no deployable template removes it; update() sends only a declared value (${NEPTUNE_SRC}, updateDBInstance)`,
@@ -785,6 +898,10 @@ const NEPTUNE_INSTANCE_CASE: TypeCase = {
         'update-remove:DeletionProtection': `not a CloudFormation property of AWS::Neptune::DBInstance (#5004), so never reset on removal; the pass-through is kept as is (${NEPTUNE_SRC}, removalHandledInUpdate)`,
         'update-remove:DBParameterGroupName': KEPT_5544('DBParameterGroupName'),
         'update-remove:PreferredMaintenanceWindow': KEPT_5544('PreferredMaintenanceWindow'),
+        'update-remove:PubliclyAccessible': KEPT_2762('PubliclyAccessible'),
+        'create:AllowMajorVersionUpgrade': INSTANCE_MODIFY_ONLY,
+        'create-vary:AllowMajorVersionUpgrade': INSTANCE_MODIFY_ONLY,
+        'update-remove:AllowMajorVersionUpgrade': INSTANCE_MODIFY_ONLY,
       },
       expectedRemovalThrows: TAG_THROWS(ALL_DIRECTIONS, 2),
     },

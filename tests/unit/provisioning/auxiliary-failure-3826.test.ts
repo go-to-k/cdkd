@@ -42,6 +42,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { ECRClient } from '@aws-sdk/client-ecr';
 import { EFSClient } from '@aws-sdk/client-efs';
+import { NeptuneClient } from '@aws-sdk/client-neptune';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { EventBridgeClient } from '@aws-sdk/client-eventbridge';
@@ -78,6 +79,7 @@ import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynam
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ECRProvider } from '../../../src/provisioning/providers/ecr-provider.js';
 import { EFSProvider } from '../../../src/provisioning/providers/efs-provider.js';
+import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-provider.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { EventBridgeBusProvider } from '../../../src/provisioning/providers/eventbridge-bus-provider.js';
 import { EventBridgeRuleProvider } from '../../../src/provisioning/providers/eventbridge-rule-provider.js';
@@ -441,6 +443,27 @@ const CASES: Case[] = [
       CreateRepositoryCommand: {
         repository: { repositoryName: 'repo', repositoryArn: 'arn:aws:ecr:us-east-1:123456789012:repository/repo' },
       },
+    },
+  },
+  {
+    // go-to-k/cdkd#2762: a role is attached after CreateDBCluster returned.
+    name: 'neptune AWS::Neptune::DBCluster',
+    provider: () => new NeptuneProvider(),
+    resourceType: 'AWS::Neptune::DBCluster',
+    properties: {
+      DBClusterIdentifier: 'cluster',
+      AssociatedRoles: [{ RoleArn: 'arn:aws:iam::123456789012:role/r' }],
+    },
+    clients: [NeptuneClient],
+    main: 'CreateDBClusterCommand',
+    mainAwsError: {
+      name: 'DBClusterAlreadyExistsFault',
+      message: 'DB Cluster already exists',
+    },
+    aux: 'AddRoleToDBClusterCommand',
+    responses: {
+      CreateDBClusterCommand: { DBCluster: {} },
+      DescribeDBClustersCommand: { DBClusters: [{ Status: 'available' }] },
     },
   },
   {

@@ -41,6 +41,14 @@ export interface InstanceModifyRetryOptions {
   readonly logger: Logger;
   /** The debug-line label, e.g. `Neptune DBInstance`. */
   readonly label: string;
+  /** What a failure calls the resource: `instance` unless the caller is a cluster call. */
+  readonly subject?: 'instance' | 'cluster';
+  /**
+   * Which refusal is waited out: {@link isModifyNotAvailableRefusal} unless a
+   * call words its own. Such a refusal need not mean the status is anything but
+   * `available`, so running out of budget then reports the last status read.
+   */
+  readonly isRefusal?: (error: unknown) => boolean;
   readonly logicalId: string;
   /** What the engine's per-resource deadline leaves (`enclosingDeadlineRemainingMs()`). */
   readonly remainingMs: number;
@@ -78,42 +86,53 @@ export interface InstanceModifyRetryOptions {
 export async function modifyDbInstanceWhenAvailable(
   opts: InstanceModifyRetryOptions
 ): Promise<void> {
+  const noun = opts.subject ?? 'instance';
   const capMs = opts.maxWaitMs ?? INSTANCE_MODIFY_RETRY_WAIT_MS;
   const deadlineBound = opts.remainingMs - DEADLINE_MARGIN_MS < capMs;
   const budgetMs = deadlineBound ? opts.remainingMs - DEADLINE_MARGIN_MS : capMs;
   const startTime = Date.now();
   let delay = 5_000;
   let refusals = 0;
+  let lastStatus: string | undefined;
   for (;;) {
     try {
       await opts.send();
       return;
     } catch (error) {
-      if (!isModifyNotAvailableRefusal(error)) throw error;
+      if (!(opts.isRefusal ?? isModifyNotAvailableRefusal)(error)) throw error;
       const subject =
-        (error as Error).name === 'InvalidDBClusterStateFault'
-          ? 'the instance or its cluster is'
-          : 'the instance is';
+        noun === 'cluster'
+          ? 'the cluster is'
+          : (error as Error).name === 'InvalidDBClusterStateFault'
+            ? 'the instance or its cluster is'
+            : 'the instance is';
       refusals += 1;
       opts.logger.debug(
         safeMsg`${opts.label} ${opts.logicalId}: update refused as not 'available' (refusal ${String(refusals)}); waiting for it to return to 'available' before retrying`
       );
       for (;;) {
         if (Date.now() - startTime + delay >= budgetMs) {
+          if (opts.isRefusal !== undefined) {
+            throw new Error(
+              `AWS kept refusing the update as the ${noun} being busy, and cdkd stopped retrying after ${String(refusals)} ${refusals === 1 ? 'refusal' : 'refusals'}; it last read status '${lastStatus ?? 'unknown'}'. Re-run the deploy once the ${noun} has settled${deadlineBound ? ', or with a longer --resource-timeout' : ''}`,
+              { cause: error }
+            );
+          }
           throw new Error(
             deadlineBound
-              ? `AWS refused the update because ${subject} not in the 'available' state, and the resource timeout leaves no more time to wait for it; re-run the deploy once the instance is 'available', or with a longer --resource-timeout`
-              : `AWS refused the update because ${subject} not in the 'available' state, and it did not return to 'available' within ${String(Math.max(1, Math.round(capMs / 60_000)))} minutes; re-run the deploy once the instance is 'available'`,
+              ? `AWS refused the update because ${subject} not in the 'available' state, and the resource timeout leaves no more time to wait for it; re-run the deploy once the ${noun} is 'available', or with a longer --resource-timeout`
+              : `AWS refused the update because ${subject} not in the 'available' state, and it did not return to 'available' within ${String(Math.max(1, Math.round(capMs / 60_000)))} minutes; re-run the deploy once the ${noun} is 'available'`,
             { cause: error }
           );
         }
         await opts.sleep(delay);
         delay = Math.min(delay * 2, 10_000);
         const status = await opts.readStatus();
+        lastStatus = status;
         if (status === undefined || isProceedDbStatus(status)) break;
         if (isTerminalDbWaitStatus(status)) {
           throw new Error(
-            `AWS refused the update because ${subject} not in the 'available' state, and it reads status '${status}', which does not end on its own; re-run the deploy once the instance is 'available'`,
+            `AWS refused the update because ${subject} not in the 'available' state, and it reads status '${status}', which does not end on its own; re-run the deploy once the ${noun} is 'available'`,
             { cause: error }
           );
         }

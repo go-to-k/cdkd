@@ -116,24 +116,11 @@
       "FunctionScalingConfig"
     ],
     "AWS::Neptune::DBCluster": [
-      "AssociatedRoles",
-      "AvailabilityZones",
-      "CopyTagsToSnapshot",
-      "DBInstanceParameterGroupName",
-      "EnableCloudwatchLogsExports",
-      "GlobalClusterIdentifier",
-      "NetworkType",
       "RestoreToTime",
       "RestoreType",
-      "ServerlessScalingConfiguration",
       "SnapshotIdentifier",
       "SourceDBClusterIdentifier",
       "UseLatestRestorableTime"
-    ],
-    "AWS::Neptune::DBInstance": [
-      "AllowMajorVersionUpgrade",
-      "DBSnapshotIdentifier",
-      "PubliclyAccessible"
     ],
     "AWS::RDS::DBCluster": [
       "AllocatedStorage",

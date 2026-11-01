@@ -593,6 +593,12 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     members: {
       DBPort: ['Port'],
       IamAuthEnabled: ['EnableIAMDatabaseAuthentication'],
+      // ModifyDBCluster takes the delta, not the list.
+      EnableCloudwatchLogsExports: ['CloudwatchLogsExportConfiguration.EnableLogTypes'],
+    },
+    containers: {
+      AssociatedRoles: ['AddRoleToDBClusterCommand'],
+      ServerlessScalingConfiguration: ['ServerlessV2ScalingConfiguration'],
     },
   },
   'AWS::RDS::DBCluster': {

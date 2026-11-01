@@ -1440,13 +1440,32 @@ export interface ResourceProvider {
     attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined>;
 
+  /**
+   * Canonicalize a bag for the proof after a successful `update()`
+   * (`unsettledAfterUpdate`), applied to both sides of each unsettled name, so
+   * it runs on a SINGLE-KEY bag. Separate from
+   * {@link canonicalizeDriftProperties} on purpose: that one may strip a member
+   * drift cannot compare, which here would prove a value settled unread.
+   * Absent: the values are compared as they are.
+   */
+  canonicalizeUnsettledProperties?(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown>;
+
   unsettledInTransition?(
     physicalId: string,
     logicalId: string,
     resourceType: string,
     names: ReadonlySet<string>,
     /** The record's `properties`, for a read needing a parent id (an EMR group's `JobFlowId`). */
-    recordedProperties?: Record<string, unknown>
+    recordedProperties?: Record<string, unknown>,
+    /**
+     * The bag the update sent, present only on the proof after a successful
+     * `update()`: a provider whose resource reads as moving because of that
+     * update can leave the verdict to the value comparison.
+     */
+    desiredProperties?: Record<string, unknown>
   ): Promise<ReadonlySet<string>>;
 
   /**
