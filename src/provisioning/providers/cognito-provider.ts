@@ -324,6 +324,14 @@ function echoesCustomerManagedKey(pool: UserPoolType): boolean {
   return pool.KeyConfiguration?.KeyType === 'CUSTOMER_MANAGED_KEY';
 }
 
+/** What a `DeletionProtection`-only write resets on `pool`, for the warn and the ERROR report. */
+function bareFlipResets(pool: UserPoolType): string {
+  const reset = ['self sign-up', 'Lambda triggers', 'advanced security'];
+  if (echoesDeveloperEmail(pool)) reset.push('SES email configuration');
+  if (echoesCustomerManagedKey(pool)) reset.push('customer-managed key');
+  return `${reset.slice(0, -1).join(', ')} and ${reset[reset.length - 1]}`;
+}
+
 /**
  * The `UpdateUserPool` failures that mean AWS VALIDATED the echoed
  * configuration and refused it -- the only case where the bare write is worth
@@ -3806,7 +3814,7 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             // widened type by design. That is the cost of moving this fence
             // from a grep to the compiler, and it is worth paying.
             caveat:
-              'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
+              'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security, AutoVerifiedAttributes and a customer-managed KeyConfiguration among them), so send your complete pool configuration alongside that flag rather than the flag alone.',
           },
         })
       : `AWS::Cognito::UserPool is a stateful type, so re-run with ${replaceFlags} to recreate it (this deletes all users in the pool).`;
@@ -3876,12 +3884,22 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           } catch (readError) {
             // Cannot tell what landed: report a possible reset as recorded.
             if (bareFlip)
-              this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+              this.reportSettingsResetByBareFlip(
+                physicalId,
+                bareFlip.pool,
+                reportKind(bareFlip),
+                maskerOrIdentity(context?.maskSecrets)
+              );
             throw readError;
           }
           if (!pool) {
             if (bareFlip)
-              this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+              this.reportSettingsResetByBareFlip(
+                physicalId,
+                bareFlip.pool,
+                reportKind(bareFlip),
+                maskerOrIdentity(context?.maskSecrets)
+              );
             throw new Error(`DescribeUserPool returned no pool for ${physicalId}`);
           }
           // OFF after a bare attempt: the bare write landed (only a
@@ -3891,7 +3909,12 @@ export class CognitoUserPoolProvider implements ResourceProvider {
           // Every bare attempt is reported. An unclear one whose pool reads ON
           // stays "MAY": a read can lag the write it is meant to reflect.
           if (bareFlip)
-            this.reportSettingsResetByBareFlip(physicalId, bareFlip.pool, reportKind(bareFlip));
+            this.reportSettingsResetByBareFlip(
+              physicalId,
+              bareFlip.pool,
+              reportKind(bareFlip),
+              maskerOrIdentity(context?.maskSecrets)
+            );
           // A flip-off sent without the SES EmailConfiguration that the read
           // shows LANDED: the pool is live on Cognito's default sender. A
           // bare flip's own report already names it.
@@ -3964,8 +3987,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
    * advanced security were reset by that write, and nothing cdkd does
    * afterwards can bring them back -- a redeploy will not either, because the
    * recorded properties still match the template, so the diff is empty.
-   * Names what the pool held before the flip (none of it secret: a boolean,
-   * trigger ARNs, a mode) so the user can put it back.
+   * Names what the pool held before the flip (a boolean, trigger and key
+   * ARNs, a mode) so the user can put it back. An ARN is template-authored, so
+   * it can come from a dynamic reference: each value and the line are masked.
    */
   private reportSettingsResetByBareFlip(
     physicalId: string,
@@ -3975,7 +3999,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
      * `earlier` -- it landed, but an echo flip landed since, so the settings
      * may have been restored; `unclear` -- whether it landed is not known.
      */
-    kind: 'reset' | 'earlier' | 'unclear'
+    kind: 'reset' | 'earlier' | 'unclear',
+    mask: MaskerFn
   ): void {
     const held: string[] = [];
     const adminOnly = before.AdminCreateUserConfig?.AllowAdminCreateUserOnly;
@@ -4005,10 +4030,9 @@ export class CognitoUserPoolProvider implements ResourceProvider {
     if (echoesCustomerManagedKey(before)) {
       held.push(`KeyConfiguration.KmsKeyArn=${String(before.KeyConfiguration?.KmsKeyArn)}`);
     }
-    const heldText = held.length > 0 ? held.join(', ') : 'none of these settings';
-    const what = echoesDeveloperEmail(before)
-      ? 'self sign-up, Lambda triggers, advanced security and SES email configuration'
-      : 'self sign-up, Lambda triggers and advanced security';
+    const heldText =
+      held.length > 0 ? held.map((entry) => mask(entry)).join(', ') : 'none of these settings';
+    const what = bareFlipResets(before);
     const state =
       kind === 'unclear'
         ? safeMsg`is LIVE and its ${what} MAY have been reset: ` +
@@ -4024,11 +4048,13 @@ export class CognitoUserPoolProvider implements ResourceProvider {
             safeMsg`--remove-protection had to turn DeletionProtection off with UpdateUserPool alone (the ` +
             safeMsg`pool's own configuration was refused), and the delete then failed.`;
     this.logger.error(
-      safeMsg`Cognito User Pool ${physicalId} ` +
-        state +
-        safeMsg` Before that write the pool held: ${heldText}. Put them back with ` +
-        safeMsg`aws cognito-idp update-user-pool, sending the pool's complete configuration -- a ` +
-        safeMsg`cdkd deploy will NOT restore them, because its recorded properties still match the template.`
+      mask(
+        safeMsg`Cognito User Pool ${physicalId} ` +
+          state +
+          safeMsg` Before that write the pool held: ${heldText}. Put them back with ` +
+          safeMsg`aws cognito-idp update-user-pool, sending the pool's complete configuration -- a ` +
+          safeMsg`cdkd deploy will NOT restore them, because its recorded properties still match the template.`
+      )
     );
   }
 
@@ -4360,8 +4386,8 @@ export class CognitoUserPoolProvider implements ResourceProvider {
       this.logger.warn(
         safeMsg`Cognito User Pool ${physicalId}: UpdateUserPool refused the pool's own configuration ` +
           safeMsg`echoed back (${mask(describeAwsFailure(echoError).summary)}), so DeletionProtection was ` +
-          safeMsg`turned off alone. That write resets the settings it omits -- self sign-up, Lambda ` +
-          safeMsg`triggers and advanced security among them -- which stays that way if the delete fails.`
+          safeMsg`turned off alone. That write resets the settings it omits -- ${bareFlipResets(pool)} ` +
+          safeMsg`among them -- which stays that way if the delete fails.`
       );
     }
   }

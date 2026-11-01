@@ -699,6 +699,38 @@ describe('CognitoUserPoolProvider.delete --remove-protection: read-modify-write 
     );
   });
 
+  it('masks a key ARN that came from a dynamic reference, in the warn and the ERROR report (#2762)', async () => {
+    const arn = 'arn:aws:kms:us-east-1:123456789012:key/secret-key-id';
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: arn } }],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      dels: [domainRefusal()],
+    });
+    const maskSecrets = (text: string): string => text.replaceAll(arn, '***');
+    await expect(del({ removeProtection: true, maskSecrets } as never)).rejects.toBeDefined();
+    const lines = [...childLogger.error.mock.calls, ...childLogger.warn.mock.calls].map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('KeyConfiguration.KmsKeyArn=***'))).toBe(true);
+    expect(lines.some((l) => l.includes('and customer-managed key'))).toBe(true);
+    for (const line of lines) expect(line).not.toContain(arn);
+  });
+
+  it.each([
+    ['an unreadable pool', new Error('read failed')],
+    ['a read with no pool', null],
+  ])('masks the key ARN when the re-enable meets %s (#2762)', async (_label, secondRead) => {
+    const arn = 'arn:aws:kms:us-east-1:123456789012:key/secret-key-id';
+    script({
+      reads: [{ ...livePool('ACTIVE'), KeyConfiguration: { KeyType: 'CUSTOMER_MANAGED_KEY', KmsKeyArn: arn } }, secondRead],
+      echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() },
+      dels: [domainRefusal()],
+    });
+    const maskSecrets = (text: string): string => text.replaceAll(arn, '***');
+    await expect(del({ removeProtection: true, maskSecrets } as never)).rejects.toBeDefined();
+    const errors = childLogger.error.mock.calls.map((c) => String(c[0]));
+    expect(errors.some((l) => l.includes('KeyConfiguration.KmsKeyArn=***'))).toBe(true);
+    for (const line of errors) expect(line).not.toContain(arn);
+  });
+
   it('the ERROR report stays silent about an AWS owned key', async () => {
     script({ echoError: { INACTIVE: echoRefusal(), ACTIVE: echoRefusal() }, dels: [domainRefusal()] });
     await expect(del()).rejects.toSatisfy(says('domain configured'));

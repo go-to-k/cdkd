@@ -548,8 +548,9 @@ export function logGroupProtectionSite(
  *
  * The restore command carries a caveat rather than standing alone: it omits
  * every other `UpdateUserPool` member, and the Lambda triggers, advanced
- * security and `AutoVerifiedAttributes` are measured to RESET on omission
- * (`USER_POOL_ECHO_MEMBERS` in `cognito-provider.ts`). cdkd's own re-enable
+ * security, `AutoVerifiedAttributes` and a customer-managed `KeyConfiguration`
+ * are measured to RESET on omission (`USER_POOL_ECHO_MEMBERS` in
+ * `cognito-provider.ts`). cdkd's own re-enable
  * echoes the pool back and does not reset them (issue #4066); the pasted
  * command cannot.
  */
@@ -577,7 +578,7 @@ export function userPoolProtectionSite(
       };
     },
     restoreCaveat:
-      'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them), ' +
+      'Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security, AutoVerifiedAttributes and a customer-managed KeyConfiguration among them), ' +
       'so send your complete pool configuration alongside that flag rather than the flag alone.',
   };
 }

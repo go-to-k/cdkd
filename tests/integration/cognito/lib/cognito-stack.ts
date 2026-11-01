@@ -241,7 +241,8 @@ export class CognitoStack extends cdk.Stack {
     //
     // Cognito needs both services on the key policy: a create or an update is
     // refused until cognito-idp AND identitystore can use the key (measured
-    // 2026-11-01, the five actions below are the set AWS names).
+    // 2026-11-01: the five actions below are the set AWS names, and both
+    // services accept the aws:SourceAccount condition).
     const poolKey = new kms.Key(this, 'PoolKey', {
       description: 'cdkd cognito integ: user pool customer-managed key',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -261,8 +262,12 @@ export class CognitoStack extends cdk.Stack {
           'kms:DescribeKey',
         ],
         resources: ['*'],
+        conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
       })
     );
+    // cdk.Tags reaches the key, so verify.sh can sweep it: `state destroy` only
+    // drops cdkd's record.
+    cdk.Tags.of(poolKey).add('cdkd-cognito-integ', this.stackName);
     const customerManagedKey = {
       KeyType: 'CUSTOMER_MANAGED_KEY',
       KmsKeyArn: poolKey.keyArn,

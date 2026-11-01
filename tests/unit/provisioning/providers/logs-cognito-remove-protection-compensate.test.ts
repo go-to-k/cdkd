@@ -611,7 +611,7 @@ describe('logGroupProtectionSite / userPoolProtectionSite', () => {
     ).rejects.toThrow('domain configured');
     expect(childLogger.error).toHaveBeenCalledWith(
       expect.stringContaining(
-        `${pool.restoreCommand}. Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security and AutoVerifiedAttributes among them)`
+        `${pool.restoreCommand}. Note UpdateUserPool resets some members a call omits (self sign-up, Lambda triggers, advanced security, AutoVerifiedAttributes and a customer-managed KeyConfiguration among them)`
       )
     );
 

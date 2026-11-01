@@ -225,6 +225,20 @@ cleanup() {
         aws cognito-idp delete-user-pool --user-pool-id "${stray}" --region "${REGION}" >/dev/null 2>&1 || true
       fi
     done
+    # The #2762 fixture key, swept by tag for the same reason: an Enabled key
+    # outlives `state destroy`, and PendingDeletion is its normal end state.
+    local k
+    for k in $(aws resourcegroupstaggingapi get-resources --region "${REGION}" \
+      --resource-type-filters kms --tag-filters "Key=cdkd-cognito-integ,Values=${STACK}" \
+      --query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null); do
+      [ "${k}" = "None" ] && continue
+      if [ "$(aws kms describe-key --key-id "${k}" --region "${REGION}" \
+        --query 'KeyMetadata.KeyState' --output text 2>/dev/null)" = "Enabled" ]; then
+        aws kms schedule-key-deletion --key-id "${k}" --pending-window-in-days 7 \
+          --region "${REGION}" >/dev/null 2>&1 ||
+          echo "WARN: cleanup could not schedule deletion of KMS key ${k}" >&2
+      fi
+    done
   fi
   set -eu
   return "${rc}"
