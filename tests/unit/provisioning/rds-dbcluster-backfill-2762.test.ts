@@ -203,6 +203,33 @@ describe('RDSProvider DBCluster backfill (go-to-k/cdkd#2762)', () => {
     });
   });
 
+  describe('EngineVersion upgrades (AllowMajorVersionUpgrade)', () => {
+    it.each([
+      ['a major upgrade with the parameter group family', '16.4', '17.9', { DBClusterParameterGroupName: 'default.aurora-postgresql17' }],
+      ['a minor upgrade, as CloudFormation sends it on any change', '17.4', '17.9', {}],
+      ['a version recorded as a number', 16, '17.9', {}],
+    ])('%s sends AllowMajorVersionUpgrade true', async (_label, previous, desired, extra) => {
+      armLive({});
+      await update(
+        { ...BASE, EngineVersion: desired, ...extra },
+        { ...BASE, EngineVersion: previous, DBClusterParameterGroupName: 'default.aurora-postgresql16' }
+      );
+      expect(modify()).toMatchObject({ EngineVersion: desired, AllowMajorVersionUpgrade: true });
+    });
+
+    it.each([
+      ['an unchanged EngineVersion', { EngineVersion: '17.9' }, { EngineVersion: '17.9' }, undefined],
+      ['an unchanged EngineVersion recorded as a number', { EngineVersion: '17' }, { EngineVersion: 17 }, undefined],
+      ['a removed EngineVersion', {}, { EngineVersion: '17.9' }, undefined],
+      ['an EngineVersion with none recorded', { EngineVersion: '17.9' }, {}, undefined],
+      ['a rollback replay', { EngineVersion: '16.4' }, { EngineVersion: '17.9' }, { replayingState: true }],
+    ])('%s sends no AllowMajorVersionUpgrade', async (_label, next, prev, context) => {
+      armLive({});
+      await update({ ...BASE, ...next }, { ...BASE, ...prev }, context);
+      expect(modify()).not.toHaveProperty('AllowMajorVersionUpgrade');
+    });
+  });
+
   describe('readCurrentState', () => {
     it('reads each member back under its CFn name', async () => {
       armLive({

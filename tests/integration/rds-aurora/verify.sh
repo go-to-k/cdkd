@@ -41,7 +41,9 @@
 # the warning naming DebugLogging as left in place, as CloudFormation leaves it.
 #
 # #3993 (no Cloud Control final snapshot): the L2 AuroraCluster is routed via
-# Cloud Control (asserted, so the arm cannot pass vacuously), whose registry
+# Cloud Control (its record is seeded to cc-api after phase 1, since #2762 the
+# deploy creates it on the SDK route; asserted, so the arm cannot pass
+# vacuously), whose registry
 # delete handler took an untagged `rds-snapshot-<random>` on every delete. The
 # run fails if any manual snapshot of that cluster was created after it began;
 # cleanup deletes any such snapshot either way.
@@ -238,6 +240,23 @@ seed_tg_cc_api() {
   [ "$(tg_field .provisionedBy)" = "cc-api" ] || { echo "FAIL: seeding the target group record to cc-api did not stick" >&2; return 1; }
 }
 
+# Issue #3993 premise: rewrite the L2 AuroraCluster's record to
+# provisionedBy=cc-api, the record a binary that routed it through Cloud Control
+# wrote (every one before go-to-k/cdkd#2762 wired its last unhandled key). Both
+# routes record the DBClusterIdentifier as the physical id, and the record
+# stays cc-api on later deploys (AWS::RDS::DBCluster is not in
+# STICKY_CC_MIGRATION_EXEMPT), so the arm no longer depends on which DBCluster
+# properties the SDK provider handles.
+seed_aurora_cc_api() {
+  local state seeded by
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  seeded=$(echo "${state}" | jq '.resources |= with_entries(if .value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster")) then .value.provisionedBy = "cc-api" else . end)') || return 1
+  printf '%s\n' "${seeded}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || return 1
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  by=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.provisionedBy // "sdk"] | first // ""')
+  [ "${by}" = "cc-api" ] || { echo "FAIL: seeding the L2 AuroraCluster record to cc-api did not stick (got '${by}')" >&2; return 1; }
+}
+
 # This stack's deployments/*.jsonl keys, sorted, one per line (go-to-k/cdkd#2319).
 # A failed listing returns non-zero, so a caller never reads an empty list as
 # "no new events".
@@ -396,6 +415,10 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --region "${REGION}" \
   --yes
 
+# Issue #3993: put the L2 AuroraCluster on the Cloud Control route (see
+# seed_aurora_cc_api) before the premise check below reads the record.
+seed_aurora_cc_api
+
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 if [ -z "${STATE}" ]; then
   echo "FAIL: no state file at s3://${STATE_BUCKET}/${STATE_KEY} after deploy" >&2
@@ -416,7 +439,9 @@ echo "    resolved SecurityCluster identifier: ${DB_CLUSTER_ID}"
 
 # Issue #3993 premise: the L2 AuroraCluster must be Cloud Control-routed, or
 # the no-snapshot assertion (after phase 3; phase 2b's destroy is the one that
-# deletes this cluster) tests the SDK path it always passed.
+# deletes this cluster) tests the SDK path it always passed. Its record is
+# seeded to cc-api above: since go-to-k/cdkd#2762 every key the L2 emits is
+# handled, so the deploy itself creates it on the SDK route.
 AURORA_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.physicalId] | first // ""')
 AURORA_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("^AuroraCluster"))) | .value.provisionedBy // "sdk"] | first // ""')
 if [ -z "${AURORA_CLUSTER_ID}" ] || [ "${AURORA_CLUSTER_ID}" = "null" ]; then
@@ -944,10 +969,15 @@ echo "    OK: after ManageMasterUserPassword removal, the managed master passwor
 # ones, so each must still hold its phase-1 value. Polled for the window.
 AFTER_2762=""
 for i in $(seq 1 12); do
-  AFTER_2762_JSON=$(aws rds describe-db-clusters \
+  # A transient AWS error is one more poll, not the end of the run; its
+  # stderr shows, and the last read is still what the check below asserts.
+  if ! AFTER_2762_JSON=$(aws rds describe-db-clusters \
     --db-cluster-identifier "${DB_CLUSTER_ID}" \
     --region "${REGION}" \
-    --query 'DBClusters[0]' --output json)
+    --query 'DBClusters[0]' --output json); then
+    sleep 10
+    continue
+  fi
   AFTER_2762=$(echo "${AFTER_2762_JSON}" | jq -r '[.DBClusterParameterGroup, .PreferredBackupWindow, .PreferredMaintenanceWindow, (.CopyTagsToSnapshot | tostring), (.StorageType // "absent")] | join(" ")')
   [ "$(echo "${AFTER_2762_JSON}" | jq -r '.PreferredMaintenanceWindow // "null"')" = "mon:06:00-mon:06:30" ] && break
   if [ "${i}" -lt 12 ]; then

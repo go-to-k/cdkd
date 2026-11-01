@@ -514,6 +514,25 @@ function clusterModifyBackfillMembers(
   return members;
 }
 
+/**
+ * go-to-k/cdkd#2762: whether this cluster update changes `EngineVersion`, the
+ * condition CloudFormation's handler sends `AllowMajorVersionUpgrade: true`
+ * under. Both sides must be declared and differ (as strings: CFn may write a
+ * version as a number); a rollback replay never counts, as the handler's
+ * rollback arm sends neither.
+ */
+function clusterEngineVersionChanged(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): boolean {
+  if (context?.replayingState === true) return false;
+  const desired = properties['EngineVersion'];
+  const previous = previousProperties['EngineVersion'];
+  if (desired == null || previous == null) return false;
+  return String(desired as string | number) !== String(previous as string | number);
+}
+
 /** Issue #1160: the member statuses a cluster change moves an instance through. */
 const SECURITY_GROUP_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying']);
 const PORT_CHANGE_MEMBER_STATUSES: ReadonlySet<string> = new Set(['modifying', 'rebooting']);
@@ -1488,10 +1507,23 @@ export class RDSProvider implements ResourceProvider {
       // the stack update completes in place and the live user stays the old one.
       const manageMasterUserPasswordOff = managedPasswordOnRemoval(properties, previousProperties);
       const portToSend = clusterPortToSend(properties, previousProperties);
+      // go-to-k/cdkd#2762: a changed EngineVersion goes out with
+      // AllowMajorVersionUpgrade, as CloudFormation's handler sends it
+      // (`Translator.modifyDbClusterRequest`: any EngineVersion change outside
+      // a rollback). Without it RDS refuses a major upgrade, such as the one
+      // CDK's L2 cluster emits with its default parameter group's family, which
+      // CloudFormation applies in place. DBCluster has no template
+      // `AllowMajorVersionUpgrade` property to read.
+      const allowMajorVersionUpgrade = clusterEngineVersionChanged(
+        properties,
+        previousProperties,
+        context
+      );
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
           EngineVersion: properties['EngineVersion'] as string | undefined,
+          ...(allowMajorVersionUpgrade && { AllowMajorVersionUpgrade: true }),
           // Removal keeps the live value, as CFn does (#5004 A/B).
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
           // CFn resets a removed BackupRetentionPeriod to 1 (#5004 A/B).
