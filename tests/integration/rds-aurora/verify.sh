@@ -1212,15 +1212,17 @@ if ! grep -qE "Failed to delete DBCluster SecurityCluster: .*(still contains DB 
   exit 1
 fi
 # The FAILURE SET: the SecurityCluster, and nothing but it and what the
-# out-of-band member's ENI holds (its subnet group, the shared SG, the VPC and
-# its subnets). Anything else failing here would otherwise be absorbed silently
-# by phase 3's destroy.
+# surviving cluster and its out-of-band member hold: the cluster's subnet group
+# and its parameter group (SecurityClusterParams, go-to-k/cdkd#2762; RDS refuses
+# to delete a group a live cluster's members use), and what the member's ENI
+# holds (the shared SG, the VPC and its subnets). Anything else failing here
+# would otherwise be absorbed silently by phase 3's destroy.
 FAILED_2B="$(printf '%s\n' "${DESTROY_2B_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
 if ! printf '%s\n' "${FAILED_2B}" | grep -qx SecurityCluster; then
   echo "FAIL: phase 2b: SecurityCluster is not among the failed deletes (got: $(printf '%s ' ${FAILED_2B}))" >&2
   exit 1
 fi
-UNEXPECTED_2B="$(printf '%s\n' "${FAILED_2B}" | grep -vE '^(SecurityCluster|SecuritySubnetGroup|AuroraSecurityGroup[0-9A-F]{8}|AuroraVpc[A-Za-z0-9]*)$' || true)"
+UNEXPECTED_2B="$(printf '%s\n' "${FAILED_2B}" | grep -vE '^(SecurityCluster|SecuritySubnetGroup|SecurityClusterParams|AuroraSecurityGroup[0-9A-F]{8}|AuroraVpc[A-Za-z0-9]*)$' || true)"
 if [ -n "${UNEXPECTED_2B}" ]; then
   echo "FAIL: phase 2b: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_2B})" >&2
   exit 1
