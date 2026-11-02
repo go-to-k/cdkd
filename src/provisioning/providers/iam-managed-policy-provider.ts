@@ -19,6 +19,7 @@ import {
   AttachUserPolicyCommand,
   DetachUserPolicyCommand,
   NoSuchEntityException,
+  type Policy,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure, safeStringify } from '../../utils/aws-failure-text.js';
@@ -58,6 +59,7 @@ import {
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   markNonRetryable,
@@ -256,7 +258,8 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       typeof policyDocument === 'string' ? policyDocument : JSON.stringify(policyDocument);
 
     // go-to-k/cdkd#4583: the ARN CreatePolicy returned (the id `delete()` takes),
-    // cleared when the partial-create cleanup deleted the policy.
+    // or that a replay adopted (#5660), cleared when the partial-create cleanup
+    // deleted the policy.
     let leftBehindArn: string | undefined;
     // go-to-k/cdkd#4606: the PolicyId CreatePolicy answered with, carried on
     // the mark so the journal needs no read of a policy whose failure may fail
@@ -285,25 +288,55 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
       }
 
       const createClient = await this.createClient.get();
-      const response = await createClient.send(new CreatePolicyCommand(createParams));
-      const policyArn = response.Policy?.Arn;
+      let policy: Policy | undefined;
+      let adopted = false;
+      try {
+        policy = (await createClient.send(new CreatePolicyCommand(createParams))).Policy;
+      } catch (createError) {
+        // go-to-k/cdkd#5660: a replay colliding with the policy its own earlier
+        // attempt left behind finishes that policy; anything else fails as
+        // before. The ARN a same-name re-create reuses proves nothing, so the
+        // proof is the PolicyId. The wiring is `attachToPrincipals` alone, whose
+        // three calls each succeeded on an attached policy when measured on real
+        // IAM (2026-11-03); `CreatePolicyVersion` belongs to `update()`, and the
+        // document came with `CreatePolicy`.
+        const expectedArnTail = `:policy${createParams.Path ?? '/'}${policyName}`;
+        policy = await iamEntityLeftByThisCreate({
+          logicalId,
+          resourceType,
+          noun: 'managed policy',
+          displayName: policyName,
+          createError,
+          namesThisEntity: (reported) => reported.endsWith(expectedArnTail),
+          read: async (reportedArn) =>
+            (await this.iamClient.send(new GetPolicyCommand({ PolicyArn: reportedArn }))).Policy,
+          identityOf: (live) => policyIdentityToken(live?.PolicyId),
+          log,
+        });
+        if (policy === undefined) throw createError;
+        adopted = true;
+      }
+      const policyArn = policy?.Arn;
       if (!policyArn) {
         throw new ProvisioningError(
-          `CreatePolicy succeeded but no Arn returned for ${logicalId}`,
+          `${adopted ? 'GetPolicy' : 'CreatePolicy'} succeeded but no Arn returned for ${logicalId}`,
           resourceType,
           logicalId,
           policyName
         );
       }
       leftBehindArn = policyArn;
-      createdPolicyIdentity = policyIdentityToken(response.Policy?.PolicyId);
-      reportCreatedResource(logicalId, resourceType, policyArn, createdPolicyIdentity); // go-to-k/cdkd#5511
-      log.debug(`Created IAM managed policy: ${v(policyArn)}`);
+      createdPolicyIdentity = policyIdentityToken(policy?.PolicyId);
+      if (!adopted) {
+        reportCreatedResource(logicalId, resourceType, policyArn, createdPolicyIdentity); // go-to-k/cdkd#5511
+        log.debug(`Created IAM managed policy: ${v(policyArn)}`);
+      }
 
       // CreatePolicy has succeeded — AWS has committed the policy. Wire up
       // attachments next; if any fail, AWS-side cleanup mirrors `delete()`
       // (detach principals + delete non-default versions + DeletePolicy) so
-      // the next redeploy doesn't trip over `EntityAlreadyExists`.
+      // the next redeploy doesn't trip over `EntityAlreadyExists`; an adopted
+      // policy skips this cleanup (see the catch).
       try {
         await this.attachToPrincipals(
           policyArn,
@@ -313,31 +346,35 @@ export class IAMManagedPolicyProvider implements ResourceProvider {
           log
         );
       } catch (innerError) {
-        try {
-          await this.detachAllPrincipals(policyArn);
-          await this.deleteAllNonDefaultVersions(policyArn);
-          await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
-          retractCreatedResource(logicalId, resourceType, policyArn);
-          leftBehindArn = undefined;
-          log.debug(
-            `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`
-          );
-        } catch (cleanupError) {
-          // The ARN is AWS-minted but embeds the TEMPLATE-chosen name and path,
-          // so every command below renders through `pasteableAwsCommand`
-          // (issue #3136): withheld when it cannot be printed exactly.
-          // The masker is handed over too (issue #2177), so a secret-bearing
-          // name withholds the command rather than printing it.
-          const aws = pasteableAwsCommand(log.mask);
-          // An AWS-authored failure is named by its class at warn, and AWS's
-          // text (a denied `DeletePolicy` names the caller) goes to `debug`
-          // under the same head (go-to-k/cdkd#2319).
-          const cleanupFailure = describeAwsFailure(cleanupError);
-          const cleanupHead = `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): `;
-          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
-          log.warn(
-            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
-          );
+        // go-to-k/cdkd#5660: an adopted policy is not stripped or deleted, see
+        // `iamEntityLeftByThisCreate`.
+        if (!adopted) {
+          try {
+            await this.detachAllPrincipals(policyArn);
+            await this.deleteAllNonDefaultVersions(policyArn);
+            await this.iamClient.send(new DeletePolicyCommand({ PolicyArn: policyArn }));
+            retractCreatedResource(logicalId, resourceType, policyArn);
+            leftBehindArn = undefined;
+            log.debug(
+              `Cleaned up partially-created managed policy ${logicalId} (${v(policyArn)}) after attachment failure`
+            );
+          } catch (cleanupError) {
+            // The ARN is AWS-minted but embeds the TEMPLATE-chosen name and path,
+            // so every command below renders through `pasteableAwsCommand`
+            // (issue #3136): withheld when it cannot be printed exactly.
+            // The masker is handed over too (issue #2177), so a secret-bearing
+            // name withholds the command rather than printing it.
+            const aws = pasteableAwsCommand(log.mask);
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeletePolicy` names the caller) goes to `debug`
+            // under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created managed policy ${logicalId} (${v(policyArn)}): `;
+            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
+            log.warn(
+              `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required: detach principals (${aws`aws iam list-entities-for-policy --policy-arn ${policyArn}`.render()}), delete versions (${aws`aws iam list-policy-versions --policy-arn ${policyArn}`.render()} then aws iam delete-policy-version), then ${aws`aws iam delete-policy --policy-arn ${policyArn}`.render()}`
+            );
+          }
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).
