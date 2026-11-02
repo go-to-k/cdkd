@@ -151,6 +151,8 @@ TABLE7="${STACK}-table7"
 TABLE8="${STACK}-table8"
 # Two regions, each with its own read capacity.
 TABLE9="${STACK}-table9"
+# go-to-k/cdkd#5615: two regions and an auto-scaled write side from the first deploy.
+TABLE10="${STACK}-table10"
 LOCAL_ALIAS="alias/${STACK}-local"
 REPLICA_ALIAS="alias/${STACK}-replica"
 # Phase 5b's out-of-band key for ${TABLE2} in ${REGION}: fixture-owned, NOT the
@@ -530,13 +532,14 @@ cleanup() {
   teardown_table "${TABLE7}"
   teardown_table "${TABLE8}"
   teardown_table "${TABLE9}"
+  teardown_table "${TABLE10}"
   # Keys LAST, once every table is gone: a table still DELETING on a customer
   # managed key whose deletion is scheduled stays stuck until the key is
   # enabled again (bounded: 15 min per table and region).
   # Every fixture table, before ANY fixture key: the stack's local keys, the
   # replica keys and Phase 5b's out-of-band key below.
   local t
-  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}"; do
+  for t in "${TABLE}" "${TABLE2}" "${TABLE3}" "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}" "${TABLE10}"; do
     case " ${stuck} " in *" ${t} "*) continue ;; esac
     await_table_gone "${t}" || stuck="${stuck:+${stuck} }${t}"
   done
@@ -1335,7 +1338,7 @@ expect_replica_read() { # usage: expect_replica_read <table> <local read> <secon
 
 echo "==> Phase 6b: vector indexes, warm throughput, TableType and the table-level read ceiling"
 deploy "${TS_BASE}" "${LOG_DIR}/phase6b.log"
-for logical in VectorTable TableLevelReadTable TableLevelCapacityTable LocalCapacityTable AutoScaledWriteTable ReplicaOverrideTable; do
+for logical in VectorTable TableLevelReadTable TableLevelCapacityTable LocalCapacityTable AutoScaledWriteTable ReplicaOverrideTable TwoRegionCreateTable; do
   by="$(record_of "${logical}")"
   if [ "${by}" != "sdk" ]; then
     echo "FAIL: Phase 6b: ${logical} records provisionedBy '${by}', not sdk (go-to-k/cdkd#2762)" >&2
@@ -1350,6 +1353,11 @@ expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7
 expect_capacity "${TABLE7}" 3 3 "Phase 6b"
 expect_capacity "${TABLE8}" 3 1 "Phase 6b"
 expect_table_field "${TABLE9}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 3 "Phase 6b"
+# go-to-k/cdkd#5615: created with its second region on the first deploy.
+expect_replica_read "${TABLE10}" 3 2 "Phase 6b (go-to-k/cdkd#5615)"
+expect_replica_index_read "${TABLE10}" 6 "Phase 6b (go-to-k/cdkd#5615)"
+await_write_target "${TABLE10}" 1 "Phase 6b: ${TABLE10} has no write scalable target"
+await_write_target "${TABLE10}" 1 "Phase 6b: ${TABLE10} has no write scalable target in the second region" "${SECOND_REGION}"
 # Application Auto Scaling is eventually consistent, so the read polls.
 await_write_target "${TABLE6}" 1 "Phase 6b: ${TABLE6} has no write scalable target"
 await_write_target "${TABLE8}" 1 "Phase 6b: ${TABLE8} has no write scalable target"
@@ -1449,7 +1457,7 @@ done
 echo "    the Phase 5b table deleted in both regions"
 assert_gone "table ${TABLE3} still exists in ${REGION} after destroy" aws dynamodb describe-table --table-name "${TABLE3}" --region "${REGION}"
 echo "    the Phase 1b ModeTable deleted"
-for t in "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}"; do
+for t in "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}" "${TABLE10}"; do
   for r in "${REGION}" "${SECOND_REGION}"; do
     for _ in $(seq 1 30); do
       gone_probe aws dynamodb describe-table --table-name "${t}" --region "${r}" && break
@@ -1461,6 +1469,8 @@ done
 await_write_target "${TABLE6}" 0 "Phase 7: ${TABLE6}'s write scalable target outlived the table"
 await_write_target "${TABLE8}" 0 "Phase 7: ${TABLE8}'s write scalable target outlived the table"
 await_write_target "${TABLE9}" 0 "Phase 7: ${TABLE9}'s write scalable target outlived the table"
+await_write_target "${TABLE10}" 0 "Phase 7: ${TABLE10}'s write scalable target outlived the table"
+await_write_target "${TABLE10}" 0 "Phase 7: ${TABLE10}'s write scalable target outlived its replica" "${SECOND_REGION}"
 await_write_target "${TABLE9}" 0 "Phase 7: ${TABLE9}'s write scalable target outlived its replica" "${SECOND_REGION}"
 echo "    the Phase 6b tables deleted, and ${TABLE6}'s scalable target with them"
 

@@ -1707,6 +1707,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // go-to-k/cdkd#4606: the `TableId` CreateTable answered with, carried on
     // the created-before-failure mark so the journal needs no read of a table
     // whose failure (a describe that cannot run, say) may fail that read too.
+
+    // go-to-k/cdkd#5615: the targets a failed create has to take down itself.
+    let registeredBeforeReplicas: AutoScalingTargetSpec[] = [];
     let createdTableId: string | undefined;
     try {
       const createOut = await (
@@ -1746,6 +1749,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // building when the table reads ACTIVE; a replica add must not meet it.
       if (createVectorIndexes !== undefined) {
         await this.waitForVectorIndexesSettled(tableName, logicalId, maskSecrets);
+      }
+
+      // go-to-k/cdkd#5615: DynamoDB refuses a replica on a table whose write side,
+      // or any index's, has no scalable target AND scaling policy yet. A replica
+      // added right after both is accepted (measured), so no wait goes between.
+      const scalingSpecs =
+        billingMode === 'PROVISIONED'
+          ? // `wiringProperties`, not `properties`: on the replay omit arm a
+            // replica's per-index read target would name an index this create did
+            // not build, and the registrations run in sequence, so one that
+            // throws skips every target after it.
+            collectAutoScalingTargets(wiringProperties, currentRegion)
+          : [];
+      if (wiringReplicas.some((r) => r['Region'] !== currentRegion)) {
+        registeredBeforeReplicas = scalingSpecs.filter(
+          (spec) => spec.region === currentRegion && spec.dimension.endsWith('WriteCapacityUnits')
+        );
+      }
+      if (registeredBeforeReplicas.length > 0) {
+        await this.reconcileAutoScalingTargets(
+          tableName,
+          [],
+          registeredBeforeReplicas,
+          currentRegion,
+          undefined,
+          maskSecrets
+        );
       }
 
       // Replica adds: one UpdateTable per region (AWS rejects multiple
@@ -1852,18 +1882,18 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // happened to run an update, and per-index settings were dropped even
       // then. Runs after the table AND every replica are ACTIVE:
       // `RegisterScalableTarget` against a still-provisioning table or a
-      // not-yet-created index is rejected.
+      // not-yet-created index is rejected. The write targets a replica needs went
+      // first, above, and are skipped here.
       //
       // Deliberately the LAST wiring step, and deliberately wrapped so it
       // cannot throw. Both are about the partial-create cleanup below: that
-      // handler deletes the table (it does NOT route through `delete()`, so
-      // it would not deregister anything), and a target registered before a
-      // LATER wiring step failed would be orphaned in the
-      // application-autoscaling control plane with no table left to name it
-      // — the exact leak this issue exists to close, re-introduced on the
-      // failure path. Registering last means nothing can fail after it, and
-      // warn-instead-of-throw means a best-effort concern can never be what
-      // destroys a successfully created table.
+      // handler deletes the table (it does NOT route through `delete()`), so a
+      // target registered before a LATER wiring step failed would be orphaned
+      // in the application-autoscaling control plane with no table left to
+      // name it unless that handler deregisters it, as it does for
+      // `registeredBeforeReplicas`. Registering the rest last means nothing can
+      // fail after it, and warn-instead-of-throw means a best-effort concern can
+      // never be what destroys a successfully created table.
       //
       // Skipped on PAY_PER_REQUEST — scalable targets are meaningless
       // without provisioned capacity, and AWS rejects them.
@@ -1872,13 +1902,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           await this.reconcileAutoScalingTargets(
             tableName,
             [],
-            // `wiringProperties`, not `properties`: on the replay omit arm a
-            // replica's per-index read target would name an index this create
-            // did not build, and the registrations run in sequence, so one
-            // that throws skips every target after it.
-            collectAutoScalingTargets(wiringProperties, currentRegion),
+            scalingSpecs,
             currentRegion,
-            undefined,
+            new Set(registeredBeforeReplicas.map(autoScalingTargetKey)),
             maskSecrets
           );
         } catch (autoScalingErr) {
@@ -2007,6 +2033,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 `Run: ${pasteableAwsCommand(maskSecrets)`aws dynamodb update-table --table-name ${tableName} --replica-updates 'Delete={RegionName='${region}'}' --region ${currentRegion}`.render()}`
             );
           }
+        }
+        // go-to-k/cdkd#5615: this handler does not route through `delete()`, and a
+        // table it cannot delete is `delete()`'s to clean up, targets included.
+        for (const spec of registeredBeforeReplicas) {
+          await this.applyAutoScalingDiff(
+            tableName,
+            spec.dimension,
+            spec.settings,
+            undefined,
+            undefined,
+            spec.indexName,
+            undefined,
+            maskSecrets
+          );
         }
         // go-to-k/cdkd#2762: a vector index may still be building when the
         // failure arrives (the wait for it can be what failed), and AWS refuses
