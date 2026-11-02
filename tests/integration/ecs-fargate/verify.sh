@@ -156,7 +156,7 @@ if [ "${REJECT_RC}" -eq 0 ]; then
   echo "FAIL: deploy accepted --no-wait --full-wait; the pair must be rejected" >&2
   exit 1
 fi
-if ! grep -q -- <<<"${REJECT_OUT}" '--no-wait and --full-wait cannot be combined'; then
+if ! grep -q -- '--no-wait and --full-wait cannot be combined' <<<"${REJECT_OUT}"; then
   echo "FAIL: deploy failed for the wrong reason (expected the mutual-exclusion error):" >&2
   printf '%s\n' "${REJECT_OUT}" >&2
   exit 1

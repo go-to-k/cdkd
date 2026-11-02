@@ -286,7 +286,7 @@ for needle in \
   'resource(s) of types Cloud Control API cannot create:' \
   "  - ${PROJECT_LID} (AWS::CodeBuild::Project) — ProvisioningType: NON_PROVISIONABLE" \
   'None of these resources was touched.'; do
-  if ! printf '%s\n' "${RECREATE_PLAIN}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${RECREATE_PLAIN}"; then
     echo "FAIL: Phase 1b output lacks the recreate refusal wording: '${needle}'" >&2
     exit 1
   fi

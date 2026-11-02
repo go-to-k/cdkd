@@ -1002,7 +1002,7 @@ PROBE_RC=$?
 set -e
 printf '%s\n' "${PROBE_OUT}" | sed 's/^/    /'
 # The rc AND the receipt line only a complete run prints: 9 cases.
-if [ "${PROBE_RC}" -ne 0 ] || ! printf '%s\n' "${PROBE_OUT}" | grep -qx '\[probe\] ALL 9 PASSED'; then
+if [ "${PROBE_RC}" -ne 0 ] || ! grep -qx '\[probe\] ALL 9 PASSED' <<<"${PROBE_OUT}"; then
   echo "FAIL: issue #4606 -- the isSameResource probe exited ${PROBE_RC} without '[probe] ALL 9 PASSED' (output above)" >&2
   exit 1
 fi
@@ -1155,7 +1155,7 @@ run_net_probe() {
   rc=$?
   set -e
   printf '%s\n' "${out}" | sed 's/^/    /'
-  if [ "${rc}" -ne 0 ] || ! printf '%s\n' "${out}" | grep -qx "\[probe\] ALL $2 PASSED"; then
+  if [ "${rc}" -ne 0 ] || ! grep -qx "\[probe\] ALL $2 PASSED" <<<"${out}"; then
     echo "FAIL: issue #4606 -- the network probe's '$1' phase exited ${rc} without '[probe] ALL $2 PASSED' (output above)" >&2
     exit 1
   fi

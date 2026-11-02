@@ -1301,7 +1301,7 @@ fi
 # holds (the shared SG, the VPC and its subnets). Anything else failing here
 # would otherwise be absorbed silently by phase 3's destroy.
 FAILED_2B="$(printf '%s\n' "${DESTROY_2B_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
-if ! printf '%s\n' "${FAILED_2B}" | grep -qx SecurityCluster; then
+if ! grep -qx SecurityCluster <<<"${FAILED_2B}"; then
   echo "FAIL: phase 2b: SecurityCluster is not among the failed deletes (got: $(printf '%s ' ${FAILED_2B}))" >&2
   exit 1
 fi

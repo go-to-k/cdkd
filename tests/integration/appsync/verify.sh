@@ -750,23 +750,23 @@ set -e
 # and run every assertion in this block against the plain text.
 EXPORT_OUT="$(printf '%s\n' "${EXPORT_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
 if [ "${EXPORT_RC}" -eq 0 ]; then
-  if ! printf '%s\n' "${EXPORT_OUT}" | grep -qE 'Import plan for CloudFormation stack'; then
+  if ! grep -qE 'Import plan for CloudFormation stack' <<<"${EXPORT_OUT}"; then
     echo "FAIL: export --dry-run exited 0 without printing an import plan" >&2
     printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
     exit 1
   fi
-  printf '%s\n' "${EXPORT_OUT}" | grep -qE '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:' \
+  grep -qE '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:' <<<"${EXPORT_OUT}" \
     || { echo "FAIL: export plan did not resolve the GraphQLApi identifier from the recorded Arn" >&2; exit 1; }
-  printf '%s\n' "${EXPORT_OUT}" | grep -qE "\(AWS::AppSync::ApiKey\).*ApiId=${API_ID}, ApiKeyId=da2-" \
+  grep -qE "\(AWS::AppSync::ApiKey\).*ApiId=${API_ID}, ApiKeyId=da2-" <<<"${EXPORT_OUT}" \
     || { echo "FAIL: export plan did not resolve the ApiKey composite identifier" >&2; exit 1; }
 else
-  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q 'block migration'; then
+  if ! grep -q 'block migration' <<<"${EXPORT_OUT}"; then
     echo "FAIL: export --dry-run failed for a reason other than blocked resources (rc=${EXPORT_RC})" >&2
     printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
     exit 1
   fi
   for blocker in 'GraphQLSchema (AWS::AppSync::GraphQLSchema)' 'GraphQLApi (AWS::AppSync::GraphQLApi)'; do
-    if ! printf '%s\n' "${EXPORT_OUT}" | grep -qF -- "- ${blocker}"; then
+    if ! grep -qF -- "- ${blocker}" <<<"${EXPORT_OUT}"; then
       echo "FAIL: the blocked list does not name ${blocker} (an expected blocker)" >&2
       printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
       exit 1
@@ -776,7 +776,7 @@ else
   # thrown message carries the number of blocked resources, so pin it at two
   # — a third blocker with any wording the loop below does not know (a masked
   # id, a row missing from state) would otherwise pass silently.
-  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q '2 resource(s) block migration'; then
+  if ! grep -q '2 resource(s) block migration' <<<"${EXPORT_OUT}"; then
     echo "FAIL: unexpected blocker count (expected exactly GraphQLSchema + GraphQLApi):" >&2
     printf '%s\n' "${EXPORT_OUT}" | grep -E 'block migration|^\s+- ' | sed 's/^/  /' >&2
     exit 1
@@ -788,7 +788,7 @@ else
   # before the ANSI strip above), or the loop below is comparing the whole
   # output and the comment two lines up is a lie.
   OTHER_LINES="$(printf '%s\n' "${EXPORT_OUT}" | grep -vE '^\s+- (GraphQLSchema|GraphQLApi) \(')"
-  if printf '%s\n' "${OTHER_LINES}" | grep -qE '^\s+- (GraphQLSchema|GraphQLApi) \('; then
+  if grep -qE '^\s+- (GraphQLSchema|GraphQLApi) \(' <<<"${OTHER_LINES}"; then
     echo "FAIL: the blocked-line exclusion did not remove the expected blockers (ANSI or format drift)" >&2
     exit 1
   fi
@@ -799,7 +799,7 @@ else
   fi
   for unresolved in 'could not resolve resource identifier' 'COMPOSITE_ID_SPLITTERS' \
     'AWS::AppSync::ApiKey' 'AWS::AppSync::DataSource' 'AWS::AppSync::Resolver'; do
-    if printf '%s\n' "${OTHER_LINES}" | grep -qF -- "${unresolved}"; then
+    if grep -qF -- "${unresolved}" <<<"${OTHER_LINES}"; then
       echo "FAIL: export --dry-run reports an unresolved identifier (${unresolved}):" >&2
       printf '%s\n' "${OTHER_LINES}" | grep -F -- "${unresolved}" | sed 's/^/  /' >&2
       exit 1

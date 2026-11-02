@@ -333,16 +333,16 @@ echo "    RuntimeManagementConfig reset to Auto; code-signing config detached"
 # Sentinel: any line naming RecursiveLoop as removed must carry the rest of the
 # sentence too, so a reworded warning fails here instead of reading as absent.
 WARN_LINES="$(printf '%s\n' "${DEPLOY2_OUT}" | grep -F 'removed from the template' || true)"
-if printf '%s\n' "${WARN_LINES}" | grep -qF 'RecursiveLoop' \
-  && ! printf '%s\n' "${WARN_LINES}" | grep -qF 'cdkd leaves the current AWS value in place'; then
+if grep -qF 'RecursiveLoop' <<<"${WARN_LINES}" \
+  && ! grep -qF 'cdkd leaves the current AWS value in place' <<<"${WARN_LINES}"; then
   echo "FAIL: the RecursiveLoop removal warning changed wording: ${WARN_LINES}" >&2; exit 1
 fi
-if ! printf '%s\n' "${WARN_LINES}" | grep -qF 'property RecursiveLoop was removed from the template'; then
+if ! grep -qF 'property RecursiveLoop was removed from the template' <<<"${WARN_LINES}"; then
   echo "FAIL: no warning named the RecursiveLoop removal (got: '${WARN_LINES}')" >&2; exit 1
 fi
 # The six reset fields are DECLARED, so they must not be named as left in place.
 for declared in Timeout MemorySize Description Environment EphemeralStorage TracingConfig; do
-  if printf '%s\n' "${WARN_LINES}" | grep -qw "${declared}"; then
+  if grep -qw "${declared}" <<<"${WARN_LINES}"; then
     echo "FAIL: the removal warning names ${declared}, which cdkd resets: ${WARN_LINES}" >&2; exit 1
   fi
 done

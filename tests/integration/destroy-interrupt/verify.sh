@@ -291,7 +291,7 @@ if [ "${ALL_RC}" -ne 1 ]; then
   echo "FAIL: destroy --all with an unsynthesizable app exited ${ALL_RC}, expected 1" >&2
   exit 1
 fi
-if ! grep -qF -- <<<"${ALL_OUT}" "--all selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state"; then
+if ! grep -qF -- "--all selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state" <<<"${ALL_OUT}"; then
   echo "FAIL: the --all refusal did not name --all and the failed synth" >&2
   exit 1
 fi
@@ -348,7 +348,7 @@ for STATE_ALL_ARGS in "--all" "${STACK} --all"; do
     echo "FAIL: state destroy ${STATE_ALL_ARGS} --yes exited ${STATE_ALL_RC}, expected 1" >&2
     exit 1
   fi
-  if ! grep -qF -- <<<"${STATE_ALL_OUT}" "${STATE_ALL_REFUSAL}"; then
+  if ! grep -qF -- "${STATE_ALL_REFUSAL}" <<<"${STATE_ALL_OUT}"; then
     echo "FAIL: state destroy ${STATE_ALL_ARGS} did not print the --all removal refusal" >&2
     exit 1
   fi
@@ -371,7 +371,7 @@ if [ "${STATE_EXACT_RC}" -ne 1 ] || ! grep -qF "No state found for stack(s): ${S
   echo "FAIL: state destroy of an exact name did not reach the state listing (rc=${STATE_EXACT_RC})" >&2
   exit 1
 fi
-if grep -qF -- <<<"${STATE_EXACT_OUT}" "${STATE_ALL_REFUSAL}"; then
+if grep -qF -- "${STATE_ALL_REFUSAL}" <<<"${STATE_EXACT_OUT}"; then
   echo "FAIL: an exact state destroy name was refused like --all" >&2
   exit 1
 fi

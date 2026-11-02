@@ -314,12 +314,12 @@ if [ "${CONTROL_RC}" -eq 0 ]; then
   echo "FAIL: Phase 2 deploy SUCCEEDED — no stateful guard fired for a create-only Tags change" >&2
   printf '%s\n' "${CONTROL_PLAIN}" >&2; exit 1
 fi
-if printf '%s\n' "${CONTROL_PLAIN}" | grep -qF "${LOOKUP_MARKER}"; then
+if grep -qF "${LOOKUP_MARKER}" <<<"${CONTROL_PLAIN}"; then
   echo "FAIL: Phase 2 runs as the caller, but its create-only lookup failed — the caller lacks cloudformation:DescribeType, so the control proves nothing" >&2
   printf '%s\n' "${CONTROL_PLAIN}" >&2; exit 1
 fi
-if ! printf '%s\n' "${CONTROL_PLAIN}" | grep -qF "${PROPERTY_MARKER}"; then
-  if printf '%s\n' "${CONTROL_PLAIN}" | grep -qF "${SHARED_MARKER}"; then
+if ! grep -qF "${PROPERTY_MARKER}" <<<"${CONTROL_PLAIN}"; then
+  if grep -qF "${SHARED_MARKER}" <<<"${CONTROL_PLAIN}"; then
     echo "FAIL: Phase 2 was refused by a stateful guard, but not with '${PROPERTY_MARKER}' — the wording moved, or AWS no longer lists Tags as create-only" >&2
   else
     echo "FAIL: Phase 2 failed, but not with a stateful refusal" >&2
@@ -346,20 +346,20 @@ fi
 # The premise: the lookup failed and fell back to NOTHING (no snapshot entry).
 # With a snapshot entry the change would be a replacement again, and this phase
 # would be Phase 2 under another name.
-if ! printf '%s\n' "${BLOCK_PLAIN}" | grep -qF "${LOOKUP_MARKER}"; then
+if ! grep -qF "${LOOKUP_MARKER}" <<<"${BLOCK_PLAIN}"; then
   echo "FAIL: Phase 3 output does not show the failed create-only lookup ('${LOOKUP_MARKER}')" >&2
   printf '%s\n' "${BLOCK_PLAIN}" >&2; exit 1
 fi
-if ! printf '%s\n' "${BLOCK_PLAIN}" | grep -qF "${REGISTRY_ONLY_MARKER}"; then
+if ! grep -qF "${REGISTRY_ONLY_MARKER}" <<<"${BLOCK_PLAIN}"; then
   echo "FAIL: the create-only lookup did not fall back to the registry-only classification — ${TYPE} now has a committed snapshot entry, so this fixture no longer reaches the update-failure arm" >&2
   printf '%s\n' "${BLOCK_PLAIN}" >&2; exit 1
 fi
-if printf '%s\n' "${BLOCK_PLAIN}" | grep -qF "${PROPERTY_MARKER}"; then
+if grep -qF "${PROPERTY_MARKER}" <<<"${BLOCK_PLAIN}"; then
   echo "FAIL: Phase 3 was refused by the PROPERTY-DRIVEN guard — the update-failure arm was not reached" >&2
   printf '%s\n' "${BLOCK_PLAIN}" >&2; exit 1
 fi
-if ! printf '%s\n' "${BLOCK_PLAIN}" | grep -qF "${ARM_MARKER}"; then
-  if printf '%s\n' "${BLOCK_PLAIN}" | grep -qF "${SHARED_MARKER}"; then
+if ! grep -qF "${ARM_MARKER}" <<<"${BLOCK_PLAIN}"; then
+  if grep -qF "${SHARED_MARKER}" <<<"${BLOCK_PLAIN}"; then
     echo "FAIL: Phase 3 carries '${SHARED_MARKER}' but not '${ARM_MARKER}' — the update-failure refusal was reworded; update ARM_MARKER" >&2
   else
     echo "FAIL: Phase 3 failed, but not with the update-failure stateful refusal" >&2
@@ -391,7 +391,7 @@ if [ "${FORCE_RC}" -ne 0 ]; then
 fi
 # The replacement must be the update-failure fallback's, not a property-driven
 # one: only the fallback logs this line.
-if ! printf '%s\n' "${FORCE_PLAIN}" | grep -qF "${REPLACING_MARKER}"; then
+if ! grep -qF "${REPLACING_MARKER}" <<<"${FORCE_PLAIN}"; then
   echo "FAIL: Phase 4 output lacks '${REPLACING_MARKER}' — the replacement did not come from the update-failure fallback" >&2
   exit 1
 fi

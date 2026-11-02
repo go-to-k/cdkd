@@ -350,7 +350,7 @@ if grep -q 'pass a secure dynamic reference' <<<"${REFUSE_TXT}"; then
   HEAD_SEEN=1
 fi
 LINE_SEEN=0
-if grep -q -- <<<"${REFUSE_TXT}" "- ${REFERENCE_ID}: ServiceToken"; then
+if grep -q -- "- ${REFERENCE_ID}: ServiceToken" <<<"${REFUSE_TXT}"; then
   LINE_SEEN=1
 fi
 if [ "${LINE_SEEN}" -eq 1 ] && [ "${HEAD_SEEN}" -eq 0 ]; then

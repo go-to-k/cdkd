@@ -482,7 +482,7 @@ for run in \
   GHOST_RC=$?
   set -e
   printf '%s\n' "${GHOST_OUT}"
-  if [ "${GHOST_RC}" -eq 0 ] || ! grep -qF -- <<<"${GHOST_OUT}" "${GHOST_NEEDLE}"; then
+  if [ "${GHOST_RC}" -eq 0 ] || ! grep -qF -- "${GHOST_NEEDLE}" <<<"${GHOST_OUT}"; then
     mv cdk.out/manifest.json.orig cdk.out/manifest.json
     echo "FAIL: ${verb} (${sel}) with a ghost Stage exited ${GHOST_RC} or did not name it" >&2
     exit 1
@@ -546,7 +546,7 @@ for pat in "*" "CdkdStageAssets-*" "CdkdStageAssets*"; do
   SEL_RC=$?
   set -e
   printf '%s\n' "${SEL_OUT}"
-  if [ "${SEL_RC}" -eq 0 ] || ! grep -qF -- <<<"${SEL_OUT}" "No stacks matching ${pat} found in assembly"; then
+  if [ "${SEL_RC}" -eq 0 ] || ! grep -qF -- "No stacks matching ${pat} found in assembly" <<<"${SEL_OUT}"; then
     echo "FAIL: diff '${pat}' exited ${SEL_RC} or did not report no match" >&2
     exit 1
   fi
@@ -564,7 +564,7 @@ for verb in diff destroy; do
   ALL_RC=$?
   set -e
   printf '%s\n' "${ALL_OUT}"
-  if [ "${ALL_RC}" -eq 0 ] || ! grep -qF -- <<<"${ALL_OUT}" "--all selects top-level stacks only, and this app has none: every stack is inside a CDK Stage (${STACK} (${STACK_PATH}))"; then
+  if [ "${ALL_RC}" -eq 0 ] || ! grep -qF -- "--all selects top-level stacks only, and this app has none: every stack is inside a CDK Stage (${STACK} (${STACK_PATH}))" <<<"${ALL_OUT}"; then
     echo "FAIL: ${verb} --all over a stage-only app exited ${ALL_RC} or did not refuse" >&2
     exit 1
   fi

@@ -596,7 +596,7 @@ done
 unset each_msg
 case "${FAILED_MSG}" in *"<caller-principal>"*) HAS_MASK=1 ;; *) HAS_MASK="" ;; esac
 if [ -z "${HAS_MASK}" ]; then
-  if printf '%s\n' "${FAILED_MSG}" | grep -qiF "not authorized"; then
+  if grep -qiF "not authorized" <<<"${FAILED_MSG}"; then
     echo "FAIL: premise not met: handler text quoted no principal (it does say 'not authorized'; read ${STACK}'s denial wording with --verbose and widen the mask or this arm)" >&2
   else
     echo "FAIL: premise not met: handler text quoted no principal (and says no 'not authorized'; the handler may not have reached the denied write)" >&2

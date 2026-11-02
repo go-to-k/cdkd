@@ -277,7 +277,7 @@ if ! grep -q 'held by ANOTHER existing resource' <<<"${HELD_OUT}"; then
   printf '%s\n' "${HELD_OUT}" >&2
   exit 1
 fi
-if ! grep -q -- <<<"${HELD_OUT}" '--replace was NOT applied and nothing was deleted'; then
+if ! grep -q -- '--replace was NOT applied and nothing was deleted' <<<"${HELD_OUT}"; then
   echo "FAIL: the refusal does not say --replace was withheld" >&2
   printf '%s\n' "${HELD_OUT}" >&2
   exit 1
@@ -346,7 +346,7 @@ if ! grep -q 'custom-named resource requires replacing' <<<"${DEPLOY_OUT}"; then
   exit 1
 fi
 echo "    OK: refusal names the create-first collision"
-if ! grep -q -- <<<"${DEPLOY_OUT}" '--replace'; then
+if ! grep -q -- '--replace' <<<"${DEPLOY_OUT}"; then
   echo "FAIL: the refusal does not point at the --replace escape hatch" >&2
   printf '%s\n' "${DEPLOY_OUT}" >&2
   exit 1

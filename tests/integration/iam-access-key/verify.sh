@@ -236,7 +236,7 @@ fi
 # The ARN embeds the path, so the recorded one must be the moved principal's.
 STATE_ARNS=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | python3 -c "import json,sys; s=json.load(sys.stdin); [print(r.get('attributes',{}).get('Arn','')) for r in s['resources'].values() if r['resourceType'] in ('AWS::IAM::User','AWS::IAM::Group')]")
 for want in "user${MOVED_PATH}${USER_NAME}" "group${MOVED_PATH}${GROUP_NAME}"; do
-  if ! printf '%s\n' "${STATE_ARNS}" | grep -qF ":${want}"; then
+  if ! grep -qF ":${want}" <<<"${STATE_ARNS}"; then
     echo "FAIL: state records no ARN ending in ${want} after the Path update (got: ${STATE_ARNS})" >&2
     exit 1
   fi

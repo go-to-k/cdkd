@@ -253,7 +253,7 @@ fi
 P1_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 # Anywhere in the record (properties, observedProperties, attributes), not
 # only the Description: a redaction regression fails here. Value withheld.
-if grep -qF -- <<<"${P1_STATE}" "${SECRET_DESC}"; then
+if grep -qF -- "${SECRET_DESC}" <<<"${P1_STATE}"; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the resolved secret value (value withheld)" >&2
   exit 1
 fi
@@ -270,7 +270,7 @@ if [ -z "${NOECHO_DESC}" ] || [ "${NOECHO_DESC}" = "None" ]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${NOECHO_HC_KEPT_NAME} has no Description on AWS" >&2
   exit 1
 fi
-if grep -qF -- <<<"${P1_STATE}" "${NOECHO_DESC}"; then
+if grep -qF -- "${NOECHO_DESC}" <<<"${P1_STATE}"; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the NoEcho Description (value withheld)" >&2
   exit 1
 fi

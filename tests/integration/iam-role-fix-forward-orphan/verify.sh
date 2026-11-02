@@ -400,7 +400,7 @@ done
 # go-to-k/cdkd#2319: the thrown message names AWS's refusal by its class
 # (`MalformedPolicyDocument[Exception]`); AWS's own text (`must be in ARN
 # format`) is shown only with --verbose.
-if ! printf '%s' "$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ')" | grep -qE 'MalformedPolicyDocument(Exception)?\.'; then
+if ! grep -qE 'MalformedPolicyDocument(Exception)?\.' <<<"$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ')"; then
   echo "[verify] FAIL: the step-2 deploy did not fail on the refused inline policy (its MalformedPolicyDocument class; output above)" >&2
   exit 1
 fi

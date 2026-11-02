@@ -238,7 +238,7 @@ assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logical 
     echo "FAIL: Phase 2 persisted no RESOURCE_FAILED event with an error message for ${lid} (the #2319 checks would pass for free)" >&2
     exit 1
   fi
-  if ! grep -qF -- <<<"${msg}" "${prefix}: "; then
+  if ! grep -qF -- "${prefix}: " <<<"${msg}"; then
     echo "FAIL: ${lid}'s RESOURCE_FAILED message does not carry '${prefix}: ' (#2319); ${#msg} chars" >&2
     exit 1
   fi

@@ -367,7 +367,7 @@ for edit in literal swap; do
   edit_out="$(cat "${WORK_DIR}/diff-${edit}.txt")"
   assert_no_plaintext_in "phase 1b ${edit} diff output" "${edit_out}"
   if [ "${edit_rc}" -ne 1 ] \
-    || ! printf '%s\n' "${edit_out}" | grep -qF 'scrub-nested-child other'; then
+    || ! grep -qF 'scrub-nested-child other' <<<"${edit_out}"; then
     echo "FAIL: 'cdkd diff --recursive --fail' with CDKD_4479_EDIT=${edit} exited ${edit_rc} or did not show the Description moving to 'scrub-nested-child other'" >&2
     printf '%s\n' "${edit_out}" | tail -40 >&2
     exit 1
@@ -445,7 +445,7 @@ if ! cmp -s "${WORK_DIR}/child-after-dry.json" "${WORK_DIR}/child-seeded-readbac
   echo "FAIL: --dry-run changed the child record" >&2
   exit 1
 fi
-if ! printf '%s\n' "${DRY_OUT}" | grep -qF "Would scrub 1 nested-stack output attribute(s) in ${STACK}"; then
+if ! grep -qF "Would scrub 1 nested-stack output attribute(s) in ${STACK}" <<<"${DRY_OUT}"; then
   echo "FAIL: --dry-run printed no 'Would scrub 1 nested-stack output attribute(s) in ${STACK}' line (#3961)" >&2
   printf '%s\n' "${DRY_OUT}" | tail -20 >&2
   exit 1
@@ -469,7 +469,7 @@ if [ "${SCRUB_RC}" -ne 0 ]; then
   printf '%s\n' "${SCRUB_OUT}" | tail -20 >&2
   exit 1
 fi
-if ! printf '%s\n' "${SCRUB_OUT}" | grep -qF "Scrubbed 2 resource record(s) in ${CHILD_STACK}"; then
+if ! grep -qF "Scrubbed 2 resource record(s) in ${CHILD_STACK}" <<<"${SCRUB_OUT}"; then
   # Sentinel: a scrub that exited 0 without this line either rewrote a
   # different count or its wording drifted; either way the phase proves nothing.
   echo "FAIL: cdkd scrub printed no 'Scrubbed 2 resource record(s) in ${CHILD_STACK}' line" >&2
@@ -489,7 +489,7 @@ if holds_plaintext "${WORK_DIR}/child-scrubbed.json"; then
   echo "FAIL: the CURRENT child state.json still holds the plaintext after scrub" >&2
   exit 1
 fi
-if ! printf '%s\n' "${SCRUB_OUT}" | grep -qF "Scrubbed 1 nested-stack output attribute(s) in ${STACK}"; then
+if ! grep -qF "Scrubbed 1 nested-stack output attribute(s) in ${STACK}" <<<"${SCRUB_OUT}"; then
   echo "FAIL: cdkd scrub printed no 'Scrubbed 1 nested-stack output attribute(s) in ${STACK}' line (#3961)" >&2
   printf '%s\n' "${SCRUB_OUT}" | tail -20 >&2
   exit 1
@@ -526,12 +526,12 @@ if [ "${VERSIONING}" != "Enabled" ]; then
   echo "FAIL: premise: the state bucket is not versioned (Status=${VERSIONING}) -- the purge is unobservable" >&2
   exit 1
 fi
-if printf '%s\n' "${SCRUB_OUT}" | grep -qF "Could not purge noncurrent versions"; then
+if grep -qF "Could not purge noncurrent versions" <<<"${SCRUB_OUT}"; then
   echo "FAIL: cdkd scrub warned that it could not purge -- the assertions below would fail for a grant, not the code" >&2
   printf '%s\n' "${SCRUB_OUT}" | tail -20 >&2
   exit 1
 fi
-if ! printf '%s\n' "${SCRUB_OUT}" | grep -qF "were purged, unless a warning above says otherwise"; then
+if ! grep -qF "were purged, unless a warning above says otherwise" <<<"${SCRUB_OUT}"; then
   echo "FAIL: cdkd scrub's summary does not claim the purge of the rewritten state.json's earlier versions" >&2
   printf '%s\n' "${SCRUB_OUT}" | tail -20 >&2
   exit 1
@@ -573,7 +573,7 @@ if [ "${CLEAN_RC}" -ne 0 ]; then
   printf '%s\n' "${CLEAN_OUT}" | tail -20 >&2
   exit 1
 fi
-if ! printf '%s\n' "${CLEAN_OUT}" | grep -qF "No plaintext secrets found in ${CHILD_STACK}"; then
+if ! grep -qF "No plaintext secrets found in ${CHILD_STACK}" <<<"${CLEAN_OUT}"; then
   echo "FAIL: the clean run printed no 'No plaintext secrets found in ${CHILD_STACK}' line -- was the child visited?" >&2
   printf '%s\n' "${CLEAN_OUT}" | tail -20 >&2
   exit 1
@@ -639,7 +639,7 @@ if [ "${CDKD_RC}" -ne 0 ]; then
   printf '%s\n' "${PURGE_OUT}" | tail -20 >&2
   exit 1
 fi
-if ! printf '%s\n' "${PURGE_OUT}" | grep -qF -- "--purge-history: on a VERSIONED state bucket, the earlier state.json versions of"; then
+if ! grep -qF -- "--purge-history: on a VERSIONED state bucket, the earlier state.json versions of" <<<"${PURGE_OUT}"; then
   echo "FAIL: cdkd scrub --purge-history printed no purge line" >&2
   printf '%s\n' "${PURGE_OUT}" | tail -20 >&2
   exit 1

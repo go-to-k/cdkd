@@ -340,7 +340,7 @@ if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true ${CLI} deploy "${STACK}" \
 fi
 REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
 printf '%s\n' "${REFUSAL_PLAIN}" >&2
-if printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF 'UnsupportedActionException'; then
+if grep -qF 'UnsupportedActionException' <<<"${REFUSAL_PLAIN}"; then
   echo "[verify] FAIL: step 1b routed the cluster to Cloud Control (the pre-#3866 behavior) instead of refusing pre-flight" >&2
   exit 1
 fi
@@ -349,7 +349,7 @@ for needle in \
   'cannot fall back to Cloud Control API' \
   '- UseLatestRestorableTime: ' \
   '--prefer-sdk-route AWS::DocDB::DBCluster:UseLatestRestorableTime'; do
-  if ! printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${REFUSAL_PLAIN}"; then
     echo "[verify] FAIL: step 1b output lacks the pre-flight refusal wording: '${needle}'" >&2
     exit 1
   fi
@@ -1233,7 +1233,7 @@ done
 # step 4's destroy.
 FAILED_3G="$(printf '%s\n' "${DESTROY_3G_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
 for cluster_lid in DocdbCluster NeptuneCluster; do
-  if ! printf '%s\n' "${FAILED_3G}" | grep -qx "${cluster_lid}"; then
+  if ! grep -qx "${cluster_lid}" <<<"${FAILED_3G}"; then
     echo "[verify] FAIL: step 3g: ${cluster_lid} is not among the failed deletes (got: $(printf '%s ' ${FAILED_3G}))" >&2
     exit 1
   fi

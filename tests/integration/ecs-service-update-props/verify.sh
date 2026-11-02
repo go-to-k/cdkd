@@ -993,7 +993,7 @@ if [ -z "${BREAKER_LINE}" ]; then
   printf '%s\n' "${BREAKER_OUT}" | tail -40 >&2
   exit 1
 fi
-if ! printf '%s\n' "${BREAKER_LINE}" | grep -q 'aws ecs list-tasks'; then
+if ! grep -q 'aws ecs list-tasks' <<<"${BREAKER_LINE}"; then
   echo "FAIL: the circuit-breaker failure does not carry the stopped-task diagnosis command:" >&2
   printf '%s\n' "${BREAKER_LINE}" >&2
   exit 1

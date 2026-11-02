@@ -240,9 +240,9 @@ DST_ETAG="$(state_etag "${DST_KEY}")"
 OUT_2A="$(cdkd refactor --all "${STATE_FLAGS[@]}" --dry-run 2>&1)"
 printf '%s\n' "${OUT_2A}"
 for pair in "${SRC}.${TABLE_ID} -> ${DST}." "${SRC}.${QUEUE_ID} -> ${DST}."; do
-  printf '%s\n' "${OUT_2A}" | grep -qF "  ${pair}" || { echo "FAIL: plan lacks the move ${pair}" >&2; exit 1; }
+  grep -qF "  ${pair}" <<<"${OUT_2A}" || { echo "FAIL: plan lacks the move ${pair}" >&2; exit 1; }
 done
-if printf '%s\n' "${OUT_2A}" | grep -qE '^  (Not moved|Not refactored|Refused|Ambiguous|Warning:)'; then
+if grep -qE '^  (Not moved|Not refactored|Refused|Ambiguous|Warning:)' <<<"${OUT_2A}"; then
   echo "FAIL: the move plan carries a warning or refusal" >&2
   exit 1
 fi

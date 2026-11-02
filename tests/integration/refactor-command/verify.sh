@@ -226,7 +226,7 @@ grep -qF "run 'cdkd refactor' to keep it)" <<<"${TABLE_ROW}" \
   || { echo "FAIL: the table's hint does not name cdkd refactor" >&2; exit 1; }
 TOPIC_ROWS="$(printf '%s\n' "${OUT_2A}" | grep -F '(AWS::SNS::Topic)' | grep -F '[-] ' || true)"
 [ -n "${TOPIC_ROWS}" ] || { echo "FAIL: diff shows no topic removal rows" >&2; exit 1; }
-if printf '%s\n' "${TOPIC_ROWS}" | grep -qF 'moved to'; then
+if grep -qF 'moved to' <<<"${TOPIC_ROWS}"; then
   echo "FAIL: an ambiguous topic removal carries a refactor hint" >&2
   exit 1
 fi
@@ -287,9 +287,9 @@ done
 # deprecation warning) are not, and must not trip this. The positive anchor
 # proves the plan lines still carry that indent, so a drift in it fails here
 # instead of making the negative grep pass vacuously.
-printf '%s\n' "${OUT_2C}" | grep -qE "^  ${OLD_TABLE_ID} -> ${NEW_TABLE_ID}  " \
+grep -qE "^  ${OLD_TABLE_ID} -> ${NEW_TABLE_ID}  " <<<"${OUT_2C}" \
   || { echo "FAIL: plan lines are no longer two-space indented; the check below would be vacuous" >&2; exit 1; }
-if printf '%s\n' "${OUT_2C}" | grep -qE '^  (Warning:|Not refactored|Refused|Ambiguous)'; then
+if grep -qE '^  (Warning:|Not refactored|Refused|Ambiguous)' <<<"${OUT_2C}"; then
   echo "FAIL: the mapped plan carries a warning or refusal" >&2
   exit 1
 fi

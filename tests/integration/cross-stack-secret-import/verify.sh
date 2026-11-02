@@ -1455,7 +1455,7 @@ fi
 # profile / state-bucket / state-prefix flags after the target, so the end
 # anchor admits exactly those three and nothing else.
 RUN_FLAGS_TAIL="( --(profile|state-bucket|state-prefix) [^ ]+)*"
-if ! printf '%s\n' "${PLAINTEXT_PRODUCER_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$"; then
+if ! grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$" <<<"${PLAINTEXT_PRODUCER_OUT}"; then
   diag "${PLAINTEXT_PRODUCER_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused without a 'Scrub with: cdkd scrub ${PRODUCER}' labelled line"
 fi
@@ -1652,7 +1652,7 @@ if ! grep -qF "at \"Description['Fn::Join']" <<<"${TAKEN_REFUSE_OUT}"; then
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused from somewhere other than the Description's Fn::Join — the refusal is not attributable to the taken-branch conditional read this phase seeds for"
 fi
-if ! printf '%s\n' "${TAKEN_REFUSE_OUT}" | grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$"; then
+if ! grep -qE "^Scrub with: cdkd scrub '?${PRODUCER}'?${RUN_FLAGS_TAIL}$" <<<"${TAKEN_REFUSE_OUT}"; then
   diag "${TAKEN_REFUSE_OUT}"
   fail "'cdkd scrub ${CONSUMER}' refused without a 'Scrub with: cdkd scrub ${PRODUCER}' labelled line"
 fi

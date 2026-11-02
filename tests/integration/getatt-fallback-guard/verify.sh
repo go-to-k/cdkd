@@ -177,7 +177,7 @@ if [ "${STRICT_RC}" -eq 0 ]; then
   exit 1
 fi
 for needle in 'Cannot resolve Fn::GetAtt' 'BogusName' '--strict-getatt'; do
-  if ! grep -qF -- <<<"${STRICT_OUT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${STRICT_OUT}"; then
     echo "FAIL: strict deploy output lacks message fragment: ${needle}" >&2
     exit 1
   fi
@@ -205,7 +205,7 @@ if [ "${WARN_RC}" -ne 0 ]; then
   exit 1
 fi
 for needle in 'Unknown attribute BogusName' 'fell back to the physical ID' '--strict-getatt'; do
-  if ! grep -qF -- <<<"${WARN_OUT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${WARN_OUT}"; then
     echo "FAIL: default-mode deploy output lacks fragment: ${needle}" >&2
     exit 1
   fi
@@ -240,7 +240,7 @@ if [ "${OUTPUT_RC}" -eq 0 ]; then
   exit 1
 fi
 for needle in 'Failed to resolve output BadOutput' '--strict-getatt'; do
-  if ! grep -qF -- <<<"${OUTPUT_OUT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${OUTPUT_OUT}"; then
     echo "FAIL: output-strict deploy output lacks fragment: ${needle}" >&2
     exit 1
   fi
@@ -254,7 +254,7 @@ if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev
 fi
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)" || { echo "FAIL: could not read the persisted state file for content assertions" >&2; exit 1; }
 for needle in '"Probe"' '"Consumer"' "${PARAM}" "${CONSUMER_PARAM}"; do
-  if ! grep -qF -- <<<"${STATE_JSON}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${STATE_JSON}"; then
     echo "FAIL: persisted state lacks ${needle} after the strict output failure" >&2
     exit 1
   fi

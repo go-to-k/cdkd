@@ -269,7 +269,7 @@ if [ "$(policies_on "${P3_NEW_POLICIES}" "${RESOURCE_ID_B}")" != "2" ]; then
   exit 1
 fi
 while read -r old_id _; do
-  if printf '%s\n' "${P3_NEW_POLICIES}" | grep -qF "${old_id} "; then
+  if grep -qF "${old_id} " <<<"${P3_NEW_POLICIES}"; then
     echo "FAIL: #4701: state still records the deleted policy ${old_id}" >&2
     exit 1
   fi

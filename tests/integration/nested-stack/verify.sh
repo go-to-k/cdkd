@@ -305,7 +305,7 @@ if ! grep -qF "${CHILD_STACK} (${REGION}): drift detected on 1 resource" <<<"${d
   echo "FAIL: the child's block did not report drift on 1 resource" >&2
   exit 1
 fi
-if ! grep -qF -- <<<"${drift_del_out}" "- ${CHILD_PARAM_ID} (AWS::SSM::Parameter) — DELETED outside cdkd"; then
+if ! grep -qF -- "- ${CHILD_PARAM_ID} (AWS::SSM::Parameter) — DELETED outside cdkd" <<<"${drift_del_out}"; then
   echo "FAIL: the deleted child parameter ${CHILD_PARAM_ID} was not reported DELETED" >&2
   exit 1
 fi

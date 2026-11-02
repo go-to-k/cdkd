@@ -734,7 +734,7 @@ ADOPT_STATE_2="$(aws s3 cp "s3://${STATE_BUCKET}/${ADOPT_STATE_KEY}" -)"
 ADOPT_ROLE_NAME_2="$(printf '%s' "${ADOPT_STATE_2}" | jq -r --arg k "${ADOPT_LOGICAL_ID}" '.resources[$k].physicalId // ""')"
 KEPT_TOPIC_ARN_2="$(printf '%s' "${ADOPT_STATE_2}" | jq -r '.resources.KeptTopic.physicalId // ""')"
 for arn in "${KEPT_TOPIC_ARN}" "${KEPT_TOPIC_ARN_2}"; do
-  if ! printf '%s' "${arn##*:}" | grep -qE "^${ADOPT_STACK}-KeptTopic-[0-9a-f]{12}\$"; then
+  if ! grep -qE "^${ADOPT_STACK}-KeptTopic-[0-9a-f]{12}\$" <<<"${arn##*:}"; then
     echo "FAIL: KeptTopic '${arn}' is not a generated ${ADOPT_STACK}-KeptTopic-<12 hex> topic"
     exit 1
   fi

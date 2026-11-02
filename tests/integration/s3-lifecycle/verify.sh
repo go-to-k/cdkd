@@ -390,7 +390,7 @@ SR_FLAT="$(printf '%s' "${SR_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'XrArmBucket (AWS::S3::Bucket) is created with BucketName' \
   "(${SR_ARM_BUCKET}) already holds that name" \
   'Nothing was created.' 'Choose a name no other resource holds'; do
-  if ! grep -qF -- <<<"${SR_FLAT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${SR_FLAT}"; then
     echo "FAIL phase 0b: refusal output lacks message fragment: ${needle}" >&2
     exit 1
   fi
@@ -398,7 +398,7 @@ done
 # The other arms of the same refusal must not be what fired: a 301 or 403 here
 # would mean the lookup did not see the same-region bucket at all.
 for needle in 'S3 answered 301' 'S3 answered 403'; do
-  if grep -qF -- <<<"${SR_FLAT}" "${needle}"; then
+  if grep -qF -- "${needle}" <<<"${SR_FLAT}"; then
     echo "FAIL phase 0b: the refusal took the '${needle}' arm for a bucket in this region" >&2
     exit 1
   fi
@@ -531,12 +531,12 @@ XR_FLAT="$(printf '%s' "${XR_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'XrArmBucket (AWS::S3::Bucket) is created with BucketName' \
   "BucketName ${XR_ARM_BUCKET}, and S3 answered 301 for that bucket" \
   'already exists in another region' 'Nothing was created.'; do
-  if ! grep -qF -- <<<"${XR_FLAT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${XR_FLAT}"; then
     echo "FAIL phase 0: refusal output lacks message fragment: ${needle}" >&2
     exit 1
   fi
 done
-if grep -qF -- <<<"${XR_FLAT}" 'Refusing to adopt existing S3 bucket'; then
+if grep -qF -- 'Refusing to adopt existing S3 bucket' <<<"${XR_FLAT}"; then
   echo "FAIL phase 0: the issue #2227 CreateBucket-side guard fired, so the pre-create lookup let the name through as free" >&2
   exit 1
 fi
@@ -776,7 +776,7 @@ fi
 # destroy failed", which any unrelated breakage would also satisfy.
 CC_XR_FLAT="$(printf '%s' "${CC_XR_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'Refusing to delete S3 bucket' "lives in ${XR_REGION}" "destroy targets ${REGION}"; do
-  if ! grep -qF -- <<<"${CC_XR_FLAT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${CC_XR_FLAT}"; then
     echo "FAIL phase 0c-XR: refusal output lacks message fragment: ${needle}" >&2
     exit 1
   fi
@@ -947,7 +947,7 @@ assert_gone_eventually "phase 0c-ID: ${CC_ARM_ID_CLEAN_BUCKET} (the in-run contr
 CC_ID_FLAT="$(printf '%s' "${CC_ID_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'Could not confirm which region S3 bucket' 'Grant s3:GetBucketLocation' \
   'unverified, 0 errors)' '1 pre-flight safety check(s) could NOT be completed'; do
-  if ! grep -qF -- <<<"${CC_ID_FLAT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${CC_ID_FLAT}"; then
     echo "FAIL phase 0c-ID: destroy output lacks fragment: ${needle}" >&2
     exit 1
   fi
@@ -1048,7 +1048,7 @@ esac
 # membership assertion below: that one proves no row was emitted for the clean
 # bucket, this one proves the guard was actually exercised on it, and only the
 # two together distinguish "the guard answered" from "the guard never ran".
-if ! grep -qF -- <<<"${CC_ID_FLAT}" "Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}"; then
+if ! grep -qF -- "Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}" <<<"${CC_ID_FLAT}"; then
   echo "FAIL phase 0c-ID control: no 'Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}' line -- the control bucket's identity probe never ran, so its lack of a guard row proves nothing." >&2
   exit 1
 fi
@@ -1544,7 +1544,7 @@ if [ "${DEP_ID_STATE_LEFT}" != "DepArmReplaceBucket=${DEP_ARM_NEW_BUCKET}" ]; th
 fi
 
 DEP_ID_FLAT="$(printf '%s' "${DEP_ID_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
-if ! grep -qF -- <<<"${DEP_ID_FLAT}" "Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}"; then
+if ! grep -qF -- "Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}" <<<"${DEP_ID_FLAT}"; then
   echo "FAIL phase 1c control: no 'Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}' line -- the control's identity probe never ran, so its lack of a guard row proves nothing" >&2
   exit 1
 fi
@@ -1940,7 +1940,7 @@ set -e
 printf '%s\n' "${RN_OUT}"
 RN_FLAT="$(printf '%s' "${RN_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
 # The pre-fix outcome first, so a regression names itself.
-if grep -qF -- <<<"${RN_FLAT}" 'was ADOPTED, not created'; then
+if grep -qF -- 'was ADOPTED, not created' <<<"${RN_FLAT}"; then
   echo "FAIL [phase 2d]: the re-create ADOPTED ${RN_OLD_BUCKET}, a bucket this stack never made" >&2
   exit 1
 fi
@@ -1953,7 +1953,7 @@ fi
 for needle in 'Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket)' \
   'Nothing was deleted.' "Refusing to adopt S3 bucket ${RN_OLD_BUCKET} for RenameArmBucket" \
   'its BucketName is set explicitly'; do
-  if ! grep -qF -- <<<"${RN_FLAT}" "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${RN_FLAT}"; then
     echo "FAIL [phase 2d]: rollback output lacks message fragment: ${needle}" >&2
     exit 1
   fi
