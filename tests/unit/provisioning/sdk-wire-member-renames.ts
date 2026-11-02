@@ -161,6 +161,9 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     members: {
       Visibility: ['projectVisibility'],
     },
+    containers: {
+      Triggers: ['CreateWebhookCommand', 'UpdateWebhookCommand'],
+    },
   },
   'AWS::CodeCommit::Repository': {
     members: {

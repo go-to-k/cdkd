@@ -651,6 +651,11 @@
       "scenarios": []
     },
     {
+      "name": "codebuild-webhook",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "codecommit",
       "annotated": true,
       "scenarios": []
@@ -3537,6 +3542,7 @@
     "cdk-cross-account-lookup-role",
     "cloudtrail-trail",
     "codebuild-project",
+    "codebuild-webhook",
     "codedeploy-lambda-deployment-group",
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
