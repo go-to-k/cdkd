@@ -8,7 +8,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /** Deterministic names, so verify.sh's cleanup can find what a failed run left. */
 export const STREAM_NAME = 'CdkdFirehoseIceberg5636';
 export const DATABASE_NAME = 'cdkd_firehose_iceberg_5636';
-export const ROLE_NAME = 'CdkdFirehoseIceberg5636Role';
+/** IAM is global: the region suffix keeps runs in two regions apart. */
+export const ROLE_NAME_PREFIX = 'CdkdFirehoseIceberg5636Role';
 
 /**
  * Firehose `IcebergDestinationConfiguration` on the SDK route (issue #5636).
@@ -47,7 +48,7 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
     });
 
     const role = new iam.CfnRole(this, 'Role', {
-      roleName: ROLE_NAME,
+      roleName: `${ROLE_NAME_PREFIX}-${this.region}`,
       assumeRolePolicyDocument: {
         Version: '2012-10-17',
         Statement: [

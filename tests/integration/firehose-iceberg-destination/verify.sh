@@ -73,7 +73,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # Deterministic names from lib/firehose-iceberg-destination-stack.ts.
 STREAM_NAME="CdkdFirehoseIceberg5636"
 DATABASE_NAME="cdkd_firehose_iceberg_5636"
-ROLE_NAME="CdkdFirehoseIceberg5636Role"
+ROLE_NAME="CdkdFirehoseIceberg5636Role-${REGION}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
