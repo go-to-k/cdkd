@@ -345,6 +345,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         'Tags',
         'NotificationTopicArn',
         'SnapshotName',
+        'SnapshotArns',
         'LogDeliveryConfigurations',
         'NetworkType',
         'IpDiscovery',
@@ -766,6 +767,10 @@ export class ElastiCacheProvider implements ResourceProvider {
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           NotificationTopicArn: properties['NotificationTopicArn'] as string | undefined,
           SnapshotName: properties['SnapshotName'] as string | undefined,
+          // go-to-k/cdkd#5635: create-only (a change replaces the cluster),
+          // and DescribeCacheClusters has no member for it, so it is sent
+          // here and nowhere else.
+          SnapshotArns: properties['SnapshotArns'] as string[] | undefined,
           LogDeliveryConfigurations: properties['LogDeliveryConfigurations'] as
             | LogDeliveryConfigurationRequest[]
             | undefined,

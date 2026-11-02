@@ -1095,6 +1095,11 @@
       ]
     },
     {
+      "name": "elasticache-snapshot-arns",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "elbv2-same-name-replacement",
       "annotated": false,
       "scenarios": []
@@ -3563,6 +3568,7 @@
     "ecs-schedule-targets",
     "ecs-taskdef-tags-launch-type",
     "efs-immutable-replacement",
+    "elasticache-snapshot-arns",
     "elbv2-same-name-replacement",
     "eventbridge-api-destination",
     "eventbridge-input-transformer",

@@ -189,6 +189,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`ecs-schedule-targets`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ecs-schedule-targets/)
 - [`ecs-taskdef-tags-launch-type`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ecs-taskdef-tags-launch-type/)
 - [`efs-immutable-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/efs-immutable-replacement/)
+- [`elasticache-snapshot-arns`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/elasticache-snapshot-arns/)
 - [`elbv2-same-name-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/elbv2-same-name-replacement/)
 - [`eventbridge-api-destination`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/eventbridge-api-destination/)
 - [`eventbridge-input-transformer`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/eventbridge-input-transformer/)
