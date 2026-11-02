@@ -76,6 +76,10 @@
 # (the provisionedBy=sdk guard is what a pre-fix cdkd fails). Phase 2 changes
 # the maintenance window and drops the other four, which must be kept.
 #
+# #2762 (DBInstance PromotionTier): the L2 writer instance declares
+# PromotionTier 0, its only key that was a silent drop; phase 1 asserts the
+# writer is provisionedBy=sdk (what a pre-fix cdkd fails) with tier 0 live.
+#
 # #2762 (DBProxyEndpoint EndpointNetworkType): the reader endpoint declares
 # EndpointNetworkType=IPV4. Before #2762 the key was a silent drop, which routed
 # the endpoint to Cloud Control; phase 1 asserts provisionedBy=sdk, the recorded
@@ -461,6 +465,29 @@ if [ "${AURORA_DELETION_POLICY}" != "Delete" ]; then
   echo "FAIL: #3993 premise: the L2 AuroraCluster records DeletionPolicy '${AURORA_DELETION_POLICY}', expected 'Delete'" >&2
   exit 1
 fi
+
+# go-to-k/cdkd#2762 (DBInstance PromotionTier): the L2 writer instance
+# declares PromotionTier 0 (RDS's default is 1), its only key that was a
+# silent drop, which routed the writer to Cloud Control. It must now be
+# created on the SDK route, with the tier live. A recorded provisionedBy
+# absent from the record is a legacy SDK one; an absent RECORD is not.
+WRITER_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^AuroraClusterWriter"))) | .value.provisionedBy // "sdk"] | first // "<no writer record>"')
+if [ "${WRITER_PROVISIONED_BY}" != "sdk" ]; then
+  echo "FAIL: #2762: the L2 writer instance is routed via '${WRITER_PROVISIONED_BY}', expected 'sdk' (PromotionTier still a silent drop)" >&2
+  exit 1
+fi
+WRITER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^AuroraClusterWriter"))) | .value.physicalId] | first // ""')
+if [ -z "${WRITER_ID}" ] || [ "${WRITER_ID}" = "null" ]; then
+  echo "FAIL: could not resolve the L2 writer instance identifier from state" >&2
+  exit 1
+fi
+WRITER_TIER=$(aws rds describe-db-instances --db-instance-identifier "${WRITER_ID}" \
+  --region "${REGION}" --query 'DBInstances[0].PromotionTier' --output text)
+if [ "${WRITER_TIER}" != "0" ]; then
+  echo "FAIL: #2762: the writer ${WRITER_ID} has PromotionTier '${WRITER_TIER}', expected 0" >&2
+  exit 1
+fi
+echo "    OK: L2 writer ${WRITER_ID} is provisionedBy=sdk with PromotionTier 0 (#2762)"
 
 # --- Routing guard: the SecurityCluster must be SDK-provisioned -------
 # If any set prop were still a silent-drop, #614 routing would flip the
