@@ -19,6 +19,16 @@
 #      Also: the VPN gateway attachment's state record is the SDK provider's
 #      (`provisionedBy` sdk, physicalId `<vgwId>|<vpcId>`), AWS reports it
 #      `attached`, and the route through the VPN gateway exists.
+#   1b. OdbNetworkArn REJECTION PROBE (issue #5631, CDKD_TEST_ODB_PROBE=true):
+#      re-deploy the Phase 1 template plus a route targeting a well-formed but
+#      NONEXISTENT ODB network ARN. A read-back is impossible: the test account
+#      is not onboarded to Oracle Database@AWS, so no ODB network can be made.
+#      Instead assert the deploy FAILS with EC2's `odbNetworkArn ID '<arn>' does
+#      not exist` (InvalidOdbNetworkArn.NotFound, checked before the route
+#      table), that cdkd sent it through the SDK provider's own CreateRoute (SDK
+#      call log: EC2 CreateRoute >= 1, Cloud Control CreateResource == 0; before
+#      #5631 the route auto-routed to Cloud Control), and that no route for the
+#      probe destination and no state record for it exist afterwards.
 #   2. UPDATE (CDKD_TEST_UPDATE=true): swap the prefix-list route's target from
 #      the IGW to the TGW. Assert the swap was one ReplaceRoute with no
 #      DeleteRoute / CreateRoute (the SDK call log, issue #5068), the target
@@ -181,6 +191,13 @@ cleanup() {
   if [ -n "${P2_CALLS:-}" ]; then
     rm -f "${P2_CALLS}"
   fi
+  # Phase 1b's call log and deploy output (issue #5631).
+  if [ -n "${ODB_CALLS:-}" ]; then
+    rm -f "${ODB_CALLS}"
+  fi
+  if [ -n "${ODB_OUT:-}" ]; then
+    rm -f "${ODB_OUT}"
+  fi
 
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -213,7 +230,7 @@ cleanup
 
 # --- Phase 1: deploy baseline (pl-route -> IGW, cidr-route -> TGW) ----------
 echo "==> Phase 1: deploy (prefix-list route -> IGW, CIDR route -> TGW)"
-env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_UPDATE -u CDKD_TEST_ODB_PROBE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 RTB_ID="$(aws ec2 describe-route-tables --region "${REGION}" \
@@ -333,6 +350,86 @@ echo "==> Phase 1: drift read-back (expect no drift)"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}"
 echo "    drift clean after deploy"
 
+# Every Route record that exists is the SDK provider's: the routing guard the
+# #5631 backfill keeps (the ODB probe route itself never gets a record).
+ROUTE_ROUTES="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state.resources;const out=Object.keys(r).filter(k=>r[k].resourceType==="AWS::EC2::Route").sort().map(k=>`${k}=${r[k].provisionedBy??"<absent>"}`);process.stdout.write(out.join(" "))})')"
+if [ "${ROUTE_ROUTES}" != "PrefixListRoute=sdk TgwRoute=sdk VgwRoute=sdk" ]; then
+  echo "FAIL: Route records expected 'PrefixListRoute=sdk TgwRoute=sdk VgwRoute=sdk', got '${ROUTE_ROUTES}'" >&2
+  exit 1
+fi
+echo "    every Route record provisioned by the SDK provider (${ROUTE_ROUTES})"
+
+# --- Phase 1b: OdbNetworkArn rejection probe (issue #5631) -------------------
+# No ODB network can exist in the test account (not onboarded to Oracle
+# Database@AWS), so the value is proven to reach AWS by AWS REJECTING it.
+echo "==> Phase 1b: deploy a route to a nonexistent ODB network (expected to fail)"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+PARTITION="$(aws sts get-caller-identity --query Arn --output text | cut -d: -f2)"
+ODB_ARN="arn:${PARTITION}:odb:${REGION}:${ACCOUNT_ID}:odb-network/odbnet_cdkd5631probe"
+ODB_CALLS="$(mktemp -t cdkd-route-targets-odb-calls.XXXXXX)"
+ODB_OUT="$(mktemp -t cdkd-route-targets-odb-out.XXXXXX)"
+# cdkd APPENDS one line at exit: start from no file, so its existence below
+# proves the log took effect.
+rm -f "${ODB_CALLS}"
+if env -u CDKD_TEST_UPDATE CDKD_TEST_ODB_PROBE=true CDKD_SDK_CALL_LOG="${ODB_CALLS}" \
+  node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${ODB_OUT}" 2>&1; then
+  echo "FAIL: a route to the nonexistent ODB network ${ODB_ARN} deployed; AWS should have refused it (issue #5631)" >&2
+  tail -40 "${ODB_OUT}" >&2
+  exit 1
+fi
+# EC2's refusal of the ODB network ARN, in the form each route prints it (both
+# copied from real runs): the SDK provider prints only the error code without
+# --verbose ("Failed to create Route OdbProbeRoute:
+# InvalidOdbNetworkArn.NotFound."), while Cloud Control relays AWS's message
+# ("The odbNetworkArn ID '<arn>' does not exist"), its account segment masked
+# as `<account-id>` (ACCOUNT_ID_MASK). Either names the ODB field, so an
+# unrelated failure cannot pass; the call counts below tell the routes apart.
+ODB_ARN_RE="arn:${PARTITION}:odb:${REGION}:(${ACCOUNT_ID}|<account-id>):odb-network/odbnet_cdkd5631probe"
+if ! grep -qE "OdbProbeRoute: InvalidOdbNetworkArn\.NotFound\b|odbNetworkArn ID '${ODB_ARN_RE}' does not exist" "${ODB_OUT}"; then
+  echo "FAIL: the Phase 1b deploy failed, but not with EC2's rejection of the ODB network ARN (issue #5631)" >&2
+  tail -40 "${ODB_OUT}" >&2
+  exit 1
+fi
+echo "    AWS rejected the ODB network ARN: the field reached CreateRoute"
+if [ ! -s "${ODB_CALLS}" ]; then
+  echo "FAIL: the SDK call log ${ODB_CALLS} was not written — CDKD_SDK_CALL_LOG did not take effect" >&2
+  exit 1
+fi
+# Summed over every line (one per cdkd process); 0 when the command is absent.
+odb_calls() { # <client.command>
+  node -e 'const fs=require("fs");let n=0;for(const l of fs.readFileSync(process.argv[1],"utf8").split("\n")){if(l.trim()==="")continue;n+=JSON.parse(l).counts[process.argv[2]]??0}process.stdout.write(String(n))' "${ODB_CALLS}" "$1"
+}
+ODB_CREATE_ROUTE="$(odb_calls EC2Client.CreateRouteCommand)"
+ODB_CC_CREATE="$(odb_calls CloudControlClient.CreateResourceCommand)"
+echo "    Phase 1b calls: EC2 CreateRoute=${ODB_CREATE_ROUTE} CloudControl CreateResource=${ODB_CC_CREATE}"
+# Before #5631 the unwired OdbNetworkArn auto-routed the route to Cloud Control,
+# whose handler makes the same EC2 call server-side: the rejection alone cannot
+# tell the routes apart, these counts can.
+if [ "${ODB_CREATE_ROUTE}" -lt 1 ] || [ "${ODB_CC_CREATE}" != "0" ]; then
+  echo "FAIL: the ODB route must go through the SDK provider's CreateRoute, not Cloud Control (issue #5631)" >&2
+  cat "${ODB_CALLS}" >&2
+  exit 1
+fi
+rm -f "${ODB_CALLS}" "${ODB_OUT}"
+ODB_ROUTE_LEFT="$(aws ec2 describe-route-tables --region "${REGION}" --route-table-ids "${RTB_ID}" \
+  --query "length(RouteTables[0].Routes[?DestinationCidrBlock=='10.220.0.0/16'])" --output text)"
+if [ "${ODB_ROUTE_LEFT}" != "0" ]; then
+  echo "FAIL: a route for the ODB probe destination exists after the refused deploy (count=${ODB_ROUTE_LEFT})" >&2
+  exit 1
+fi
+ODB_RECORD="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json 2>/dev/null \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const k=Object.keys(JSON.parse(s).state.resources);process.stdout.write(!k.some(x=>x.startsWith("PrefixListRoute"))?"unread":k.some(x=>x.startsWith("OdbProbeRoute"))?"present":"absent")})')"
+if [ "${ODB_RECORD}" != "absent" ]; then
+  # "unread": the state lacks Phase 1's PrefixListRoute, so "no OdbProbeRoute" would prove nothing.
+  echo "FAIL: ODB probe route state check read '${ODB_RECORD}' (want absent)" >&2
+  exit 1
+fi
+echo "    no ODB probe route in AWS or in state"
+
 # --- Phase 2: swap the prefix-list route's target IGW -> TGW ----------------
 # Issue #5068: a target change is "Update requires: No interruption" in
 # CloudFormation, served by one atomic ReplaceRoute. A DeleteRoute + CreateRoute
@@ -343,7 +440,7 @@ P2_CALLS="$(mktemp -t cdkd-route-targets-p2-calls.XXXXXX)"
 # cdkd APPENDS one line at exit: start from no file, so its existence below
 # proves the log took effect.
 rm -f "${P2_CALLS}"
-CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
+env -u CDKD_TEST_ODB_PROBE CDKD_SDK_CALL_LOG="${P2_CALLS}" CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
 if [ ! -s "${P2_CALLS}" ]; then
@@ -437,7 +534,7 @@ echo "    drift clean after update"
 
 # --- Phase 3: destroy --------------------------------------------------------
 echo "==> Phase 3: destroy"
-node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
+env -u CDKD_TEST_ODB_PROBE node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force
 
 ATT_LEFT="$(aws ec2 describe-transit-gateway-vpc-attachments --region "${REGION}" \
   --filters "Name=tag:Name,Values=${TGW_ATTACHMENT_TAG}" "Name=state,Values=available,pending,modifying,deleting" \
@@ -479,4 +576,4 @@ echo "    TGW attachment, TGW, prefix list, VPN gateway, and VPC all gone"
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
 echo "    cdkd state removed"
 
-echo "[verify] PASS — EC2 Route prefix-list destination + TGW target + VPN gateway attachment: deploy, target-swap update, drift read-back, and destroy all verified"
+echo "[verify] PASS — EC2 Route prefix-list destination + TGW target + VPN gateway attachment + OdbNetworkArn rejection probe: deploy, target-swap update, drift read-back, and destroy all verified"
