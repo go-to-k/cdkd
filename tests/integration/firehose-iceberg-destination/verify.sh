@@ -19,8 +19,16 @@
 #   2. CDKD_TEST_UPDATE=true: buffering 120s, retry 600s, table `events_v2`.
 #      Assert the same stream (create timestamp unchanged), the new values in
 #      AWS, the catalog untouched, and a clean drift.
-#   3. Destroy; assert the stream, database, bucket, role and state file are
+#   3. Empty the bucket (Glue's Iceberg metadata), destroy; assert the
+#      stream, both tables, database, bucket, role and state file are
 #      gone.
+#
+# Both destination tables (`events`, `events_v2`) are real Iceberg tables the
+# stack creates before the stream: with table creation off, Firehose's create
+# requires the table to exist (glue:GetTable refusal, measured 2026-11-02).
+# The shape was validated by a throwaway CloudFormation stack the same day:
+# the stream reached ACTIVE, the phase-2 update applied in place, and the
+# read-back table entry held exactly the two templated keys.
 #
 # SchemaEvolutionConfiguration and TableCreationConfiguration are not
 # templated: an enabled schema evolution is refused on a DirectPut stream
@@ -79,9 +87,19 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # Deterministic names from lib/firehose-iceberg-destination-stack.ts.
 STREAM_NAME="CdkdFirehoseIceberg5636"
 DATABASE_NAME="cdkd_firehose_iceberg_5636"
+TABLE_NAMES="events events_v2"
 ROLE_NAME="CdkdFirehoseIceberg5636Role-${REGION}"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
+
+# Only a value shaped like a bucket name AND carrying the name cdkd generates
+# for this stack's `Bucket` (resource-name.ts: the lowercased
+# `{StackName}-{LogicalId}`, plus `-{12 hex}` on a stack with an instance id)
+# is ever emptied or deleted.
+is_fixture_bucket() { # usage: is_fixture_bucket <name>
+  [[ "$1" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] &&
+    [[ "$1" =~ ^cdkdfirehoseicebergdestinationexample-bucket(-[0-9a-f]{12})?$ ]]
+}
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -92,6 +110,11 @@ cleanup() {
   if [ -n "${STATE_BUCKET:-}" ]; then
     leftover_bucket="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" 2>/dev/null |
       jq -r '.resources.Bucket.physicalId // empty' 2>/dev/null)"
+  fi
+  # The Iceberg tables' metadata sits in the bucket, which a delete refuses
+  # while it holds objects: empty it first.
+  if [ -n "${leftover_bucket}" ] && is_fixture_bucket "${leftover_bucket}"; then
+    aws s3 rm "s3://${leftover_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
   fi
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
@@ -112,18 +135,18 @@ cleanup() {
       sleep 5
     done
   fi
+  # Stream, then tables, then database.
+  for t in ${TABLE_NAMES}; do
+    aws glue delete-table --database-name "${DATABASE_NAME}" --name "${t}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
   aws glue delete-database --name "${DATABASE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name iceberg >/dev/null 2>&1 || true
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1 || true
   # A failed state destroy left the bucket: empty and delete it by the name
   # read above, and name it loudly if it is still there.
-  # Only a value shaped like a bucket name AND carrying the name cdkd
-  # generates for this stack's `Bucket` (resource-name.ts: the lowercased
-  # `{StackName}-{LogicalId}`, plus `-{12 hex}` on a stack with an instance
-  # id) is deleted; anything else is named and left alone.
+  # Anything not this fixture's generated name is named and left alone.
   if [ "${rc}" != "0" ] && [ -n "${leftover_bucket}" ]; then
-    if [[ "${leftover_bucket}" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] &&
-      [[ "${leftover_bucket}" =~ ^cdkdfirehoseicebergdestinationexample-bucket(-[0-9a-f]{12})?$ ]]; then
+    if is_fixture_bucket "${leftover_bucket}"; then
       aws s3 rm "s3://${leftover_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
       aws s3api delete-bucket --bucket "${leftover_bucket}" --region "${REGION}" >/dev/null 2>&1 || true
       if ! (gone_probe aws s3api head-bucket --bucket "${leftover_bucket}" --region "${REGION}"); then
@@ -292,6 +315,10 @@ echo "    ok: no drift after the update"
 
 # --- Phase 3: destroy --------------------------------------------------------
 echo "==> Phase 3: destroy"
+# Glue wrote the Iceberg tables' metadata under warehouse/: empty the bucket
+# so its delete can succeed.
+is_fixture_bucket "${BUCKET_NAME}" || { echo "FAIL: '${BUCKET_NAME}' is not this fixture's generated bucket name" >&2; exit 1; }
+aws s3 rm "s3://${BUCKET_NAME}" --recursive --region "${REGION}" >/dev/null
 node "${LOCAL_DIST}" destroy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -299,6 +326,10 @@ node "${LOCAL_DIST}" destroy "${STACK}" \
 
 assert_gone "delivery stream ${STREAM_NAME} still exists after destroy" \
   aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" --region "${REGION}"
+for t in ${TABLE_NAMES}; do
+  assert_gone "Glue table ${DATABASE_NAME}.${t} still exists after destroy" \
+    aws glue get-table --database-name "${DATABASE_NAME}" --name "${t}" --region "${REGION}"
+done
 assert_gone "Glue database ${DATABASE_NAME} still exists after destroy" \
   aws glue get-database --name "${DATABASE_NAME}" --region "${REGION}"
 assert_gone "IAM role ${ROLE_NAME} still exists after destroy" \

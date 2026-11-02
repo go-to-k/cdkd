@@ -4598,11 +4598,16 @@
       "resourceType": "AWS::Glue::Table",
       "integs": [
         "data-analytics",
+        "firehose-iceberg-destination",
         "glue-update-hardening",
         "import-auto-mode"
       ],
       "signals": {
         "data-analytics": [
+          "l1",
+          "literal"
+        ],
+        "firehose-iceberg-destination": [
           "l1",
           "literal"
         ],

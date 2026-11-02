@@ -8,6 +8,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /** Deterministic names, so verify.sh's cleanup can find what a failed run left. */
 export const STREAM_NAME = 'CdkdFirehoseIceberg5636';
 export const DATABASE_NAME = 'cdkd_firehose_iceberg_5636';
+/** Phase 1 delivers to the first, phase 2 to the second; both exist from the start. */
+export const TABLE_NAMES = ['events', 'events_v2'] as const;
 /** IAM is global: the region suffix keeps runs in two regions apart. */
 export const ROLE_NAME_PREFIX = 'CdkdFirehoseIceberg5636Role';
 
@@ -16,6 +18,7 @@ export const ROLE_NAME_PREFIX = 'CdkdFirehoseIceberg5636Role';
  *
  * covers: AWS::KinesisFirehose::DeliveryStream
  * covers: AWS::Glue::Database
+ * covers: AWS::Glue::Table
  *
  * Before the fix the property was not in the provider's `handledProperties`,
  * so the stream routed through Cloud Control (recorded `provisionedBy:
@@ -37,8 +40,11 @@ export const ROLE_NAME_PREFIX = 'CdkdFirehoseIceberg5636Role';
  * AWS documents both only for a database source, which needs a reachable
  * database. Their mapping is pinned by the unit tests only.
  *
- * No record is ever put, so Firehose creates no table and writes nothing to
- * the bucket: only control-plane resources exist.
+ * With table creation off, Firehose requires each destination table to exist
+ * at create (glue:GetTable, measured 2026-11-02), so both tables are real
+ * Iceberg tables Glue creates first (`MetadataOperation: CREATE`), which
+ * writes their metadata under the bucket's `warehouse/` prefix. verify.sh
+ * empties the bucket before the destroy. No record is ever put.
  */
 export class FirehoseIcebergDestinationStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -53,6 +59,26 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
       catalogId: this.account,
       databaseInput: { name: DATABASE_NAME },
     });
+
+    const tables = TABLE_NAMES.map(
+      (name) =>
+        new glue.CfnTable(this, name === 'events' ? 'EventsTable' : 'EventsV2Table', {
+          catalogId: this.account,
+          databaseName: database.ref,
+          openTableFormatInput: { icebergInput: { metadataOperation: 'CREATE', version: '2' } },
+          tableInput: {
+            name,
+            tableType: 'EXTERNAL_TABLE',
+            storageDescriptor: {
+              columns: [
+                { name: 'id', type: 'string' },
+                { name: 'ts', type: 'timestamp' },
+              ],
+              location: `s3://${bucket.ref}/warehouse/${name}/`,
+            },
+          },
+        })
+    );
 
     const role = new iam.CfnRole(this, 'Role', {
       roleName: `${ROLE_NAME_PREFIX}-${this.region}`,
@@ -89,11 +115,14 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
               },
               {
                 Effect: 'Allow',
-                Action: ['glue:GetDatabase', 'glue:GetTable', 'glue:CreateTable', 'glue:UpdateTable'],
+                Action: ['glue:GetDatabase', 'glue:GetTable', 'glue:UpdateTable'],
                 Resource: [
                   `arn:${this.partition}:glue:${this.region}:${this.account}:catalog`,
                   `arn:${this.partition}:glue:${this.region}:${this.account}:database/${DATABASE_NAME}`,
-                  `arn:${this.partition}:glue:${this.region}:${this.account}:table/${DATABASE_NAME}/*`,
+                  ...TABLE_NAMES.map(
+                    (name) =>
+                      `arn:${this.partition}:glue:${this.region}:${this.account}:table/${DATABASE_NAME}/${name}`
+                  ),
                 ],
               },
             ],
@@ -128,6 +157,7 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
       },
     });
     stream.addResourceDependency(database);
+    for (const table of tables) stream.addResourceDependency(table);
 
     new cdk.CfnOutput(this, 'StreamName', { value: stream.ref });
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.ref });
