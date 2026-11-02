@@ -10,7 +10,7 @@ unlisted: true
 
 Classifies every CC-routable resource type (whose CFn schema is cached under `tests/fixtures/cfn-schemas/`) by whether its computed `readOnly` `Fn::GetAtt` attributes are populated by `CloudControlProvider.enrichResourceAttributes`. A computed attribute that is NOT enriched silently falls through the intrinsic resolver to the physicalId (the bug class fixed in #844 / #864 / #865 / #866).
 
-Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback-gap`) is only exposed on the #614 silent-drop CC-fallback path — the SDK provider populates the attribute on the primary path — so it is informational and does NOT fail CI. A gap on a **pure-CC** type (`unenriched-computed`, no SDK provider) is the real bug class: the CC path is the only path, so the attribute would always fall through. The `audit:enrichment-coverage:check` critic hard-fails ONLY on `unenriched-computed`.
+Gap severity depends on the tier. A gap on an **SDK-backed** type (`sdk-fallback-gap`) is only exposed on the #614 CC-fallback path for SDK-unwired properties — the SDK provider populates the attribute on the primary path — so it is informational and does NOT fail CI. A gap on a **pure-CC** type (`unenriched-computed`, no SDK provider) is the real bug class: the CC path is the only path, so the attribute would always fall through. The `audit:enrichment-coverage:check` critic hard-fails ONLY on `unenriched-computed`.
 
 > NOTE: every cached schema today is an SDK-backed (Tier 1) type — the fixture refresh only fetches registered providers — so the critic currently has 0 hard gaps by construction. It becomes load-bearing the moment a pure-CC type's schema is cached (e.g. `AWS::ElastiCache::ReplicationGroup`, `AWS::Redshift::Cluster`, `AWS::OpenSearchService::Domain`).
 
@@ -29,7 +29,7 @@ None. Every computed `readOnly` attribute on a cached pure-CC type is either enr
 
 ## SDK-fallback gaps (informational)
 
-SDK-backed types whose computed attribute is unenriched: only exposed on the #614 silent-drop CC-fallback path. Tracked so a future #614-hardening pass can prioritise; does not block CI.
+SDK-backed types whose computed attribute is unenriched: only exposed on the #614 CC-fallback path for SDK-unwired properties. Tracked so a future #614-hardening pass can prioritise; does not block CI.
 
 | Resource type | Unenriched computed attributes (CC-fallback only) |
 | --- | --- |

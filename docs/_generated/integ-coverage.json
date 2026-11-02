@@ -1443,6 +1443,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -1525,6 +1526,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -1707,6 +1711,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -1785,6 +1790,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -1986,6 +1994,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2067,6 +2076,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2248,6 +2260,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -2330,6 +2343,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -2510,6 +2526,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
+        "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2569,6 +2586,9 @@
           "l2"
         ],
         "cc-final-snapshot-handlers": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "codebuild-project": [
@@ -2744,6 +2764,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2832,6 +2853,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "codebuild-project": [
@@ -3048,6 +3072,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3126,6 +3151,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -3296,6 +3324,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -3388,6 +3417,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "codebuild-project": [
@@ -3617,6 +3649,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
         "docdb-fix-forward-orphan",
@@ -3698,6 +3731,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-mount-target": [
           "l2"
         ],
         "deletion-ordering-complex": [
@@ -4190,6 +4226,7 @@
     {
       "resourceType": "AWS::EFS::FileSystem",
       "integs": [
+        "cc-to-sdk-reroute-mount-target",
         "drift-revert-vpc",
         "ecs-fargate",
         "efs-immutable-replacement",
@@ -4199,6 +4236,9 @@
         "stack-copy-create-tokens"
       ],
       "signals": {
+        "cc-to-sdk-reroute-mount-target": [
+          "l1"
+        ],
         "drift-revert-vpc": [
           "l1",
           "literal"
@@ -4230,12 +4270,17 @@
     {
       "resourceType": "AWS::EFS::MountTarget",
       "integs": [
+        "cc-to-sdk-reroute-mount-target",
         "drift-revert-vpc",
         "ecs-fargate",
         "efs-lambda",
         "efs-standalone"
       ],
       "signals": {
+        "cc-to-sdk-reroute-mount-target": [
+          "l1",
+          "literal"
+        ],
         "drift-revert-vpc": [
           "l1",
           "literal"
@@ -6924,10 +6969,15 @@
     {
       "resourceType": "AWS::Route53::HostedZone",
       "integs": [
+        "cc-to-sdk-reroute-hosted-zone",
         "ec2-vpc",
         "route53"
       ],
       "signals": {
+        "cc-to-sdk-reroute-hosted-zone": [
+          "l1",
+          "literal"
+        ],
         "ec2-vpc": [
           "l1",
           "literal"

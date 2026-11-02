@@ -609,6 +609,16 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute-hosted-zone",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "cc-to-sdk-reroute-mount-target",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-write-only-create-only",
       "annotated": false,
       "scenarios": []
@@ -3548,6 +3558,8 @@
     "cc-final-snapshot-handlers",
     "cc-required-name-generation",
     "cc-to-sdk-reroute",
+    "cc-to-sdk-reroute-hosted-zone",
+    "cc-to-sdk-reroute-mount-target",
     "cc-write-only-create-only",
     "cdk-cross-account-lookup-role",
     "cloudtrail-trail",

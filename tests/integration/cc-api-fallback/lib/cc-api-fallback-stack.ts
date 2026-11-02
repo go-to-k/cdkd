@@ -25,10 +25,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * CreateApi path" — cdkd's provider deliberately models routes and
  * integrations as explicit resources, so wiring `Body` would mean
  * adopting the ImportApi code path, a settled design decision rather
- * than a missing call. (The one entry with an even stronger rationale,
- * Lambda's `PublishToLatestPublished` — "no AWS SDK equivalent" — was
- * tried first and AWS itself rejects it outside Managed Instance
- * functions, so it cannot ride a cheap fixture.) Should `Body` ever be
+ * than a missing call. Should `Body` ever be
  * SDK-wired anyway, verify.sh's step-0 guard reds with a message naming
  * this selection rule instead of a misleading deploy-time assertion.
  *

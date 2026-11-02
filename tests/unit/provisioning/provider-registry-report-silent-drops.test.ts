@@ -142,7 +142,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain('MyResource');
     expect(msg).toContain(fx.resourceType);
     expect(msg).toContain(fx.property);
-    expect(msg).toContain('silently dropped');
+    expect(msg).toContain('left unwritten');
     expect(msg).toContain('--prefer-sdk-route');
   });
 
@@ -150,7 +150,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
    * Issue #2750. The allow set is per `<Type>:<Prop>` while the ROUTE is per
    * resource: the un-allowed sibling sends the whole resource through Cloud
    * Control, which forwards the full property map — so the allow-listed
-   * property reaches AWS after all and the "will be silently dropped" line is
+   * property reaches AWS after all and the "will be left unwritten" line is
    * simply false. Only the auto-route line is true here.
    */
   it('does NOT warn that an overridden drop will be DROPPED when a sibling auto-routes', () => {
@@ -303,7 +303,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
       },
     ]);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]![0] as string).toContain('silently dropped');
+    expect(warn.mock.calls[0]![0] as string).toContain('left unwritten');
   });
 
   /**

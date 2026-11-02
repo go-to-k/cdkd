@@ -3274,7 +3274,7 @@ describe('the finished-campaign sentinel', () => {
     // list. Emitting a bare newline for it made the sync workflow's
     // rows-or-nothing guard kill the step under `set -e` with no annotation,
     // and the umbrella kept its last stale rows permanently.
-    expect(UMBRELLA_EMPTY_SENTINEL).toMatch(/^_No remaining silent-drop properties/);
+    expect(UMBRELLA_EMPTY_SENTINEL).toMatch(/^_No remaining SDK-unwired properties/);
     // ONE renderer emits this sentence again. go-to-k/cdkd#2949 briefly gave it
     // a second — the parent's per-type index — and go-to-k/cdkd#2998 deleted
     // that along with the whole parent-body splice, so the reconciler must not
@@ -3607,7 +3607,7 @@ describe('renderChangelogFragment', () => {
     expect(fragment).toContain('now deploys on the SDK path');
     // The keeps-a-drop wording would be vacuous here -- it describes drops the
     // type no longer has.
-    expect(fragment).not.toContain('the drops it still carries are REFUSED');
+    expect(fragment).not.toContain('properties it still carries are REFUSED');
   });
 
   it('fits the cap with every bucket populated, and says what it omitted', () => {

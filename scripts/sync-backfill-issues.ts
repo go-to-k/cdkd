@@ -429,7 +429,7 @@ export function applyAction(run: Runner, repo: string, action: Action, scratch: 
         'completed',
         '--comment',
         'Every property of this type is now wired into its provider — the coverage map reports ' +
-          'no remaining silent drops. A new issue linking back here is filed if the type regains one.',
+          'no remaining SDK-unwired properties. A new issue linking back here is filed if the type regains one.',
       ]);
       return action.number;
   }

@@ -610,6 +610,8 @@
         "cc-protection-flip-eks",
         "cc-required-name-generation",
         "cc-to-sdk-reroute",
+        "cc-to-sdk-reroute-hosted-zone",
+        "cc-to-sdk-reroute-mount-target",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -929,7 +931,9 @@
     {
       "flag": "--pin-cc-api",
       "integs": [
-        "cc-to-sdk-reroute"
+        "cc-to-sdk-reroute",
+        "cc-to-sdk-reroute-hosted-zone",
+        "cc-to-sdk-reroute-mount-target"
       ]
     },
     {
@@ -963,6 +967,8 @@
         "cc-final-snapshot-handlers",
         "cc-required-name-generation",
         "cc-to-sdk-reroute",
+        "cc-to-sdk-reroute-hosted-zone",
+        "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "generated-name-lifecycle",
         "iam-recreate-reattach",
@@ -1029,6 +1035,8 @@
         "cc-protection-flip-eks",
         "cc-required-name-generation",
         "cc-to-sdk-reroute",
+        "cc-to-sdk-reroute-hosted-zone",
+        "cc-to-sdk-reroute-mount-target",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -1523,6 +1531,8 @@
         "cc-protection-flip-eks",
         "cc-required-name-generation",
         "cc-to-sdk-reroute",
+        "cc-to-sdk-reroute-hosted-zone",
+        "cc-to-sdk-reroute-mount-target",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -1992,6 +2002,8 @@
         "cc-protection-flip-eks",
         "cc-required-name-generation",
         "cc-to-sdk-reroute",
+        "cc-to-sdk-reroute-hosted-zone",
+        "cc-to-sdk-reroute-mount-target",
         "cc-write-only-create-only",
         "cdk-cross-account-lookup-role",
         "ci-cd",
@@ -2438,6 +2450,7 @@
     "--from-state",
     "--frozen-lockfile",
     "--function-name",
+    "--function-scaling-config",
     "--gateway",
     "--global-cluster-identifier",
     "--global-secondary-index-updates",

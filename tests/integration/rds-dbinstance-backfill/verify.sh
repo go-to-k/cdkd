@@ -63,6 +63,14 @@
 # the instance reboots; CloudFormation reboots after that update, so the deploy
 # must return with B live and `in-sync`. Both groups must be gone after destroy.
 #
+# go-to-k/cdkd#5640 (DBInstance EnableCloudwatchLogsExports): phase 1 exports
+# `postgresql`; the provisionedBy=sdk guard is what a pre-fix cdkd fails, and
+# phase 1 asserts the live EnabledCloudwatchLogsExports. Phase 2 adds `upgrade`
+# and asserts both are live. Phase 2c (CDKD_TEST_LOGS_REMOVED=true) drops the
+# property, which disables both, as CloudFormation's handler does (it disables
+# what the previous template declared), with parameter group B kept beside it.
+# Cleanup deletes the CloudWatch log groups RDS created for the exports.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -165,6 +173,13 @@ cleanup() {
       PG_B_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBParameterGroup" and (.key | test("^ParamGroupB"))) | .value.physicalId // empty] | first // ""')
     fi
   fi
+  # go-to-k/cdkd#5640: the instance whose exported-log groups cleanup deletes
+  # below; on the pre-run pass, the one a leftover state record names.
+  LOG_INSTANCE_ID="${DB_INSTANCE_ID}"
+  if [ -z "${LOG_INSTANCE_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    LOG_INSTANCE_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.physicalId // empty] | first // ""')
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # Pass --state-bucket explicitly so the cdk.json default placeholder
     # ('your-cdkd-state-bucket') does not poison state destroy with a
@@ -222,6 +237,20 @@ cleanup() {
     for pg in ${PG_A_ID} ${PG_B_ID}; do
       aws rds delete-db-parameter-group --db-parameter-group-name "${pg}" \
         --region "${REGION}" >/dev/null 2>&1 || true
+    done
+  fi
+  # go-to-k/cdkd#5640: RDS creates one log group per exported log type and
+  # deletes none of them with the instance. Named exactly, never swept by
+  # prefix; RDS names them by the lower-cased identifier.
+  if [ -n "${LOG_INSTANCE_ID}" ]; then
+    LOG_INSTANCE_LOWER=$(printf '%s' "${LOG_INSTANCE_ID}" | tr '[:upper:]' '[:lower:]')
+    for log_type in postgresql upgrade; do
+      LOG_GROUP="/aws/rds/instance/${LOG_INSTANCE_LOWER}/${log_type}"
+      if LOG_DELETE_OUT=$(aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region "${REGION}" 2>&1); then
+        echo "    cleanup: deleted log group ${LOG_GROUP}"
+      elif ! printf '%s' "${LOG_DELETE_OUT}" | grep -q 'ResourceNotFoundException'; then
+        echo "    WARN: cleanup could not delete log group ${LOG_GROUP}; delete it by hand: ${LOG_DELETE_OUT}" >&2
+      fi
     done
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
@@ -486,6 +515,22 @@ PG_B_LOWER=$(printf '%s' "${PG_B_ID}" | tr '[:upper:]' '[:lower:]')
 assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_A_LOWER}" 'DBParameterGroupName' 'phase 1'
 assert_instance_field '.DBParameterGroups[0].ParameterApplyStatus' 'in-sync' 'DBParameterGroupName applied at create' 'phase 1'
 
+# go-to-k/cdkd#5640: the exported log types on ${INSTANCE}, sorted (RDS answers
+# in its own order). No pending change may be left: the deploy returns once the
+# change is applied, as CloudFormation's does.
+# usage: assert_log_exports <expected, space-separated, sorted> <what> <phase>
+assert_log_exports() {
+  local actual pending
+  actual=$(echo "${INSTANCE}" | jq -r '[.EnabledCloudwatchLogsExports[]?] | sort | join(" ")')
+  pending=$(echo "${INSTANCE}" | jq -c '.PendingModifiedValues.PendingCloudwatchLogsExports // null')
+  if [ "${actual}" != "${1}" ] || [ "${pending}" != "null" ]; then
+    echo "FAIL: ${3}: EnabledCloudwatchLogsExports is '${actual}' (pending: ${pending}), expected '${1}' with nothing pending (${2}, go-to-k/cdkd#5640)" >&2
+    exit 1
+  fi
+  echo "    OK: ${3}: EnabledCloudwatchLogsExports == '${1}' on AWS (${2}, go-to-k/cdkd#5640)"
+}
+assert_log_exports 'postgresql' 'EnableCloudwatchLogsExports rode CreateDBInstance' 'phase 1'
+
 # #5542 premise: the VPC's `default` group, which the phase-2 removal of
 # VPCSecurityGroups must attach. Resolved through the instance's own subnet
 # group VPC, and it must differ from the custom group phase 1 asserted.
@@ -608,6 +653,9 @@ assert_instance_field '.Iops' '13000' 'unchanged Iops' 'phase 2'
 # phase-2 deploy above succeeding is the main signal (a re-sent EngineVersion is
 # refused as a downgrade); the live version must also still be the upgraded one.
 assert_instance_field '.EngineVersion' "${UPGRADE_TARGET}" 'an unchanged EngineVersion is not re-sent' 'phase 2'
+# go-to-k/cdkd#5640: the added `upgrade` was enabled through ModifyDBInstance's
+# CloudwatchLogsExportConfiguration, and `postgresql` kept.
+assert_log_exports 'postgresql upgrade' 'an added log type is enabled' 'phase 2'
 
 # A removed MaxAllocatedStorage turns storage autoscaling OFF, as
 # CloudFormation's handler does by setting the maximum to the allocated
@@ -658,6 +706,24 @@ assert_instance_field '.DBParameterGroups | length' '1' 'a single parameter grou
 assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_B_LOWER}" 'a changed DBParameterGroupName is sent' 'phase 2b'
 assert_instance_field '.DBParameterGroups[0].ParameterApplyStatus' 'in-sync' 'the reboot after a pending-reboot parameter group change' 'phase 2b'
 assert_instance_field '.DBInstanceStatus' 'available' 'the deploy waited for the reboot' 'phase 2b'
+
+# --- Phase 2c: drop EnableCloudwatchLogsExports (go-to-k/cdkd#5640) -----------
+# CloudFormation's handler disables every log type the previous template
+# declared when the property is removed (`Translator.
+# buildTranslateCloudwatchLogsExportConfiguration`: previous minus desired).
+# Premise: phase 2 asserted both live. A cdkd that sends nothing on a removal
+# leaves both enabled here. Parameter group B is the retained sibling.
+echo "==> Phase 2c: redeploy with CDKD_TEST_LOGS_REMOVED=true (EnableCloudwatchLogsExports dropped; go-to-k/cdkd#5640)"
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b CDKD_TEST_LOGS_REMOVED=true node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${DB_INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_log_exports '' 'a removed EnableCloudwatchLogsExports disables what the previous template declared' 'phase 2c'
+assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_B_LOWER}" 'the retained parameter group' 'phase 2c'
 
 # --- Phase 3: destroy -------------------------------------------------
 # --remove-protection: DeletionProtection is retained on removal (#5004), so

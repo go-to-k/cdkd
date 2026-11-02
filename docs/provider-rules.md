@@ -378,7 +378,10 @@ implementation. Three details are worth copying:
     error `create()` throws, with the id `delete()` takes (the success path's
     `physicalId`). A catch that deletes its own resource marks only when that
     cleanup FAILED; a resource the create adopted or found held (an idempotent
-    create returning an existing one, `heldBefore !== 'free'`) is never marked;
+    create returning an existing one, `heldBefore !== 'free'`) is not marked,
+    except one an earlier attempt of THIS operation made and a later attempt
+    adopted by identity, which is marked with that identity
+    ([#5656](https://github.com/go-to-k/cdkd/issues/5656));
     a provider whose delete would reach beyond what the create wrote (`AWS::IAM::Policy`
     walks every listed principal) removes its own writes in the catch instead
     (issue [#4583](https://github.com/go-to-k/cdkd/issues/4583)).
@@ -387,7 +390,9 @@ implementation. Three details are worth copying:
     `reportCreatedResource(logicalId, resourceType, physicalId, identity?)`
     (`src/provisioning/created-resource-sink.ts`, issue
     [#5511](https://github.com/go-to-k/cdkd/issues/5511)) the moment the create
-    call returns, before any wait, under the same gates as the mark; a catch
+    call returns, before any wait, under the same conditions as the mark, except
+    that a report is never made for a resource the create adopted or found
+    held, so that exception to the mark has no report of its own; a catch
     whose cleanup deleted the resource calls `retractCreatedResource` (the
     report before it, if any, then stands again). The deploy engine journals
     the reported id only when the operation's deadline fired and the error it
@@ -1371,9 +1376,14 @@ shared report is `orphan-report.ts`):
   `DescribeTaskDefinition`), narrow by the list's own fields first, then read
   each remaining candidate; a list ordered newest first stops at the first
   candidate older than the window.
-- **Adopt only on EXACT attribution, which a lookup never has.** The one
-  adoption in this family is a KMS key id that came back in this process's own
-  response before a follow-up call failed, bound to a digest of its inputs.
+- **Adopt only on EXACT attribution, which a lookup never has.** Two adoptions
+  meet it. A KMS key id that came back in this process's own response before a
+  follow-up call failed, bound to a digest of its inputs. And an IAM entity
+  (`iam-replay-adopt.ts`, [#5656](https://github.com/go-to-k/cdkd/issues/5656),
+  [#5660](https://github.com/go-to-k/cdkd/issues/5660)) whose create replay
+  collides with it, when the operation's own report holds the unique id its
+  create call answered with and a live read returns that same id; it lasts one
+  operation, so a later deploy still fails.
   A NAME is not attribution, even a cdkd-generated one: names are scoped to
   the account and region, the stack lock to the state bucket and prefix, so
   another run of the same stack name can create an identical resource in the
@@ -2823,7 +2833,9 @@ To admit a type:
    user-supplied name keeps its id through a destroy + recreate, so that
    fixture also attaches an out-of-band subscription cdkd does not manage and
    asserts it survives. Without such a witness the arm cannot tell an in-place
-   update from a replacement, which is the whole claim.
+   update from a replacement, which is the whole claim. An AWS-minted id is its
+   own witness, once the recreate is seen to change it
+   ([`tests/integration/cc-to-sdk-reroute-mount-target/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-mount-target/)).
 4. Add the entry naming that fixture. `tests/unit/provisioning/sticky-exempt-registry.test.ts`
    refuses an entry whose fixture does not exist or has no row in the integ
    ledger. A fixture that ran before your arm was added still passes that

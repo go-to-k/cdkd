@@ -197,7 +197,11 @@ describe('IAMRoleProvider: a replay colliding with its own left-behind role (#56
 
   it.each([
     ['throttled', throttling, /Throttling/],
-    ['answered with a 5xx', () => awsError('ServiceFailure', 500), /ServiceFailure/],
+    [
+      'answered with a 5xx',
+      () => Object.assign(awsError('ServiceFailureException', 500), { $fault: 'server' }),
+      /ServiceFailure/,
+    ],
   ])('leaves the proof standing when the identity read is %s', async (_, failure, shown) => {
     let reads = 0;
     failedAttempt([
@@ -288,13 +292,23 @@ describe('IAMRoleProvider: a replay colliding with its own left-behind role (#56
   });
 
   it('finishes a rename replay, deleting only the old role', async () => {
-    failedAttempt();
+    failedAttempt([
+      [
+        DeleteRoleCommand,
+        (input) => {
+          if (input['RoleName'] !== 'old-role') throw throttling();
+          return {};
+        },
+      ],
+    ]);
     const rename = () =>
       provider.update(LOGICAL_ID, 'old-role', TYPE, properties, { ...properties, RoleName: 'old-role' });
     await inOperation(async () => {
       await expect(rename()).rejects.toThrow(/Failed to create IAM role/);
       mockSend.mockClear();
-      await expect(rename()).resolves.toMatchObject({ physicalId: NAME, wasReplaced: true });
+      const result = await rename();
+      expect(result).toMatchObject({ physicalId: NAME, wasReplaced: true });
+      expect(result.outcome).toBeUndefined(); // Not the partial arm of a failed old delete.
     });
     expect(calls(GetRoleCommand)[0]).toEqual({ RoleName: NAME });
     expect(calls(DeleteRoleCommand)).toEqual([{ RoleName: 'old-role' }]);

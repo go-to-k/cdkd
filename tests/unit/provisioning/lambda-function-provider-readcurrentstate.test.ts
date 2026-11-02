@@ -306,6 +306,7 @@ describe('LambdaFunctionProvider.readCurrentState', () => {
       'Code.S3ObjectStorageMode',
       'Code.ZipFile',
       'Code.SourceKMSKeyArn',
+      'PublishToLatestPublished',
     ]);
   });
 

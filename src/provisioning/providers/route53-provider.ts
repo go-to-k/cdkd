@@ -71,6 +71,7 @@ import type {
   ResourceNotFound,
 } from '../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
@@ -322,6 +323,12 @@ const VPCS_KEPT_ON_REMOVAL_NOTE =
 /** True when a desired `VPCs` value declares no VPC: absent, null or `[]`. */
 function declaresNoVpcs(vpcs: unknown): boolean {
   return vpcs == null || (Array.isArray(vpcs) && vpcs.length === 0);
+}
+
+/** The `VPCId`s a `VPCs` value names; a malformed value or entry names none. */
+function declaredVpcIds(vpcs: unknown): unknown[] {
+  if (!Array.isArray(vpcs)) return [];
+  return vpcs.map((vpc) => (vpc as Record<string, unknown> | null)?.['VPCId']);
 }
 
 /** `text` closed as a sentence, for a wrap that continues after it. */
@@ -809,7 +816,7 @@ export class Route53Provider implements ResourceProvider {
       await this.applyHostedZoneTags(zoneId, properties, logicalId, undefined, mask);
 
       // Configure query logging
-      await this.applyQueryLoggingConfig(zoneId, properties, logicalId);
+      await this.applyQueryLoggingConfig(zoneId, properties, logicalId, undefined, mask);
 
       // `HostedZoneFeatures.EnableAcceleratedRecovery`: post-create
       // control-plane call. CreateHostedZone does NOT accept this field;
@@ -1091,12 +1098,26 @@ export class Route53Provider implements ResourceProvider {
 
       // Update query logging config. The previous side likewise turns an
       // absent desired block from "nothing to do" into a REMOVAL.
-      await this.applyQueryLoggingConfig(physicalId, properties, logicalId, previousProperties);
+      await this.applyQueryLoggingConfig(
+        physicalId,
+        properties,
+        logicalId,
+        previousProperties,
+        mask,
+        context?.markUnsettled
+      );
 
       // Associates added VPCs and disassociates dropped ones. A `VPCs` removed
       // whole (or emptied) changes nothing, as in CloudFormation, and is named
       // by the warning below (VPCS_KEPT_ON_REMOVAL_NOTE).
-      await this.syncVPCAssociations(physicalId, properties, logicalId);
+      await this.syncVPCAssociations(
+        physicalId,
+        properties,
+        logicalId,
+        previousProperties,
+        mask,
+        context
+      );
 
       // `HostedZoneFeatures.EnableAcceleratedRecovery`: post-create
       // control-plane call, gated on the BOOLEAN-effective diff (i.e.
@@ -1144,8 +1165,9 @@ export class Route53Provider implements ResourceProvider {
       if (
         context?.desiredFromAwsReadback !== true &&
         declaresNoVpcs(properties['VPCs']) &&
-        Array.isArray(previousProperties['VPCs']) &&
-        previousProperties['VPCs'].length > 0
+        // Unsettled VPCs leave the previous side here (see `readUnsettled`).
+        ((Array.isArray(previousProperties['VPCs']) && previousProperties['VPCs'].length > 0) ||
+          context?.unsettledProperties?.has('VPCs') === true)
       ) {
         this.logger.warn(
           context?.replayingState
@@ -2312,7 +2334,9 @@ export class Route53Provider implements ResourceProvider {
     zoneId: string,
     properties: Record<string, unknown>,
     logicalId: string,
-    previousProperties?: Record<string, unknown>
+    previousProperties?: Record<string, unknown>,
+    mask?: (text: string) => string,
+    markUnsettled?: (propertyName: string) => void
   ): Promise<void> {
     const cloudWatchLogsLogGroupArn = this.readQueryLogGroupArn(properties);
 
@@ -2374,6 +2398,7 @@ export class Route53Provider implements ResourceProvider {
         // carries it — so a swallowed failure means the config keeps writing to
         // CloudWatch, and billing, forever with `cdkd diff` clean. That is the
         // exact #1160 failure mode, so verify the delete actually happened.
+        markUnsettled?.('QueryLoggingConfig');
         await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
         const remaining = await this.listQueryLoggingConfigIds(zoneId);
         if (remaining.length > 0) {
@@ -2391,8 +2416,22 @@ export class Route53Provider implements ResourceProvider {
       return;
     }
 
+    // Unchanged on an update: leave it alone. The replacement below is not
+    // atomic, so re-running it on every deploy could lose a working config to
+    // a change that never touched it (a Comment edit, say). A config deleted
+    // out of band is drift, which `cdkd drift` owns.
+    if (
+      previousProperties !== undefined &&
+      this.readQueryLogGroupArn(previousProperties) === cloudWatchLogsLogGroupArn
+    ) {
+      return;
+    }
+
     try {
-      // Delete existing query logging config first (only one allowed per zone)
+      // Delete existing query logging config first (only one allowed per zone).
+      // Marked first: a create failing after this leaves no config, and an
+      // unchanged template could not tell (#5380).
+      markUnsettled?.('QueryLoggingConfig');
       await this.deleteQueryLoggingConfigForZone(zoneId, logicalId);
 
       await this.getClient().send(
@@ -2403,13 +2442,28 @@ export class Route53Provider implements ResourceProvider {
       );
       this.logger.debug(`Applied query logging config to hosted zone ${logicalId}`);
     } catch (error) {
-      // QueryLoggingConfigAlreadyExists is not fatal if we tried to delete first
-      if (error instanceof Error && error.name === 'QueryLoggingConfigAlreadyExists') {
+      // On a create this is a replay finding its own config. On an update the
+      // ARN changed, so it is the OLD config, whose delete was swallowed.
+      if (
+        previousProperties === undefined &&
+        error instanceof Error &&
+        error.name === 'QueryLoggingConfigAlreadyExists'
+      ) {
         this.logger.debug(`Query logging config already exists for hosted zone ${logicalId}`);
         return;
       }
-      this.logger.warn(
-        `Failed to apply query logging config to hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to apply query logging config to hosted zone ${logicalId}: ${text}`,
+            'AWS::Route53::HostedZone',
+            logicalId,
+            zoneId,
+            cause
+          )
       );
     }
   }
@@ -2504,14 +2558,18 @@ export class Route53Provider implements ResourceProvider {
 
   /**
    * Sync VPC associations for a private hosted zone during update.
-   * Compares current VPC associations with desired ones and adds/removes as needed.
+   * Associates each desired VPC the zone lacks, then disassociates each live
+   * VPC the previous side declared and the desired side dropped.
    * An absent or empty desired `VPCs` returns early, keeping every association,
    * as CloudFormation does (see {@link VPCS_KEPT_ON_REMOVAL_NOTE}).
    */
   private async syncVPCAssociations(
     zoneId: string,
     properties: Record<string, unknown>,
-    logicalId: string
+    logicalId: string,
+    previousProperties: Record<string, unknown>,
+    mask?: (text: string) => string,
+    marks?: Pick<UpdateContext, 'markUnsettled' | 'markAttempted'>
   ): Promise<void> {
     const desiredVpcs = properties['VPCs'] as Array<Record<string, unknown>> | undefined;
     if (!desiredVpcs || desiredVpcs.length === 0) return;
@@ -2529,6 +2587,7 @@ export class Route53Provider implements ResourceProvider {
         const vpcId = vpc['VPCId'] as string;
         if (!currentVpcIds.has(vpcId)) {
           this.logger.debug(`Associating VPC ${vpcId} with hosted zone ${zoneId}`);
+          marks?.markUnsettled?.('VPCs');
           await this.getClient().send(
             new AssociateVPCWithHostedZoneCommand({
               HostedZoneId: zoneId,
@@ -2538,20 +2597,19 @@ export class Route53Provider implements ResourceProvider {
               },
             })
           );
+          marks?.markAttempted?.('VPCs', [vpcId]);
+          currentVpcIds.add(vpcId);
         }
       }
 
-      // Disassociate removed VPCs (but never remove the last one)
+      // Only a VPC the previous side declared: one associated out of band is
+      // drift, which `cdkd drift` owns. Every desired VPC is associated by
+      // now and none is removed, so this cannot empty the zone.
+      const previousVpcIds = new Set(declaredVpcIds(previousProperties['VPCs']));
       for (const vpc of currentVpcs) {
-        if (vpc.VPCId && !desiredVpcIds.has(vpc.VPCId)) {
-          // Don't disassociate if it would leave 0 VPCs
-          if (currentVpcs.length <= 1) {
-            this.logger.warn(
-              `Cannot disassociate last VPC ${vpc.VPCId} from hosted zone ${logicalId}`
-            );
-            continue;
-          }
+        if (vpc.VPCId && previousVpcIds.has(vpc.VPCId) && !desiredVpcIds.has(vpc.VPCId)) {
           this.logger.debug(`Disassociating VPC ${vpc.VPCId} from hosted zone ${zoneId}`);
+          marks?.markUnsettled?.('VPCs');
           await this.getClient().send(
             new DisassociateVPCFromHostedZoneCommand({
               HostedZoneId: zoneId,
@@ -2564,8 +2622,18 @@ export class Route53Provider implements ResourceProvider {
         }
       }
     } catch (error) {
-      this.logger.warn(
-        `Failed to sync VPC associations for hosted zone ${logicalId}: ${describeAwsFailure(error).detail}`
+      const cause = error instanceof Error ? error : undefined;
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to sync VPC associations for hosted zone ${logicalId}: ${text}`,
+            'AWS::Route53::HostedZone',
+            logicalId,
+            zoneId,
+            cause
+          )
       );
     }
   }
@@ -2910,9 +2978,57 @@ export class Route53Provider implements ResourceProvider {
     }
   }
 
+  /**
+   * go-to-k/cdkd#5487: `readCurrentState` for the engine's convergence step,
+   * with two differences. A failed `QueryLoggingConfig` read throws, where
+   * `readCurrentState` reports no config, which would make an unsettled removal
+   * skip the delete. And `VPCs` keeps only what the record, the template or an
+   * earlier attempt (#5498) names: the convergence puts this on the previous
+   * side, so a VPC associated out of band would read as dropped by the
+   * template. A desired side declaring no VPCs leaves them out, since nothing
+   * applies them (see {@link VPCS_KEPT_ON_REMOVAL_NOTE}) and nothing can settle.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    if (resourceType !== 'AWS::Route53::HostedZone') {
+      return this.readCurrentState(physicalId, logicalId, resourceType, recordedProperties);
+    }
+    const live = await this.readHostedZone(
+      physicalId,
+      recordedProperties,
+      names.has('QueryLoggingConfig')
+    );
+    if (live === undefined || live === RESOURCE_NOT_FOUND) return live;
+    if (!names.has('VPCs') || !Array.isArray(live['VPCs'])) return live;
+    const { VPCs: liveVpcs, ...rest } = live;
+    if (declaresNoVpcs(desiredProperties?.['VPCs'])) return rest;
+    const named = new Set<unknown>([
+      ...declaredVpcIds(recordedProperties?.['VPCs']),
+      ...declaredVpcIds(desiredProperties?.['VPCs']),
+      ...[...(attemptedItems?.get('VPCs') ?? [])].filter(isUsableAttemptedName),
+    ]);
+    return {
+      ...rest,
+      VPCs: (liveVpcs as Array<Record<string, unknown>>).filter((vpc) => named.has(vpc['VPCId'])),
+    };
+  }
+
+  /** A zone's associations carry no order, in the template or in AWS's answer. */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::Route53::HostedZone' ? ['VPCs'] : [];
+  }
+
   private async readHostedZone(
     physicalId: string,
-    properties?: Record<string, unknown>
+    properties?: Record<string, unknown>,
+    throwOnFailedQueryLoggingRead = false
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let resp;
     try {
@@ -3014,6 +3130,7 @@ export class Route53Provider implements ResourceProvider {
       this.logger.debug(
         `Route53 ListQueryLoggingConfigs(${idTail}) failed: ${describeAwsFailure(err).detail}`
       );
+      if (throwOnFailedQueryLoggingRead) throw err;
       result['QueryLoggingConfig'] = {};
     }
 

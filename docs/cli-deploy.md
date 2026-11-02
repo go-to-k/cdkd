@@ -179,7 +179,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::CloudFront::Distribution` | same as default | Return after the create / update call | Wait for `Deployed` (3-15 min) | Waits | Waits (`wait_for_deployment`, default true) |
 | `AWS::ECS::Service` | Return after `CreateService` / `UpdateService` | Wait for steady state; a failed or rolled-back rollout fails the deploy | same as default | Waits for steady state | Does not wait (`wait_for_steady_state`, default false) |
 | `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait (waiting is a separate `aws_acm_certificate_validation` resource) |
-| `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call; an instance update leaving its parameter group `pending-reboot` still waits for it to settle, then reboots and returns | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply, and reboots an instance left `pending-reboot`, waiting for `in-sync` | same as default | Waits | Waits |
+| `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call; an instance update leaving its parameter group `pending-reboot` still waits for it to settle, then reboots and returns | Wait for `available` (5-10 min); an update waits for a changed cluster port, security groups or CloudWatch Logs exports to apply, and reboots an instance left `pending-reboot`, waiting for `in-sync` | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply, and for a changed log export, `NetworkType`, `StorageType`, serverless scaling, CA certificate or Performance Insights setting to read back | same as default | Waits | Waits |
 | `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create or update call; a cluster whose `AssociatedRoles` change still waits for `available`, which attaching or detaching a role needs | Wait for `available` (5-10 min); an update waits for changed cluster security groups to apply, and for a changed role, log export, `NetworkType` or `PubliclyAccessible` to read back | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
@@ -196,6 +196,11 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
+- **A Lambda Managed Instances function waits in every mode**, `--no-wait`
+  included. A create waits for `$LATEST.PUBLISHED`, the version it publishes,
+  which takes minutes because that launches capacity. An update waits for each
+  publish and scaling change, and a delete waits until the function is gone. A
+  wait ends at `--resource-timeout`.
 - **`AWS::S3::Bucket` waits for each S3 Metadata table it turns on, in every
   mode**, up to five minutes: the table ARNs are `Fn::GetAtt` values. A table
   that S3 reports `FAILED`, or one still unsettled at the limit, gets a warning

@@ -800,14 +800,15 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     // the mark on an object the record never holds and the embedded leaf back
     // in plaintext. Every other case in this file drops nothing, which is why
     // that ordering is invisible to them: here the SDK route removes
-    // `CapacityProviderConfig` and the embedded secret must still be written
+    // ApiGatewayV2 `Body` and the embedded secret must still be written
     // as its token.
-    const DROPPED = 'CapacityProviderConfig';
+    const DROPPED = 'Body';
+    const DROPPING_TYPE = 'AWS::ApiGatewayV2::Api';
     const desired = { ...DESIRED, [DROPPED]: { Some: 'value' } };
     // Inert for the assertions below -- see the mock's own comment. Kept so the
     // case describes a real `--allow-unsupported-properties` deploy.
     mockProviderRegistry.getAllowedUnsupportedProperties!.mockReturnValue(
-      new Set([`${RESOURCE_TYPE}:${DROPPED}`])
+      new Set([`${DROPPING_TYPE}:${DROPPED}`])
     );
     mockProvider.readCurrentState!.mockResolvedValue(undefined);
     mockDiffCalculator.calculateDiff!.mockResolvedValue(
@@ -817,7 +818,7 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
           {
             logicalId: 'Fn',
             changeType: 'CREATE',
-            resourceType: RESOURCE_TYPE,
+            resourceType: DROPPING_TYPE,
             desiredProperties: desired,
           },
         ],
@@ -825,7 +826,7 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     );
 
     await makeEngine().deploy(stackName, {
-      Resources: { Fn: { Type: RESOURCE_TYPE, Properties: desired } },
+      Resources: { Fn: { Type: DROPPING_TYPE, Properties: desired } },
     });
 
     const record = savedState().resources['Fn']!;
@@ -841,7 +842,8 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     // narrowing is the SDK route's, so a `cc-api` resource keeps the key --
     // Cloud Control forwards the full map. The provider-substituted bag is
     // leaf-certified (go-to-k/cdkd#5063), so its sub-floor leaf takes its token.
-    const DROPPED = 'CapacityProviderConfig';
+    const DROPPED = 'Body';
+    const DROPPING_TYPE = 'AWS::ApiGatewayV2::Api';
     mockProviderRegistry.getProviderFor!.mockReturnValue({
       provider: mockProvider,
       provisionedBy: 'cc-api',
@@ -855,9 +857,24 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
       },
     });
     mockProvider.readCurrentState!.mockResolvedValue(undefined);
-    mockDiffCalculator.calculateDiff!.mockResolvedValue(changeMap('CREATE'));
+    const desired = { ...DESIRED, [DROPPED]: { Some: 'value' } };
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Fn',
+          {
+            logicalId: 'Fn',
+            changeType: 'CREATE',
+            resourceType: DROPPING_TYPE,
+            desiredProperties: desired,
+          },
+        ],
+      ])
+    );
 
-    await makeEngine().deploy(stackName, template);
+    await makeEngine().deploy(stackName, {
+      Resources: { Fn: { Type: DROPPING_TYPE, Properties: desired } },
+    });
 
     const record = savedState().resources['Fn']!;
     expect(record.properties[DROPPED]).toEqual({ Some: 'value' });

@@ -47,7 +47,14 @@ function armFunction(): void {
         FunctionArn: FN_ARN,
         LastUpdateStatus: 'Successful',
         State: 'Active',
+        // update() reads this only when a side names the block: the Managed
+        // Instances bag's calls run only for a function AWS says is one.
+        CapacityProviderConfig: {},
       },
+    }),
+    GetFunctionConfigurationCommand: () => ({
+      State: 'Active',
+      LastUpdateStatus: 'Successful',
     }),
   });
 }
@@ -55,6 +62,10 @@ function armFunction(): void {
 const CODE_REQUIRED: Throw = {
   why: 'Code is required: create() refuses a function without it before any call',
   says: /Code is required/,
+};
+const SCALING_NEEDS_CAPACITY: Throw = {
+  why: 'FunctionScalingConfig without CapacityProviderConfig: refused before any call, as CloudFormation refuses it',
+  says: /FunctionScalingConfig without CapacityProviderConfig/,
 };
 const ROLE_REQUIRED: Throw = {
   why: 'Role is required: create() refuses a function without it before any call',
@@ -146,7 +157,10 @@ const FUNCTION_CASE: TypeCase = {
   physicalId: FN,
   createOnly: createOnlyOf('AWS::Lambda::Function'),
   arm: () => armFunction(),
-  exempt: {},
+  exempt: {
+    PublishToLatestPublished:
+      'no wire member: it decides whether update() calls PublishVersion (lambda-function-managed-instances-5637.test.ts)',
+  },
   targets: [
     { path: ['Tags', 0], command: 'UntagResourceCommand', names: 'k1', notNames: 'k2' },
     { path: ['Tags', 1], command: 'UntagResourceCommand', names: 'k2', notNames: 'k1' },
@@ -191,6 +205,31 @@ const FUNCTION_CASE: TypeCase = {
         'create:Code': CODE_REQUIRED,
         'create:Role': ROLE_REQUIRED,
         ...TAG_THROWS(ALL_DIRECTIONS, 2),
+      },
+    },
+    {
+      name: 'a Managed Instances function',
+      bag: {
+        Code: { S3Bucket: 'code-bucket', S3Key: 'code.zip' },
+        Role: ROLE,
+        Handler: 'index.handler',
+        Runtime: 'python3.13',
+        CapacityProviderConfig: {
+          LambdaManagedInstancesCapacityProviderConfig: {
+            CapacityProviderArn: `arn:aws:lambda:us-east-1:${ACCOUNT}:capacity-provider:cp`,
+            PerExecutionEnvironmentMaxConcurrency: 8,
+            ExecutionEnvironmentMemoryGiBPerVCpu: 4,
+          },
+        },
+        FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 },
+      },
+      expectedSilent: { 'update-remove:Code': CODE_REQUIRED_ON_UPDATE },
+      expectedRemovalThrows: {
+        'create:Code': CODE_REQUIRED,
+        'create:Role': ROLE_REQUIRED,
+        'create:CapacityProviderConfig': SCALING_NEEDS_CAPACITY,
+        'update-add:CapacityProviderConfig': SCALING_NEEDS_CAPACITY,
+        'update-remove:CapacityProviderConfig': SCALING_NEEDS_CAPACITY,
       },
     },
     {

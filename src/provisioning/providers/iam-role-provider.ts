@@ -48,15 +48,10 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
-import {
-  reportCreatedResource,
-  reportedCreatedResource,
-  retractCreatedResource,
-} from '../created-resource-sink.js';
+import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
-  isThrottlingError,
-  isTransientServerError,
   markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
@@ -305,7 +300,21 @@ export class IAMRoleProvider implements ResourceProvider {
       } catch (createError) {
         // go-to-k/cdkd#5656: a replay colliding with the role its own earlier
         // attempt left behind finishes that role; anything else fails as before.
-        role = await this.roleLeftByThisCreate(logicalId, resourceType, roleName, createError, log);
+        // Repeating `AttachRolePolicy` succeeded when measured on real IAM
+        // (2026-11-03); `PutRolePolicy` was not probed, while its siblings
+        // `PutUserPolicy` and `PutGroupPolicy` were and succeeded.
+        role = await iamEntityLeftByThisCreate({
+          logicalId,
+          resourceType,
+          noun: 'role',
+          displayName: roleName,
+          createError,
+          namesThisEntity: (reported) => reported === roleName,
+          read: async () =>
+            (await this.iamClient.send(new GetRoleCommand({ RoleName: roleName }))).Role,
+          identityOf: (live) => roleIdentityToken(live?.RoleId),
+          log,
+        });
         if (role === undefined) throw createError;
         adopted = true;
       }
@@ -440,66 +449,6 @@ export class IAMRoleProvider implements ResourceProvider {
           : built;
       });
     }
-  }
-
-  /**
-   * go-to-k/cdkd#5656: the role a `CreateRole` collision hit, when it provably
-   * is the one an earlier attempt of THIS operation made and failed to clean
-   * up; `undefined` when it is not proven, so the caller rethrows the collision
-   * and touches nothing.
-   *
-   * The proof is the operation's `reportCreatedResource` of this name, whose
-   * RoleId `CreateRole` itself answered with, against the live RoleId: IAM never
-   * reuses one, and a name alone says nothing about who holds it. A failed
-   * attempt's cleanup withdraws the report once its `DeleteRole` landed. The
-   * report lives only as long as the operation, so a later deploy, or a replay
-   * outside a deploy operation, has none and fails as before.
-   *
-   * Finishing is re-running the wiring, not reconciling the role: the engine
-   * resolves the properties once, before its retries, so this replay's bag is
-   * the one the earlier attempt sent, and everything `CreateRole` itself carries
-   * (tags included) is already on the role. `AttachRolePolicy` and
-   * `PutRolePolicy` both succeed on an attached or existing policy, and restore
-   * what that attempt's partial cleanup removed.
-   *
-   * A throttled or 5xx read rethrows, so the engine retries; another read
-   * failure leaves the identity unproven.
-   */
-  private async roleLeftByThisCreate(
-    logicalId: string,
-    resourceType: string,
-    roleName: string,
-    createError: unknown,
-    log: MaskedLogSinks
-  ): Promise<Role | undefined> {
-    if ((createError as { name?: unknown } | null)?.name !== 'EntityAlreadyExistsException') {
-      return undefined;
-    }
-    const report = reportedCreatedResource(logicalId, resourceType);
-    if (report?.physicalId !== roleName || report.createdResourceIdentity === undefined) {
-      return undefined;
-    }
-    const { value: v } = log;
-    let role: Role | undefined;
-    try {
-      role = (await this.iamClient.send(new GetRoleCommand({ RoleName: roleName }))).Role;
-    } catch (probeError) {
-      if (isThrottlingError(probeError) || isTransientServerError(probeError)) throw probeError;
-      log.debug(
-        `IAM role ${logicalId}: could not read ${v(roleName)} to identify it: ${v(describeAwsFailure(probeError).detail)}`
-      );
-      return undefined;
-    }
-    if (roleIdentityToken(role?.RoleId) !== report.createdResourceIdentity) {
-      log.warn(
-        `IAM role ${logicalId}: ${v(roleName)} is not the role an earlier attempt of this create made, so it is left untouched. Do not delete it unless you know it is yours, whatever the failure below suggests.`
-      );
-      return undefined;
-    }
-    log.warn(
-      `IAM role ${logicalId}: finishing ${v(roleName)}, the role an earlier attempt of this create made and could not delete. No manual deletion is needed if this create succeeds.`
-    );
-    return role;
   }
 
   /**

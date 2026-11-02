@@ -6,6 +6,7 @@ import {
   AddRoleToInstanceProfileCommand,
   RemoveRoleFromInstanceProfileCommand,
   NoSuchEntityException,
+  type InstanceProfile,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -36,6 +37,7 @@ import {
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { iamEntityLeftByThisCreate } from './iam-replay-adopt.js';
 import {
   onlySecretDerived,
   readPrincipalLists,
@@ -175,8 +177,9 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     }
     const roles = principals.lists.Roles;
 
-    // go-to-k/cdkd#4583: set once CreateInstanceProfile returns; cleared when the
-    // partial-create cleanup deleted the profile, so only a left-behind one is marked.
+    // go-to-k/cdkd#4583: set once CreateInstanceProfile returns, or a replay adopts
+    // its own profile (#5660); cleared when the partial-create cleanup deleted the
+    // profile, so only a left-behind one is marked.
     let leftBehind = false;
     // go-to-k/cdkd#4606: the InstanceProfileId CreateInstanceProfile answered
     // with, carried on the mark so the journal needs no read of a profile whose
@@ -185,20 +188,46 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
     try {
       // Create instance profile
       const createClient = await this.createClient.get();
-      const response = await createClient.send(
-        new CreateInstanceProfileCommand({
-          InstanceProfileName: instanceProfileName,
-          Path: path,
-        })
-      );
+      let profile: InstanceProfile | undefined;
+      let adopted = false;
+      try {
+        profile = (
+          await createClient.send(
+            new CreateInstanceProfileCommand({
+              InstanceProfileName: instanceProfileName,
+              Path: path,
+            })
+          )
+        ).InstanceProfile;
+      } catch (createError) {
+        // go-to-k/cdkd#5660: a replay colliding with the profile its own earlier
+        // attempt left behind finishes that profile; anything else fails as before.
+        profile = await iamEntityLeftByThisCreate({
+          logicalId,
+          resourceType,
+          noun: 'instance profile',
+          displayName: instanceProfileName,
+          createError,
+          namesThisEntity: (reported) => reported === instanceProfileName,
+          read: async () =>
+            (
+              await this.iamClient.send(
+                new GetInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
+              )
+            ).InstanceProfile,
+          identityOf: (live) => instanceProfileIdentityToken(live?.InstanceProfileId),
+          log,
+        });
+        if (profile === undefined) throw createError;
+        adopted = true;
+      }
       leftBehind = true;
-      createdProfileIdentity = instanceProfileIdentityToken(
-        response.InstanceProfile?.InstanceProfileId
-      );
-      // go-to-k/cdkd#5511
-      reportCreatedResource(logicalId, resourceType, instanceProfileName, createdProfileIdentity);
-
-      log.debug(`Created IAM instance profile: ${v(instanceProfileName)}`);
+      createdProfileIdentity = instanceProfileIdentityToken(profile?.InstanceProfileId);
+      if (!adopted) {
+        // go-to-k/cdkd#5511
+        reportCreatedResource(logicalId, resourceType, instanceProfileName, createdProfileIdentity);
+        log.debug(`Created IAM instance profile: ${v(instanceProfileName)}`);
+      }
 
       // CreateInstanceProfileCommand has succeeded — AWS has now
       // committed the InstanceProfile. The subsequent
@@ -210,12 +239,19 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       // Wrap the role-attach loop in an inner try/catch that issues
       // `RemoveRoleFromInstanceProfile` per attached role + then
       // `DeleteInstanceProfileCommand` before re-throwing the original
-      // error.
+      // error; an adopted profile skips this cleanup (see the catch).
       const attachedRoles: string[] = [];
+      // go-to-k/cdkd#5660: `AddRoleToInstanceProfile` is not repeatable (the same
+      // role added twice answered `LimitExceeded`, measured on real IAM
+      // 2026-11-03), so an adopted profile skips what the read that
+      // proved its identity already shows on it. A fresh profile answers with none.
+      // IAM role names compare case-insensitively.
+      const heldRoles = new Set(profile?.Roles?.map((role) => role.RoleName?.toLowerCase()));
       try {
         // Add roles to instance profile
         if (roles && Array.isArray(roles)) {
           for (const roleName of roles) {
+            if (heldRoles.has(roleName.toLowerCase())) continue;
             await this.iamClient.send(
               new AddRoleToInstanceProfileCommand({
                 InstanceProfileName: instanceProfileName,
@@ -227,46 +263,50 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
           }
         }
       } catch (innerError) {
-        try {
-          for (const roleName of attachedRoles) {
-            try {
-              await this.iamClient.send(
-                new RemoveRoleFromInstanceProfileCommand({
-                  InstanceProfileName: instanceProfileName,
-                  RoleName: roleName,
-                })
-              );
-            } catch (err) {
-              if (!(err instanceof NoSuchEntityException)) throw err;
+        // go-to-k/cdkd#5660: an adopted profile is not stripped or deleted, see
+        // `iamEntityLeftByThisCreate`.
+        if (!adopted) {
+          try {
+            for (const roleName of attachedRoles) {
+              try {
+                await this.iamClient.send(
+                  new RemoveRoleFromInstanceProfileCommand({
+                    InstanceProfileName: instanceProfileName,
+                    RoleName: roleName,
+                  })
+                );
+              } catch (err) {
+                if (!(err instanceof NoSuchEntityException)) throw err;
+              }
             }
+            await this.iamClient.send(
+              new DeleteInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
+            );
+            retractCreatedResource(logicalId, resourceType, instanceProfileName);
+            leftBehind = false;
+            log.debug(
+              `Cleaned up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            // The name is `generateResourceNameWithFallback`'s output, whose
+            // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+            // (issue #3136), so it renders BARE -- but it can still BE a resolved
+            // secret, so every command goes through `pasteableAwsCommand` with the
+            // masker (issue #2177): a masked name is WITHHELD rather than printed
+            // as `***`, which would act on a different profile. Pinned by this
+            // type's partial-create cleanup test.
+            // The `<name>` hole is QUOTED: bare, it is two shell redirections.
+            const aws = pasteableAwsCommand(log.mask);
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteInstanceProfile` names the caller) goes to
+            // `debug` under the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}): `;
+            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
+            log.warn(
+              `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: remove every role (${aws`aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>'`.render()}) then ${aws`aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`.render()}`
+            );
           }
-          await this.iamClient.send(
-            new DeleteInstanceProfileCommand({ InstanceProfileName: instanceProfileName })
-          );
-          retractCreatedResource(logicalId, resourceType, instanceProfileName);
-          leftBehind = false;
-          log.debug(
-            `Cleaned up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}) after wiring failure`
-          );
-        } catch (cleanupError) {
-          // The name is `generateResourceNameWithFallback`'s output, whose
-          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // (issue #3136), so it renders BARE -- but it can still BE a resolved
-          // secret, so every command goes through `pasteableAwsCommand` with the
-          // masker (issue #2177): a masked name is WITHHELD rather than printed
-          // as `***`, which would act on a different profile. Pinned by this
-          // type's partial-create cleanup test.
-          // The `<name>` hole is QUOTED: bare, it is two shell redirections.
-          const aws = pasteableAwsCommand(log.mask);
-          // An AWS-authored failure is named by its class at warn, and AWS's
-          // text (a denied `DeleteInstanceProfile` names the caller) goes to
-          // `debug` under the same head (go-to-k/cdkd#2319).
-          const cleanupFailure = describeAwsFailure(cleanupError);
-          const cleanupHead = `Failed to clean up partially-created IAM instance profile ${logicalId} (${v(instanceProfileName)}): `;
-          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
-          log.warn(
-            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: remove every role (${aws`aws iam remove-role-from-instance-profile --instance-profile-name ${instanceProfileName} --role-name '<name>'`.render()}) then ${aws`aws iam delete-instance-profile --instance-profile-name ${instanceProfileName}`.render()}`
-          );
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).
@@ -280,7 +320,7 @@ export class IAMInstanceProfileProvider implements ResourceProvider {
       return {
         physicalId: instanceProfileName,
         attributes: {
-          Arn: response.InstanceProfile?.Arn,
+          Arn: profile?.Arn,
         },
       };
     } catch (error) {

@@ -86,10 +86,6 @@
       "MSKSourceConfiguration",
       "SnowflakeDestinationConfiguration"
     ],
-    "AWS::Lambda::Function": [
-      "CapacityProviderConfig",
-      "FunctionScalingConfig"
-    ],
     "AWS::Neptune::DBCluster": [
       "RestoreToTime",
       "RestoreType",
@@ -110,7 +106,6 @@
       "DatabaseInsightsMode",
       "Domain",
       "DomainIAMRoleName",
-      "EnableCloudwatchLogsExports",
       "EnableGlobalWriteForwarding",
       "EnableHttpEndpoint",
       "EnableLocalWriteForwarding",
@@ -154,7 +149,6 @@
       "DomainFqdn",
       "DomainIAMRoleName",
       "DomainOu",
-      "EnableCloudwatchLogsExports",
       "EngineLifecycleSupport",
       "MasterUserAuthenticationType",
       "NcharCharacterSetName",

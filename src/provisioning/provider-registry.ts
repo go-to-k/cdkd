@@ -377,6 +377,39 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'alb',
     },
   ],
+  [
+    'AWS::EFS::MountTarget',
+    {
+      // Pinned to cc-api: every mount target first deployed while declaring a
+      // property the provider did not handle yet (go-to-k/cdkd#2762 wired
+      // IpAddress, IpAddressType and Ipv6Address). Cloud Control manages it
+      // correctly; this is admitted for the SDK path's speed.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `fsmt-...` id: the schema primaryIdentifier is Id ' +
+        'and EFSProvider.create records the CreateMountTarget MountTargetId (Cloud ' +
+        'Control Identifier measured us-east-1, 2026-11-02)',
+      issue: 'https://github.com/go-to-k/cdkd/issues/5641',
+      integFixture: 'cc-to-sdk-reroute-mount-target',
+    },
+  ],
+  [
+    'AWS::Route53::HostedZone',
+    {
+      // Pinned to cc-api: every zone first deployed while declaring a property
+      // the provider did not handle yet, DelegationSetId among them
+      // (go-to-k/cdkd#2762). Cloud Control manages it correctly; this is
+      // admitted for the SDK path's speed.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `Z...` zone id, without the `/hostedzone/` prefix ' +
+        'Route 53 answers with: the schema primaryIdentifier is Id, Route53Provider.create ' +
+        'strips the prefix, and the Cloud Control Identifier has none (measured ' +
+        'us-east-1, 2026-11-02)',
+      issue: 'https://github.com/go-to-k/cdkd/issues/5641',
+      integFixture: 'cc-to-sdk-reroute-hosted-zone',
+    },
+  ],
 ]);
 
 /** Why a `'cc-broken'` type cannot be routed to Cloud Control, as users read it. */
@@ -688,7 +721,7 @@ export class ProviderRegistry {
       // → auto-route through Cloud Control (which forwards the full property
       // map to AWS, closing the silent-drop bug). Closes issue #614.
       debug(
-        `Auto-routing ${resourceType} via Cloud Control (silent-drop properties: ${actionableDrops
+        `Auto-routing ${resourceType} via Cloud Control (SDK-unwired properties: ${actionableDrops
           .map((d) => d.property)
           .join(', ')})`
       );
@@ -762,7 +795,7 @@ export class ProviderRegistry {
       safeMsg`${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
       safeMsg`this type cannot fall back to Cloud Control API (${reason}):\n` +
       `${details}\n` +
-      `Remove the properties, or force the SDK provider path and accept the drop via ` +
+      `Remove the properties, or force the SDK provider path and accept leaving them unwritten via ` +
       `--prefer-sdk-route ${overrideHint} ` +
       `(the provider may still reject the resource if the property is required).`
     );
@@ -1301,7 +1334,7 @@ export class ProviderRegistry {
         }
         this.logger.warn(
           `${logicalId} (${resourceType}): ${overridden.join(', ')} will be ` +
-            `silently dropped (--prefer-sdk-route override ` +
+            `left unwritten (--prefer-sdk-route override ` +
             `accepted). ${remedies.join(' ')}`
         );
       }

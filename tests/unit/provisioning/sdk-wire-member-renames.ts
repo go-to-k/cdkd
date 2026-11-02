@@ -613,6 +613,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::RDS::DBCluster': {
     members: {
+      // ModifyDBCluster takes the delta, not the list (go-to-k/cdkd#5639).
+      EnableCloudwatchLogsExports: ['CloudwatchLogsExportConfiguration.EnableLogTypes'],
       'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
     },
     containers: {
@@ -621,6 +623,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
   },
   'AWS::RDS::DBInstance': {
     members: {
+      // ModifyDBInstance takes the delta, not the list (go-to-k/cdkd#5640).
+      EnableCloudwatchLogsExports: ['CloudwatchLogsExportConfiguration.EnableLogTypes'],
       'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
       Port: ['DBPortNumber'],
       VPCSecurityGroups: ['VpcSecurityGroupIds'],

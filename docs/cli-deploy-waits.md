@@ -114,7 +114,7 @@ rollout succeeded: a service whose tasks crash or whose image cannot be pulled
 deploys with exit `0`. Use this for a first deploy before the image is pushed,
 a fast iteration loop, or a pipeline that runs its own health check.
 
-### The wait `--no-wait` never skips
+### The waits `--no-wait` never skips
 
 A Lambda-backed custom resource is one wait that every mode keeps. Just before
 cdkd invokes the Lambda function behind an
@@ -123,7 +123,10 @@ cdkd invokes the Lambda function behind an
 fails with `The function is currently in the following state: Pending`.
 
 The wait belongs to that invoke only. An ordinary Lambda create or update
-returns as soon as the API call returns. A Lambda function in a VPC that
+returns as soon as the API call returns. A Lambda Managed Instances function is
+the other wait every mode keeps, on create, update and delete: the version it
+publishes launches its capacity, and AWS refuses the next call until that
+settles. A Lambda function in a VPC that
 nothing invokes therefore does not hold the deploy for the 5 to 10 minutes its
 network interface takes to attach.
 

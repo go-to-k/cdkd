@@ -15,17 +15,17 @@
  * Writes: src/provisioning/property-coverage.generated.ts
  *
  * The pre-flight check (`ProviderRegistry.validateResourceProperties`)
- * consults the generated module to REPORT top-level properties cdkd would
- * silently drop on write; the resource is then auto-routed through Cloud
- * Control so the property reaches AWS. v0 stance: silent drop is a bug, so
- * accepting one takes an explicit `--allow-unsupported-properties
- * <Type:Prop>,...`, which keeps the resource on the SDK path instead.
+ * consults the generated module to REPORT top-level properties the SDK
+ * provider does not write (SDK-unwired); the resource is then auto-routed
+ * through Cloud Control so the property reaches AWS. Not writing one takes
+ * an explicit `--prefer-sdk-route <Type:Prop>,...`, which keeps the
+ * resource on the SDK path instead.
  * Pre-flight does still REJECT the sub-case Cloud Control cannot serve — a
  * NON_PROVISIONABLE type, or a provider with `disableCcApiFallback` — since
  * there the auto-route would fail later with an opaque error.
  *
  * Tier 2 (CC API) types are NOT in the output — CC forwards the full
- * property map to AWS, so there is no write-side silent drop at cdkd.
+ * property map to AWS, so no property goes unwritten there.
  *
  * Why a generated TS module and not a runtime JSON read: package.json
  * `files` ships only `dist/`, so tests/fixtures/*.json is not in the
@@ -543,28 +543,28 @@ const content = `/**
  * Per-Tier-1-type property coverage for the deploy-time pre-flight check
  * (\`ProviderRegistry.validateResourceProperties\`). The \`silentDrop\` set
  * lists top-level CFn schema properties whose SDK provider does not write
- * them to AWS — using these in a template silently drops the field at
- * deploy time. Pre-flight does not reject them for that reason:
+ * them to AWS (SDK-unwired). A template using one does NOT lose it:
  * \`reportSilentDropDecisions\` logs the routing decision at INFO (DEBUG once
  * the resource is already sticky on CC) and the resource is auto-routed
- * through Cloud Control, so the property reaches AWS anyway (issue #614). It
+ * through Cloud Control, so the property reaches AWS (issue #614). Pre-flight
  * DOES reject the sub-case Cloud Control cannot serve — a NON_PROVISIONABLE
  * type, or a provider with \`disableCcApiFallback\`.
- * \`--allow-unsupported-properties <Type:Prop>,...\` opts back INTO the drop,
- * keeping the resource on the SDK path, and WARNs when it does (the
- * unrecognized-property warn is the other one). (This comment claimed pre-flight rejected every silent drop until
+ * \`--prefer-sdk-route <Type:Prop>,...\` opts INTO not writing it, keeping
+ * the resource on the SDK path, and WARNs when it does (the
+ * unrecognized-property warn is the other one). (This comment claimed pre-flight rejected every SDK-unwired property until
  * go-to-k/cdkd#2744 measured a live deploy applying one with no flag; see
  * tests/integration/sdk-to-cc-autoroute/.)
  *
  * Tier 2 (Cloud Control) types are NOT in this map: CC forwards the full
- * property map to AWS, so there is no write-side silent drop at cdkd.
+ * property map to AWS, so no property goes unwritten there.
  */
 
 export interface PropertyCoverage {
   /** Top-level CFn properties the SDK provider's create/update writes to AWS. */
   readonly handled: ReadonlySet<string>;
   /**
-   * Top-level CFn properties cdkd would silently drop on write. Each entry
+   * Top-level CFn properties the SDK provider does not write (SDK-unwired);
+   * a resource using one auto-routes through Cloud Control. Each entry
    * carries a one-line rationale (either the provider's \`unhandledByDesign\`
    * rationale or the default \`not yet implemented by cdkd\`).
    */
@@ -579,7 +579,7 @@ export interface PropertyCoverage {
    * deploy, and an added create-only property classifies as a REPLACEMENT --
    * so a plain upgrade deploy over an unchanged template would destroy and
    * re-create the resource, cascading to its dependents. Routing is
-   * unaffected: a create-only property is still a silent drop and still
+   * unaffected: a create-only property is still SDK-unwired and still
    * auto-routes through Cloud Control.
    */
   readonly createOnlyDrops: ReadonlySet<string>;
@@ -615,7 +615,7 @@ ${body}
   renameSync(tmp, OUT_FILE);
   console.log(
     `Wrote property coverage for ${coverageByType.size} Tier 1 types ` +
-      `(${totalHandled} handled, ${totalDrops} silent-drop) to ${OUT_FILE}.`
+      `(${totalHandled} handled, ${totalDrops} SDK-unwired) to ${OUT_FILE}.`
   );
 }
 
