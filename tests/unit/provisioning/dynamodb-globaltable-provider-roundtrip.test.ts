@@ -3379,6 +3379,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] },
       }); // waitForReplicaActive
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // settle
+      mockSend.mockResolvedValueOnce({}); // UpdateTable (the override a Create drops)
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // settle
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       mockAutoScalingSend.mockReset();
@@ -3410,7 +3413,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           BillingMode: 'PROVISIONED',
           WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
           Replicas: [{ Region: 'us-east-1' }],
-        }
+        },
+        // A literal write side with a region to add is refused on a template.
+        { replayingState: true }
       );
 
       const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
@@ -3495,7 +3500,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
               },
             },
           ],
-        }
+        },
+        // A literal write side with a region to add is refused on a template.
+        { replayingState: true }
       );
 
       const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);

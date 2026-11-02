@@ -35,6 +35,7 @@ import {
   type GlobalSecondaryIndexUpdate,
   type GlobalTableSettingsReplicationMode,
   type LocalSecondaryIndex,
+  type TableDescription,
   type OnDemandThroughput,
   type ProvisionedThroughput,
   type ReplicaGlobalSecondaryIndex,
@@ -2439,6 +2440,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     await this.waitForReplicaActive(tableName, region, logicalId, undefined, maskSecrets);
 
+    // DynamoDB takes `ProvisionedThroughputOverride` on a replica `Create` and
+    // drops it: the region comes up ACTIVE at the source's read with no override,
+    // and stays there. The same override on an `Update` holds (measured,
+    // go-to-k/cdkd#5604), which is what CloudFormation's result needs.
+    const provisionedIndexes = replicaIndexes?.filter((i) => i.ProvisionedThroughputOverride);
+    if (create.ProvisionedThroughputOverride || provisionedIndexes?.length) {
+      // The replica reads ACTIVE while the table still reads UPDATING.
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+      await this.dynamoDBClient.send(
+        new UpdateTableCommand({
+          TableName: tableName,
+          ReplicaUpdates: [
+            {
+              Update: {
+                RegionName: region,
+                ...(create.ProvisionedThroughputOverride && {
+                  ProvisionedThroughputOverride: create.ProvisionedThroughputOverride,
+                }),
+                ...(provisionedIndexes?.length && { GlobalSecondaryIndexes: provisionedIndexes }),
+              },
+            },
+          ],
+        })
+      );
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+    }
+
     // `CreateReplicationGroupMemberAction` has no deletion-protection member,
     // so a cross-region replica's `DeletionProtectionEnabled` is set on the
     // replica's own table in its own region once it exists. A new replica
@@ -4809,6 +4837,52 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         new DescribeTableCommand({ TableName: physicalId })
       );
       const tableArn = describeResp.Table?.TableArn;
+      const liveHasCrossRegionReplica = (describeResp.Table?.Replicas ?? []).some(
+        (r) => r.RegionName !== undefined && r.RegionName !== currentRegion
+      );
+      // go-to-k/cdkd#5604: a table with a cross-region replica keeps an auto-scaled
+      // write side. CloudFormation refuses a literal one, DynamoDB refuses every
+      // `ReplicaUpdates` Update once the write target is gone (measured), and
+      // `ProvisionedThroughput` would overwrite the other regions' read. Asked of
+      // the table this update leaves: one dropping its last other region ends up
+      // single-region, where a literal write side is fine. Before the first write
+      // of this update. A state-borne bag has no template to fix and a throw would
+      // strand what its revert applied, so it warns and skips.
+      const declaredRegions = declaredCrossRegions(properties, currentRegion);
+      const staysReplicated = liveHasCrossRegionReplica && declaredRegions.length > 0;
+      const literalWriteMoves =
+        staysReplicated &&
+        literalWriteSideMoves(properties, previousProperties, currentRegion, describeResp.Table);
+      const statePath =
+        context?.replayingState === true || context?.desiredFromAwsReadback === true;
+      // A region this update adds meets the same refusal from DynamoDB, mid-update.
+      const addsRegionToLiteral =
+        !statePath &&
+        properties['BillingMode'] === 'PROVISIONED' &&
+        !writeSideScaled(properties) &&
+        declaredRegions.some(
+          (region) => !describeResp.Table?.Replicas?.some((r) => r.RegionName === region)
+        );
+      if (literalWriteMoves || addsRegionToLiteral) {
+        const refusal =
+          `AWS::DynamoDB::GlobalTable ${logicalId}: a table with a cross-region replica needs ` +
+          `an auto-scaled write side, and this update declares none: CloudFormation refuses a ` +
+          `literal WriteCapacityUnits, and DynamoDB refuses every replica update without ` +
+          `auto-scaling`;
+        if (statePath) {
+          warn(`${refusal}${refusal}. No capacity beyond what a billing flip carries was sent.`);
+        } else {
+          throw new ProvisioningError(
+            maskSecrets(
+              `${refusal}. Nothing was applied to the table; declare ` +
+                `WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings`
+            ),
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+      }
       // go-to-k/cdkd#2762: VectorIndexes. `UpdateTable` creates or deletes a
       // vector index and has no in-place modify, so a same-name index whose
       // definition changed is refused here, before any mutating call. Planned
@@ -5129,12 +5203,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         diagnostics,
         maskSecrets
       );
-      // The TABLE-level provisioned capacity is only SENT by step 4's billing
-      // flip, which is also the only place it can fall through to 5/5 — so the
-      // #1511 diagnostic is gated on exactly that condition rather than on
-      // `newBilling` alone, which would warn about a value nothing consumes.
-      // Same `'seed'` source step 4 uses, so the blamed member matches what it
-      // would have read. Result discarded: this call is for the diagnostics.
+      // The TABLE-level provisioned capacity falls through to 5/5 only on step
+      // 4's billing flip, so the #1511 diagnostic is gated on exactly that
+      // condition rather than on `newBilling` alone, which would warn about a
+      // value nothing consumes. Same `'seed'` source step 4 uses, so the blamed
+      // member matches what it would have read. Result discarded: this call is
+      // for the diagnostics.
       const flippingToProvisioned = oldBilling !== newBilling && newBilling === 'PROVISIONED';
       if (flippingToProvisioned) {
         derivePerCallProvisionedThroughput(
@@ -5145,6 +5219,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           maskSecrets
         );
       }
+      // Read here so a declared value step 4a' cannot read is reported with the
+      // rest of this update's diagnostics. A flip carried the capacity already,
+      // and a table turned on-demand out of band reports 0/0, no capacity to
+      // send back.
+      const tableCapacityChange =
+        !literalWriteMoves &&
+        oldBilling === 'PROVISIONED' &&
+        newBilling === 'PROVISIONED' &&
+        liveBillingMode === 'PROVISIONED'
+          ? readTableCapacityChange(
+              properties,
+              previousProperties,
+              currentRegion,
+              diagnostics,
+              maskSecrets
+            )
+          : undefined;
       // The DIFF's translation stays on `'min'` (step 6 compares against it),
       // but the diagnostics must be raised with the source step 4 will actually
       // READ: on a flip that is `'seed'`, and naming `MinCapacity` for a value
@@ -5782,9 +5873,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // replica diff. The AWS managed key (`SSEType: KMS`, no key) and the
       // AWS owned key (`Enabled: false`) do go through it, and move every
       // replica with the table (measured).
-      const liveHasCrossRegionReplica = (describeResp.Table?.Replicas ?? []).some(
-        (r) => r.RegionName !== undefined && r.RegionName !== currentRegion
-      );
       if (sseUpdate?.KMSMasterKeyId !== undefined && liveHasCrossRegionReplica) {
         deferredSseUpdate = sseUpdate;
         deferredSseFromTemplate = sseFromTemplate;
@@ -6014,51 +6102,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
-      // 4a'. go-to-k/cdkd#2762: a change to the table-level
-      // `ReadProvisionedThroughputSettings`, or a block moved to or from the
-      // local replica (the two spell one value). `ProvisionedThroughput` takes
-      // both members, so the write side goes out as AWS holds it; a flip carried
-      // the read capacity already. Gated on the LIVE mode too: a table turned
-      // on-demand out of band reports 0/0, which is no capacity to send back. A
-      // value AWS holds is not sent: DynamoDB refuses a call that changes nothing.
-      const readBlockOf = (bag: Record<string, unknown>): unknown =>
-        localReplicaEntry(bag, currentRegion)?.[TABLE_READ_PROVISIONED_KEY] ??
-        bag[TABLE_READ_PROVISIONED_KEY];
-      if (
-        oldBilling === 'PROVISIONED' &&
-        newBilling === 'PROVISIONED' &&
-        liveBillingMode === 'PROVISIONED' &&
-        (properties[TABLE_READ_PROVISIONED_KEY] !== undefined ||
-          previousProperties[TABLE_READ_PROVISIONED_KEY] !== undefined) &&
-        !deepEqual(readBlockOf(properties), readBlockOf(previousProperties))
-      ) {
-        const wantRead = coerceCfnInteger(asRecord(readBlockOf(properties))?.['ReadCapacityUnits']);
-        const liveThroughput = describeResp.Table?.ProvisionedThroughput;
-        if (
-          wantRead !== undefined &&
-          liveThroughput?.WriteCapacityUnits !== undefined &&
-          wantRead !== liveThroughput.ReadCapacityUnits
-        ) {
-          markUnsettled(TABLE_READ_PROVISIONED_KEY);
-          await this.dynamoDBClient.send(
-            new UpdateTableCommand({
-              TableName: physicalId,
-              ProvisionedThroughput: {
-                ReadCapacityUnits: wantRead,
-                WriteCapacityUnits: liveThroughput.WriteCapacityUnits,
-              },
-            })
-          );
-          await this.waitForTableActiveAfterUpdate(
-            physicalId,
-            logicalId,
-            undefined,
-            undefined,
-            maskSecrets
-          );
-        }
-      }
-
       // 4b. Table-level write auto-scaling diff (Issue #402 / closes #395
       // deferred items). Fires whenever the WriteCapacityAutoScalingSettings
       // sub-shape differs between old and new (incl. add / remove). Skipped
@@ -6090,7 +6133,22 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // still backfilled by 6b (Issue #1419 — see reconcileAutoScalingTargets).
       const autoScalingApplied = new Set<string>();
       const autoScalingMeaningful = newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED';
-      if (autoScalingMeaningful && !deepEqual(writeAutoScalingOld, effectiveNewAutoScaling)) {
+      // Ahead of step 4a': DynamoDB refuses `ReplicaUpdates` on a table with a
+      // cross-region replica until its write side is auto-scaled (measured), and
+      // declaring that with a read change is the way out of the refusal above.
+      if (literalWriteMoves) {
+        autoScalingApplied.add(
+          autoScalingTargetKey({
+            dimension: 'dynamodb:table:WriteCapacityUnits',
+            region: currentRegion,
+          })
+        );
+      }
+      if (
+        autoScalingMeaningful &&
+        !literalWriteMoves &&
+        !deepEqual(writeAutoScalingOld, effectiveNewAutoScaling)
+      ) {
         await this.applyAutoScalingDiff(
           physicalId,
           'dynamodb:table:WriteCapacityUnits',
@@ -6107,6 +6165,68 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             region: currentRegion,
           })
         );
+      }
+
+      // 4a'. go-to-k/cdkd#2762, go-to-k/cdkd#5604: a changed literal capacity,
+      // on either side. `ProvisionedThroughput` takes both members, so a side
+      // this update does not change goes out as AWS holds it, which is also how
+      // an auto-scaled side stays with its scaling policy. A value AWS holds is
+      // not sent: DynamoDB refuses a `ProvisionedThroughput` that changes nothing.
+      //
+      // `ProvisionedThroughput` on a table with a cross-region replica sets
+      // every region to the sent read capacity and clears its
+      // `ProvisionedThroughputOverride`, a write-only change included (measured),
+      // so such a table never gets one: its read goes out as the local region's
+      // override, which leaves the others alone (the result CloudFormation
+      // reaches, measured), and its write side is auto-scaled (`literalWriteMoves`).
+      if (tableCapacityChange) {
+        const liveThroughput = describeResp.Table?.ProvisionedThroughput;
+        const sendRead = tableCapacityChange.read ?? liveThroughput?.ReadCapacityUnits;
+        const sendWrite = tableCapacityChange.write ?? liveThroughput?.WriteCapacityUnits;
+        const readMoves = sendRead !== liveThroughput?.ReadCapacityUnits;
+        const writeMoves = sendWrite !== liveThroughput?.WriteCapacityUnits;
+        if (sendRead !== undefined && sendWrite !== undefined && (readMoves || writeMoves)) {
+          markUnsettled(
+            ...(readMoves ? tableCapacityChange.readKeys : []),
+            ...(writeMoves ? [TABLE_WRITE_PROVISIONED_KEY] : [])
+          );
+          await this.dynamoDBClient.send(
+            new UpdateTableCommand(
+              staysReplicated
+                ? {
+                    TableName: physicalId,
+                    ReplicaUpdates: [
+                      {
+                        Update: {
+                          RegionName: currentRegion,
+                          ProvisionedThroughputOverride: { ReadCapacityUnits: sendRead },
+                        },
+                      },
+                    ],
+                  }
+                : {
+                    TableName: physicalId,
+                    ProvisionedThroughput: {
+                      ReadCapacityUnits: sendRead,
+                      WriteCapacityUnits: sendWrite,
+                    },
+                  }
+            )
+          );
+          // The whole group: another region moves with this one, and step 5
+          // meets a refusal while a replica is still updating.
+          if (liveHasCrossRegionReplica) {
+            await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
+          } else {
+            await this.waitForTableActiveAfterUpdate(
+              physicalId,
+              logicalId,
+              undefined,
+              undefined,
+              maskSecrets
+            );
+          }
+        }
       }
 
       // go-to-k/cdkd#5489: a REMOVED settings replication mode is reset
@@ -9246,7 +9366,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             let protection: boolean | undefined;
             let disassociationProtection: boolean | undefined;
             let streamArn: string | undefined;
+            let regionalRead: number | undefined;
             if (isLocal) {
+              regionalRead = table.ProvisionedThroughput?.ReadCapacityUnits;
               protection = table.DeletionProtectionEnabled;
               disassociationProtection = table.DisassociationProtectionEnabled;
               streamArn = table.LatestStreamArn;
@@ -9255,6 +9377,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 const regional = await client.send(
                   new DescribeTableCommand({ TableName: tableNameForSubs })
                 );
+                regionalRead = regional.Table?.ProvisionedThroughput?.ReadCapacityUnits;
                 protection = regional.Table?.DeletionProtectionEnabled;
                 disassociationProtection = regional.Table?.DisassociationProtectionEnabled;
                 streamArn = regional.Table?.LatestStreamArn;
@@ -9334,14 +9457,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // policy in its own region, so the local-region client can
             // only see the local replica's settings.
             //
-            // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
-            // `DescribeTable` returns ONE `ProvisionedThroughput` block for
-            // the table, not one per replica, so cdkd cannot synthesize
-            // per-replica flat read capacity from the local read. When
-            // autoscaling owns the replica's read dimension the full
-            // settings shape is surfaced; otherwise the key is omitted
-            // entirely (drift will not fire on missing key, matching the
-            // pre-#395 behavior for non-autoscaled replicas).
+            // When autoscaling owns the replica's read dimension the full
+            // settings shape is surfaced. Otherwise the plain read omits the key
+            // (drift will not fire on a missing key, matching the pre-#395
+            // behavior for non-autoscaled replicas), and only the strict read
+            // of an unsettled `Replicas` reports the flat read below, from the
+            // region's own `DescribeTable`.
             if (billingMode === 'PROVISIONED') {
               const replicaAutoScalingClient = isLocal
                 ? undefined
@@ -9355,6 +9476,11 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                 entry['ReadProvisionedThroughputSettings'] = {
                   ReadCapacityAutoScalingSettings: readAutoScaling,
                 };
+              } else if (strictFor('Replicas') && regionalRead !== undefined) {
+                // go-to-k/cdkd#5604: an unsettled `Replicas` has to read what was
+                // sent, or it never settles and every deploy sends it again. Only
+                // there: the plain read stays free of a value drift would compare.
+                entry['ReadProvisionedThroughputSettings'] = { ReadCapacityUnits: regionalRead };
               }
             }
             return entry;
@@ -11228,6 +11354,7 @@ const REPLICATION_MODE_KEY = 'GlobalTableSettingsReplicationMode';
 /** The table-level read settings (go-to-k/cdkd#2762), beside each replica's own. */
 const TABLE_READ_ON_DEMAND_KEY = 'ReadOnDemandThroughputSettings';
 const TABLE_READ_PROVISIONED_KEY = 'ReadProvisionedThroughputSettings';
+const TABLE_WRITE_PROVISIONED_KEY = 'WriteProvisionedThroughputSettings';
 
 /** One read of the declared `Replicas[].GlobalTableSettingsReplicationMode`. */
 export type ReplicationModeRead =
@@ -11750,6 +11877,119 @@ export function derivePerCallProvisionedThroughput(
   return {
     ReadCapacityUnits: read ?? DEFAULT_CAPACITY_UNITS,
     WriteCapacityUnits: write ?? DEFAULT_CAPACITY_UNITS,
+  };
+}
+
+/** The regions other than `region` a properties bag declares. */
+function declaredCrossRegions(properties: Record<string, unknown>, region: string): string[] {
+  const replicas = properties['Replicas'];
+  return (Array.isArray(replicas) ? replicas : [])
+    .map((replica) => asRecord(replica)?.['Region'])
+    .filter((name): name is string => typeof name === 'string' && name !== region);
+}
+
+/** Whether a properties bag declares write auto-scaling. */
+function writeSideScaled(bag: Record<string, unknown>): boolean {
+  return (
+    asRecord(bag[TABLE_WRITE_PROVISIONED_KEY])?.['WriteCapacityAutoScalingSettings'] !== undefined
+  );
+}
+
+/**
+ * Whether this update moves a PROVISIONED table's capacity with a write side that
+ * is not auto-scaled: a literal or read change on a literal table, the
+ * auto-scaling removed, or a flip from on-demand, whose capacity is all new.
+ */
+function literalWriteSideMoves(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  region: string,
+  live: TableDescription | undefined
+): boolean {
+  if (properties['BillingMode'] !== 'PROVISIONED' || writeSideScaled(properties)) return false;
+  if (writeSideScaled(previousProperties)) return true;
+  if (live?.BillingModeSummary?.BillingMode === 'PAY_PER_REQUEST') return true;
+  const change = readTableCapacityChange(properties, previousProperties, region, [], (t) => t);
+  return (
+    (change.write !== undefined &&
+      change.write !== live?.ProvisionedThroughput?.WriteCapacityUnits) ||
+    (change.read !== undefined && change.read !== live?.ProvisionedThroughput?.ReadCapacityUnits)
+  );
+}
+
+/**
+ * What an in-place update owes the table's `ProvisionedThroughput` while the
+ * billing mode holds still: the literal capacity of each side whose block
+ * changed, and the keys a moved read side leaves unsettled (the read block
+ * lives on the local replica, or at the table level with settings replication
+ * ENABLED; the two spell one value).
+ *
+ * A block carrying auto-scaling settings yields nothing, whatever else it
+ * declares: the scaling policy owns that dimension, and its diff is applied by
+ * step 4b and by {@link reconcileAutoScalingTargets}. A declared literal this
+ * cannot read is reported, since the deploy otherwise succeeds with the old
+ * capacity in place.
+ */
+function readTableCapacityChange(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  region: string,
+  diagnostics: ThroughputDiagnostic[],
+  maskSecrets: MaskerFn
+): { read?: number; write?: number; readKeys: string[] } {
+  const localBlockOf = (bag: Record<string, unknown>): unknown =>
+    localReplicaEntry(bag, region)?.[TABLE_READ_PROVISIONED_KEY];
+  const readBlockOf = (bag: Record<string, unknown>): unknown =>
+    localBlockOf(bag) ?? bag[TABLE_READ_PROVISIONED_KEY];
+  const literal = (
+    block: unknown,
+    previousBlock: unknown,
+    side: 'Read' | 'Write',
+    blockName: string
+  ): number | undefined => {
+    if (deepEqual(block, previousBlock)) return undefined;
+    const settings = asRecord(block);
+    if (settings?.[`${side}CapacityAutoScalingSettings`] !== undefined) return undefined;
+    const units = coerceCfnInteger(settings?.[`${side}CapacityUnits`]);
+    if (units === undefined) {
+      reportUnresolvedProvisionedCapacity(
+        block,
+        side,
+        'min',
+        { suppressed: 'so cdkd sent no capacity for it and the old value stays on AWS' },
+        diagnostics,
+        { blockName },
+        maskSecrets
+      );
+    }
+    return units;
+  };
+  const read = literal(
+    readBlockOf(properties),
+    readBlockOf(previousProperties),
+    'Read',
+    localBlockOf(properties) !== undefined
+      ? `Replicas[local].${TABLE_READ_PROVISIONED_KEY}`
+      : TABLE_READ_PROVISIONED_KEY
+  );
+  const write = literal(
+    properties[TABLE_WRITE_PROVISIONED_KEY],
+    previousProperties[TABLE_WRITE_PROVISIONED_KEY],
+    'Write',
+    TABLE_WRITE_PROVISIONED_KEY
+  );
+  const declaredOnReplica =
+    localBlockOf(properties) !== undefined || localBlockOf(previousProperties) !== undefined;
+  const declaredOnTable =
+    properties[TABLE_READ_PROVISIONED_KEY] !== undefined ||
+    previousProperties[TABLE_READ_PROVISIONED_KEY] !== undefined;
+  return {
+    ...(read !== undefined && { read }),
+    ...(write !== undefined && { write }),
+    readKeys: [
+      ...(declaredOnTable ? [TABLE_READ_PROVISIONED_KEY] : []),
+      ...(declaredOnReplica ? ['Replicas'] : []),
+    ],
   };
 }
 
@@ -12645,9 +12885,10 @@ function reportUnresolvedProvisionedCapacity(
  * {@link CapacitySource}, which `source` selects.
  *
  * A literal `WriteCapacityUnits` is still honored first: the CFn schema
- * forbids it, but hand-authored / imported templates and cdkd state written
- * before this helper existed can carry it, and honoring it is strictly more
- * faithful than ignoring it.
+ * forbids it, but hand-authored / imported templates, cdkd state written
+ * before this helper existed and `readCurrentState`'s flat shape can carry it,
+ * and honoring it is strictly more faithful than ignoring it. An in-place
+ * change of it goes through {@link readTableCapacityChange}.
  *
  * `source` selects between the two contexts CloudFormation distinguishes —
  * see {@link CapacitySource}. Defaults to `'min'`, the common case.

@@ -220,7 +220,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'Replicas.GlobalSecondaryIndexes.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': ['PutScalingPolicyCommand:index-index-read', 'RegisterScalableTargetCommand:index-index-read'],
       'Replicas.KinesisStreamSpecification': ['EnableKinesisStreamingConfiguration', 'EnableKinesisStreamingDestinationCommand'],
       'Replicas.ReadOnDemandThroughputSettings': ['OnDemandThroughput'],
-      'Replicas.ReadProvisionedThroughputSettings': ['ProvisionedThroughputOverride'],
+      'Replicas.ReadProvisionedThroughputSettings': ['ProvisionedThroughput', 'ProvisionedThroughputOverride'],
       'Replicas.ReadProvisionedThroughputSettings.ReadCapacityAutoScalingSettings': ['PutScalingPolicyCommand:table-table-read', 'RegisterScalableTargetCommand:table-table-read'],
       'Replicas.ReplicaStreamSpecification': ['TagResourceCommand'],
       'Replicas.ReplicaStreamSpecification.ResourcePolicy': ['PutResourcePolicyCommand:stream'],
