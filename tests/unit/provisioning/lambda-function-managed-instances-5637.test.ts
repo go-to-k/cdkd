@@ -199,12 +199,20 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
     it('deletes the function when the published version fails', async () => {
       arm((command) =>
         command instanceof GetFunctionConfigurationCommand
-          ? { State: 'Failed', StateReason: 'no capacity' }
+          ? {
+              State: 'Failed',
+              StateReasonCode: 'InternalError',
+              StateReason: 'denied for arn:aws:iam::123456789012:role/caller',
+            }
           : undefined
       );
       const error = await provider.create('Fn', TYPE, MANAGED).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ProvisioningError);
-      expect(String(error)).toMatch(/Failed to set CapacityProviderConfig.*no capacity/);
+      // A status reason can name the account: the persisted message has its
+      // code and the pointer, never its text (go-to-k/cdkd#2319).
+      expect(String(error)).toMatch(/Failed to set CapacityProviderConfig.*InternalError/);
+      expect(String(error)).toMatch(/--verbose/);
+      expect(String(error)).not.toContain('123456789012');
       expect(sent(DeleteFunctionCommand)).toHaveLength(1);
     });
 
@@ -274,9 +282,34 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
 
     it('resends the capacity provider on any configuration change, as CloudFormation does', async () => {
       await update({ ...MANAGED, Timeout: 9 }, { ...MANAGED, Timeout: 3 });
-      expect(sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig).toEqual(
-        CAPACITY
+      expect(sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig).toEqual({
+        LambdaManagedInstancesCapacityProviderConfig: {
+          ...CAPACITY.LambdaManagedInstancesCapacityProviderConfig,
+          ExecutionEnvironmentMemoryGiBPerVCpu: 2,
+        },
+      });
+    });
+
+    it('resets an absent memory ratio and leaves an absent concurrency out, as CloudFormation does', async () => {
+      await update(
+        { ...BASE, CapacityProviderConfig: CAPACITY, Timeout: 9 },
+        {
+          ...BASE,
+          Timeout: 3,
+          CapacityProviderConfig: {
+            LambdaManagedInstancesCapacityProviderConfig: {
+              ...CAPACITY.LambdaManagedInstancesCapacityProviderConfig,
+              PerExecutionEnvironmentMaxConcurrency: 8,
+              ExecutionEnvironmentMemoryGiBPerVCpu: 4,
+            },
+          },
+        }
       );
+      const sentConfig = sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig;
+      expect(sentConfig?.LambdaManagedInstancesCapacityProviderConfig).toEqual({
+        ...CAPACITY.LambdaManagedInstancesCapacityProviderConfig,
+        ExecutionEnvironmentMemoryGiBPerVCpu: 2,
+      });
     });
 
     it('sends a changed capacity provider', async () => {
@@ -286,9 +319,10 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
         },
       };
       await update({ ...BASE, CapacityProviderConfig: moved }, MANAGED);
-      expect(sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig).toEqual(
-        moved
-      );
+      expect(
+        sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig
+          ?.LambdaManagedInstancesCapacityProviderConfig?.CapacityProviderArn
+      ).toBe(moved.LambdaManagedInstancesCapacityProviderConfig.CapacityProviderArn);
     });
 
     it('resets a removed scaling block with an empty one', async () => {
@@ -351,7 +385,7 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
     });
 
-    it('fails the update when the publish does not settle', async () => {
+    it('fails the update when the publish fails, withholding the reason', async () => {
       let reads = 0;
       arm((command) => {
         if (command instanceof GetFunctionConfigurationCommand && ++reads === 2) {
@@ -359,7 +393,82 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
         }
         return undefined;
       });
-      await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(/boom/);
+      const error = await update(MANAGED, { ...MANAGED, Timeout: 3 }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(String(error)).toMatch(/\$LATEST\.PUBLISHED failed/);
+      expect(String(error)).not.toContain('boom');
+    });
+
+    it('keeps cdkd\'s fallback when a failure carries no reason', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 2) {
+          return { State: 'Failed' };
+        }
+        return undefined;
+      });
+      await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(/no reason given/);
+    });
+
+    it('lets a fixed template past a Failed version left by an earlier attempt', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 1) {
+          return { State: 'Failed', StateReason: 'earlier attempt' };
+        }
+        return undefined;
+      });
+      await update(MANAGED, { ...MANAGED, Timeout: 3 });
+      expect(sent(PublishVersionCommand)).toHaveLength(1);
+    });
+
+    it('applies a scaling change to a Deactivated version', async () => {
+      arm((command) =>
+        command instanceof GetFunctionConfigurationCommand
+          ? { State: 'Deactivated', LastUpdateStatus: 'Successful' }
+          : undefined
+      );
+      await update(
+        { ...MANAGED, PublishToLatestPublished: false, FunctionScalingConfig: SCALING },
+        {
+          ...MANAGED,
+          PublishToLatestPublished: false,
+          FunctionScalingConfig: { MinExecutionEnvironments: 0, MaxExecutionEnvironments: 0 },
+        }
+      );
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(1);
+    });
+
+    it('waits through Deactivating', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 2) {
+          return { State: 'Deactivating', LastUpdateStatus: 'Successful' };
+        }
+        return undefined;
+      });
+      await update(
+        { ...MANAGED, PublishToLatestPublished: false, FunctionScalingConfig: SCALING },
+        { ...MANAGED, PublishToLatestPublished: false }
+      );
+      expect(reads).toBe(3);
+    });
+
+    it('stops at the enclosing resource deadline, not the 10 minute budget', async () => {
+      const deadline = await import('../../../src/deployment/resource-deadline.js');
+      const spy = vi.spyOn(deadline, 'enclosingDeadlineRemainingMs').mockReturnValue(0);
+      try {
+        arm((command) =>
+          command instanceof GetFunctionConfigurationCommand
+            ? { State: 'Pending', LastUpdateStatus: 'Successful' }
+            : undefined
+        );
+        await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(
+          /did not settle within 0s/
+        );
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('gives up on a version that never settles, naming its state', async () => {
@@ -372,6 +481,41 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(
         /did not settle within 0s \(State Pending/
       );
+    });
+  });
+
+  describe('delete', () => {
+    const gone = (): ResourceNotFoundException =>
+      new ResourceNotFoundException({ message: 'gone', $metadata: {} });
+
+    it('waits until the function is gone: its capacity provider is deleted next', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionCommand && ++reads === 3) throw gone();
+        return undefined;
+      });
+      await provider.delete('Fn', 'fn', TYPE, MANAGED);
+      expect(reads).toBe(3);
+    });
+
+    it('does not fail a landed delete when the read fails, and warns', async () => {
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) throw new Error('throttled');
+        return undefined;
+      });
+      await provider.delete('Fn', 'fn', TYPE, MANAGED);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Waiting for Lambda function/));
+    });
+
+    it('warns and returns at the budget', async () => {
+      Object.assign(provider, { functionUpdateMaxWaitSeconds: 0 });
+      await provider.delete('Fn', 'fn', TYPE, MANAGED);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/still being deleted/));
+    });
+
+    it('does not wait for a plain function', async () => {
+      await provider.delete('Fn', 'fn', TYPE, BASE);
+      expect(sent(GetFunctionCommand)).toHaveLength(0);
     });
   });
 
