@@ -1666,6 +1666,26 @@ Checklist when writing or reviewing an `update()`:
   (read after UPDATE_ROLLBACK_COMPLETE and about four minutes later), so a
   rollback sends no reset either. Not measured:
   `ServerlessScalingConfiguration` and `NetworkType`.
+  Real CloudFormation A/B, go-to-k/cdkd#2762 (us-east-1, engine 5.0.0, each
+  dropped alone; read at once and after about four minutes, nothing pending): an
+  `AWS::DocDB::DBCluster` KEEPS `CopyTagsToSnapshot`,
+  `EnableCloudwatchLogsExports` (Neptune resets it), `StorageType`,
+  `ServerlessV2ScalingConfiguration` and, with `ManageMasterUserPassword`
+  staying `true`, `MasterUserSecretKmsKeyId`; a DBInstance KEEPS
+  `CACertificateIdentifier` and `EnablePerformanceInsights`. After a failed
+  update rolled back, `CopyTagsToSnapshot` and `EnableCloudwatchLogsExports`
+  still held their values. Not measured: `NetworkType` and a removed
+  `ManageMasterUserPassword`; `update()` leaves them in place and warns without
+  claiming parity. A removed `ManageMasterUserPassword` beside a changed
+  `MasterUserPassword` is refused: sending `false` would delete the AWS secret
+  on that unmeasured path, so leaving managed mode takes an explicit `false`
+  plus the password. A rollback leaves the password out with a warning. `false`
+  beside a password sends that password whether or not it changed, since AWS
+  refuses `false` without one. A rollback with no password to send, and any
+  `drift --revert` changing `ManageMasterUserPassword`, send nothing and warn. `RotateMasterUserPassword` is a request, not a
+  setting: cdkd sends it when the template turns it to `true`, never again while
+  it stays `true`, and never from a rollback or `drift --revert`. To rotate
+  again, deploy `false`, then `true`.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

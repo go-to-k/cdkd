@@ -951,8 +951,22 @@ const DOCDB_CLUSTER_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:cluster:${DOCDB_CLUS
 function docdbArmCluster(_physicalId: string, bag: Bag): void {
   let sentPort: number | undefined;
   let sentGroups: string[] | undefined;
+  // Live values a changed key's read-back wait reads: the bag's, then the call's.
+  let logTypes = (bag['EnableCloudwatchLogsExports'] as string[] | undefined) ?? [];
+  let networkType = bag['NetworkType'];
+  let storageType = bag['StorageType'];
+  let scaling = bag['ServerlessV2ScalingConfiguration'];
   setOutputOverrides({
     ModifyDBClusterCommand: (input) => {
+      networkType = input['NetworkType'] ?? networkType;
+      storageType = input['StorageType'] ?? storageType;
+      scaling = input['ServerlessV2ScalingConfiguration'] ?? scaling;
+      const logs = input['CloudwatchLogsExportConfiguration'] as
+        | { EnableLogTypes?: string[]; DisableLogTypes?: string[] }
+        | undefined;
+      logTypes = [...logTypes, ...(logs?.EnableLogTypes ?? [])].filter(
+        (type) => !logs?.DisableLogTypes?.includes(type)
+      );
       if (input['Port'] !== undefined) sentPort = input['Port'] as number;
       if (input['VpcSecurityGroupIds'] !== undefined) {
         sentGroups = input['VpcSecurityGroupIds'] as string[];
@@ -971,6 +985,10 @@ function docdbArmCluster(_physicalId: string, bag: Bag): void {
           ),
           DBClusterArn: DOCDB_CLUSTER_ARN,
           DBClusterMembers: [],
+          EnabledCloudwatchLogsExports: logTypes,
+          NetworkType: networkType,
+          StorageType: storageType,
+          ServerlessV2ScalingConfiguration: scaling,
         },
       ],
     }),
@@ -979,6 +997,12 @@ function docdbArmCluster(_physicalId: string, bag: Bag): void {
 
 const kept = (why: string): string =>
   `left in place on removal: ModifyDBCluster keeps a member it is not sent (merge semantics), ${why}`;
+
+/** Named in a warning that claims no parity: no A/B has measured the removal. */
+const DOCDB_UNMEASURED = (key: string): string =>
+  `and no CloudFormation A/B has measured a removed ${key} (#2762), so update() warns without claiming parity (${DOCDB_SRC} DOCDB_CLUSTER_UNMEASURED_ON_REMOVAL)`;
+
+const ROTATE_MODIFY_ONLY = `CreateDBCluster has no such member: it only reaches ModifyDBCluster (${DOCDB_SRC} rotateMasterUserPassword)`;
 
 const DOCDB_CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::DocDB::DBCluster',
@@ -995,6 +1019,13 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
       command: 'ModifyDBClusterCommand',
       names: 'sg-1',
       notNames: 'sg-2',
+    },
+    // ModifyDBCluster takes the delta: the dropped type goes in DisableLogTypes.
+    {
+      path: ['EnableCloudwatchLogsExports', 0],
+      command: 'ModifyDBClusterCommand',
+      names: '=audit',
+      notNames: '=profiler',
     },
   ],
   bags: [
@@ -1017,6 +1048,12 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
         DBClusterParameterGroupName: 'docdb-params',
         DeletionProtection: true,
         Tags: fresh(DOCDB_TAGS),
+        AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+        CopyTagsToSnapshot: true,
+        EnableCloudwatchLogsExports: ['audit', 'profiler'],
+        NetworkType: 'DUAL',
+        ServerlessV2ScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
+        StorageType: 'iopt1',
       },
       expectedSilent: {
         ...Object.fromEntries(
@@ -1029,13 +1066,18 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
             'PreferredBackupWindow',
             'PreferredMaintenanceWindow',
             'DBClusterParameterGroupName',
+            'CopyTagsToSnapshot',
+            'EnableCloudwatchLogsExports',
+            'StorageType',
+            'ServerlessV2ScalingConfiguration',
           ].map((key) => [
             `update-remove:${key}`,
             kept(
-              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543 / #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
             ),
           ])
         ),
+        'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
         'update-remove:MasterUserPassword': kept(
           `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
         ),
@@ -1046,7 +1088,42 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
           ])
         ),
       },
-      expectedRemovalThrows: TAG_REFUSALS,
+      expectedRemovalThrows: {
+        ...TAG_REFUSALS,
+        ...Object.fromEntries(
+          ['create', 'update-add', 'update-remove'].flatMap((direction) =>
+            ['MinCapacity', 'MaxCapacity'].map((member) => [
+              `${direction}:ServerlessV2ScalingConfiguration.${member}`,
+              {
+                says: /ServerlessV2ScalingConfiguration must be/,
+                why: 'a block missing a capacity is refused before any call, not sent one-sided',
+              },
+            ])
+          )
+        ),
+      },
+    },
+    {
+      // AWS holds the password: this bag can declare no MasterUserPassword.
+      name: 'a managed password',
+      bag: {
+        DBClusterIdentifier: DOCDB_CLUSTER_ID,
+        MasterUsername: 'docdbadmin',
+        ManageMasterUserPassword: true,
+        MasterUserSecretKmsKeyId: `arn:aws:kms:us-east-1:${ACCOUNT}:key/secret-key`,
+        RotateMasterUserPassword: true,
+      },
+      expectedSilent: {
+        'create:RotateMasterUserPassword': ROTATE_MODIFY_ONLY,
+        'create-vary:RotateMasterUserPassword': ROTATE_MODIFY_ONLY,
+        'update-remove:RotateMasterUserPassword': `a request, not a setting: a removal has nothing to reset (${DOCDB_SRC} rotateMasterUserPassword)`,
+        'update-remove:ManageMasterUserPassword': kept(
+          DOCDB_UNMEASURED('ManageMasterUserPassword')
+        ),
+        'update-remove:MasterUserSecretKmsKeyId': kept(
+          `and CloudFormation keeps the key too, warned about by update() (CFn A/B, #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+        ),
+      },
     },
   ],
 };
@@ -1057,7 +1134,15 @@ const DOCDB_INSTANCE_ID = 'docdb-instance';
 
 /** DescribeDBInstances answers the instance available with its ARN: the create wait returns at once. */
 function docdbArmInstance(): void {
+  // Live values a changed key's read-back wait reads.
+  let certificate: unknown;
+  let insights: unknown;
   setOutputOverrides({
+    ModifyDBInstanceCommand: (input) => {
+      certificate = input['CACertificateIdentifier'] ?? certificate;
+      insights = input['EnablePerformanceInsights'] ?? insights;
+      return {};
+    },
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
         {
@@ -1065,11 +1150,18 @@ function docdbArmInstance(): void {
           Engine: 'docdb',
           DBInstanceStatus: 'available',
           DBInstanceArn: `arn:aws:rds:us-east-1:${ACCOUNT}:db:${DOCDB_INSTANCE_ID}`,
+          CACertificateIdentifier: certificate,
+          PerformanceInsightsEnabled: insights,
         },
       ],
     }),
   });
 }
+
+const DOCDB_INSTANCE_KEPT_2762 = `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, #2762, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`;
+
+/** Valid beside a certificate change only; no bag spells one with the flag alone varied. */
+const RESTART_WITH_CERTIFICATE = `sent only beside a CACertificateIdentifier change, and CreateDBInstance has no such member; docdb-provider-backfill-2762.test.ts covers that arm (${DOCDB_SRC} updateDBInstance)`;
 
 const DOCDB_INSTANCE_CASE: TypeCase = {
   resourceType: 'AWS::DocDB::DBInstance',
@@ -1090,10 +1182,20 @@ const DOCDB_INSTANCE_CASE: TypeCase = {
         PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
         AutoMinorVersionUpgrade: true,
         Tags: fresh(DOCDB_TAGS),
+        CACertificateIdentifier: 'rds-ca-rsa4096-g1',
+        CertificateRotationRestart: false,
+        EnablePerformanceInsights: true,
       },
       expectedSilent: {
         'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC} updateDBInstance)`,
         'update-remove:PreferredMaintenanceWindow': `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`,
+        'update-remove:CACertificateIdentifier': DOCDB_INSTANCE_KEPT_2762,
+        'update-remove:EnablePerformanceInsights': DOCDB_INSTANCE_KEPT_2762,
+        ...Object.fromEntries(
+          ['create', 'create-vary', 'update-add', 'update-remove', 'update-vary'].map(
+            (direction) => [`${direction}:CertificateRotationRestart`, RESTART_WITH_CERTIFICATE]
+          )
+        ),
         'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC} updateDBInstance)`,
       },
       expectedRemovalThrows: TAG_REFUSALS,

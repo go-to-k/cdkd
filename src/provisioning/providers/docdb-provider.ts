@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   DocDBClient,
   CreateDBClusterCommand,
@@ -9,6 +10,7 @@ import {
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
   type DBCluster,
+  type DBInstance,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { markNotGone } from '../not-gone.js';
@@ -16,6 +18,9 @@ import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
+import { markNonRetryable } from '../../deployment/retryable-errors.js';
+import { coerceCfnBoolean } from '../config-shape.js';
+import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
@@ -42,6 +47,10 @@ import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-red
 import {
   applyDocDBTagDiff,
   attachDocDBTags,
+  docdbLogExportChange,
+  docdbServerlessScaling,
+  docdbStringList,
+  holdsDocDBPendingValue,
   isDocDBNotFoundError,
   wrapDocDBFailure,
 } from './docdb-shared.js';
@@ -53,6 +62,7 @@ import {
   rdsFamilyProtectionSite,
   type ProtectionFlipRecord,
   deleteAfterProtectionFlipWithFinalSnapshot,
+  isProceedDbStatus,
   isTerminalDbWaitStatus,
 } from './deletion-protection-compensation.js';
 import { modifyDbInstanceWhenAvailable } from './db-instance-modify-retry.js';
@@ -111,18 +121,70 @@ function masterUserPasswordToSend(
  */
 const DOCDB_DEFAULT_PORT = 27017;
 
+/** What a cluster declaring none holds; DescribeDBClusters leaves it out for this value. */
+const DOCDB_DEFAULT_STORAGE_TYPE = 'standard';
+
 /**
- * Issues #5004 / #1160 / #5543: the `AWS::DocDB::DBCluster` properties a
+ * go-to-k/cdkd#2762: whether a `ModifyDBCluster` carries
+ * `RotateMasterUserPassword: true`. It is a request, not a setting: a template
+ * keeping `true` must not rotate the secret on every update, so it goes out only
+ * when the previous side does not already hold `true`. A rollback or
+ * `drift --revert` restores a bag and never asks for a rotation. CreateDBCluster
+ * has no such member.
+ */
+function rotateMasterUserPassword(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): boolean {
+  if (context?.replayingState === true || context?.desiredFromAwsReadback === true) return false;
+  return (
+    coerceCfnBoolean(properties['RotateMasterUserPassword']) === true &&
+    coerceCfnBoolean(previousProperties['RotateMasterUserPassword']) !== true
+  );
+}
+
+/** A KMS key id without its ARN prefix or `key/` segment: an alias keeps its whole name. */
+function kmsKeyText(key: string): string {
+  return key.replace(/^arn:[^:]*:kms:[^:]*:[^:]*:/, '').replace(/^key\//, '');
+}
+
+/** Whether two spellings name one KMS key: an ARN equals its bare id, or its `alias/...`. */
+function sameKmsKey(a: string, b: string | undefined): boolean {
+  return b !== undefined && kmsKeyText(a) === kmsKeyText(b);
+}
+
+/**
+ * Whether a declared scalar differs from what the cluster or instance holds,
+ * read off the record, else the live value. `null`, or an equal one, sends
+ * nothing. Compared as text: a CFn boolean may arrive as a string.
+ */
+function declaredChange(
+  desired: string | boolean | undefined,
+  recorded: unknown,
+  live: unknown
+): boolean {
+  return desired != null && String(desired) !== String(recorded ?? live);
+}
+
+/**
+ * Issues #5004 / #1160 / #5543 / #2762: the `AWS::DocDB::DBCluster` properties a
  * removal leaves at their live value, because a real CloudFormation A/B showed
  * CloudFormation leaves them: `DeletionProtection` / `BackupRetentionPeriod`
- * (#5004), `VpcSecurityGroupIds` (#1160), and the last four (us-east-1,
+ * (#5004), `VpcSecurityGroupIds` (#1160), then four more (us-east-1,
  * 2026-10-30, #5543). That A/B created a cluster with `EngineVersion: 5.0.0`
  * (the default is 8.0.2), `PreferredBackupWindow: 07:00-08:00`,
  * `PreferredMaintenanceWindow: sun:10:00-sun:10:30` and a custom
  * `DBClusterParameterGroupName`, then removed all four: every one read back
  * unchanged for eight minutes after UPDATE_COMPLETE, both alone and beside a
  * `BackupRetentionPeriod` change that did land. In particular CloudFormation
- * does NOT move the cluster back to `default.docdb5.0`.
+ * does NOT move the cluster back to `default.docdb5.0`. The last five were
+ * measured by a real CloudFormation A/B on engine 5.0.0 (us-east-1, 2026-11-01,
+ * #2762), each dropped alone and read at once and about four minutes later;
+ * after a stack rollback `CopyTagsToSnapshot` and `EnableCloudwatchLogsExports`
+ * still held their values too. Neptune RESETS a removed log export: do not
+ * copy its handling here. `MasterUserSecretKmsKeyId` was measured with
+ * `ManageMasterUserPassword` staying `true`.
  */
 export const DOCDB_CLUSTER_KEPT_ON_REMOVAL = [
   'DeletionProtection',
@@ -132,10 +194,64 @@ export const DOCDB_CLUSTER_KEPT_ON_REMOVAL = [
   'PreferredBackupWindow',
   'PreferredMaintenanceWindow',
   'DBClusterParameterGroupName',
+  'CopyTagsToSnapshot',
+  'EnableCloudwatchLogsExports',
+  'StorageType',
+  'ServerlessV2ScalingConfiguration',
+  'MasterUserSecretKmsKeyId',
 ] as const;
 
-/** Issue #5543: the `AWS::DocDB::DBInstance` counterpart, measured in the same A/B. */
-const DOCDB_INSTANCE_KEPT_ON_REMOVAL = ['PreferredMaintenanceWindow'] as const;
+/**
+ * Removals `update()` leaves at the live value (ModifyDBCluster keeps a setting
+ * it is not sent) but no A/B has measured (#2762): `NetworkType` was only ever
+ * IPV4, and removing `ManageMasterUserPassword` needs a password declared. The
+ * warning names them and claims no parity.
+ */
+const DOCDB_CLUSTER_UNMEASURED_ON_REMOVAL = ['NetworkType', 'ManageMasterUserPassword'] as const;
+
+/**
+ * Issues #5543 / #2762: the `AWS::DocDB::DBInstance` counterpart. The last two
+ * are the #2762 A/B (`EnablePerformanceInsights` on a db.r6g.large).
+ */
+const DOCDB_INSTANCE_KEPT_ON_REMOVAL = [
+  'PreferredMaintenanceWindow',
+  'CACertificateIdentifier',
+  'EnablePerformanceInsights',
+] as const;
+
+/**
+ * go-to-k/cdkd#5380: the keys an accepted Modify may leave half-applied when a
+ * later step of the update fails. Only the #2762 ones: `update()` compares each
+ * but `CopyTagsToSnapshot`, which goes out on every update, with the previous
+ * side before sending it. The credential keys stay out: a key sent while the
+ * password stays managed is refused, so a live value on the previous side would
+ * turn a resend into a failure.
+ */
+const CLUSTER_MODIFY_UNSETTLED_KEYS = [
+  'CopyTagsToSnapshot',
+  'EnableCloudwatchLogsExports',
+  'NetworkType',
+  'ServerlessV2ScalingConfiguration',
+  'StorageType',
+] as const;
+const INSTANCE_MODIFY_UNSETTLED_KEYS = [
+  'CACertificateIdentifier',
+  'EnablePerformanceInsights',
+] as const;
+
+/** How long an accepted change is waited on before a warning. */
+const SETTLE_MAX_WAIT_MS = 300_000;
+
+/**
+ * The same for a `StorageType` change, the provisioned-cluster change that takes
+ * longest: a real run (go-to-k/cdkd#2762) was still `standard` after five minutes
+ * and the member instance was refused as not `available` for over a minute more.
+ * The bound the cluster's other update waits use.
+ */
+const STORAGE_SETTLE_MAX_WAIT_MS = 1_800_000;
+
+/** Budget kept back from the enclosing resource deadline. */
+const DEADLINE_MARGIN_MS = 30_000;
 
 /**
  * The ONE warning line naming each of `keys` removed, which the resource keeps
@@ -153,7 +269,8 @@ function keptOnRemovalWarning(
   previousProperties: Record<string, unknown>,
   context: UpdateContext | undefined,
   logicalId: string,
-  resourceType: string
+  resourceType: string,
+  measured = true
 ): string | undefined {
   const removedProperties = context?.removedProperties;
   const removedSet =
@@ -165,7 +282,7 @@ function keptOnRemovalWarning(
   const modify = resourceType === 'AWS::DocDB::DBInstance' ? 'ModifyDBInstance' : 'ModifyDBCluster';
   return context?.replayingState
     ? safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'is' : 'are'} absent from the state being restored; ${modify} keeps a setting it is not sent, so the rollback leaves any value the failed deploy applied in place.`
-    : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place, as CloudFormation does. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`;
+    : safeMsg`${logicalId} (${resourceType}): ${names} ${one ? 'was' : 'were'} removed from the template; cdkd leaves the current AWS ${one ? 'value' : 'values'} in place${measured ? ', as CloudFormation does' : ''}. Declare ${one ? 'it' : 'them'} to change ${one ? 'it' : 'them'}.`;
 }
 
 /** Issue #1160: the member statuses a cluster change moves an instance through. */
@@ -289,8 +406,8 @@ export class DocDBProvider implements ResourceProvider {
    * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
    * `ProvisioningType: NON_PROVISIONABLE` — Cloud Control has no handlers for
    * them — so the #614 silent-drop auto-route must not send a template using
-   * an unhandled property (`EnableCloudwatchLogsExports`, `StorageType`,
-   * `CACertificateIdentifier`, ...) to CC, where it fails mid-deploy with an
+   * an unhandled property (`GlobalClusterIdentifier`, `RestoreType`,
+   * `SnapshotIdentifier`, ...) to CC, where it fails mid-deploy with an
    * opaque UnsupportedActionException. With this opt-out the registry refuses
    * such a template pre-flight (issue #3866).
    *
@@ -310,16 +427,19 @@ export class DocDBProvider implements ResourceProvider {
    * showed CloudFormation KEEPS the live value of every removal listed under
    * `*_KEPT_ON_REMOVAL`, which `update()` names in its own warning. The one
    * DocDB reset CloudFormation was measured to make, a removed cluster `Port`,
-   * is computed locally (`clusterPortToSend`). Two entries are listed without
+   * is computed locally (`clusterPortToSend`). Four entries are listed without
    * an A/B, because no reset value exists: a removed `MasterUserPassword` (a
-   * secret with no default) and the instance `AutoMinorVersionUpgrade` (inert
-   * on DocDB, see `updateDBInstance`).
+   * secret with no default), the per-call `RotateMasterUserPassword` and
+   * `CertificateRotationRestart`, and the instance `AutoMinorVersionUpgrade`
+   * (inert on DocDB, see `updateDBInstance`). The UNMEASURED cluster list is
+   * named in a warning that claims no parity.
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
     [
       'AWS::DocDB::DBCluster',
       new Set([
         // Create-only: a removal replaces.
+        'AvailabilityZones',
         'DBClusterIdentifier',
         'DBSubnetGroupName',
         'KmsKeyId',
@@ -332,9 +452,13 @@ export class DocDBProvider implements ResourceProvider {
         // Not measured: a secret with no default to reset to, so a removal
         // sends nothing and the cluster keeps its password.
         'MasterUserPassword',
+        // A request, not a setting: nothing to reset.
+        'RotateMasterUserPassword',
         // Left in place, as CloudFormation leaves them (CFn A/B), and named in
         // update()'s own warning.
         ...DOCDB_CLUSTER_KEPT_ON_REMOVAL,
+        // Left in place and named in the warning claiming no parity.
+        ...DOCDB_CLUSTER_UNMEASURED_ON_REMOVAL,
       ]),
     ],
     [
@@ -349,6 +473,8 @@ export class DocDBProvider implements ResourceProvider {
         'Tags',
         // Not measured: inert on DocDB (see updateDBInstance), no value to reset.
         'AutoMinorVersionUpgrade',
+        // Rides a CACertificateIdentifier change only: nothing to reset.
+        'CertificateRotationRestart',
         // Left in place, as CloudFormation leaves it (CFn A/B 2026-10-30,
         // #5543), and named in update()'s own warning.
         ...DOCDB_INSTANCE_KEPT_ON_REMOVAL,
@@ -375,6 +501,15 @@ export class DocDBProvider implements ResourceProvider {
         'DBClusterParameterGroupName',
         'DeletionProtection',
         'Tags',
+        'AvailabilityZones',
+        'CopyTagsToSnapshot',
+        'EnableCloudwatchLogsExports',
+        'ManageMasterUserPassword',
+        'MasterUserSecretKmsKeyId',
+        'NetworkType',
+        'RotateMasterUserPassword',
+        'ServerlessV2ScalingConfiguration',
+        'StorageType',
       ]),
     ],
     [
@@ -392,6 +527,9 @@ export class DocDBProvider implements ResourceProvider {
         'PreferredMaintenanceWindow',
         'AutoMinorVersionUpgrade',
         'Tags',
+        'CACertificateIdentifier',
+        'CertificateRotationRestart',
+        'EnablePerformanceInsights',
       ]),
     ],
   ]);
@@ -444,9 +582,21 @@ export class DocDBProvider implements ResourceProvider {
     const mask = context?.maskSecrets;
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties, mask);
+        return this.createDBCluster(
+          logicalId,
+          resourceType,
+          properties,
+          mask,
+          context?.replayingState === true
+        );
       case 'AWS::DocDB::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties, mask);
+        return this.createDBInstance(
+          logicalId,
+          resourceType,
+          properties,
+          mask,
+          context?.replayingState === true
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -552,11 +702,35 @@ export class DocDBProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replayingState: boolean
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const origin = { stateBorne: replayingState };
+    const { logTypes, scaling } = this.readClusterBlocks(
+      properties,
+      resourceType,
+      logicalId,
+      origin,
+      true
+    );
+    const managedPassword = this.readBooleanProperty(
+      'ManageMasterUserPassword',
+      properties,
+      resourceType,
+      logicalId,
+      origin
+    );
+    const password = this.passwordBesideManaged(
+      managedPassword,
+      false,
+      properties['MasterUserPassword'] as string | undefined,
+      resourceType,
+      logicalId,
+      origin
+    );
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
@@ -575,7 +749,7 @@ export class DocDBProvider implements ResourceProvider {
           Engine: 'docdb',
           EngineVersion: properties['EngineVersion'] as string | undefined,
           MasterUsername: properties['MasterUsername'] as string | undefined,
-          MasterUserPassword: properties['MasterUserPassword'] as string | undefined,
+          MasterUserPassword: password,
           Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
           VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
           DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
@@ -593,6 +767,15 @@ export class DocDBProvider implements ResourceProvider {
             | string
             | undefined,
           DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+          AvailabilityZones: properties['AvailabilityZones'] as string[] | undefined,
+          CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
+          ManageMasterUserPassword: managedPassword,
+          MasterUserSecretKmsKeyId: properties['MasterUserSecretKmsKeyId'] as string | undefined,
+          NetworkType: properties['NetworkType'] as string | undefined,
+          StorageType: properties['StorageType'] as string | undefined,
+          ...(logTypes !== undefined &&
+            logTypes.length > 0 && { EnableCloudwatchLogsExports: logTypes }),
+          ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -664,8 +847,37 @@ export class DocDBProvider implements ResourceProvider {
     this.logger.debug(`Updating DocDB DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const origin = {
+      stateBorne: context?.replayingState === true || context?.desiredFromAwsReadback === true,
+      physicalId,
+    };
+    const { logTypes, scaling } = this.readClusterBlocks(
+      properties,
+      resourceType,
+      logicalId,
+      origin,
+      false
+    );
+    // An absent list is a removal, which CloudFormation keeps (#2762 A/B); only
+    // a declared one is a delta. A malformed record only misses disables.
+    const logExportConfig =
+      logTypes === undefined
+        ? undefined
+        : docdbLogExportChange(
+            logTypes,
+            docdbStringList(previousProperties['EnableCloudwatchLogsExports']) ?? []
+          );
 
     try {
+      const credentials = await this.planMasterCredentials(
+        physicalId,
+        properties,
+        previousProperties,
+        resourceType,
+        logicalId,
+        context,
+        origin
+      );
       // Class 2 — `VpcSecurityGroupIds: []` would CLEAR all SGs on the
       // cluster. readCurrentState always-emits `[]` for clusters that
       // legitimately have no VPC SGs; the round-trip must NOT translate
@@ -695,6 +907,42 @@ export class DocDBProvider implements ResourceProvider {
       // A removed Port IS reset, to 27017 (`clusterPortToSend`): a real
       // CloudFormation A/B (#1160) read a removed `Port: 27018` back as 27017.
       const portToSend = clusterPortToSend(properties, previousProperties);
+      // A value the record does not hold compares with the live one: NetworkType
+      // and StorageType are real changes, AWS limits StorageType changes, and
+      // it reports no StorageType for `standard`.
+      const unrecorded = (key: string): boolean =>
+        properties[key] != null && previousProperties[key] == null;
+      const live =
+        unrecorded('NetworkType') ||
+        unrecorded('StorageType') ||
+        logExportConfig?.EnableLogTypes !== undefined
+          ? await this.describeDBCluster(physicalId)
+          : undefined;
+      const networkType = properties['NetworkType'] as string | undefined;
+      const networkChange = declaredChange(
+        networkType,
+        previousProperties['NetworkType'],
+        live?.NetworkType
+      );
+      const storageType = properties['StorageType'] as string | undefined;
+      const storageChange = declaredChange(
+        storageType,
+        previousProperties['StorageType'],
+        live?.StorageType ?? DOCDB_DEFAULT_STORAGE_TYPE
+      );
+      const previousScaling = docdbServerlessScaling(
+        previousProperties['ServerlessV2ScalingConfiguration']
+      );
+      const scalingChange =
+        scaling != null &&
+        (scaling.MinCapacity !== previousScaling?.MinCapacity ||
+          scaling.MaxCapacity !== previousScaling?.MaxCapacity);
+      this.markChangedUnsettled(
+        CLUSTER_MODIFY_UNSETTLED_KEYS,
+        properties,
+        previousProperties,
+        context
+      );
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -716,11 +964,38 @@ export class DocDBProvider implements ResourceProvider {
             | undefined,
           ...(sendVpcSgIds && { VpcSecurityGroupIds: vpcSgIds }),
           // #5153: only a changed password; any supplied one resets credentials.
-          MasterUserPassword: masterUserPasswordToSend(properties, previousProperties, context),
+          MasterUserPassword: credentials.password,
           Port: portToSend,
+          CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
+          // #2762: a request for this update, never a setting to repeat.
+          ...(rotateMasterUserPassword(properties, previousProperties, context) && {
+            RotateMasterUserPassword: true,
+          }),
+          ...(credentials.managed !== undefined && {
+            ManageMasterUserPassword: credentials.managed,
+          }),
+          ...(credentials.secretKmsKey !== undefined && {
+            MasterUserSecretKmsKeyId: credentials.secretKmsKey,
+          }),
+          // Each sent only on a change: re-sending asks AWS for one every update.
+          ...(networkChange && { NetworkType: networkType }),
+          ...(storageChange && { StorageType: storageType }),
+          ...(scalingChange && { ServerlessV2ScalingConfiguration: scaling }),
+          ...(logExportConfig !== undefined && {
+            CloudwatchLogsExportConfiguration: logExportConfig,
+          }),
           ApplyImmediately: true,
         })
       );
+
+      // go-to-k/cdkd#5498: what this call added, so a convergence after a later
+      // failure disables it, and nothing an out-of-band change enabled.
+      const addedLogTypes = (logExportConfig?.EnableLogTypes ?? []).filter(
+        (type) => !live?.EnabledCloudwatchLogsExports?.includes(type)
+      );
+      if (addedLogTypes.length > 0) {
+        context?.markAttempted?.('EnableCloudwatchLogsExports', addedLogTypes);
+      }
 
       this.logger.debug(`Successfully updated DocDB DBCluster ${logicalId}`);
 
@@ -739,6 +1014,48 @@ export class DocDBProvider implements ResourceProvider {
       }
 
       const described = await this.describeDBCluster(physicalId);
+
+      if (!noWait) {
+        // The observed baseline is captured after update(): an old value read
+        // here is a phantom drift later. The delta, not the whole list: a log
+        // type enabled out of band is not ours.
+        const { EnableLogTypes: enabled = [], DisableLogTypes: disabled = [] } =
+          logExportConfig ?? {};
+        const applied = new Map<string, (cluster: DBCluster | undefined) => boolean>();
+        if (logExportConfig !== undefined) {
+          applied.set('EnableCloudwatchLogsExports', (cluster) => {
+            const logs = cluster?.EnabledCloudwatchLogsExports;
+            return (
+              enabled.every((type) => logs?.includes(type)) &&
+              !disabled.some((type) => logs?.includes(type))
+            );
+          });
+        }
+        if (networkChange) {
+          applied.set('NetworkType', (cluster) => cluster?.NetworkType === networkType);
+        }
+        if (storageChange) {
+          applied.set(
+            'StorageType',
+            (cluster) => (cluster?.StorageType ?? DOCDB_DEFAULT_STORAGE_TYPE) === storageType
+          );
+        }
+        if (scalingChange) {
+          applied.set('ServerlessV2ScalingConfiguration', (cluster) => {
+            const live = cluster?.ServerlessV2ScalingConfiguration;
+            return (
+              live?.MinCapacity === scaling?.MinCapacity &&
+              live?.MaxCapacity === scaling?.MaxCapacity
+            );
+          });
+        }
+        await this.waitForApplied(
+          logicalId,
+          applied,
+          () => this.describeDBCluster(physicalId),
+          storageChange ? STORAGE_SETTLE_MAX_WAIT_MS : SETTLE_MAX_WAIT_MS
+        );
+      }
 
       if (!noWait && portChanged) {
         for (const member of described?.DBClusterMembers ?? []) {
@@ -807,6 +1124,17 @@ export class DocDBProvider implements ResourceProvider {
         resourceType
       );
       if (keptWarning !== undefined) this.logger.warn(keptWarning);
+      const unmeasuredWarning = keptOnRemovalWarning(
+        DOCDB_CLUSTER_UNMEASURED_ON_REMOVAL,
+        properties,
+        previousProperties,
+        context,
+        logicalId,
+        resourceType,
+        false
+      );
+      if (unmeasuredWarning !== undefined) this.logger.warn(unmeasuredWarning);
+      if (credentials.heldWarning !== undefined) this.logger.warn(credentials.heldWarning);
 
       return {
         physicalId,
@@ -818,8 +1146,13 @@ export class DocDBProvider implements ResourceProvider {
             ? { ...described, Port: portToSend }
             : described
         ),
+        ...(credentials.effectiveProperties !== undefined && {
+          effectiveProperties: credentials.effectiveProperties,
+        }),
       };
     } catch (error) {
+      // A refusal of ours names its own cause.
+      if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         context?.maskSecrets,
@@ -1007,11 +1340,19 @@ export class DocDBProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replayingState: boolean
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DocDB DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const insights = this.readBooleanProperty(
+      'EnablePerformanceInsights',
+      properties,
+      resourceType,
+      logicalId,
+      { stateBorne: replayingState }
+    );
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
@@ -1035,6 +1376,8 @@ export class DocDBProvider implements ResourceProvider {
             | string
             | undefined,
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+          CACertificateIdentifier: properties['CACertificateIdentifier'] as string | undefined,
+          EnablePerformanceInsights: insights,
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1106,6 +1449,16 @@ export class DocDBProvider implements ResourceProvider {
     const mask = context?.maskSecrets;
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const insights = this.readBooleanProperty(
+      'EnablePerformanceInsights',
+      properties,
+      resourceType,
+      logicalId,
+      {
+        stateBorne: context?.replayingState === true || context?.desiredFromAwsReadback === true,
+        physicalId,
+      }
+    );
 
     try {
       // #1160 reset-on-removal — ModifyDBInstance has merge semantics, but
@@ -1118,6 +1471,33 @@ export class DocDBProvider implements ResourceProvider {
       //   * PreferredMaintenanceWindow — a real CloudFormation A/B (#5543)
       //     showed CloudFormation KEEPS a removed window (alone and beside
       //     another instance change), so a removal sends nothing.
+      //   * CACertificateIdentifier, EnablePerformanceInsights — KEPT too
+      //     (#2762 A/B). Each goes out on a change only: re-sending either asks
+      //     AWS for a restart or a feature change on every update.
+      //     CertificateRotationRestart rides a certificate change, the one
+      //     call it applies to; CreateDBInstance has no such member.
+      const certificate = properties['CACertificateIdentifier'] as string | undefined;
+      const live =
+        (certificate != null && previousProperties['CACertificateIdentifier'] == null) ||
+        (insights !== undefined && previousProperties['EnablePerformanceInsights'] == null)
+          ? await this.describeDBInstance(physicalId)
+          : undefined;
+      const certificateChange = declaredChange(
+        certificate,
+        previousProperties['CACertificateIdentifier'],
+        live?.CACertificateIdentifier
+      );
+      const insightsChange = declaredChange(
+        insights,
+        previousProperties['EnablePerformanceInsights'],
+        live?.PerformanceInsightsEnabled ?? false
+      );
+      this.markChangedUnsettled(
+        INSTANCE_MODIFY_UNSETTLED_KEYS,
+        properties,
+        previousProperties,
+        context
+      );
       // #5194: a cluster change in the same deploy can leave this member not
       // `available` for a moment; only that refusal is waited out and resent.
       await modifyDbInstanceWhenAvailable({
@@ -1130,6 +1510,12 @@ export class DocDBProvider implements ResourceProvider {
                 | string
                 | undefined,
               AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
+              ...(certificateChange && { CACertificateIdentifier: certificate }),
+              ...(certificateChange &&
+                properties['CertificateRotationRestart'] != null && {
+                  CertificateRotationRestart: properties['CertificateRotationRestart'] as boolean,
+                }),
+              ...(insightsChange && { EnablePerformanceInsights: insights }),
               ApplyImmediately: true,
             })
           ),
@@ -1142,6 +1528,23 @@ export class DocDBProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully updated DocDB DBInstance ${logicalId}`);
+
+      if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        const applied = new Map<string, (instance: DBInstance | undefined) => boolean>();
+        if (certificateChange) {
+          applied.set(
+            'CACertificateIdentifier',
+            (instance) => instance?.CACertificateIdentifier === certificate
+          );
+        }
+        if (insightsChange) {
+          applied.set(
+            'EnablePerformanceInsights',
+            (instance) => instance?.PerformanceInsightsEnabled === insights
+          );
+        }
+        await this.waitForApplied(logicalId, applied, () => this.describeDBInstance(physicalId));
+      }
 
       const described = await this.describeDBInstance(physicalId);
 
@@ -1254,6 +1657,286 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
+
+  /** go-to-k/cdkd#5380: mark each of `keys` the update sends, just before the call. */
+  private markChangedUnsettled(
+    keys: readonly string[],
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    context: UpdateContext | undefined
+  ): void {
+    for (const key of keys) {
+      if (properties[key] != null && !isDeepStrictEqual(properties[key], previousProperties[key])) {
+        context?.markUnsettled?.(key);
+      }
+    }
+  }
+
+  /** A refusal before any call: nothing reached AWS, and only key names are printed. */
+  private refuseBlock(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string | undefined,
+    text: string
+  ): never {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType === 'AWS::DocDB::DBInstance' ? 'DocDB DBInstance' : 'DocDB DBCluster'} ${logicalId}: ${text}; nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+
+  /**
+   * The `EnableCloudwatchLogsExports` (`undefined` when absent) and
+   * `ServerlessV2ScalingConfiguration` a create or update sends, malformed ones
+   * refused before any call. A state-borne bag, which the template cannot fix,
+   * downgrades to a warning and leaves the block out. One exception: a malformed
+   * list on an UPDATE stays refused, since the list is read as a diff and read
+   * as empty it would disable every log
+   * (`.claude/rules/provider-aws-response-reads.md`, the list rule).
+   */
+  private readClusterBlocks(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    origin: { stateBorne: boolean; physicalId?: string },
+    creating: boolean
+  ): {
+    logTypes: string[] | undefined;
+    scaling: { MinCapacity: number; MaxCapacity: number } | null | undefined;
+  } {
+    const leaveOut = (key: string): void => {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): the recorded ${key} is unusable, so it is not sent.`
+      );
+    };
+    const rawLogs = properties['EnableCloudwatchLogsExports'];
+    let logTypes = rawLogs == null ? undefined : docdbStringList(rawLogs);
+    if (rawLogs != null && logTypes === undefined) {
+      if (!(creating && origin.stateBorne)) {
+        this.refuseBlock(
+          logicalId,
+          resourceType,
+          origin.physicalId,
+          'EnableCloudwatchLogsExports must be a list of strings'
+        );
+      }
+      leaveOut('EnableCloudwatchLogsExports');
+      logTypes = undefined;
+    }
+    const scaling = docdbServerlessScaling(properties['ServerlessV2ScalingConfiguration']);
+    if (scaling === null) {
+      if (!origin.stateBorne) {
+        this.refuseBlock(
+          logicalId,
+          resourceType,
+          origin.physicalId,
+          'ServerlessV2ScalingConfiguration must be an object with both a numeric MinCapacity and a numeric MaxCapacity'
+        );
+      }
+      leaveOut('ServerlessV2ScalingConfiguration');
+    }
+    return { logTypes, scaling };
+  }
+
+  /**
+   * go-to-k/cdkd#2762: what a cluster update sends for the master credentials.
+   *
+   * - The managed side is the record's flag. A record without one (never
+   *   declared, or a deploy dropped it and the cluster stayed managed) reads
+   *   `MasterUserSecret` when a password, the flag or a changed key is about to
+   *   go out, and only then; its ARN is never kept.
+   * - The flag goes out on a change, or beside a key change.
+   * - Leaving managed mode sends the declared password whether it changed or
+   *   not: AWS refuses `false` without one.
+   * - `drift --revert` never changes the mode, either way: its bags hold no
+   *   password or key. A rollback turning management off with no password to
+   *   send sends nothing and records `true`, what AWS holds. Both leave a warning
+   *   for after the update.
+   */
+  private async planMasterCredentials(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    context: UpdateContext | undefined,
+    origin: { stateBorne: boolean; physicalId?: string }
+  ): Promise<{
+    managed: boolean | undefined;
+    secretKmsKey: string | undefined;
+    password: string | undefined;
+    heldWarning: string | undefined;
+    effectiveProperties?: Record<string, unknown>;
+  }> {
+    const managed = this.readBooleanProperty(
+      'ManageMasterUserPassword',
+      properties,
+      resourceType,
+      logicalId,
+      origin
+    );
+    const changedPassword = masterUserPasswordToSend(properties, previousProperties, context);
+    const recordedFlag = coerceCfnBoolean(previousProperties['ManageMasterUserPassword']);
+    const key = properties['MasterUserSecretKmsKeyId'] as string | undefined;
+    const recordedKey = previousProperties['MasterUserSecretKmsKeyId'] as string | undefined;
+    let managedSide = recordedFlag ?? false;
+    let keyChange = key != null && !sameKmsKey(key, recordedKey);
+    if (
+      recordedFlag === undefined &&
+      (changedPassword !== undefined || managed !== undefined || keyChange)
+    ) {
+      const secret = (await this.describeDBCluster(physicalId))?.MasterUserSecret;
+      managedSide = secret !== undefined;
+      // A live key is a uuid or ARN, which no declared alias can be compared with.
+      if (recordedKey === undefined && secret?.KmsKeyId !== undefined && key != null) {
+        keyChange = !sameKmsKey(key, secret.KmsKeyId) && !kmsKeyText(key).startsWith('alias/');
+      }
+    }
+    const leaving = managed === false && managedSide;
+    const declared = properties['MasterUserPassword'];
+    const declaredUsable =
+      typeof declared === 'string' &&
+      declared !== SECRET_MASK &&
+      dynamicReferenceTokens(declared).length === 0;
+    const password = leaving ? (declaredUsable ? declared : undefined) : changedPassword;
+    const modeChange = managed !== undefined && managed !== managedSide;
+    if (context?.desiredFromAwsReadback === true && modeChange) {
+      return {
+        managed: undefined,
+        secretKmsKey: undefined,
+        password: undefined,
+        heldWarning: safeMsg`${logicalId} (${resourceType}): cdkd drift --revert does not change ManageMasterUserPassword, so it is left as it is. Declare it in the template and deploy to change it.`,
+      };
+    }
+    if (origin.stateBorne && leaving && password === undefined) {
+      return {
+        managed: undefined,
+        secretKmsKey: undefined,
+        password: undefined,
+        heldWarning: safeMsg`${logicalId} (${resourceType}): ManageMasterUserPassword stays true: turning it off needs a MasterUserPassword, which the restored state does not hold. Declare both in the template and deploy.`,
+        // The record says what AWS holds, so a later `false` is still a change.
+        effectiveProperties: { ...properties, ManageMasterUserPassword: true },
+      };
+    }
+    // The key rides only turning management on or a change while it stays on:
+    // AWS takes one only then, answers the second itself, and never beside false.
+    const sendKey =
+      key != null && ((modeChange && managed === true) || (keyChange && (managed ?? managedSide)));
+    return {
+      managed: modeChange || sendKey ? managed : undefined,
+      secretKmsKey: sendKey ? key : undefined,
+      password: this.passwordBesideManaged(
+        managed,
+        managed === undefined && managedSide,
+        password,
+        resourceType,
+        logicalId,
+        origin
+      ),
+      heldWarning: undefined,
+    };
+  }
+
+  /**
+   * A boolean property as what it means, `undefined` when absent. Sending or
+   * skipping a call hangs on it, so a value that is no boolean is refused before
+   * any call, except from a state-borne bag: left out, with a warning.
+   */
+  private readBooleanProperty(
+    key: 'ManageMasterUserPassword' | 'EnablePerformanceInsights',
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    origin: { stateBorne: boolean; physicalId?: string }
+  ): boolean | undefined {
+    const value = properties[key];
+    if (value == null) return undefined;
+    const flag = coerceCfnBoolean(value);
+    if (flag !== undefined) return flag;
+    if (!origin.stateBorne) {
+      this.refuseBlock(logicalId, resourceType, origin.physicalId, `${key} must be a boolean`);
+    }
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the recorded ${key} is unusable, so it is not sent.`
+    );
+    return undefined;
+  }
+
+  /**
+   * go-to-k/cdkd#2762: the password a call carries beside
+   * `ManageMasterUserPassword`. AWS manages that password, so a call asking for
+   * both is never sent: refused before any call rather than dropping a password
+   * the template spelled, and from a state-borne bag the password is left out.
+   * `removedFromManaged` is the same conflict with the flag gone from the
+   * template and the record managed: sending `false` too would delete the AWS
+   * secret on a path no A/B measured, so leaving takes an explicit `false`. An
+   * unchanged password on an update is already `undefined` here. The value is
+   * never printed.
+   */
+  private passwordBesideManaged(
+    managed: boolean | undefined,
+    removedFromManaged: boolean,
+    password: string | undefined,
+    resourceType: string,
+    logicalId: string,
+    origin: { stateBorne: boolean; physicalId?: string }
+  ): string | undefined {
+    if ((managed !== true && !removedFromManaged) || password == null) return password;
+    if (!origin.stateBorne) {
+      this.refuseBlock(
+        logicalId,
+        resourceType,
+        origin.physicalId,
+        removedFromManaged
+          ? 'MasterUserPassword cannot change while AWS manages the password; declare ManageMasterUserPassword: false beside it to leave managed mode'
+          : 'MasterUserPassword cannot be set while ManageMasterUserPassword is true, because AWS manages that password'
+      );
+    }
+    this.logger.warn(
+      removedFromManaged
+        ? safeMsg`${logicalId} (${resourceType}): the recorded MasterUserPassword is not sent: the cluster stays managed, because the recorded ManageMasterUserPassword is absent.`
+        : safeMsg`${logicalId} (${resourceType}): the recorded MasterUserPassword is not sent, because ManageMasterUserPassword is true.`
+    );
+    return undefined;
+  }
+
+  /**
+   * Poll until each change AWS accepted reads back, so the observed baseline the
+   * engine captures after update() does not record the old value (phantom
+   * drift). No key: no call. The change was accepted, so the cap (the tighter
+   * of `maxWaitMs` and what the resource deadline leaves) is a warning naming
+   * the keys still old, not a failure. The baseline then keeps that old value,
+   * which outlives the change landing, so the warning says how to refresh it.
+   */
+  private async waitForApplied<T>(
+    logicalId: string,
+    applied: ReadonlyMap<string, (live: T | undefined) => boolean>,
+    read: () => Promise<T | undefined>,
+    maxWaitMs = SETTLE_MAX_WAIT_MS
+  ): Promise<void> {
+    if (applied.size === 0) return;
+    const capMs = Math.min(maxWaitMs, enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS);
+    const startTime = Date.now();
+    let delay = 2_000;
+    for (;;) {
+      const live = await read();
+      const pending = [...applied].filter(([, isApplied]) => !isApplied(live));
+      if (pending.length === 0) return;
+      if (Date.now() - startTime + delay >= capMs) {
+        const keys = pending.map(([key]) => key).join(', ');
+        this.logger.warn(
+          safeMsg`${logicalId}: the new ${keys} did not read back when cdkd stopped waiting; AWS accepted the change, so cdkd drift may report the old value as the baseline. Once it applies, run cdkd drift --accept.`
+        );
+        return;
+      }
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+  }
 
   private async describeDBCluster(dbClusterIdentifier: string) {
     const response = await this.getClient().send(
@@ -1706,6 +2389,117 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
+   * What no read answers for drift. `RotateMasterUserPassword` and
+   * `CertificateRotationRestart` are per-call requests. `AvailabilityZones` is
+   * create-only, and DescribeDBClusters reports the zones AWS placed the cluster
+   * in. `MasterUserSecretKmsKeyId` may be declared as an alias or key id, where
+   * the read answers one spelling.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    if (resourceType === 'AWS::DocDB::DBCluster') {
+      return ['AvailabilityZones', 'MasterUserSecretKmsKeyId', 'RotateMasterUserPassword'];
+    }
+    if (resourceType === 'AWS::DocDB::DBInstance') return ['CertificateRotationRestart'];
+    return [];
+  }
+
+  /** A set to AWS, answered in its own order; `unsettledAfterUpdate` compares by it too. */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::DocDB::DBCluster' ? ['EnableCloudwatchLogsExports'] : [];
+  }
+
+  /**
+   * What the comparator cannot see: a repeated log type reads as the same list,
+   * and a CFn capacity may be a numeric string. A malformed side is left alone.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::DocDB::DBCluster') return properties;
+    const out = { ...properties };
+    const logs = out['EnableCloudwatchLogsExports'];
+    if (Array.isArray(logs) && docdbStringList(logs) !== undefined) {
+      out['EnableCloudwatchLogsExports'] = [...new Set(logs as string[])];
+    }
+    const scaling = docdbServerlessScaling(out['ServerlessV2ScalingConfiguration']);
+    if (scaling != null) out['ServerlessV2ScalingConfiguration'] = scaling;
+    return out;
+  }
+
+  /** The post-update proof compares through the same normalization. */
+  canonicalizeUnsettledProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return this.canonicalizeDriftProperties(resourceType, properties);
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the live values of a record's unsettled names. The log
+   * list keeps only the types the record, the template or an earlier attempt
+   * (#5498) names: the convergence puts this on the previous side, so a type an
+   * out-of-band change enabled would otherwise read as dropped, and be disabled.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (resourceType !== 'AWS::DocDB::DBCluster') return live;
+    if (live === undefined || live === RESOURCE_NOT_FOUND) return live;
+    if (!names.has('EnableCloudwatchLogsExports')) return live;
+    const key = 'EnableCloudwatchLogsExports';
+    const named = new Set([
+      ...(docdbStringList(recordedProperties?.[key]) ?? []),
+      ...(docdbStringList(desiredProperties?.[key]) ?? []),
+      ...[...(attemptedItems?.get(key) ?? [])].filter(isUsableAttemptedName),
+    ]);
+    return { ...live, [key]: ((live[key] ?? []) as string[]).filter((type) => named.has(type)) };
+  }
+
+  /**
+   * go-to-k/cdkd#5380: every name while AWS is still changing the resource. A
+   * backup moves nothing, so it does not hold a deploy back. After a successful
+   * update (`desiredProperties` present) nothing is reported: the caller's
+   * comparison of each value with the template is the proof. A failed read
+   * keeps every name.
+   */
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    _recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>
+  ): Promise<ReadonlySet<string>> {
+    if (desiredProperties !== undefined) return new Set();
+    const unmoving = (status: string | undefined): boolean =>
+      isProceedDbStatus(status) || status === 'backing-up';
+    try {
+      if (resourceType === 'AWS::DocDB::DBCluster') {
+        const cluster = await this.describeDBCluster(physicalId);
+        return unmoving(cluster?.Status) ? new Set() : names;
+      }
+      if (resourceType === 'AWS::DocDB::DBInstance') {
+        const instance = await this.describeDBInstance(physicalId);
+        const settled =
+          unmoving(instance?.DBInstanceStatus) &&
+          !holdsDocDBPendingValue(instance?.PendingModifiedValues);
+        return settled ? new Set() : names;
+      }
+      return new Set();
+    } catch {
+      return names;
+    }
+  }
+
+  /**
    * Adopt an existing DocDB resource into cdkd state.
    *
    * Supported types: `AWS::DocDB::DBInstance`, `AWS::DocDB::DBCluster`.
@@ -1732,7 +2526,8 @@ export class DocDBProvider implements ResourceProvider {
    *
    * Each branch surfaces only the keys cdkd's `create()` accepts. Sensitive
    * fields like `MasterUserPassword` are NEVER surfaced (DocDB does not
-   * return them in the Describe responses). `Tags` are surfaced via a
+   * return them in the Describe responses), and of `MasterUserSecret` only
+   * whether one exists: its ARN is not a property. `Tags` are surfaced via a
    * follow-up `ListTagsForResource(ResourceName=arn)` call.
    *
    * Returns `RESOURCE_NOT_FOUND` when the resource is gone (`*NotFoundFault`
@@ -1784,6 +2579,10 @@ export class DocDBProvider implements ResourceProvider {
     if (inst.AutoMinorVersionUpgrade !== undefined) {
       result['AutoMinorVersionUpgrade'] = inst.AutoMinorVersionUpgrade;
     }
+    if (inst.CACertificateIdentifier !== undefined) {
+      result['CACertificateIdentifier'] = inst.CACertificateIdentifier;
+    }
+    result['EnablePerformanceInsights'] = inst.PerformanceInsightsEnabled ?? false;
     if (inst.DBInstanceArn)
       await attachDocDBTags(this.getClient(), this.logger, result, inst.DBInstanceArn);
     return result;
@@ -1834,6 +2633,17 @@ export class DocDBProvider implements ResourceProvider {
     }
     if (cluster.DeletionProtection !== undefined) {
       result['DeletionProtection'] = cluster.DeletionProtection;
+    }
+    // The drift walk compares recorded keys only, so these read nothing for an
+    // older record. Absent on the wire means the default for the three below.
+    result['CopyTagsToSnapshot'] = cluster.CopyTagsToSnapshot ?? false;
+    result['ManageMasterUserPassword'] = cluster.MasterUserSecret !== undefined;
+    result['StorageType'] = cluster.StorageType ?? DOCDB_DEFAULT_STORAGE_TYPE;
+    result['EnableCloudwatchLogsExports'] = cluster.EnabledCloudwatchLogsExports ?? [];
+    if (cluster.NetworkType !== undefined) result['NetworkType'] = cluster.NetworkType;
+    const { MinCapacity: min, MaxCapacity: max } = cluster.ServerlessV2ScalingConfiguration ?? {};
+    if (min !== undefined && max !== undefined) {
+      result['ServerlessV2ScalingConfiguration'] = { MinCapacity: min, MaxCapacity: max };
     }
     if (cluster.DBClusterArn)
       await attachDocDBTags(this.getClient(), this.logger, result, cluster.DBClusterArn);

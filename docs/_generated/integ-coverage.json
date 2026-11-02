@@ -5437,6 +5437,7 @@
         "cognito",
         "composite-stack",
         "cross-backend-same-stack",
+        "docdb-neptune",
         "drift-revert",
         "dynamodb-globaltable-replica-settings",
         "dynamodb-ondemand",
@@ -5465,6 +5466,9 @@
         "cross-backend-same-stack": [
           "l2",
           "literal"
+        ],
+        "docdb-neptune": [
+          "l2"
         ],
         "drift-revert": [
           "l2"

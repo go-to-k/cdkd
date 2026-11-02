@@ -6,7 +6,7 @@
 #
 # Steps:
 #   1. install + build cdkd (root) + install fixture deps
-#   1b. CDKD_TEST_NONPROV_REFUSAL=true deploy — adds CopyTagsToSnapshot,
+#   1b. CDKD_TEST_NONPROV_REFUSAL=true deploy — adds UseLatestRestorableTime,
 #       which the DocDB cluster's SDK provider does not handle; must be
 #       refused pre-flight with no state written (issue #3866)
 #   2. cdkd deploy CdkdDocdbNeptuneExample with per-type long timeouts
@@ -21,7 +21,8 @@
 #       bind to a real, non-default value
 #   3b2. CDKD_TEST_BACKFILL_UPDATE=true redeploy (go-to-k/cdkd#2762): a role
 #       swap, a log type and the scaling cap change in place; drift reads them
-#       clean, then an out-of-band log type must read as drifted.
+#       clean, then an out-of-band log type must read as drifted. The DocDB
+#       properties change too, and the managed master password rotates once.
 #   3c. CDKD_TEST_REMOVAL=true redeploy — DROPS the step-2 fields so
 #       cdkd's Modify* calls see ABSENT fields (removal, issues #1160 /
 #       #5004). A real CloudFormation A/B (#5004) showed CloudFormation
@@ -30,7 +31,9 @@
 #       update through the provider's update() (issue #2613).
 #       Step 3c also DROPS the go-to-k/cdkd#2762 properties: AssociatedRoles
 #       and EnableCloudwatchLogsExports reset, CopyTagsToSnapshot and
-#       PubliclyAccessible stay, as a real CloudFormation A/B measured.
+#       PubliclyAccessible stay, as a real CloudFormation A/B measured. The
+#       DocDB ones all stay (the same A/B), and the kept
+#       RotateMasterUserPassword: true must not rotate the secret again.
 #   3d. wait for both clusters to be available, then assert the baseline
 #       values are RETAINED (DeletionProtection=true, BackupRetentionPeriod=7,
 #       Neptune IAMDatabaseAuthenticationEnabled=true, Neptune instance
@@ -68,7 +71,7 @@
 # Auto-resolves AWS account ID + state bucket. Run from anywhere.
 #
 # A failed run leaves DocDB / Neptune clusters that bill ~$0.07/hr each
-# (db.t3.medium). The cleanup trap re-attempts destroy on any failure
+# (db.t3.medium), and more for the DocDB instance (db.r6g.large). The cleanup trap re-attempts destroy on any failure
 # exit so a botched run does not bill the user indefinitely; because an
 # aborted run can die between steps 2 and 3c with the baseline
 # DeletionProtection=true still live, cleanup first best-effort flips
@@ -318,7 +321,7 @@ trap '(exit 143); cleanup; exit 143' TERM
 # auto-routed to Cloud Control, which failed with UnsupportedActionException
 # after the VPC and subnet group had been created -- also a non-zero exit, so
 # the refusal's own wording is the discriminator, not the rc.
-echo "[verify] step 1b: a CopyTagsToSnapshot property is refused pre-flight (issue #3866)"
+echo "[verify] step 1b: a UseLatestRestorableTime property is refused pre-flight (issue #3866)"
 # Precondition for the no-state assertion below: a state record left by an
 # earlier, interrupted run would otherwise be blamed on this step.
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
@@ -332,7 +335,7 @@ if REFUSAL_OUT="$(env CDKD_TEST_NONPROV_REFUSAL=true ${CLI} deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   "${TIMEOUT_OVERRIDES[@]}" 2>&1)"; then
   printf '%s\n' "${REFUSAL_OUT}" >&2
-  echo "[verify] FAIL: step 1b deploy exited 0; CopyTagsToSnapshot on AWS::DocDB::DBCluster must be refused" >&2
+  echo "[verify] FAIL: step 1b deploy exited 0; UseLatestRestorableTime on AWS::DocDB::DBCluster must be refused" >&2
   exit 1
 fi
 REFUSAL_PLAIN="$(printf '%s\n' "${REFUSAL_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
@@ -344,8 +347,8 @@ fi
 for needle in \
   'AWS::DocDB::DBCluster uses properties' \
   'cannot fall back to Cloud Control API' \
-  '- CopyTagsToSnapshot: ' \
-  '--prefer-sdk-route AWS::DocDB::DBCluster:CopyTagsToSnapshot'; do
+  '- UseLatestRestorableTime: ' \
+  '--prefer-sdk-route AWS::DocDB::DBCluster:UseLatestRestorableTime'; do
   if ! printf '%s\n' "${REFUSAL_PLAIN}" | grep -qF -- "${needle}"; then
     echo "[verify] FAIL: step 1b output lacks the pre-flight refusal wording: '${needle}'" >&2
     exit 1
@@ -378,7 +381,7 @@ echo "[verify] step 3 ok"
 # Resolve the auto-generated cluster identifiers from cdkd state (strict
 # capture — a read failure aborts under set -e).
 STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
-DOCDB_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DocDB::DBCluster") | .value.physicalId] | first // ""')
+DOCDB_CLUSTER_ID=$(echo "${STATE}" | jq -r '.resources.DocdbCluster.physicalId // ""')
 NEPTUNE_CLUSTER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBCluster") | .value.physicalId] | first // ""')
 if [ -z "${DOCDB_CLUSTER_ID}" ] || [ -z "${NEPTUNE_CLUSTER_ID}" ]; then
   echo "[verify] FAIL: could not resolve cluster identifiers from state (docdb='${DOCDB_CLUSTER_ID}', neptune='${NEPTUNE_CLUSTER_ID}')" >&2
@@ -388,10 +391,10 @@ echo "[verify] resolved clusters: docdb=${DOCDB_CLUSTER_ID} neptune=${NEPTUNE_CL
 # Issue #5184 premise: both clusters record DeletionPolicy Snapshot, so step 4's
 # destroy takes a final snapshot after the flip. Without it the wait under test
 # never runs and step 5b would fail for the wrong reason.
-for type in AWS::DocDB::DBCluster AWS::Neptune::DBCluster; do
-  policy=$(echo "${STATE}" | jq -r --arg t "${type}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .value.deletionPolicy // "absent"] | first // ""')
+for logical in DocdbCluster NeptuneCluster; do
+  policy=$(echo "${STATE}" | jq -r --arg l "${logical}" '.resources[$l].deletionPolicy // "absent"')
   if [ "${policy}" != "Snapshot" ]; then
-    echo "[verify] FAIL: issue #5184 premise: ${type} records DeletionPolicy '${policy}', expected Snapshot" >&2
+    echo "[verify] FAIL: issue #5184 premise: ${logical} records DeletionPolicy '${policy}', expected Snapshot" >&2
     exit 1
   fi
 done
@@ -525,7 +528,7 @@ cluster_sgs() {
   echo "${out}" | jq -r '[(. // [])[] | "\(.VpcSecurityGroupId):\(.Status)"] | sort | join(" ")'
 }
 CUSTOM_SG_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::SecurityGroup" and (.key | test("^Sg"))) | .value.physicalId] | first // ""')
-VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // ""')
+VPC_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC" and (.key | test("^Vpc"))) | .value.physicalId] | first // ""')
 DEFAULT_SG_ID=""
 if [ -n "${VPC_ID}" ]; then
   DEFAULT_SG_ID=$(aws ec2 describe-security-groups --region "${REGION}" \
@@ -556,7 +559,7 @@ check_endpoints() { # usage: check_endpoints <step label>
   local state docdb_cluster neptune_cluster docdb_instance_id neptune_instance_id
   local docdb_instance_endpoint neptune_instance_endpoint
   state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
-  docdb_instance_id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DocDB::DBInstance") | .value.physicalId] | first // ""') || return 1
+  docdb_instance_id=$(echo "${state}" | jq -r '.resources.DocdbInstance.physicalId // ""') || return 1
   neptune_instance_id=$(echo "${state}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Neptune::DBInstance") | .value.physicalId] | first // ""') || return 1
   if [ -z "${docdb_instance_id}" ] || [ -z "${neptune_instance_id}" ]; then
     echo "[verify] FAIL: could not resolve instance identifiers from state (docdb='${docdb_instance_id}', neptune='${neptune_instance_id}')" >&2
@@ -686,6 +689,105 @@ wait_neptune_log_types() { # usage: wait_neptune_log_types <want>
   echo "[verify] FAIL: #2762: the Neptune log types read '${now}', want '$1'" >&2
   exit 1
 }
+# go-to-k/cdkd#2762: the DocDB properties. One line: CopyTagsToSnapshot, log
+# types, NetworkType, StorageType, both capacities, the instance's certificate
+# and Performance Insights. AWS reports no StorageType for `standard`.
+# DocdbCluster starts on the defaults so its update can move them;
+# DocdbManagedCluster holds the non-default values a create must deliver.
+DOCDB_INSTANCE_ID=$(echo "${STATE}" | jq -r '.resources.DocdbInstance.physicalId // ""')
+DOCDB_MANAGED_ID=$(echo "${STATE}" | jq -r '.resources.DocdbManagedCluster.physicalId // ""')
+DOCDB_MANAGED_INSTANCE_ID=$(echo "${STATE}" | jq -r '.resources.DocdbManagedInstance.physicalId // ""')
+# The L2 key's logical id carries CDK's hash suffix.
+DOCDB_SECRET_KEY_ARN=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.key | startswith("DocdbSecretKey")) | .value.attributes.Arn] | first // ""')
+if [ -z "${DOCDB_INSTANCE_ID}" ] || [ -z "${DOCDB_MANAGED_ID}" ] || [ -z "${DOCDB_MANAGED_INSTANCE_ID}" ] || [ -z "${DOCDB_SECRET_KEY_ARN}" ]; then
+  echo "[verify] FAIL: #2762: could not resolve the DocDB resources from state (instance='${DOCDB_INSTANCE_ID}', managed='${DOCDB_MANAGED_ID}', managed instance='${DOCDB_MANAGED_INSTANCE_ID}', key='${DOCDB_SECRET_KEY_ARN}')" >&2
+  exit 1
+fi
+docdb_view() {
+  local cluster instance
+  cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_CLUSTER_ID}" --region "${REGION}" \
+    --query 'DBClusters[0]' --output json | jq -r '[(.CopyTagsToSnapshot // false | tostring),
+    ((.EnabledCloudwatchLogsExports // []) | sort | join(",")), (.NetworkType // "null"), (.StorageType // "standard"),
+    ((.ServerlessV2ScalingConfiguration.MinCapacity + 0) | tostring), ((.ServerlessV2ScalingConfiguration.MaxCapacity + 0) | tostring)] | join(" ")') || return 1
+  instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_INSTANCE_ID}" --region "${REGION}" \
+    --query 'DBInstances[0]' --output json | jq -r '[.CACertificateIdentifier, (.PerformanceInsightsEnabled // false | tostring)] | join(" ")') || return 1
+  echo "${cluster} ${instance}"
+}
+# Waits for a change AWS is still applying; an unchanged value fails at the end.
+assert_docdb_view() { # usage: assert_docdb_view <want> <when>
+  local now="" i
+  for i in $(seq 1 40); do
+    now=$(docdb_view) || return 1
+    [ "${now}" = "$1" ] && return 0
+    [ "${i}" -lt 40 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: the live DocDB values $2 read '${now}', want '$1'" >&2
+  exit 1
+}
+# One line for the managed pair: CopyTagsToSnapshot, StorageType, NetworkType,
+# Performance Insights. None of these is what a create without them leaves.
+docdb_managed_view() {
+  local cluster instance
+  cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_MANAGED_ID}" --region "${REGION}" \
+    --query 'DBClusters[0]' --output json | jq -r '[(.CopyTagsToSnapshot // false | tostring), (.StorageType // "standard"), (.NetworkType // "null")] | join(" ")') || return 1
+  instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_MANAGED_INSTANCE_ID}" --region "${REGION}" \
+    --query 'DBInstances[0]' --output json | jq -r '.PerformanceInsightsEnabled // false | tostring') || return 1
+  echo "${cluster} ${instance}"
+}
+assert_docdb_managed_view() { # usage: assert_docdb_managed_view <when>
+  local now
+  now=$(docdb_managed_view) || exit 1
+  if [ "${now}" != "true iopt1 DUAL true" ]; then
+    echo "[verify] FAIL: #2762: the managed DocDB pair $1 reads '${now}', want 'true iopt1 DUAL true'" >&2
+    exit 1
+  fi
+}
+docdb_settled() {
+  local cluster managed instance managed_instance i
+  for i in $(seq 1 60); do
+    cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_CLUSTER_ID}" --region "${REGION}" --query 'DBClusters[0].Status' --output text) || return 1
+    managed=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_MANAGED_ID}" --region "${REGION}" --query 'DBClusters[0].Status' --output text) || return 1
+    instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_INSTANCE_ID}" --region "${REGION}" --query 'DBInstances[0].DBInstanceStatus' --output text) || return 1
+    managed_instance=$(aws docdb describe-db-instances --db-instance-identifier "${DOCDB_MANAGED_INSTANCE_ID}" --region "${REGION}" --query 'DBInstances[0].DBInstanceStatus' --output text) || return 1
+    [ "${cluster}/${managed}/${instance}/${managed_instance}" = "available/available/available/available" ] && return 0
+    [ "${i}" -lt 60 ] && sleep 15
+  done
+  echo "[verify] FAIL: #2762: the DocDB resources read '${cluster}/${managed}/${instance}/${managed_instance}', want all available" >&2
+  exit 1
+}
+# The managed secret, by metadata only: the value is never read. One line: its
+# AWSCURRENT version id, SecretStatus, the KMS key.
+docdb_secret_view() {
+  local cluster arn current
+  cluster=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_MANAGED_ID}" --region "${REGION}" \
+    --query 'DBClusters[0].MasterUserSecret' --output json) || return 1
+  arn=$(echo "${cluster}" | jq -r '.SecretArn // ""')
+  [ -n "${arn}" ] || { echo "none none none"; return 0; }
+  current=$(aws secretsmanager describe-secret --secret-id "${arn}" --region "${REGION}" --output json \
+    | jq -r '[.VersionIdsToStages | to_entries[] | select(.value | index("AWSCURRENT")) | .key] | first // "none"') || return 1
+  echo "${current} $(echo "${cluster}" | jq -r '.SecretStatus // "none"') $(echo "${cluster}" | jq -r '.KmsKeyId // "none"')"
+}
+assert_docdb_view "false audit IPV4 standard 0.5 2 rds-ca-rsa4096-g1 false" "after the create"
+assert_docdb_managed_view "after the create"
+# A subset, not equality: DocumentDB may report more zones than the declared
+# list, and the subnet group alone may put these in it. The wire is the unit
+# suite's; this reads the record. The live list is printed for the next reader.
+echo "[verify] DocDB live AvailabilityZones: $(echo "${DOCDB_BASE}" | jq -c '.AvailabilityZones')"
+DOCDB_AZ_MISSING=$(jq -nr --argjson state "${STATE}" --argjson live "${DOCDB_BASE}" \
+  '($state.resources.DocdbCluster.properties.AvailabilityZones // ["<none recorded>"]) - $live.AvailabilityZones | join(",")')
+if [ -n "${DOCDB_AZ_MISSING}" ]; then
+  echo "[verify] FAIL: #2762: the declared DocDB AvailabilityZones are not live: '${DOCDB_AZ_MISSING}'" >&2
+  exit 1
+fi
+DOCDB_SECRET_BASE=$(docdb_secret_view) || exit 1
+read -r DOCDB_SECRET_VERSION _ DOCDB_SECRET_KMS <<<"${DOCDB_SECRET_BASE}"
+# AWS may spell the key as an ARN or a bare id: compare the id.
+if [ "${DOCDB_SECRET_VERSION}" = "none" ] || [ "${DOCDB_SECRET_KMS##*/}" != "${DOCDB_SECRET_KEY_ARN##*/}" ]; then
+  echo "[verify] FAIL: #2762: the managed password's secret is not under the declared key (version '${DOCDB_SECRET_VERSION}', key '${DOCDB_SECRET_KMS}', want '${DOCDB_SECRET_KEY_ARN}')" >&2
+  exit 1
+fi
+echo "[verify] step 3b: the DocDB #2762 properties reached AWS on the create"
+
 echo "[verify] step 3b2: CDKD_TEST_BACKFILL_UPDATE=true redeploy (#2762)"
 UPDATE_2762_LOG="$(mktemp)"
 if ! CDKD_TEST_BACKFILL_UPDATE=true ${CLI} deploy "${STACK}" \
@@ -737,6 +839,29 @@ esac
 modify_neptune_log_exports '{"DisableLogTypes":["audit"]}'
 wait_neptune_log_types "slowquery"
 neptune_cluster_available
+# go-to-k/cdkd#2762: the DocDB changes, and one rotation of the managed secret.
+assert_docdb_view "true audit,profiler IPV4 iopt1 1 4 rds-ca-rsa2048-g1 true" "after the update redeploy"
+DOCDB_ROTATED=""
+for i in $(seq 1 40); do
+  DOCDB_SECRET_NOW=$(docdb_secret_view) || exit 1
+  read -r DOCDB_ROTATED DOCDB_SECRET_STATUS _ <<<"${DOCDB_SECRET_NOW}"
+  [ "${DOCDB_ROTATED}" != "${DOCDB_SECRET_VERSION}" ] && [ "${DOCDB_SECRET_STATUS}" = "active" ] && break
+  DOCDB_ROTATED=""
+  [ "${i}" -lt 40 ] && sleep 15
+done
+if [ -z "${DOCDB_ROTATED}" ]; then
+  echo "[verify] FAIL: #2762: RotateMasterUserPassword: true did not rotate the managed secret" >&2
+  exit 1
+fi
+docdb_settled
+DOCDB_DRIFT_JSON=$(${CLI} drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json || true)
+for logical in DocdbCluster DocdbInstance DocdbManagedCluster DocdbManagedInstance; do
+  if [ "$(echo "${DOCDB_DRIFT_JSON}" | jq -r --arg l "${logical}" '[.[] | (.clean // [])[] | select(.logicalId == $l)] | length')" != "1" ]; then
+    echo "[verify] FAIL: #2762: cdkd drift does not read ${logical} clean right after a deploy: ${DOCDB_DRIFT_JSON}" >&2
+    exit 1
+  fi
+done
+echo "[verify] step 3b2 ok: the DocDB properties changed in place, the secret rotated once, and drift reads them clean (#2762)"
 echo "[verify] step 3b2 ok: the backfilled Neptune properties changed in place, and drift reads a stable baseline and an out-of-band log type (#2762)"
 
 echo "[verify] step 3c: CDKD_TEST_REMOVAL=true redeploy (DROP the #1160 / #5004 fields)"
@@ -868,9 +993,9 @@ fi
 # Issue #5543: the DocDB properties CloudFormation keeps on removal are named
 # in one line per resource. Before the fix cdkd kept them silently, so this is
 # the arm's only post-fix-only assertion. The fixture drops three cluster
-# properties (listed in DOCDB_CLUSTER_KEPT_ON_REMOVAL's order); the instance
-# drops none, so it has no line.
-needle="DocdbCluster (AWS::DocDB::DBCluster): properties DeletionProtection, BackupRetentionPeriod, VpcSecurityGroupIds were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."
+# properties (listed in DOCDB_CLUSTER_KEPT_ON_REMOVAL's order), and go-to-k/cdkd#2762
+# the rest of step 3c's drops, including the instance's and an unmeasured one.
+needle="DocdbCluster (AWS::DocDB::DBCluster): properties DeletionProtection, BackupRetentionPeriod, VpcSecurityGroupIds, CopyTagsToSnapshot, EnableCloudwatchLogsExports, StorageType, ServerlessV2ScalingConfiguration were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them."
 if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
   echo "[verify] FAIL: #5543: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
   exit 1
@@ -929,6 +1054,44 @@ for needle in "did not read back" "had not settled"; do
     exit 1
   fi
 done
+# go-to-k/cdkd#2762: a real CloudFormation A/B keeps every DocDB value, and the
+# kept RotateMasterUserPassword: true rotates nothing on this update.
+assert_docdb_view "true audit,profiler IPV4 iopt1 1 4 rds-ca-rsa2048-g1 true" "after the removal redeploy"
+for needle in \
+  "DocdbCluster (AWS::DocDB::DBCluster): property NetworkType was removed from the template; cdkd leaves the current AWS value in place. Declare it to change it." \
+  "DocdbInstance (AWS::DocDB::DBInstance): properties CACertificateIdentifier, EnablePerformanceInsights were removed from the template; cdkd leaves the current AWS values in place, as CloudFormation does. Declare them to change them." \
+  "DocdbManagedCluster (AWS::DocDB::DBCluster): property MasterUserSecretKmsKeyId was removed from the template; cdkd leaves the current AWS value in place, as CloudFormation does. Declare it to change it."; do
+  if ! grep -qF "${needle}" <<<"${REMOVAL_3C_PLAIN}"; then
+    echo "[verify] FAIL: #2762: the step-3c deploy output lacks the kept-removal warning '${needle}'" >&2
+    exit 1
+  fi
+done
+docdb_settled
+# The maintenance window is step 3c's companion change: without it no update
+# reached the managed cluster, and an unmoved secret would prove nothing.
+DOCDB_MANAGED_MW=$(aws docdb describe-db-clusters --db-cluster-identifier "${DOCDB_MANAGED_ID}" --region "${REGION}" \
+  --query 'DBClusters[0].PreferredMaintenanceWindow' --output text)
+if [ "${DOCDB_MANAGED_MW}" != "wed:05:00-wed:05:30" ]; then
+  echo "[verify] FAIL: #2762: the managed cluster's companion change is not live ('${DOCDB_MANAGED_MW}')" >&2
+  exit 1
+fi
+assert_docdb_managed_view "after the removal redeploy"
+# A rotation is asynchronous, so one read cannot show its absence: watch for as
+# long as the positive poll above was allowed to take.
+for i in $(seq 1 40); do
+  DOCDB_SECRET_AFTER=$(docdb_secret_view) || exit 1
+  read -r DOCDB_VERSION_AFTER _ DOCDB_KMS_AFTER <<<"${DOCDB_SECRET_AFTER}"
+  if [ "${DOCDB_VERSION_AFTER}" != "${DOCDB_ROTATED}" ]; then
+    echo "[verify] FAIL: #2762: a kept RotateMasterUserPassword: true rotated the secret again" >&2
+    exit 1
+  fi
+  [ "${i}" -lt 40 ] && sleep 15
+done
+if [ "${DOCDB_KMS_AFTER##*/}" != "${DOCDB_SECRET_KEY_ARN##*/}" ]; then
+  echo "[verify] FAIL: #2762: a removed MasterUserSecretKmsKeyId moved the secret to '${DOCDB_KMS_AFTER}'" >&2
+  exit 1
+fi
+echo "[verify] step 3d ok: the DocDB values and the secret's key kept, no second rotation (#2762, matches CloudFormation)"
 echo "[verify] step 3d ok: roles and log exports cleared, CopyTagsToSnapshot and PubliclyAccessible kept, no settle wait gave up (#2762, matches CloudFormation)"
 
 # Issue #1160: VpcSecurityGroupIds was removed from both clusters. Neptune must

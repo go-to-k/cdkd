@@ -601,6 +601,12 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       ServerlessScalingConfiguration: ['ServerlessV2ScalingConfiguration'],
     },
   },
+  'AWS::DocDB::DBCluster': {
+    members: {
+      // ModifyDBCluster takes the delta, not the list.
+      EnableCloudwatchLogsExports: ['CloudwatchLogsExportConfiguration.EnableLogTypes'],
+    },
+  },
   'AWS::RDS::DBCluster': {
     members: {
       'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],

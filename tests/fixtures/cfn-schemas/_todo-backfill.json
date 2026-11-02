@@ -27,26 +27,12 @@
       "Triggers"
     ],
     "AWS::DocDB::DBCluster": [
-      "AvailabilityZones",
-      "CopyTagsToSnapshot",
-      "EnableCloudwatchLogsExports",
       "GlobalClusterIdentifier",
-      "ManageMasterUserPassword",
-      "MasterUserSecretKmsKeyId",
-      "NetworkType",
       "RestoreToTime",
       "RestoreType",
-      "RotateMasterUserPassword",
-      "ServerlessV2ScalingConfiguration",
       "SnapshotIdentifier",
       "SourceDBClusterIdentifier",
-      "StorageType",
       "UseLatestRestorableTime"
-    ],
-    "AWS::DocDB::DBInstance": [
-      "CACertificateIdentifier",
-      "CertificateRotationRestart",
-      "EnablePerformanceInsights"
     ],
     "AWS::DynamoDB::GlobalTable": [
       "GlobalTableSourceArn",

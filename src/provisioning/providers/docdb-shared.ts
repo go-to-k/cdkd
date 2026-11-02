@@ -57,6 +57,62 @@ export function wrapDocDBFailure(
   return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
 }
 
+/** A list of strings, or `undefined` when unusable; absent or `null` is empty. */
+export function docdbStringList(value: unknown): string[] | undefined {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return undefined;
+  return value.every((item) => typeof item === 'string') ? (value as string[]) : undefined;
+}
+
+/**
+ * The ModifyDBCluster `CloudwatchLogsExportConfiguration` taking the cluster
+ * from `previous` to `desired`, or `undefined` when they name the same types.
+ * ModifyDBCluster takes a delta where CreateDBCluster takes the list.
+ */
+export function docdbLogExportChange(
+  desired: readonly string[],
+  previous: readonly string[]
+): { EnableLogTypes?: string[]; DisableLogTypes?: string[] } | undefined {
+  const enable = [...new Set(desired)].filter((type) => !previous.includes(type));
+  const disable = [...new Set(previous)].filter((type) => !desired.includes(type));
+  if (enable.length === 0 && disable.length === 0) return undefined;
+  return {
+    ...(enable.length > 0 && { EnableLogTypes: enable }),
+    ...(disable.length > 0 && { DisableLogTypes: disable }),
+  };
+}
+
+function cfnCapacity(value: unknown): number | undefined {
+  const usable = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '');
+  const capacity = usable ? Number(value) : Number.NaN;
+  return Number.isFinite(capacity) ? capacity : undefined;
+}
+
+/**
+ * The SDK's `ServerlessV2ScalingConfiguration`: `undefined` when absent, `null`
+ * when the block is unusable. A CFn number may arrive as a numeric string;
+ * anything else is no capacity (`Number` would read `''` as 0 and `true` as 1,
+ * and send a value nobody declared).
+ */
+export function docdbServerlessScaling(
+  value: unknown
+): { MinCapacity: number; MaxCapacity: number } | null | undefined {
+  if (value == null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  const { MinCapacity, MaxCapacity } = value as Record<string, unknown>;
+  const min = cfnCapacity(MinCapacity);
+  const max = cfnCapacity(MaxCapacity);
+  if (min === undefined || max === undefined) return null;
+  return { MinCapacity: min, MaxCapacity: max };
+}
+
+/** Whether a `PendingModifiedValues` holds anything: AWS answers an idle instance with `{}`. */
+export function holdsDocDBPendingValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'object') return Object.values(value).some(holdsDocDBPendingValue);
+  return true;
+}
+
 export function isDocDBNotFoundError(error: unknown, faultName: string): boolean {
   if (!(error instanceof Error)) return false;
   const name = (error as { name?: string }).name ?? '';
