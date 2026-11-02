@@ -378,7 +378,10 @@ describe('RDSProvider DBInstance DBParameterGroupName (go-to-k/cdkd#2762)', () =
         { ...BASE, DBParameterGroupName: 'pg-a', CertificateRotationRestart: true }
       );
       expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
-      expect(sleeps).toBe(1);
+      // The reboot waited for the third read, where the CA change had cleared.
+      const names = order();
+      const before = names.slice(0, names.indexOf('RebootDBInstanceCommand'));
+      expect(before.filter((n) => n === 'DescribeDBInstancesCommand')).toHaveLength(3);
     });
 
     it('an unchanged group still `applying` an edit is waited out and rebooted if it then reads `pending-reboot`', async () => {
