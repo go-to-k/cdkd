@@ -9,11 +9,15 @@ import {
   DeleteDBInstanceCommand,
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
+  DescribeGlobalClustersCommand,
+  RemoveFromGlobalClusterCommand,
   type DBCluster,
   type DBInstance,
+  type GlobalClusterMember,
 } from '@aws-sdk/client-docdb';
 import { getLogger } from '../../utils/logger.js';
 import { markNotGone } from '../not-gone.js';
+import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { enclosingDeadlineRemainingMs } from '../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
@@ -294,6 +298,105 @@ function numberOrUndefined(value: unknown): number | undefined {
   return value == null ? undefined : Number(value);
 }
 
+/**
+ * A cluster's `GlobalClusterIdentifier` as cdkd reads it (go-to-k/cdkd#5628):
+ * only a non-blank string names a global cluster, so absent, `null` and blank
+ * all mean "not a member". A non-string is not read as either: the create and
+ * update guards refuse it, and the delete does not detach on it.
+ */
+function docdbGlobalClusterId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+/** What an update does about `GlobalClusterIdentifier` (`planGlobalClusterUpdate`). */
+type GlobalClusterUpdate =
+  | { kind: 'none' }
+  | { kind: 'keep' }
+  | { kind: 'detach'; globalClusterId: string };
+
+/**
+ * `bag` with the PREVIOUS record's `GlobalClusterIdentifier`, for an update
+ * that kept the membership: a copy, dropping the key when the record had none.
+ */
+function withRecordedGlobalCluster(
+  bag: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): Record<string, unknown> {
+  const { GlobalClusterIdentifier: _dropped, ...rest } = bag;
+  const previous = previousProperties['GlobalClusterIdentifier'];
+  return previous === undefined ? rest : { ...rest, GlobalClusterIdentifier: previous };
+}
+
+/** Whether a `GlobalClusterIdentifier` value is one {@link docdbGlobalClusterId} can read. */
+function readableGlobalClusterId(value: unknown): boolean {
+  return value == null || typeof value === 'string';
+}
+
+/**
+ * How long a delete waits for a global-cluster detach to land: the bound the
+ * cluster delete's own wait uses.
+ */
+const DETACH_MAX_WAIT_MS = 1_800_000;
+
+/**
+ * How long a detach waits through `InvalidGlobalClusterStateFault`: a global
+ * cluster that keeps refusing (a primary whose secondaries are still attached,
+ * for one) fails with AWS's fault class instead of the whole budget.
+ */
+const GLOBAL_CLUSTER_BUSY_MAX_WAIT_MS = 600_000;
+
+/**
+ * Faults a detach waits through rather than failing on: the cluster or the
+ * global cluster is busy, or the call was throttled past the SDK's own
+ * retries (as `RDSProvider`'s detach, issue #4029).
+ */
+const TRANSIENT_DETACH_FAULTS: ReadonlySet<string> = new Set([
+  'InvalidDBClusterStateFault',
+  'InvalidGlobalClusterStateFault',
+  'ThrottlingException',
+  'Throttling',
+  'RequestLimitExceeded',
+]);
+
+function awsErrorName(error: unknown): string {
+  return (error as { name?: string } | undefined)?.name ?? '';
+}
+
+/**
+ * A failure DETACHING a cluster from its global cluster (go-to-k/cdkd#5628).
+ * Its own class so the delete's catch rethrows it before the not-found arm: an
+ * AWS message about the GLOBAL cluster or the membership can read "not found",
+ * and that arm would report the live cluster deleted.
+ */
+class GlobalClusterDetachError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GlobalClusterDetachError';
+  }
+}
+
+/**
+ * go-to-k/cdkd#5628: the ModifyDBCluster `EngineVersion`, sent only when it
+ * changed. AWS refuses any `EngineVersion`, the cluster's own included, on a
+ * cluster with no healthy primary instance ("Cannot modify engine version
+ * without a healthy primary instance", measured on an instance-less cluster in
+ * a global cluster, us-east-1, 2026-11-02), so re-sending an unchanged one
+ * failed every update of such a cluster. CloudFormation's RDS handler sends it
+ * only on a change too (`clusterEngineVersionChanged` in `rds-provider.ts`),
+ * and a rollback replay never: AWS refuses an engine downgrade.
+ */
+function docdbEngineVersionToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): string | undefined {
+  if (context?.replayingState === true) return undefined;
+  const desired = properties['EngineVersion'];
+  if (desired == null) return undefined;
+  const previous = previousProperties['EngineVersion'];
+  return previous != null && String(previous) === String(desired) ? undefined : (desired as string);
+}
+
 /** The ModifyDBCluster `Port`: the declared one, or the default on removal. */
 function clusterPortToSend(
   properties: Record<string, unknown>,
@@ -406,8 +509,7 @@ export class DocDBProvider implements ResourceProvider {
    * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
    * `ProvisioningType: NON_PROVISIONABLE` — Cloud Control has no handlers for
    * them — so the #614 silent-drop auto-route must not send a template using
-   * an unhandled property (`GlobalClusterIdentifier`, `RestoreType`,
-   * `SnapshotIdentifier`, ...) to CC, where it fails mid-deploy with an
+   * an unhandled property (`RestoreType`, `SnapshotIdentifier`, ...) to CC, where it fails mid-deploy with an
    * opaque UnsupportedActionException. With this opt-out the registry refuses
    * such a template pre-flight (issue #3866).
    *
@@ -427,12 +529,15 @@ export class DocDBProvider implements ResourceProvider {
    * showed CloudFormation KEEPS the live value of every removal listed under
    * `*_KEPT_ON_REMOVAL`, which `update()` names in its own warning. The one
    * DocDB reset CloudFormation was measured to make, a removed cluster `Port`,
-   * is computed locally (`clusterPortToSend`). Four entries are listed without
-   * an A/B, because no reset value exists: a removed `MasterUserPassword` (a
-   * secret with no default), the per-call `RotateMasterUserPassword` and
-   * `CertificateRotationRestart`, and the instance `AutoMinorVersionUpgrade`
-   * (inert on DocDB, see `updateDBInstance`). The UNMEASURED cluster list is
-   * named in a warning that claims no parity.
+   * is computed locally (`clusterPortToSend`), and a removed
+   * `GlobalClusterIdentifier` detaches the cluster in place, as a real
+   * CloudFormation A/B measured (go-to-k/cdkd#5628, `planGlobalClusterUpdate`).
+   * Four entries are listed without an A/B, because no reset value exists: a
+   * removed `MasterUserPassword` (a secret with no default), the per-call
+   * `RotateMasterUserPassword` and `CertificateRotationRestart`, and the
+   * instance `AutoMinorVersionUpgrade` (inert on DocDB, see
+   * `updateDBInstance`). The UNMEASURED cluster list is named in a warning that
+   * claims no parity.
    */
   removalHandledInUpdate = new Map<string, ReadonlySet<string>>([
     [
@@ -454,6 +559,8 @@ export class DocDBProvider implements ResourceProvider {
         'MasterUserPassword',
         // A request, not a setting: nothing to reset.
         'RotateMasterUserPassword',
+        // go-to-k/cdkd#5628: a removal detaches in place (CFn A/B).
+        'GlobalClusterIdentifier',
         // Left in place, as CloudFormation leaves them (CFn A/B), and named in
         // update()'s own warning.
         ...DOCDB_CLUSTER_KEPT_ON_REMOVAL,
@@ -504,6 +611,7 @@ export class DocDBProvider implements ResourceProvider {
         'AvailabilityZones',
         'CopyTagsToSnapshot',
         'EnableCloudwatchLogsExports',
+        'GlobalClusterIdentifier',
         'ManageMasterUserPassword',
         'MasterUserSecretKmsKeyId',
         'NetworkType',
@@ -647,12 +755,12 @@ export class DocDBProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
     switch (resourceType) {
       case 'AWS::DocDB::DBCluster':
-        return this.deleteDBCluster(logicalId, physicalId, resourceType, context);
+        return this.deleteDBCluster(logicalId, physicalId, resourceType, properties, context);
       case 'AWS::DocDB::DBInstance':
         return this.deleteDBInstance(logicalId, physicalId, resourceType, context);
       default:
@@ -731,6 +839,23 @@ export class DocDBProvider implements ResourceProvider {
       logicalId,
       origin
     );
+    // go-to-k/cdkd#5628: the global cluster this one joins (a primary when the
+    // global cluster has no member yet). Refused before any call when it is
+    // not a string; a state replay leaves it out instead.
+    if (!readableGlobalClusterId(properties['GlobalClusterIdentifier'])) {
+      if (!replayingState) {
+        this.refuseBlock(
+          logicalId,
+          resourceType,
+          undefined,
+          'GlobalClusterIdentifier is not a string'
+        );
+      }
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): the recorded GlobalClusterIdentifier is unusable, so it is not sent.`
+      );
+    }
+    const globalClusterId = docdbGlobalClusterId(properties['GlobalClusterIdentifier']);
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
@@ -773,6 +898,7 @@ export class DocDBProvider implements ResourceProvider {
           MasterUserSecretKmsKeyId: properties['MasterUserSecretKmsKeyId'] as string | undefined,
           NetworkType: properties['NetworkType'] as string | undefined,
           StorageType: properties['StorageType'] as string | undefined,
+          ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
           ...(logTypes !== undefined &&
             logTypes.length > 0 && { EnableCloudwatchLogsExports: logTypes }),
           ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
@@ -858,6 +984,15 @@ export class DocDBProvider implements ResourceProvider {
       origin,
       false
     );
+    const globalClusterPlan = await this.planGlobalClusterUpdate(
+      physicalId,
+      properties,
+      previousProperties,
+      resourceType,
+      logicalId,
+      origin,
+      context?.desiredFromAwsReadback === true
+    );
     // An absent list is a removal, which CloudFormation keeps (#2762 A/B); only
     // a declared one is a delta. A malformed record only misses disables.
     const logExportConfig =
@@ -868,6 +1003,8 @@ export class DocDBProvider implements ResourceProvider {
             docdbStringList(previousProperties['EnableCloudwatchLogsExports']) ?? []
           );
 
+    // Set once this update detached the cluster, so a later failure says so.
+    let detachedFrom: string | undefined;
     try {
       const credentials = await this.planMasterCredentials(
         physicalId,
@@ -937,6 +1074,20 @@ export class DocDBProvider implements ResourceProvider {
         scaling != null &&
         (scaling.MinCapacity !== previousScaling?.MinCapacity ||
           scaling.MaxCapacity !== previousScaling?.MaxCapacity);
+      // go-to-k/cdkd#5628: a removed GlobalClusterIdentifier detaches the
+      // cluster in place, as CloudFormation does, BEFORE the ModifyDBCluster:
+      // the detach leaves it `modifying` until it is out and `available` again.
+      if (globalClusterPlan.kind === 'detach') {
+        const detached = await this.detachFromGlobalCluster(
+          logicalId,
+          physicalId,
+          globalClusterPlan.globalClusterId,
+          { beforeDelete: false, removeProtection: false },
+          { stripped: false },
+          maskerOrIdentity(context?.maskSecrets)
+        );
+        if (detached) detachedFrom = globalClusterPlan.globalClusterId;
+      }
       this.markChangedUnsettled(
         CLUSTER_MODIFY_UNSETTLED_KEYS,
         properties,
@@ -946,7 +1097,7 @@ export class DocDBProvider implements ResourceProvider {
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
-          EngineVersion: properties['EngineVersion'] as string | undefined,
+          EngineVersion: docdbEngineVersionToSend(properties, previousProperties, context),
           // #5004: CloudFormation KEEPS the live value of a removed
           // DeletionProtection / BackupRetentionPeriod, so an absent value
           // is passed through as absent (no reset).
@@ -1146,20 +1297,43 @@ export class DocDBProvider implements ResourceProvider {
             ? { ...described, Port: portToSend }
             : described
         ),
-        ...(credentials.effectiveProperties !== undefined && {
-          effectiveProperties: credentials.effectiveProperties,
+        ...((credentials.effectiveProperties !== undefined ||
+          globalClusterPlan.kind === 'keep') && {
+          effectiveProperties:
+            globalClusterPlan.kind === 'keep'
+              ? withRecordedGlobalCluster(
+                  credentials.effectiveProperties ?? properties,
+                  previousProperties
+                )
+              : credentials.effectiveProperties,
         }),
       };
     } catch (error) {
       // A refusal of ours names its own cause.
       if (error instanceof ProvisioningError) throw error;
+      if (error instanceof GlobalClusterDetachError) {
+        // Already masked and waited through: a retry would only repeat it.
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Failed to update DocDB DBCluster ${logicalId}: ${error.message}`,
+            resourceType,
+            logicalId,
+            physicalId,
+            error
+          )
+        );
+      }
       const cause = error instanceof Error ? error : undefined;
+      const detachedNote =
+        detachedFrom !== undefined
+          ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
+          : '';
       throw this.wrapCaughtError(
         context?.maskSecrets,
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to update DocDB DBCluster ${logicalId}: ${text}`,
+            `Failed to update DocDB DBCluster ${logicalId}: ${text}${detachedNote}`,
             resourceType,
             logicalId,
             physicalId,
@@ -1179,12 +1353,14 @@ export class DocDBProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties: Record<string, unknown> | undefined,
     context?: DeleteContext
   ): Promise<void> {
     await deleteWithProtectionCompensation({
       registry: this.protectionFlips,
       key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
-      run: (flip) => this.deleteDBClusterOnce(logicalId, physicalId, resourceType, context, flip),
+      run: (flip) =>
+        this.deleteDBClusterOnce(logicalId, physicalId, resourceType, properties, context, flip),
       compensation: {
         logicalId,
         physicalId,
@@ -1215,10 +1391,18 @@ export class DocDBProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
+    properties: Record<string, unknown> | undefined,
     context: DeleteContext | undefined,
     flip: ProtectionFlipRecord
   ): Promise<void> {
     this.logger.debug(`Deleting DocDB DBCluster ${logicalId}`);
+    // go-to-k/cdkd#5628: set once a global-cluster detach was issued, so a
+    // delete failing after it says the cluster is already standalone.
+    let detachedFrom: string | undefined;
+    // Set once the detach is accepted, even when its wait then fails: a
+    // detached cluster is not the global member its record describes, so a
+    // refused delete is never read as a whole survivor (go-to-k/cdkd#4946).
+    const progress: DeleteProgress = { stripped: false };
 
     try {
       // `--remove-protection`: flip DeletionProtection off in-place
@@ -1261,6 +1445,22 @@ export class DocDBProvider implements ResourceProvider {
         }
       }
 
+      // go-to-k/cdkd#5628: a global-cluster member cannot be deleted until it
+      // is detached.
+      const globalClusterId = docdbGlobalClusterId(properties?.['GlobalClusterIdentifier']);
+      if (globalClusterId !== undefined) {
+        detachedFrom = (await this.detachFromGlobalCluster(
+          logicalId,
+          physicalId,
+          globalClusterId,
+          { beforeDelete: true, removeProtection: context?.removeProtection === true },
+          progress,
+          maskerOrIdentity(context?.maskSecrets)
+        ))
+          ? globalClusterId
+          : undefined;
+      }
+
       // `DeletionPolicy: Snapshot` (issue #1352): flip to the atomic
       // final-snapshot delete when the destroy call site passed an id.
       const finalSnapshotId = context?.finalSnapshotIdentifier;
@@ -1298,6 +1498,25 @@ export class DocDBProvider implements ResourceProvider {
       // Wait for cluster to be fully deleted
       await this.waitForClusterDeleted(logicalId, physicalId);
     } catch (error) {
+      if (error instanceof GlobalClusterDetachError) {
+        // Not gone, so the destroy / deploy classifiers never read an AWS
+        // "not found" in the detail as the cluster being gone (#5228). Also
+        // non-retryable: the detach already waited out busy states and
+        // throttles, so a retry would only spend that budget again; a re-run
+        // of the destroy repeats the detach.
+        const detachFailure = markNotGone(
+          markNonRetryable(
+            new ProvisioningError(
+              `Failed to delete DocDB DBCluster ${logicalId}: ${error.message}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              error
+            )
+          )
+        );
+        throw progress.stripped ? markDeleteStarted(detachFailure) : detachFailure;
+      }
       if (isDocDBNotFoundError(error, 'DBClusterNotFoundFault')) {
         const clientRegion = await this.getClient().config.region();
         assertRegionMatch(
@@ -1319,18 +1538,228 @@ export class DocDBProvider implements ResourceProvider {
         return;
       }
       const cause = error instanceof Error ? error : undefined;
-      throw this.wrapDeleteError(
+      const detachedNote =
+        detachedFrom !== undefined
+          ? ' (it was already detached from its global cluster, and stays a standalone cluster)'
+          : '';
+      const failure = this.wrapDeleteError(
         context?.maskSecrets,
         error,
         (text) =>
           new ProvisioningError(
-            `Failed to delete DocDB DBCluster ${logicalId}: ${text}`,
+            `Failed to delete DocDB DBCluster ${logicalId}: ${text}${detachedNote}`,
             resourceType,
             logicalId,
             physicalId,
             cause
           )
       );
+      throw progress.stripped ? markDeleteStarted(failure) : failure;
+    }
+  }
+
+  /**
+   * A {@link GlobalClusterDetachError} for a failed detach or membership read:
+   * the class goes on the error, AWS's text (it can quote the caller's role) to
+   * debug only, both through the delete's masker (go-to-k/cdkd#2319).
+   */
+  private wrapGlobalClusterDetachError(
+    error: unknown,
+    mask: (text: string) => string,
+    build: (text: string) => string
+  ): GlobalClusterDetachError {
+    const failure = describeAwsFailure(error);
+    if (failure.redacted) this.logger.debug(mask(build(mask(failure.detail))));
+    return new GlobalClusterDetachError(build(mask(failure.summary)));
+  }
+
+  /**
+   * Detach cluster `physicalId` from global cluster `globalClusterId` and wait
+   * until it is out of the member list and `available` again
+   * (go-to-k/cdkd#5628, the shape of `RDSProvider`'s #4029 detach). Returns
+   * whether the cluster was detached (`progress.stripped`), for the caller's
+   * failure message.
+   *
+   * The detach is IRREVERSIBLE (a secondary becomes a standalone cluster), so
+   * `beforeDelete`, a cluster whose deletion protection is still on is refused
+   * BEFORE it: the delete could only fail after it. Under `--remove-protection`
+   * the flip just made gets a short grace to show. An update's detach (a
+   * removed `GlobalClusterIdentifier`) is the change itself, and deletion
+   * protection guards only a delete, so it is not consulted there.
+   *
+   * A cluster that is gone surfaces as the describe's `DBClusterNotFoundFault`
+   * or an empty answer, both left to the caller's region-checked not-found
+   * arm. A global cluster that is gone, or a cluster it does not list (read
+   * BEFORE the detach), needs no detach. A busy cluster or global cluster, or a
+   * throttle, is waited through within {@link DETACH_MAX_WAIT_MS}, a global
+   * cluster refusing the detach as busy within
+   * {@link GLOBAL_CLUSTER_BUSY_MAX_WAIT_MS}. Every other failure is a
+   * {@link GlobalClusterDetachError}.
+   */
+  private async detachFromGlobalCluster(
+    logicalId: string,
+    physicalId: string,
+    globalClusterId: string,
+    { beforeDelete, removeProtection }: { beforeDelete: boolean; removeProtection: boolean },
+    progress: DeleteProgress,
+    mask: (text: string) => string
+  ): Promise<boolean> {
+    let cluster = await this.describeDBCluster(physicalId);
+    for (let i = 0; removeProtection && cluster?.DeletionProtection === true && i < 6; i++) {
+      await this.sleep(5_000);
+      cluster = await this.describeDBCluster(physicalId);
+    }
+    if (cluster === undefined) return false;
+    if (beforeDelete && cluster.DeletionProtection === true) {
+      throw new GlobalClusterDetachError(
+        safeMsg`${physicalId} has deletion protection on, so cdkd did not detach it from global cluster ${globalClusterId}; turn it off (cdkd destroy --remove-protection does) and re-run`
+      );
+    }
+    const clusterArn = cluster.DBClusterArn;
+    if (typeof clusterArn !== 'string' || clusterArn === '') {
+      throw new GlobalClusterDetachError(
+        safeMsg`could not read the ARN of ${physicalId} to detach it from global cluster ${globalClusterId}`
+      );
+    }
+
+    const startTime = Date.now();
+    let delay = 5_000;
+    const backOff = async (): Promise<void> => {
+      if (Date.now() - startTime >= DETACH_MAX_WAIT_MS) {
+        throw new GlobalClusterDetachError(
+          safeMsg`timed out waiting for ${physicalId} to leave global cluster ${globalClusterId}`
+        );
+      }
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    };
+    // The global cluster's members, `undefined` for a busy or throttled read
+    // (the caller waits through it), `[]` for a global cluster that is gone.
+    const readMembers = async (
+      build: (text: string) => string
+    ): Promise<GlobalClusterMember[] | undefined> => {
+      try {
+        const response = await this.getClient().send(
+          new DescribeGlobalClustersCommand({ GlobalClusterIdentifier: globalClusterId })
+        );
+        return response.GlobalClusters?.[0]?.GlobalClusterMembers ?? [];
+      } catch (error) {
+        const name = awsErrorName(error);
+        if (name === 'GlobalClusterNotFoundFault') return [];
+        if (TRANSIENT_DETACH_FAULTS.has(name)) return undefined;
+        throw this.wrapGlobalClusterDetachError(error, mask, build);
+      }
+    };
+    const isMember = async (build: (text: string) => string): Promise<boolean | undefined> => {
+      const members = await readMembers(build);
+      return members?.some((member) => member.DBClusterArn === clusterArn);
+    };
+
+    // A cluster the global cluster does not hold (detached outside cdkd, or a
+    // global cluster that is gone) needs no detach, and none is claimed.
+    for (;;) {
+      const members = await readMembers(
+        (text) =>
+          safeMsg`could not read whether ${physicalId} is a member of global cluster ${globalClusterId} (${text})`
+      );
+      if (members !== undefined) {
+        const own = members.find((member) => member.DBClusterArn === clusterArn);
+        if (own === undefined) return false;
+        // AWS refuses to detach the primary while secondaries remain: no wait
+        // changes that, so name them instead of spending the busy budget.
+        const others = members
+          .filter((member) => member.DBClusterArn !== clusterArn)
+          // The identifier, not the ARN: the ARN carries the account id.
+          .map(
+            (member) =>
+              /^arn:[^:]*:rds:[^:]*:[^:]*:cluster:(.+)$/.exec(member.DBClusterArn ?? '')?.[1] ??
+              '(unnamed)'
+          );
+        if (own.IsWriter === true && others.length > 0) {
+          throw new GlobalClusterDetachError(
+            safeMsg`${physicalId} is the primary of global cluster ${globalClusterId}, which still has other members (${others.join(', ')}); detach or delete them first, then re-run`
+          );
+        }
+        break;
+      }
+      await backOff();
+    }
+
+    let globalBusySince: number | undefined;
+    for (;;) {
+      try {
+        await this.getClient().send(
+          new RemoveFromGlobalClusterCommand({
+            GlobalClusterIdentifier: globalClusterId,
+            DbClusterIdentifier: clusterArn,
+          })
+        );
+        progress.stripped = true;
+        this.logger.info(
+          beforeDelete
+            ? safeMsg`Detaching DocDB DBCluster ${logicalId} from global cluster ${globalClusterId} before the delete`
+            : safeMsg`Detaching DocDB DBCluster ${logicalId} from global cluster ${globalClusterId}: GlobalClusterIdentifier was removed`
+        );
+        break;
+      } catch (error) {
+        const name = awsErrorName(error);
+        if (name === 'GlobalClusterNotFoundFault') return false;
+        // The read above found it a member, so "not a member" now means an
+        // earlier send (an SDK replay) already detached it: the cluster is no
+        // longer the member its record describes (go-to-k/cdkd#4946).
+        if (name === 'DBClusterNotFoundFault') {
+          progress.stripped = true;
+          break;
+        }
+        // A global cluster that stays in a state refusing the detach (a
+        // primary with secondaries left, for one) is not waited on for the
+        // whole budget.
+        if (name === 'InvalidGlobalClusterStateFault') {
+          globalBusySince ??= Date.now();
+          if (Date.now() - globalBusySince >= GLOBAL_CLUSTER_BUSY_MAX_WAIT_MS) {
+            throw this.wrapGlobalClusterDetachError(
+              error,
+              mask,
+              (text) =>
+                safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${text})`
+            );
+          }
+        }
+        if (!TRANSIENT_DETACH_FAULTS.has(name)) {
+          throw this.wrapGlobalClusterDetachError(
+            error,
+            mask,
+            (text) =>
+              safeMsg`detaching ${physicalId} from global cluster ${globalClusterId} failed (${text})`
+          );
+        }
+        await backOff();
+      }
+    }
+
+    for (;;) {
+      const stillMember = await isMember(
+        (text) =>
+          safeMsg`could not confirm ${physicalId} left global cluster ${globalClusterId} (${text})`
+      );
+      if (stillMember === false) {
+        let after: DBCluster | undefined;
+        try {
+          after = await this.describeDBCluster(physicalId);
+        } catch (error) {
+          // A throttle is waited through like the detach's own reads; any
+          // other failure (a not-found included) is the caller's to classify.
+          if (!TRANSIENT_DETACH_FAULTS.has(awsErrorName(error))) throw error;
+          await backOff();
+          continue;
+        }
+        if (after === undefined) return true;
+        this.logger.debug(
+          safeMsg`DocDB DBCluster ${physicalId} status after the detach: ${after.Status}`
+        );
+        if (after.Status === 'available') return true;
+      }
+      await backOff();
     }
   }
 
@@ -1687,6 +2116,126 @@ export class DocDBProvider implements ResourceProvider {
         physicalId
       )
     );
+  }
+
+  /**
+   * go-to-k/cdkd#5628: what an update does about `GlobalClusterIdentifier`.
+   * ModifyDBCluster has no member for it. A real CloudFormation A/B
+   * (us-east-1, engine 5.0.0, 2026-11-02) measured the handler:
+   *
+   * - REMOVAL, or `""` (also measured), updates in place: the cluster is
+   *   detached from its global cluster and stays `available`, standalone, under
+   *   the same id. Here a template removal is `detach` (`detachFromGlobalCluster`,
+   *   which does nothing when the live cluster is no longer listed).
+   * - ADD or CHANGE fails ("Changing GlobalClusterIdentifier to a different
+   *   global cluster is not supported unless the cluster is already part of
+   *   the target global cluster"), measured from a non-member cluster and from
+   *   a member, which stays in its global cluster. Here a template add / change
+   *   is refused before any write, unless the live cluster is already part of
+   *   the target (`none`, no call). A state-borne one (a rollback of a forward
+   *   removal asks to re-join) cannot be applied either: it warns, and `keep`
+   *   records the previous side, so the record never claims a re-join.
+   * - A state-borne REMOVAL keeps a membership the live cluster shows. With add
+   *   / change refused unless the cluster is already part of the target, a
+   *   forward deploy can only have RECORDED a membership it found, never made
+   *   one, so restoring the pre-deploy state means leaving the cluster where it
+   *   is; a detach would be irreversible. One the live cluster does not show (a
+   *   refused add the rollback restores) is `none`: the record drops the key.
+   *
+   * A `drift --revert` readback never carries the key (it is a drift-unknown
+   * path), so its ABSENCE there is no change: `keep`, silently.
+   */
+  private async planGlobalClusterUpdate(
+    physicalId: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    origin: { stateBorne: boolean; physicalId?: string },
+    fromReadback: boolean
+  ): Promise<GlobalClusterUpdate> {
+    const desired = properties['GlobalClusterIdentifier'];
+    if (fromReadback && desired === undefined) {
+      return previousProperties['GlobalClusterIdentifier'] !== undefined
+        ? { kind: 'keep' }
+        : { kind: 'none' };
+    }
+    const readable = readableGlobalClusterId(desired);
+    const desiredId = docdbGlobalClusterId(desired);
+    const previousId = docdbGlobalClusterId(previousProperties['GlobalClusterIdentifier']);
+    if (readable && desiredId === previousId) return { kind: 'none' };
+    // `""` reads as no global cluster, and detaches like a removal: the
+    // CloudFormation A/B measured `""` on a member detaching in place.
+    if (readable && desiredId === undefined && previousId !== undefined) {
+      if (origin.stateBorne) {
+        // Only a membership the live cluster SHOWS is kept. A record naming one
+        // it does not (a refused add, restored by --revert-failed with the
+        // attempted bag as previous) would otherwise disable the next deploy's
+        // refusal. An unreadable listing answers false: recording no membership
+        // is self-correcting (the next add re-reads live), recording a false one
+        // is not.
+        const member = await this.liveGlobalClusterMatches(physicalId, previousId);
+        if (member === undefined) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): the cluster's membership of global cluster ${previousId} could not be read, so the record treats it as absent; if it is still a member, a later destroy may need aws docdb remove-from-global-cluster first.`
+          );
+        }
+        if (member !== true) return { kind: 'none' };
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the restored state has no GlobalClusterIdentifier, but cdkd did not add the cluster to global cluster ${previousId} (it was already a member), so it leaves it there.`
+        );
+        return { kind: 'keep' };
+      }
+      return { kind: 'detach', globalClusterId: previousId };
+    }
+    if (readable && (await this.liveGlobalClusterMatches(physicalId, desiredId)) === true) {
+      return { kind: 'none' };
+    }
+    const text = readable
+      ? 'Changing GlobalClusterIdentifier to a different global cluster is not supported unless the cluster is already part of the target global cluster (CloudFormation refuses it too). To join a different global cluster, replace the cluster, for example with a new DBClusterIdentifier'
+      : 'GlobalClusterIdentifier is not a string';
+    if (!origin.stateBorne) this.refuseBlock(logicalId, resourceType, physicalId, text);
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): ${text}; the cluster keeps its current global cluster membership.`
+    );
+    return { kind: 'keep' };
+  }
+
+  /**
+   * Whether the live cluster's global cluster is `desiredId` (`undefined`:
+   * none). Every global cluster is listed, as a cluster can be in at most one.
+   * A failed read answers `undefined` (unknown), which callers keep apart from
+   * `false`: an add keeps its refusal on either.
+   */
+  private async liveGlobalClusterMatches(
+    physicalId: string,
+    desiredId: string | undefined
+  ): Promise<boolean | undefined> {
+    try {
+      const arn = (await this.describeDBCluster(physicalId))?.DBClusterArn;
+      if (typeof arn !== 'string' || arn === '') return undefined;
+      let liveId: string | undefined;
+      let marker: string | undefined;
+      do {
+        const page = await this.getClient().send(
+          new DescribeGlobalClustersCommand({ ...(marker !== undefined && { Marker: marker }) })
+        );
+        const holder = (page.GlobalClusters ?? []).find((global) =>
+          (global.GlobalClusterMembers ?? []).some((member) => member.DBClusterArn === arn)
+        );
+        if (holder !== undefined) {
+          liveId = holder.GlobalClusterIdentifier;
+          break;
+        }
+        marker = page.Marker;
+      } while (marker);
+      return liveId === desiredId;
+    } catch (error) {
+      this.logger.debug(
+        safeMsg`Could not read a DocDB cluster's global cluster membership: ${describeAwsFailure(error).summary}`
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -2389,7 +2938,8 @@ export class DocDBProvider implements ResourceProvider {
   }
 
   /**
-   * What no read answers for drift. `RotateMasterUserPassword` and
+   * What no read answers for drift. `GlobalClusterIdentifier` is not on the
+   * DescribeDBClusters answer (go-to-k/cdkd#5628). `RotateMasterUserPassword` and
    * `CertificateRotationRestart` are per-call requests. `AvailabilityZones` is
    * create-only, and DescribeDBClusters reports the zones AWS placed the cluster
    * in. `MasterUserSecretKmsKeyId` may be declared as an alias or key id, where
@@ -2397,7 +2947,12 @@ export class DocDBProvider implements ResourceProvider {
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType === 'AWS::DocDB::DBCluster') {
-      return ['AvailabilityZones', 'MasterUserSecretKmsKeyId', 'RotateMasterUserPassword'];
+      return [
+        'AvailabilityZones',
+        'GlobalClusterIdentifier',
+        'MasterUserSecretKmsKeyId',
+        'RotateMasterUserPassword',
+      ];
     }
     if (resourceType === 'AWS::DocDB::DBInstance') return ['CertificateRotationRestart'];
     return [];

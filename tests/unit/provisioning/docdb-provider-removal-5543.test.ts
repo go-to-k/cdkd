@@ -271,7 +271,9 @@ describe('DocDBProvider removal of CloudFormation-kept properties (#5543)', () =
     );
 
     const input = sentInput('ModifyDBClusterCommand');
-    expect(input['EngineVersion']).toBe('5.0.0');
+    // An unchanged EngineVersion is not re-sent (go-to-k/cdkd#5628): AWS
+    // refuses one on a cluster with no healthy primary instance.
+    expect(input['EngineVersion']).toBeUndefined();
     expect(input['PreferredBackupWindow']).toBe('08:00-09:00');
     expect(input['PreferredMaintenanceWindow']).toBe('sun:10:00-sun:10:30');
     expect(input['DBClusterParameterGroupName']).toBe('custom-docdb50');

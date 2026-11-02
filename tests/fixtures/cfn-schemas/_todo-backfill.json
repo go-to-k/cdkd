@@ -24,7 +24,6 @@
   ],
   "types": {
     "AWS::DocDB::DBCluster": [
-      "GlobalClusterIdentifier",
       "RestoreToTime",
       "RestoreType",
       "SnapshotIdentifier",

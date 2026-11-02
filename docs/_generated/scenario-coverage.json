@@ -908,6 +908,11 @@
       "scenarios": []
     },
     {
+      "name": "docdb-global-cluster",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "docdb-neptune",
       "annotated": true,
       "scenarios": []
@@ -3557,6 +3562,7 @@
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",
+    "docdb-global-cluster",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",

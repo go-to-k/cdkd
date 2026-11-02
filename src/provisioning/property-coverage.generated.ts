@@ -925,6 +925,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DeletionProtection',
         'EnableCloudwatchLogsExports',
         'EngineVersion',
+        'GlobalClusterIdentifier',
         'KmsKeyId',
         'ManageMasterUserPassword',
         'MasterUsername',
@@ -942,7 +943,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
       ]),
       silentDrop: new Map<string, string>([
-        ['GlobalClusterIdentifier', 'not yet implemented by cdkd'],
         ['RestoreToTime', 'not yet implemented by cdkd'],
         ['RestoreType', 'not yet implemented by cdkd'],
         ['SnapshotIdentifier', 'not yet implemented by cdkd'],
