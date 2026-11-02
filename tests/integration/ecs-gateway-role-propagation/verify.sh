@@ -129,6 +129,14 @@ cleanup() {
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
     rc=$?
+    if [ "${rc}" != "0" ]; then
+      # A gateway Cloud Control created but state never recorded holds its
+      # ALB in the public subnets, so the subnet / VPC deletes above fail.
+      # Remove it, then destroy what state still records once more.
+      sweep_owned
+      node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
+      rc=$?
+    fi
   else
     rc=0
   fi
@@ -212,15 +220,23 @@ fi
 RETRY_LINES="$(grep -E 'Retrying Gateway in .*\(attempt [0-9]+/[0-9]+' <<< "${DEPLOY_PLAIN}" || true)"
 RETRY_LINE_COUNT="$(grep -c . <<< "${RETRY_LINES}" || true)"
 echo "    gateway retry lines during phase 1: ${RETRY_LINE_COUNT} (debug lines captured: ${DEBUG_LINES})"
+WORDING_RETRIES=0
 while IFS= read -r wording; do
   [ -n "${wording}" ] || continue
-  echo "      $(grep -cF "${wording}" <<< "${RETRY_LINES}" || true)  ${wording}"
+  n="$(grep -cF "${wording}" <<< "${RETRY_LINES}" || true)"
+  WORDING_RETRIES=$((WORDING_RETRIES + n))
+  echo "      ${n}  ${wording}"
 done <<'PROPAGATION_WORDINGS'
 Could not assume the infrastructure role
 AWS was not able to validate the provided access credentials (Service: Ecs,
 PROPAGATION_WORDINGS
-if [ "${RETRY_LINE_COUNT}" = "0" ]; then
-  echo "    NOTE: go-to-k/cdkd#5661: the gateway create was not rejected this run (the role propagated in time), so this run did not exercise the retry"
+# Keyed on the two #5661 wordings, not on every retry line: a run retried only
+# on some other transient (a throttle) did not exercise #5661 either. States
+# what was observed, not why.
+if [ "${WORDING_RETRIES}" = "0" ]; then
+  echo "    NOTE: go-to-k/cdkd#5661: no gateway retry line carried either #5661 wording this run, so this run did not exercise the retry"
+else
+  echo "    OK: go-to-k/cdkd#5661: the gateway create was retried ${WORDING_RETRIES} time(s) on the #5661 wordings and then succeeded"
 fi
 
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
