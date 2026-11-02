@@ -1902,7 +1902,17 @@ export class RDSProvider implements ResourceProvider {
       // go-to-k/cdkd#5639: CloudFormation reports the update once no change is
       // pending; a later read of the old list would also be a phantom drift.
       if (!noWait && logExportConfig !== undefined) {
-        await this.waitForClusterLogExportsApplied(physicalId, logicalId, logExportConfig);
+        await this.waitForClusterState(
+          logicalId,
+          physicalId,
+          (cluster) =>
+            logExportsApplied(
+              logExportConfig,
+              cluster.EnabledCloudwatchLogsExports,
+              cluster.PendingModifiedValues?.PendingCloudwatchLogsExports
+            ),
+          'CloudWatch Logs exports'
+        );
       }
 
       // Describe to get updated attributes
@@ -3367,14 +3377,15 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#5639: wait until the cluster lists the log types a
-   * ModifyDBCluster enabled and none it disabled, with nothing pending. The
-   * budget is the resource's own deadline, 30 minutes when none is in scope.
+   * Poll a DBCluster until `done` holds, as {@link waitForInstanceState} does
+   * for an instance: a missing cluster or a terminal status fails at once, and
+   * the budget is the resource's own deadline, 30 minutes when none is in scope.
    */
-  private async waitForClusterLogExportsApplied(
-    dbClusterIdentifier: string,
+  private async waitForClusterState(
     logicalId: string,
-    config: CloudwatchLogsExportConfiguration
+    dbClusterIdentifier: string,
+    done: (cluster: DBCluster) => boolean,
+    change: string
   ): Promise<void> {
     const remaining = enclosingDeadlineRemainingMs();
     const maxWaitMs = Number.isFinite(remaining) ? remaining : 1_800_000;
@@ -3384,26 +3395,16 @@ export class RDSProvider implements ResourceProvider {
       const cluster = this.requireClusterWhileWaiting(
         await this.describeDBCluster(dbClusterIdentifier),
         logicalId,
-        'CloudWatch Logs exports'
+        change
       );
-      if (
-        logExportsApplied(
-          config,
-          cluster.EnabledCloudwatchLogsExports,
-          cluster.PendingModifiedValues?.PendingCloudwatchLogsExports
-        )
-      ) {
-        return;
-      }
+      if (done(cluster)) return;
       this.logger.debug(
-        safeMsg`DBCluster ${logicalId} CloudWatch Logs exports not applied yet (status ${cluster.Status ?? 'unknown'})`
+        safeMsg`DBCluster ${logicalId} waiting for its ${change} (status ${cluster.Status ?? 'unknown'})`
       );
       await this.sleep(delay);
       delay = Math.min(delay * 2, 10_000);
     }
-    throw new Error(
-      `Timed out waiting for DBCluster ${logicalId} to apply its CloudWatch Logs exports`
-    );
+    throw new Error(safeMsg`Timed out waiting for DBCluster ${logicalId}'s ${change}`);
   }
 
   /**
@@ -4023,11 +4024,16 @@ export class RDSProvider implements ResourceProvider {
     if (parameterGroupName !== undefined) result['DBParameterGroupName'] = parameterGroupName;
     // go-to-k/cdkd#5640: emitted only when non-empty, as an instance exporting
     // nothing reads; compared order-insensitively (`getDriftUnorderedPaths`).
-    const instanceLogs = liveLogExports(
-      inst.EnabledCloudwatchLogsExports,
-      inst.PendingModifiedValues?.PendingCloudwatchLogsExports
-    );
-    if (instanceLogs.length > 0) result['EnableCloudwatchLogsExports'] = instanceLogs;
+    // Not for a cluster member: DescribeDBInstances reports the CLUSTER's list
+    // there (read on DocDB and Neptune members, the same API), which the
+    // cluster owns, so a member's baseline would go stale on a cluster change.
+    if (inst.DBClusterIdentifier === undefined) {
+      const instanceLogs = liveLogExports(
+        inst.EnabledCloudwatchLogsExports,
+        inst.PendingModifiedValues?.PendingCloudwatchLogsExports
+      );
+      if (instanceLogs.length > 0) result['EnableCloudwatchLogsExports'] = instanceLogs;
+    }
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }

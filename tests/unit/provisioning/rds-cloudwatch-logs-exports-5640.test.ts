@@ -361,6 +361,17 @@ describe.each(SIDES)('RDSProvider $type EnableCloudwatchLogsExports', (side) => 
       expect(state['EnableCloudwatchLogsExports']).toEqual(['postgresql', 'iam-db-auth-error']);
     });
 
+    it("omits a cluster member's list: RDS reports the cluster's, which the cluster owns", async () => {
+      arm([{ DBClusterIdentifier: 'c-1', EnabledCloudwatchLogsExports: ['postgresql'] }]);
+      const state = (await provider.readCurrentState(side.id, 'L', side.type)) as Input;
+      if (side.type === INSTANCE) {
+        expect(state).not.toHaveProperty('EnableCloudwatchLogsExports');
+      } else {
+        // A cluster's own read is unaffected by the field.
+        expect(state['EnableCloudwatchLogsExports']).toEqual(['postgresql']);
+      }
+    });
+
     it('omits the key when nothing is exported', async () => {
       arm([{ EnabledCloudwatchLogsExports: [] }]);
       const empty = (await provider.readCurrentState(side.id, 'L', side.type)) as Input;

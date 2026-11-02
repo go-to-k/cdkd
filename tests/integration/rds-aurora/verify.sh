@@ -296,6 +296,15 @@ cleanup() {
   if [ -n "${OOB_INSTANCE_ID}" ]; then
     delete_oob_instance "${OOB_INSTANCE_ID}" || true
   fi
+  # go-to-k/cdkd#5639: RDS creates one log group per exported log type and
+  # deletes none of them with the cluster. Named exactly, never swept by
+  # prefix; RDS names them by the lower-cased identifier. On the pre-run pass,
+  # the cluster a leftover state record names.
+  LOG_CLUSTER_ID="${DB_CLUSTER_ID}"
+  if [ -z "${LOG_CLUSTER_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    LOG_CLUSTER_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.physicalId // empty] | first // ""')
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture
@@ -341,15 +350,8 @@ cleanup() {
         || echo "WARN: cleanup could not delete the #2762 parameter group ${PARAMS_NAME}: ${PARAMS_DELETE_OUT}" >&2
     fi
   fi
-  # go-to-k/cdkd#5639: RDS creates one log group per exported log type and
-  # deletes none of them with the cluster. Named exactly, never swept by
-  # prefix; RDS names them by the lower-cased identifier. On the pre-run pass,
-  # the cluster a leftover state record names.
-  LOG_CLUSTER_ID="${DB_CLUSTER_ID}"
-  if [ -z "${LOG_CLUSTER_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
-    LOG_CLUSTER_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
-      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.physicalId // empty] | first // ""')
-  fi
+  # go-to-k/cdkd#5639: the exported-log groups RDS created; resolved above,
+  # before `state destroy` deleted the record.
   if [ -n "${LOG_CLUSTER_ID}" ]; then
     LOG_CLUSTER_LOWER=$(printf '%s' "${LOG_CLUSTER_ID}" | tr '[:upper:]' '[:lower:]')
     for log_type in postgresql iam-db-auth-error; do
