@@ -884,6 +884,11 @@
       ]
     },
     {
+      "name": "destroy-failed-delete-keeps-dependencies",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "destroy-interrupt",
       "annotated": true,
       "scenarios": [
@@ -3586,6 +3591,7 @@
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "custom-resource-service-token-change",
+    "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",

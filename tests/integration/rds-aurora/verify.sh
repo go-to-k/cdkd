@@ -1206,15 +1206,16 @@ echo "    OK: the forced Engine swap replaced ${ENGINE_CLUSTER_OLD} with ${ENGIN
 # The discriminator is the READBACK, not cdkd's output: before #2204 the flip
 # was never undone, so the cluster reads DeletionProtection=false here.
 #
-# COST, stated so a slow run is not read as a hang. cdkd's destroy has no
-# per-resource target and its level loop does not stop at a failure, so this
-# destroy deletes everything it can (the L2 AuroraCluster, the proxy family,
-# both IAM roles) and keeps going below the refused SecurityCluster. Its
-# subnet group, the shared SG, the subnets and the VPC are still held by the
-# out-of-band member's ENI and answer DependencyViolation, which the EC2
-# provider and the destroy loop both retry: expect this phase to add tens of
-# minutes. The failure-set assertion below proves nothing ELSE failed along
-# the way, and phase 3 deletes what is left.
+# What this destroy deletes: cdkd's destroy has no per-resource target, so it
+# deletes everything the refused SecurityCluster does not depend on (the L2
+# AuroraCluster, the proxy family). Since go-to-k/cdkd#5670 it keeps what the
+# refused cluster still references after phase 2, directly or through others
+# (its parameter group and subnet group, and the subnets and VPC behind
+# them), as CloudFormation's DELETE_FAILED does, and counts them as blocked.
+# Anything else the out-of-band member's ENI holds (the shared SG) answers
+# DependencyViolation, which the EC2 provider and the destroy loop retry, so
+# this phase can still take several minutes. The failure-set assertion below proves nothing ELSE failed
+# along the way, and phase 3 deletes what is left.
 echo "==> Phase 2b: --remove-protection compensation after a terminal delete failure (issue #2204)"
 # The guard is already ON: phase 1 set it and phase 2 KEPT it (#5004), so no
 # out-of-band flip is needed; the premise check below pins it.
@@ -1233,11 +1234,12 @@ if [ "${PRE_PROTECTION}" != "true" ]; then
   exit 1
 fi
 
-# The destroy below deletes SecurityMonitoringRole (a lower DAG level than the
-# refused cluster), after which phase 3 has to MODIFY a cluster whose
-# MonitoringRoleArn names a role that no longer exists. Turn Enhanced
-# Monitoring off first, so phase 3's flip and cleanup's raw flip-off never
-# depend on RDS accepting a cluster in that state. The #609 monitoring
+# The destroy below deletes SecurityMonitoringRole: phase 2's template no
+# longer references it from the cluster, so it is not one of the refused
+# cluster's dependencies the destroy keeps (go-to-k/cdkd#5670). Phase 3 then
+# has to MODIFY a cluster whose MonitoringRoleArn names a role that no longer
+# exists. Turn Enhanced Monitoring off first, so phase 3's flip and cleanup's
+# raw flip-off never depend on RDS accepting a cluster in that state. The #609 monitoring
 # assertions ran in phase 1, so nothing later reads these fields.
 aws rds modify-db-cluster --db-cluster-identifier "${DB_CLUSTER_ID}" \
   --region "${REGION}" --monitoring-interval 0 --apply-immediately >/dev/null

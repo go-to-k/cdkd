@@ -90,18 +90,26 @@ To see the same list without starting a destroy, run
                                  ─▶ state.json kept with what is left, exit 2
 ```
 
-Each resource ends in one of four ways, and the summary line counts them:
+Each resource ends in one of five ways, and the summary line counts them:
 
 | Summary line | The resource in AWS | Its entry in the state record |
 | --- | --- | --- |
 | `N deleted` | Gone | Removed |
 | `N retained` | Kept, because of `DeletionPolicy: Retain` | Removed |
 | `N skipped` | May still exist | Kept |
+| `N blocked` | Kept, not deleted | Kept |
 | `N errors` | May still exist | Kept |
+
+When a delete fails, cdkd does not delete the resources that resource depends
+on, directly or through others. They are counted as `blocked`.
+CloudFormation's `DELETE_FAILED` keeps them too: the failed resource may still
+need them to be deleted later, as an ECS gateway needs its infrastructure
+role. Resources that the failed resource does not depend on are still deleted.
 
 A run with skipped resources or errors exits `2` and keeps `state.json`, cut
 down to the resources that are left. Running the same command again continues
-from there. A failed delete is retried by the re-run. A
+from there. A failed delete is retried by the re-run, and the blocked resources
+are deleted once it succeeds. A
 [skipped resource](cli-destroy-skipped.md) needs its state entry repaired
 first.
 

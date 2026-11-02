@@ -382,9 +382,11 @@ echo "[verify] step 4 ok: state preserved"
 # first"), which matches no retryable pattern. The NLB is the same arm for
 # ELBv2's deletion_protection.enabled: an out-of-band VPC endpoint service
 # backed by it makes DeleteLoadBalancer refuse ("currently associated with
-# another service"), terminal too. The rest of the stack is deleted by this
-# destroy, except the VPC pieces the surviving NLB holds; step 5 then deletes
-# what is left.
+# another service"), terminal too. This destroy deletes the rest of the stack
+# except what the two refused resources depend on: since go-to-k/cdkd#5670
+# those (the NLB's subnets and the VPC behind them among them) are kept and
+# counted as blocked, as CloudFormation's DELETE_FAILED keeps them. Step 5
+# then deletes what is left.
 #
 # The log group has no counterpart arm: no DeleteLogGroup refusal that is both
 # TERMINAL and constructible from outside exists (an IAM deny reads "not
