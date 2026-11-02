@@ -501,7 +501,7 @@ const INSTANCE_CASE: TypeCase = {
       },
     },
     {
-      name: 'network type, license, promotion tier, Database Insights, log volume and the major-version flag (go-to-k/cdkd#2762)',
+      name: 'network type, license, promotion tier, Database Insights, log volume, parameter group and the major-version flag (go-to-k/cdkd#2762)',
       bag: {
         DBInstanceIdentifier: INSTANCE_ID,
         DBInstanceClass: 'db.m6g.large',
@@ -512,6 +512,7 @@ const INSTANCE_CASE: TypeCase = {
         DatabaseInsightsMode: 'advanced',
         DedicatedLogVolume: true,
         AllowMajorVersionUpgrade: true,
+        DBParameterGroupName: 'pg-1',
       },
       expectedSilent: {
         ...INSTANCE_ENGINE_SILENT,
@@ -526,6 +527,7 @@ const INSTANCE_CASE: TypeCase = {
             'DatabaseInsightsMode',
             'DedicatedLogVolume',
             'AllowMajorVersionUpgrade',
+            'DBParameterGroupName',
           ].map((key) => [`update-remove:${key}`, CFN_DIFF_KEPT(key)])
         ),
       },
