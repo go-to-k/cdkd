@@ -3449,6 +3449,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({}); // UpdateTable (replica Update)
       mockSend.mockResolvedValueOnce({
         Table: {
+          TableStatus: 'ACTIVE',
           Replicas: [
             { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
             { RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' },
