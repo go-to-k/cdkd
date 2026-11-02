@@ -25,9 +25,9 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 **The `backfill-type` exclusion is load-bearing** (#2949): a
 slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
 
-To WORK the campaign, take the umbrella (`gh issue list --label
-backfill-umbrella`), wire one type, write `Refs` (`filing.md` §5-f); §4's
-claim comment still applies.
+To WORK the campaign, take a type's own issue (`gh issue list --label
+backfill-type`) and read its comments, which hold the claims and measurements;
+§4's claim comment goes there, and `filing.md` §5-f says when to write `Closes`.
 
 ## 2. Map the collision landscape
 

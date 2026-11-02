@@ -4,16 +4,16 @@ paths:
   - 'scripts/refresh-cfn-schemas.mjs'
   - 'scripts/diagnose-schema-refresh.mjs'
   - 'scripts/diagnose-schema-refresh.d.mts'
-  - 'scripts/sync-backfill-umbrella.ts'
+  - 'scripts/sync-backfill-issues.ts'
   - 'scripts/offline-property-evidence.ts'
   - 'scripts/published-sdk-typings.ts'
   - '.github/workflows/cfn-schema-refresh.yml'
-  - '.github/workflows/backfill-umbrella-sync.yml'
+  - '.github/workflows/backfill-issues-sync.yml'
   - 'tests/unit/scripts/refresh-cfn-schemas-zip.test.ts'
   - 'tests/unit/scripts/cfn-schema-refresh-workflow.test.ts'
-  - 'tests/unit/scripts/backfill-umbrella-sync-workflow.test.ts'
+  - 'tests/unit/scripts/backfill-issues-sync-workflow.test.ts'
   - 'tests/unit/scripts/umbrella-checklist-no-deps.test.ts'
-  - 'tests/unit/scripts/sync-backfill-umbrella.test.ts'
+  - 'tests/unit/scripts/sync-backfill-issues.test.ts'
   - 'tests/unit/scripts/diagnose-schema-refresh.test.ts'
 ---
 
@@ -106,7 +106,7 @@ open, not only on drift.
 ## The backfill campaign
 
 The refresh job does NOT write the backfill campaign's issue;
-`.github/workflows/backfill-umbrella-sync.yml` reconciles it on every `push` to
+`.github/workflows/backfill-issues-sync.yml` reconciles it on every `push` to
 `main` touching `src/provisioning/property-coverage.generated.ts` — the exact
 path filter, since `parseSilentDropByType` reads that file and nothing else.
 Driving it from `main` rather than from the refresh RUN is what keeps it
@@ -114,23 +114,19 @@ describing a state that exists; that also took `issues: write` off the repo's
 only unattended `contents: write` job
 ([#2774](https://github.com/go-to-k/cdkd/issues/2774)).
 
-- **ONE issue.** `scripts/sync-backfill-umbrella.ts` rewrites a GENERATED BLOCK
-  between `<!-- backfill-types:start -->` and `<!-- backfill-types:end -->` in
-  the umbrella's body, one `- [ ] ` row per resource type, and everything
-  OUTSIDE those markers — the audit provenance a PR closing a slice writes — is
-  carried through byte for byte. Its refusals FAIL the run rather than warning:
-  each guards a write onto the campaign's only public page.
-- The block is DELIMITED rather than the body being rewritten whole, because a
-  generated region that can reach human provenance is the only write here that
-  could destroy something no run can recompute
-  ([#2998](https://github.com/go-to-k/cdkd/issues/2998)).
-- One issue, not one per type: a per-type set is indistinguishable from unfixed
-  defects in the open-issue count. A PR writes `Refs` and its row disappears on
-  its own.
-- The `backfill-type` label is LEGACY: nothing generates it, and it stays on each
-  slice the one-shot migration (`node scripts/sync-backfill-umbrella.ts
-  --close-legacy`, run by hand) closes — that pass skips any labelled issue whose
-  body carries no generated marker, since that is something a person filed.
+- **One generated issue per type, no parent.**
+  `scripts/sync-backfill-issues.ts` creates, updates and closes the issues
+  labelled `backfill-type` (matched by their `<!-- backfill-type: … -->` marker);
+  each body carries the procedure. A type that regains a property gets a NEW
+  issue ending `Previous issue: #N`, never a reopen. Its refusals FAIL the run
+  rather than warning: each guards a mutation across dozens of public issues.
+- Every line of a sub-issue BODY is generated; comments are never touched, so
+  claims, measurements and decisions live there.
+- The shape has moved twice. go-to-k/cdkd#2949 made the per-type issues;
+  go-to-k/cdkd#3423 folded them into one checklist because generated slices
+  count as open issues; that one thread then reached 117 comments and buried an
+  outside contributor's exchange, so the per-type issues came back without a
+  parent, accepting the open-issue count as the cost.
 - **The campaign is about ROUTING, not loss**: an unwired property auto-routes
   the whole resource through Cloud Control, which forwards the full map
   ([#614](https://github.com/go-to-k/cdkd/issues/614)), so backfilling restores
@@ -188,9 +184,9 @@ CONTROL twin so a report-everything checker cannot pass both);
 open-PR guard and the branch construction share one branch prefix — a drift
 there lets every cycle open a competing PR); `umbrella-checklist-no-deps.test.ts`
 (every render-only mode SPAWNED with no `node_modules`, plus a control restoring
-the static import); `backfill-umbrella-sync-workflow.test.ts` and
-`sync-backfill-umbrella.test.ts` (trigger exactness, the two-scope permission
-grant, and both halves' refusals — no wipe of a live checklist, no missing or
+the static import); `backfill-issues-sync-workflow.test.ts` and
+`sync-backfill-issues.test.ts` (trigger exactness, the two-scope permission
+grant, and both halves' refusals — no mass-close on an empty plan, no missing or
 duplicated marker, no write on an unchanged run); and
 `schema-refresh-decision-ci-coverage.test.ts`, which owns the CROSS-workflow
 relation the others cannot see. NO AWS integ (pure capture + static analysis).
