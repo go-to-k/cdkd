@@ -16,9 +16,11 @@
 `integ-destroy`-scoped file.** A lane runs no integ (it still runs `triage.md`'s
 throwaway CFn change set itself: never brief it down to read-only probes,
 #5401), so only the parent finds an integ-time AWS-side rejection:
-run a NEW arm once EARLY too, as soon as the lane has written it, between review
-rounds (never during a `src` fix round); that run sets no marker and is no §8-d
-proof — a new arm's first AWS contact can reject its shape (#4618). Sequence:
+run a NEW arm once EARLY too, as soon as the lane has written it, from a
+`--detach` sibling at the pushed sha (§8-d's `worktree add`, no revert): its own
+`dist/` and `verify.sh`, so no fix round waits on it (#2762). That run sets no
+marker and is no §8-d proof — a new arm's first AWS contact can reject its shape
+(#4618). Sequence:
 dispatch reviewers → (new arm: early run) → apply EVERY finding, nits included →
 §8-d probe → rebase → integ → marker (rebase AFTER the probe: an hour-long
 probe stales the base, #5475). A UNIT-test-only fix round may overlap the parent's
@@ -34,8 +36,8 @@ rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES (a code path its run takes, not merely a file it loads; #4683):
 re-run it on the rebased head (#3726).
 
-- **DECLARE the tree final, in words, to whoever is still editing it** — every
-  scoped touch buys another real-AWS run. The one exception to §8-h's "nits
+- **DECLARE the tree final, in words, to whoever is still editing it.** The one
+  exception to §8-h's "nits
   included": a COMMENT-ONLY nit found after the integ may ride this run's next
   lane on that file, whose integ re-runs anyway, named in that lane's PR body
   (#3977); with no such lane, fix it here and re-run. Scope the reviewers to the
@@ -44,11 +46,9 @@ re-run it on the rebased head (#3726).
 
 ### 8-c. The live-test tiers
 
-Run `/verify-pr`: it adds CI, docs, cleanup, review and a **live-test of the
-changed behavior** to `/check`.
-Run `/check-docs` ONCE per PR, at the FINAL sha: it is the required step for
-SEMANTIC docs consistency, because CI covers only the structural checks. Unit
-tests passing is necessary but NOT sufficient:
+Run `/verify-pr`, which adds a **live-test of the changed behavior** to `/check`.
+Run `/check-docs` ONCE per PR, at the FINAL sha: CI covers only the structural
+checks. Unit tests passing is necessary but NOT sufficient:
 
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
   integ's **destroy** step completes cleanly (`integ-destroy`); a CROSS-CUTTING
@@ -104,8 +104,8 @@ the throwaway tree only, never the PR, and re-run (#5414), at most two such work
 re-run (#5218). A refusal at the arm's OWN deploy, emitted by the route the
 fix replaces while the fixed route accepts the shape, IS the symptom (#5507);
 one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
-(#4927). A failure HINT's needle is
-copied from that red run, never reasoned (#4336); a refusal the
+(#4927). A failure HINT's needle, or a provider retry regex's, is
+copied from a real red run, never reasoned (#4336, #5592); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert in a
 THROWAWAY detached tree at the PUSHED final sha, never the lane's** — there is
@@ -146,8 +146,8 @@ test. Two more vacuity shapes:
 
 ### 8-e. Watching runs and pollers
 
-**Never leave a real-AWS run unwatched** — a hung integ is indistinguishable
-from a slow one; `/run-integ` step 5 carries the watchdog recipe. **ANCHOR the
+**Never leave a real-AWS run unwatched**: `/run-integ` step 5 carries the
+watchdog recipe. **ANCHOR the
 predicate a poller waits on**: a line written only at the END
 (`grep -q "^suite_rc="` — unanchored, `test_rc=` matches `typecheck_test_rc=`)
 plus `kill -0 <YOUR run's PID>`, never `pgrep -f <name>`, which also matches
@@ -158,8 +158,7 @@ SOLE command.
 
 ### 8-f. Fixture environment prechecks
 
-**Check a fixture's unstated PRECONDITIONS before spending a run** — they
-refuse rather than explain:
+**Check a fixture's unstated PRECONDITIONS before spending a run**:
 
 ```bash
 aws s3api head-bucket --bucket "cdk-hnb659fds-assets-<acct>-<region>"   # bootstrapped?
@@ -208,7 +207,8 @@ merge-ready, ONCE, on the final sha — brief each reviewer with the maintainer'
 design answers and "what does this break that CFn or the CDK CLI accepts?" (a
 redaction slice adds: "sweep every helper that returns or mutates the ORIGINAL
 SDK error after the try — created-before-failure cleanup, orphan notes, retire
-paths", #5161), to read by explicit sha after
+paths", #5161; a state machine adds the table to walk: path × previous side ×
+desired side, #5611), to read by explicit sha after
 `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
 shared across worktrees, `fetch.prune` DELETES a ref fetched from the short
 `pull/<N>/head`, and without `+` a force-push is rejected. A later fix round goes to the same reviewer with the delta. **The reviewer set is
