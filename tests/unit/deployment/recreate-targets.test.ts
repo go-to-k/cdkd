@@ -184,49 +184,49 @@ describe('validateRecreateTargets (#615)', () => {
     it('reports overlap when the same Type:Prop is in both flags AND template uses the property', () => {
       const template: CloudFormationTemplate = {
         Resources: {
-          MyLambda: {
-            Type: 'AWS::Lambda::Function',
+          MyApi: {
+            Type: 'AWS::ApiGatewayV2::Api',
             Properties: {
-              FunctionName: 'foo',
-              FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 }, // silent-drop property
+              Name: 'foo',
+              Body: { openapi: '3.0.1' }, // silent-drop property
             },
           },
         },
       };
-      const state = st('S', { MyLambda: res('AWS::Lambda::Function') });
+      const state = st('S', { MyApi: res('AWS::ApiGatewayV2::Api') });
       const v = validateRecreateTargets({
         template,
         state,
-        recreateViaCcApi: ['MyLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
+        recreateViaCcApi: ['MyApi'],
+        allowUnsupportedProperties: new Set(['AWS::ApiGatewayV2::Api:Body']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([
-        { logicalId: 'MyLambda', resourceType: 'AWS::Lambda::Function', property: 'FunctionScalingConfig' },
+        { logicalId: 'MyApi', resourceType: 'AWS::ApiGatewayV2::Api', property: 'Body' },
       ]);
       const error = renderRecreateTargetsErrors(v);
       expect(error).toContain('Ambiguous intent');
-      expect(error).toContain('FunctionScalingConfig');
+      expect(error).toContain('Body');
       expect(error).toMatch(/pick ONE strategy per resource/);
     });
 
     it('does NOT report overlap when --allow-unsupported-properties names a different property than the template uses', () => {
       const template: CloudFormationTemplate = {
         Resources: {
-          MyLambda: {
-            Type: 'AWS::Lambda::Function',
-            Properties: { FunctionName: 'foo', FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
+          MyApi: {
+            Type: 'AWS::ApiGatewayV2::Api',
+            Properties: { Name: 'foo', Body: { openapi: '3.0.1' } },
           },
         },
       };
-      const state = st('S', { MyLambda: res('AWS::Lambda::Function') });
-      // Allow-set covers SnapStart, not FunctionScalingConfig — the template's
-      // actual silent-drop property is FunctionScalingConfig, so no overlap fires.
+      const state = st('S', { MyApi: res('AWS::ApiGatewayV2::Api') });
+      // Allow-set covers Name, not Body — the template's
+      // actual silent-drop property is Body, so no overlap fires.
       const v = validateRecreateTargets({
         template,
         state,
-        recreateViaCcApi: ['MyLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:SnapStart']),
+        recreateViaCcApi: ['MyApi'],
+        allowUnsupportedProperties: new Set(['AWS::ApiGatewayV2::Api:Name']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([]);
@@ -235,18 +235,18 @@ describe('validateRecreateTargets (#615)', () => {
     it('does NOT report overlap when the template has no silent-drop property at all (override is a no-op)', () => {
       const template: CloudFormationTemplate = {
         Resources: {
-          PlainLambda: {
-            Type: 'AWS::Lambda::Function',
-            Properties: { FunctionName: 'foo' /* no FunctionScalingConfig */ },
+          PlainApi: {
+            Type: 'AWS::ApiGatewayV2::Api',
+            Properties: { Name: 'foo' /* no Body */ },
           },
         },
       };
-      const state = st('S', { PlainLambda: res('AWS::Lambda::Function') });
+      const state = st('S', { PlainApi: res('AWS::ApiGatewayV2::Api') });
       const v = validateRecreateTargets({
         template,
         state,
-        recreateViaCcApi: ['PlainLambda'],
-        allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
+        recreateViaCcApi: ['PlainApi'],
+        allowUnsupportedProperties: new Set(['AWS::ApiGatewayV2::Api:Body']),
         forceStatefulRecreation: false,
       });
       expect(v.ambiguousIntent).toEqual([]);
@@ -462,25 +462,25 @@ describe('validateRecreateTargets (#615)', () => {
     const template: CloudFormationTemplate = {
       Resources: {
         MyDB: { Type: 'AWS::RDS::DBInstance', Properties: {} },
-        MyLambda: {
-          Type: 'AWS::Lambda::Function',
-          Properties: { FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
+        MyApi: {
+          Type: 'AWS::ApiGatewayV2::Api',
+          Properties: { Body: { openapi: '3.0.1' } },
         },
         // Declared but never deployed → missingFromState
-        FreshResource: { Type: 'AWS::Lambda::Function', Properties: {} },
+        FreshResource: { Type: 'AWS::ApiGatewayV2::Api', Properties: {} },
         MyGlobalTable: { Type: 'AWS::DynamoDB::GlobalTable', Properties: {} },
       },
     };
     const state = st('S', {
       MyDB: res('AWS::RDS::DBInstance'),
-      MyLambda: res('AWS::Lambda::Function'),
+      MyApi: res('AWS::ApiGatewayV2::Api'),
       MyGlobalTable: res('AWS::DynamoDB::GlobalTable'),
     });
     const v = validateRecreateTargets({
       template,
       state,
-      recreateViaCcApi: ['MyDB', 'MyLambda', 'NotInTemplate', 'FreshResource', 'MyGlobalTable'],
-      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
+      recreateViaCcApi: ['MyDB', 'MyApi', 'NotInTemplate', 'FreshResource', 'MyGlobalTable'],
+      allowUnsupportedProperties: new Set(['AWS::ApiGatewayV2::Api:Body']),
       forceStatefulRecreation: false,
     });
     expect(v.unknownLogicalIds).toEqual(['NotInTemplate']);
@@ -490,7 +490,7 @@ describe('validateRecreateTargets (#615)', () => {
       'MyGlobalTable',
     ]);
     expect(v.blockedMultiRegionTargets.map((t) => t.logicalId)).toEqual(['MyGlobalTable']);
-    expect(v.ambiguousIntent.map((a) => a.logicalId)).toEqual(['MyLambda']);
+    expect(v.ambiguousIntent.map((a) => a.logicalId)).toEqual(['MyApi']);
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('not present in the synth template');
     expect(error).toContain('fresh CREATEs on the next deploy');
@@ -894,50 +894,50 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
   it('inverse ambiguous-intent: refuses --recreate-via-sdk-provider when template uses a silent-drop property NOT in --allow-unsupported-properties', () => {
     const template: CloudFormationTemplate = {
       Resources: {
-        MyLambda: {
-          Type: 'AWS::Lambda::Function',
-          Properties: { FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
+        MyApi: {
+          Type: 'AWS::ApiGatewayV2::Api',
+          Properties: { Body: { openapi: '3.0.1' } },
         },
       },
     };
     const state = st('S', {
-      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+      MyApi: res('AWS::ApiGatewayV2::Api', { provisionedBy: 'cc-api' }),
     });
     const v = validateRecreateTargets({
       template,
       state,
       recreateViaCcApi: [],
-      recreateViaSdkProvider: ['MyLambda'],
-      // FunctionScalingConfig NOT in --allow-unsupported-properties → next deploy
+      recreateViaSdkProvider: ['MyApi'],
+      // Body NOT in --allow-unsupported-properties → next deploy
       // would auto-route the recreated SDK resource back to CC.
       allowUnsupportedProperties: new Set(),
       forceStatefulRecreation: false,
       hasSdkProvider: () => true,
     });
-    expect(v.ambiguousIntentSdk.map((a) => a.logicalId)).toEqual(['MyLambda']);
+    expect(v.ambiguousIntentSdk.map((a) => a.logicalId)).toEqual(['MyApi']);
     const error = renderRecreateTargetsErrors(v);
     expect(error).toContain('IMMEDIATELY be re-routed back to Cloud Control');
-    expect(error).toContain('FunctionScalingConfig');
+    expect(error).toContain('Body');
   });
 
   it('inverse ambiguous-intent: PASSES when the silent-drop property IS in --allow-unsupported-properties', () => {
     const template: CloudFormationTemplate = {
       Resources: {
-        MyLambda: {
-          Type: 'AWS::Lambda::Function',
-          Properties: { FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 } },
+        MyApi: {
+          Type: 'AWS::ApiGatewayV2::Api',
+          Properties: { Body: { openapi: '3.0.1' } },
         },
       },
     };
     const state = st('S', {
-      MyLambda: res('AWS::Lambda::Function', { provisionedBy: 'cc-api' }),
+      MyApi: res('AWS::ApiGatewayV2::Api', { provisionedBy: 'cc-api' }),
     });
     const v = validateRecreateTargets({
       template,
       state,
       recreateViaCcApi: [],
-      recreateViaSdkProvider: ['MyLambda'],
-      allowUnsupportedProperties: new Set(['AWS::Lambda::Function:FunctionScalingConfig']),
+      recreateViaSdkProvider: ['MyApi'],
+      allowUnsupportedProperties: new Set(['AWS::ApiGatewayV2::Api:Body']),
       forceStatefulRecreation: false,
       hasSdkProvider: () => true,
     });

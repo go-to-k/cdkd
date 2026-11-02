@@ -16,10 +16,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * `LoggingConfig`, then `RecursiveLoop`, then `RuntimeManagementConfig`, and
  * each was later wired into `lambda-function-provider.ts`, after which the
  * baseline silently landed on `'sdk'` and the run failed before reaching
- * anything it tests. The type's remaining silent drops cannot carry a
- * fixture: `CapacityProviderConfig` / `FunctionScalingConfig` need Lambda
- * Managed Instances capacity, and `PublishToLatestPublished` is an
- * undocumented CloudFormation directive. The explicit flag depends on no
+ * anything it tests, and go-to-k/cdkd#5637 wired the type's last silent drops.
+ * The explicit flag depends on no
  * coverage table, so a backfill cannot rot it. (The auto-route itself is
  * covered by `sdk-to-cc-autoroute` and `cc-api-fallback`.)
  *

@@ -95,15 +95,15 @@ describe('findSilentDropProperties', () => {
   });
 
   it('sorts results alphabetically by property name', () => {
-    const cov = getPropertyCoverage('AWS::Lambda::Function');
-    if (!cov) throw new Error('AWS::Lambda::Function should have a coverage record');
+    const cov = getPropertyCoverage('AWS::RDS::DBCluster');
+    if (!cov) throw new Error('AWS::RDS::DBCluster should have a coverage record');
     if (cov.silentDrop.size < 2) {
-      throw new Error('AWS::Lambda::Function should declare ≥2 silent-drop properties');
+      throw new Error('AWS::RDS::DBCluster should declare ≥2 silent-drop properties');
     }
     const keys = Array.from(cov.silentDrop.keys());
     const reversed = [...keys].reverse();
     const props = Object.fromEntries(reversed.map((k) => [k, 'x']));
-    const drops = findSilentDropProperties('AWS::Lambda::Function', props);
+    const drops = findSilentDropProperties('AWS::RDS::DBCluster', props);
     const sortedKeys = [...keys].sort((a, b) => a.localeCompare(b));
     expect(drops.map((d) => d.property)).toEqual(sortedKeys);
   });

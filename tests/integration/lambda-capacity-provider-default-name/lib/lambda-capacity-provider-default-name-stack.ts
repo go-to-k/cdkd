@@ -13,6 +13,10 @@ import type { Construct } from 'constructs';
  * attached so the provider actually launches instances, which is what the
  * destroy has to tear down.
  *
+ * The function also carries `CapacityProviderConfig` + `FunctionScalingConfig`
+ * on the SDK route (go-to-k/cdkd#5637); the update phase changes its scaling and
+ * description, which must reach a newly published `$LATEST.PUBLISHED`.
+ *
  * covers: AWS::Lambda::CapacityProvider
  * covers: AWS::Lambda::Function
  */
@@ -50,7 +54,9 @@ export class LambdaCapacityProviderDefaultNameStack extends cdk.Stack {
       cdk.Tags.of(spare).add('cdkd-integ-phase', 'update');
     }
 
+    const updating = process.env.CDKD_TEST_UPDATE === 'true';
     const fn = new lambda.Function(this, 'Handler', {
+      description: updating ? 'cdkd-integ-updated' : 'cdkd-integ-initial',
       runtime: lambda.Runtime.PYTHON_3_13,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 2048,
@@ -58,7 +64,13 @@ export class LambdaCapacityProviderDefaultNameStack extends cdk.Stack {
       handler: 'index.handler',
       code: lambda.Code.fromInline('def handler(event, context):\n    return {}\n'),
     });
-    provider.addFunction(fn, { publishToLatestPublished: true });
+    provider.addFunction(fn, {
+      publishToLatestPublished: true,
+      latestPublishedScalingConfig: {
+        minExecutionEnvironments: 1,
+        maxExecutionEnvironments: updating ? 3 : 2,
+      },
+    });
 
     new cdk.CfnOutput(this, 'ProviderArn', { value: provider.capacityProviderArn });
   }

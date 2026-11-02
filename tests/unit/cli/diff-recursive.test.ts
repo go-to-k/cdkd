@@ -1914,31 +1914,23 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     });
   });
 
-  it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. Lambda FunctionScalingConfig)', async () => {
+  it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. ApiGatewayV2 Body)', async () => {
     const template: CloudFormationTemplate = {
       Resources: {
-        SilentDropLambda: {
-          Type: 'AWS::Lambda::Function',
+        SilentDropApi: {
+          Type: 'AWS::ApiGatewayV2::Api',
           Properties: {
-            FunctionName: 'foo',
-            Role: 'arn:aws:iam::1:role/r',
-            Code: { ZipFile: 'x' },
-            Runtime: 'nodejs20.x',
-            Handler: 'index.handler',
+            Name: 'foo',
             // Top-level CFn property cdkd's SDK provider does not yet wire.
-            FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 },
+            Body: { openapi: '3.0.1' },
           },
         },
-        // A sibling Lambda whose template uses NO silent-drop property —
+        // A sibling Api whose template uses NO silent-drop property —
         // the route should NOT pick it up, so the rendered diff stays clean.
-        OkayLambda: {
-          Type: 'AWS::Lambda::Function',
+        OkayApi: {
+          Type: 'AWS::ApiGatewayV2::Api',
           Properties: {
-            FunctionName: 'bar',
-            Role: 'arn:aws:iam::1:role/r',
-            Code: { ZipFile: 'x' },
-            Runtime: 'nodejs20.x',
-            Handler: 'index.handler',
+            Name: 'bar',
           },
         },
       },
@@ -1957,20 +1949,20 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       isNestedChild: false,
     });
 
-    expect(root.ccApiRoutes.get('SilentDropLambda')).toEqual(['FunctionScalingConfig']);
-    expect(root.ccApiRoutes.has('OkayLambda')).toBe(false);
+    expect(root.ccApiRoutes.get('SilentDropApi')).toEqual(['Body']);
+    expect(root.ccApiRoutes.has('OkayApi')).toBe(false);
 
     // The annotation makes it into the human renderer + the JSON projection.
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
     expect(lines.join('\n')).toContain(
-      '[+] SilentDropLambda (AWS::Lambda::Function) [via CC API: FunctionScalingConfig]'
+      '[+] SilentDropApi (AWS::ApiGatewayV2::Api) [via CC API: Body]'
     );
 
     const json = diffTreeToJson(root);
-    const silentDropChange = json.changes.find((c) => c.logicalId === 'SilentDropLambda');
-    const okayChange = json.changes.find((c) => c.logicalId === 'OkayLambda');
-    expect(silentDropChange?.ccApi).toEqual(['FunctionScalingConfig']);
+    const silentDropChange = json.changes.find((c) => c.logicalId === 'SilentDropApi');
+    const okayChange = json.changes.find((c) => c.logicalId === 'OkayApi');
+    expect(silentDropChange?.ccApi).toEqual(['Body']);
     expect(okayChange?.ccApi).toBeUndefined();
   });
 
@@ -1978,11 +1970,11 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     const template: CloudFormationTemplate = {
       Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
       Resources: {
-        SilentDropLambda: {
-          Type: 'AWS::Lambda::Function',
+        SilentDropApi: {
+          Type: 'AWS::ApiGatewayV2::Api',
           Condition: 'Off',
           Properties: {
-            FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 },
+            Body: { openapi: '3.0.1' },
           },
         },
       },
@@ -1995,14 +1987,14 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       nestedTemplates: {},
       recursive: true,
       stateBackend: fakeBackend({
-        Leaf: st('Leaf', { SilentDropLambda: res('AWS::Lambda::Function', {}) }),
+        Leaf: st('Leaf', { SilentDropApi: res('AWS::ApiGatewayV2::Api', {}) }),
       }),
       diffCalculator: new DiffCalculator(),
       isNestedChild: false,
     });
 
-    expect(root.changes.get('SilentDropLambda')!.changeType).toBe('DELETE');
-    expect(root.ccApiRoutes.has('SilentDropLambda')).toBe(false);
+    expect(root.changes.get('SilentDropApi')!.changeType).toBe('DELETE');
+    expect(root.ccApiRoutes.has('SilentDropApi')).toBe(false);
     expect(diffTreeToJson(root).changes[0]!.ccApi).toBeUndefined();
   });
 

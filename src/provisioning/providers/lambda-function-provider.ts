@@ -20,6 +20,12 @@ import {
   PutFunctionRecursionConfigCommand,
   PutFunctionCodeSigningConfigCommand,
   PutRuntimeManagementConfigCommand,
+  PublishVersionCommand,
+  PutFunctionScalingConfigCommand,
+  GetFunctionScalingConfigCommand,
+  GetFunctionConfigurationCommand,
+  type CapacityProviderConfig,
+  type FunctionScalingConfig,
   DeleteFunctionCodeSigningConfigCommand,
   TagResourceCommand,
   UntagResourceCommand,
@@ -457,6 +463,8 @@ function withholdWaiterPayload(
  * `Pending` -> terminal transition takes without stalling a failed deploy.
  */
 const LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS = 3;
+/** The version a Managed Instances function runs and scales from. */
+const LATEST_PUBLISHED = '$LATEST.PUBLISHED';
 
 /**
  * Refuse `CodeSigningConfigArn` / `RuntimeManagementConfig` on a
@@ -475,6 +483,32 @@ const LAMBDA_CLEANUP_DELETE_MAX_ATTEMPTS = 3;
  * downgraded warning could only report success over a call that then fails
  * (the `.claude/rules/provider-replay-and-refusals.md` exception).
  */
+function refuseScalingWithoutCapacityProvider(
+  logicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  physicalId?: string
+): void {
+  if (
+    properties['FunctionScalingConfig'] === undefined ||
+    properties['CapacityProviderConfig'] !== undefined
+  ) {
+    return;
+  }
+  // Same refusal as CloudFormation's ("can't be specified unless creating a
+  // Lambda Managed Instance function"), before any call (go-to-k/cdkd#5637).
+  throw markNonRetryable(
+    new ProvisioningError(
+      `Lambda function ${logicalId} declares FunctionScalingConfig without ` +
+        `CapacityProviderConfig: AWS applies it to Lambda Managed Instances functions only. ` +
+        `Add a capacity provider, or remove FunctionScalingConfig.`,
+      resourceType,
+      logicalId,
+      physicalId
+    )
+  );
+}
+
 function refuseImageFunctionUnsupported(
   logicalId: string,
   resourceType: string,
@@ -539,6 +573,7 @@ const SEPARATELY_APPLIED_KEYS: ReadonlySet<string> = new Set([
   'RecursiveLoop',
   'CodeSigningConfigArn',
   'RuntimeManagementConfig',
+  'FunctionScalingConfig',
 ]);
 export class LambdaFunctionProvider implements ResourceProvider {
   private lambdaClient: LambdaClient;
@@ -578,6 +613,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'RuntimeManagementConfig',
         'DurableConfig',
         'TenancyConfig',
+        'CapacityProviderConfig',
+        'FunctionScalingConfig',
+        'PublishToLatestPublished',
       ]),
     ],
   ]);
@@ -645,40 +683,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'ReservedConcurrentExecutions',
         'CodeSigningConfigArn',
         'RuntimeManagementConfig',
-      ]),
-    ],
-  ]);
-
-  /**
-   * Properties the provider deliberately does NOT wire (issue #391 /
-   * see `ResourceProvider.unhandledByDesign`).
-   *
-   * `CapacityProviderConfig` / `FunctionScalingConfig` are deliberately NOT
-   * here — they stay in `silentDrop` (pre-flight rejection with the
-   * `--allow-unsupported-properties` escape hatch) rather than being declared
-   * un-wirable, because they ARE wirable once Lambda managed instances are
-   * supported. They are one coupled feature: `PutFunctionScalingConfig` fails
-   * with `AccessDeniedException: The function provided by the arn does not
-   * contain a capacity provider configuration` unless the function already
-   * carries a capacity provider (live-probed us-east-1, 2026-08-11). Tracked
-   * in issue #1616.
-   */
-  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
-    [
-      'AWS::Lambda::Function',
-      new Map([
-        [
-          'PublishToLatestPublished',
-          // A CloudFormation-ORCHESTRATION directive, not a Lambda API field:
-          // it tells CFn whether to move the `$LATEST.PUBLISHED` pointer as
-          // part of the stack update. `@aws-sdk/client-lambda` 3.1018.0 has no
-          // corresponding member on ANY request shape (verified by grepping
-          // the whole dist-types tree: 0 hits, while the other six silent-drop
-          // properties of this type all resolve to real members), so there is
-          // nothing for an SDK provider to send. cdkd has no CFn-side
-          // version-publishing step to gate, so the flag is inert here.
-          'CloudFormation-only version-publishing directive with no AWS SDK equivalent',
-        ],
+        // Lambda Managed Instances: a removal is refused, reset by its own
+        // call, or (the publish flag) back to its default.
+        'CapacityProviderConfig',
+        'FunctionScalingConfig',
+        'PublishToLatestPublished',
       ]),
     ],
   ]);
@@ -713,6 +722,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
   // invoked it. The Active wait now lives in `CustomResourceProvider`
   // (the only deploy-time consumer that breaks against Pending).
   private readonly functionUpdateMaxWaitSeconds: number = 10 * 60;
+  private readonly latestPublishedPollMs: number = 3000;
 
   // delstack-style ENI cleanup tunables.
   // - initial sleep: gives AWS time to publish post-detach ENI state via
@@ -784,6 +794,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
 
     refuseImageFunctionUnsupported(logicalId, resourceType, properties);
+    refuseScalingWithoutCapacityProvider(logicalId, resourceType, properties);
 
     // Set once CreateFunction returns: every failure after it is an auxiliary
     // call's and must not classify as this function's name collision (#3826).
@@ -802,6 +813,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
         ? Object.fromEntries(desiredTags.map((tag) => [tag.Key, tag.Value]))
         : undefined;
 
+      const capacityProviderConfig = properties['CapacityProviderConfig'] as
+        | CapacityProviderConfig
+        | undefined;
       const createParams: CreateFunctionCommandInput = {
         FunctionName: functionName,
         Role: role,
@@ -847,6 +861,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
         // (there is no member on UpdateFunctionConfiguration).
         CodeSigningConfigArn: properties['CodeSigningConfigArn'] as string | undefined,
         Tags: tags,
+        ...(capacityProviderConfig !== undefined && {
+          CapacityProviderConfig: capacityProviderConfig,
+          // A Managed Instances function runs only from a published version,
+          // so its create always publishes, whatever
+          // `PublishToLatestPublished` says: CloudFormation sends these two
+          // with the flag false too, and a create with `PublishTo` alone
+          // publishes nothing (CloudTrail + live, us-east-1, go-to-k/cdkd#5637).
+          Publish: true,
+          PublishTo: 'LATEST_PUBLISHED' as const,
+        }),
       };
 
       const createClient = await this.createClient.get();
@@ -856,6 +880,43 @@ export class LambdaFunctionProvider implements ResourceProvider {
       createdFunctionIdentity = functionIdentityToken(response.FunctionArn, response.LastModified);
       // go-to-k/cdkd#5511: reported before any post-create wait.
       reportCreatedResource(logicalId, resourceType, createdFunctionName, createdFunctionIdentity);
+
+      // A Managed Instances function is not done at CreateFunction: the
+      // version it publishes launches the capacity (minutes), and that version
+      // refuses PutFunctionScalingConfig until it settles. This is the one
+      // Lambda create that waits, as the same function does on CloudFormation.
+      // The later Puts and this publish may move `LastModified`, so the token
+      // is dropped as for RuntimeManagementConfig below (go-to-k/cdkd#4606).
+      if (capacityProviderConfig !== undefined) {
+        createdFunctionIdentity = undefined;
+        reportCreatedResource(logicalId, resourceType, createdFunctionName);
+        await this.applyPostCreateConfig(() => this.waitForLatestPublishedSettled(functionName), {
+          apiName: 'GetFunctionConfiguration',
+          propertyName: 'CapacityProviderConfig',
+          logicalId,
+          resourceType,
+          functionName,
+          log,
+          cleanup: postCreateCleanup,
+        });
+        const functionScalingConfig = properties['FunctionScalingConfig'] as
+          | FunctionScalingConfig
+          | undefined;
+        if (functionScalingConfig !== undefined) {
+          await this.applyPostCreateConfig(
+            () => this.putFunctionScalingConfig(functionName, functionScalingConfig),
+            {
+              apiName: 'PutFunctionScalingConfig',
+              propertyName: 'FunctionScalingConfig',
+              logicalId,
+              resourceType,
+              functionName,
+              log,
+              cleanup: postCreateCleanup,
+            }
+          );
+        }
+      }
 
       // RecursiveLoop is a post-create control-plane prop: AWS sets it via
       // a SEPARATE `PutFunctionRecursionConfig` API, NOT on `CreateFunction`.
@@ -954,15 +1015,21 @@ export class LambdaFunctionProvider implements ResourceProvider {
             // it to the opt-in property keeps that property's cost on the
             // templates that ask for it and leaves every other Lambda's deploy
             // time unchanged.
-            await waitUntilFunctionActiveV2(
-              {
-                client: this.lambdaClient,
-                maxWaitTime: this.functionUpdateMaxWaitSeconds,
-                minDelay: 1,
-                maxDelay: 5,
-              },
-              { FunctionName: functionName }
-            );
+            //
+            // A Managed Instances function has settled above, and this waiter
+            // could never succeed on it: its `$LATEST` stops at
+            // `ActiveNonInvocable` (measured, go-to-k/cdkd#5637).
+            if (capacityProviderConfig === undefined) {
+              await waitUntilFunctionActiveV2(
+                {
+                  client: this.lambdaClient,
+                  maxWaitTime: this.functionUpdateMaxWaitSeconds,
+                  minDelay: 1,
+                  maxDelay: 5,
+                },
+                { FunctionName: functionName }
+              );
+            }
             // go-to-k/cdkd#5511: re-reported by name alone BEFORE the call,
             // since a deadline can drop its outcome after it has moved the
             // token (below).
@@ -1265,6 +1332,64 @@ export class LambdaFunctionProvider implements ResourceProvider {
   }
 
   /**
+   * Poll `$LATEST.PUBLISHED` until it is `Active` with no update in progress.
+   *
+   * Not `waitUntilFunctionActiveV2`: unqualified, that reads `$LATEST`, which
+   * on a Managed Instances function never leaves `ActiveNonInvocable`. Until
+   * this settles, `PublishVersion` and `PutFunctionScalingConfig` answer
+   * `ResourceConflictException` (measured us-east-1, go-to-k/cdkd#5637: about
+   * 95s after a publish, 30s after a Put, minutes after the first publish).
+   */
+  private async waitForLatestPublishedSettled(functionName: string): Promise<void> {
+    const deadline = Date.now() + this.functionUpdateMaxWaitSeconds * 1000;
+    for (;;) {
+      const cfg = await this.lambdaClient.send(
+        new GetFunctionConfigurationCommand({
+          FunctionName: functionName,
+          Qualifier: LATEST_PUBLISHED,
+        })
+      );
+      if (cfg.State === 'Failed' || cfg.LastUpdateStatus === 'Failed') {
+        throw new Error(
+          `${LATEST_PUBLISHED} of ${functionName} failed: ` +
+            `${cfg.StateReason ?? cfg.LastUpdateStatusReason ?? 'no reason given'}`
+        );
+      }
+      if (cfg.State === 'Active' && cfg.LastUpdateStatus === 'Successful') return;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `${LATEST_PUBLISHED} of ${functionName} did not settle within ` +
+            `${this.functionUpdateMaxWaitSeconds}s (State ${cfg.State}, ` +
+            `LastUpdateStatus ${cfg.LastUpdateStatus})`
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.latestPublishedPollMs));
+    }
+  }
+
+  /**
+   * Apply `FunctionScalingConfig`, which CloudFormation applies to
+   * `$LATEST.PUBLISHED`: no numbered version exists on either route. An empty
+   * block resets the version to Lambda's default, as removing the property
+   * does on CloudFormation (both measured, go-to-k/cdkd#5637). `AWS::Lambda::Version`
+   * declares the same property for its own version, which this does not touch.
+   */
+  private async putFunctionScalingConfig(
+    functionName: string,
+    config: FunctionScalingConfig | undefined
+  ): Promise<void> {
+    await this.waitForLatestPublishedSettled(functionName);
+    await this.lambdaClient.send(
+      new PutFunctionScalingConfigCommand({
+        FunctionName: functionName,
+        Qualifier: LATEST_PUBLISHED,
+        FunctionScalingConfig: config ?? {},
+      })
+    );
+    await this.waitForLatestPublishedSettled(functionName);
+  }
+
+  /**
    * Update a Lambda function
    */
   async update(
@@ -1314,6 +1439,26 @@ export class LambdaFunctionProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     refuseImageFunctionUnsupported(logicalId, resourceType, properties, physicalId);
+    refuseScalingWithoutCapacityProvider(logicalId, resourceType, properties, physicalId);
+    // An absent UpdateFunctionConfiguration member means "no change", so this
+    // removal would otherwise report success and change nothing. CloudFormation
+    // fails it the same way (go-to-k/cdkd#5637). The opposite direction reaches
+    // AWS, which refuses it ("isn't supported for Lambda Default functions").
+    if (
+      previousProperties['CapacityProviderConfig'] !== undefined &&
+      properties['CapacityProviderConfig'] === undefined
+    ) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Lambda function ${logicalId} cannot lose its CapacityProviderConfig: AWS does not ` +
+            `support removing it from a function. Keep the property, or replace the function ` +
+            `under a new logical id.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
 
     try {
       // Check for configuration changes
@@ -1336,6 +1481,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         'SnapStart',
         'LoggingConfig',
         'DurableConfig',
+        'CapacityProviderConfig',
       ];
 
       const changedConfigFields: string[] = [];
@@ -1416,6 +1562,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // a block that is present on BOTH sides (a genuine in-place edit,
           // which the API accepts and applies).
           DurableConfig: properties['DurableConfig'] as DurableConfig | undefined,
+          CapacityProviderConfig: properties['CapacityProviderConfig'] as
+            | CapacityProviderConfig
+            | undefined,
         };
 
         for (const field of changedConfigFields) markUnsettled(field);
@@ -1613,6 +1762,39 @@ export class LambdaFunctionProvider implements ResourceProvider {
             maskDeep(newRuntimeManagementConfig ?? { UpdateRuntimeOn: 'Auto' }, operationMask)
           )}`
         );
+      }
+
+      // Lambda Managed Instances, last: a publish captures everything above.
+      // CloudFormation publishes on every update of such a function unless
+      // `PublishToLatestPublished` is false, and a publish that captures no
+      // change is a no-op (measured, go-to-k/cdkd#5637). The scaling call goes
+      // to the published version with or without a publish.
+      if (properties['CapacityProviderConfig'] !== undefined) {
+        if (properties['PublishToLatestPublished'] !== false) {
+          await this.waitForLatestPublishedSettled(physicalId);
+          await this.lambdaClient.send(
+            new PublishVersionCommand({
+              FunctionName: physicalId,
+              Description: properties['Description'] as string | undefined,
+              PublishTo: 'LATEST_PUBLISHED',
+            })
+          );
+          await this.waitForLatestPublishedSettled(physicalId);
+          log.debug(`Published ${LATEST_PUBLISHED} of ${log.value(physicalId)}`);
+        }
+        const newScaling = properties['FunctionScalingConfig'] as FunctionScalingConfig | undefined;
+        const prevScaling = previousProperties['FunctionScalingConfig'] as
+          | FunctionScalingConfig
+          | undefined;
+        // Member by member: a stringify compare is key-ORDER sensitive.
+        const scalingChanged =
+          newScaling?.MinExecutionEnvironments !== prevScaling?.MinExecutionEnvironments ||
+          newScaling?.MaxExecutionEnvironments !== prevScaling?.MaxExecutionEnvironments;
+        if (scalingChanged || context?.unsettledProperties?.has('FunctionScalingConfig') === true) {
+          markUnsettled('FunctionScalingConfig');
+          await this.putFunctionScalingConfig(physicalId, newScaling);
+          log.debug(`Updated FunctionScalingConfig of ${log.value(physicalId)}`);
+        }
       }
 
       // Get updated function info for attributes (also gives us the ARN
@@ -2540,6 +2722,20 @@ export class LambdaFunctionProvider implements ResourceProvider {
       );
       set('CodeSigningConfigArn', r?.CodeSigningConfigArn);
     }
+    if (names.has('FunctionScalingConfig')) {
+      const r = await strict(() =>
+        this.lambdaClient.send(
+          new GetFunctionScalingConfigCommand({
+            FunctionName: physicalId,
+            Qualifier: LATEST_PUBLISHED,
+          })
+        )
+      );
+      set(
+        'FunctionScalingConfig',
+        r?.RequestedFunctionScalingConfig ?? r?.AppliedFunctionScalingConfig
+      );
+    }
     return out;
   }
 
@@ -2730,6 +2926,31 @@ export class LambdaFunctionProvider implements ResourceProvider {
       }
       if (cfg.TenancyConfig?.TenantIsolationMode !== undefined) {
         result['TenancyConfig'] = { TenantIsolationMode: cfg.TenancyConfig.TenantIsolationMode };
+      }
+
+      // A Managed Instances function: the attachment rides on this response,
+      // the scaling settings have their own read of the version they apply to.
+      // AWS reports the request until it is applied, then only the applied one.
+      if (cfg.CapacityProviderConfig !== undefined) {
+        result['CapacityProviderConfig'] = cfg.CapacityProviderConfig;
+        try {
+          const scaling = await this.lambdaClient.send(
+            new GetFunctionScalingConfigCommand({
+              FunctionName: physicalId,
+              Qualifier: LATEST_PUBLISHED,
+            })
+          );
+          const live =
+            scaling.RequestedFunctionScalingConfig ?? scaling.AppliedFunctionScalingConfig;
+          if (live !== undefined) result['FunctionScalingConfig'] = live;
+        } catch (scalingErr) {
+          if (!(scalingErr instanceof ResourceNotFoundException)) {
+            // WARN for the same reason as RuntimeManagementConfig below.
+            this.logger.warn(
+              safeMsg`GetFunctionScalingConfig failed for ${physicalId} — FunctionScalingConfig omitted from the drift snapshot (may surface as a false removal): ${describeAwsFailure(scalingErr).summary}`
+            );
+          }
+        }
       }
 
       // Tags: GetFunction returns a map keyed by tag name. Filter

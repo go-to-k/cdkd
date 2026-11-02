@@ -19,7 +19,9 @@
 #      (go-to-k/cdkd#5064: the 12-hex stack instance suffix) on the Cloud
 #      Control route, AWS reports them `Active`, the function's
 #      CapacityProviderConfig points at the first, and the ProviderArn output
-#      agrees. The deploy runs with `--verbose` so the log shows whether the
+#      agrees. The function is on the SDK route (go-to-k/cdkd#5637) and its
+#      `$LATEST.PUBLISHED` is Active with the template's scaling.
+#      The deploy runs with `--verbose` so the log shows whether the
 #      create was retried on any of the THREE propagation rejections this
 #      create races (`IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS`); the counts are
 #      reported PER WORDING and not asserted, since a role that propagates in
@@ -46,7 +48,10 @@
 #   3. UPDATE (CDKD_TEST_UPDATE=true tags both providers, a mutable property):
 #      both go through the Cloud Control update path. Assert each tag reached
 #      AWS, each provider keeps its ARN and its state physical id (in place,
-#      not replaced), and a diff under the same mode is clean.
+#      not replaced), and a diff under the same mode is clean. The same deploy
+#      changes the function's description and scaling: `update()` must publish
+#      (the published version carries the new description) and apply the new
+#      scaling to that version, still on the SDK route.
 #   4. Destroy. Assert every provider, the function and both per-provider
 #      operator IAM roles are gone, no instance is left in the fixture VPC, the
 #      VPC is gone, and the state file is removed.
@@ -56,7 +61,7 @@
 # (tests/unit/deployment/deploy-engine-cc-update-fallback-name.test.ts).
 #
 # COST: the first provider launches EC2 instances once the function version is
-# published, so every run carries an EC2 charge until the destroy finishes. The
+# published (the create waits for that, so phase 1 takes minutes), so every run carries an EC2 charge until the destroy finishes. The
 # spare providers have no function and launch none.
 #
 # Required env vars: STATE_BUCKET; AWS_REGION (defaults us-east-1).
@@ -255,6 +260,15 @@ CLEANED_UP=0
 read_state() { # $1 = python expression over `s` (the state fetched into STATE_JSON)
   printf '%s' "${STATE_JSON}" | python3 -c "import json, sys; s = json.load(sys.stdin); print($1)"
 }
+published_field() { # usage: published_field <query>; reads $LATEST.PUBLISHED, strict
+  aws lambda get-function-configuration --function-name "${FUNCTION_NAME}" --qualifier '$LATEST.PUBLISHED' \
+    --region "${REGION}" --query "$1" --output text
+}
+published_scaling() { # prints `<min> <max>` of the scaling applied to $LATEST.PUBLISHED
+  aws lambda get-function-scaling-config --function-name "${FUNCTION_NAME}" --qualifier '$LATEST.PUBLISHED' \
+    --region "${REGION}" --query 'join(`" "`, [to_string(AppliedFunctionScalingConfig.MinExecutionEnvironments), to_string(AppliedFunctionScalingConfig.MaxExecutionEnvironments)])' \
+    --output text
+}
 provider_field() { # usage: provider_field <name> <query field>; strict, no fallback
   aws lambda get-capacity-provider --capacity-provider-name "$1" --region "${REGION}" \
     --query "CapacityProvider.$2" --output text
@@ -434,6 +448,18 @@ FN_PROVIDER_ARN="$(aws lambda get-function-configuration --function-name "${FUNC
   { echo "FAIL: function CapacityProviderArn '${FN_PROVIDER_ARN}' != '${PROVIDER_ARN}'" >&2; exit 1; }
 echo "    function ${FUNCTION_NAME} runs on the provider"
 
+# go-to-k/cdkd#5637: the routing guard, then the values read back from AWS.
+STATE_FN_ROUTE="$(read_state "s['resources']['${FUNCTION_LOGICAL}'].get('provisionedBy', '')")"
+[ "${STATE_FN_ROUTE}" = "sdk" ] ||
+  { echo "FAIL: function provisionedBy='${STATE_FN_ROUTE}', expected sdk" >&2; exit 1; }
+PUBLISHED_STATE="$(published_field State)"
+[ "${PUBLISHED_STATE}" = "Active" ] ||
+  { echo "FAIL: \$LATEST.PUBLISHED State='${PUBLISHED_STATE}', expected Active" >&2; exit 1; }
+SCALING="$(published_scaling)"
+[ "${SCALING}" = "1 2" ] ||
+  { echo "FAIL: scaling on \$LATEST.PUBLISHED is '${SCALING}', expected '1 2'" >&2; exit 1; }
+echo "    function on the SDK route; \$LATEST.PUBLISHED Active with scaling ${SCALING}"
+
 # `| tr -d ' '`: BSD `wc` pads its count to width 8, and `$(...)` strips only the
 # trailing newline, so without the trim the captured value is `"       0"` on a
 # stock macOS host and every `=` comparison against it is false. The sibling
@@ -537,6 +563,19 @@ SPARE_ID_AFTER="$(read_state "s['resources']['SpareProvider8B33A338']['physicalI
 [ "${PROVIDER_ID_AFTER}" = "${PROVIDER_NAME}" ] && [ "${SPARE_ID_AFTER}" = "${SPARE_REWIRED}" ] ||
   { echo "FAIL: a provider's state physical id changed across the update (provider='${PROVIDER_ID_AFTER}' spare='${SPARE_ID_AFTER}')" >&2; exit 1; }
 echo "    tags reached AWS; both providers updated in place, ${SPARE_REWIRED} under its own name"
+
+# go-to-k/cdkd#5637: the function's update path. The description is on the
+# published version only if update() published after the configuration change.
+PUBLISHED_DESCRIPTION="$(published_field Description)"
+[ "${PUBLISHED_DESCRIPTION}" = "cdkd-integ-updated" ] ||
+  { echo "FAIL: \$LATEST.PUBLISHED description is '${PUBLISHED_DESCRIPTION}': the update did not publish" >&2; exit 1; }
+SCALING="$(published_scaling)"
+[ "${SCALING}" = "1 3" ] ||
+  { echo "FAIL: scaling on \$LATEST.PUBLISHED after the update is '${SCALING}', expected '1 3'" >&2; exit 1; }
+STATE_FN_ROUTE="$(read_state "s['resources']['${FUNCTION_LOGICAL}'].get('provisionedBy', '')")"
+[ "${STATE_FN_ROUTE}" = "sdk" ] ||
+  { echo "FAIL: function provisionedBy='${STATE_FN_ROUTE}' after the update, expected sdk" >&2; exit 1; }
+echo "    update published \$LATEST.PUBLISHED and applied scaling ${SCALING} on the SDK route"
 
 CDKD_TEST_UPDATE=true assert_clean_diff "after the update"
 echo "    diff under the update mode reports no changes"
