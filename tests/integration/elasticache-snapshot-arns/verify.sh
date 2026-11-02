@@ -10,15 +10,19 @@
 # 1. Seed: write a one-key RDB file (make-seed-rdb.mjs) to a bucket this
 #    script owns, whose policy lets ElastiCache read it, and pass the object
 #    ARN to the app in CDKD_TEST_SEED_RDB_ARN.
-# 2. Deploy, then assert the cluster is `provisionedBy=sdk` -- the routing
-#    guard a pre-fix cdkd FAILS (the value still reaches AWS through Cloud
-#    Control there, so the data check alone cannot tell the two apart).
-# 3. (LOAD-BEARING) DescribeCacheClusters has no SnapshotArns member, so the
+# 2. Deploy. A seed ElastiCache cannot load leaves the cluster
+#    `restore-failed`, which fails the deploy at once (the provider's wait
+#    names the status).
+# 3. Routing guard: the cluster is `provisionedBy=sdk` -- what a pre-fix cdkd
+#    FAILS (the value still reaches AWS through Cloud Control there, so the
+#    data check alone cannot tell the two apart).
+# 4. (LOAD-BEARING) DescribeCacheClusters has no SnapshotArns member, so the
 #    value is read back through the DATA it seeds: the in-VPC SeedReader
 #    function GETs the seeded key, and it must hold this run's value. A
 #    handled-but-unwired property (SDK route, nothing sent) fails here.
-# 4. Destroy, assert 0 orphans, then delete the seed bucket. Cleanup order:
-#    the stack goes first, the seed after it (the bucket outlives the create).
+# 5. Destroy.
+# 6. Assert 0 orphans, then delete the seed bucket. Cleanup order: the stack
+#    goes first, the seed after it (the bucket outlives the create).
 #
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
@@ -98,9 +102,10 @@ cleanup() {
   local rc=$?
   echo "==> Cleanup (errors tolerated)"
   set +eu
-  # The stack first: the cluster was created from the seed, and nothing
-  # reads it after the create, but a cleanup that runs mid-create must not
-  # pull the file out from under it.
+  # The stack first, the seed after it. An interrupt DURING the create is
+  # not covered: `state destroy` on a cluster still `creating` fails
+  # (InvalidCacheClusterState) and the cluster is left behind -- delete it
+  # by hand once it settles (aws elasticache delete-cache-cluster).
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --region "${REGION}" \
       --state-bucket "${STATE_BUCKET:-}" --yes
@@ -178,6 +183,9 @@ DEPLOY_RC=$?
 set -e
 if [ "${DEPLOY_RC}" -ne 0 ]; then
   echo "FAIL: deploy exited ${DEPLOY_RC}" >&2
+  if grep -q 'is restore-failed' "${DEPLOY_LOG}"; then
+    echo "      the cluster is restore-failed: SnapshotArns reached AWS, but ElastiCache could not load the seed (bucket policy or RDB format)" >&2
+  fi
   tail -60 "${DEPLOY_LOG}" >&2
   exit 1
 fi
@@ -205,7 +213,9 @@ echo "==> Step 4 (LOAD-BEARING): the seeded key is in the cluster"
 STATUS=$(aws elasticache describe-cache-clusters --cache-cluster-id "${CLUSTER_ID}" \
   --region "${REGION}" --query 'CacheClusters[0].CacheClusterStatus' --output text)
 if [ "${STATUS}" != "available" ]; then
-  echo "FAIL: cache cluster ${CLUSTER_ID} is '${STATUS}', expected 'available' (a 'restore-failed' means the seed was sent but not loadable)" >&2
+  # The deploy's wait already refuses `restore-failed`; this catches a
+  # cluster that left `available` after it.
+  echo "FAIL: cache cluster ${CLUSTER_ID} is '${STATUS}', expected 'available'" >&2
   exit 1
 fi
 # The cluster's own account of the restore, for the record (not asserted:
@@ -235,7 +245,10 @@ if [ -n "${INVOKE_ERR}" ]; then
   echo "FAIL: the seed reader kept failing (${INVOKE_ERR}): $(cat "${READ_OUT}" 2>/dev/null)" >&2
   exit 1
 fi
-FOUND=$(jq -r '.found' "${READ_OUT}")
+FOUND=$(jq -r '.found' "${READ_OUT}") || {
+  echo "FAIL: the seed reader's output is missing or not JSON: $(cat "${READ_OUT}" 2>/dev/null)" >&2
+  exit 1
+}
 GOT=$(jq -r '.value // ""' "${READ_OUT}")
 if [ "${FOUND}" != "true" ]; then
   echo "FAIL: ${SEED_KEY} is absent from the cluster: CreateCacheCluster carried no SnapshotArns (issue #5635)" >&2

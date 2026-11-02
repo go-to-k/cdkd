@@ -159,7 +159,9 @@ describe('ElastiCacheProvider CacheCluster SnapshotArns (#5635)', () => {
       const calls = recordCalls(status);
       const provider = new ElastiCacheProvider();
       const sleep = vi.spyOn(provider as unknown as { sleep: (ms: number) => Promise<void> }, 'sleep');
-      sleep.mockResolvedValue(undefined);
+      // A wait that polls again instead of failing ends here rather than
+      // spinning to the cap.
+      sleep.mockRejectedValue(new Error('the wait slept: the status was not treated as terminal'));
       const err = await provider
         .create('Cache', TYPE, {
           ClusterName: 'seeded',
