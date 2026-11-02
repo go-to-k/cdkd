@@ -941,13 +941,13 @@ describe('update', () => {
 
     it('masks the value the report names', async () => {
       await update(
-        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 'abc' }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 'a"b' }),
         local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 }),
-        { maskSecrets: (text: string) => text.replaceAll('abc', '***') }
+        { maskSecrets: (text: string) => text.replaceAll('a"b', '***') }
       );
       const warned = warnSpy.mock.calls.flat().join('\n');
       expect(warned).toContain('did not resolve');
-      expect(warned).not.toContain('abc');
+      expect(warned).not.toContain('a\\"b');
     });
 
     it('does not report an unreadable block the update did not change', async () => {
