@@ -26,6 +26,13 @@ import type { Construct } from 'constructs';
  *   Cloud Control), plus a route through that gateway, which AWS accepts only
  *   once the attachment is `attached`.
  *
+ * - `OdbNetworkArn` (issue #5631) — a REJECTION PROBE, not a live route: the
+ *   test account is not onboarded to Oracle Database@AWS, so no ODB network can
+ *   exist. Under `CDKD_TEST_ODB_PROBE=true` the stack adds a route targeting a
+ *   well-formed but nonexistent ODB network ARN; the deploy is expected to FAIL
+ *   with EC2's `InvalidOdbNetworkArn.NotFound`, which proves the field reached
+ *   `CreateRoute` (EC2 validates the ARN before the route table).
+ *
  * Phase 2 (CDKD_TEST_UPDATE=true) swaps the prefix-list route's target from
  * the Internet Gateway to the Transit Gateway, driving updateRoute's
  * in-place ReplaceRoute (issue #5068) through the prefix-list destination form,
@@ -133,6 +140,18 @@ export class Ec2RouteTargetsStack extends cdk.Stack {
       gatewayId: vgw.ref,
     });
     vgwRoute.addDependency(vgwAttachment);
+
+    // Issue #5631: the rejection probe (see the class comment). Never created,
+    // so no later phase removes it; the destination is unused elsewhere.
+    if (process.env.CDKD_TEST_ODB_PROBE === 'true') {
+      new ec2.CfnRoute(this, 'OdbProbeRoute', {
+        routeTableId: routeTable.ref,
+        destinationCidrBlock: '10.220.0.0/16',
+        odbNetworkArn: cdk.Fn.sub(
+          'arn:${AWS::Partition}:odb:${AWS::Region}:${AWS::AccountId}:odb-network/odbnet_cdkd5631probe'
+        ),
+      });
+    }
 
     new cdk.CfnOutput(this, 'RouteTableId', { value: routeTable.ref });
     new cdk.CfnOutput(this, 'PrefixListId', { value: prefixList.attrPrefixListId });

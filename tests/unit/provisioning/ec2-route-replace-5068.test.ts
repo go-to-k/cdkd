@@ -67,7 +67,7 @@ describe('EC2Provider AWS::EC2::Route target change uses ReplaceRoute (#5068)', 
     .filter((key) => !createOnly.has(key))
     .sort();
 
-  it('derives the eleven CloudFormation target keys', () => {
+  it('derives the twelve CloudFormation target keys', () => {
     expect(createOnly).toEqual(
       new Set([
         'DestinationCidrBlock',
@@ -85,6 +85,7 @@ describe('EC2Provider AWS::EC2::Route target change uses ReplaceRoute (#5068)', 
       'LocalGatewayId',
       'NatGatewayId',
       'NetworkInterfaceId',
+      'OdbNetworkArn',
       'TransitGatewayId',
       'VpcEndpointId',
       'VpcPeeringConnectionId',

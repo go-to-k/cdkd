@@ -69,6 +69,8 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
       ['CarrierGatewayId', 'cagw-0123456789abcdef0'],
       ['CoreNetworkArn', 'arn:aws:networkmanager::123456789012:core-network/core-network-abc'],
       ['LocalGatewayId', 'lgw-0123456789abcdef0'],
+      // Issue #5631: an Oracle Database@AWS network target.
+      ['OdbNetworkArn', 'arn:aws:odb:us-east-1:123456789012:odb-network/odbnet_abc'],
       ['TransitGatewayId', 'tgw-0123456789abcdef0'],
       ['VpcEndpointId', 'vpce-0123456789abcdef0'],
     ])('%s is forwarded', async (key, value) => {
@@ -101,6 +103,7 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
         'CarrierGatewayId',
         'CoreNetworkArn',
         'LocalGatewayId',
+        'OdbNetworkArn',
         'TransitGatewayId',
         'VpcEndpointId',
         'DestinationPrefixListId',
@@ -326,6 +329,7 @@ describe('EC2Provider AWS::EC2::Route extra target types (#609)', () => {
       ['LocalGatewayId', 'lgw-0123456789abcdef0'],
       ['CarrierGatewayId', 'cagw-0123456789abcdef0'],
       ['CoreNetworkArn', 'arn:aws:networkmanager::123456789012:core-network/core-network-abc'],
+      ['OdbNetworkArn', 'arn:aws:odb:us-east-1:123456789012:odb-network/odbnet_abc'],
     ])('surfaces %s from the route read-back', async (key, value) => {
       mockSend.mockResolvedValueOnce({
         RouteTables: [

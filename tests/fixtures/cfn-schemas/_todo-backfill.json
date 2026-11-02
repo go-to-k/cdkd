@@ -59,9 +59,6 @@
       "Tenancy",
       "Volumes"
     ],
-    "AWS::EC2::Route": [
-      "OdbNetworkArn"
-    ],
     "AWS::EC2::Subnet": [
       "AssignIpv6AddressOnCreation",
       "AvailabilityZoneId",

@@ -618,6 +618,7 @@ export const CASES_16_EC2: TypeCase[] = [
       ['EgressOnlyInternetGatewayId', 'eigw-1'],
       ['InstanceId', 'i-1'],
       ['NetworkInterfaceId', 'eni-1'],
+      ['OdbNetworkArn', `arn:aws:odb:us-east-1:${ACCOUNT}:odb-network/odbnet_1`],
       ['TransitGatewayId', 'tgw-1'],
       ['VpcEndpointId', 'vpce-1'],
       ['VpcPeeringConnectionId', 'pcx-1'],
