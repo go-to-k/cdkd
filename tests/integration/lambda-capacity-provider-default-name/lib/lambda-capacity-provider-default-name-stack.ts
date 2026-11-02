@@ -60,7 +60,7 @@ export class LambdaCapacityProviderDefaultNameStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_13,
       architecture: lambda.Architecture.ARM_64,
       memorySize: 2048,
-      timeout: cdk.Duration.minutes(1),
+      timeout: cdk.Duration.minutes(updating ? 2 : 1),
       handler: 'index.handler',
       code: lambda.Code.fromInline('def handler(event, context):\n    return {}\n'),
     });

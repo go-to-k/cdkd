@@ -47,6 +47,9 @@ function armFunction(): void {
         FunctionArn: FN_ARN,
         LastUpdateStatus: 'Successful',
         State: 'Active',
+        // update() reads this only when a side names the block: the Managed
+        // Instances bag's calls run only for a function AWS says is one.
+        CapacityProviderConfig: {},
       },
     }),
     GetFunctionConfigurationCommand: () => ({

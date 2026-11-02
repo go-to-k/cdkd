@@ -196,6 +196,11 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
+- **A Lambda Managed Instances function waits in every mode**, `--no-wait`
+  included. A create waits for `$LATEST.PUBLISHED`, the version it publishes,
+  which takes minutes because that launches capacity. An update waits for each
+  publish and scaling change, and a delete waits until the function is gone. A
+  wait ends at `--resource-timeout`.
 - **`AWS::S3::Bucket` waits for each S3 Metadata table it turns on, in every
   mode**, up to five minutes: the table ARNs are `Fn::GetAtt` values. A table
   that S3 reports `FAILED`, or one still unsettled at the limit, gets a warning

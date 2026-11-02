@@ -51,7 +51,9 @@
 #      not replaced), and a diff under the same mode is clean. The same deploy
 #      changes the function's description and scaling: `update()` must publish
 #      (the published version carries the new description) and apply the new
-#      scaling to that version, still on the SDK route.
+#      scaling to that version, still on the SDK route. Timeout proves the
+#      publish ran after the configuration change.
+#   3b. `cdkd drift` is clean (go-to-k/cdkd#5637).
 #   4. Destroy. Assert every provider, the function and both per-provider
 #      operator IAM roles are gone, no instance is left in the fixture VPC, the
 #      VPC is gone, and the state file is removed.
@@ -220,8 +222,10 @@ cleanup() {
   fi
   delete_provider "${SPARE_REWIRED}"
   [ -n "${SPARE_GENERATED}" ] && delete_provider "${SPARE_GENERATED}"
-  if [ -f "${LOCAL_DIST}" ]; then
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
+  STATE_DESTROYED=0
+  if [ -f "${LOCAL_DIST}" ] &&
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1; then
+    STATE_DESTROYED=1
   fi
   # The function before its provider: deleting it deletes every version, which
   # frees the provider it runs on.
@@ -238,9 +242,20 @@ cleanup() {
       echo "WARN: teardown sweep refused: STACK='${STACK}' does not match CdkdLmi?*" >&2
       ;;
   esac
-  if [ -n "${STATE_BUCKET:-}" ]; then
+  # The state is the only record of what a failed `state destroy` left behind.
+  if [ "${STATE_DESTROYED}" != "1" ]; then
+    echo "WARN: state destroy failed: s3://${STATE_BUCKET:-<unset>}/${STATE_KEY} is kept, and resources of ${STACK} (VPC, operator roles, security group) may remain" >&2
+  elif [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+  fi
+  # A failed run must not leave capacity billing: instances outlive every delete
+  # above when the provider refused them.
+  if [ -n "${VPC_ID:-}" ]; then
+    LEFT_INSTANCES="$(aws ec2 describe-instances --region "${REGION}" \
+      --filters "Name=vpc-id,Values=${VPC_ID}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+      --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null)"
+    [ -z "${LEFT_INSTANCES}" ] || echo "WARN: instances left in ${VPC_ID}: ${LEFT_INSTANCES}" >&2
   fi
   set -eu
 }
@@ -566,9 +581,17 @@ echo "    tags reached AWS; both providers updated in place, ${SPARE_REWIRED} un
 
 # go-to-k/cdkd#5637: the function's update path. The description is on the
 # published version only if update() published after the configuration change.
+# Timeout proves the ORDER: PublishVersion carries a description of its own but
+# no timeout, so only a publish AFTER UpdateFunctionConfiguration can show it.
 PUBLISHED_DESCRIPTION="$(published_field Description)"
 [ "${PUBLISHED_DESCRIPTION}" = "cdkd-integ-updated" ] ||
   { echo "FAIL: \$LATEST.PUBLISHED description is '${PUBLISHED_DESCRIPTION}': the update did not publish" >&2; exit 1; }
+PUBLISHED_TIMEOUT="$(published_field Timeout)"
+[ "${PUBLISHED_TIMEOUT}" = "120" ] ||
+  { echo "FAIL: \$LATEST.PUBLISHED Timeout is '${PUBLISHED_TIMEOUT}', expected 120: the publish did not capture the configuration change" >&2; exit 1; }
+PUBLISHED_SETTLED="$(published_field '[State,LastUpdateStatus]' | tr '\t' ' ')"
+[ "${PUBLISHED_SETTLED}" = "Active Successful" ] ||
+  { echo "FAIL: \$LATEST.PUBLISHED after the update is '${PUBLISHED_SETTLED}', expected 'Active Successful'" >&2; exit 1; }
 SCALING="$(published_scaling)"
 [ "${SCALING}" = "1 3" ] ||
   { echo "FAIL: scaling on \$LATEST.PUBLISHED after the update is '${SCALING}', expected '1 3'" >&2; exit 1; }
@@ -579,6 +602,15 @@ echo "    update published \$LATEST.PUBLISHED and applied scaling ${SCALING} on 
 
 CDKD_TEST_UPDATE=true assert_clean_diff "after the update"
 echo "    diff under the update mode reports no changes"
+
+# --- Phase 3b: drift --------------------------------------------------------
+# go-to-k/cdkd#5637: both properties read back through the SDK route, and the
+# write-only publish flag must not read as a removal. `drift` exits non-zero on
+# any drift.
+echo "==> Phase 3b: drift"
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" ||
+  { echo "FAIL: drift after the update is not clean" >&2; exit 1; }
+echo "    drift reports nothing"
 
 # --- Phase 4: destroy -------------------------------------------------------
 echo "==> Phase 4: destroy"

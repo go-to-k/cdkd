@@ -487,18 +487,37 @@ function capacityProviderConfigForUpdate(
   };
 }
 
-function refuseScalingWithoutCapacityProvider(
+function refuseManagedInstancesPropertiesWithoutCapacityProvider(
   logicalId: string,
   resourceType: string,
   properties: Record<string, unknown>,
-  physicalId?: string
+  context: { replayingState?: boolean | undefined; physicalId?: string | undefined },
+  warn: (message: string) => void
 ): void {
-  if (
-    properties['FunctionScalingConfig'] === undefined ||
-    properties['CapacityProviderConfig'] !== undefined
-  ) {
-    return;
+  if (properties['CapacityProviderConfig'] !== undefined) return;
+  // A record can hold the flag on a plain function: the SDK route used to accept
+  // it and send nothing. The call this guards was never going to carry it, so a
+  // replay warns, as `.claude/rules/provider-replay-and-refusals.md` requires.
+  if (properties['PublishToLatestPublished'] !== undefined) {
+    if (context.replayingState === true) {
+      warn(
+        `Lambda function ${logicalId} records PublishToLatestPublished without ` +
+          `CapacityProviderConfig; ignoring it for this replay.`
+      );
+    } else {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Lambda function ${logicalId} declares PublishToLatestPublished without ` +
+            `CapacityProviderConfig: AWS applies it to Lambda Managed Instances functions ` +
+            `only. Add a capacity provider, or remove PublishToLatestPublished.`,
+          resourceType,
+          logicalId,
+          context.physicalId
+        )
+      );
+    }
   }
+  if (properties['FunctionScalingConfig'] === undefined) return;
   // Same refusal as CloudFormation's ("can't be specified unless creating a
   // Lambda Managed Instance function"), before any call (go-to-k/cdkd#5637).
   // Unconditional, including on a replay (`replayingState`): AWS rejects the
@@ -510,7 +529,7 @@ function refuseScalingWithoutCapacityProvider(
         `Add a capacity provider, or remove FunctionScalingConfig.`,
       resourceType,
       logicalId,
-      physicalId
+      context.physicalId
     )
   );
 }
@@ -818,7 +837,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
 
     refuseImageFunctionUnsupported(logicalId, resourceType, properties);
-    refuseScalingWithoutCapacityProvider(logicalId, resourceType, properties);
+    refuseManagedInstancesPropertiesWithoutCapacityProvider(
+      logicalId,
+      resourceType,
+      properties,
+      { replayingState: context?.replayingState },
+      log.warn
+    );
 
     // Set once CreateFunction returns: every failure after it is an auxiliary
     // call's and must not classify as this function's name collision (#3826).
@@ -907,8 +932,9 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       // A Managed Instances function is not done at CreateFunction: the
       // version it publishes launches the capacity (minutes), and that version
-      // refuses PutFunctionScalingConfig until it settles. This is the one
-      // Lambda create that waits, as the same function does on CloudFormation.
+      // refuses PutFunctionScalingConfig until it settles, so this create waits
+      // in every mode, as the same function does on CloudFormation. It is not
+      // the only Lambda create that waits: RuntimeManagementConfig below does.
       // The later Puts and this publish may move `LastModified`, so the token
       // is dropped as for RuntimeManagementConfig below (go-to-k/cdkd#4606).
       if (capacityProviderConfig !== undefined) {
@@ -1087,7 +1113,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         );
       }
 
-      // A plain function deliberately does NOT wait for State=Active. CreateFunction
+      // Apart from the two waits above, a create does NOT wait for State=Active. CreateFunction
       // returns synchronously while the function is still in `Pending`,
       // but the deploy-time consumers that actually break against a
       // Pending function are a synchronous Lambda Invoke (Custom Resources)
@@ -1316,7 +1342,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
         ctx.cleanup.deleted = true;
         // A retried create of this name, or the rollback of a capacity provider
         // this deploy made, would otherwise meet the `Deleting` function.
-        if (ctx.awaitGone) await this.waitForFunctionGone(ctx.logicalId, ctx.functionName, log);
+        if (ctx.awaitGone) {
+          // The create's own failure is the one to report.
+          await this.waitForFunctionGone(ctx, log).catch((goneError: unknown) => {
+            log.warn(describeAwsFailure(goneError).summary);
+          });
+        }
       }
       if (cleanupFailure !== undefined) {
         // `error` has no sink of its own: the finished line goes through the
@@ -1381,8 +1412,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * 95s after a publish, 30s after a Put, minutes after the first publish).
    *
    * `Failed` fails only the wait that follows cdkd's own call (`after`). Before
-   * a call it is the leftover of an earlier attempt, which that call may fix,
-   * and refusing there would strand the function. AWS's reason is a status
+   * a call it is the leftover of an earlier attempt, and a publish of a fixed
+   * configuration is the way out of it. AWS's reason is a status
    * reason, so the message carries its code and the `--verbose` pointer
    * (go-to-k/cdkd#2319). The wait is capped by the enclosing resource deadline:
    * past it nobody is listening, and a later call would land unobserved.
@@ -1532,30 +1563,58 @@ export class LambdaFunctionProvider implements ResourceProvider {
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
 
     refuseImageFunctionUnsupported(logicalId, resourceType, properties, physicalId);
-    refuseScalingWithoutCapacityProvider(logicalId, resourceType, properties, physicalId);
-    // An absent UpdateFunctionConfiguration member means "no change", so this
-    // removal would otherwise report success and change nothing. CloudFormation
-    // fails it the same way (go-to-k/cdkd#5637). The opposite direction reaches
-    // AWS, which refuses it ("isn't supported for Lambda Default functions").
-    // Unconditional on a replay too: a function cannot lose the block on AWS, so
-    // no state record of a replay asks for this.
-    if (
-      previousProperties['CapacityProviderConfig'] !== undefined &&
-      properties['CapacityProviderConfig'] === undefined
-    ) {
-      throw markNonRetryable(
-        new ProvisioningError(
-          `Lambda function ${logicalId} cannot lose its CapacityProviderConfig: AWS does not ` +
-            `support removing it from a function. Keep the property, or replace the function ` +
-            `under a new logical id.`,
-          resourceType,
-          logicalId,
-          physicalId
-        )
-      );
-    }
-
+    refuseManagedInstancesPropertiesWithoutCapacityProvider(
+      logicalId,
+      resourceType,
+      properties,
+      { replayingState: context?.replayingState, physicalId },
+      log.warn
+    );
     try {
+      // Whether this function is Managed Instances is AWS's to say, not the
+      // record's: an `import` record or an older binary's holds a block the SDK
+      // route never sent, and `previousProperties` on `rollback --revert-failed`
+      // is the failed attempt's. Read only when a side names the block.
+      const desiredCapacity = properties['CapacityProviderConfig'] as
+        | CapacityProviderConfig
+        | undefined;
+      const recordedCapacity = previousProperties['CapacityProviderConfig'];
+      const liveManaged =
+        desiredCapacity !== undefined || recordedCapacity !== undefined
+          ? (await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: physicalId })))
+              .Configuration?.CapacityProviderConfig !== undefined
+          : false;
+      // An absent UpdateFunctionConfiguration member means "no change", so this
+      // removal would otherwise report success and change nothing. CloudFormation
+      // fails it the same way (go-to-k/cdkd#5637). Unconditional on a replay
+      // too: the block is live, and AWS has no call that removes it.
+      if (liveManaged && desiredCapacity === undefined) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `Lambda function ${logicalId} cannot lose its CapacityProviderConfig: AWS does not ` +
+              `support removing it from a function. Keep the property, or replace the function ` +
+              `under a new logical id.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      // The record says Managed Instances and AWS says plain: the block was
+      // never sent, and AWS refuses adding it ("isn't supported for Lambda
+      // Default functions"), so the rest of this update goes as for a plain
+      // function. With no block on record this is a real addition, which reaches
+      // AWS and gets that refusal, as on CloudFormation.
+      const capacityNeverApplied =
+        !liveManaged && desiredCapacity !== undefined && recordedCapacity !== undefined;
+      if (capacityNeverApplied) {
+        log.warn(
+          `Lambda function ${logicalId} is not a Managed Instances function on AWS, so its ` +
+            `CapacityProviderConfig and FunctionScalingConfig are not applied. Replace the ` +
+            `function to apply them.`
+        );
+      }
+
       // Check for configuration changes
       const configFields = [
         'Role',
@@ -1581,6 +1640,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
       const changedConfigFields: string[] = [];
       for (const field of configFields) {
+        if (field === 'CapacityProviderConfig' && capacityNeverApplied) continue;
         if (JSON.stringify(properties[field]) !== JSON.stringify(previousProperties[field])) {
           changedConfigFields.push(field);
         }
@@ -1658,7 +1718,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
           // which the API accepts and applies).
           DurableConfig: properties['DurableConfig'] as DurableConfig | undefined,
           CapacityProviderConfig: capacityProviderConfigForUpdate(
-            properties['CapacityProviderConfig'] as CapacityProviderConfig | undefined
+            capacityNeverApplied ? undefined : desiredCapacity
           ),
         };
 
@@ -1864,7 +1924,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // `PublishToLatestPublished` is false, and a publish that captures no
       // change is a no-op (measured, go-to-k/cdkd#5637). The scaling call goes
       // to the published version with or without a publish.
-      if (properties['CapacityProviderConfig'] !== undefined) {
+      if (liveManaged && desiredCapacity !== undefined) {
         const target = { logicalId, resourceType, functionName: physicalId };
         const newScaling = properties['FunctionScalingConfig'] as FunctionScalingConfig | undefined;
         const prevScaling = previousProperties['FunctionScalingConfig'] as
@@ -1884,10 +1944,10 @@ export class LambdaFunctionProvider implements ResourceProvider {
               PublishTo: 'LATEST_PUBLISHED',
             })
           );
-          // A publish with nothing to capture leaves the version as it was, so
-          // a `Failed` here can be the one a scaling fix below is about to
-          // clear. That call's own wait then has the last word.
-          await this.waitForLatestPublishedSettled(target, log, applyScaling ? 'before' : 'after');
+          // A version left `Failed` stays so through a publish with nothing to
+          // capture, and refuses the scaling call below, so it stops here with
+          // its reason code (measured, go-to-k/cdkd#5637).
+          await this.waitForLatestPublishedSettled(target, log, 'after');
           log.debug(`Published ${LATEST_PUBLISHED} of ${log.value(physicalId)}`);
         }
         if (applyScaling) {
@@ -2078,8 +2138,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
     if (properties?.['CapacityProviderConfig'] !== undefined) {
       await this.waitForFunctionGone(
-        logicalId,
-        physicalId,
+        { logicalId, resourceType, functionName: physicalId },
         createMaskedLogSinks(this.logger, context?.maskSecrets)
       );
     }
@@ -2087,15 +2146,16 @@ export class LambdaFunctionProvider implements ResourceProvider {
 
   /**
    * A Managed Instances function stays `Deleting` after `DeleteFunction` (69s
-   * measured, go-to-k/cdkd#5637), and its capacity provider, deleted next,
-   * refuses while it does. The delete has landed by now, so this never fails
-   * it: the capacity provider's own delete retries what is left.
+   * measured, go-to-k/cdkd#5637). What is deleted next, and a create reusing the
+   * name, would meet it. The delete has landed, so a read that fails only warns.
+   * Expiry throws with `markDeleteStarted`: reporting a function gone while it is
+   * not would release what depends on it, and the retry finds it not found.
    */
   private async waitForFunctionGone(
-    logicalId: string,
-    physicalId: string,
+    target: { logicalId: string; resourceType: string; functionName: string },
     log: MaskedLogSinks
   ): Promise<void> {
+    const { logicalId, resourceType, functionName } = target;
     const deadline =
       Date.now() +
       Math.min(
@@ -2104,19 +2164,23 @@ export class LambdaFunctionProvider implements ResourceProvider {
       );
     for (;;) {
       try {
-        await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: physicalId }));
+        await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: functionName }));
       } catch (error) {
         if (error instanceof ResourceNotFoundException) return;
         const failure = describeAwsFailure(error);
         log.debug(log.mask(`Waiting for Lambda function ${logicalId} to go: ${failure.detail}`));
-        this.logger.warn(
-          safeMsg`Waiting for Lambda function ${logicalId} to go failed: ${failure.summary}`
-        );
+        log.warn(`Waiting for Lambda function ${logicalId} to go failed: ${failure.summary}`);
         return;
       }
       if (Date.now() >= deadline) {
-        this.logger.warn(safeMsg`Lambda function ${logicalId} is still being deleted`);
-        return;
+        throw markDeleteStarted(
+          new ProvisioningError(
+            `Lambda function ${logicalId} is still being deleted`,
+            resourceType,
+            logicalId,
+            functionName
+          )
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, this.latestPublishedPollMs));
     }
@@ -3251,6 +3315,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       'Code.S3ObjectStorageMode',
       'Code.ZipFile',
       'Code.SourceKMSKeyArn',
+      // A write-only directive: no read returns it.
+      'PublishToLatestPublished',
     ];
   }
 

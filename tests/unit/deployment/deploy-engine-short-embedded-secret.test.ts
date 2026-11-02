@@ -843,6 +843,7 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     // Cloud Control forwards the full map. The provider-substituted bag is
     // leaf-certified (go-to-k/cdkd#5063), so its sub-floor leaf takes its token.
     const DROPPED = 'Body';
+    const DROPPING_TYPE = 'AWS::ApiGatewayV2::Api';
     mockProviderRegistry.getProviderFor!.mockReturnValue({
       provider: mockProvider,
       provisionedBy: 'cc-api',
@@ -856,9 +857,24 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
       },
     });
     mockProvider.readCurrentState!.mockResolvedValue(undefined);
-    mockDiffCalculator.calculateDiff!.mockResolvedValue(changeMap('CREATE'));
+    const desired = { ...DESIRED, [DROPPED]: { Some: 'value' } };
+    mockDiffCalculator.calculateDiff!.mockResolvedValue(
+      new Map<string, ResourceChange>([
+        [
+          'Fn',
+          {
+            logicalId: 'Fn',
+            changeType: 'CREATE',
+            resourceType: DROPPING_TYPE,
+            desiredProperties: desired,
+          },
+        ],
+      ])
+    );
 
-    await makeEngine().deploy(stackName, template);
+    await makeEngine().deploy(stackName, {
+      Resources: { Fn: { Type: DROPPING_TYPE, Properties: desired } },
+    });
 
     const record = savedState().resources['Fn']!;
     expect(record.properties[DROPPED]).toEqual({ Some: 'value' });

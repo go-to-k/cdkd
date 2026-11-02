@@ -74,11 +74,11 @@ describe('findSilentDropProperties', () => {
   });
 
   it('flags a silent-drop property with its rationale', () => {
-    const cov = getPropertyCoverage('AWS::Lambda::Function');
-    if (!cov) throw new Error('AWS::Lambda::Function should have a coverage record');
+    const cov = getPropertyCoverage('AWS::RDS::DBCluster');
+    if (!cov) throw new Error('AWS::RDS::DBCluster should have a coverage record');
     const dropKey = Array.from(cov.silentDrop.keys())[0];
-    if (!dropKey) return; // No silent drops left — provider has caught up.
-    const drops = findSilentDropProperties('AWS::Lambda::Function', { [dropKey]: 'x' });
+    if (!dropKey) throw new Error('AWS::RDS::DBCluster should declare a silent-drop property');
+    const drops = findSilentDropProperties('AWS::RDS::DBCluster', { [dropKey]: 'x' });
     expect(drops).toHaveLength(1);
     expect(drops[0]).toEqual({
       property: dropKey,
