@@ -414,6 +414,194 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
     }
   );
 
+  describe('go-to-k/cdkd#5615: the write targets a replica needs', () => {
+    const SCALING = {
+      MinCapacity: 1,
+      MaxCapacity: 5,
+      TargetTrackingScalingPolicyConfiguration: { TargetValue: 70 },
+    };
+    const provisioned = {
+      ...baseProps,
+      BillingMode: 'PROVISIONED',
+      StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' },
+      AttributeDefinitions: [
+        { AttributeName: 'pk', AttributeType: 'S' },
+        { AttributeName: 'g', AttributeType: 'S' },
+      ],
+      WriteProvisionedThroughputSettings: { WriteCapacityAutoScalingSettings: SCALING },
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: 'gsi1',
+          KeySchema: [{ AttributeName: 'g', KeyType: 'HASH' }],
+          Projection: { ProjectionType: 'KEYS_ONLY' },
+          WriteProvisionedThroughputSettings: { WriteCapacityAutoScalingSettings: SCALING },
+        },
+      ],
+    };
+    const replicas = [
+      { Region: 'us-east-1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 3 } },
+      {
+        Region: 'eu-west-1',
+        ReadProvisionedThroughputSettings: { ReadCapacityAutoScalingSettings: SCALING },
+      },
+    ];
+    let order: string[];
+    let failReplicaCreate: boolean;
+    let replicaLive: boolean;
+
+    const scalingLabel = (input: Record<string, unknown>): string =>
+      `${String(input['ResourceId']).includes('/index/') ? 'index' : 'table'}:${String(input['ScalableDimension']).split(':')[2]}`;
+
+    beforeEach(() => {
+      order = [];
+      failReplicaCreate = false;
+      replicaLive = false;
+      mockSend.mockImplementation((command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+        const name = command.constructor.name;
+        if (name === 'UpdateTableCommand') {
+          const entry = (command.input['ReplicaUpdates'] as Array<Record<string, unknown>>)[0]!;
+          if (entry['Create']) {
+            order.push('ReplicaCreate');
+            if (failReplicaCreate) return Promise.reject(new Error('replica boom'));
+            replicaLive = true;
+          }
+          return Promise.resolve({});
+        }
+        if (name === 'DeleteTableCommand') order.push('DeleteTable');
+        if (name === 'DescribeTableCommand') {
+          return Promise.resolve({
+            Table: {
+              TableName: 'my-test-table-xxx',
+              TableStatus: 'ACTIVE',
+              TableArn: 'a',
+              Replicas: replicaLive ? [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] : [],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+      mockAutoScalingSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          const name = command.constructor.name;
+          if (name.startsWith('Register')) order.push(`Register ${scalingLabel(command.input)}`);
+          if (name.startsWith('Put')) order.push(`Policy ${scalingLabel(command.input)}`);
+          if (name.startsWith('Deregister')) order.push(`Deregister ${scalingLabel(command.input)}`);
+          return Promise.resolve({ ScalableTargets: [] });
+        }
+      );
+    });
+
+    const atFirst = (label: string): number => order.indexOf(label);
+
+    it('registers the table and index write targets, policies included, before a replica', async () => {
+      await provider.create('MyTable', RESOURCE_TYPE, { ...provisioned, Replicas: replicas });
+      const replica = atFirst('ReplicaCreate');
+      for (const label of [
+        'Register table:WriteCapacityUnits',
+        'Policy table:WriteCapacityUnits',
+        'Register index:WriteCapacityUnits',
+        'Policy index:WriteCapacityUnits',
+      ]) {
+        expect(atFirst(label)).toBeGreaterThanOrEqual(0);
+        expect(atFirst(label)).toBeLessThan(replica);
+      }
+    });
+
+    it('registers each write target once, and a replica read target after the replica', async () => {
+      await provider.create('MyTable', RESOURCE_TYPE, { ...provisioned, Replicas: replicas });
+      expect(order.filter((o) => o === 'Register table:WriteCapacityUnits')).toHaveLength(1);
+      expect(order.filter((o) => o === 'Register index:WriteCapacityUnits')).toHaveLength(1);
+      expect(atFirst('Register table:ReadCapacityUnits')).toBeGreaterThan(atFirst('ReplicaCreate'));
+    });
+
+    it('leaves a single-region table registering after the rest of its wiring', async () => {
+      await provider.create('MyTable', RESOURCE_TYPE, {
+        ...provisioned,
+        Replicas: replicas.slice(0, 1),
+      });
+      expect(order.filter((o) => o === 'Register table:WriteCapacityUnits')).toHaveLength(1);
+      expect(atFirst('ReplicaCreate')).toBe(-1);
+    });
+
+    it('registers nothing on a single-region table whose wiring fails', async () => {
+      const send = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'UpdateTimeToLiveCommand'
+          ? Promise.reject(new Error('ttl boom'))
+          : send(command)
+      );
+      await expect(
+        provider.create('MyTable', RESOURCE_TYPE, {
+          ...provisioned,
+          TimeToLiveSpecification: { AttributeName: 'ttl', Enabled: true },
+          Replicas: replicas.slice(0, 1),
+        })
+      ).rejects.toThrow('Failed to create DynamoDB GlobalTable');
+      expect(order.filter((o) => o.startsWith('Register'))).toEqual([]);
+    });
+
+    it('still warns and keeps a single-region table when registration fails', async () => {
+      mockAutoScalingSend.mockRejectedValue(new Error('denied'));
+      await expect(
+        provider.create('MyTable', RESOURCE_TYPE, {
+          ...provisioned,
+          Replicas: replicas.slice(0, 1),
+        })
+      ).resolves.toBeDefined();
+      expect(atFirst('DeleteTable')).toBe(-1);
+    });
+
+    it('takes the targets down when a replica fails, before deleting the table', async () => {
+      failReplicaCreate = true;
+      await expect(
+        provider.create('MyTable', RESOURCE_TYPE, { ...provisioned, Replicas: replicas })
+      ).rejects.toThrow('Failed to create DynamoDB GlobalTable');
+      const deleted = atFirst('DeleteTable');
+      expect(deleted).toBeGreaterThanOrEqual(0);
+      expect(atFirst('Deregister table:WriteCapacityUnits')).toBeGreaterThanOrEqual(0);
+      expect(atFirst('Deregister table:WriteCapacityUnits')).toBeLessThan(deleted);
+      expect(atFirst('Deregister index:WriteCapacityUnits')).toBeGreaterThanOrEqual(0);
+      expect(atFirst('Deregister index:WriteCapacityUnits')).toBeLessThan(deleted);
+    });
+
+    it('points a cleanup that stopped early at rollback, which takes the targets too', async () => {
+      failReplicaCreate = true;
+      const send = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      let failing = false;
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.input['ReplicaUpdates']) failing = true;
+          return failing && command.constructor.name === 'DescribeTableCommand'
+            ? Promise.reject(new Error('describe boom'))
+            : send(command);
+        }
+      );
+      await expect(
+        provider.create('MyTable', RESOURCE_TYPE, { ...provisioned, Replicas: replicas })
+      ).rejects.toThrow('Failed to create DynamoDB GlobalTable');
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(atFirst('Deregister table:WriteCapacityUnits')).toBe(-1);
+      expect(warned).toContain('write scalable targets and scaling policies');
+      expect(warned).toContain('cdkd rollback --revert-failed');
+      expect(warned).not.toContain('aws dynamodb delete-table');
+    });
+
+    it('takes down a target whose registration is what failed, and deletes the table', async () => {
+      failReplicaCreate = true;
+      const send = mockAutoScalingSend.getMockImplementation() as (c: unknown) => unknown;
+      mockAutoScalingSend.mockImplementation((command: { constructor: { name: string }; input: Record<string, unknown> }) =>
+        command.constructor.name.startsWith('Register') && scalingLabel(command.input).startsWith('index')
+          ? Promise.reject(new Error('denied'))
+          : send(command)
+      );
+      await expect(
+        provider.create('MyTable', RESOURCE_TYPE, { ...provisioned, Replicas: replicas })
+      ).rejects.toThrow('Failed to create DynamoDB GlobalTable');
+      expect(atFirst('Deregister table:WriteCapacityUnits')).toBeGreaterThanOrEqual(0);
+      expect(atFirst('DeleteTable')).toBeGreaterThanOrEqual(0);
+    });
+  });
+
   it('uses CreateTableCommand as the first call (sanity)', async () => {
     // Defensive guard against future refactors accidentally swapping the
     // CreateTable wire order.

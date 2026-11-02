@@ -533,8 +533,9 @@ describe('DynamoDBGlobalTableProvider replay-CREATE effectiveProperties (issues 
       ],
     });
 
-    expect(reconcile).toHaveBeenCalledTimes(1);
-    const desired = reconcile.mock.calls[0]![2] as Array<{ dimension: string; region: string }>;
+    // Once for the write targets the replica needs, then for all of them.
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    const desired = reconcile.mock.calls[1]![2] as Array<{ dimension: string; region: string }>;
     // Every TABLE-level target survives — the withdrawal must not take them.
     expect(desired.map((s) => `${s.dimension}@${s.region}`).sort()).toEqual([
       'dynamodb:table:ReadCapacityUnits@eu-west-1',

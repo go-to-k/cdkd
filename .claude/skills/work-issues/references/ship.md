@@ -35,9 +35,8 @@ step 4**, whichever lane owns it — its isolation rules are not per-lane:
   quotas carry, else spread them across regions.
 
 The PARENT checks all four before granting each further lane's integ. ANY
-turn holding HOURS tells the user
-unasked its ETA and queue. A subagent running a turn's integs, marker and
-ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
+turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
+integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID
 exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN, take each
@@ -162,12 +161,13 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   `additional CFn schema drift`, #5123): merge with `--match-head-commit <the
   sha you verified>`, take a head you did not author by the MERGE ARM, never a
   force-push, and approve its runs — `gh run list --branch <b> --status
-  action_required`, then `gh api -X POST repos/<R>/actions/runs/<id>/approve`
-  (`gh run` has no verb); until then `gh pr checks` says `no checks reported`.
+  action_required`, then `gh api -X POST repos/<R>/actions/runs/<id>/approve`; until
+  then `gh pr checks` says `no checks reported`.
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
-  "base branch policy prohibits the merge"); `gh run rerun` what it CANCELLED,
-  as it blocks even after re-runs pass (#3664).
+  "base branch policy prohibits the merge"); `gh run rerun` what it or a quick
+  second push CANCELLED, as it blocks even after re-runs pass (#3664). A run
+  with `ci-ok` absent stops short of `CLEAN` too: rerun, else repush.
 - **`gh pr merge`'s output is not the verdict — `gh pr view <N> --json state`
   = `MERGED` is**, read in its OWN call before anything presuming the merge:
   from the PR's own worktree
@@ -241,12 +241,12 @@ git -C "<LANE_TREE>" branch --show-current  # must print <LAUNCH_BRANCH>
 git -C "<LANE_TREE>" branch --list '<your prefix>*'  # ...and every branch this run added is gone
 ```
 
-`--no-guess`: plain `git switch` re-creates a gone branch from `origin` and
-reports success instead of falling through. The dirty check is a TEST, since
+`--no-guess`: plain `git switch` re-creates a gone branch from `origin`.
+The dirty check is a TEST, since
 `--porcelain` exits 0 either way and `git switch` carries uncommitted changes
 ACROSS; unchained, a FAILED switch still runs the `-D`. The delete is PLURAL
-(§10-d adds a retro branch, so this runs LAST, not per-lane) and
-unconditional: confirm each PR reads `MERGED`.
+(§10-d adds a retro branch, so this runs LAST) and unconditional: confirm each
+PR reads `MERGED`.
 
 Fallback — INSTEAD of the block above, ONLY when `LAUNCH_BRANCH` was empty at
 probe time (launched detached) or is now gone. Keep it chained: after a failed
@@ -272,4 +272,4 @@ done
 Every `OPEN` needs a comment saying the issue is now UNCLAIMED, what the merged
 PR closed, and what remains and why, carrying forward anything expensive the
 lane measured. **Write it AFTER the merge, or state the PR's ACTUAL state.**
-Then go on to §10 while the run's evidence still exists.
+Then go on to §10.
