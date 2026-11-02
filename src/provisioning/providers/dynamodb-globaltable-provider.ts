@@ -2439,6 +2439,31 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
 
     await this.waitForReplicaActive(tableName, region, logicalId, undefined, maskSecrets);
 
+    // DynamoDB takes `ProvisionedThroughputOverride` on a replica `Create` and
+    // drops it: the region comes up ACTIVE at the source's read with no override,
+    // and stays there. The same override on an `Update` holds (measured,
+    // go-to-k/cdkd#5604), which is what CloudFormation's result needs.
+    const provisionedIndexes = replicaIndexes?.filter((i) => i.ProvisionedThroughputOverride);
+    if (create.ProvisionedThroughputOverride || provisionedIndexes?.length) {
+      await this.dynamoDBClient.send(
+        new UpdateTableCommand({
+          TableName: tableName,
+          ReplicaUpdates: [
+            {
+              Update: {
+                RegionName: region,
+                ...(create.ProvisionedThroughputOverride && {
+                  ProvisionedThroughputOverride: create.ProvisionedThroughputOverride,
+                }),
+                ...(provisionedIndexes?.length && { GlobalSecondaryIndexes: provisionedIndexes }),
+              },
+            },
+          ],
+        })
+      );
+      await this.waitForGlobalTableSettled(tableName, logicalId, maskSecrets);
+    }
+
     // `CreateReplicationGroupMemberAction` has no deletion-protection member,
     // so a cross-region replica's `DeletionProtectionEnabled` is set on the
     // replica's own table in its own region once it exists. A new replica
@@ -4060,12 +4085,13 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
   }
 
   /**
-   * The read capacity of each cross-region replica that a
+   * The read capacity of each cross-region replica the new template keeps that a
    * `ProvisionedThroughput` of `sendRead` would change, read in its own region.
    */
   private async readRegionReadsToRestore(
     tableName: string,
     replicas: readonly ReplicaDescription[],
+    properties: Record<string, unknown>,
     currentRegion: string,
     sendRead: number
   ): Promise<Array<{ region: string; read: number }>> {
@@ -4073,6 +4099,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     for (const replica of replicas) {
       const region = replica.RegionName;
       if (region === undefined || region === currentRegion) continue;
+      // A region this update drops, or one the template wants at the sent read.
+      const declared = localReplicaEntry(properties, region);
+      const wanted = asRecord(declared?.[TABLE_READ_PROVISIONED_KEY])?.['ReadCapacityUnits'];
+      if (!declared || coerceCfnInteger(wanted) === sendRead) continue;
       const regional = await this.getRegionalClient(region).send(
         new DescribeTableCommand({ TableName: tableName })
       );
@@ -6055,151 +6085,6 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         );
       }
 
-      // 4a'. go-to-k/cdkd#2762, go-to-k/cdkd#5604: a changed literal capacity,
-      // on either side. `ProvisionedThroughput` takes both members, so a side
-      // this update does not change goes out as AWS holds it, which is also how
-      // an auto-scaled side stays with its scaling policy. A value AWS holds is
-      // not sent: DynamoDB refuses a `ProvisionedThroughput` that changes nothing.
-      //
-      // `ProvisionedThroughput` on a table with a cross-region replica sets
-      // every region to the sent read capacity and clears its
-      // `ProvisionedThroughputOverride`, a write-only change included (measured,
-      // go-to-k/cdkd#5604). So a read change alone goes out as the local
-      // region's override, which leaves the others alone (the result
-      // CloudFormation reaches, measured), and a write change, which has no
-      // such route, puts back each region's read, as that region reports it
-      // rather than from the override the local region lists. An override on an
-      // auto-scaled region is accepted and its scalable target stays (measured).
-      // That put-back has to come before step 4b: once the write target is gone
-      // from a table with a cross-region replica, DynamoDB refuses every
-      // `ReplicaUpdates` Update (measured), and `ProvisionedThroughput` still goes
-      // through, so such a table cannot put a region back.
-      if (tableCapacityChange) {
-        const liveThroughput = describeResp.Table?.ProvisionedThroughput;
-        const sendRead = tableCapacityChange.read ?? liveThroughput?.ReadCapacityUnits;
-        const sendWrite = tableCapacityChange.write ?? liveThroughput?.WriteCapacityUnits;
-        const readMoves = sendRead !== liveThroughput?.ReadCapacityUnits;
-        const writeMoves = sendWrite !== liveThroughput?.WriteCapacityUnits;
-        if (sendRead !== undefined && sendWrite !== undefined && (readMoves || writeMoves)) {
-          // Read before the send, which loses them. A region already at the sent
-          // read has nothing to put back. A failed read stops here with the
-          // capacity unchanged.
-          const readsToRestore =
-            writeMoves && liveHasCrossRegionReplica
-              ? await this.readRegionReadsToRestore(
-                  physicalId,
-                  describeResp.Table?.Replicas ?? [],
-                  currentRegion,
-                  sendRead
-                )
-              : [];
-          if (
-            readsToRestore.length > 0 &&
-            asRecord(previousProperties[TABLE_WRITE_PROVISIONED_KEY])?.[
-              'WriteCapacityAutoScalingSettings'
-            ] === undefined
-          ) {
-            throw new ProvisioningError(
-              `Cannot change the write capacity of AWS::DynamoDB::GlobalTable ${logicalId}: it ` +
-                `would overwrite the read capacity of ` +
-                `${readsToRestore.map((r) => r.region).join(', ')}, and DynamoDB refuses the ` +
-                `override that puts it back while the write side is not auto-scaled. Declare ` +
-                `WriteCapacityAutoScalingSettings and re-deploy. The capacity is unchanged.`,
-              resourceType,
-              logicalId,
-              physicalId
-            );
-          }
-          // After a failure, `Replicas` makes the next deploy send what the
-          // template declares for each region; a value it does not declare is
-          // named in the warning below, and nothing recovers it.
-          markUnsettled(
-            ...(readMoves ? tableCapacityChange.readKeys : []),
-            ...(writeMoves ? [TABLE_WRITE_PROVISIONED_KEY] : []),
-            ...(readsToRestore.length > 0 ? ['Replicas'] : [])
-          );
-          await this.dynamoDBClient.send(
-            new UpdateTableCommand(
-              liveHasCrossRegionReplica && !writeMoves
-                ? {
-                    TableName: physicalId,
-                    ReplicaUpdates: [
-                      {
-                        Update: {
-                          RegionName: currentRegion,
-                          ProvisionedThroughputOverride: { ReadCapacityUnits: sendRead },
-                        },
-                      },
-                    ],
-                  }
-                : {
-                    TableName: physicalId,
-                    ProvisionedThroughput: {
-                      ReadCapacityUnits: sendRead,
-                      WriteCapacityUnits: sendWrite,
-                    },
-                  }
-            )
-          );
-          const unsent = [...readsToRestore];
-          let unconfirmed: { region: string; read: number } | undefined;
-          try {
-            // The whole group: another region moves with this one, and step 5
-            // meets a refusal while a replica is still updating.
-            if (liveHasCrossRegionReplica) {
-              await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
-            } else {
-              await this.waitForTableActiveAfterUpdate(
-                physicalId,
-                logicalId,
-                undefined,
-                undefined,
-                maskSecrets
-              );
-            }
-            for (const { region, read } of readsToRestore) {
-              await this.dynamoDBClient.send(
-                new UpdateTableCommand({
-                  TableName: physicalId,
-                  ReplicaUpdates: [
-                    {
-                      Update: {
-                        RegionName: region,
-                        ProvisionedThroughputOverride: { ReadCapacityUnits: read },
-                      },
-                    },
-                  ],
-                })
-              );
-              unsent.shift();
-              unconfirmed = { region, read };
-              await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
-              unconfirmed = undefined;
-            }
-          } catch (putBackError) {
-            const list = (reads: ReadonlyArray<{ region: string; read: number }>): string =>
-              reads.map((r) => `${r.region}=${r.read}`).join(', ');
-            if (unconfirmed || unsent.length > 0) {
-              warn(
-                `${maskSecrets(physicalId)}: the write capacity update set every region's read ` +
-                  `capacity to ${sendRead}. ` +
-                  (unconfirmed
-                    ? `AWS accepted the put-back of ${list([unconfirmed])}, which was not seen to ` +
-                      `finish. `
-                    : '') +
-                  (unsent.length > 0
-                    ? `It failed before putting back ${list(unsent)}. A value the template ` +
-                      `declares goes out on the next deploy; set any other with UpdateTable ` +
-                      `ReplicaUpdates (ProvisionedThroughputOverride), or leave a region with a ` +
-                      `read scaling policy to it.`
-                    : '')
-              );
-            }
-            throw putBackError;
-          }
-        }
-      }
-
       // 4b. Table-level write auto-scaling diff (Issue #402 / closes #395
       // deferred items). Fires whenever the WriteCapacityAutoScalingSettings
       // sub-shape differs between old and new (incl. add / remove). Skipped
@@ -6231,23 +6116,195 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // still backfilled by 6b (Issue #1419 — see reconcileAutoScalingTargets).
       const autoScalingApplied = new Set<string>();
       const autoScalingMeaningful = newBilling === 'PROVISIONED' || oldBilling === 'PROVISIONED';
+      // Removing the target stops DynamoDB taking any `ReplicaUpdates` Update on a
+      // table with a cross-region replica (measured, go-to-k/cdkd#5604), so it is
+      // the last thing this update does: every put-back and replica change first,
+      // and a failed update leaves a re-run able to send them. Registering stays
+      // here, ahead of the capacity sends, which need it for the same reason.
+      const removeWriteTargetLast =
+        liveHasCrossRegionReplica &&
+        !billingFlippedToOnDemand &&
+        writeAutoScalingOld !== undefined &&
+        effectiveNewAutoScaling === undefined;
       if (autoScalingMeaningful && !deepEqual(writeAutoScalingOld, effectiveNewAutoScaling)) {
-        await this.applyAutoScalingDiff(
-          physicalId,
-          'dynamodb:table:WriteCapacityUnits',
-          writeAutoScalingOld,
-          effectiveNewAutoScaling,
-          undefined,
-          undefined,
-          undefined,
-          maskSecrets
-        );
+        if (!removeWriteTargetLast) {
+          await this.applyAutoScalingDiff(
+            physicalId,
+            'dynamodb:table:WriteCapacityUnits',
+            writeAutoScalingOld,
+            effectiveNewAutoScaling,
+            undefined,
+            undefined,
+            undefined,
+            maskSecrets
+          );
+        }
         autoScalingApplied.add(
           autoScalingTargetKey({
             dimension: 'dynamodb:table:WriteCapacityUnits',
             region: currentRegion,
           })
         );
+      }
+
+      // 4a'. go-to-k/cdkd#2762, go-to-k/cdkd#5604: a changed literal capacity,
+      // on either side. `ProvisionedThroughput` takes both members, so a side
+      // this update does not change goes out as AWS holds it, which is also how
+      // an auto-scaled side stays with its scaling policy. A value AWS holds is
+      // not sent: DynamoDB refuses a `ProvisionedThroughput` that changes nothing.
+      //
+      // `ProvisionedThroughput` on a table with a cross-region replica sets
+      // every region to the sent read capacity and clears its
+      // `ProvisionedThroughputOverride`, a write-only change included (measured,
+      // go-to-k/cdkd#5604). So a read change alone goes out as the local
+      // region's override, which leaves the others alone (the result
+      // CloudFormation reaches, measured), and a write change, which has no
+      // such route, puts back each region's read, as that region reports it
+      // rather than from the override the local region lists. An override on an
+      // auto-scaled region is accepted and its scalable target stays (measured).
+      // Once the write target is gone from a table with a cross-region replica,
+      // DynamoDB refuses every `ReplicaUpdates` Update (measured) and
+      // `ProvisionedThroughput` still goes through, so such a table cannot put a
+      // region back.
+      if (tableCapacityChange) {
+        const liveThroughput = describeResp.Table?.ProvisionedThroughput;
+        const sendRead = tableCapacityChange.read ?? liveThroughput?.ReadCapacityUnits;
+        const sendWrite = tableCapacityChange.write ?? liveThroughput?.WriteCapacityUnits;
+        const readMoves = sendRead !== liveThroughput?.ReadCapacityUnits;
+        const writeMoves = sendWrite !== liveThroughput?.WriteCapacityUnits;
+        if (sendRead !== undefined && sendWrite !== undefined && (readMoves || writeMoves)) {
+          // Read before the send, which loses them. A region already at the sent
+          // read has nothing to put back. A failed read stops here with the
+          // capacity unchanged.
+          const readsToRestore =
+            writeMoves && liveHasCrossRegionReplica
+              ? await this.readRegionReadsToRestore(
+                  physicalId,
+                  describeResp.Table?.Replicas ?? [],
+                  properties,
+                  currentRegion,
+                  sendRead
+                )
+              : [];
+          const cannotPutBack =
+            readsToRestore.length > 0 &&
+            asRecord(previousProperties[TABLE_WRITE_PROVISIONED_KEY])?.[
+              'WriteCapacityAutoScalingSettings'
+            ] === undefined;
+          // A state-borne bag has no template to fix, and a throw would strand
+          // what this revert already applied.
+          if (
+            cannotPutBack &&
+            (context?.replayingState === true || context?.desiredFromAwsReadback === true)
+          ) {
+            warn(
+              `${maskSecrets(physicalId)}: the capacity was not sent: it would overwrite the ` +
+                `read capacity of ${readsToRestore.map((r) => r.region).join(', ')}, and ` +
+                `DynamoDB refuses the override that puts it back while the write side is not ` +
+                `auto-scaled.`
+            );
+          } else if (cannotPutBack) {
+            throw new ProvisioningError(
+              `Cannot change the write capacity of AWS::DynamoDB::GlobalTable ${logicalId}: it ` +
+                `would overwrite the read capacity of ` +
+                `${readsToRestore.map((r) => r.region).join(', ')}, and DynamoDB refuses the ` +
+                `override that puts it back while the write side is not auto-scaled. Declare ` +
+                `WriteCapacityAutoScalingSettings and re-deploy. The capacity is unchanged.`,
+              resourceType,
+              logicalId,
+              physicalId
+            );
+          }
+          // After a failure, `Replicas` makes the next deploy send what the
+          // template declares for each region; a value it does not declare is
+          // named in the warning below, and nothing recovers it.
+          if (!cannotPutBack) {
+            markUnsettled(
+              ...(readMoves ? tableCapacityChange.readKeys : []),
+              ...(writeMoves ? [TABLE_WRITE_PROVISIONED_KEY] : []),
+              ...(readsToRestore.length > 0 ? ['Replicas'] : [])
+            );
+            await this.dynamoDBClient.send(
+              new UpdateTableCommand(
+                liveHasCrossRegionReplica && !writeMoves
+                  ? {
+                      TableName: physicalId,
+                      ReplicaUpdates: [
+                        {
+                          Update: {
+                            RegionName: currentRegion,
+                            ProvisionedThroughputOverride: { ReadCapacityUnits: sendRead },
+                          },
+                        },
+                      ],
+                    }
+                  : {
+                      TableName: physicalId,
+                      ProvisionedThroughput: {
+                        ReadCapacityUnits: sendRead,
+                        WriteCapacityUnits: sendWrite,
+                      },
+                    }
+              )
+            );
+            const unsent = [...readsToRestore];
+            let unconfirmed: { region: string; read: number } | undefined;
+            try {
+              // The whole group: another region moves with this one, and step 5
+              // meets a refusal while a replica is still updating.
+              if (liveHasCrossRegionReplica) {
+                await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
+              } else {
+                await this.waitForTableActiveAfterUpdate(
+                  physicalId,
+                  logicalId,
+                  undefined,
+                  undefined,
+                  maskSecrets
+                );
+              }
+              for (const { region, read } of readsToRestore) {
+                await this.dynamoDBClient.send(
+                  new UpdateTableCommand({
+                    TableName: physicalId,
+                    ReplicaUpdates: [
+                      {
+                        Update: {
+                          RegionName: region,
+                          ProvisionedThroughputOverride: { ReadCapacityUnits: read },
+                        },
+                      },
+                    ],
+                  })
+                );
+                unsent.shift();
+                unconfirmed = { region, read };
+                await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
+                unconfirmed = undefined;
+              }
+            } catch (putBackError) {
+              const list = (reads: ReadonlyArray<{ region: string; read: number }>): string =>
+                reads.map((r) => `${r.region}=${r.read}`).join(', ');
+              if (unconfirmed || unsent.length > 0) {
+                warn(
+                  `${maskSecrets(physicalId)}: the write capacity update set every region's read ` +
+                    `capacity to ${sendRead}. ` +
+                    (unconfirmed
+                      ? `AWS accepted the put-back of ${list([unconfirmed])}, which was not seen to ` +
+                        `finish. `
+                      : '') +
+                    (unsent.length > 0
+                      ? `It failed before putting back ${list(unsent)}. A value the template ` +
+                        `declares goes out on the next deploy; set any other with UpdateTable ` +
+                        `ReplicaUpdates (ProvisionedThroughputOverride), or leave a region with a ` +
+                        `read scaling policy to it.`
+                      : '')
+                );
+              }
+              throw putBackError;
+            }
+          }
+        }
       }
 
       // go-to-k/cdkd#5489: a REMOVED settings replication mode is reset
@@ -7318,6 +7375,19 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           ...(effectiveProperties ?? properties),
           [STREAM_SPECIFICATION_KEY]: impliedStream,
         };
+      }
+
+      if (removeWriteTargetLast) {
+        await this.applyAutoScalingDiff(
+          physicalId,
+          'dynamodb:table:WriteCapacityUnits',
+          writeAutoScalingOld,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maskSecrets
+        );
       }
 
       return {
