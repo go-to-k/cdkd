@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { IAM_MAX_ATTEMPTS } from '../../../src/utils/iam-max-attempts.js';
 
 describe('AwsClients', () => {
   it('passes the configured profile to every AWS SDK client', () => {
@@ -44,5 +45,18 @@ describe('AwsClients', () => {
       clients.destroy();
     }
     expect(destroyed).toBe(1);
+  });
+
+  // A throttled AttachRolePolicy / PutRolePolicy / DeleteRole at the SDK default of
+  // 3 attempts fails a role's create and leaves the role behind (EntityAlreadyExists
+  // on the replay), so the IAM client keeps retrying a throttle for longer.
+  it('gives the IAM client more SDK attempts than the default, to ride out throttling', async () => {
+    const clients = new AwsClients({ region: 'us-east-1' });
+    try {
+      expect(IAM_MAX_ATTEMPTS).toBeGreaterThan(3);
+      expect(await clients.iam.config.maxAttempts()).toBe(IAM_MAX_ATTEMPTS);
+    } finally {
+      clients.destroy();
+    }
   });
 });
