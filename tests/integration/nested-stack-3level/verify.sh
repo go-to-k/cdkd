@@ -737,11 +737,11 @@ echo "==> Step 4: 'cdkd diff ${STACK} --recursive' must report no changes"
 CLEAN_OUT=$(${CDKD} diff ${STACK} --recursive --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" 2>&1)
 scan_output "cdkd diff --recursive" "${CLEAN_OUT}"
 echo "${CLEAN_OUT}"
-if ! echo "${CLEAN_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${CLEAN_OUT}"; then
   echo "FAIL: recursive diff of a freshly-deployed tree reported spurious changes"
   exit 1
 fi
-if echo "${CLEAN_OUT}" | grep -qE "\[~\]|\[\+\]|\[-\]"; then
+if grep -qE "\[~\]|\[\+\]|\[-\]" <<<"${CLEAN_OUT}"; then
   echo "FAIL: recursive diff of a freshly-deployed tree printed change markers"
   exit 1
 fi
@@ -761,11 +761,11 @@ if [[ ${CHANGED_RC} -ne 1 ]]; then
   echo "FAIL: --recursive --fail exited ${CHANGED_RC} after a great-grandchild change (expected 1)"
   exit 1
 fi
-if ! echo "${CHANGED_OUT}" | grep -q "Nested stack: ${GREATGRANDCHILD}"; then
+if ! grep -q "Nested stack: ${GREATGRANDCHILD}" <<<"${CHANGED_OUT}"; then
   echo "FAIL: recursive diff did not print a 'Nested stack: ${GREATGRANDCHILD}' block"
   exit 1
 fi
-if ! echo "${CHANGED_OUT}" | grep -q "\[~\]"; then
+if ! grep -q "\[~\]" <<<"${CHANGED_OUT}"; then
   echo "FAIL: recursive diff did not print an UPDATE ([~]) line for the changed great-grandchild"
   exit 1
 fi
@@ -1254,12 +1254,12 @@ echo "${TREE_OUT}"
 # branch prefix. Assert the full ~-joined name shows at each level AND that the
 # tree nesting (box-drawing chars) is present.
 for lvl in "${LEVELS[@]}"; do
-  if ! echo "${TREE_OUT}" | grep -qF "${lvl}"; then
+  if ! grep -qF "${lvl}" <<<"${TREE_OUT}"; then
     echo "FAIL: 'state list --tree' did not render level '${lvl}'"
     exit 1
   fi
 done
-if ! echo "${TREE_OUT}" | grep -qE '(└──|├──)'; then
+if ! grep -qE '(└──|├──)' <<<"${TREE_OUT}"; then
   echo "FAIL: 'state list --tree' rendered no box-drawing branches (hierarchy not shown)"
   exit 1
 fi

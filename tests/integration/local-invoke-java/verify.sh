@@ -118,12 +118,12 @@ if RESULT_3=$(${CDKD} local invoke CdkdLocalInvokeJavaFixture/InlineHandler --no
   echo "FAIL: expected non-zero exit on inline Java, got success: ${RESULT_3}"
   exit 1
 fi
-echo "${RESULT_3}" | grep -q "Inline 'Code.ZipFile' is not supported" || {
+grep -q "Inline 'Code.ZipFile' is not supported" <<<"${RESULT_3}" || {
   echo "FAIL: expected 'Inline Code.ZipFile is not supported' message, got:"
   echo "${RESULT_3}"
   exit 1
 }
-echo "${RESULT_3}" | grep -q "Code.fromAsset" || {
+grep -q "Code.fromAsset" <<<"${RESULT_3}" || {
   echo "FAIL: expected 'Code.fromAsset' routing in message, got:"
   echo "${RESULT_3}"
   exit 1

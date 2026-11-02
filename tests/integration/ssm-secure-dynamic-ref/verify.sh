@@ -197,7 +197,7 @@ DEPLOY_LOG="$(mktemp "${TMPDIR:-/tmp}/cdkd-2482-deploy.XXXXXX")"
 # Never print a marker: withhold any output that carries one. A diagnostic
 # that leaks the value it is guarding is itself the bug.
 leaks_marker() { # leaks_marker <text> -> 0 when either marker is in it
-  grep -qF -e <<<"$1" "${MARKER}" -e "${MARKER_VERSIONED}"
+  grep -qF -e "${MARKER}" -e "${MARKER_VERSIONED}" <<<"$1"
 }
 diag_output() { # diag_output <text>
   if leaks_marker "$1"; then

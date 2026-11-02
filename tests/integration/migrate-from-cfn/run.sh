@@ -530,11 +530,11 @@ run_one() {
     log "[${stack}] cdkd diff (PR #331 regression guard for AWS::ECR::Repository.Arn)"
     diff_output=$(AWS_REGION="${REGION}" ${CDKD} diff "${stack}" 2>&1 || true)
     echo "${diff_output}"
-    if echo "${diff_output}" | grep -q "Unknown attribute Arn for resource type AWS::ECR::Repository"; then
+    if grep -q "Unknown attribute Arn for resource type AWS::ECR::Repository" <<<"${diff_output}"; then
       echo "ASSERTION FAILED: PR #331 regression — ECR Repository.Arn handler missing from intrinsic resolver" >&2
       exit 1
     fi
-    if echo "${diff_output}" | grep -q "Fn::Select: index .* out of bounds (array length: 1)"; then
+    if grep -q "Fn::Select: index .* out of bounds (array length: 1)" <<<"${diff_output}"; then
       echo "ASSERTION FAILED: PR #331 regression — Fn::Select OOB on ECR ARN parse" >&2
       exit 1
     fi

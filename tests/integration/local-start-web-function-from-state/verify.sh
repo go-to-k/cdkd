@@ -320,9 +320,9 @@ fi
 
 BODY="$(curl -s "http://127.0.0.1:${PORT}/whoami")"
 echo "    /whoami: ${BODY}"
-echo "${BODY}" | grep -q "\"arn\":\"arn:aws:sts::${ACCOUNT}:assumed-role/${ROLE_NAME}/" \
+grep -q "\"arn\":\"arn:aws:sts::${ACCOUNT}:assumed-role/${ROLE_NAME}/" <<<"${BODY}" \
   || fail "the container did not run as ${ROLE_NAME}: ${BODY}"
-echo "${BODY}" | grep -q "\"roleName\":\"${ROLE_NAME}\"" \
+grep -q "\"roleName\":\"${ROLE_NAME}\"" <<<"${BODY}" \
   || fail "ROLE_NAME (a Ref) was not resolved from state: ${BODY}"
 
 echo "==> SIGTERM removes the container"

@@ -128,7 +128,7 @@ if [ "${STATUS}" != "200" ]; then
   exit 1
 fi
 BODY="$(cat /tmp/cdkd-nodejs-out.json 2>/dev/null || echo "")"
-if ! echo "${BODY}" | grep -q "hello cdkd from nodejs-function"; then
+if ! grep -q "hello cdkd from nodejs-function" <<<"${BODY}"; then
   echo "FAIL: invoke response missing expected body; got: ${BODY}" >&2
   exit 1
 fi

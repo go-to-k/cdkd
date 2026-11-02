@@ -264,7 +264,7 @@ assert_refusal_text() {
     echo "FAIL: ${what}: no #4009 refusal naming '${line}'" >&2
     exit 1
   fi
-  if grep -qF -e <<<"${txt}" "${SECURE_VALUE}" -e "${NESTED_VALUE}"; then
+  if grep -qF -e "${SECURE_VALUE}" -e "${NESTED_VALUE}" <<<"${txt}"; then
     echo "FAIL: ${what}: a secret value appeared in cdkd's own output" >&2
     exit 1
   fi

@@ -326,11 +326,11 @@ echo ""
 echo "==> Step 2: 'cdkd diff ${STACK} --recursive' must report no changes"
 CLEAN_OUT=$(${CDKD} diff ${STACK} --recursive --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}")
 echo "${CLEAN_OUT}"
-if ! echo "${CLEAN_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${CLEAN_OUT}"; then
   echo "FAIL: recursive diff of a freshly-deployed tree reported spurious changes"
   exit 1
 fi
-if echo "${CLEAN_OUT}" | grep -q "\[~\]\|\[+\]\|\[-\]"; then
+if grep -q "\[~\]\|\[+\]\|\[-\]" <<<"${CLEAN_OUT}"; then
   echo "FAIL: recursive diff of a freshly-deployed tree printed change markers"
   exit 1
 fi
@@ -364,11 +364,11 @@ if [[ ${CHANGED_RC} -ne 1 ]]; then
   echo "FAIL: --recursive --fail exited ${CHANGED_RC} after a grandchild change (expected 1)"
   exit 1
 fi
-if ! echo "${CHANGED_OUT}" | grep -q "Nested stack: ${GRANDCHILD_STACK}"; then
+if ! grep -q "Nested stack: ${GRANDCHILD_STACK}" <<<"${CHANGED_OUT}"; then
   echo "FAIL: recursive diff did not print a 'Nested stack: ${GRANDCHILD_STACK}' block"
   exit 1
 fi
-if ! echo "${CHANGED_OUT}" | grep -q "\[~\]"; then
+if ! grep -q "\[~\]" <<<"${CHANGED_OUT}"; then
   echo "FAIL: recursive diff did not print an UPDATE ([~]) line for the changed grandchild"
   exit 1
 fi

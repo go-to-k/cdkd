@@ -520,17 +520,17 @@ if ! DRY_OUT=$(node "${LOCAL_DIST}" gc --state-bucket "${STATE_BUCKET}" --region
 fi
 echo "${DRY_OUT}" | tail -5
 
-if ! echo "${DRY_OUT}" | grep -qF "s3://${ASSET_BUCKET}/${GARBAGE_KEY}"; then
+if ! grep -qF "s3://${ASSET_BUCKET}/${GARBAGE_KEY}" <<<"${DRY_OUT}"; then
   echo "FAIL: gc --dry-run plan does not list the seeded garbage object. Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
 fi
-if echo "${DRY_OUT}" | grep -qF "${CODE_KEY}"; then
+if grep -qF "${CODE_KEY}" <<<"${DRY_OUT}"; then
   echo "FAIL: gc --dry-run plan lists the deploy-referenced asset ${CODE_KEY} — it would delete a live asset. Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
 fi
-if ! echo "${DRY_OUT}" | grep -qF "Total: 3 S3 object(s)"; then
+if ! grep -qF "Total: 3 S3 object(s)" <<<"${DRY_OUT}"; then
   echo "FAIL: gc --dry-run plan should contain exactly 3 S3 candidates (the seeded garbage + the two bucket-case controls). Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
@@ -540,14 +540,14 @@ fi
 # named through a bucket-case variant in a byte-compared position MUST be — a
 # run that simply protected everything would satisfy the six survivals alone.
 for key in "${S3_CASE_SURVIVOR_KEYS[@]}"; do
-  if echo "${DRY_OUT}" | grep -qF "${key}"; then
+  if grep -qF "${key}" <<<"${DRY_OUT}"; then
     echo "FAIL: gc --dry-run plan lists ${key}, which IS referenced by a spelling that names the live object (issue #1847) — it would delete it. Output:" >&2
     echo "${DRY_OUT}" >&2
     exit 1
   fi
 done
 for key in "${S3_BUCKETCASE_DELETED_KEYS[@]}"; do
-  if ! echo "${DRY_OUT}" | grep -qF "${key}"; then
+  if ! grep -qF "${key}" <<<"${DRY_OUT}"; then
     echo "FAIL: gc --dry-run plan does not list ${key}, whose only reference spells the BUCKET upper-cased where S3 compares it byte-for-byte — folding the bucket name there would pin any object forever (issue #1847). Output:" >&2
     echo "${DRY_OUT}" >&2
     exit 1
@@ -555,12 +555,12 @@ for key in "${S3_BUCKETCASE_DELETED_KEYS[@]}"; do
 done
 # ONE ECR candidate: the unreferenced image. The two images referenced through
 # the WIDENED host forms must not be candidates at all.
-if ! echo "${DRY_OUT}" | grep -qF "1 ECR image(s)"; then
+if ! grep -qF "1 ECR image(s)" <<<"${DRY_OUT}"; then
   echo "FAIL: gc --dry-run plan should contain exactly 1 ECR candidate (the unreferenced image). Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
 fi
-if ! echo "${DRY_OUT}" | grep -qF "${GARBAGE_IMAGE_DIGEST}"; then
+if ! grep -qF "${GARBAGE_IMAGE_DIGEST}" <<<"${DRY_OUT}"; then
   echo "FAIL: gc --dry-run plan does not list the unreferenced image ${GARBAGE_IMAGE_DIGEST}. Output:" >&2
   echo "${DRY_OUT}" >&2
   exit 1
@@ -571,7 +571,7 @@ fi
 # (and `${packed#*:}` reports a nonsense label). Same trap as cdkd's own
 # unescaped composite-id separator (issue #1672).
 assert_widened_ref_not_a_candidate() { # usage: <digest> <what it exercises>
-  if echo "${DRY_OUT}" | grep -qF "$1"; then
+  if grep -qF "$1" <<<"${DRY_OUT}"; then
     echo "FAIL: gc --dry-run plan lists $1, which IS referenced through a widened host form ($2) — it would delete a live image. Output:" >&2
     echo "${DRY_OUT}" >&2
     exit 1

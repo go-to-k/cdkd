@@ -454,25 +454,25 @@ echo "PASS: deploy exited 2 for the orphaned predecessor (issue #1960)"
 # The banner must not claim success either -- the exit code was only half the
 # mis-report. A run still printing "Deployment completed successfully" while a
 # resource survived would leave the human-readable half wrong.
-if echo "${deploy_txt}" | grep -q "Deployment completed successfully"; then
+if grep -q "Deployment completed successfully" <<<"${deploy_txt}"; then
   echo "FAIL: the run still claims it completed successfully (issue #1960)"
   exit 1
 fi
-if ! echo "${deploy_txt}" | grep -q "were left unaddressed"; then
+if ! grep -q "were left unaddressed" <<<"${deploy_txt}"; then
   echo "FAIL: no unaddressed-resource verdict line in the summary (issue #1960)"
   exit 1
 fi
 echo "PASS: the verdict line names the survivor instead of claiming success"
 
 # The status line names the cause instead of printing a bare `updated`.
-if ! echo "${deploy_txt}" | grep -q "partial ("; then
+if ! grep -q "partial (" <<<"${deploy_txt}"; then
   echo "FAIL: no 'partial (<reason>)' status line -- the survivor was reported as a clean update"
   exit 1
 fi
 echo "PASS: status line reports the partial outcome"
 
 # The summary counts it apart from a clean update.
-if ! echo "${deploy_txt}" | grep -q "of which left an orphaned predecessor: 1"; then
+if ! grep -q "of which left an orphaned predecessor: 1" <<<"${deploy_txt}"; then
   echo "FAIL: summary has no orphaned-predecessor row"
   echo "${deploy_txt}" | grep -iE "updated|skipped" || true
   exit 1
@@ -481,7 +481,7 @@ echo "PASS: summary counts the orphaned predecessor"
 
 # The reason names the OLD physical id -- state now points at the NEW cert, so
 # this event is the only place the survivor's identity still exists.
-if ! echo "${deploy_txt}" | grep -q "${malformed}"; then
+if ! grep -q "${malformed}" <<<"${deploy_txt}"; then
   echo "FAIL: the reported reason does not name the surviving physical id"
   exit 1
 fi
@@ -505,26 +505,26 @@ fi
 events_out=$($CDKD events "${STACK}" --run "${run_id}" --region "${REGION}" \
   --state-bucket "${BUCKET}" 2>&1 | sed $'s/\033\[[0-9;]*m//g' || true)
 
-if ! echo "${events_out}" | grep -q "RESOURCE_SKIPPED"; then
+if ! grep -q "RESOURCE_SKIPPED" <<<"${events_out}"; then
   echo "FAIL: no RESOURCE_SKIPPED event recorded for the survivor"
   echo "${events_out}" | tail -20
   exit 1
 fi
 # The updated row must ALSO be recorded as done -- the pair is the whole point.
 # A lone skip would mean the events store claims the resource was not addressed.
-if ! echo "${events_out}" | grep -q "RESOURCE_SUCCEEDED"; then
+if ! grep -q "RESOURCE_SUCCEEDED" <<<"${events_out}"; then
   echo "FAIL: no RESOURCE_SUCCEEDED event -- the updated row must still count as done"
   echo "${events_out}" | tail -20
   exit 1
 fi
 # The durable record must name the survivor: state points at the NEW cert, so
 # this is the only place its identity still exists.
-if ! echo "${events_out}" | grep -q "${malformed}"; then
+if ! grep -q "${malformed}" <<<"${events_out}"; then
   echo "FAIL: the RESOURCE_SKIPPED event does not name the surviving physical id"
   exit 1
 fi
 # The run-level counter cdkd events renders as the warn badge.
-if ! echo "${events_out}" | grep -q "RUN_FINISHED.*⚠1"; then
+if ! grep -q "RUN_FINISHED.*⚠1" <<<"${events_out}"; then
   echo "FAIL: RUN_FINISHED does not carry the run-level skipped count"
   echo "${events_out}" | grep RUN_FINISHED || true
   exit 1
@@ -535,7 +535,7 @@ fi
 # post-mortem said one thing and the process said another. Asserted through a
 # real S3 round-trip rather than only in the unit test, because what is being
 # checked is that the value PERSISTS and RENDERS, not that it was passed.
-if ! echo "${events_out}" | grep -q "RUN_FINISHED.*FAILED.*⚠1"; then
+if ! grep -q "RUN_FINISHED.*FAILED.*⚠1" <<<"${events_out}"; then
   echo "FAIL: RUN_FINISHED does not record the run as FAILED (issue #1960)"
   echo "${events_out}" | grep RUN_FINISHED || true
   exit 1
@@ -596,7 +596,7 @@ allow_txt=$(printf '%s' "${allow_out}" | sed $'s/\033\[[0-9;]*m//g')
 # The arm is only meaningful if this deploy actually reproduced the partial
 # outcome. Checked FIRST: a run that quietly made no change would exit 0 too,
 # and would then "pass" the flag assertion below while proving nothing.
-if ! echo "${allow_txt}" | grep -q "of which left an orphaned predecessor: 1"; then
+if ! grep -q "of which left an orphaned predecessor: 1" <<<"${allow_txt}"; then
   echo "FAIL: phase 3 did not reproduce the partial update, so the flag is untested"
   echo "${allow_txt}" | grep -iE "updated|skipped|unaddressed" || true
   exit 1
@@ -612,11 +612,11 @@ echo "PASS: --allow-unaddressed exited 0 for an outcome that otherwise exits 2"
 # The flag suppresses the EXIT CODE only. If it also silenced the warning the
 # operator would have no signal at all, which is the failure mode the flag must
 # not create.
-if ! echo "${allow_txt}" | grep -q "were left unaddressed"; then
+if ! grep -q "were left unaddressed" <<<"${allow_txt}"; then
   echo "FAIL: --allow-unaddressed silenced the survivor warning as well as the exit code"
   exit 1
 fi
-if ! echo "${allow_txt}" | grep -q "allow-unaddressed was passed"; then
+if ! grep -q "allow-unaddressed was passed" <<<"${allow_txt}"; then
   echo "FAIL: the verdict line does not say the exit code was suppressed by the flag"
   exit 1
 fi

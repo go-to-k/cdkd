@@ -222,7 +222,7 @@ if ! DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
 fi
 echo "${DEPLOY_OUT}" | tail -3
 
-if echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
+if grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: cdkd-assets-mode deploy printed the legacy 'cdk gc' notice" >&2
   exit 1
 fi

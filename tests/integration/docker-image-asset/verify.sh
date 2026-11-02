@@ -213,7 +213,7 @@ echo "    OK: Lambda Code.ImageUri == ${IMAGE_URI}"
 ECR_REPO=$(echo "${IMAGE_URI}" | sed -E 's#^[^/]+/##; s#[@:].*$##')
 # Extract the `:tag` only (skip the `@sha256:...` digest form): take the part
 # after the LAST `:` but only if the URI has no `@` digest separator.
-if echo "${IMAGE_URI}" | grep -q '@'; then
+if grep -q '@' <<<"${IMAGE_URI}"; then
   IMAGE_TAG=""
 else
   IMAGE_TAG="${IMAGE_URI##*:}"

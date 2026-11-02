@@ -136,7 +136,7 @@ invoke_with_retry() {
   err="$(mktemp)"
   while [ $i -le $attempts ]; do
     if out=$(${CLI} local invoke "${args[@]}" 2>"${err}" | tail -1) && \
-       echo "${out}" | grep -q '"tableName":'; then
+       grep -q '"tableName":' <<<"${out}"; then
       rm -f "${err}"
       printf '%s' "${out}"
       return 0
@@ -158,11 +158,11 @@ invoke_with_retry() {
 echo "[verify] step 5: cdkd local invoke (no --from-cfn-stack) — expect TABLE_NAME=unset"
 RESULT_BASELINE=$(invoke_with_retry "${STACK}/EchoTableHandler" --no-pull)
 echo "[verify]   response: ${RESULT_BASELINE}"
-echo "${RESULT_BASELINE}" | grep -q '"tableName":"unset"' || {
+grep -q '"tableName":"unset"' <<<"${RESULT_BASELINE}" || {
   echo "[verify] FAIL: expected TABLE_NAME to be dropped (default warn-and-drop), got: ${RESULT_BASELINE}"
   exit 1
 }
-echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_BASELINE}" || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline response, got: ${RESULT_BASELINE}"
   exit 1
 }
@@ -173,11 +173,11 @@ echo "[verify] step 6: cdkd local invoke --from-cfn-stack — expect TABLE_NAME=
 # name to both.
 RESULT_FROM_CFN=$(invoke_with_retry "${STACK}/EchoTableHandler" --from-cfn-stack --no-pull)
 echo "[verify]   response: ${RESULT_FROM_CFN}"
-echo "${RESULT_FROM_CFN}" | grep -q "\"tableName\":\"${DEPLOYED_TABLE}\"" || {
+grep -q "\"tableName\":\"${DEPLOYED_TABLE}\"" <<<"${RESULT_FROM_CFN}" || {
   echo "[verify] FAIL: expected TABLE_NAME=${DEPLOYED_TABLE}, got: ${RESULT_FROM_CFN}"
   exit 1
 }
-echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_FROM_CFN}" || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-cfn-stack, got: ${RESULT_FROM_CFN}"
   exit 1
 }
@@ -249,7 +249,7 @@ DENIED=$(
   aws cloudformation list-stack-resources --stack-name "${STACK}" --region "${REGION}" 2>&1 >/dev/null || true
 )
 unset ROLE_CREDS
-echo "${DENIED}" | grep -q 'AccessDenied' || {
+grep -q 'AccessDenied' <<<"${DENIED}" || {
   echo "[verify] FAIL: premise broken: the no-permission role was not denied ListStackResources (got: ${DENIED})"
   exit 1
 }
@@ -261,14 +261,14 @@ for attempt in 1 2 3; do
   # shellcheck disable=SC2086 # CLI is "node <path>", split on purpose
   RESULT_ROLE=$(run_as_caller ${CLI} local invoke "${STACK}/EchoTableHandler" \
     --from-cfn-stack --no-pull --role-arn "${ROLE_ARN}" 2>"${ROLE_ERR}" | tail -1) || true
-  echo "${RESULT_ROLE}" | grep -q '"tableName":' && break
+  grep -q '"tableName":' <<<"${RESULT_ROLE}" && break
   echo "[verify]   invoke attempt ${attempt} returned no payload; stderr tail:" >&2
   tail -5 "${ROLE_ERR}" >&2
   sleep 2
 done
 unset CALLER_AKID CALLER_SECRET CALLER_TOKEN
 echo "[verify]   response: ${RESULT_ROLE}"
-if ! echo "${RESULT_ROLE}" | grep -q "\"tableName\":\"${DEPLOYED_TABLE}\""; then
+if ! grep -q "\"tableName\":\"${DEPLOYED_TABLE}\"" <<<"${RESULT_ROLE}"; then
   if grep -q 'ListStackResources.*AccessDenied\|AccessDenied.*ListStackResources' "${ROLE_ERR}"; then
     echo "[verify] FAIL (#3240): --from-cfn-stack read the stack AS THE --role-arn ROLE (ListStackResources AccessDenied); expected the caller's identity"
   else

@@ -112,12 +112,12 @@ boot_serve "${STACK}/Endpoint" --port "${PORT}" --no-pull
 URL="http://127.0.0.1:${PORT}"
 grep -q "Server listening on ${URL}" "${OUT_FILE}" || fail "ready banner does not name ${URL}"
 BODY="$(curl -s -X POST "${URL}/hello/world?q=1")"
-echo "${BODY}" | grep -q '"method":"POST"' || fail "method not echoed: ${BODY}"
-echo "${BODY}" | grep -q '"path":"/hello/world?q=1"' || fail "path not echoed: ${BODY}"
-echo "${BODY}" | grep -q '"revision":"v2"' || fail "higher-weight revision RevV2 not served: ${BODY}"
-echo "${BODY}" | grep -q '"greeting":"hello-from-v2"' || fail "ServiceConfig env not injected: ${BODY}"
-echo "${BODY}" | grep -q '"entry":"index"' || fail "default entry index.js not started: ${BODY}"
-echo "${BODY}" | grep -q '"functionName":"cdkd-integ-web-fn"' || fail "function name not set: ${BODY}"
+grep -q '"method":"POST"' <<<"${BODY}" || fail "method not echoed: ${BODY}"
+grep -q '"path":"/hello/world?q=1"' <<<"${BODY}" || fail "path not echoed: ${BODY}"
+grep -q '"revision":"v2"' <<<"${BODY}" || fail "higher-weight revision RevV2 not served: ${BODY}"
+grep -q '"greeting":"hello-from-v2"' <<<"${BODY}" || fail "ServiceConfig env not injected: ${BODY}"
+grep -q '"entry":"index"' <<<"${BODY}" || fail "default entry index.js not started: ${BODY}"
+grep -q '"functionName":"cdkd-integ-web-fn"' <<<"${BODY}" || fail "function name not set: ${BODY}"
 [[ "$(grep -c 'weighted routing is not emulated' "${OUT_FILE}")" -eq 1 ]] \
   || fail "the weighted-split warning was not printed exactly once"
 # Sentinel: the warning names the served revision, independent of the phrase above.
@@ -132,16 +132,16 @@ assert_no_orphans "the endpoint serve"
 echo "==> Arm 2: --revision RevV1 overrides the endpoint weights"
 boot_serve "${STACK}/Endpoint" --revision RevV1 --no-assume-role --port "$((PORT + 1))" --no-pull
 BODY="$(curl -s "http://127.0.0.1:$((PORT + 1))/")"
-echo "${BODY}" | grep -q '"revision":"v1"' || fail "--revision RevV1 not served: ${BODY}"
-echo "${BODY}" | grep -q '"greeting":"hello-from-v1"' || fail "RevV1 env not injected: ${BODY}"
+grep -q '"revision":"v1"' <<<"${BODY}" || fail "--revision RevV1 not served: ${BODY}"
+grep -q '"greeting":"hello-from-v1"' <<<"${BODY}" || fail "RevV1 env not injected: ${BODY}"
 stop_server
 assert_no_orphans "the --revision serve"
 
 echo "==> Arm 3: AWS_LAMBDA_NODEJS_ENTRYPOINT=alt.js starts alt.js"
 boot_serve "${STACK}/WebFn" --revision RevAlt --port "$((PORT + 2))" --no-pull
 BODY="$(curl -s "http://127.0.0.1:$((PORT + 2))/")"
-echo "${BODY}" | grep -q '"entry":"alt"' || fail "the entrypoint env did not start alt.js: ${BODY}"
-echo "${BODY}" | grep -q '"revision":"alt"' || fail "RevAlt not served: ${BODY}"
+grep -q '"entry":"alt"' <<<"${BODY}" || fail "the entrypoint env did not start alt.js: ${BODY}"
+grep -q '"revision":"alt"' <<<"${BODY}" || fail "RevAlt not served: ${BODY}"
 stop_server
 assert_no_orphans "the entrypoint serve"
 

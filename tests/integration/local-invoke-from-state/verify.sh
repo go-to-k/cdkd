@@ -186,7 +186,7 @@ invoke_with_retry() {
   err="$(mktemp)"
   while [ $i -le $attempts ]; do
     if out=$(${CLI} local invoke "${args[@]}" 2>"${err}" | tail -1) && \
-       echo "${out}" | grep -q '"bucketName":'; then
+       grep -q '"bucketName":' <<<"${out}"; then
       rm -f "${err}"
       printf '%s' "${out}"
       return 0
@@ -208,15 +208,15 @@ invoke_with_retry() {
 echo "[verify] step 3: cdkd local invoke (no --from-state) — expect BUCKET_NAME=unset"
 RESULT_PR1=$(invoke_with_retry "${STACK}/EchoBucketHandler" --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_PR1}"
-echo "${RESULT_PR1}" | grep -q '"bucketName":"unset"' || {
+grep -q '"bucketName":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected BUCKET_NAME to be dropped (PR 1 warn-and-drop), got: ${RESULT_PR1}"
   exit 1
 }
-echo "${RESULT_PR1}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in response, got: ${RESULT_PR1}"
   exit 1
 }
-echo "${RESULT_PR1}" | grep -q '"accountTag":"unset"' || {
+grep -q '"accountTag":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG to be dropped without --from-state, got: ${RESULT_PR1}"
   exit 1
 }
@@ -224,15 +224,15 @@ echo "${RESULT_PR1}" | grep -q '"accountTag":"unset"' || {
 echo "[verify] step 4: cdkd local invoke --from-state — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
 RESULT_PR2=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_PR2}"
-echo "${RESULT_PR2}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_PR2}"
   exit 1
 }
-echo "${RESULT_PR2}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-state, got: ${RESULT_PR2}"
   exit 1
 }
-echo "${RESULT_PR2}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state, got: ${RESULT_PR2}"
   exit 1
 }
@@ -252,13 +252,13 @@ echo "[verify] step 4b: --from-state --stack-region ${UPPER_REGION} — expect B
 RESULT_UPPER=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state \
   --stack-region "${UPPER_REGION}" --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_UPPER}"
-echo "${RESULT_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_UPPER}" || {
   echo "[verify] FAIL: an upper-cased --stack-region must still read the ${REGION} state record;"
   echo "[verify]       expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_UPPER}"
   exit 1
 }
 # The shape the regression emits: a silent fall-back to no state at all.
-echo "${RESULT_UPPER}" | grep -q '"bucketName":"unset"' && {
+grep -q '"bucketName":"unset"' <<<"${RESULT_UPPER}" && {
   echo "[verify] FAIL: --stack-region ${UPPER_REGION} fell back to no state (BUCKET_NAME unset)"
   exit 1
 }
@@ -280,7 +280,7 @@ echo "[verify] step 4d: AWS_REGION=${UPPER_REGION} --from-state (no --region) �
 RESULT_ENV_UPPER=$(AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGION}" \
   invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_ENV_UPPER}"
-echo "${RESULT_ENV_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_ENV_UPPER}" || {
   echo "[verify] FAIL: AWS_REGION=${UPPER_REGION} must still read the ${REGION} state record;"
   echo "[verify]       expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ENV_UPPER}"
   exit 1
@@ -322,11 +322,11 @@ done
 RESULT_ROLE=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --role-arn "${READ_ROLE_ARN}" \
   --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_ROLE}"
-echo "${RESULT_ROLE}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_ROLE}" || {
   echo "[verify] FAIL: --role-arn must still read the state record; expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ROLE}"
   exit 1
 }
-echo "${RESULT_ROLE}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_ROLE}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state --role-arn, got: ${RESULT_ROLE}"
   exit 1
 }

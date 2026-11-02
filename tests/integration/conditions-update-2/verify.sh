@@ -275,7 +275,7 @@ echo "    OK: WorkQueue RedrivePolicy SET in phase a (maxReceiveCount=3)"
 
 # --- Case 3: MoverParamName output (gated on IsPhaseA) PRESENT -------
 KEYS=$(state_output_keys)
-if ! echo "${KEYS}" | grep -qx "MoverParamName"; then
+if ! grep -qx "MoverParamName" <<<"${KEYS}"; then
   echo "FAIL: MoverParamName output is ABSENT from cdkd state outputs but should exist in phase a" >&2
   echo "      state output keys were: ${KEYS}" >&2
   exit 1
@@ -352,7 +352,7 @@ echo "    OK: WorkQueue RedrivePolicy nested block REMOVED in place in phase b"
 
 # --- Case 3: MoverParamName output (gated on IsPhaseA) now ABSENT ----
 KEYS=$(state_output_keys)
-if echo "${KEYS}" | grep -qx "MoverParamName"; then
+if grep -qx "MoverParamName" <<<"${KEYS}"; then
   echo "FAIL: MoverParamName output STILL in cdkd state outputs but should be absent in phase b" >&2
   echo "      state output keys were: ${KEYS}" >&2
   exit 1

@@ -231,7 +231,7 @@ echo "    OK: Docker Lambda Code.ImageUri == ${IMAGE_URI}"
 # supported here: cdkd pushes by tag, so we expect the tag form and treat a
 # digest URI as a parse failure (IMAGE_TAG stays empty -> the check below fails).
 ECR_REPO=$(echo "${IMAGE_URI}" | sed -E 's#^[^/]+/##; s#[@:].*$##')
-if echo "${IMAGE_URI}" | grep -q '@'; then
+if grep -q '@' <<<"${IMAGE_URI}"; then
   IMAGE_TAG=""
 else
   IMAGE_TAG="${IMAGE_URI##*:}"

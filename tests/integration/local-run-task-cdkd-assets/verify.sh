@@ -90,7 +90,7 @@ echo "${RUN_OUT}" | sed 's/^/[verify]   run-task> /'
 # On the PRE-fix binary, run-task would have classified the image as a plain
 # ECR URI and failed the pull before ever creating a container. Guard against a
 # false pass by explicitly rejecting the ECR-pull error signature.
-if echo "${RUN_OUT}" | grep -qiE "not an ECR URI|ECR pull|is not in the local docker cache|pull .* failed"; then
+if grep -qiE "not an ECR URI|ECR pull|is not in the local docker cache|pull .* failed" <<<"${RUN_OUT}"; then
   echo "[verify] FAIL: run-task attempted an ECR pull instead of building the custom-qualifier asset"
   exit 1
 fi
@@ -102,7 +102,7 @@ CID="$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}} {{.Names}}' | 
 
 LOGS="$(docker logs "${CID}" 2>&1)"
 echo "${LOGS}" | sed 's/^/[verify]   container> /'
-if ! echo "${LOGS}" | grep -qF "${MARKER}"; then
+if ! grep -qF "${MARKER}" <<<"${LOGS}"; then
   echo "[verify] FAIL: expected marker '${MARKER}' in the container logs — asset build / run did not complete"
   exit 1
 fi

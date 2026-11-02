@@ -125,7 +125,7 @@ HTTP_OK=0
 for attempt in $(seq 1 30); do
   if RESPONSE=$(curl --silent --show-error --max-time 5 \
         "http://127.0.0.1:${HOST_PORT}/" 2>&1); then
-    if echo "${RESPONSE}" | grep -qF "${EXPECTED_BANNER}"; then
+    if grep -qF "${EXPECTED_BANNER}" <<<"${RESPONSE}"; then
       HTTP_OK=1
       break
     fi

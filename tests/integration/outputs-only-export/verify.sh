@@ -157,7 +157,7 @@ if [[ "${DIFF_CLEAN_RC}" -ne 0 ]]; then
   echo "${DIFF_CLEAN_OUT}"
   exit 1
 fi
-if ! echo "${DIFF_CLEAN_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${DIFF_CLEAN_OUT}"; then
   echo "FAIL: cdkd diff on the just-deployed producer did not report 'No changes detected'"
   echo "${DIFF_CLEAN_OUT}"
   exit 1
@@ -182,17 +182,17 @@ if [[ "${DIFF_RC}" -ne 1 ]]; then
 fi
 pass "cdkd diff --fail exits 1 for the Outputs-only change"
 
-if echo "${DIFF_OUT}" | grep -q "No changes detected"; then
+if grep -q "No changes detected" <<<"${DIFF_OUT}"; then
   echo "FAIL: cdkd diff still reports 'No changes detected' for the Outputs-only change (#1921 regression)"
   exit 1
 fi
-if ! echo "${DIFF_OUT}" | grep -q "Outputs:"; then
+if ! grep -q "Outputs:" <<<"${DIFF_OUT}"; then
   echo "FAIL: cdkd diff printed no Outputs section for the Outputs-only change"
   exit 1
 fi
 # The `[export]`-tagged row is the load-bearing one: that string is what the
 # consumer's Fn::ImportValue resolves against in phase 2b.
-if ! echo "${DIFF_OUT}" | grep -qE "\[\+\] ${EXPORT_NAME} \[export\]"; then
+if ! grep -qE "\[\+\] ${EXPORT_NAME} \[export\]" <<<"${DIFF_OUT}"; then
   echo "FAIL: cdkd diff did not report ${EXPORT_NAME} as an added export row"
   exit 1
 fi
@@ -228,7 +228,7 @@ if [[ "${DEPLOY_RC}" -ne 0 ]]; then
   echo "FAIL: producer redeploy failed (rc=${DEPLOY_RC})"
   exit 1
 fi
-if ! echo "${DEPLOY_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: producer redeploy was not a no-op resource diff (expected 'No changes detected')"
   exit 1
 fi
@@ -290,7 +290,7 @@ if [[ "${DIFF_AFTER_RC}" -ne 0 ]]; then
   echo "${DIFF_AFTER_OUT}"
   exit 1
 fi
-if ! echo "${DIFF_AFTER_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${DIFF_AFTER_OUT}"; then
   echo "FAIL: cdkd diff reports a change on the stack it just deployed (phantom Outputs diff)"
   echo "${DIFF_AFTER_OUT}"
   exit 1

@@ -91,7 +91,7 @@ fi
 echo "==> [1/20] Invoking EchoAgent with default empty event"
 RESULT_1=$(capture ${CDKD} local invoke-agentcore "${TARGET}")
 echo "    response: ${RESULT_1}"
-echo "${RESULT_1}" | grep -q '"greeting":"hello-from-agent"' || {
+grep -q '"greeting":"hello-from-agent"' <<<"${RESULT_1}" || {
   echo "FAIL: expected greeting=hello-from-agent in response, got: ${RESULT_1}"
   exit 1
 }
@@ -108,7 +108,7 @@ trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"prompt":"hello agent","n":7}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --event "${EVENT_FILE}")
 echo "    response: ${RESULT_2}"
-echo "${RESULT_2}" | grep -q '"prompt":"hello agent"' || {
+grep -q '"prompt":"hello agent"' <<<"${RESULT_2}" || {
   echo "FAIL: expected echoed prompt in response, got: ${RESULT_2}"
   exit 1
 }
@@ -120,7 +120,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --env-vars "${ENV_FILE}")
 echo "    response: ${RESULT_3}"
-echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
+grep -q '"greeting":"overridden"' <<<"${RESULT_3}" || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
   exit 1
 }
@@ -130,7 +130,7 @@ echo "==> [4/20] Invoking EchoAgent with explicit --session-id"
 SESSION="cdkd-integ-session-1234567890abcdef"
 RESULT_4=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --session-id "${SESSION}")
 echo "    response: ${RESULT_4}"
-echo "${RESULT_4}" | grep -q "\"sessionId\":\"${SESSION}\"" || {
+grep -q "\"sessionId\":\"${SESSION}\"" <<<"${RESULT_4}" || {
   echo "FAIL: expected sessionId=${SESSION} in response, got: ${RESULT_4}"
   exit 1
 }
@@ -147,7 +147,7 @@ echo "    exit=${RC_5}"
   echo "FAIL: expected a non-zero exit for the protected runtime with no token, got 0. Output: ${OUT_5}"
   exit 1
 }
-echo "${OUT_5}" | grep -q "requires an inbound JWT" || {
+grep -q "requires an inbound JWT" <<<"${OUT_5}" || {
   echo "FAIL: expected an 'requires an inbound JWT' error, got: ${OUT_5}"
   exit 1
 }
@@ -161,7 +161,7 @@ RUNNING=$(docker ps -a --filter name=cdkd-local-agentcore- -q | wc -l | tr -d ' 
 echo "==> [6/20] ProtectedAgent with --no-verify-auth proceeds (auth skipped)"
 RESULT_6=$(capture ${CDKD} local invoke-agentcore "${PROTECTED}" --no-verify-auth)
 echo "    response: ${RESULT_6}"
-echo "${RESULT_6}" | grep -q '"greeting":"hello-from-agent"' || {
+grep -q '"greeting":"hello-from-agent"' <<<"${RESULT_6}" || {
   echo "FAIL: expected the agent to respond under --no-verify-auth, got: ${RESULT_6}"
   exit 1
 }
@@ -172,7 +172,7 @@ echo "==> [7/20] ProtectedAgent with --bearer-token forwards the Authorization h
 TOKEN="header.payload.sig"
 RESULT_7=$(capture ${CDKD} local invoke-agentcore "${PROTECTED}" --bearer-token "${TOKEN}")
 echo "    response: ${RESULT_7}"
-echo "${RESULT_7}" | grep -q "\"authorization\":\"Bearer ${TOKEN}\"" || {
+grep -q "\"authorization\":\"Bearer ${TOKEN}\"" <<<"${RESULT_7}" || {
   echo "FAIL: expected the bearer token forwarded as Authorization: Bearer ${TOKEN}, got: ${RESULT_7}"
   exit 1
 }
@@ -188,12 +188,12 @@ echo '{"stream":true}' > "${STREAM_EVENT}"
 RESULT_8=$(${CDKD} local invoke-agentcore "${TARGET}" --event "${STREAM_EVENT}" 2>/dev/null)
 echo "    response: ${RESULT_8}"
 for tok in hello from sse; do
-  echo "${RESULT_8}" | grep -q "\"token\":\"${tok}\"" || {
+  grep -q "\"token\":\"${tok}\"" <<<"${RESULT_8}" || {
     echo "FAIL: expected streamed SSE frame token=${tok}, got: ${RESULT_8}"
     exit 1
   }
 done
-echo "${RESULT_8}" | grep -q '\[DONE\]' || {
+grep -q '\[DONE\]' <<<"${RESULT_8}" || {
   echo "FAIL: expected the streamed [DONE] sentinel, got: ${RESULT_8}"
   exit 1
 }
@@ -204,7 +204,7 @@ echo "${RESULT_8}" | grep -q '\[DONE\]' || {
 echo "==> [9/20] McpAgent (no --event) runs the handshake + tools/list"
 RESULT_9=$(${CDKD} local invoke-agentcore "${MCP}" 2>/dev/null)
 echo "    response: ${RESULT_9}"
-echo "${RESULT_9}" | grep -q '"name": "add_numbers"' || {
+grep -q '"name": "add_numbers"' <<<"${RESULT_9}" || {
   echo "FAIL: expected tools/list to return the add_numbers tool, got: ${RESULT_9}"
   exit 1
 }
@@ -216,7 +216,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}"' EXI
 echo '{"method":"tools/call","params":{"name":"add_numbers","arguments":{"a":2,"b":3}}}' > "${CALL_EVENT}"
 RESULT_10=$(${CDKD} local invoke-agentcore "${MCP}" --event "${CALL_EVENT}" 2>/dev/null)
 echo "    response: ${RESULT_10}"
-echo "${RESULT_10}" | grep -q '"text": "5"' || {
+grep -q '"text": "5"' <<<"${RESULT_10}" || {
   echo "FAIL: expected tools/call add_numbers(2,3) to return text \"5\", got: ${RESULT_10}"
   exit 1
 }
@@ -227,11 +227,11 @@ echo "${RESULT_10}" | grep -q '"text": "5"' || {
 echo "==> [11/20] CodeAgent (fromCodeAsset) builds from source + responds"
 RESULT_11=$(capture ${CDKD} local invoke-agentcore "${CODE}")
 echo "    response: ${RESULT_11}"
-echo "${RESULT_11}" | grep -q '"runtime":"python-code"' || {
+grep -q '"runtime":"python-code"' <<<"${RESULT_11}" || {
   echo "FAIL: expected the from-source python agent to respond, got: ${RESULT_11}"
   exit 1
 }
-echo "${RESULT_11}" | grep -q '"greeting":"hello-from-code"' || {
+grep -q '"greeting":"hello-from-code"' <<<"${RESULT_11}" || {
   echo "FAIL: expected greeting=hello-from-code (env injected), got: ${RESULT_11}"
   exit 1
 }
@@ -243,7 +243,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${C
 echo '{"prompt":"hello code"}' > "${CODE_EVENT}"
 RESULT_12=$(capture ${CDKD} local invoke-agentcore "${CODE}" --event "${CODE_EVENT}")
 echo "    response: ${RESULT_12}"
-echo "${RESULT_12}" | grep -q '"prompt":"hello code"' || {
+grep -q '"prompt":"hello code"' <<<"${RESULT_12}" || {
   echo "FAIL: expected echoed prompt from the from-source agent, got: ${RESULT_12}"
   exit 1
 }
@@ -258,19 +258,19 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${C
 echo '{"prompt":"hello ws"}' > "${WS_EVENT}"
 RESULT_13=$(${CDKD} local invoke-agentcore "${TARGET}" --ws --event "${WS_EVENT}" 2>/dev/null)
 echo "    response: ${RESULT_13}"
-echo "${RESULT_13}" | grep -q '"ws":true' || {
+grep -q '"ws":true' <<<"${RESULT_13}" || {
   echo "FAIL: expected the /ws frame marker \"ws\":true, got: ${RESULT_13}"
   exit 1
 }
-echo "${RESULT_13}" | grep -q '"prompt":"hello ws"' || {
+grep -q '"prompt":"hello ws"' <<<"${RESULT_13}" || {
   echo "FAIL: expected the echoed event over /ws, got: ${RESULT_13}"
   exit 1
 }
-echo "${RESULT_13}" | grep -q '"greeting":"hello-from-agent"' || {
+grep -q '"greeting":"hello-from-agent"' <<<"${RESULT_13}" || {
   echo "FAIL: expected GREETING injected over /ws, got: ${RESULT_13}"
   exit 1
 }
-echo "${RESULT_13}" | grep -q 'ws-frame-2' || {
+grep -q 'ws-frame-2' <<<"${RESULT_13}" || {
   echo "FAIL: expected the second streamed /ws frame, got: ${RESULT_13}"
   exit 1
 }
@@ -289,11 +289,11 @@ echo "    response: ${OUT_14}"
   echo "FAIL: expected MCP --ws to still succeed (exit 0), got ${RC_14}. Output: ${OUT_14}"
   exit 1
 }
-echo "${OUT_14}" | grep -q '"name": "add_numbers"' || {
+grep -q '"name": "add_numbers"' <<<"${OUT_14}" || {
   echo "FAIL: expected MCP --ws to fall through to tools/list, got: ${OUT_14}"
   exit 1
 }
-echo "${ERR_14}" | grep -q -- '--ws applies only to the HTTP / AGUI protocols' || {
+grep -q -- '--ws applies only to the HTTP / AGUI protocols' <<<"${ERR_14}" || {
   echo "FAIL: expected an MCP --ws ignored warning on stderr, got: ${ERR_14}"
   exit 1
 }
@@ -307,11 +307,11 @@ echo "${ERR_14}" | grep -q -- '--ws applies only to the HTTP / AGUI protocols' |
 echo "==> [15/20] ProtectedAgentClaims (allowedScopes + customClaims) invokes successfully"
 RESULT_15=$(capture ${CDKD} local invoke-agentcore "${PROTECTED_CLAIMS}" --bearer-token "h.p.s")
 echo "    response: ${RESULT_15}"
-echo "${RESULT_15}" | grep -q '"greeting":"hello-from-agent"' || {
+grep -q '"greeting":"hello-from-agent"' <<<"${RESULT_15}" || {
   echo "FAIL: expected ProtectedAgentClaims to invoke under pass-through, got: ${RESULT_15}"
   exit 1
 }
-echo "${RESULT_15}" | grep -q '"authorization":"Bearer h.p.s"' || {
+grep -q '"authorization":"Bearer h.p.s"' <<<"${RESULT_15}" || {
   echo "FAIL: expected the bearer token forwarded as Authorization: Bearer h.p.s, got: ${RESULT_15}"
   exit 1
 }
@@ -330,11 +330,11 @@ RESULT_16=$(AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE \
   AWS_REGION=us-east-1 \
   capture ${CDKD} local invoke-agentcore "${TARGET}" --sigv4)
 echo "    response: ${RESULT_16}"
-echo "${RESULT_16}" | grep -q '"authorization":"AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/' || {
+grep -q '"authorization":"AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/' <<<"${RESULT_16}" || {
   echo "FAIL: expected an AWS4-HMAC-SHA256 Authorization header carrying the access key id, got: ${RESULT_16}"
   exit 1
 }
-echo "${RESULT_16}" | grep -q '/us-east-1/bedrock-agentcore/aws4_request' || {
+grep -q '/us-east-1/bedrock-agentcore/aws4_request' <<<"${RESULT_16}" || {
   echo "FAIL: expected the signed credential scope to include bedrock-agentcore + us-east-1, got: ${RESULT_16}"
   exit 1
 }
@@ -348,7 +348,7 @@ set -e
   echo "FAIL: expected a non-zero exit for --sigv4 + --bearer-token, got 0. Output: ${OUT_16B}"
   exit 1
 }
-echo "${OUT_16B}" | grep -q 'mutually exclusive' || {
+grep -q 'mutually exclusive' <<<"${OUT_16B}" || {
   echo "FAIL: expected a 'mutually exclusive' error, got: ${OUT_16B}"
   exit 1
 }
@@ -362,7 +362,7 @@ echo "${OUT_16B}" | grep -q 'mutually exclusive' || {
 echo "==> [17/20] EchoAgent --timeout 60000 succeeds (flag is parsed + applied)"
 RESULT_17=$(capture ${CDKD} local invoke-agentcore "${TARGET}" --timeout 60000)
 echo "    response: ${RESULT_17}"
-echo "${RESULT_17}" | grep -q '"greeting":"hello-from-agent"' || {
+grep -q '"greeting":"hello-from-agent"' <<<"${RESULT_17}" || {
   echo "FAIL: expected EchoAgent to invoke under --timeout 60000, got: ${RESULT_17}"
   exit 1
 }
@@ -376,7 +376,7 @@ set -e
   echo "FAIL: expected a non-zero exit for --timeout 0, got 0. Output: ${OUT_17B}"
   exit 1
 }
-echo "${OUT_17B}" | grep -q 'positive integer' || {
+grep -q 'positive integer' <<<"${OUT_17B}" || {
   echo "FAIL: expected a 'positive integer' error message, got: ${OUT_17B}"
   exit 1
 }
@@ -387,7 +387,7 @@ echo "${OUT_17B}" | grep -q 'positive integer' || {
 echo "==> [19/20] A2aAgent (no --event) runs the JSON-RPC agent/getCard request"
 RESULT_19=$(${CDKD} local invoke-agentcore "${A2A}" 2>/dev/null)
 echo "    response: ${RESULT_19}"
-echo "${RESULT_19}" | grep -q '"name": "fixture-a2a-agent"' || {
+grep -q '"name": "fixture-a2a-agent"' <<<"${RESULT_19}" || {
   echo "FAIL: expected the A2A agent card with name fixture-a2a-agent, got: ${RESULT_19}"
   exit 1
 }
@@ -399,11 +399,11 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${STREAM_EVENT}" "${CALL_EVENT}" "${C
 echo '{"method":"tasks/send","params":{"id":"task-1","message":{"text":"hello a2a"}}}' > "${A2A_EVENT}"
 RESULT_19B=$(${CDKD} local invoke-agentcore "${A2A}" --event "${A2A_EVENT}" 2>/dev/null)
 echo "    response: ${RESULT_19B}"
-echo "${RESULT_19B}" | grep -q '"id": "task-1"' || {
+grep -q '"id": "task-1"' <<<"${RESULT_19B}" || {
   echo "FAIL: expected tasks/send result echoing id=task-1, got: ${RESULT_19B}"
   exit 1
 }
-echo "${RESULT_19B}" | grep -q '"state": "completed"' || {
+grep -q '"state": "completed"' <<<"${RESULT_19B}" || {
   echo "FAIL: expected tasks/send to report completed state, got: ${RESULT_19B}"
   exit 1
 }
@@ -416,15 +416,15 @@ echo "${RESULT_19B}" | grep -q '"state": "completed"' || {
 echo "==> [20/20] AguiAgent SSE event stream surfaces RUN_STARTED + MESSAGE_CONTENT + RUN_FINISHED"
 RESULT_20=$(${CDKD} local invoke-agentcore "${AGUI}" 2>/dev/null)
 echo "    response (head): $(echo "${RESULT_20}" | head -c 300)..."
-echo "${RESULT_20}" | grep -q '"type":"RUN_STARTED"' || {
+grep -q '"type":"RUN_STARTED"' <<<"${RESULT_20}" || {
   echo "FAIL: expected RUN_STARTED event in AGUI SSE stream, got: ${RESULT_20}"
   exit 1
 }
-echo "${RESULT_20}" | grep -q '"content":"hello-from-agui"' || {
+grep -q '"content":"hello-from-agui"' <<<"${RESULT_20}" || {
   echo "FAIL: expected MESSAGE_CONTENT event with hello-from-agui in AGUI SSE stream, got: ${RESULT_20}"
   exit 1
 }
-echo "${RESULT_20}" | grep -q '"type":"RUN_FINISHED"' || {
+grep -q '"type":"RUN_FINISHED"' <<<"${RESULT_20}" || {
   echo "FAIL: expected RUN_FINISHED event in AGUI SSE stream, got: ${RESULT_20}"
   exit 1
 }
@@ -452,12 +452,12 @@ RESULT_18=$(printf 'line-A\nline-B\n' | \
   ${CDKD} local invoke-agentcore "${TARGET}" --ws --event "${LOOP_EVENT_FILE}" --timeout 8000 2>/dev/null || true)
 echo "    response: ${RESULT_18}"
 # Initial frame echo (first frame's loop:true is acknowledged by the agent):
-echo "${RESULT_18}" | grep -q '"echoed":{"loop":true}' || {
+grep -q '"echoed":{"loop":true}' <<<"${RESULT_18}" || {
   echo "FAIL: expected initial ack of the loop event in the WS response, got: ${RESULT_18}"
   exit 1
 }
 # The piped stdin lines must NOT be sent as follow-up frames on a non-TTY:
-echo "${RESULT_18}" | grep -q 'loop-echo:line-A' && {
+grep -q 'loop-echo:line-A' <<<"${RESULT_18}" && {
   echo "FAIL: piped (non-TTY) --ws must not send stdin lines as follow-up frames, got: ${RESULT_18}"
   exit 1
 }

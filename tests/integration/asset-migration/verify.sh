@@ -310,7 +310,7 @@ echo "==> Phase 1: deploy without marker (legacy: CDK bootstrap destinations)"
 DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --no-auto-asset-storage --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
-echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}" ||
+grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}" ||
   { echo "FAIL: legacy-mode deploy did not print the gc-hazard notice" >&2; exit 1; }
 
 BUCKETS=$(lambda_code_buckets "${parent_state_key}")
@@ -343,7 +343,7 @@ node "${LOCAL_DIST}" bootstrap --state-bucket "${STATE_BUCKET}" --region "${REGI
 
 DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
-if ! echo "${DIFF_OUT}" | grep -qF "${CDKD_BUCKET}"; then
+if ! grep -qF "${CDKD_BUCKET}" <<<"${DIFF_OUT}"; then
   echo "FAIL: post-bootstrap diff does not preview the cdkd-assets repointing. Tail:" >&2
   echo "${DIFF_OUT}" | tail -10 >&2
   exit 1
@@ -355,7 +355,7 @@ echo "==> Phase 3: deploy with marker (publish redirection + template rewrite)"
 DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
-if echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
+if grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: cdkd-assets mode deploy still printed the legacy gc notice" >&2
   exit 1
 fi
@@ -398,7 +398,7 @@ echo "    OK: assets in ${CDKD_BUCKET}; parent+child Code + env-var URL repointe
 echo "==> Phase 3b: diff after migration (expect no changes)"
 DIFF_OUT=$(node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)
-if ! echo "${DIFF_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${DIFF_OUT}"; then
   echo "FAIL: post-migration diff is not clean. Tail:" >&2
   echo "${DIFF_OUT}" | tail -10 >&2
   exit 1

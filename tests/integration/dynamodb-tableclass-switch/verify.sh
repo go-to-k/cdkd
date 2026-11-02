@@ -170,7 +170,7 @@ table_gone=""
 for attempt in $(seq 1 15); do
   STATUS="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
     --query 'Table.TableStatus' --output text 2>&1 || true)"
-  if echo "${STATUS}" | grep -q "ResourceNotFoundException"; then
+  if grep -q "ResourceNotFoundException" <<<"${STATUS}"; then
     table_gone="yes"
     break
   fi

@@ -71,7 +71,7 @@ ${CDKD} synth >/dev/null
 echo "==> [1/4] Invoking EchoHandler with default empty event"
 RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokePythonFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
-echo "${RESULT_1}" | grep -q '"greeting": "hello"' || {
+grep -q '"greeting": "hello"' <<<"${RESULT_1}" || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
   exit 1
 }
@@ -83,7 +83,7 @@ trap 'rm -f "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokePythonFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
-echo "${RESULT_2}" | grep -q '"key": "value"' || {
+grep -q '"key": "value"' <<<"${RESULT_2}" || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
   exit 1
 }
@@ -97,7 +97,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKD} local invoke CdkdLocalInvokePythonFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
-echo "${RESULT_3}" | grep -q '"greeting": "overridden"' || {
+grep -q '"greeting": "overridden"' <<<"${RESULT_3}" || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
   exit 1
 }
@@ -109,7 +109,7 @@ trap 'rm -f "${EVENT_FILE}" "${ENV_FILE}" "${INLINE_EVENT}"' EXIT
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
 RESULT_4=$(capture ${CDKD} local invoke CdkdLocalInvokePythonFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull)
 echo "    response: ${RESULT_4}"
-echo "${RESULT_4}" | grep -q '"hi": "there"' || {
+grep -q '"hi": "there"' <<<"${RESULT_4}" || {
   echo "FAIL: expected inlineEcho with hi=there, got: ${RESULT_4}"
   exit 1
 }

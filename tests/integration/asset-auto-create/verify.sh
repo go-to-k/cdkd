@@ -202,11 +202,11 @@ if ! DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
 fi
 echo "${DEPLOY_OUT}" | tail -3
 
-if ! echo "${DEPLOY_OUT}" | grep -qF "${AUTO_CREATE_LINE}"; then
+if ! grep -qF "${AUTO_CREATE_LINE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: deploy output lacks the auto-create info line" >&2
   exit 1
 fi
-if echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
+if grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: auto-create deploy still printed the legacy 'cdk gc' notice" >&2
   exit 1
 fi
@@ -257,11 +257,11 @@ OPTOUT_RC=$?
 set -e
 echo "${OPTOUT_OUT}" | tail -3
 
-if echo "${OPTOUT_OUT}" | grep -qF "${AUTO_CREATE_LINE}"; then
+if grep -qF "${AUTO_CREATE_LINE}" <<<"${OPTOUT_OUT}"; then
   echo "FAIL: --no-auto-asset-storage deploy still printed the auto-create line" >&2
   exit 1
 fi
-if ! echo "${OPTOUT_OUT}" | grep -qF "${GC_NOTICE}"; then
+if ! grep -qF "${GC_NOTICE}" <<<"${OPTOUT_OUT}"; then
   echo "FAIL: --no-auto-asset-storage deploy did not print the legacy gc notice" >&2
   exit 1
 fi
@@ -275,7 +275,7 @@ if [ "${OPTOUT_RC}" -eq 0 ]; then
   echo "FAIL: legacy deploy unexpectedly succeeded in a cdk-bootstrap-free region" >&2
   exit 1
 fi
-if ! echo "${OPTOUT_OUT}" | grep -q "asset-publish"; then
+if ! grep -q "asset-publish" <<<"${OPTOUT_OUT}"; then
   echo "FAIL: opt-out deploy failed somewhere other than the legacy asset publish. Output tail:" >&2
   echo "${OPTOUT_OUT}" | tail -10 >&2
   exit 1
@@ -292,7 +292,7 @@ SKIP_RC=$?
 set -e
 echo "${SKIP_OUT}" | tail -3
 
-if echo "${SKIP_OUT}" | grep -qF "${AUTO_CREATE_LINE}"; then
+if grep -qF "${AUTO_CREATE_LINE}" <<<"${SKIP_OUT}"; then
   echo "FAIL: --skip-assets deploy auto-created asset storage" >&2
   exit 1
 fi

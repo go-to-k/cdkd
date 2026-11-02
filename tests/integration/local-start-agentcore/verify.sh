@@ -138,12 +138,12 @@ PING_CODE="$(curl -fsS -o /dev/null -w '%{http_code}' "${HTTP_URL}/ping" || true
 echo "[verify] step 5: warm HTTP contract — POST /invocations round-trips through the warm proxy"
 INVOKE_RESP="$(curl -fsS -X POST "${HTTP_URL}/invocations" \
   -H 'Content-Type: application/json' -d '{"hello":"http-contract"}' || true)"
-echo "${INVOKE_RESP}" | grep -q 'http-contract' \
+grep -q 'http-contract' <<<"${INVOKE_RESP}" \
   || fail "POST /invocations did not echo the request body: ${INVOKE_RESP}"
-echo "${INVOKE_RESP}" | grep -q '"greeting":"hello-from-agent"' \
+grep -q '"greeting":"hello-from-agent"' <<<"${INVOKE_RESP}" \
   || fail "POST /invocations did not surface the GREETING env var: ${INVOKE_RESP}"
 # The curl client sent no session-id header; the warm serve must inject one.
-if echo "${INVOKE_RESP}" | grep -q '"sessionId":null'; then
+if grep -q '"sessionId":null' <<<"${INVOKE_RESP}"; then
   fail "warm serve did not inject a session-id on the forwarded request: ${INVOKE_RESP}"
 fi
 echo "${INVOKE_RESP}" | grep -Eq '"sessionId":"[^"]+"' \
@@ -176,7 +176,7 @@ else
   echo "[verify]   ready (sigv4): ${HTTP_URL}"
   SIGV4_RESP="$(curl -fsS -X POST "${HTTP_URL}/invocations" \
     -H 'Content-Type: application/json' -d '{"hello":"sigv4"}' || true)"
-  echo "${SIGV4_RESP}" | grep -q 'AWS4-HMAC-SHA256' \
+  grep -q 'AWS4-HMAC-SHA256' <<<"${SIGV4_RESP}" \
     || fail "--sigv4 did not sign the forwarded request's Authorization header: ${SIGV4_RESP}"
 
   echo "[verify] step 9: SIGTERM tears the --sigv4 container down (no orphan)"

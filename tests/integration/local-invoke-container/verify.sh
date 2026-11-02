@@ -108,11 +108,11 @@ ${CDKD} synth >/dev/null
 echo "==> [1/5] Invoking EchoHandler (container) with default empty event"
 RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
-echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
+grep -q '"greeting":"hello"' <<<"${RESULT_1}" || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
   exit 1
 }
-echo "${RESULT_1}" | grep -q '"fromContainer":true' || {
+grep -q '"fromContainer":true' <<<"${RESULT_1}" || {
   echo "FAIL: expected fromContainer=true in response, got: ${RESULT_1}"
   exit 1
 }
@@ -139,7 +139,7 @@ trap 'rm -f "${STDOUT_1B}" "${STDERR_1B}" "${EVENT_FILE}"' EXIT
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
-echo "${RESULT_2}" | grep -q '"key":"value"' || {
+grep -q '"key":"value"' <<<"${RESULT_2}" || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
   exit 1
 }
@@ -151,7 +151,7 @@ trap 'rm -f "${STDOUT_1B}" "${STDERR_1B}" "${EVENT_FILE}" "${ENV_FILE}"' EXIT
 echo '{"Parameters":{"GREETING":"overridden"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKD} local invoke CdkdLocalInvokeContainerFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
-echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
+grep -q '"greeting":"overridden"' <<<"${RESULT_3}" || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
   exit 1
 }
@@ -172,7 +172,7 @@ invoke_split "${STDOUT_4}" "${STDERR_4}" ${CDKD} local invoke CdkdLocalInvokeCon
 RESULT_4=$(cat "${STDOUT_4}")
 echo "    response: ${RESULT_4}"
 assert_one_json "${STDOUT_4}" "${STDERR_4}"
-echo "${RESULT_4}" | grep -q '"greeting":"hello"' || {
+grep -q '"greeting":"hello"' <<<"${RESULT_4}" || {
   echo "FAIL: expected greeting=hello (--no-build response), got: ${RESULT_4}"
   cat "${STDERR_4}"
   exit 1

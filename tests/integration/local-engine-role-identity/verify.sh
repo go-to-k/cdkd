@@ -243,7 +243,7 @@ DENIED="$(
 set --
 unset ROLE_CREDS
 [ "${ROLE_AKID}" != "${CALLER_AKID}" ] || { echo "[verify] FAIL: premise broken: the role session has the caller's access key" >&2; exit 1; }
-echo "${DENIED}" | grep -q 'AccessDenied' \
+grep -q 'AccessDenied' <<<"${DENIED}" \
   || { echo "[verify] FAIL: premise broken: the no-permission role was not denied ssm:GetParameter (got: ${DENIED})" >&2; exit 1; }
 echo "[verify]   premise ok: the role session (${ROLE_AKID}) is denied the parameter; the caller is ${CALLER_AKID}"
 

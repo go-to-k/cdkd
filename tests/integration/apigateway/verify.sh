@@ -389,7 +389,7 @@ echo "    OK: TOKEN authorizer ${POOL_AUTHORIZER_ID} and GET /scoped scopes 'cdk
 # deployed (a missed DAG edge would leave the proxy route out of the snapshot).
 API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
 PROXY_BODY="$(curl -fsS "${API_URL}/some/arbitrary/proxy/path" || echo "")"
-if ! echo "${PROXY_BODY}" | grep -q "Hello from cdkd!"; then
+if ! grep -q "Hello from cdkd!" <<<"${PROXY_BODY}"; then
   echo "FAIL: {proxy+} ANY route did not return the Lambda body; got: ${PROXY_BODY}" >&2
   exit 1
 fi

@@ -147,7 +147,7 @@ if [[ "${DELETED_RC}" -eq 0 ]]; then
   echo "${DELETED_OUT}"
   exit 1
 fi
-if ! echo "${DELETED_OUT}" | grep -q -E "ParameterNotFound|not.*found"; then
+if ! grep -q -E "ParameterNotFound|not.*found" <<<"${DELETED_OUT}"; then
   echo "FAIL: get-parameter failed but with unexpected error shape:"
   echo "${DELETED_OUT}"
   exit 1

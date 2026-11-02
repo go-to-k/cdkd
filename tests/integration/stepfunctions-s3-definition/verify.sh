@@ -165,7 +165,7 @@ if [ "${GREETING}" != "hello-from-cdkd" ]; then
   echo "${DEFINITION}" >&2
   exit 1
 fi
-if echo "${DEFINITION}" | grep -q '${Greeting}'; then
+if grep -q '${Greeting}' <<<"${DEFINITION}"; then
   echo "FAIL: raw \${Greeting} token still present in deployed definition (substitution not applied)" >&2
   exit 1
 fi

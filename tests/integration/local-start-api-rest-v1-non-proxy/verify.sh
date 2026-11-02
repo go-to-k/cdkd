@@ -127,7 +127,7 @@ if [[ "${STATUS}" != "200" ]]; then
 fi
 BODY="$(cat /tmp/resp.body)"
 echo "    body=${BODY}"
-if ! echo "${BODY}" | grep -q '"source":"mock"'; then
+if ! grep -q '"source":"mock"' <<<"${BODY}"; then
   echo "FAIL: /mock-200 body does not contain source=mock; body was: ${BODY}"
   exit 1
 fi
@@ -143,7 +143,7 @@ if [[ "${STATUS}" != "404" ]]; then
 fi
 BODY="$(cat /tmp/resp.body)"
 echo "    body=${BODY}"
-if ! echo "${BODY}" | grep -q 'not found'; then
+if ! grep -q 'not found' <<<"${BODY}"; then
   echo "FAIL: /mock-404 body does not contain the 404 response template content; body was: ${BODY}"
   exit 1
 fi
@@ -171,11 +171,11 @@ BODY="$(cat /tmp/resp.body)"
 echo "    body=${BODY}"
 # Response template wraps the Lambda's `greeting` into {"data": <value>}.
 # Verifies request-side VTL extracted `name` AND response-side VTL ran.
-if ! echo "${BODY}" | grep -q 'Hello, Alice'; then
+if ! grep -q 'Hello, Alice' <<<"${BODY}"; then
   echo "FAIL: /aws-lambda body does not show the round-tripped greeting; body was: ${BODY}"
   exit 1
 fi
-if ! echo "${BODY}" | grep -q '"data"'; then
+if ! grep -q '"data"' <<<"${BODY}"; then
   echo "FAIL: /aws-lambda body does not show the response-template wrapping; body was: ${BODY}"
   exit 1
 fi

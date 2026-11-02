@@ -252,7 +252,7 @@ LISTED_RAW=$(aws lambda list-event-source-mappings \
   --region "${REGION}" \
   --query 'EventSourceMappings[].UUID' --output text)
 LISTED=$(printf '%s\n' "${LISTED_RAW}" | tr '\t' '\n' | grep -v '^$' || true)
-if ! echo "${LISTED}" | grep -qx "${ESM_UUID}"; then
+if ! grep -qx "${ESM_UUID}" <<<"${LISTED}"; then
   echo "FAIL: list-event-source-mappings by queue ARN did not return ${ESM_UUID}" >&2
   echo "      got: ${LISTED}" >&2
   exit 1
@@ -276,7 +276,7 @@ for _ in $(seq 1 36); do
     --region "${REGION}" \
     --filter-pattern "CDKD_ESM_PROCESSED" \
     --query 'events[].message' --output text 2>/dev/null || true)
-  if echo "${HITS}" | grep -qF "${PROBE}"; then
+  if grep -qF "${PROBE}" <<<"${HITS}"; then
     PROCESSED=1
     break
   fi

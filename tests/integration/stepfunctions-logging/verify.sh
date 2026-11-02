@@ -275,7 +275,7 @@ destroy_and_assert_gone() {
       describe_rc=$?
     fi
     if [ "${describe_rc}" != "0" ]; then
-      if echo "${status}" | grep -q "StateMachineDoesNotExist"; then
+      if grep -q "StateMachineDoesNotExist" <<<"${status}"; then
         sm_gone="yes"
         break
       fi

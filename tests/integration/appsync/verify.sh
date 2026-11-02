@@ -456,7 +456,7 @@ fi
 # returning `{}` degrades every later Fn::GetAtt to the physical-id fallback.
 # The stack's GraphQLApiUrl output is that Fn::GetAtt, so a URL here is the
 # live proof it survived the update.
-if ! echo "${UPDATE_OUT}" | grep -qE 'GraphQLApiUrl = https://'; then
+if ! grep -qE 'GraphQLApiUrl = https://' <<<"${UPDATE_OUT}"; then
   echo "FAIL: GraphQLApiUrl output did not resolve after the update — the update path wiped the create-time attributes" >&2
   echo "${UPDATE_OUT}" | grep -iE 'GraphQLApiUrl|Cannot resolve' >&2
   exit 1

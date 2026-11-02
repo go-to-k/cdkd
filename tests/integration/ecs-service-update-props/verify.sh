@@ -561,7 +561,7 @@ if [ "${DRIFT_RC}" != "0" ] && [ "${DRIFT_RC}" != "1" ]; then
   echo "${DRIFT_OUT}" | tail -20
   exit 1
 fi
-if echo "${DRIFT_OUT}" | grep -q "ContainerDefinitions"; then
+if grep -q "ContainerDefinitions" <<<"${DRIFT_OUT}"; then
   echo "FAIL: 'cdkd drift' reported ContainerDefinitions drift on the TaskDefinition (#1169 reverse-map did NOT round-trip against real AWS)" >&2
   echo "${DRIFT_OUT}" | grep -B2 -A8 "ContainerDefinitions" | head -40
   exit 1
@@ -570,7 +570,7 @@ fi
 # ones (AvailabilityZoneRebalancing / DeploymentController) via the reverse
 # map, the unreadable ones (Monitoring / ForceNewDeployment) via
 # getDriftUnknownPaths.
-if echo "${DRIFT_OUT}" | grep -qE "AvailabilityZoneRebalancing|DeploymentController|Monitoring|ForceNewDeployment"; then
+if grep -qE "AvailabilityZoneRebalancing|DeploymentController|Monitoring|ForceNewDeployment" <<<"${DRIFT_OUT}"; then
   echo "FAIL: 'cdkd drift' reported phantom drift on a #609 Service member (read-back / getDriftUnknownPaths NOT working against real AWS)" >&2
   echo "${DRIFT_OUT}" | grep -B2 -A8 -E "AvailabilityZoneRebalancing|DeploymentController|Monitoring|ForceNewDeployment" | head -40
   exit 1

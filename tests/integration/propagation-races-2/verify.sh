@@ -283,7 +283,7 @@ if [ "${INVOKE_OUT}" != "200" ]; then
 fi
 POLICY_JSON=$(aws lambda get-policy --function-name "${FUNCTION_NAME}" \
   --region "${REGION}" --query 'Policy' --output text)
-if ! echo "${POLICY_JSON}" | grep -qF "s3.amazonaws.com"; then
+if ! grep -qF "s3.amazonaws.com" <<<"${POLICY_JSON}"; then
   echo "FAIL: Lambda resource policy does not grant s3.amazonaws.com — the permission PUT did not land" >&2
   echo "${POLICY_JSON}" >&2
   exit 1
@@ -298,7 +298,7 @@ if [ -z "${BUCKET_POLICY}" ]; then
   echo "FAIL: no bucket policy on ${POLICED_BUCKET} — PutBucketPolicy did not land" >&2
   exit 1
 fi
-if ! echo "${BUCKET_POLICY}" | grep -qF "AllowFreshRoleRead"; then
+if ! grep -qF "AllowFreshRoleRead" <<<"${BUCKET_POLICY}"; then
   echo "FAIL: bucket policy missing the AllowFreshRoleRead statement" >&2
   echo "${BUCKET_POLICY}" >&2
   exit 1
@@ -322,7 +322,7 @@ if [ -z "${ENC}" ]; then
 fi
 KEY_POLICY=$(aws kms get-key-policy --key-id "${KEY_ID}" --policy-name default \
   --region "${REGION}" --query 'Policy' --output text)
-if ! echo "${KEY_POLICY}" | grep -qF "AllowFreshRoleUse"; then
+if ! grep -qF "AllowFreshRoleUse" <<<"${KEY_POLICY}"; then
   echo "FAIL: KMS key policy missing the AllowFreshRoleUse statement" >&2
   echo "${KEY_POLICY}" >&2
   exit 1

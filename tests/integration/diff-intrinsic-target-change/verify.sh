@@ -96,7 +96,7 @@ echo "  ROLE_NAME  = ${ROLE_NAME}"
 echo "  POLICY_NAME= ${POLICY_NAME}"
 
 V1_POLICY_DOC=$(aws iam get-role-policy --region "${AWS_REGION}" --role-name "${ROLE_NAME}" --policy-name "${POLICY_NAME}" --query 'PolicyDocument' --output json)
-if ! echo "${V1_POLICY_DOC}" | grep -q "${V1_BUCKET}"; then
+if ! grep -q "${V1_BUCKET}" <<<"${V1_POLICY_DOC}"; then
   echo "FAIL: v1 sanity check — IAM policy does not reference v1 bucket ${V1_BUCKET}"
   echo "${V1_POLICY_DOC}"
   exit 1
@@ -136,12 +136,12 @@ fi
 
 V2_POLICY_DOC=$(aws iam get-role-policy --region "${AWS_REGION}" --role-name "${ROLE_NAME}" --policy-name "${POLICY_NAME}" --query 'PolicyDocument' --output json)
 
-if echo "${V2_POLICY_DOC}" | grep -q "${V1_BUCKET}"; then
+if grep -q "${V1_BUCKET}" <<<"${V2_POLICY_DOC}"; then
   echo "FAIL (bug): IAM policy still references v1 bucket ${V1_BUCKET} after v2 deploy"
   echo "${V2_POLICY_DOC}"
   exit 1
 fi
-if ! echo "${V2_POLICY_DOC}" | grep -q "${V2_BUCKET}"; then
+if ! grep -q "${V2_BUCKET}" <<<"${V2_POLICY_DOC}"; then
   echo "FAIL: IAM policy does not reference v2 bucket ${V2_BUCKET} after v2 deploy"
   echo "${V2_POLICY_DOC}"
   exit 1

@@ -678,12 +678,12 @@ fi
 echo "${DEAD_VERDICTS}" | sed 's/^/    /'
 # All three must read as DELETED (go-to-k/cdkd#4283; before it, `notSupported`);
 # only the ones ECS still lists as INACTIVE are named as verified below.
-if ! echo "${DEAD_VERDICTS}" | grep -qx "drift_rc 1"; then
+if ! grep -qx "drift_rc 1" <<<"${DEAD_VERDICTS}"; then
   echo "FAIL: drift over the deleted ECS resources did not exit 1: $(echo "${DEAD_VERDICTS}" | grep '^drift_rc ')" >&2
   exit 1
 fi
 for type in AWS::ECS::Cluster AWS::ECS::Service AWS::ECS::TaskDefinition; do
-  if ! echo "${DEAD_VERDICTS}" | grep -qx "${type} deleted"; then
+  if ! grep -qx "${type} deleted" <<<"${DEAD_VERDICTS}"; then
     echo "FAIL: drift read the deleted ${type} as present (issue #4272): $(echo "${DEAD_VERDICTS}" | grep "^${type} ")" >&2
     exit 1
   fi

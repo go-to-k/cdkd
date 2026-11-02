@@ -135,7 +135,7 @@ curl_body_with_retry() {
   # (go-to-k/cdkd#5137 runs), with the route present and wired.
   for _ in $(seq 1 24); do
     body="$(curl -fsS "${url}" 2>/dev/null || true)"
-    if echo "${body}" | grep -q '"ok":true'; then
+    if grep -q '"ok":true' <<<"${body}"; then
       echo "${body}"
       return 0
     fi
@@ -208,12 +208,12 @@ echo "    Resolved REST API id: ${API_ID}"
 # --- Assertion 2: Lambda Permission SourceArn has the bare stage name --
 FN_NAME=$(echo "${STATE}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.physicalId')
 POLICY=$(aws lambda get-policy --function-name "${FN_NAME}" --region "${REGION}" --query Policy --output text)
-if echo "${POLICY}" | grep -q "${API_ID}/${API_ID}|"; then
+if grep -q "${API_ID}/${API_ID}|" <<<"${POLICY}"; then
   echo "FAIL: Lambda Permission SourceArn carries the compound stage id (issue #963 regressed):" >&2
   echo "${POLICY}" | tr ',' '\n' | grep SourceArn >&2
   exit 1
 fi
-if ! echo "${POLICY}" | grep -q "${API_ID}/${STAGE_NAME}/GET/hello"; then
+if ! grep -q "${API_ID}/${STAGE_NAME}/GET/hello" <<<"${POLICY}"; then
   echo "FAIL: Lambda Permission SourceArn does not carry the expected .../${STAGE_NAME}/GET/hello:" >&2
   echo "${POLICY}" | tr ',' '\n' | grep SourceArn >&2
   exit 1
@@ -223,7 +223,7 @@ echo "    OK: Lambda Permission SourceArn carries the bare stage name (Ref resol
 # --- Assertion 3: the route actually serves ----------------------------
 API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
 HELLO_BODY="$(curl_body_with_retry "${API_URL}/hello")"
-if ! echo "${HELLO_BODY}" | grep -q '"ok":true'; then
+if ! grep -q '"ok":true' <<<"${HELLO_BODY}"; then
   echo "FAIL: GET /hello did not return the Lambda body (the #963 symptom); got: ${HELLO_BODY}" >&2
   exit 1
 fi
@@ -268,7 +268,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes
 
 ITEMS_BODY="$(curl_body_with_retry "${API_URL}/items")"
-if ! echo "${ITEMS_BODY}" | grep -q '"ok":true'; then
+if ! grep -q '"ok":true' <<<"${ITEMS_BODY}"; then
   echo "FAIL: GET /items (added on update) did not return the Lambda body; got: ${ITEMS_BODY}" >&2
   route_diagnostics items "${FN_NAME}" "$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)"
   exit 1
@@ -316,7 +316,7 @@ if [ "${PERMISSION_COUNT}" -lt 2 ]; then
 fi
 # A stack with an instance id sends `<StackName>-<LogicalId>-<12 hex>`, as
 # CloudFormation does, never the bare logical id (go-to-k/cdkd#5137).
-if echo "${IDS_BEFORE_REPLACE}" | grep -qvE "^${STACK}-[A-Za-z0-9_-]+-[0-9a-f]{12}\$"; then
+if grep -qvE "^${STACK}-[A-Za-z0-9_-]+-[0-9a-f]{12}\$" <<<"${IDS_BEFORE_REPLACE}"; then
   echo "FAIL: a Lambda Permission statement id is not the generated <StackName>-<LogicalId>-<suffix> form:" >&2
   echo "${IDS_BEFORE_REPLACE}" >&2
   exit 1
@@ -358,7 +358,7 @@ if [ "$(policy_sids "${NEW_FN_NAME}")" != "${IDS_AFTER_REPLACE}" ]; then
 fi
 for route in hello items; do
   ROUTE_BODY="$(curl_body_with_retry "${API_URL}/${route}")"
-  if ! echo "${ROUTE_BODY}" | grep -q '"ok":true'; then
+  if ! grep -q '"ok":true' <<<"${ROUTE_BODY}"; then
     echo "FAIL: GET /${route} does not serve after the function replacement; got: ${ROUTE_BODY}" >&2
     route_diagnostics "${route}" "${NEW_FN_NAME}" "${STATE_AFTER_REPLACE}"
     exit 1

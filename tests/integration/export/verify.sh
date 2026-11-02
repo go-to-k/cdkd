@@ -483,7 +483,7 @@ print(" ".join(r["physicalId"] for r in rs.values() if r.get("resourceType") == 
     # and a gateway to point at.
     for needed in 'AWS::S3::Bucket' 'AWS::SNS::Topic' 'AWS::Lambda::Function' 'AWS::IAM::Role' \
                   'AWS::EC2::VPC' 'AWS::EC2::InternetGateway' 'AWS::EC2::RouteTable'; do
-      if ! echo "${RESOURCES}" | grep -q "${needed}"; then
+      if ! grep -q "${needed}" <<<"${RESOURCES}"; then
         echo "[verify] FAIL: ${needed} not found in CFn stack"
         exit 1
       fi
@@ -493,7 +493,7 @@ print(" ".join(r["physicalId"] for r in rs.values() if r.get("resourceType") == 
     # + the four issue #1771 / #1691 EC2 & Lambda composite types.
     for needed in 'AWS::ApiGatewayV2::Api' 'AWS::ApiGatewayV2::Integration' 'AWS::ApiGatewayV2::Route' 'AWS::Lambda::Permission' \
                   'AWS::EC2::Route' 'AWS::EC2::EIP' 'AWS::EC2::VPCGatewayAttachment' 'AWS::Lambda::EventInvokeConfig'; do
-      if ! echo "${RESOURCES}" | grep -q "${needed}"; then
+      if ! grep -q "${needed}" <<<"${RESOURCES}"; then
         echo "[verify] FAIL: ${needed} not found in CFn stack (composite-id splitter regression)"
         exit 1
       fi
@@ -501,12 +501,12 @@ print(" ".join(r["physicalId"] for r in rs.values() if r.get("resourceType") == 
     # IMPORT-unsupported re-CREATE (phase 2): AWS::IAM::Policy is
     # pre-deleted between phases, then CFn UPDATE re-CREATEs it fresh.
     # Closes cdkd issue #307 + the IAM::Policy case.
-    if ! echo "${RESOURCES}" | grep -q 'AWS::IAM::Policy'; then
+    if ! grep -q 'AWS::IAM::Policy' <<<"${RESOURCES}"; then
       echo "[verify] FAIL: AWS::IAM::Policy not found in CFn stack (pre-delete + phase-2 CREATE missed)"
       exit 1
     fi
     # Issue #1772: the stage is a phase-1 IMPORT now; step 4d proves in place.
-    if ! echo "${RESOURCES}" | grep -q 'AWS::ApiGatewayV2::Stage'; then
+    if ! grep -q 'AWS::ApiGatewayV2::Stage' <<<"${RESOURCES}"; then
       echo "[verify] FAIL: AWS::ApiGatewayV2::Stage not found in CFn stack (phase-1 IMPORT missed)"
       exit 1
     fi
@@ -516,7 +516,7 @@ print(" ".join(r["physicalId"] for r in rs.values() if r.get("resourceType") == 
     # form `Custom::*` or the untyped default `AWS::CloudFormation::CustomResource`.
     # The integ fixture uses the untyped form, but accept either so the
     # check is robust to future fixture tweaks.
-    if ! echo "${RESOURCES}" | grep -qE '(Custom::|AWS::CloudFormation::CustomResource)'; then
+    if ! grep -qE '(Custom::|AWS::CloudFormation::CustomResource)' <<<"${RESOURCES}"; then
       echo "[verify] FAIL: no Custom Resource in CFn stack (phase 2 missed)"
       exit 1
     fi
@@ -662,7 +662,7 @@ for lid in sorted(deleted):
     # target stack — otherwise an unrelated failure (missing creds /
     # region mismatch / stack not found) would yield an empty stdout and
     # the regression greps below would silently pass on nothing.
-    if ! echo "${CDK_DIFF_OUT}" | grep -q "Stack ${STACK}"; then
+    if ! grep -q "Stack ${STACK}" <<<"${CDK_DIFF_OUT}"; then
       echo "[verify] FAIL: 'cdk diff' did not produce a 'Stack ${STACK}' header (rc=${CDK_DIFF_RC})"
       echo "${CDK_DIFF_OUT}" | sed 's/^/  /'
       exit 1
@@ -670,7 +670,7 @@ for lid in sorted(deleted):
     # Search for "requires replacement" — CDK CLI emits this marker on
     # every property change that would force a REPLACE. Pre-#319 every
     # auto-named resource showed `(requires replacement)` lines.
-    if echo "${CDK_DIFF_OUT}" | grep -q 'requires replacement'; then
+    if grep -q 'requires replacement' <<<"${CDK_DIFF_OUT}"; then
       echo "[verify] FAIL: post-export 'cdk diff' proposes REPLACEMENT (issue #319 regression):"
       echo "${CDK_DIFF_OUT}" | grep -B1 'requires replacement' | sed 's/^/  /'
       exit 1
@@ -680,7 +680,7 @@ for lid in sorted(deleted):
     # sub-resources surfaced as `may be replaced` because CDK's diff
     # cannot resolve `Fn::GetAtt` confidently across the literal vs
     # intrinsic shape mismatch.
-    if echo "${CDK_DIFF_OUT}" | grep -q 'may be replaced'; then
+    if grep -q 'may be replaced' <<<"${CDK_DIFF_OUT}"; then
       echo "[verify] FAIL: post-export 'cdk diff' proposes possible REPLACEMENT (issue #319 regression):"
       echo "${CDK_DIFF_OUT}" | grep -B1 'may be replaced' | sed 's/^/  /'
       exit 1
