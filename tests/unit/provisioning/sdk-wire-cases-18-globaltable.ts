@@ -95,7 +95,7 @@ function armGlobalTable(_physicalId: string, bag: Bag): void {
           bag['WriteOnDemandThroughputSettings']
         ),
         ...(bag['WarmThroughput'] ? { WarmThroughput: { ...rec(bag['WarmThroughput']), Status: 'ACTIVE' } } : {}),
-        ...(bag['BillingMode'] === 'PROVISIONED' && local['GlobalTableSettingsReplicationMode'] !== undefined
+        ...(bag['BillingMode'] === 'PROVISIONED'
           ? {
               // A capacity no bag declares: an update sends a read capacity
               // AWS does not already hold.
@@ -412,6 +412,17 @@ const TABLE_LEVEL_PROVISIONED_BAG: Bag = {
   WriteProvisionedThroughputSettings: { WriteCapacityUnits: 3 },
 };
 
+// The shape CloudFormation takes on a PROVISIONED table (go-to-k/cdkd#5604): the local
+// replica holds a flat read, the write side auto-scales.
+const LOCAL_REPLICA_READ_BAG: Bag = {
+  TableName: TABLE,
+  KeySchema: [{ AttributeName: 'pk', KeyType: 'HASH' }],
+  AttributeDefinitions: [{ AttributeName: 'pk', AttributeType: 'S' }],
+  BillingMode: 'PROVISIONED',
+  Replicas: [{ Region: 'us-east-1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 } }],
+  WriteProvisionedThroughputSettings: { WriteCapacityAutoScalingSettings: SCALING(2, 8) },
+};
+
 const S = 'dynamodb-globaltable-provider.ts';
 const RS = 'dynamodb-replica-settings.ts';
 
@@ -514,9 +525,14 @@ const SEED = `SeedCapacity is the initial capacity of a PAY_PER_REQUEST -> PROVI
 const LSI_VARY = `the varied LocalSecondaryIndexes entry is refused like its removal (${S}:3566-3578), so the vary sees no wire`;
 const SSE_KEY_PASS = `the table's customer managed key goes through the replica-key pass on a table with cross-region replicas (measured, ${S}:4664-4676), which sends nothing while the declared key is the live one; SSEEnabled / SSEType with that key only re-spell the same encryption (an absent SSEEnabled is true, an absent SSEType with SSEEnabled is KMS, ${S}:9506-9520)`;
 
+const WRITE_SCALING_REMOVED: Throw = {
+  why: `a table with a cross-region replica keeps an auto-scaled write side: DynamoDB refuses every replica update without it (measured, go-to-k/cdkd#5604)`,
+  says: /needs an auto-scaled write side/,
+};
 const PROVISIONED_THROWS: Record<string, Throw> = {
   ...keyThrows(PROVISIONED_BAG),
   ...pick(PROVISIONED_BAG, [
+    [REMOVE, /^WriteProvisionedThroughputSettings(\.WriteCapacityAutoScalingSettings)?$/, WRITE_SCALING_REMOVED],
     [UPD, /^LocalSecondaryIndexes(\..*)?$/, LSI_REFUSED],
     [/^(create|update-remove)$/, /^Replicas\.0\.KinesisStreamSpecification\.StreamArn$/, {
       why: `a replica Kinesis destination without its StreamArn is refused before any call (${RS}:105)`,
@@ -612,7 +628,8 @@ const READ_CAPACITY_REMOVED: Throw = {
   why: `a PROVISIONED table needs a read capacity: removing the table-level block with no replica declaring one is refused before any call, as CloudFormation refuses it (measured 2026-11-01, go-to-k/cdkd#2762)`,
   says: /cannot be removed from a PROVISIONED table with no replica declaring its own/,
 };
-const WRITE_CAPACITY_FLIP_ONLY = `a literal table-level write capacity goes out only on a billing flip (${S}, derivePerCallProvisionedThroughput); auto-scaling owns the dimension otherwise`;
+const WRITE_CAPACITY_REMOVED = `a removed literal write capacity leaves no value to send, so AWS keeps the capacity it holds (${S}, readTableCapacityChange)`;
+const LOCAL_READ_REMOVED = `no read capacity is declared on the new side, so there is no value to send and AWS keeps the capacity it holds (${S}, readTableCapacityChange)`;
 const WARM_KEPT = `a removed WarmThroughput sends nothing: DynamoDB refuses a decrease and has no unset, so the live value stays, as on AWS::DynamoDB::Table (go-to-k/cdkd#2762)`;
 
 const TABLE_LEVEL_THROWS: Record<string, Throw> = {
@@ -649,8 +666,19 @@ const TABLE_LEVEL_PROVISIONED_SILENT: Record<string, string> = {
     [/vary$/, /^Replicas\.0\.GlobalTableSettingsReplicationMode$/, MODE_VARY],
     [UPD, /^Replicas\.0\.Region$/, NO_REGION_ENTRY],
     [REMOVE, /^ReadProvisionedThroughputSettings\.ReadCapacityUnits$/, `the block stays declared with no capacity to read, so nothing is sent; the whole block's removal is refused`],
-    [UPD, /^WriteProvisionedThroughputSettings(\..*)?$/, WRITE_CAPACITY_FLIP_ONLY],
-    [VARY_ON_UPDATE, /^WriteProvisionedThroughputSettings\./, WRITE_CAPACITY_FLIP_ONLY],
+    [REMOVE, /^WriteProvisionedThroughputSettings(\..*)?$/, WRITE_CAPACITY_REMOVED],
+    [VARY_ON_UPDATE, /^Replicas\.0\.Region$/, `the varied Region reads as a region added to a literal write side, refused before any call (go-to-k/cdkd#5604), so the vary sees no wire`],
+  ]),
+};
+
+const LOCAL_REPLICA_READ_THROWS: Record<string, Throw> = {
+  ...keyThrows(LOCAL_REPLICA_READ_BAG),
+};
+const LOCAL_REPLICA_READ_SILENT: Record<string, string> = {
+  ...keySilent(LOCAL_REPLICA_READ_BAG),
+  ...pick(LOCAL_REPLICA_READ_BAG, [
+    [/^(create|create-vary|update-vary)$/, /SeedCapacity$/, SEED],
+    [REMOVE, /^Replicas(\.0(\.ReadProvisionedThroughputSettings(\.ReadCapacityUnits)?|\.Region)?)?$/, LOCAL_READ_REMOVED],
   ]),
 };
 
@@ -700,6 +728,12 @@ const GLOBAL_TABLE_CASE: TypeCase = {
       bag: fresh(TABLE_LEVEL_PROVISIONED_BAG),
       expectedSilent: TABLE_LEVEL_PROVISIONED_SILENT,
       expectedRemovalThrows: TABLE_LEVEL_PROVISIONED_THROWS,
+    },
+    {
+      name: 'local replica read',
+      bag: fresh(LOCAL_REPLICA_READ_BAG),
+      expectedSilent: LOCAL_REPLICA_READ_SILENT,
+      expectedRemovalThrows: LOCAL_REPLICA_READ_THROWS,
     },
   ],
 };
