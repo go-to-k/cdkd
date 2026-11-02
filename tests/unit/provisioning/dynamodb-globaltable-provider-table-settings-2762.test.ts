@@ -1189,6 +1189,35 @@ describe('update', () => {
         expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 3 }]);
       });
 
+      it('holds the deploy until a replica Update has moved the table', async () => {
+        // AWS as measured: ACTIVE on the replica, UPDATING on the table.
+        const statuses = ['UPDATING', 'UPDATING', 'ACTIVE'];
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+          const sent = updates().some((u) => u['ReplicaUpdates']);
+          if (sent && command.constructor.name === 'DescribeTableCommand') {
+            return Promise.resolve({
+              Table: { ...live, TableStatus: statuses.shift() ?? 'ACTIVE' },
+            });
+          }
+          return respond(command);
+        });
+        const next = replicated(7, scaling(3));
+        (next['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 5,
+        };
+        const finished: string[] = [];
+        await update(next, replicated(7, scaling(3)));
+        finished.push(...statuses);
+        expect(finished).toEqual([]);
+        expect(replicaUpdates()).toContainEqual({
+          Update: {
+            RegionName: 'us-west-2',
+            ProvisionedThroughputOverride: { ReadCapacityUnits: 5 },
+          },
+        });
+      });
+
       it('waits for the whole group before the next replica step', async () => {
         const statuses = ['UPDATING', 'ACTIVE'];
         let leftAtReplicaStep: number | undefined;

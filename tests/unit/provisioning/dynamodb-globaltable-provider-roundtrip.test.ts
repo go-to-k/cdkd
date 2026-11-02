@@ -3455,6 +3455,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           ],
         },
       });
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // the region's own read
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
 
       mockAutoScalingSend.mockReset();

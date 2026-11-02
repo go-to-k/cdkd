@@ -6542,7 +6542,9 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             ReplicaUpdates: [{ Update: updateAction }],
           })
         );
-        await this.waitForReplicaActive(physicalId, region, logicalId, undefined, maskSecrets);
+        // The replica reads ACTIVE throughout: only the table's status shows the
+        // region has not moved yet, about 40 seconds on (measured, go-to-k/cdkd#5604).
+        await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets, { region });
       }
       const addedReplicaRegions = new Set(replicaDiff.added.map((r) => r['Region']));
       if (modeUpdate !== undefined && readReplicationMode(properties).kind === 'usable') {
