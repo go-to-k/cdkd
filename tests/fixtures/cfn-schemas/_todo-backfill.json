@@ -88,9 +88,6 @@
     "AWS::ECS::Service": [
       "GatewayConnectors"
     ],
-    "AWS::ElastiCache::CacheCluster": [
-      "SnapshotArns"
-    ],
     "AWS::KinesisFirehose::DeliveryStream": [
       "DatabaseSourceConfiguration",
       "MSKSourceConfiguration",
