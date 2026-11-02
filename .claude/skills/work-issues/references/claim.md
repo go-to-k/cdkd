@@ -17,8 +17,8 @@ Name a sibling worktree `.claude/worktrees/<branch>` and the launch tree by its
 basename; a lane brief that hands over absolute paths says so too.
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
-Post now: a claim that waits for the branch lands after the first edit. Such
-lanes are SERIAL (§3).
+Post now: a claim that waits for the branch lands after the first edit. Queue
+all but the first (§3):
 
 ```bash
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
@@ -59,7 +59,7 @@ gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <fi
 Claiming to avoid collision with parallel agents."
 ```
 
-Mandatory, BEFORE the analysis and the first edit. A lane's `Agent` call goes in
+Mandatory, BEFORE design and the first edit. A lane's `Agent` call goes in
 a LATER message, after the read-back below: sent beside a refused post, two
 lanes launched briefed "claim posted" (#5637).
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with

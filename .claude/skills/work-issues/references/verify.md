@@ -42,7 +42,7 @@ re-run it on the rebased head (#3726).
   included": a COMMENT-ONLY nit found after the integ may ride this run's next
   lane on that file, whose integ re-runs anyway, named in that lane's PR body
   (#3977); with no such lane, fix it here and re-run. Scope the reviewers to the
-  delta by `git range-diff` or the PR's own file list (a two-dot diff across a
+  delta by `git range-diff` or the PR's file list (a two-dot diff over a
   rebase shows peers' files, #5651) and paste its COMMIT MESSAGE into the brief:
   they read `gh pr diff`, not `git log`.
 
@@ -113,7 +113,7 @@ THROWAWAY detached tree at the PUSHED final sha, never the lane's** — the lane
 tree then has nothing to restore (a SECOND probe in the throwaway tree restores
 the first's edit with `CDKD_ALLOW_DIRTY_RESTORE=1`, never `git show >` around
 the gate: #5657), and a restore in the lane tree is refused by
-`dirty-path-restore-gate`. Inside
+`dirty-path-restore-gate`, and `cp` by the classifier. Inside
 `bash -c` (zsh mangles `$B:src`), each copy written beside the file FIRST — a
 redirect onto the file truncates it even when `git show` fails:
 
@@ -150,8 +150,7 @@ test. More vacuity shapes:
   issue is that slot: make it a `FAIL` before the run (#4548).
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red.**
-- **A baseline compared with the same read, or a count asserted 0 with no prior
-  1, proves nothing**: change the value out of band first (#5648, #5649).
+- **A self-compared baseline, or a 0 count with no prior 1, proves nothing**: change the value out of band first (#5648, #5649).
 
 ### 8-e. Watching runs and pollers
 

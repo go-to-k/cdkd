@@ -128,9 +128,9 @@ parser from `node_modules`, never by reading its source (#2221).
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
 maintainer-only step) or closing an AWS-side limit with
 docs: return its options, each fix and what CFn / the CDK CLI do, for ONE
-`AskUserQuestion` at triage (gotchas.md). An issue's "Undecided" line is not yet
-a question: where the CFn premise above settles it, take that, unasked (#5637,
-#5656: the maintainer asked why CFn had not).
+`AskUserQuestion` at triage (gotchas.md). An issue's "Undecided" line is no
+question: where the CFn premise settles it, take that, unasked (#5637, #5656:
+the maintainer asked why CFn had not settled it).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
