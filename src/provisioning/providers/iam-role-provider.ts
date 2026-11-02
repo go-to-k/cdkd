@@ -20,6 +20,7 @@ import {
   DeleteRolePermissionsBoundaryCommand,
   ListRoleTagsCommand,
   NoSuchEntityException,
+  type Role,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -47,9 +48,15 @@ import {
   markAuxiliaryFailure,
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import {
+  reportCreatedResource,
+  reportedCreatedResource,
+  retractCreatedResource,
+} from '../created-resource-sink.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
+  isThrottlingError,
+  isTransientServerError,
   markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
@@ -239,12 +246,13 @@ export class IAMRoleProvider implements ResourceProvider {
       );
     }
 
-    // go-to-k/cdkd#4583: set once CreateRole returns; cleared when the
-    // partial-create cleanup deleted the role, so only a left-behind one is marked.
+    // go-to-k/cdkd#4583: set once CreateRole returns, or a replay adopts its own
+    // role (#5656); cleared when the partial-create cleanup deleted the role, so
+    // only a left-behind one is marked.
     let leftBehind = false;
-    // go-to-k/cdkd#4606: the RoleId CreateRole answered with, carried on the
-    // mark so the journal needs no read of a role whose failure may fail that
-    // read too.
+    // go-to-k/cdkd#4606: the RoleId CreateRole answered with (for an adopted
+    // role, the same one, read back), carried on the mark so the journal needs
+    // no read of a role whose failure may fail that read too.
     let createdRoleIdentity: string | undefined;
     try {
       // Serialize policy document
@@ -290,14 +298,26 @@ export class IAMRoleProvider implements ResourceProvider {
       }
 
       const createClient = await this.createClient.get();
-      const response = await createClient.send(new CreateRoleCommand(createParams));
+      let role: Role | undefined;
+      let adopted = false;
+      try {
+        role = (await createClient.send(new CreateRoleCommand(createParams))).Role;
+      } catch (createError) {
+        // go-to-k/cdkd#5656: a replay colliding with the role its own earlier
+        // attempt left behind finishes that role; anything else fails as before.
+        role = await this.roleLeftByThisCreate(logicalId, resourceType, roleName, createError, log);
+        if (role === undefined) throw createError;
+        adopted = true;
+      }
       leftBehind = true;
-      createdRoleIdentity = roleIdentityToken(response.Role?.RoleId);
-      reportCreatedResource(logicalId, resourceType, roleName, createdRoleIdentity); // go-to-k/cdkd#5511
+      createdRoleIdentity = roleIdentityToken(role?.RoleId);
+      if (!adopted) {
+        reportCreatedResource(logicalId, resourceType, roleName, createdRoleIdentity); // go-to-k/cdkd#5511
+        log.debug(`Created IAM role: ${v(roleName)}`);
+      }
 
-      log.debug(`Created IAM role: ${v(roleName)}`);
-
-      // CreateRoleCommand has succeeded — AWS has now committed the Role.
+      // CreateRoleCommand has succeeded (here or, for an adopted role, in an
+      // earlier attempt) — AWS has now committed the Role.
       // Every subsequent call wires sub-resources onto it (managed-policy
       // attachments / inline policies); if any fail, the role
       // exists on AWS but cdkd state will NOT (the throw aborts before
@@ -306,7 +326,8 @@ export class IAMRoleProvider implements ResourceProvider {
       // <X> already exists`. Wrap the wiring in an inner try/catch that
       // issues best-effort `Detach*` + `DeleteRolePolicy` + `DeleteRole`
       // before re-throwing, so the failed attempt is self-healing on the
-      // next redeploy. The cleanup mirrors the order in `delete()`:
+      // next redeploy; an adopted role skips this cleanup (see the catch).
+      // The cleanup mirrors the order in `delete()`:
       // managed-policy detach -> inline-policy delete -> DeleteRole
       // (instance profiles don't need removal on a freshly-created role).
       try {
@@ -346,35 +367,42 @@ export class IAMRoleProvider implements ResourceProvider {
           }
         }
       } catch (innerError) {
-        try {
-          await this.detachAllManagedPolicies(roleName, log);
-          await this.deleteAllInlinePolicies(roleName, log);
-          await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
-          retractCreatedResource(logicalId, resourceType, roleName);
-          leftBehind = false;
-          log.debug(
-            `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`
-          );
-        } catch (cleanupError) {
-          // The name is `generateResourceNameWithFallback`'s output, whose
-          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // (issue #3136), so it renders BARE -- but it can still BE a resolved
-          // secret, so every command goes through `pasteableAwsCommand` with the
-          // masker (issue #2177): a masked name is WITHHELD rather than printed
-          // as `***`, which would act on a different role. Pinned by this
-          // type's partial-create cleanup test.
-          // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
-          // redirections.
-          const aws = pasteableAwsCommand(log.mask);
-          // An AWS-authored failure is named by its class at warn, and AWS's
-          // text (a denied `DeleteRole` names the caller) goes to `debug` under
-          // the same head (go-to-k/cdkd#2319).
-          const cleanupFailure = describeAwsFailure(cleanupError);
-          const cleanupHead = `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): `;
-          if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
-          log.warn(
-            `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
-          );
+        // go-to-k/cdkd#5656: the identity was read once, and every call here
+        // goes by NAME, so a stripping delete is not repeated on the strength
+        // of that read. The role stays reported and marked: the next replay
+        // adopts it again, and a final failure leaves it to the journal, whose
+        // settle compares the RoleId before deleting.
+        if (!adopted) {
+          try {
+            await this.detachAllManagedPolicies(roleName, log);
+            await this.deleteAllInlinePolicies(roleName, log);
+            await this.iamClient.send(new DeleteRoleCommand({ RoleName: roleName }));
+            retractCreatedResource(logicalId, resourceType, roleName);
+            leftBehind = false;
+            log.debug(
+              `Cleaned up partially-created IAM role ${logicalId} (${v(roleName)}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            // The name is `generateResourceNameWithFallback`'s output, whose
+            // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+            // (issue #3136), so it renders BARE -- but it can still BE a resolved
+            // secret, so every command goes through `pasteableAwsCommand` with the
+            // masker (issue #2177): a masked name is WITHHELD rather than printed
+            // as `***`, which would act on a different role. Pinned by this
+            // type's partial-create cleanup test.
+            // The `<arn>` / `<name>` holes are QUOTED: bare, each is two shell
+            // redirections.
+            const aws = pasteableAwsCommand(log.mask);
+            // An AWS-authored failure is named by its class at warn, and AWS's
+            // text (a denied `DeleteRole` names the caller) goes to `debug` under
+            // the same head (go-to-k/cdkd#2319).
+            const cleanupFailure = describeAwsFailure(cleanupError);
+            const cleanupHead = `Failed to clean up partially-created IAM role ${logicalId} (${v(roleName)}): `;
+            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${v(cleanupFailure.detail)}`);
+            log.warn(
+              `${cleanupHead}${cleanupFailure.redacted ? `${v(cleanupFailure.summary)} ` : `${v(cleanupFailure.detail)}. `}Manual deletion may be required before the next deploy: detach managed policies (${aws`aws iam list-attached-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam detach-role-policy --role-name ${roleName} --policy-arn '<arn>'`.render()}), delete inline policies (${aws`aws iam list-role-policies --role-name ${roleName}`.render()} then ${aws`aws iam delete-role-policy --role-name ${roleName} --policy-name '<name>'`.render()}), then ${aws`aws iam delete-role --role-name ${roleName}`.render()}`
+            );
+          }
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).
@@ -384,8 +412,8 @@ export class IAMRoleProvider implements ResourceProvider {
       log.debug(`Successfully created IAM role ${logicalId}: ${v(roleName)}`);
 
       const attributes = {
-        Arn: response.Role?.Arn,
-        RoleId: response.Role?.RoleId,
+        Arn: role?.Arn,
+        RoleId: role?.RoleId,
       };
 
       return {
@@ -412,6 +440,66 @@ export class IAMRoleProvider implements ResourceProvider {
           : built;
       });
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5656: the role a `CreateRole` collision hit, when it provably
+   * is the one an earlier attempt of THIS operation made and failed to clean
+   * up; `undefined` when it is not proven, so the caller rethrows the collision
+   * and touches nothing.
+   *
+   * The proof is the operation's `reportCreatedResource` of this name, whose
+   * RoleId `CreateRole` itself answered with, against the live RoleId: IAM never
+   * reuses one, and a name alone says nothing about who holds it. A failed
+   * attempt's cleanup withdraws the report once its `DeleteRole` landed. The
+   * report lives only as long as the operation, so a later deploy, or a replay
+   * outside a deploy operation, has none and fails as before.
+   *
+   * Finishing is re-running the wiring, not reconciling the role: the engine
+   * resolves the properties once, before its retries, so this replay's bag is
+   * the one the earlier attempt sent, and everything `CreateRole` itself carries
+   * (tags included) is already on the role. `AttachRolePolicy` and
+   * `PutRolePolicy` both succeed on an attached or existing policy, and restore
+   * what that attempt's partial cleanup removed.
+   *
+   * A throttled or 5xx read rethrows, so the engine retries; another read
+   * failure leaves the identity unproven.
+   */
+  private async roleLeftByThisCreate(
+    logicalId: string,
+    resourceType: string,
+    roleName: string,
+    createError: unknown,
+    log: MaskedLogSinks
+  ): Promise<Role | undefined> {
+    if ((createError as { name?: unknown } | null)?.name !== 'EntityAlreadyExistsException') {
+      return undefined;
+    }
+    const report = reportedCreatedResource(logicalId, resourceType);
+    if (report?.physicalId !== roleName || report.createdResourceIdentity === undefined) {
+      return undefined;
+    }
+    const { value: v } = log;
+    let role: Role | undefined;
+    try {
+      role = (await this.iamClient.send(new GetRoleCommand({ RoleName: roleName }))).Role;
+    } catch (probeError) {
+      if (isThrottlingError(probeError) || isTransientServerError(probeError)) throw probeError;
+      log.debug(
+        `IAM role ${logicalId}: could not read ${v(roleName)} to identify it: ${v(describeAwsFailure(probeError).detail)}`
+      );
+      return undefined;
+    }
+    if (roleIdentityToken(role?.RoleId) !== report.createdResourceIdentity) {
+      log.warn(
+        `IAM role ${logicalId}: ${v(roleName)} is not the role an earlier attempt of this create made, so it is left untouched. Do not delete it unless you know it is yours, whatever the failure below suggests.`
+      );
+      return undefined;
+    }
+    log.warn(
+      `IAM role ${logicalId}: finishing ${v(roleName)}, the role an earlier attempt of this create made and could not delete. No manual deletion is needed if this create succeeds.`
+    );
+    return role;
   }
 
   /**

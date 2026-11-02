@@ -135,7 +135,7 @@ const CREATED_BEFORE_FAILURE = Symbol.for('cdkd.createdBeforeFailure');
 
 /**
  * Declare that `ownerLogicalId`'s create call had RETURNED — the resource
- * `physicalId` exists in AWS because THIS attempt made it — before `error`
+ * `physicalId` exists in AWS because THIS operation made it — before `error`
  * was thrown (go-to-k/cdkd#1710). The deploy engine journals that id on the
  * failed CREATE so `cdkd rollback --revert-failed` can delete a resource no
  * state record holds.
