@@ -2916,6 +2916,9 @@ export class ECSProvider implements ResourceProvider {
     // go-to-k/cdkd#4946: set once the scale-down is accepted, so a refused
     // `DeleteService` is never read as a whole survivor.
     let stripped = false;
+    // go-to-k/cdkd#5664: the scale-down found the service NOT ACTIVE (an
+    // earlier attempt deleted it), so only the INACTIVE wait remains.
+    let alreadyDeleted = false;
 
     try {
       // First scale down to 0
@@ -2947,24 +2950,27 @@ export class ECSProvider implements ResourceProvider {
           );
           // go-to-k/cdkd#5664: NOT ACTIVE is not gone. A service an earlier
           // attempt already deleted is still DRAINING, and what depends on it
-          // must not be deleted before it is INACTIVE.
-          if (this.isServiceNotActiveException(error)) {
-            await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
-          }
-          return;
+          // must not be deleted before it is INACTIVE: skip the delete and
+          // fall through to the wait below (outside this try, so its failure
+          // is not re-wrapped as a delete failure).
+          if (!this.isServiceNotActiveException(error)) return;
+          alreadyDeleted = true;
+        } else {
+          throw error;
         }
-        throw error;
       }
 
       // Then force delete
-      await client.send(
-        new DeleteServiceCommand({
-          cluster,
-          service: physicalId,
-          force: true,
-        })
-      );
-      this.logger.debug(`Successfully deleted ECS service ${logicalId}`);
+      if (!alreadyDeleted) {
+        await client.send(
+          new DeleteServiceCommand({
+            cluster,
+            service: physicalId,
+            force: true,
+          })
+        );
+        this.logger.debug(`Successfully deleted ECS service ${logicalId}`);
+      }
     } catch (error) {
       if (this.isServiceNotFoundException(error)) {
         const clientRegion = await client.config.region();
@@ -2976,32 +2982,32 @@ export class ECSProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(`ECS service ${physicalId} not found, skipping deletion`);
-        if (this.isServiceNotActiveException(error)) {
-          await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
-        }
-        return;
+        // NOT ACTIVE (#5664): already deleted and possibly still DRAINING,
+        // so it falls through to the wait below instead of returning.
+        if (!this.isServiceNotActiveException(error)) return;
+      } else {
+        const cause = error instanceof Error ? error : undefined;
+        const wrapped = this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ECS service ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+        // A missing CLUSTER means the service is gone too, so it stays readable
+        // as already deleted; any other `NotFound` class (a Service Connect
+        // `NamespaceNotFoundException` from the scale-down UpdateService) is
+        // not this service's.
+        const failure = this.isClusterNotFoundException(error)
+          ? wrapped
+          : markNotGoneOnNotFoundClass(error, wrapped);
+        throw stripped ? markDeleteStarted(failure) : failure;
       }
-      const cause = error instanceof Error ? error : undefined;
-      const wrapped = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete ECS service ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // A missing CLUSTER means the service is gone too, so it stays readable
-      // as already deleted; any other `NotFound` class (a Service Connect
-      // `NamespaceNotFoundException` from the scale-down UpdateService) is
-      // not this service's.
-      const failure = this.isClusterNotFoundException(error)
-        ? wrapped
-        : markNotGoneOnNotFoundClass(error, wrapped);
-      throw stripped ? markDeleteStarted(failure) : failure;
     }
 
     // go-to-k/cdkd#5664: DeleteService returns while the service is still
@@ -3048,7 +3054,7 @@ export class ECSProvider implements ResourceProvider {
       (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
     );
     const deadline = serviceInactiveWait.now() + maxWaitSeconds * 1000;
-    let delayMs = 2_000;
+    let delay = 2_000;
     let lastStatus = 'unknown';
     for (;;) {
       try {
@@ -3085,8 +3091,8 @@ export class ECSProvider implements ResourceProvider {
           )
         );
       }
-      await serviceInactiveWait.sleep(delayMs);
-      delayMs = Math.min(delayMs * 2, 10_000);
+      await serviceInactiveWait.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
     }
   }
 
@@ -4407,11 +4413,6 @@ export class ECSProvider implements ResourceProvider {
   /**
    * Check if error is ServiceNotFoundException
    */
-  /** The NOT-ACTIVE arm of {@link isServiceNotFoundException} (go-to-k/cdkd#5664). */
-  private isServiceNotActiveException(error: unknown): boolean {
-    return error instanceof Error && error.name === 'ServiceNotActiveException';
-  }
-
   private isServiceNotFoundException(error: unknown): boolean {
     if (error instanceof Error) {
       return (
@@ -4422,6 +4423,11 @@ export class ECSProvider implements ResourceProvider {
       );
     }
     return false;
+  }
+
+  /** The NOT-ACTIVE arm of {@link isServiceNotFoundException} (go-to-k/cdkd#5664). */
+  private isServiceNotActiveException(error: unknown): boolean {
+    return error instanceof Error && error.name === 'ServiceNotActiveException';
   }
 
   /**

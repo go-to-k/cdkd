@@ -166,6 +166,39 @@ describe('ECS Service delete waits for INACTIVE (go-to-k/cdkd#5664)', () => {
     ]);
   });
 
+  it('a DeleteService answered NOT ACTIVE (a concurrent delete) is still waited for', async () => {
+    mockSend
+      .mockResolvedValueOnce({}) // UpdateService desiredCount 0
+      .mockRejectedValueOnce(awsError('ServiceNotActiveException')) // DeleteService
+      .mockResolvedValueOnce({ services: [{ status: 'DRAINING' }] })
+      .mockResolvedValueOnce({ services: [{ status: 'INACTIVE' }] });
+
+    await provider.delete('Svc', SERVICE_ARN, TYPE, PROPS);
+
+    expect(sentCommands()).toEqual([
+      UpdateServiceCommand.name,
+      DeleteServiceCommand.name,
+      DescribeServicesCommand.name,
+      DescribeServicesCommand.name,
+    ]);
+  });
+
+  it('a NOT ACTIVE service that never drains fails with the wait error itself, not a re-wrapped delete failure', async () => {
+    mockSend
+      .mockRejectedValueOnce(awsError('ServiceNotActiveException'))
+      .mockResolvedValue({ services: [{ status: 'DRAINING' }] });
+
+    const error = await provider.delete('Svc', SERVICE_ARN, TYPE, PROPS).then(
+      () => undefined,
+      (e: unknown) => e as Error
+    );
+
+    expect(error!.message).toMatch(/^ECS service .*Svc.* was deleted but did not reach INACTIVE/);
+    expect(error!.message).not.toContain('Failed to delete ECS service');
+    expect(isMarkedNonRetryable(error)).toBe(true);
+    expect(isDeleteStarted(error)).toBe(true);
+  });
+
   it('a service that is not found is gone, with no wait', async () => {
     mockSend.mockRejectedValueOnce(awsError('ServiceNotFoundException'));
 
