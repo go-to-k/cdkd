@@ -3379,6 +3379,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({
         Table: { Replicas: [{ RegionName: 'eu-west-1', ReplicaStatus: 'ACTIVE' }] },
       }); // waitForReplicaActive
+      mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // settle
       mockSend.mockResolvedValueOnce({}); // UpdateTable (the override a Create drops)
       mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'ACTIVE' } }); // settle
       mockSend.mockResolvedValueOnce({ Table: { TableArn: TABLE_ARN } }); // final describe
