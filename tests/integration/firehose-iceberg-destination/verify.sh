@@ -16,10 +16,16 @@
 #      `events`. Assert provisionedBy=sdk, every templated member in
 #      DescribeDeliveryStream, and the CloudFormation spelling in
 #      observedProperties.
-#   2. CDKD_TEST_UPDATE=true: backup mode AllData, buffering 120s, retry 600s,
-#      table `events_v2`. Assert the same stream (create timestamp unchanged),
-#      the new values in AWS, the catalog untouched, and a clean drift.
-#   3. Destroy; assert the stream, database and state file are gone.
+#   2. CDKD_TEST_UPDATE=true: buffering 120s, retry 600s, table `events_v2`.
+#      Assert the same stream (create timestamp unchanged), the new values in
+#      AWS, the catalog untouched, and a clean drift.
+#   3. Destroy; assert the stream, database, bucket, role and state file are
+#      gone.
+#
+# The backup mode stays FailedDataOnly in both phases: it is the only value
+# Firehose accepts for Iceberg (the SDK's member docs) and also its default,
+# so the write side of `s3BackupMode` cannot be told apart on AWS. Its READ
+# side can: observedProperties must carry it as `s3BackupMode`.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -67,6 +73,7 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 # Deterministic names from lib/firehose-iceberg-destination-stack.ts.
 STREAM_NAME="CdkdFirehoseIceberg5636"
 DATABASE_NAME="cdkd_firehose_iceberg_5636"
+ROLE_NAME="CdkdFirehoseIceberg5636Role"
 
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
@@ -80,9 +87,19 @@ cleanup() {
     rc=0
   fi
   # By deterministic name: a run that died before recording them in state.
-  aws firehose delete-delivery-stream --delivery-stream-name "${STREAM_NAME}" --allow-force-delete \
-    --region "${REGION}" >/dev/null 2>&1 || true
+  # A delete leaves the name DELETING for minutes, and the next create of it
+  # is refused, so wait (capped) until the stream is gone.
+  if aws firehose delete-delivery-stream --delivery-stream-name "${STREAM_NAME}" --allow-force-delete \
+    --region "${REGION}" >/dev/null 2>&1; then
+    for _ in $(seq 1 36); do
+      aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" \
+        --region "${REGION}" >/dev/null 2>&1 || break
+      sleep 5
+    done
+  fi
   aws glue delete-database --name "${DATABASE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
+  aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name iceberg >/dev/null 2>&1 || true
+  aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1 || true
   if [ -n "${STATE_BUCKET:-}" ] && [ "${rc}" = "0" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -213,12 +230,17 @@ fi
 assert_eq "observed s3BackupMode" "$(jq -r '.s3BackupMode // "<absent>"' <<<"${OBSERVED}")" "FailedDataOnly"
 assert_eq "observed CatalogConfiguration.CatalogArn" \
   "$(jq -r '.CatalogConfiguration.CatalogArn // "<absent>"' <<<"${OBSERVED}")" "${CATALOG_ARN}"
+# A list entry compares by exact key set, so a default AWS adds inside one
+# would read as drift against a template-only baseline on every run.
+assert_eq "observed DestinationTableConfigurationList[0] keys" \
+  "$(jq -r '.DestinationTableConfigurationList[0] | keys | join(",")' <<<"${OBSERVED}")" \
+  "DestinationDatabaseName,DestinationTableName"
 assert_eq "observed S3Configuration.BucketARN" \
   "$(jq -r '.S3Configuration.BucketARN // "<absent>"' <<<"${OBSERVED}")" "arn:aws:s3:::${BUCKET_NAME}"
 BASE_CREATED="$(create_timestamp)"
 
 # --- Phase 2: in-place update ------------------------------------------------
-echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (backup AllData, buffering 120s, retry 600s, table events_v2)"
+echo "==> Phase 2: redeploy with CDKD_TEST_UPDATE=true (buffering 120s, retry 600s, table events_v2)"
 CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -228,7 +250,7 @@ assert_sdk_route
 assert_eq "stream create timestamp (in place, not replaced)" "$(create_timestamp)" "${BASE_CREATED}"
 DESC="$(iceberg_desc)"
 assert_fixed_members "${DESC}"
-assert_phase_members "${DESC}" AllData 120 600 events_v2
+assert_phase_members "${DESC}" FailedDataOnly 120 600 events_v2
 
 echo "==> Phase 2: drift must be clean"
 node "${LOCAL_DIST}" drift "${STACK}" \
@@ -247,11 +269,13 @@ assert_gone "delivery stream ${STREAM_NAME} still exists after destroy" \
   aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" --region "${REGION}"
 assert_gone "Glue database ${DATABASE_NAME} still exists after destroy" \
   aws glue get-database --name "${DATABASE_NAME}" --region "${REGION}"
+assert_gone "IAM role ${ROLE_NAME} still exists after destroy" \
+  aws iam get-role --role-name "${ROLE_NAME}"
 assert_gone "bucket ${BUCKET_NAME} still exists after destroy" \
   aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REGION}"
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" \
   aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"
-echo "    ok: stream, database, bucket and state file are gone"
+echo "    ok: stream, database, role, bucket and state file are gone"
 
 echo ""
 echo "[verify] PASS — firehose-iceberg-destination: IcebergDestinationConfiguration created and updated in place on the SDK route, read back in CloudFormation's spelling (#5636)"

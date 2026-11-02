@@ -1701,6 +1701,12 @@ describe('FirehoseProvider.update — explicit-falsy-value pass-through (#549 / 
 // `S3Configuration`.
 describe('FirehoseProvider — Iceberg destination on the SDK route (#5636)', () => {
   const ROLE = 'arn:aws:iam::111:role/firehose-role';
+  const AWS_S3_DEFAULTS = {
+    CompressionFormat: 'UNCOMPRESSED',
+    BufferingHints: { IntervalInSeconds: 300, SizeInMBs: 5 },
+    EncryptionConfiguration: { NoEncryptionConfig: 'NoEncryption' },
+    CloudWatchLoggingOptions: { Enabled: false },
+  };
   const CATALOG = 'arn:aws:glue:us-east-1:111:catalog';
   const template = () => ({
     RoleARN: ROLE,
@@ -1789,7 +1795,9 @@ describe('FirehoseProvider — Iceberg destination on the SDK route (#5636)', ()
                   ...same,
                   S3BackupMode: s3BackupMode,
                   CatalogConfiguration: { CatalogARN: CATALOG, WarehouseLocation: 's3://wh/' },
-                  S3DestinationDescription: S3Configuration,
+                  // What AWS returns for the nested bucket: the template's
+                  // members plus the defaults it always reports.
+                  S3DestinationDescription: { ...S3Configuration, ...AWS_S3_DEFAULTS },
                 },
               },
             ],
@@ -1808,8 +1816,7 @@ describe('FirehoseProvider — Iceberg destination on the SDK route (#5636)', ()
     >;
     expect(observed['IcebergDestinationConfiguration']).toEqual({
       ...template(),
-      // mapS3DescriptionToCfn's always-emitted placeholders.
-      S3Configuration: { ...S3Configuration, EncryptionConfiguration: {}, CloudWatchLoggingOptions: {} },
+      S3Configuration: { ...S3Configuration, ...AWS_S3_DEFAULTS },
     });
 
     // A drift --revert of the read-back against a state with another mode

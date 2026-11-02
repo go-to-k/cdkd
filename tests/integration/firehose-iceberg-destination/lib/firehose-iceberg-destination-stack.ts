@@ -8,6 +8,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 /** Deterministic names, so verify.sh's cleanup can find what a failed run left. */
 export const STREAM_NAME = 'CdkdFirehoseIceberg5636';
 export const DATABASE_NAME = 'cdkd_firehose_iceberg_5636';
+export const ROLE_NAME = 'CdkdFirehoseIceberg5636Role';
 
 /**
  * Firehose `IcebergDestinationConfiguration` on the SDK route (issue #5636).
@@ -22,10 +23,11 @@ export const DATABASE_NAME = 'cdkd_firehose_iceberg_5636';
  * `CatalogConfiguration.CatalogArn` (`CatalogARN`), and on the read side the
  * nested `S3DestinationDescription` (`S3Configuration`).
  *
- * Mode list (`CDKD_TEST_UPDATE`): '' (phase 1) | 'true' (phase 2: backup mode
- * FailedDataOnly -> AllData, buffering interval 60 -> 120, retry 300 -> 600,
- * destination table events -> events_v2; every one an in-place
- * `UpdateDestination`).
+ * Mode list (`CDKD_TEST_UPDATE`): '' (phase 1) | 'true' (phase 2: buffering
+ * interval 60 -> 120, retry 300 -> 600, destination table events ->
+ * events_v2; every one an in-place `UpdateDestination`). The backup mode stays
+ * `FailedDataOnly`, the only value Firehose accepts for Iceberg today (the
+ * SDK's member docs), so no phase can change it.
  *
  * No record is ever put, so Firehose creates no table and writes nothing to
  * the bucket: only control-plane resources exist.
@@ -45,6 +47,7 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
     });
 
     const role = new iam.CfnRole(this, 'Role', {
+      roleName: ROLE_NAME,
       assumeRolePolicyDocument: {
         Version: '2012-10-17',
         Statement: [
@@ -52,6 +55,8 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
             Effect: 'Allow',
             Principal: { Service: 'firehose.amazonaws.com' },
             Action: 'sts:AssumeRole',
+            // The confused-deputy guard Firehose's own role docs use.
+            Condition: { StringEquals: { 'sts:ExternalId': this.account } },
           },
         ],
       },
@@ -108,7 +113,7 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
         tableCreationConfiguration: { enabled: true },
         bufferingHints: { intervalInSeconds: isUpdate ? 120 : 60, sizeInMBs: 1 },
         retryOptions: { durationInSeconds: isUpdate ? 600 : 300 },
-        s3BackupMode: isUpdate ? 'AllData' : 'FailedDataOnly',
+        s3BackupMode: 'FailedDataOnly',
         s3Configuration: {
           bucketArn: bucket.attrArn,
           roleArn: role.attrArn,
