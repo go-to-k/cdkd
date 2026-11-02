@@ -1678,6 +1678,37 @@ Checklist when writing or reviewing an `update()`:
   (read after UPDATE_ROLLBACK_COMPLETE and about four minutes later), so a
   rollback sends no reset either. Not measured:
   `ServerlessScalingConfiguration` and `NetworkType`.
+  Real CloudFormation measurement, go-to-k/cdkd#5638 (us-east-1, CloudTrail's
+  request parameters of each handler call): a Neptune DBCluster with
+  `SourceDBClusterIdentifier` calls `RestoreDBClusterToPointInTime`, winning
+  over a `SnapshotIdentifier` beside it; `SnapshotIdentifier` alone calls
+  `RestoreDBClusterFromSnapshot`; neither calls `CreateDBCluster`, a lone
+  `RestoreType`, `RestoreToTime` or `UseLatestRestorableTime` having no effect.
+  A restore takes port 8182, not the source's; `StorageEncrypted: true` with no
+  key sends `alias/aws/rds`; a declared `SnapshotIdentifier` draws a
+  `ModifyDBCluster` setting `BackupRetentionPeriod`, 1 when omitted. With no
+  value declared, `DeletionProtection` reads false and `IamAuthEnabled` is the
+  source's. An empty `SnapshotIdentifier` or `SourceDBClusterIdentifier` counts
+  as none. Removing
+  `SnapshotIdentifier` is a replacement, and a copy-on-write restore needs a
+  source with a healthy instance. CloudFormation DROPS some declared values:
+  both windows on either restore, and `BackupRetentionPeriod`,
+  `CopyTagsToSnapshot`, `EngineVersion`, `DBClusterParameterGroupName`,
+  `DeletionProtection` and `AvailabilityZones` on a point-in-time one. cdkd sends
+  those it can, by a follow-up `ModifyDBCluster` where the restore has no member
+  or AWS could refuse the value there, rather than record what AWS does not
+  hold (`AvailabilityZones` has no call, and warns); AWS can refuse such a value
+  where CloudFormation succeeds (a window overlapping the inherited one, an
+  older engine, another family's parameter group), so that refusal is a warning
+  naming the keys, not a failed create. The record then holds the declared value,
+  so neither a redeploy nor `cdkd drift` shows the difference. CloudFormation's
+  next update leaves an unchanged window or `EngineVersion` out, and cdkd matches
+  it on a restored cluster; it sends `BackupRetentionPeriod`,
+  `CopyTagsToSnapshot` and `DBClusterParameterGroupName` whether or not they
+  changed, so such a value AWS refused fails every update until the template
+  changes it, under both. A `SourceDBClusterIdentifier` naming the cluster itself
+  is refused before a delete-first replacement's delete, which would lose the
+  source (`refuseRestoreFromItself`).
   Real CloudFormation A/B, go-to-k/cdkd#2762 (us-east-1, engine 5.0.0, each
   dropped alone; read at once and after about four minutes, nothing pending): an
   `AWS::DocDB::DBCluster` KEEPS `CopyTagsToSnapshot`,

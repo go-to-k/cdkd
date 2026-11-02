@@ -705,6 +705,29 @@ const MAJOR_UPGRADE_ONLY = `sent only with a major EngineVersion change, which n
 /** No create member, and no live value to reset: ModifyDBInstance takes it per call. */
 const INSTANCE_MODIFY_ONLY = `CreateDBInstance has no such member, and the schema calls it write-only: it only reaches ModifyDBInstance (${NEPTUNE_SRC}, updateDBInstance)`;
 
+/** What a restore bag's update removals keep, as the full bag's do. */
+const RESTORE_KEPT: Record<string, string> = {
+  'update-remove:IamAuthEnabled': KEPT_5004('IamAuthEnabled'),
+  'update-remove:DeletionProtection': KEPT_5004('DeletionProtection'),
+  'update-remove:DBClusterParameterGroupName': KEPT_5544('DBClusterParameterGroupName'),
+  'update-remove:NetworkType': KEPT_UNMEASURED('NetworkType'),
+  'update-remove:ServerlessScalingConfiguration': KEPT_UNMEASURED('ServerlessScalingConfiguration'),
+  'update-remove:VpcSecurityGroupIds.0': `ModifyDBCluster sends the WHOLE desired list from next (${NEPTUNE_SRC}), so only a whole-list removal reads prev`,
+};
+
+/** The refusals of a restore bag's one-tag list and scaling block. */
+const RESTORE_THROWS: Record<string, Throw> = {
+  ...TAG_THROWS(ALL_DIRECTIONS, 1),
+  ...Object.fromEntries(
+    ALL_DIRECTIONS.flatMap((direction) =>
+      ['MinCapacity', 'MaxCapacity'].map((member) => [
+        `${direction}:ServerlessScalingConfiguration.${member}`,
+        SCALING_REFUSED,
+      ])
+    )
+  ),
+};
+
 const NEPTUNE_CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::Neptune::DBCluster',
   provider: () => new NeptuneProvider(),
@@ -836,6 +859,73 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
       bag: { Port: '8184' },
       expectedSilent: {
         'update-remove:Port': PORT_KEPT,
+      },
+    },
+    {
+      name: 'a snapshot restore',
+      bag: {
+        SnapshotIdentifier: 'neptune-snapshot',
+        DBSubnetGroupName: NEPTUNE_SUBNET_GROUP,
+        VpcSecurityGroupIds: ['sg-1'],
+        DBClusterParameterGroupName: 'cluster-params',
+        IamAuthEnabled: true,
+        DeletionProtection: true,
+        KmsKeyId: KMS,
+        NetworkType: 'DUAL',
+        EnableCloudwatchLogsExports: ['audit'],
+        ServerlessScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
+        Tags: [{ Key: 'k1', Value: 'v1' }],
+        EngineVersion: '1.3.2.0',
+        BackupRetentionPeriod: 7,
+        PreferredBackupWindow: '03:00-04:00',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        CopyTagsToSnapshot: true,
+        AvailabilityZones: ['us-east-1a'],
+      },
+      expectedRemovalThrows: RESTORE_THROWS,
+      expectedSilent: {
+        ...RESTORE_KEPT,
+        'update-remove:BackupRetentionPeriod': KEPT_5004('BackupRetentionPeriod'),
+        'update-remove:CopyTagsToSnapshot': KEPT_2762('CopyTagsToSnapshot'),
+        'update-remove:EngineVersion': KEPT_5544('EngineVersion'),
+        'update-remove:PreferredBackupWindow': KEPT_5544('PreferredBackupWindow'),
+        'update-remove:PreferredMaintenanceWindow': KEPT_5544('PreferredMaintenanceWindow'),
+      },
+    },
+    {
+      name: 'a point-in-time restore to the latest time',
+      bag: {
+        SourceDBClusterIdentifier: 'neptune-source',
+        RestoreType: 'copy-on-write',
+        DBSubnetGroupName: NEPTUNE_SUBNET_GROUP,
+        VpcSecurityGroupIds: ['sg-1'],
+        DBClusterParameterGroupName: 'cluster-params',
+        IamAuthEnabled: true,
+        DeletionProtection: true,
+        KmsKeyId: KMS,
+        NetworkType: 'DUAL',
+        EnableCloudwatchLogsExports: ['audit'],
+        ServerlessScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
+        Tags: [{ Key: 'k1', Value: 'v1' }],
+        UseLatestRestorableTime: true,
+        BackupRetentionPeriod: 7,
+        CopyTagsToSnapshot: true,
+      },
+      expectedRemovalThrows: RESTORE_THROWS,
+      expectedSilent: {
+        ...RESTORE_KEPT,
+        'update-remove:BackupRetentionPeriod': KEPT_5004('BackupRetentionPeriod'),
+        'update-remove:CopyTagsToSnapshot': KEPT_2762('CopyTagsToSnapshot'),
+      },
+    },
+    {
+      name: 'a point-in-time restore to a time',
+      bag: {
+        SourceDBClusterIdentifier: 'neptune-source',
+        RestoreToTime: '2026-11-02T07:50:50Z',
+      },
+      expectedSilent: {
+        'create-vary:RestoreToTime': `the harness's varied value is no timestamp, so it is refused before any call; neptune-provider-backfill-2762.test.ts pins the refusal and the Date a real one sends (${NEPTUNE_SRC}, readClusterRestore)`,
       },
     },
   ],

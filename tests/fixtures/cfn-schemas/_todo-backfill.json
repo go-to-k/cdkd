@@ -89,13 +89,6 @@
       "MSKSourceConfiguration",
       "SnowflakeDestinationConfiguration"
     ],
-    "AWS::Neptune::DBCluster": [
-      "RestoreToTime",
-      "RestoreType",
-      "SnapshotIdentifier",
-      "SourceDBClusterIdentifier",
-      "UseLatestRestorableTime"
-    ],
     "AWS::RDS::DBCluster": [
       "AllocatedStorage",
       "AssociatedRoles",
