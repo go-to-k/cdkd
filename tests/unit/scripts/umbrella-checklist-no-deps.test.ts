@@ -113,7 +113,7 @@ const _publishedSdkInterfacesIsNotLooser: EvidenceDeps['publishedSdkInterfaces']
   null as unknown as ExpectedPublishedSdkInterfaces;
 
 /** The shape guard the workflow itself applies to the rendered file. */
-const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining silent-drop properties/m;
+const WORKFLOW_SHAPE = /^- \[ \] |^_No remaining SDK-unwired properties/m;
 
 /**
  * Every corpus this file creates, removed in `afterEach`.

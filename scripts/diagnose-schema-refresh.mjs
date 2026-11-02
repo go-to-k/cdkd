@@ -2850,7 +2850,7 @@ export function assertFixtureFloor(fixtureCount, declaredCount) {
  * spellings against each other.
  */
 export const UMBRELLA_EMPTY_SENTINEL =
-  '_No remaining silent-drop properties — every declared type is fully covered._';
+  '_No remaining SDK-unwired properties — every declared type is fully covered._';
 
 /**
  * The remaining silent-drop properties, as a checklist the umbrella issue owns.
@@ -3344,7 +3344,7 @@ export function renderChangelogFragment({
       // includes properties on refused types, so testing it said "them" of a
       // single routed property whenever an unroutable type rode along.
       `On ${routedNames.join(' / ')}, no SDK provider writes ${routedCount === 1 ? 'it' : 'them'} ` +
-        `yet (\`not yet implemented by cdkd\`), so pre-flight classifies each as a silent drop and the ` +
+        `yet (\`not yet implemented by cdkd\`), so pre-flight classifies each as SDK-unwired and the ` +
         `issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route sends a resource whose ` +
         `template carries one through Cloud Control, which forwards the full property map. Since issue ` +
         `#3713 a key absent from the snapshot already routed so, unless the state record held it with ` +
@@ -3359,7 +3359,7 @@ export function renderChangelogFragment({
       `${unroutableNames.join(' / ')} cannot take that route — ` +
         `${unroutable.length === 1 ? 'its provider declines' : 'their providers decline'} the Cloud ` +
         `Control fallback, or AWS reports the type NON_PROVISIONABLE — so a template carrying one is ` +
-        `REFUSED at pre-flight with the unroutable-silent-drop message instead of deploying.`,
+        `REFUSED at pre-flight with the unroutable-property message instead of deploying.`,
       CONSEQUENCE
     );
   }
@@ -3722,8 +3722,8 @@ export function renderSubIssueBody({ type, properties }) {
     'has no Cloud Control to fall back to, so cdkd refuses the deploy with an explicit',
     'error instead.',
     '',
-    'And `--allow-unsupported-properties` runs the OTHER way from what its name suggests:',
-    'it opts IN to the drop, keeping the resource on the SDK path and accepting that the',
+    'And `--prefer-sdk-route` (formerly `--allow-unsupported-properties`) runs the OTHER way:',
+    'it opts IN to not writing the property, keeping the resource on the SDK path and accepting that the',
     'value is not written — the point being that the Cloud Control route is sticky. It is',
     'not the flag that reaches Cloud Control — `--recreate-via-cc-api` is. (Nor is',
     '`--allow-unsupported-types`: its route is only reachable when NO SDK provider is',
@@ -3806,7 +3806,7 @@ export function renderSubIssuePlan(generatedSource) {
       types: groups.map(({ type, properties }) => ({
         type,
         count: properties.length,
-        title: `Backfill silent-drop properties: ${type}`,
+        title: `Backfill SDK-unwired properties: ${type}`,
         body: renderSubIssueBody({ type, properties }),
       })),
     },

@@ -58,7 +58,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 const entry = (type: string, properties: string[]) => ({
   type,
   count: properties.length,
-  title: `Backfill silent-drop properties: ${type}`,
+  title: `Backfill SDK-unwired properties: ${type}`,
   body: renderSubIssueBody({ type, properties }),
 });
 
@@ -72,7 +72,7 @@ const existing = (
 ): ExistingIssue => ({
   number,
   state,
-  title: `Backfill silent-drop properties: ${type}`,
+  title: `Backfill SDK-unwired properties: ${type}`,
   body: renderSubIssueBody({ type, properties }),
 });
 
@@ -342,7 +342,7 @@ describe('planReconciliation', () => {
     const unmarked = (number: number, state: 'OPEN' | 'CLOSED' = 'OPEN'): ExistingIssue => ({
       number,
       state,
-      title: 'Backfill silent-drop properties: AWS::S3::Bucket',
+      title: 'Backfill SDK-unwired properties: AWS::S3::Bucket',
       body: 'a body whose marker the reader no longer understands',
     });
 

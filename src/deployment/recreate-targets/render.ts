@@ -92,7 +92,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  These are fresh CREATEs on the next deploy — recreate has nothing ` +
         `to destroy first. Remove the flag for these resources; the auto-route ` +
-        `via Cloud Control handles fresh deploys for silent-drop properties, ` +
+        `via Cloud Control handles fresh deploys for SDK-unwired properties, ` +
         `and SDK Provider is the default for everything else.`
     );
   }
@@ -103,7 +103,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       `Ambiguous intent — ${validation.ambiguousIntent.length} resource(s) ` +
         `are named in BOTH --recreate-via-cc-api and ` +
         `--prefer-sdk-route with the same Type:Prop on a ` +
-        `silent-drop property the template uses:`
+        `SDK-unwired property the template uses:`
     );
     for (const overlap of validation.ambiguousIntent) {
       lines.push(
@@ -111,7 +111,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
           `--recreate-via-cc-api ${overlap.logicalId} (would migrate to CC, ` +
           `honoring ${overlap.property}) AND ` +
           `--prefer-sdk-route ${overlap.resourceType}:${overlap.property} ` +
-          `(would keep on SDK, accepting silent drop)`
+          `(would keep on SDK, leaving it unwritten)`
       );
     }
     lines.push(`  Fix: pick ONE strategy per resource.`);
@@ -299,7 +299,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       `Inverse ambiguous intent — ${validation.ambiguousIntentSdk.length} ` +
         `--recreate-via-sdk-provider target(s) would IMMEDIATELY be re-routed ` +
         `back to Cloud Control after the recreate because their template uses ` +
-        `silent-drop properties NOT in --prefer-sdk-route:`
+        `SDK-unwired properties NOT in --prefer-sdk-route:`
     );
     for (const overlap of validation.ambiguousIntentSdk) {
       lines.push(
@@ -309,7 +309,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
       );
     }
     lines.push(
-      `  Fix: pass each silent-drop property to --prefer-sdk-route as TYPE:PROPERTY ` +
+      `  Fix: pass each SDK-unwired property to --prefer-sdk-route as TYPE:PROPERTY ` +
         `so the recreated resource stays on SDK with the ` +
         `property explicitly dropped. Or drop --recreate-via-sdk-provider — ` +
         `the resource already routes via CC and honors the property.`
