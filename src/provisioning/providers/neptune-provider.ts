@@ -2206,7 +2206,7 @@ export class NeptuneProvider implements ResourceProvider {
   ): Promise<void> {
     if (await this.pollUntilSettled(applied)) return;
     this.logger.warn(
-      safeMsg`${logicalId}: the new ${what} did not read back when cdkd stopped waiting; AWS accepted it, so a drift check may report it until it applies.`
+      safeMsg`${logicalId}: the new ${what} did not read back when cdkd stopped waiting; AWS accepted it, so cdkd drift may report the old value as the baseline. Once it applies, run cdkd drift --accept.`
     );
   }
 
