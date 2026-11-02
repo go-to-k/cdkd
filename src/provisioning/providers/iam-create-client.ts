@@ -1,5 +1,6 @@
 import { IAMClient } from '@aws-sdk/client-iam';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import { IAM_MAX_ATTEMPTS } from '../../utils/iam-max-attempts.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 
 /**
@@ -46,7 +47,10 @@ export class IamCreateClientCache {
     const shared = this.shared();
     if (!(shared instanceof IAMClient)) return Promise.resolve(shared);
     this.client ??= shared.config.region().then(
-      (region) => withoutServerErrorRetries(new IAMClient({ ...ambientClientDefaults(), region })),
+      (region) =>
+        withoutServerErrorRetries(
+          new IAMClient({ ...ambientClientDefaults(), region, maxAttempts: IAM_MAX_ATTEMPTS })
+        ),
       (error: unknown) => {
         this.client = undefined;
         throw error;

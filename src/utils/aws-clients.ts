@@ -27,6 +27,7 @@ import { awsClientDefaults, type AwsClientDefaults } from './aws-client-defaults
 import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 import { quietS3Logger } from './sdk-call-log.ts';
 import { API_GATEWAY_MAX_ATTEMPTS, withApiGatewayPacing } from './apigateway-pacing.ts';
+import { IAM_MAX_ATTEMPTS } from './iam-max-attempts.ts';
 
 /**
  * AWS client configuration
@@ -281,6 +282,7 @@ export class AwsClients {
     if (!this.iamClient) {
       this.iamClient = new IAMClient({
         ...this.clientOptions,
+        maxAttempts: IAM_MAX_ATTEMPTS,
         region: this.config.region || 'us-east-1',
       });
     }
