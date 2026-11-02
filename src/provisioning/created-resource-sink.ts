@@ -110,8 +110,10 @@ function anchoredSink(
  * Report that `ownerLogicalId`'s create call has RETURNED and the resource
  * `physicalId` exists because this attempt made it. Call it right after the
  * create call returns and BEFORE any wait, under the same conditions a
- * `markCreatedBeforeFailure` of that id would be made (never for a resource
- * the create adopted or found held). `createdResourceIdentity` is the same
+ * `markCreatedBeforeFailure` of that id would be made, except that a mark also
+ * covers a resource an earlier attempt of THIS operation made and a later one
+ * adopted by identity; a report is never made for a resource the create
+ * adopted or found held. `createdResourceIdentity` is the same
  * optional token the mark takes. A no-op outside a deploy operation's scope,
  * for another logical id or type, and for an empty id. Never throws.
  */
@@ -130,6 +132,26 @@ export function reportCreatedResource(
     });
   } catch {
     // Unreportable: only the recovery is lost.
+  }
+}
+
+/**
+ * What this operation's standing report says its create made, or `undefined`
+ * (nothing reported, the report withdrawn, or no sink anchored on this logical
+ * id and type). The sink is shared by an operation's retries and by nothing
+ * else, so a report read here came from an earlier attempt of THIS create: a
+ * replay's proof that the resource it collided with may be its own. The caller
+ * still compares `createdResourceIdentity` against the live resource, since
+ * the name alone proves nothing (go-to-k/cdkd#5656). Never throws.
+ */
+export function reportedCreatedResource(
+  ownerLogicalId: string,
+  resourceType: string
+): CreatedResourceReport | undefined {
+  try {
+    return anchoredSink(ownerLogicalId, resourceType)?.report;
+  } catch {
+    return undefined;
   }
 }
 

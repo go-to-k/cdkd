@@ -173,7 +173,7 @@ iam-oidc-provider	2026-09-29T09:52:03Z	PASS	95	verify.sh	PR #4061 (#3907) final 
 iam-profile-policy-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	131	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 iam-propagation-stress	2026-10-22T10:03:45Z	PASS	75	verify.sh	PR #5170 redaction-slice; deploy+destroy clean, 0 orphans
 iam-recreate-reattach	2026-10-22T21:41:33Z	PASS	235	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, destroy clean 0 errors, 0 orphans
-iam-role-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	104	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
+iam-role-fix-forward-orphan	2026-11-02T14:42:59Z	PASS	110	verify.sh	rc 0, 0 orphans; #5659 at 915c1322e (own state bucket)
 iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, #4821 on rebased sha 45d03480f, MixedRole arm (swap, forced rollback, drift, destroy), rc ok, destroy 0 errors, orph clean; revert proof red (full revert: MixedRole drift; swap half: collision then rollback)
 iam-role-prefixed-name-update	2026-10-20T09:27:49Z	PASS	147	verify.sh	#5064 head re-run, clean
 iam-secret-derived-principals	2026-10-22T21:41:33Z	PASS	191	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, no plaintext secret in surviving state versions, 0 orphans
