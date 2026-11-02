@@ -16,7 +16,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it, not its own pool.
 
-- **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift; AWS rejects writing them).
+- **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift).
 
 - **data-delete-intent.ts** - The CDK auto-delete tag keys. S3 auto-empties, and ECR sends `force: true`, ONLY with the tag, `EmptyOnDelete: true`, or `DeleteContext.forceDataDelete`.
 
@@ -31,6 +31,8 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **created-resource-sink.ts** - `reportCreatedResource` / `retractCreatedResource`: the `markCreatedBeforeFailure` proof, written to an engine-owned AsyncLocalStorage sink the moment the create call returns, so it survives the per-resource deadline dropping the provider's late marked error (#5511). `execute.ts` scopes one sink per CREATE / UPDATE operation and, for that operation's own `ResourceTimeoutError` with no mark, reads it when the failure is saved (`settleReportedCreates`); a report or retraction after that save is lost. A retraction falls back to the earlier report. The engine clears it where it writes the resource to state (`clearCreatedReport`). Anchored on logical id and type.
 
 - **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
+
+- **restore-source-guard.ts** - Refuses a self-restore before any delete (#5638). A LEAF.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
 
@@ -102,7 +104,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 - **interrupt-watch.ts** - The ONE SIGINT watch every bounded wait here uses, plus `InterruptedWaitError` and the cause-chain classifier (NO depth ceiling: one error per nested-stack level). ONE error type: a bare `Error` from a provider reads as a resource failure and triggers an automatic ROLLBACK on Ctrl-C. ONE STICKY latch, cleared only by a COMMAND scope and armed only inside it — never on `process.listenerCount('SIGINT') > 0`, which a concurrent waiter's listener would arm permanently.
   - **A lock-holding command must release BEFORE unregistering its SIGINT handler.** `destroy-runner.ts` re-syncs `result.interrupted` GATED on `statePreserved`: **a stack whose state was deleted never reports `interrupted`**. Each signal has ONE owner: PER-STACK is `result.interrupted`, PER-RUN is the watch, and the exit code ORs in `stoppedEarly`.
 
-- **describe-type.ts** - Shared `cloudformation:DescribeType` with THROTTLE-ONLY retry, for the write-only / read-only / create-only resolvers and `export.ts`, whose fallbacks would turn a throttle into a real failure. Every call takes a slot of ONE process-wide limiter (`DESCRIBE_TYPE_MAX_IN_FLIGHT`, #3718); a prefetch is BACKGROUND, so an awaited lookup never queues behind one. **Resolve the client when SCHEDULING, never inside the task**: a queued task starts inside whichever task finished, in THAT task's per-stack AWS scope. `hasNoRegistrySchema()` is the ONE list of types with no registry entry, for which DescribeType can only fail.
+- **describe-type.ts** - Shared `cloudformation:DescribeType` with THROTTLE-ONLY retry, for the write-only / read-only / create-only resolvers and `export.ts`, whose fallbacks would turn a throttle into a real failure. Every call takes a slot of ONE process-wide limiter (`DESCRIBE_TYPE_MAX_IN_FLIGHT`, #3718); a prefetch is BACKGROUND, so an awaited lookup never queues behind one. **Resolve the client when SCHEDULING, never inside the task**: a queued task starts inside whichever task finished, in THAT task's per-stack AWS scope. `hasNoRegistrySchema()` is the ONE list of types with no registry entry.
 
 - **write-only-properties.ts** - Resolves the registry schema's `writeOnlyProperties`, caching **only SUCCESSFUL lookups**. `CloudControlProvider.update` strips them from the PREVIOUS side before patch generation: read handlers cannot return them, so one absent from the patch is dropped on every UPDATE — except an UNCHANGED key holding a create-only path that overlaps a write-only one, in either direction (`getTopLevelKeysHoldingUnreadableCreateOnly`): Cloud Control refuses any op bringing that value in, unchanged or not (#4416). `tryGetTopLevelWriteOnlyProperties` is the variant for a caller that must tell "none" from "unknown" — the diff's synthetic create-only fallback (#3803), which FAILS CLOSED on `undefined`. It warns nothing, and reads only SETTLED successes, never the other variant's in-flight promise, whose failure resolves to an empty set.
 
@@ -112,7 +114,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **cc-autoroute-update-remedy.ts** - The note appended to an UPDATE this deploy moved from the SDK provider to Cloud Control (#4904). It names the cause CONDITIONALLY, since the failure may be anything, and must carry no phrase `isNotFoundMessage` or the retryable table matches.
 
-- **slow-cc-operation-timeouts.ts** - Per-(resourceType, operation) wall-clock timeout FLOORS, and the SINGLE source for the CC poll cap and both outer deadlines, so they cannot drift.
+- **slow-cc-operation-timeouts.ts** - Per-(resourceType, operation) timeout FLOORS, and the SINGLE source for the CC poll cap and both outer deadlines.
 
 - **resource-timeout-registry.ts** - Registry of the resolved `--resource-timeout` input: per-type override > explicit global > `undefined`. **The compile-time 30m default deliberately does NOT leak in**: only an explicit user value may lift an inner waiter's floor.
 

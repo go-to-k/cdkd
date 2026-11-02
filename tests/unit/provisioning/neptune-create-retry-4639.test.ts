@@ -61,6 +61,14 @@ const CREATES: Record<string, NamedCreate> = {
     nameKey: 'DBClusterIdentifier',
     collision: () => new DBClusterAlreadyExistsFault({ message: 'DB Cluster already exists', ...meta }),
   },
+  RestoreDBClusterFromSnapshotCommand: {
+    nameKey: 'DBClusterIdentifier',
+    collision: () => new DBClusterAlreadyExistsFault({ message: 'DB Cluster already exists', ...meta }),
+  },
+  RestoreDBClusterToPointInTimeCommand: {
+    nameKey: 'DBClusterIdentifier',
+    collision: () => new DBClusterAlreadyExistsFault({ message: 'DB Cluster already exists', ...meta }),
+  },
   CreateDBInstanceCommand: {
     nameKey: 'DBInstanceIdentifier',
     collision: () =>
@@ -82,6 +90,26 @@ const SITES: CreateSite[] = [
     command: 'CreateDBClusterCommand',
     name: 'orders-neptune',
     props: { DBClusterIdentifier: 'orders-neptune' },
+    provider: () => new NeptuneProvider(),
+    prose: true,
+  },
+  {
+    type: 'AWS::Neptune::DBCluster',
+    command: 'RestoreDBClusterFromSnapshotCommand',
+    name: 'orders-from-snapshot',
+    props: { DBClusterIdentifier: 'orders-from-snapshot', SnapshotIdentifier: 'snap' },
+    provider: () => new NeptuneProvider(),
+    prose: true,
+  },
+  {
+    type: 'AWS::Neptune::DBCluster',
+    command: 'RestoreDBClusterToPointInTimeCommand',
+    name: 'orders-to-time',
+    props: {
+      DBClusterIdentifier: 'orders-to-time',
+      SourceDBClusterIdentifier: 'orders-neptune',
+      UseLatestRestorableTime: true,
+    },
     provider: () => new NeptuneProvider(),
     prose: true,
   },

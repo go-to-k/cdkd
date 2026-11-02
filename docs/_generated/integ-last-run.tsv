@@ -283,6 +283,7 @@ multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard
 multi-resource	2026-10-24T06:41:39Z	PASS	85	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (17 deleted)
 multi-stack-deps	2026-10-24T06:42:03Z	PASS	100	standard	final #5242 round (engine default --concurrency 20); all 3 stacks destroyed 0 errors, 0 orphans
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
+neptune-restore	2026-11-02T17:55:35Z	PASS	1848	verify.sh	rc ok, orph clean; pre-fix probe red at provisionedBy (cc-api vs sdk)
 nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean

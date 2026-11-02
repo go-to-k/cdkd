@@ -57,6 +57,7 @@ import {
 import { withCurrentResourceSecrets, withPrintingSecrets } from '../resource-secrets-scope.js';
 import { withRetry } from '../retry.js';
 import { withStackRecords } from '../stack-records-scope.js';
+import { refuseRestoreFromItself } from '../../provisioning/restore-source-guard.js';
 import { generatedReplacementHolderAdvice } from './name-collision.js';
 import {
   isNameCollisionErrorFrom,
@@ -381,6 +382,11 @@ export async function replaceDeleteFirstAndRecreate(
   /** go-to-k/cdkd#4682: today's values at the old record's NoEcho coordinates. */
   noEchoDeleteValues?: NoEchoDeleteValues
 ): Promise<Awaited<ReturnType<ResourceProvider['create']>>> {
+  // go-to-k/cdkd#5638: before the delete, which is what would lose the source.
+  refuseRestoreFromItself(resourceType, replaceProps, currentResource.physicalId, logicalId, {
+    region: deps.stackRegion,
+    account: deps.options.consumerAccount,
+  });
   const createContext: CreateContext = { maskSecrets: createSecretMasker(secrets) };
   // go-to-k/cdkd#2007: the bag this deploy resolved plus the name bag, which
   // covers a physical id derived from a secret: the old resource's delete and

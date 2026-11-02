@@ -79,6 +79,8 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
   'AWS::Neptune::DBCluster': {
     repeated: {
       AddRoleToDBClusterCommand: PER_ITEM('AssociatedRoles', 'RoleArn'),
+      ModifyDBClusterCommand:
+        'a restore sends CloudFormation\'s own follow-up and the declared values it drops in separate calls, so a refusal of the second only warns',
     },
   },
   'AWS::EC2::NatGateway': {

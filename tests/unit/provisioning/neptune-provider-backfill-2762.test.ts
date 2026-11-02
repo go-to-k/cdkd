@@ -37,6 +37,7 @@ import {
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   createdBeforeFailure,
+  createdResourceIdentityBeforeFailure,
   isAuxiliaryFailure,
 } from '../../../src/provisioning/auxiliary-failure.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.js';
@@ -98,6 +99,11 @@ function armCluster(
   mockSend.mockImplementation((command: { constructor: { name: string }; input: LiveRole }) => {
     const name = command.constructor.name;
     if (name === 'CreateDBClusterCommand') return Promise.resolve({ DBCluster: {} });
+    if (name.startsWith('RestoreDBCluster')) {
+      return Promise.resolve({
+        DBCluster: { DbClusterResourceId: 'cluster-res', EngineVersion: options.engineVersion },
+      });
+    }
     if (name === 'AddRoleToDBClusterCommand') {
       roles.push({ ...command.input, Status: 'ACTIVE' });
     }
@@ -886,6 +892,788 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
     });
   });
 
+  // Each expectation is the shape measured against CloudFormation's own
+  // handler (CloudTrail request parameters, #5638) unless it says otherwise.
+  describe('restore (go-to-k/cdkd#5638)', () => {
+    const restoreCreate = (properties: Record<string, unknown>) =>
+      provider.create('L', CLUSTER, { DBClusterIdentifier: 'cluster-1', ...properties });
+    const SNAPSHOT = 'RestoreDBClusterFromSnapshotCommand';
+    const POINT_IN_TIME = 'RestoreDBClusterToPointInTimeCommand';
+    const CREATE = 'CreateDBClusterCommand';
+    const MODIFY = 'ModifyDBClusterCommand';
+    const LATEST = { SourceDBClusterIdentifier: 'source', UseLatestRestorableTime: true };
+
+    it('restores a snapshot with the type defaults, whatever the snapshot held', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(sent(CREATE)).toEqual([]);
+      expect(sent(SNAPSHOT)[0]).toMatchObject({
+        DBClusterIdentifier: 'cluster-1',
+        SnapshotIdentifier: 'snap',
+        Engine: 'neptune',
+        Port: 8182,
+      });
+      expect(sent(MODIFY)).toEqual([
+        { DBClusterIdentifier: 'cluster-1', BackupRetentionPeriod: 1, ApplyImmediately: true },
+      ]);
+    });
+
+    it('sends what a snapshot restore has no member for through ModifyDBCluster', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({
+        SnapshotIdentifier: 'snap',
+        BackupRetentionPeriod: '5',
+        PreferredBackupWindow: '03:00-04:00',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        CopyTagsToSnapshot: true,
+        EngineVersion: '1.4.8.1',
+        DBPort: 8183,
+      });
+      expect(sent(SNAPSHOT)[0]).toMatchObject({
+        Port: 8183,
+        CopyTagsToSnapshot: true,
+        EngineVersion: '1.4.8.1',
+      });
+      expect(sent(SNAPSHOT)[0]).not.toHaveProperty('BackupRetentionPeriod');
+      expect(sent(MODIFY)).toEqual([
+        {
+          DBClusterIdentifier: 'cluster-1',
+          BackupRetentionPeriod: 5,
+          ApplyImmediately: true,
+        },
+        {
+          DBClusterIdentifier: 'cluster-1',
+          PreferredBackupWindow: '03:00-04:00',
+          PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+          ApplyImmediately: true,
+        },
+      ]);
+    });
+
+    it('sends a restore the default key for StorageEncrypted, or the declared one', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap', StorageEncrypted: true });
+      await restoreCreate({ ...LATEST, StorageEncrypted: true, KmsKeyId: 'key-1' });
+      await restoreCreate({ SnapshotIdentifier: 'snap', StorageEncrypted: false });
+      // A String-typed parameter's `Ref` resolves to the string.
+      await restoreCreate({ SnapshotIdentifier: 'snap', StorageEncrypted: 'true' });
+      await restoreCreate({ SnapshotIdentifier: 'snap', StorageEncrypted: 'True' });
+      expect(sent(SNAPSHOT)[0]?.['KmsKeyId']).toBe('alias/aws/rds');
+      expect(sent(POINT_IN_TIME)[0]?.['KmsKeyId']).toBe('key-1');
+      expect(sent(SNAPSHOT)[1]?.['KmsKeyId']).toBeUndefined();
+      expect(sent(SNAPSHOT)[2]?.['KmsKeyId']).toBe('alias/aws/rds');
+      expect(sent(SNAPSHOT)[3]?.['KmsKeyId']).toBe('alias/aws/rds');
+    });
+
+    it('sends a point-in-time restore no ModifyDBCluster when nothing needs one', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ ...LATEST, RestoreType: 'copy-on-write' });
+      expect(sent(POINT_IN_TIME)[0]).toMatchObject({
+        SourceDBClusterIdentifier: 'source',
+        UseLatestRestorableTime: true,
+        RestoreType: 'copy-on-write',
+        Port: 8182,
+      });
+      expect(sent(MODIFY)).toEqual([]);
+    });
+
+    it.each([
+      ['2026-11-02T07:50:50Z', '2026-11-02T07:50:50.000Z'],
+      ['2026-11-02T07:50:50.380000+00:00', '2026-11-02T07:50:50.380Z'],
+      ['2026-11-02T16:50:50+09:00', '2026-11-02T07:50:50.000Z'],
+      ['2026-11-02T16:50:50+0900', '2026-11-02T07:50:50.000Z'],
+      ['2026-11-02T07:50:50z', '2026-11-02T07:50:50.000Z'],
+      // No offset reads as UTC, never as this host's zone.
+      ['2026-11-02T07:50:50', '2026-11-02T07:50:50.000Z'],
+    ])('sends RestoreToTime %s as that instant', async (declared, instant) => {
+      // A host zone off UTC, or a test of the no-offset read proves nothing.
+      const zone = process.env['TZ'];
+      process.env['TZ'] = 'Asia/Tokyo';
+      try {
+        const { sent } = armCluster();
+        await restoreCreate({ SourceDBClusterIdentifier: 'source', RestoreToTime: declared });
+        expect(sent(POINT_IN_TIME)[0]?.['RestoreToTime']).toEqual(new Date(instant));
+      } finally {
+        if (zone === undefined) delete process.env['TZ'];
+        else process.env['TZ'] = zone;
+      }
+    });
+
+    it('reads a legacy Port on a restore', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap', Port: '8184' });
+      expect(sent(SNAPSHOT)[0]?.['Port']).toBe(8184);
+    });
+
+    it('sends the declared values CloudFormation drops from a point-in-time restore', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.0' });
+      await restoreCreate({
+        ...LATEST,
+        BackupRetentionPeriod: 5,
+        PreferredBackupWindow: '03:00-04:00',
+        CopyTagsToSnapshot: false,
+        EngineVersion: '1.4.8.1',
+      });
+      expect(sent(POINT_IN_TIME)[0]).not.toHaveProperty('EngineVersion');
+      expect(sent(MODIFY)).toEqual([
+        {
+          DBClusterIdentifier: 'cluster-1',
+          BackupRetentionPeriod: 5,
+          PreferredBackupWindow: '03:00-04:00',
+          CopyTagsToSnapshot: false,
+          EngineVersion: '1.4.8.1',
+          ApplyImmediately: true,
+        },
+      ]);
+    });
+
+    it('sends a declared EngineVersion when the answer names none', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ ...LATEST, EngineVersion: '1.4.8.1' });
+      expect(sent(MODIFY)[0]?.['EngineVersion']).toBe('1.4.8.1');
+    });
+
+    it('sends no EngineVersion on a point-in-time restore declaring none', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.0' });
+      await restoreCreate({ ...LATEST, BackupRetentionPeriod: 5 });
+      expect(sent(MODIFY)[0]).not.toHaveProperty('EngineVersion');
+    });
+
+    it('sends the instance parameter group only beside a major upgrade', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.0' });
+      await restoreCreate({
+        ...LATEST,
+        EngineVersion: '1.4.8.1',
+        DBInstanceParameterGroupName: 'instance-params',
+      });
+      expect(sent(MODIFY)[0]).not.toHaveProperty('DBInstanceParameterGroupName');
+      expect(sent(MODIFY)[0]).not.toHaveProperty('AllowMajorVersionUpgrade');
+    });
+
+    it('leaves an EngineVersion the restore already holds out of the follow-up', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.0' });
+      await restoreCreate({ ...LATEST, EngineVersion: '1.4.8.0' });
+      expect(sent(MODIFY)).toEqual([]);
+    });
+
+    it('allows the major upgrade a point-in-time restore declares', async () => {
+      const { sent } = armCluster({ engineVersion: '1.3.2.0' });
+      await restoreCreate({
+        ...LATEST,
+        EngineVersion: '1.4.8.0',
+        DBInstanceParameterGroupName: 'instance-params',
+      });
+      expect(sent(MODIFY)[0]).toMatchObject({
+        EngineVersion: '1.4.8.0',
+        AllowMajorVersionUpgrade: true,
+        DBInstanceParameterGroupName: 'instance-params',
+      });
+    });
+
+    it('takes the point-in-time restore over a SnapshotIdentifier beside it', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ ...LATEST, SnapshotIdentifier: 'snap' });
+      expect(sent(SNAPSHOT)).toEqual([]);
+      expect(sent(POINT_IN_TIME)[0]).not.toHaveProperty('SnapshotIdentifier');
+      // The declared snapshot still draws CloudFormation's retention.
+      expect(sent(MODIFY)[0]?.['BackupRetentionPeriod']).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        'L (AWS::Neptune::DBCluster): this point-in-time restore does not use SnapshotIdentifier, as in CloudFormation. A declared SnapshotIdentifier still sets BackupRetentionPeriod, 1 when none is declared.'
+      );
+    });
+
+    it('warns about the AvailabilityZones a point-in-time restore cannot send', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ ...LATEST, AvailabilityZones: ['us-east-1a'] });
+      expect(sent(POINT_IN_TIME)[0]).not.toHaveProperty('AvailabilityZones');
+      expect(warn).toHaveBeenCalledWith(
+        'L (AWS::Neptune::DBCluster): this point-in-time restore does not use AvailabilityZones, as in CloudFormation.'
+      );
+    });
+
+    it.each([
+      ['RestoreType', 'copy-on-write'],
+      ['RestoreToTime', '2026-11-02T07:50:50Z'],
+      ['UseLatestRestorableTime', true],
+    ])('creates a plain cluster for a lone %s, and says so', async (key, value) => {
+      const { sent } = armCluster();
+      await restoreCreate({ [key]: value });
+      expect(sent(CREATE)).toHaveLength(1);
+      expect(sent(CREATE)[0]).not.toHaveProperty(key);
+      expect(sent(MODIFY)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        `L (AWS::Neptune::DBCluster): this create does not use ${key}, as in CloudFormation.`
+      );
+    });
+
+    it('warns about the point-in-time keys a snapshot restore does not read', async () => {
+      armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap', RestoreType: 'copy-on-write' });
+      expect(warn).toHaveBeenCalledWith(
+        'L (AWS::Neptune::DBCluster): this snapshot restore does not use RestoreType, as in CloudFormation.'
+      );
+    });
+
+    it('warns nothing about a point-in-time restore naming only what it reads', async () => {
+      armCluster();
+      await restoreCreate({
+        ...LATEST,
+        RestoreType: 'copy-on-write',
+      });
+      await restoreCreate({ SourceDBClusterIdentifier: 'source', RestoreToTime: '2026-11-02' });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('asks nothing of a false UseLatestRestorableTime', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ UseLatestRestorableTime: false });
+      expect(sent(CREATE)).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('creates a plain cluster for an empty SnapshotIdentifier, and says so', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: '' });
+      expect(sent(CREATE)).toHaveLength(1);
+      expect(sent(SNAPSHOT)).toEqual([]);
+      expect(sent(MODIFY)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        'L (AWS::Neptune::DBCluster): this create does not use SnapshotIdentifier, as in CloudFormation.'
+      );
+    });
+
+    it('takes an empty source as none, with or without a snapshot', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SourceDBClusterIdentifier: '', UseLatestRestorableTime: true });
+      expect(sent(CREATE)).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        'L (AWS::Neptune::DBCluster): this create does not use SourceDBClusterIdentifier, UseLatestRestorableTime, as in CloudFormation.'
+      );
+      await restoreCreate({ SourceDBClusterIdentifier: '', SnapshotIdentifier: 'snap' });
+      expect(sent(SNAPSHOT)).toHaveLength(1);
+      expect(sent(POINT_IN_TIME)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        'L (AWS::Neptune::DBCluster): this snapshot restore does not use SourceDBClusterIdentifier, as in CloudFormation.'
+      );
+    });
+
+    it('treats an empty source in the record as no restore', async () => {
+      const { sent } = armCluster();
+      const declared = { PreferredBackupWindow: '05:10-05:40', SourceDBClusterIdentifier: '' };
+      await update({ ...declared, IamAuthEnabled: true }, declared);
+      expect(sent(MODIFY)[0]?.['PreferredBackupWindow']).toBe('05:10-05:40');
+    });
+
+    it('treats a null key as absent', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: null, SourceDBClusterIdentifier: null });
+      expect(sent(CREATE)).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it.each(['cluster-1', 'CLUSTER-1'])(
+      'refuses %s as its own source: a replacement deletes it first',
+      async (source) => {
+        armCluster();
+        const failure: unknown = await restoreCreate({
+          SourceDBClusterIdentifier: source,
+          UseLatestRestorableTime: true,
+        }).catch((error: unknown) => error);
+        expect((failure as Error).message).toContain(
+          'SourceDBClusterIdentifier must be another cluster than the one this creates or replaces'
+        );
+        expect(isMarkedNonRetryable(failure)).toBe(true);
+        expect(mockSend).not.toHaveBeenCalled();
+      }
+    );
+
+    it('lets an ARN source through at create: another account may hold the name', async () => {
+      const { sent } = armCluster();
+      const source = 'arn:aws:rds:us-east-1:999999999999:cluster:cluster-1';
+      await restoreCreate({ SourceDBClusterIdentifier: source, UseLatestRestorableTime: true });
+      expect(sent(POINT_IN_TIME)[0]?.['SourceDBClusterIdentifier']).toBe(source);
+    });
+
+    it('refuses a source that is the generated name of this very cluster', async () => {
+      armCluster();
+      const generated = await provider
+        .create('L', CLUSTER, {})
+        .then((result) => result.physicalId);
+      mockSend.mockClear();
+      await expect(
+        provider.create('L', CLUSTER, {
+          SourceDBClusterIdentifier: generated,
+          UseLatestRestorableTime: true,
+        })
+      ).rejects.toThrow(/must be another cluster/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('sends a point-in-time parameter group after the restore, a refusal only warning', async () => {
+      const { sent } = armCluster();
+      refuseModifyOf('DBClusterParameterGroupName', 'InvalidParameterCombination');
+      await restoreCreate({ ...LATEST, DBClusterParameterGroupName: 'other-family' });
+      expect(sent(POINT_IN_TIME)[0]?.['DBClusterParameterGroupName']).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('AWS refused DBClusterParameterGroupName after the restore')
+      );
+    });
+
+    it('keeps a snapshot parameter group on the restore call', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap', DBClusterParameterGroupName: 'group' });
+      expect(sent(SNAPSHOT)[0]?.['DBClusterParameterGroupName']).toBe('group');
+      expect(sent(MODIFY)).toHaveLength(1);
+      expect(sent(MODIFY)[0]?.['DBClusterParameterGroupName']).toBeUndefined();
+    });
+
+    it('sends the follow-up on the plain client, never the create client', async () => {
+      armCluster();
+      const creates: string[] = [];
+      const answer = mockSend.getMockImplementation()!;
+      vi.spyOn(provider as unknown as { getCreateClient(): unknown }, 'getCreateClient')
+        .mockImplementation(() => ({
+          send: (command: { constructor: { name: string } }) => {
+            creates.push(command.constructor.name);
+            return answer(command);
+          },
+        }));
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(creates).toEqual([SNAPSHOT]);
+    });
+
+    it('bounds the resend of a refused follow-up by the resource deadline', async () => {
+      deadline.remainingMs = 60_000;
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name !== MODIFY) return answer(command);
+        const refusal = new Error("DB cluster isn't available for modification with status creating.");
+        refusal.name = 'InvalidDBClusterStateFault';
+        return Promise.reject(refusal);
+      });
+      await expect(restoreCreate({ SnapshotIdentifier: 'snap' })).rejects.toThrow();
+      const sleeps = vi.mocked(
+        (provider as unknown as { sleep(ms: number): Promise<void> }).sleep
+      ).mock.calls.reduce((total, [ms]) => total + ms, 0);
+      expect(sleeps).toBeLessThan(120_000);
+    });
+
+    it('keeps the create wait under a short resource deadline', async () => {
+      deadline.remainingMs = 60_000;
+      const { sent } = armCluster({ statuses: Array<string>(150).fill('creating') });
+      await restoreCreate(LATEST);
+      expect(sent('DescribeDBClustersCommand').length).toBeGreaterThan(150);
+    });
+
+    it('keeps the deadline margin on a long restore wait', async () => {
+      deadline.remainingMs = 3_600_000;
+      armCluster({ statuses: Array<string>(5_000).fill('creating') });
+      await expect(restoreCreate(LATEST)).rejects.toThrow(/Timed out waiting/);
+      const sleeps = vi.mocked(
+        (provider as unknown as { sleep(ms: number): Promise<void> }).sleep
+      ).mock.calls.reduce((total, [ms]) => total + ms, 0);
+      expect(sleeps).toBeLessThan(3_590_000);
+    });
+
+    const RESTORED = { SnapshotIdentifier: 'snap', PreferredBackupWindow: '05:10-05:40' };
+
+    it('updates a restored cluster without its unchanged refused values', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.1' });
+      refuseModifyOf('PreferredBackupWindow');
+      const declared = {
+        ...RESTORED,
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        EngineVersion: '1.4.8.0',
+        DBClusterParameterGroupName: 'group',
+        BackupRetentionPeriod: 5,
+        CopyTagsToSnapshot: true,
+      };
+      await update({ ...declared, IamAuthEnabled: true }, declared);
+      const input = sent(MODIFY)[0]!;
+      for (const key of [
+        'PreferredBackupWindow',
+        'PreferredMaintenanceWindow',
+        'EngineVersion',
+      ]) {
+        expect(input[key]).toBeUndefined();
+      }
+      // CloudFormation's update sends these, changed or not.
+      expect(input).toMatchObject({
+        BackupRetentionPeriod: 5,
+        CopyTagsToSnapshot: true,
+        DBClusterParameterGroupName: 'group',
+      });
+    });
+
+    it('applies a changed value on a restored cluster', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.1' });
+      await update(
+        { ...RESTORED, PreferredBackupWindow: '02:00-02:30' },
+        RESTORED
+      );
+      expect(sent(MODIFY)[0]?.['PreferredBackupWindow']).toBe('02:00-02:30');
+    });
+
+    it('treats a point-in-time record as restored too', async () => {
+      const { sent } = armCluster();
+      const declared = { ...LATEST, PreferredBackupWindow: '05:10-05:40' };
+      await update({ ...declared, IamAuthEnabled: true }, declared);
+      expect(sent(MODIFY)[0]?.['PreferredBackupWindow']).toBeUndefined();
+    });
+
+    it('keeps sending an unchanged window on a cluster not restored', async () => {
+      const { sent } = armCluster();
+      const declared = { PreferredBackupWindow: '05:10-05:40', SnapshotIdentifier: '' };
+      await update({ ...declared, IamAuthEnabled: true }, declared);
+      expect(sent(MODIFY)[0]?.['PreferredBackupWindow']).toBe('05:10-05:40');
+    });
+
+    it('warns about nothing but what the template declares', async () => {
+      armCluster({ engineVersion: '1.3.2.0' });
+      refuseModifyOf('EngineVersion', 'InvalidParameterCombination');
+      await restoreCreate({ ...LATEST, EngineVersion: '1.4.8.0' });
+      expect(warn).toHaveBeenCalledWith(
+        "L (AWS::Neptune::DBCluster): AWS refused EngineVersion after the restore, so the cluster keeps its restored values. The record holds the declared ones, so drift does not report the difference. An update leaves an unchanged window or EngineVersion out, as CloudFormation does; a refused BackupRetentionPeriod, CopyTagsToSnapshot or DBClusterParameterGroupName is sent again, so every update of this cluster fails until the template changes it."
+      );
+    });
+
+    it('keeps the masked refusal reason behind debug', async () => {
+      armCluster();
+      refuseModifyOf('PreferredBackupWindow');
+      const debug = vi.spyOn(
+        (provider as unknown as { logger: { debug(line: string): void } }).logger,
+        'debug'
+      );
+      await provider.create(
+        'L',
+        CLUSTER,
+        { DBClusterIdentifier: 'cluster-1', ...LATEST, PreferredBackupWindow: '05:10-05:40' },
+        { maskSecrets: (text) => text.replaceAll('secret-window', '***') }
+      );
+      const lines = debug.mock.calls.map(([line]) => line).join('\n');
+      expect(lines).toContain('InvalidParameterValue after restoring L: the value *** overlaps');
+      expect(lines).not.toContain('secret-window');
+    });
+
+    it('warns nothing about a snapshot restore naming only what it reads', async () => {
+      armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap', AvailabilityZones: ['us-east-1a'] });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['RestoreToTime', { SourceDBClusterIdentifier: 'source', RestoreToTime: 'yesterday' }],
+      ['RestoreToTime', { SourceDBClusterIdentifier: 'source', RestoreToTime: 5 }],
+      ['SnapshotIdentifier', { SnapshotIdentifier: { Ref: 'Snapshot' } }],
+      ['SourceDBClusterIdentifier', { SourceDBClusterIdentifier: ['source'] }],
+      ['SnapshotIdentifier', { SourceDBClusterIdentifier: 'source', SnapshotIdentifier: 5 }],
+    ])('refuses a malformed %s before any call', async (key, bag) => {
+      armCluster();
+      const failure: unknown = await restoreCreate(bag).catch((error: unknown) => error);
+      expect((failure as Error).message).toContain(key);
+      expect(isMarkedNonRetryable(failure)).toBe(true);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses a malformed key on a replay too', async () => {
+      armCluster();
+      await expect(
+        provider.create(
+          'L',
+          CLUSTER,
+          { SnapshotIdentifier: 5 },
+          { replayingState: true }
+        )
+      ).rejects.toThrow(/SnapshotIdentifier must be a string/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('waits out the cluster after the follow-up', async () => {
+      const { sent } = armCluster({ statuses: ['available', 'modifying'] });
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(sent(MODIFY)).toHaveLength(1);
+      // The first wait, the one that read `modifying`, its re-read, the final read.
+      expect(sent('DescribeDBClustersCommand')).toHaveLength(4);
+    });
+
+    it('skips the wait after the follow-up under --no-wait', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      const { sent } = armCluster();
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      // The wait before the follow-up, then the final read.
+      expect(sent('DescribeDBClustersCommand')).toHaveLength(2);
+    });
+
+    it('follows a --resource-timeout past the create wait', async () => {
+      deadline.remainingMs = 3_600_000;
+      const { sent } = armCluster({ statuses: Array<string>(200).fill('creating') });
+      await restoreCreate({ ...LATEST });
+      // Thirty minutes of 10s polls is 180 reads: a longer budget outlasts them.
+      expect(sent('DescribeDBClustersCommand').length).toBeGreaterThan(200);
+    });
+
+    /** Modify refuses, as AWS does (measured), any call carrying `refusedKey`. */
+    const refuseModifyOf = (refusedKey: string, name = 'InvalidParameterValue'): void => {
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.constructor.name !== MODIFY || command.input[refusedKey] === undefined) {
+            return answer(command);
+          }
+          const refusal = new Error('the value secret-window overlaps');
+          refusal.name = name;
+          return Promise.reject(refusal);
+        }
+      );
+    };
+
+    const forever = (): string[] => Array<string>(5_000).fill('creating');
+
+    it('caps a restore wait outside any resource deadline', async () => {
+      armCluster({ statuses: forever() });
+      await expect(restoreCreate(LATEST)).rejects.toThrow(/Timed out waiting/);
+    });
+
+    it('holds a plain create to its wait, whatever the resource timeout', async () => {
+      deadline.remainingMs = 3_600_000;
+      const { sent } = armCluster({ statuses: forever() });
+      await expect(restoreCreate({})).rejects.toThrow(/Timed out waiting/);
+      expect(sent('DescribeDBClustersCommand').length).toBeLessThan(200);
+    });
+
+    it('follows a --resource-timeout after the follow-up too', async () => {
+      deadline.remainingMs = 3_600_000;
+      const { sent } = armCluster({
+        statuses: ['available', ...Array<string>(200).fill('modifying')],
+      });
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(sent('DescribeDBClustersCommand').length).toBeGreaterThan(200);
+    });
+
+    it('still waits out the cluster after a refused value', async () => {
+      const { sent } = armCluster({ statuses: ['available', 'modifying'] });
+      refuseModifyOf('PreferredBackupWindow');
+      await restoreCreate({ SnapshotIdentifier: 'snap', PreferredBackupWindow: '03:00-04:00' });
+      // The first wait, the one that read `modifying`, its re-read, the final read.
+      expect(sent('DescribeDBClustersCommand')).toHaveLength(4);
+    });
+
+    it('sends a declared retention beside a SnapshotIdentifier a source overrides', async () => {
+      const { sent } = armCluster();
+      await restoreCreate({ ...LATEST, SnapshotIdentifier: 'snap', BackupRetentionPeriod: 5 });
+      expect(sent(MODIFY)).toEqual([
+        { DBClusterIdentifier: 'cluster-1', BackupRetentionPeriod: 5, ApplyImmediately: true },
+      ]);
+    });
+
+    /** The Modify answers `refusal` once, then accepts. */
+    const refuseFirstModify = (name: string, message: string): void => {
+      const answer = mockSend.getMockImplementation()!;
+      let refusals = 1;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === MODIFY && refusals-- > 0) {
+          const refusal = new Error(message);
+          refusal.name = name;
+          return Promise.reject(refusal);
+        }
+        return answer(command);
+      });
+    };
+
+    it.each([
+      "DB cluster isn't available for modification with status creating.",
+      'DB cluster isn’t available for modification with status creating.',
+      'DB cluster is not available for modification with status creating.',
+      "DB CLUSTER ISN'T AVAILABLE FOR MODIFICATION WITH STATUS CREATING.",
+      'Database instance is not in available state.',
+    ])('resends a follow-up refused as %s', async (message) => {
+      const { sent } = armCluster();
+      refuseFirstModify('InvalidDBClusterStateFault', message);
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(sent(MODIFY)).toHaveLength(2);
+    });
+
+    it.each([
+      ['InvalidDBClusterStateFault', 'Cannot modify engine version without a healthy primary instance'],
+      ['InvalidParameterValue', "DB cluster isn't available for modification with status creating."],
+    ])('does not resend a %s saying "%s"', async (name, message) => {
+      const { sent } = armCluster();
+      refuseFirstModify(name, message);
+      await expect(restoreCreate({ SnapshotIdentifier: 'snap' })).rejects.toThrow();
+      expect(sent(MODIFY)).toHaveLength(1);
+    });
+
+    it('keeps a parameter group beside the EngineVersion it may belong to', async () => {
+      const { sent } = armCluster({ engineVersion: '1.3.2.0' });
+      refuseModifyOf('PreferredBackupWindow');
+      await restoreCreate({
+        ...LATEST,
+        EngineVersion: '1.4.8.0',
+        DBClusterParameterGroupName: 'group',
+        PreferredBackupWindow: '05:10-05:40',
+      });
+      const beside = sent(MODIFY).filter((input) => input['EngineVersion'] !== undefined);
+      expect(beside.at(-1)?.['DBClusterParameterGroupName']).toBe('group');
+      const message = warn.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(message).toContain('AWS refused PreferredBackupWindow after');
+      expect(message).not.toContain('AWS refused DBClusterParameterGroupName');
+    });
+
+    it('warns about a declared value AWS refuses, and keeps the create', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.0' });
+      refuseModifyOf('PreferredBackupWindow');
+      const result = await restoreCreate({ ...LATEST, PreferredBackupWindow: '03:00-04:00' });
+      expect(result.physicalId).toBe('cluster-1');
+      expect(sent(MODIFY)).toHaveLength(1);
+      const message = warn.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(message).toContain('AWS refused PreferredBackupWindow after the restore');
+      expect(message).not.toContain('secret-window');
+    });
+
+    it('applies every group but the one AWS refuses', async () => {
+      const { sent } = armCluster({ engineVersion: '1.4.8.1' });
+      refuseModifyOf('EngineVersion', 'InvalidParameterCombination');
+      await restoreCreate({
+        ...LATEST,
+        BackupRetentionPeriod: 35,
+        CopyTagsToSnapshot: true,
+        EngineVersion: '1.4.8.0',
+      });
+      const applied = sent(MODIFY).slice(1);
+      expect(applied.map((input) => input['BackupRetentionPeriod'])).toContain(35);
+      expect(applied.map((input) => input['CopyTagsToSnapshot'])).toContain(true);
+      const message = warn.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(message).toContain('AWS refused EngineVersion after');
+      expect(message).not.toContain('AWS refused BackupRetentionPeriod');
+    });
+
+    it('warns about nothing when each group passes alone', async () => {
+      const { sent } = armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          const { input } = command;
+          if (
+            command.constructor.name === MODIFY &&
+            'BackupRetentionPeriod' in input &&
+            'CopyTagsToSnapshot' in input
+          ) {
+            const refusal = new Error('refused');
+            refusal.name = 'InvalidParameterCombination';
+            return Promise.reject(refusal);
+          }
+          return answer(command);
+        }
+      );
+      await restoreCreate({ ...LATEST, BackupRetentionPeriod: 5, CopyTagsToSnapshot: true });
+      expect(sent(MODIFY)).toHaveLength(3);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('fails on an Invalid* answer that is not about the value', async () => {
+      armCluster();
+      refuseModifyOf('PreferredBackupWindow', 'InvalidClientTokenId');
+      await expect(
+        restoreCreate({ ...LATEST, PreferredBackupWindow: '03:00-04:00' })
+      ).rejects.toThrow();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('warns about the other refusal AWS answers for a value', async () => {
+      armCluster({ engineVersion: '1.4.8.1' });
+      refuseModifyOf('EngineVersion', 'InvalidParameterCombination');
+      await restoreCreate({ ...LATEST, EngineVersion: '1.4.8.0' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('AWS refused EngineVersion'));
+    });
+
+    it('still fails on a declared value AWS does not refuse as invalid', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name !== MODIFY) return answer(command);
+        const denied = new Error('denied');
+        denied.name = 'AccessDenied';
+        return Promise.reject(denied);
+      });
+      await expect(
+        restoreCreate({ ...LATEST, PreferredBackupWindow: '03:00-04:00' })
+      ).rejects.toThrow();
+    });
+
+    it('fails on a refused follow-up CloudFormation sends too', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name !== MODIFY) return answer(command);
+        const refusal = new Error('bad retention');
+        refusal.name = 'InvalidParameterValue';
+        return Promise.reject(refusal);
+      });
+      await expect(restoreCreate({ SnapshotIdentifier: 'snap' })).rejects.toThrow();
+    });
+
+    it('waits for the cluster before the follow-up, whatever --no-wait says', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      const { sent } = armCluster({ statuses: ['creating', 'backing-up'] });
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(sent(MODIFY)).toHaveLength(1);
+      const calls = mockSend.mock.calls.map(
+        ([call]) => (call as { constructor: { name: string } }).constructor.name
+      );
+      expect(calls.slice(0, 5)).toEqual([
+        SNAPSHOT,
+        'DescribeDBClustersCommand',
+        'DescribeDBClustersCommand',
+        'DescribeDBClustersCommand',
+        MODIFY,
+      ]);
+    });
+
+    it('skips the wait under --no-wait when no follow-up needs it', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      const { sent } = armCluster();
+      await restoreCreate(LATEST);
+      // Only the read of the final attributes.
+      expect(sent('DescribeDBClustersCommand')).toHaveLength(1);
+    });
+
+    it('resends a follow-up refused while the restored cluster settles', async () => {
+      const { sent } = armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      let refusals = 1;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === MODIFY && refusals-- > 0) {
+          const refusal = new Error(
+            "DB cluster isn't available for modification with status creating."
+          );
+          refusal.name = 'InvalidDBClusterStateFault';
+          return Promise.reject(refusal);
+        }
+        return answer(command);
+      });
+      await restoreCreate({ SnapshotIdentifier: 'snap' });
+      expect(sent(MODIFY)).toHaveLength(2);
+    });
+
+    it('marks a failed follow-up as auxiliary to the cluster it restored', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === MODIFY
+          ? Promise.reject(new Error('InvalidParameterValue'))
+          : answer(command)
+      );
+      const failure: unknown = await restoreCreate({ SnapshotIdentifier: 'snap' }).catch(
+        (error: unknown) => error
+      );
+      expect(createdBeforeFailure(failure, 'L', CLUSTER)).toBe('cluster-1');
+      expect(isAuxiliaryFailure(failure)).toBe(true);
+      // #4606: the resource id the restore returned is the orphan's identity.
+      expect(createdResourceIdentityBeforeFailure(failure, 'L', CLUSTER)).toBe('cluster-res');
+    });
+  });
+
   describe('drift', () => {
     it('reads the cluster in the shape the template declares', async () => {
       mockSend.mockResolvedValue({
@@ -947,6 +1735,11 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(provider.getDriftUnknownPaths(CLUSTER)).toEqual([
         'AvailabilityZones',
         'DBInstanceParameterGroupName',
+        'RestoreToTime',
+        'RestoreType',
+        'SnapshotIdentifier',
+        'SourceDBClusterIdentifier',
+        'UseLatestRestorableTime',
       ]);
       expect(provider.getDriftUnknownPaths(INSTANCE)).toEqual(['AllowMajorVersionUpgrade']);
       expect(provider.getDriftUnknownPaths('AWS::Neptune::DBSubnetGroup')).toEqual([]);
