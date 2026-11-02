@@ -564,6 +564,28 @@ describe('DynamoDBGlobalTableProvider partial-create cleanup (Issue #376-class)'
       expect(atFirst('Deregister index:WriteCapacityUnits')).toBeLessThan(deleted);
     });
 
+    it('points a cleanup that stopped early at rollback, which takes the targets too', async () => {
+      failReplicaCreate = true;
+      const send = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      let failing = false;
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+          if (command.input['ReplicaUpdates']) failing = true;
+          return failing && command.constructor.name === 'DescribeTableCommand'
+            ? Promise.reject(new Error('describe boom'))
+            : send(command);
+        }
+      );
+      await expect(
+        provider.create('MyTable', RESOURCE_TYPE, { ...provisioned, Replicas: replicas })
+      ).rejects.toThrow('Failed to create DynamoDB GlobalTable');
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(atFirst('Deregister table:WriteCapacityUnits')).toBe(-1);
+      expect(warned).toContain('write scalable targets and scaling policies');
+      expect(warned).toContain('cdkd rollback --revert-failed');
+      expect(warned).not.toContain('aws dynamodb delete-table');
+    });
+
     it('takes down a target whose registration is what failed, and deletes the table', async () => {
       failReplicaCreate = true;
       const send = mockAutoScalingSend.getMockImplementation() as (c: unknown) => unknown;

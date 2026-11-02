@@ -1704,12 +1704,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     }
     this.reportThroughputDiagnostics(diagnostics, logicalId, tableName, maskSecrets);
 
+    // go-to-k/cdkd#5615: the targets a failed create has to take down itself.
+    let registeredBeforeReplicas: AutoScalingTargetSpec[] = [];
+
     // go-to-k/cdkd#4606: the `TableId` CreateTable answered with, carried on
     // the created-before-failure mark so the journal needs no read of a table
     // whose failure (a describe that cannot run, say) may fail that read too.
-
-    // go-to-k/cdkd#5615: the targets a failed create has to take down itself.
-    let registeredBeforeReplicas: AutoScalingTargetSpec[] = [];
     let createdTableId: string | undefined;
     try {
       const createOut = await (
@@ -2064,12 +2064,17 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           `Partial-create cleanup failed for ${tableName}: `,
           cleanupErr
         );
+        // A bare `delete-table` would leave the write targets to a later table of
+        // this name; `delete()` takes them with the table.
         warn(
           `Partial-create cleanup failed for ${tableName}: ${cleanupMsg} ` +
-            `To remove the orphaned AWS-side table, run: ` +
-            pasteableAwsCommand(
-              maskSecrets
-            )`aws dynamodb delete-table --table-name ${tableName}`.render()
+            (registeredBeforeReplicas.length > 0
+              ? `Its write scalable targets and scaling policies may still be registered. To ` +
+                `remove the table and them, run cdkd rollback --revert-failed.`
+              : `To remove the orphaned AWS-side table, run: ` +
+                pasteableAwsCommand(
+                  maskSecrets
+                )`aws dynamodb delete-table --table-name ${tableName}`.render())
         );
       }
       // CreateTable succeeded, so nothing raised here is this table's own name

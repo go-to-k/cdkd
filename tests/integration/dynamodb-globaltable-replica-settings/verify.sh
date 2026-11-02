@@ -1287,9 +1287,11 @@ await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message
   echo "FAIL: $3: ${TABLE4} in $1 holds '${got}', not '$2'" >&2
   exit 1
 }
-write_targets() { # usage: write_targets <table> [region]; prints the count of its write scalable targets
+write_targets() { # usage: write_targets <table[/index/<name>]> [region]; prints the count of its write scalable targets
+  local scope="table"
+  case "$1" in */index/*) scope="index" ;; esac
   aws application-autoscaling describe-scalable-targets --service-namespace dynamodb \
-    --resource-ids "table/$1" --scalable-dimension dynamodb:table:WriteCapacityUnits \
+    --resource-ids "table/$1" --scalable-dimension "dynamodb:${scope}:WriteCapacityUnits" \
     --region "${2:-${REGION}}" --query 'length(ScalableTargets)' --output text
 }
 await_write_target() { # usage: await_write_target <table> <count> <message> [region]
@@ -1358,6 +1360,8 @@ expect_replica_read "${TABLE10}" 3 2 "Phase 6b (go-to-k/cdkd#5615)"
 expect_replica_index_read "${TABLE10}" 6 "Phase 6b (go-to-k/cdkd#5615)"
 await_write_target "${TABLE10}" 1 "Phase 6b: ${TABLE10} has no write scalable target"
 await_write_target "${TABLE10}" 1 "Phase 6b: ${TABLE10} has no write scalable target in the second region" "${SECOND_REGION}"
+await_write_target "${TABLE10}/index/gsi1" 1 "Phase 6b: ${TABLE10}'s index has no write scalable target"
+await_write_target "${TABLE10}/index/gsi1" 1 "Phase 6b: ${TABLE10}'s index has no write scalable target in the second region" "${SECOND_REGION}"
 # Application Auto Scaling is eventually consistent, so the read polls.
 await_write_target "${TABLE6}" 1 "Phase 6b: ${TABLE6} has no write scalable target"
 await_write_target "${TABLE8}" 1 "Phase 6b: ${TABLE8} has no write scalable target"
@@ -1471,6 +1475,8 @@ await_write_target "${TABLE8}" 0 "Phase 7: ${TABLE8}'s write scalable target out
 await_write_target "${TABLE9}" 0 "Phase 7: ${TABLE9}'s write scalable target outlived the table"
 await_write_target "${TABLE10}" 0 "Phase 7: ${TABLE10}'s write scalable target outlived the table"
 await_write_target "${TABLE10}" 0 "Phase 7: ${TABLE10}'s write scalable target outlived its replica" "${SECOND_REGION}"
+await_write_target "${TABLE10}/index/gsi1" 0 "Phase 7: ${TABLE10}'s index write scalable target outlived the table"
+await_write_target "${TABLE10}/index/gsi1" 0 "Phase 7: ${TABLE10}'s index write scalable target outlived its replica" "${SECOND_REGION}"
 await_write_target "${TABLE9}" 0 "Phase 7: ${TABLE9}'s write scalable target outlived its replica" "${SECOND_REGION}"
 echo "    the Phase 6b tables deleted, and ${TABLE6}'s scalable target with them"
 
