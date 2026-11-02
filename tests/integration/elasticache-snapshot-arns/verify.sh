@@ -236,18 +236,28 @@ REDIS_HOST=$(aws elasticache describe-cache-clusters --cache-cluster-id "${CLUST
 REDIS_PORT=$(aws elasticache describe-cache-clusters --cache-cluster-id "${CLUSTER_ID}" \
   --show-cache-node-info --region "${REGION}" \
   --query 'CacheClusters[0].CacheNodes[0].Endpoint.Port' --output text)
-case "${REDIS_HOST}:${REDIS_PORT}" in
-  *.cache.amazonaws.com:[0-9]*) ;;
-  *) echo "FAIL: could not read the cluster endpoint (got '${REDIS_HOST}:${REDIS_PORT}')" >&2; exit 1 ;;
+case "${REDIS_HOST}" in
+  *.cache.amazonaws.com) ;;
+  *) echo "FAIL: could not read the cluster endpoint host (got '${REDIS_HOST}')" >&2; exit 1 ;;
 esac
+case "${REDIS_PORT}" in
+  '' | *[!0-9]*) echo "FAIL: could not read the cluster endpoint port (got '${REDIS_PORT}')" >&2; exit 1 ;;
+esac
+READ_PAYLOAD=$(jq -nc --arg key "${SEED_KEY}" --arg host "${REDIS_HOST}" --argjson port "${REDIS_PORT}" \
+  '{key: $key, host: $host, port: $port}')
 
 # cdkd returns from CreateFunction without waiting for Active (by design), and
 # a VPC function stays Pending for minutes. Wait for Active, bounded.
 READER_STATE=""
 for _ in $(seq 1 90); do
-  READER_CFG=$(aws lambda get-function-configuration --function-name "${READER_FN}" \
-    --region "${REGION}" --output json)
-  READER_STATE=$(jq -r '.State // ""' <<<"${READER_CFG}")
+  # A failed read (a throttle) counts as "not yet Active": keep polling.
+  if READER_CFG=$(aws lambda get-function-configuration --function-name "${READER_FN}" \
+    --region "${REGION}" --output json); then
+    READER_STATE=$(jq -r '.State // ""' <<<"${READER_CFG}")
+  else
+    READER_CFG='{"State":"<read failed>"}'
+    READER_STATE=""
+  fi
   [ "${READER_STATE}" = "Active" ] && break
   [ "${READER_STATE}" = "Failed" ] && break
   sleep 10
@@ -262,10 +272,10 @@ READ_OUT="${WORK_DIR}/read.json"
 INVOKE_ERR=""
 for attempt in 1 2 3 4 5; do
   rm -f "${READ_OUT}"
-  # A CLI-level failure (function still Pending, throttling) is retried like
-  # a function error rather than ending the run under `set -e`.
+  # A CLI-level failure (throttling, a transient service error) is retried
+  # like a function error rather than ending the run under `set -e`.
   if INVOKE_META=$(aws lambda invoke --function-name "${READER_FN}" --region "${REGION}" \
-    --cli-binary-format raw-in-base64-out --payload "{\"key\":\"${SEED_KEY}\",\"host\":\"${REDIS_HOST}\",\"port\":${REDIS_PORT}}" \
+    --cli-binary-format raw-in-base64-out --payload "${READ_PAYLOAD}" \
     "${READ_OUT}" --output json); then
     INVOKE_ERR=$(jq -r '.FunctionError // ""' <<<"${INVOKE_META}")
   else
