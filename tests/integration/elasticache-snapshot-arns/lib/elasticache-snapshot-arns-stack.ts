@@ -71,8 +71,16 @@ export class ElastiCacheSnapshotArnsStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // GET <event.key> over RESP with nothing but `net`: no bundled client.
-    // Returns { found: false } for a nil reply, { found: true, value } else.
+    // GET <event.key> from <event.host>:<event.port> over RESP with nothing
+    // but `net`: no bundled client. Returns { found: false } for a nil reply,
+    // { found: true, value } else.
+    //
+    // The endpoint arrives in the PAYLOAD, not as an environment variable
+    // naming the cluster's attributes: that made the function wait for the
+    // cluster, so it was created last and invoked while still `Pending` (a
+    // VPC function takes minutes to go Active, and cdkd, by design, does not
+    // wait for it). Independent of the cluster, it is created at the start of
+    // the deploy and goes Active while the cluster is being created.
     new lambda.Function(this, 'SeedReader', {
       functionName: `${this.stackName}-seed-reader`,
       runtime: lambda.Runtime.NODEJS_22_X,
@@ -83,15 +91,11 @@ export class ElastiCacheSnapshotArnsStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
       securityGroups: [readerSg],
       logGroup: readerLogs,
-      environment: {
-        REDIS_HOST: redis.attrRedisEndpointAddress,
-        REDIS_PORT: redis.attrRedisEndpointPort,
-      },
       code: lambda.Code.fromInline(`
 const net = require('net');
 exports.handler = (event) => new Promise((resolve, reject) => {
   const key = String(event.key);
-  const sock = net.createConnection({ host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT) });
+  const sock = net.createConnection({ host: String(event.host), port: Number(event.port) });
   let buf = Buffer.alloc(0);
   const timer = setTimeout(() => { sock.destroy(); reject(new Error('timed out reading redis')); }, 15000);
   const finish = (err, result) => { clearTimeout(timer); sock.destroy(); if (err) reject(err); else resolve(result); };

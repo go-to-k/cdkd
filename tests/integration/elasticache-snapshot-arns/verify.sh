@@ -24,6 +24,12 @@
 # 6. Assert 0 orphans, then delete the seed bucket. Cleanup order: the stack
 #    goes first, the seed after it (the bucket outlives the create).
 #
+# Duration: expect a PASS in about 25-35 minutes (cluster create ~10 min, the
+# reader's Active wait overlapping it, cluster delete ~5-10 min, and the VPC
+# function's ENI release before the subnets and security groups go). Size the
+# watchdog at 3000s or more: probe runs with the reader still Pending at
+# destroy took about 2000s.
+#
 # BSD/macOS-portable (no grep -P, no date -d). Real rc captured. Explicit PASS.
 
 set -euo pipefail
@@ -224,6 +230,34 @@ aws elasticache describe-events --source-type cache-cluster --source-identifier 
   --duration 120 --region "${REGION}" --query 'Events[].Message' --output text | tr '\t' '\n' | sed 's/^/    event: /' ||
   echo "    (describe-events failed; not asserted)"
 
+REDIS_HOST=$(aws elasticache describe-cache-clusters --cache-cluster-id "${CLUSTER_ID}" \
+  --show-cache-node-info --region "${REGION}" \
+  --query 'CacheClusters[0].CacheNodes[0].Endpoint.Address' --output text)
+REDIS_PORT=$(aws elasticache describe-cache-clusters --cache-cluster-id "${CLUSTER_ID}" \
+  --show-cache-node-info --region "${REGION}" \
+  --query 'CacheClusters[0].CacheNodes[0].Endpoint.Port' --output text)
+case "${REDIS_HOST}:${REDIS_PORT}" in
+  *.cache.amazonaws.com:[0-9]*) ;;
+  *) echo "FAIL: could not read the cluster endpoint (got '${REDIS_HOST}:${REDIS_PORT}')" >&2; exit 1 ;;
+esac
+
+# cdkd returns from CreateFunction without waiting for Active (by design), and
+# a VPC function stays Pending for minutes. Wait for Active, bounded.
+READER_STATE=""
+for _ in $(seq 1 90); do
+  READER_CFG=$(aws lambda get-function-configuration --function-name "${READER_FN}" \
+    --region "${REGION}" --output json)
+  READER_STATE=$(jq -r '.State // ""' <<<"${READER_CFG}")
+  [ "${READER_STATE}" = "Active" ] && break
+  [ "${READER_STATE}" = "Failed" ] && break
+  sleep 10
+done
+if [ "${READER_STATE}" != "Active" ]; then
+  echo "FAIL: seed reader ${READER_FN} is not Active after 15 minutes: $(jq -c '{State, StateReason, StateReasonCode}' <<<"${READER_CFG}")" >&2
+  exit 1
+fi
+echo "    OK: seed reader is Active"
+
 READ_OUT="${WORK_DIR}/read.json"
 INVOKE_ERR=""
 for attempt in 1 2 3 4 5; do
@@ -231,7 +265,7 @@ for attempt in 1 2 3 4 5; do
   # A CLI-level failure (function still Pending, throttling) is retried like
   # a function error rather than ending the run under `set -e`.
   if INVOKE_META=$(aws lambda invoke --function-name "${READER_FN}" --region "${REGION}" \
-    --cli-binary-format raw-in-base64-out --payload "{\"key\":\"${SEED_KEY}\"}" \
+    --cli-binary-format raw-in-base64-out --payload "{\"key\":\"${SEED_KEY}\",\"host\":\"${REDIS_HOST}\",\"port\":${REDIS_PORT}}" \
     "${READ_OUT}" --output json); then
     INVOKE_ERR=$(jq -r '.FunctionError // ""' <<<"${INVOKE_META}")
   else
