@@ -849,7 +849,7 @@ describe('update', () => {
           { replayingState: true }
         )
       ).rejects.toThrow(/should either be Pay-Per-Request/);
-      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('The capacity was not sent');
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('No capacity beyond');
     });
 
     it('refuses adding a region to a literal write side, before the first write', async () => {
@@ -1246,7 +1246,7 @@ describe('update', () => {
           });
           expect(throughputs()).toEqual([]);
           expect(replicaUpdates()).toEqual([]);
-          expect(warned()).toContain('The capacity was not sent.');
+          expect(warned()).toContain('No capacity beyond what a billing flip carries was sent.');
           expect(
             scalingSend.mock.calls.filter(
               (c) => (c[0] as object).constructor.name === 'DeregisterScalableTargetCommand'

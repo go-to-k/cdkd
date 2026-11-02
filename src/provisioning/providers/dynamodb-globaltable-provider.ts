@@ -4870,7 +4870,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           `literal WriteCapacityUnits, and DynamoDB refuses every replica update without ` +
           `auto-scaling`;
         if (statePath) {
-          warn(`${refusal}. The capacity was not sent.`);
+          warn(`${refusal}${refusal}. No capacity beyond what a billing flip carries was sent.`);
         } else {
           throw new ProvisioningError(
             maskSecrets(
