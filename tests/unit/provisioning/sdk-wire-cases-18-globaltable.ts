@@ -525,9 +525,14 @@ const SEED = `SeedCapacity is the initial capacity of a PAY_PER_REQUEST -> PROVI
 const LSI_VARY = `the varied LocalSecondaryIndexes entry is refused like its removal (${S}:3566-3578), so the vary sees no wire`;
 const SSE_KEY_PASS = `the table's customer managed key goes through the replica-key pass on a table with cross-region replicas (measured, ${S}:4664-4676), which sends nothing while the declared key is the live one; SSEEnabled / SSEType with that key only re-spell the same encryption (an absent SSEEnabled is true, an absent SSEType with SSEEnabled is KMS, ${S}:9506-9520)`;
 
+const WRITE_SCALING_REMOVED: Throw = {
+  why: `a table with a cross-region replica keeps an auto-scaled write side: DynamoDB refuses every replica update without it (measured, go-to-k/cdkd#5604)`,
+  says: /needs an auto-scaled write side/,
+};
 const PROVISIONED_THROWS: Record<string, Throw> = {
   ...keyThrows(PROVISIONED_BAG),
   ...pick(PROVISIONED_BAG, [
+    [REMOVE, /^WriteProvisionedThroughputSettings(\.WriteCapacityAutoScalingSettings)?$/, WRITE_SCALING_REMOVED],
     [UPD, /^LocalSecondaryIndexes(\..*)?$/, LSI_REFUSED],
     [/^(create|update-remove)$/, /^Replicas\.0\.KinesisStreamSpecification\.StreamArn$/, {
       why: `a replica Kinesis destination without its StreamArn is refused before any call (${RS}:105)`,

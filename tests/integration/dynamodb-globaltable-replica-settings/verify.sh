@@ -1309,6 +1309,15 @@ expect_table_field() { # usage: expect_table_field <table> <JMESPath> <value> <m
   fi
 }
 
+expect_replica_index_read() { # usage: expect_replica_index_read <table> <read> <message>
+  local got
+  got="$(aws dynamodb describe-table --table-name "$1" --region "${SECOND_REGION}" \
+    --query 'Table.GlobalSecondaryIndexes[0].ProvisionedThroughput.ReadCapacityUnits' --output text)" || return 1
+  if [ "${got}" != "$2" ]; then
+    echo "FAIL: $3: $1's index reads '${got}' in ${SECOND_REGION}, not '$2'" >&2
+    exit 1
+  fi
+}
 expect_capacity() { # usage: expect_capacity <table> <read> <write> <message>
   expect_table_field "$1" 'Table.ProvisionedThroughput.ReadCapacityUnits' "$2" "$4"
   expect_table_field "$1" 'Table.ProvisionedThroughput.WriteCapacityUnits' "$3" "$4"
@@ -1360,6 +1369,8 @@ expect_capacity "${TABLE7}" 4 4 "Phase 6c (go-to-k/cdkd#5604)"
 expect_capacity "${TABLE8}" 4 1 "Phase 6c (go-to-k/cdkd#5604)"
 await_write_target "${TABLE8}" 1 "Phase 6c: ${TABLE8} lost its write scalable target"
 expect_replica_read "${TABLE9}" 3 2 "Phase 6c"
+# DynamoDB drops both overrides on a replica Create (go-to-k/cdkd#5604).
+expect_replica_index_read "${TABLE9}" 6 "Phase 6c (go-to-k/cdkd#5604)"
 run_drift 0 "Phase 6c"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
   echo "FAIL: Phase 6c: drift reports a table just deployed (go-to-k/cdkd#2762)" >&2
@@ -1391,23 +1402,30 @@ expect_capacity "${TABLE8}" 3 1 "Phase 6e (go-to-k/cdkd#5604)"
 # The local read moves; the second region keeps the capacity it declares, which
 # a `ProvisionedThroughput` send would have cleared.
 expect_replica_read "${TABLE9}" 4 2 "Phase 6e (go-to-k/cdkd#5604)"
+run_drift 0 "Phase 6e"
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: Phase 6e: drift reports a table just deployed (go-to-k/cdkd#5604)" >&2
+  exit 1
+fi
 echo "    OK: vec2 removed in both regions, warm throughput kept, ceiling and capacity back"
 
 echo "==> Phase 6f: both regions of ${TABLE9} move in one deploy (go-to-k/cdkd#5604)"
 deploy "${TS_BASE},ts3,ts4" "${LOG_DIR}/phase6f.log"
 expect_replica_read "${TABLE9}" 5 5 "Phase 6f"
-echo "    OK: both regions read 5 after one deploy"
+run_drift 0 "Phase 6f"
+if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
+  echo "FAIL: Phase 6f: drift reports a table just deployed (go-to-k/cdkd#5604)" >&2
+  exit 1
+fi
+echo "    OK: both regions read 5 after one deploy, no drift"
 
-echo "==> Phase 6g: the second region of ${TABLE9} takes its own read again"
-deploy "${TS_BASE},ts3,ts5" "${LOG_DIR}/phase6g.log"
-expect_replica_read "${TABLE9}" 5 2 "Phase 6g"
-
-# Last for this table: DynamoDB refuses replica updates once its write target is gone.
-echo "==> Phase 6h: a write capacity send puts the second region's read back (go-to-k/cdkd#5604)"
-deploy "${TS_BASE},ts3,ts5,ts6" "${LOG_DIR}/phase6h.log"
-expect_table_field "${TABLE9}" 'Table.ProvisionedThroughput.WriteCapacityUnits' 3 "Phase 6h"
-expect_replica_read "${TABLE9}" 5 2 "Phase 6h (go-to-k/cdkd#5604)"
-echo "    OK: the write side moved and the second region reads 2"
+echo "==> Phase 6g: a literal write side on a two-region table is refused (go-to-k/cdkd#5604)"
+deploy_refused "${TS_BASE},ts3,ts4,ts6" "${LOG_DIR}/phase6g.log" \
+  "a table with a cross-region replica needs an auto-scaled write side" \
+  "Phase 6g (ts6)"
+expect_replica_read "${TABLE9}" 5 5 "Phase 6g"
+await_write_target "${TABLE9}" 1 "Phase 6g: ${TABLE9} lost its write scalable target"
+echo "    OK: refused, and the table is as it was"
 
 # --- Phase 7: destroy --remove-protection ---------------------------------
 echo "==> Phase 7: destroy --remove-protection"

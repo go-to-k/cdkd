@@ -70,9 +70,10 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *                throughput, the read ceiling and the read capacity;
  *   - `ts3`:     with `ts`, go-to-k/cdkd#5604: keep `table7`'s `ts2` read capacity
  *                while its write capacity moves back;
- *   - `ts4`:     with `ts3`, the second region of `table9` inherits, and its read moves;
- *   - `ts5`:     with `ts3`, `table9`'s second region holds its own read again;
- *   - `ts6`:     with `ts5`, `table9`'s write side turns literal;
+ *   - `ts4`:     with `ts3`, `table9`'s second region declares no capacity of its own, so
+ *                CDK renders the primary's read on it and both regions move;
+ *   - `ts6`:     with `ts4`, `table9`'s write side turns literal (the deploy must be
+ *                refused);
  *   - `tsshape`: with `ts`, change `vec1`'s dimensions, which DynamoDB cannot
  *                do in place (the deploy must be refused);
  *   - `tsregional`: with `ts`, `TableType: Regional` on the two-replica table,
@@ -304,12 +305,16 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
       );
       // `ts2` adds a second region holding its own read capacity, which
       // `ProvisionedThroughput` would clear; `ts3` moves the local read beside it;
-      // `ts4` lets the second region inherit, so both move in one deploy; `ts5` gives
-      // it its own read back; `ts6` turns the write side literal, which puts that
-      // read back after `ProvisionedThroughput` overwrites it. `ts6` comes last:
-      // DynamoDB refuses every later replica update once the write target is gone.
-      const replicaReadCapacity = modes.has('ts4') ? {} : { readCapacity: ddb.Capacity.fixed(2) };
-      const localRead = modes.has('ts4') || modes.has('ts5') ? 5 : modes.has('ts3') ? 4 : 3;
+      // `ts4` declares none on the second region, so CDK renders the primary's read on it
+      // and both move in one deploy; `ts6` turns
+      // the write side literal, which cdkd refuses on a two-region table.
+      const replicaReadCapacity = modes.has('ts4')
+        ? {}
+        : {
+            readCapacity: ddb.Capacity.fixed(2),
+            globalSecondaryIndexOptions: { gsi1: { readCapacity: ddb.Capacity.fixed(6) } },
+          };
+      const localRead = modes.has('ts4') ? 5 : modes.has('ts3') ? 4 : 3;
       const replicaOverrideTable = new ddb.TableV2(this, 'ReplicaOverrideTable', {
         tableName: `${this.stackName}-table9`,
         partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
@@ -318,6 +323,14 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
           writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
         }),
         dynamoStream: ddb.StreamViewType.NEW_AND_OLD_IMAGES,
+        globalSecondaryIndexes: [
+          {
+            indexName: 'gsi1',
+            partitionKey: { name: 'g', type: ddb.AttributeType.STRING },
+            readCapacity: ddb.Capacity.fixed(4),
+            writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+          },
+        ],
         replicas:
           update2 || modes.has('ts3')
             ? [{ region: props.secondRegion, ...replicaReadCapacity }]

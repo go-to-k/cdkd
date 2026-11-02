@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
+import { unsettledAfterUpdate } from '../../../src/deployment/unsettled-convergence.js';
 import {
   CreateTableCommand,
   DeleteTableCommand,
@@ -992,6 +993,7 @@ describe('update', () => {
         }));
         live = {
           ...live,
+          BillingModeSummary: { BillingMode: 'PROVISIONED' },
           StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_AND_OLD_IMAGES' },
           Replicas: [
             { RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' },
@@ -1017,222 +1019,115 @@ describe('update', () => {
         });
       });
 
-      it('marks Replicas before the send that clears the override', async () => {
-        const markUnsettled = vi.fn();
-        await update(
-          replicated(7, { WriteCapacityUnits: 4 }),
-          replicated(7, scaling(3)),
-          { markUnsettled }
-        );
-        expect(markUnsettled).toHaveBeenCalledWith('Replicas');
-        const send = mockSend.mock.calls.findIndex((c) => c[0] instanceof UpdateTableCommand);
-        expect(markUnsettled.mock.invocationCallOrder[0]).toBeLessThan(
-          mockSend.mock.invocationCallOrder[send] ?? 0
-        );
-      });
-
-      it('puts back the read a region reports, with no override on record', async () => {
-        live = {
-          ...live,
-          Replicas: (live['Replicas'] as Rec[]).map(
-            ({ ProvisionedThroughputOverride: _dropped, ...r }) => r
-          ),
-        };
-        await update(
-          replicated(7, { WriteCapacityUnits: 4 }),
-          replicated(7, scaling(3))
-        );
+      it('updates only the local region, and never with ProvisionedThroughput', async () => {
+        await update(replicated(8, scaling(3)), replicated(7, scaling(3)));
+        expect(throughputs()).toEqual([]);
         expect(replicaUpdates()).toEqual([
-          { Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override } },
+          {
+            Update: {
+              RegionName: 'us-east-1',
+              ProvisionedThroughputOverride: { ReadCapacityUnits: 8 },
+            },
+          },
         ]);
       });
 
-      it('recovers a declared read on the re-run after a failed put-back', async () => {
-        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
-          if (command.input['ReplicaUpdates']) {
-            return Promise.reject(new Error('throttled'));
-          }
-          return Promise.resolve(
-            command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
-          );
-        });
-        const markUnsettled = vi.fn();
-        await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)), { markUnsettled })
-        ).rejects.toThrow();
-        expect(markUnsettled).toHaveBeenCalledWith('Replicas');
-        expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
-          /failed before putting back us-west-2=2\. A value the template declares/
-        );
-
-        // `Replicas` unsettled: the previous side is the read-back, which has no
-        // flat cross-region read, so the declared one is a replica diff.
-        mockSend.mockReset();
-        mockSend.mockImplementation((command: { constructor: { name: string } }) =>
-          Promise.resolve(
-            command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
-          )
-        );
-        const declared = replicated(7, { WriteCapacityUnits: 4 });
-        const readBack = {
-          ...declared,
-          Replicas: (declared['Replicas'] as Rec[]).map((r) => ({ Region: r['Region'] })),
-        };
-        await update(declared, readBack);
-        expect(replicaUpdates()).toContainEqual({
-          Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override },
-        });
-      });
-
       const warned = (): string => warnSpy.mock.calls.flat().join('\n');
-      // Describes succeed until `failAfter` has gone out.
-      const failingSettle = (failAfter: (input: Rec) => boolean): void => {
-        let failing = false;
-        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
-          if (command.constructor.name === 'DescribeTableCommand') {
-            return failing
-              ? Promise.reject(new Error('settle failed'))
-              : Promise.resolve({ Table: live });
-          }
-          if (failAfter(command.input)) failing = true;
-          return Promise.resolve({});
+      const tagged = {
+        ...replicated(7, { WriteCapacityUnits: 4 }),
+        Replicas: [
+          {
+            Region: 'us-east-1',
+            ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 },
+            Tags: [{ Key: 'k', Value: 'v' }],
+          },
+        ],
+      };
+
+      it('refuses a literal write change before the first write', async () => {
+        await expect(update(tagged, replicated(7, { WriteCapacityUnits: 3 }))).rejects.toThrow(
+          /needs an auto-scaled write side.*Nothing was applied.*WriteCapacityAutoScalingSettings/s
+        );
+        const names = mockSend.mock.calls.map(
+          (call) => (call[0] as { constructor: { name: string } }).constructor.name
+        );
+        expect(new Set(names)).toEqual(new Set(['DescribeTableCommand']));
+      });
+
+      it('refuses moving off auto-scaling, whichever the new side says', async () => {
+        await expect(
+          update(replicated(7, { WriteCapacityUnits: 3 }), replicated(7, scaling(3)))
+        ).rejects.toThrow(/auto-scaled write side/);
+        const { WriteProvisionedThroughputSettings: _w, ...absent } = replicated(7, {});
+        await expect(update(absent, replicated(7, scaling(3)))).rejects.toThrow(
+          /auto-scaled write side/
+        );
+        expect(updates()).toEqual([]);
+      });
+
+      it('refuses a read change on a literal table', async () => {
+        await expect(
+          update(replicated(8, { WriteCapacityUnits: 3 }), replicated(7, { WriteCapacityUnits: 3 }))
+        ).rejects.toThrow(/auto-scaled write side/);
+      });
+
+      it('leaves a billing flip to the flip', async () => {
+        await expect(
+          update(
+            { ...replicated(7, { WriteCapacityUnits: 3 }), BillingMode: 'PAY_PER_REQUEST' },
+            replicated(7, scaling(3))
+          )
+        ).resolves.toBeDefined();
+        live = { ...live, BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' } };
+        await expect(
+          update(replicated(8, { WriteCapacityUnits: 3 }), {
+            ...replicated(7, { WriteCapacityUnits: 3 }),
+            BillingMode: 'PAY_PER_REQUEST',
+          })
+        ).resolves.toBeDefined();
+      });
+
+      it('masks the refusal and the warning', async () => {
+        const maskSecrets = (text: string): string => text.replaceAll('auto-scaled write', '***');
+        await expect(
+          update(replicated(8, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)), {
+            maskSecrets,
+          })
+        ).rejects.toThrow(/needs an \*\*\* side/);
+        await update(replicated(8, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)), {
+          maskSecrets,
+          replayingState: true,
         });
-      };
-      const threeRegions = (write: Rec): Rec => {
-        const bag = replicated(7, write);
-        return {
-          ...bag,
-          Replicas: [
-            ...(bag['Replicas'] as Rec[]),
-            { Region: 'eu-west-1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 } },
-          ],
-        };
-      };
-      const armThreeRegions = (): void => {
-        live = {
-          ...live,
-          Replicas: ['us-east-1', 'us-west-2', 'eu-west-1'].map((RegionName) => ({
-            RegionName,
-            ReplicaStatus: 'ACTIVE',
-          })),
-        };
-      };
-
-      it('does not warn when a failed settle leaves nothing to put back', async () => {
-        regionalRead = 7;
-        failingSettle((input) => input['ProvisionedThroughput'] !== undefined);
-        await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)))
-        ).rejects.toThrow('settle failed');
-        expect(warned()).not.toContain('us-west-2');
-        expect(warned()).not.toContain('every region');
+        expect(warned()).toContain('needs an *** side');
       });
 
-      it('names every region when the settle right after the send fails', async () => {
-        armThreeRegions();
-        failingSettle((input) => input['ProvisionedThroughput'] !== undefined);
-        await expect(
-          update(threeRegions({ WriteCapacityUnits: 4 }), threeRegions(scaling(3)))
-        ).rejects.toThrow('settle failed');
-        expect(warned()).toContain('failed before putting back us-west-2=2, eu-west-1=2.');
-        expect(warned()).not.toContain('AWS accepted');
-      });
-
-      it('names only the region the second put-back failed on', async () => {
-        armThreeRegions();
-        let putBacks = 0;
-        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
-          if (command.input['ReplicaUpdates'] && ++putBacks === 2) {
-            return Promise.reject(new Error('throttled'));
-          }
-          return Promise.resolve(
-            command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
-          );
-        });
-        await expect(
-          update(threeRegions({ WriteCapacityUnits: 4 }), threeRegions(scaling(3)))
-        ).rejects.toThrow('throttled');
-        expect(warned()).toContain('failed before putting back eu-west-1=2.');
-        expect(warned()).not.toContain('us-west-2');
-      });
-
-      it('tells an accepted put-back whose settle failed from an unsent one', async () => {
-        armThreeRegions();
-        failingSettle((input) => input['ReplicaUpdates'] !== undefined);
-        await expect(
-          update(threeRegions({ WriteCapacityUnits: 4 }), threeRegions(scaling(3)))
-        ).rejects.toThrow('settle failed');
-        expect(warned()).toContain('AWS accepted the put-back of us-west-2=2');
-        expect(warned()).toContain('failed before putting back eu-west-1=2.');
-      });
-
-      it('refuses a write change it could not put a region back after', async () => {
-        await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }))
-        ).rejects.toThrow(/Declare WriteCapacityAutoScalingSettings/);
+      it('lets a literal table through when no capacity moves', async () => {
+        await update(
+          replicated(7, { WriteCapacityUnits: '3' }),
+          replicated(7, { WriteCapacityUnits: 3 })
+        );
         expect(throughputs()).toEqual([]);
       });
 
-      // AWS as measured: with the local write target gone, every replica Update is refused.
-      const refuseReplicaUpdatesOnceTargetGone = (): void => {
-        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
-        let targetGone = false;
-        scalingSend.mockImplementation((command: { constructor: { name: string } }) => {
-          if (command.constructor.name === 'DeregisterScalableTargetCommand') targetGone = true;
-          return Promise.resolve({ ScalableTargets: [{}], ScalingPolicies: [] });
-        });
-        mockSend.mockImplementation((command: { input: Rec }) => {
-          const update = (command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Update'];
-          return update && targetGone
-            ? Promise.reject(new Error('Table write capacity should either be Pay-Per-Request or AutoScaled'))
-            : respond(command);
-        });
-      };
-      const deregistered = (): number =>
-        scalingSend.mock.calls.filter(
-          (c) => (c[0] as object).constructor.name === 'DeregisterScalableTargetCommand'
-        ).length;
-
-      it('recovers on a re-run with the write target still registered', async () => {
-        let failPutBack = true;
-        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
-        mockSend.mockImplementation((command: { input: Rec }) =>
-          failPutBack && command.input['ReplicaUpdates']
-            ? Promise.reject(new Error('throttled'))
-            : respond(command)
-        );
-        refuseReplicaUpdatesOnceTargetGone();
-        const declared = replicated(7, { WriteCapacityUnits: 4 });
-        await expect(update(declared, replicated(7, scaling(3)))).rejects.toThrow();
-        expect(deregistered()).toBe(0);
-
-        failPutBack = false;
-        live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 4 } };
-        await update(declared, {
-          ...replicated(7, scaling(3)),
-          Replicas: (declared['Replicas'] as Rec[]).map((r) => ({ Region: r['Region'] })),
-        });
-        expect(replicaUpdates()).toContainEqual({
-          Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override },
-        });
-        expect(deregistered()).toBe(1);
-      });
-
-      it('takes a replica change in the deploy that removes the write target', async () => {
-        refuseReplicaUpdatesOnceTargetGone();
-        const moved = replicated(7, { WriteCapacityUnits: 4 });
-        (moved['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
-          ReadCapacityUnits: 6,
-        };
-        await update(moved, replicated(7, scaling(3)));
-        expect(replicaUpdates()).toContainEqual({
-          Update: {
-            RegionName: 'us-west-2',
-            ProvisionedThroughputOverride: { ReadCapacityUnits: 6 },
-          },
-        });
-        expect(deregistered()).toBe(1);
-      });
+      it.each([['replayingState'], ['desiredFromAwsReadback']])(
+        'warns and skips the capacity on a %s bag, with no regional read',
+        async (flag) => {
+          regionalClient().mockImplementation(() => ({
+            send: () => Promise.reject(new Error('regional read')),
+          }));
+          await update(replicated(8, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)), {
+            [flag]: true,
+          });
+          expect(throughputs()).toEqual([]);
+          expect(replicaUpdates()).toEqual([]);
+          expect(warned()).toContain('The capacity was not sent.');
+          expect(
+            scalingSend.mock.calls.filter(
+              (c) => (c[0] as object).constructor.name === 'DeregisterScalableTargetCommand'
+            )
+          ).toEqual([]);
+        }
+      );
 
       it('registers a declared write target before a capacity send', async () => {
         const order: string[] = [];
@@ -1252,98 +1147,52 @@ describe('update', () => {
         );
       });
 
-      it.each([['replayingState'], ['desiredFromAwsReadback']])(
-        'warns and sends no capacity on a %s bag it could not put a region back after',
-        async (flag) => {
-          await update(
-            replicated(7, { WriteCapacityUnits: 4 }),
-            replicated(7, { WriteCapacityUnits: 3 }),
-            { [flag]: true }
-          );
-          expect(throughputs()).toEqual([]);
-          expect(warned()).toContain('the capacity was not sent');
+      it('settles Replicas across two runs: the read-back reads what was sent', async () => {
+        const provider = new DynamoDBGlobalTableProvider();
+        const previous = replicated(7, scaling(3));
+        const desired = replicated(8, scaling(3));
+        await provider.update('T', TABLE, RESOURCE_TYPE, desired, previous, {});
+        live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 8, WriteCapacityUnits: 3 } };
+        const prove = (): Promise<string[]> =>
+          unsettledAfterUpdate({
+            provider,
+            physicalId: TABLE,
+            logicalId: 'T',
+            resourceType: RESOURCE_TYPE,
+            recordedProperties: desired,
+            names: new Set(['Replicas']),
+            desired,
+          });
+        expect(await prove()).toEqual([]);
+        regionalRead = 5;
+        expect(await prove()).toEqual(['Replicas']);
+
+        regionalRead = 2;
+        mockSend.mockClear();
+        const projected = await provider.readUnsettled(
+          TABLE,
+          'T',
+          RESOURCE_TYPE,
+          new Set(['Replicas']),
+          desired,
+          desired
+        );
+        await provider.update('T', TABLE, RESOURCE_TYPE, desired, {
+          ...desired,
+          Replicas: (projected as Rec)['Replicas'],
+        }, { unsettledProperties: new Set(['Replicas']) });
+        expect(replicaUpdates().filter((u) => (u as { Update?: Rec }).Update?.['ProvisionedThroughputOverride'])).toEqual([]);
+      });
+
+      it('leaves a plain read free of the flat replica read', async () => {
+        const read = (await new DynamoDBGlobalTableProvider().readCurrentState(
+          TABLE,
+          'T',
+          RESOURCE_TYPE
+        )) as Rec;
+        for (const replica of read['Replicas'] as Rec[]) {
+          expect(replica).not.toHaveProperty('ReadProvisionedThroughputSettings');
         }
-      );
-
-      it('puts back no region the template drops', async () => {
-        const dropped = replicated(7, { WriteCapacityUnits: 4 });
-        dropped['Replicas'] = (dropped['Replicas'] as Rec[]).slice(0, 1);
-        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
-        mockSend.mockImplementation((command: { input: Rec }) => {
-          if ((command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Delete']) {
-            live = { ...live, Replicas: (live['Replicas'] as Rec[]).slice(0, 1) };
-          }
-          return respond(command);
-        });
-        await update(dropped, replicated(7, scaling(3)));
-        expect(replicaUpdates().filter((u) => (u as Rec)['Update'])).toEqual([]);
-      });
-
-      it('takes a drop or a declared sent read as no reason to refuse', async () => {
-        const atSent = replicated(7, { WriteCapacityUnits: 4 });
-        (atSent['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
-          ReadCapacityUnits: 7,
-        };
-        const before = replicated(7, { WriteCapacityUnits: 3 });
-        (before['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
-          ReadCapacityUnits: 7,
-        };
-        await update(atSent, before);
-        expect(throughputs()).toEqual([{ ReadCapacityUnits: 7, WriteCapacityUnits: 4 }]);
-      });
-
-      it('leaves the capacity unchanged when a region cannot be read before the send', async () => {
-        regionalClient().mockImplementation(() => ({
-          send: () => Promise.reject(new Error('denied')),
-        }));
-        await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)))
-        ).rejects.toThrow();
-        expect(throughputs()).toEqual([]);
-      });
-
-      it('puts back no region already at the read just sent', async () => {
-        await update(
-          replicated(2, { WriteCapacityUnits: 4 }),
-          replicated(7, scaling(3))
-        );
-        expect(throughputs()).toEqual([{ ReadCapacityUnits: 2, WriteCapacityUnits: 4 }]);
-        expect(replicaUpdates()).toEqual([]);
-      });
-
-      it('waits for the other region to settle before the put-back', async () => {
-        const statuses = ['UPDATING', 'ACTIVE'];
-        let leftAtPutBack: number | undefined;
-        mockSend.mockImplementation(
-          (command: { constructor: { name: string }; input: Rec }) => {
-            if (command.input['ReplicaUpdates']) leftAtPutBack ??= statuses.length;
-            if (command.constructor.name !== 'DescribeTableCommand') return Promise.resolve({});
-            const sent = updates().some((u) => u['ProvisionedThroughput']);
-            const ReplicaStatus = sent ? (statuses.shift() ?? 'ACTIVE') : 'ACTIVE';
-            const Replicas = (live['Replicas'] as Rec[]).map((r) => ({ ...r, ReplicaStatus }));
-            return Promise.resolve({ Table: { ...live, Replicas } });
-          }
-        );
-        await update(
-          replicated(8, { WriteCapacityUnits: 4 }),
-          replicated(7, scaling(3))
-        );
-        expect(leftAtPutBack).toBe(0);
-      });
-
-      it('puts back the override AWS held after a write change, read change included', async () => {
-        await update(
-          replicated(8, { WriteCapacityUnits: 4 }),
-          replicated(7, scaling(3))
-        );
-        expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 4 }]);
-        expect(replicaUpdates()).toEqual([
-          { Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override } },
-        ]);
-        const calls = updates();
-        expect(calls.findIndex((u) => u['ProvisionedThroughput'])).toBeLessThan(
-          calls.findIndex((u) => u['ReplicaUpdates'])
-        );
       });
     });
 
@@ -1378,6 +1227,175 @@ describe('update', () => {
       expect(sentUpdates.findIndex((u) => u['Create'])).toBeLessThan(
         sentUpdates.findIndex((u) => u['Update'])
       );
+    });
+
+    describe('the override a replica Create drops', () => {
+      const one = local({ ReadCapacityUnits: 7 }, scaling(3));
+      const gsiOverride = {
+        IndexName: 'gsi1',
+        ReadProvisionedThroughputSettings: { ReadCapacityUnits: 5 },
+      };
+      const sentUpdate = async (replica: Rec): Promise<Rec | undefined> => {
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { input: Rec }) => {
+          if ((command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Create']) {
+            live = { ...live, Replicas: [{ RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' }] };
+          }
+          return respond(command);
+        });
+        await update({ ...one, Replicas: [...(one['Replicas'] as Rec[]), replica] }, one);
+        return updates()
+          .flatMap((u) => (u['ReplicaUpdates'] as Rec[] | undefined) ?? [])
+          .find((u) => u['Update'])?.['Update'] as Rec | undefined;
+      };
+
+      it('re-sends a per-index override alone', async () => {
+        expect(
+          await sentUpdate({ Region: 'us-west-2', GlobalSecondaryIndexes: [gsiOverride] })
+        ).toEqual({
+          RegionName: 'us-west-2',
+          GlobalSecondaryIndexes: [
+            { IndexName: 'gsi1', ProvisionedThroughputOverride: { ReadCapacityUnits: 5 } },
+          ],
+        });
+      });
+
+      it('re-sends both in one Update', async () => {
+        expect(
+          await sentUpdate({
+            Region: 'us-west-2',
+            ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 },
+            GlobalSecondaryIndexes: [gsiOverride],
+          })
+        ).toEqual({
+          RegionName: 'us-west-2',
+          ProvisionedThroughputOverride: { ReadCapacityUnits: 2 },
+          GlobalSecondaryIndexes: [
+            { IndexName: 'gsi1', ProvisionedThroughputOverride: { ReadCapacityUnits: 5 } },
+          ],
+        });
+      });
+
+      it('sends no Update for a replica declaring no override', async () => {
+        expect(await sentUpdate({ Region: 'us-west-2' })).toBeUndefined();
+      });
+    });
+
+    it('settles after re-sending, before the next replica', async () => {
+      const replica = (Region: string): Rec => ({
+        Region,
+        ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 },
+      });
+      const one = local({ ReadCapacityUnits: 7 }, scaling(3));
+      const statuses = ['UPDATING', 'ACTIVE'];
+      let sent = false;
+      let leftAtSecondCreate: number | undefined;
+      const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+        const entry = (command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0];
+        const created = entry?.['Create'] as Rec | undefined;
+        if (created) {
+          if (created['RegionName'] === 'eu-west-1') leftAtSecondCreate = statuses.length;
+          live = {
+            ...live,
+            Replicas: [
+              ...((live['Replicas'] as Rec[] | undefined) ?? []),
+              { RegionName: created['RegionName'], ReplicaStatus: 'ACTIVE' },
+            ],
+          };
+        }
+        if (entry?.['Update']) sent = true;
+        if (sent && leftAtSecondCreate === undefined && command.constructor.name === 'DescribeTableCommand') {
+          return Promise.resolve({ Table: { ...live, TableStatus: statuses.shift() ?? 'ACTIVE' } });
+        }
+        return respond(command);
+      });
+      await update(
+        { ...one, Replicas: [...(one['Replicas'] as Rec[]), replica('us-west-2'), replica('eu-west-1')] },
+        one
+      );
+      expect(leftAtSecondCreate).toBe(0);
+    });
+
+    it('takes the local replica read over a table-level block', async () => {
+      const both = (read: number): Rec => ({
+        ...local({ ReadCapacityUnits: read }, scaling(3)),
+        ReadProvisionedThroughputSettings: { ReadCapacityUnits: 9 },
+      });
+      // Both at once is refused on a template, so only a state-borne bag gets here.
+      await update(both(8), both(7), { replayingState: true });
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 3 }]);
+    });
+
+    it('names the block an unreadable read lives in', async () => {
+      await update(
+        local({ ReadCapacityUnits: { Ref: 'X' } }, scaling(3)),
+        local({ ReadCapacityUnits: 7 }, scaling(3))
+      );
+      expect(warnSpy.mock.calls.flat().join('\n')).toContain(
+        'Replicas[local].ReadProvisionedThroughputSettings.ReadCapacityUnits is declared'
+      );
+      warnSpy.mockClear();
+      await update(
+        {
+          ...BASE,
+          BillingMode: 'PROVISIONED',
+          Replicas: ENABLED_REPLICA,
+          ReadProvisionedThroughputSettings: { ReadCapacityUnits: { Ref: 'X' } },
+        },
+        {
+          ...BASE,
+          BillingMode: 'PROVISIONED',
+          Replicas: ENABLED_REPLICA,
+          ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 },
+        }
+      );
+      expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+        /(?<!\.)ReadProvisionedThroughputSettings\.ReadCapacityUnits is declared/
+      );
+    });
+
+    it('marks only the side that moves', async () => {
+      const markUnsettled = vi.fn();
+      await update(
+        local({ ReadCapacityUnits: 8 }, { WriteCapacityUnits: 3 }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 }),
+        { markUnsettled }
+      );
+      expect(markUnsettled.mock.calls.flat()).not.toContain('WriteProvisionedThroughputSettings');
+    });
+
+    it('settles the table before re-sending an added replica override', async () => {
+      const west = {
+        Region: 'us-west-2',
+        ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 },
+      };
+      const one = local({ ReadCapacityUnits: 7 }, scaling(3));
+      const statuses = ['UPDATING', 'ACTIVE'];
+      let leftAtUpdate: number | undefined;
+      let replicaActive = false;
+      const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      mockSend.mockImplementation(
+        (command: { constructor: { name: string }; input: Rec }) => {
+          const entry = (command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0];
+          if (entry?.['Create']) {
+            live = { ...live, Replicas: [{ RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' }] };
+          }
+          if (entry?.['Update']) leftAtUpdate ??= statuses.length;
+          if (command.constructor.name === 'DescribeTableCommand' && live['Replicas']) {
+            if (!replicaActive) {
+              replicaActive = true;
+              return respond(command);
+            }
+            return Promise.resolve({
+              Table: { ...live, TableStatus: statuses.shift() ?? 'ACTIVE' },
+            });
+          }
+          return respond(command);
+        }
+      );
+      await update({ ...one, Replicas: [...(one['Replicas'] as Rec[]), west] }, one);
+      expect(leftAtUpdate).toBe(0);
     });
 
     it('sends a cross-region override with the replica, not ProvisionedThroughput', async () => {
