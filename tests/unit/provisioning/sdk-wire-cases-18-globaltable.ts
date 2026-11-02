@@ -667,6 +667,7 @@ const TABLE_LEVEL_PROVISIONED_SILENT: Record<string, string> = {
     [UPD, /^Replicas\.0\.Region$/, NO_REGION_ENTRY],
     [REMOVE, /^ReadProvisionedThroughputSettings\.ReadCapacityUnits$/, `the block stays declared with no capacity to read, so nothing is sent; the whole block's removal is refused`],
     [REMOVE, /^WriteProvisionedThroughputSettings(\..*)?$/, WRITE_CAPACITY_REMOVED],
+    [VARY_ON_UPDATE, /^Replicas\.0\.Region$/, `the varied Region reads as a region added to a literal write side, refused before any call (go-to-k/cdkd#5604), so the vary sees no wire`],
   ]),
 };
 

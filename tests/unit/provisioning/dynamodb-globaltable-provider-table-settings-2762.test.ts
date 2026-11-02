@@ -809,6 +809,62 @@ describe('update', () => {
       live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 3 } };
     });
 
+    it('takes a live list naming only the local region as single-region', async () => {
+      const added = { Region: 'us-west-2' };
+      live = { ...live, Replicas: [{ RegionName: 'us-east-1', ReplicaStatus: 'ACTIVE' }] };
+      const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      mockSend.mockImplementation((command: { input: Rec }) => {
+        if ((command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Create']) {
+          live = {
+            ...live,
+            Replicas: [
+              ...(live['Replicas'] as Rec[]),
+              { RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' },
+            ],
+          };
+        }
+        return respond(command);
+      });
+      const next = local({ ReadCapacityUnits: 8 }, scaling(3));
+      await update(
+        { ...next, Replicas: [...(next['Replicas'] as Rec[]), added] },
+        local({ ReadCapacityUnits: 7 }, scaling(3))
+      );
+      expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 3 }]);
+    });
+
+    it('leaves adding a region to a literal write side to AWS on a replay', async () => {
+      const one = local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 });
+      const refused = new Error('Table write capacity should either be Pay-Per-Request or AutoScaled');
+      const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      mockSend.mockImplementation((command: { input: Rec }) =>
+        (command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Create']
+          ? Promise.reject(refused)
+          : respond(command)
+      );
+      await expect(
+        update(
+          { ...one, Replicas: [...(one['Replicas'] as Rec[]), { Region: 'us-west-2' }] },
+          one,
+          { replayingState: true }
+        )
+      ).rejects.toThrow(/should either be Pay-Per-Request/);
+      expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('The capacity was not sent');
+    });
+
+    it('refuses adding a region to a literal write side, before the first write', async () => {
+      const one = local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 });
+      const two = {
+        ...local({ ReadCapacityUnits: 8 }, { WriteCapacityUnits: 3 }),
+        Replicas: [
+          ...localRead({ ReadCapacityUnits: 8 }),
+          { Region: 'us-west-2', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 } },
+        ],
+      };
+      await expect(update(two, one)).rejects.toThrow(/auto-scaled write side/);
+      expect(updates()).toEqual([]);
+    });
+
     it('sends a flat read change on the local replica with the write side AWS holds', async () => {
       await update(
         local({ ReadCapacityUnits: 8 }, scaling(3)),
@@ -1041,6 +1097,7 @@ describe('update', () => {
             ReadProvisionedThroughputSettings: { ReadCapacityUnits: 7 },
             Tags: [{ Key: 'k', Value: 'v' }],
           },
+          { Region: 'us-west-2', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 } },
         ],
       };
 
@@ -1071,20 +1128,89 @@ describe('update', () => {
         ).rejects.toThrow(/auto-scaled write side/);
       });
 
-      it('leaves a billing flip to the flip', async () => {
+      it('leaves a flip to on-demand alone', async () => {
         await expect(
           update(
             { ...replicated(7, { WriteCapacityUnits: 3 }), BillingMode: 'PAY_PER_REQUEST' },
             replicated(7, scaling(3))
           )
         ).resolves.toBeDefined();
+      });
+
+      it('refuses a flip from on-demand to a literal write side', async () => {
         live = { ...live, BillingModeSummary: { BillingMode: 'PAY_PER_REQUEST' } };
+        const literal = replicated(7, { WriteCapacityUnits: 3 });
         await expect(
-          update(replicated(8, { WriteCapacityUnits: 3 }), {
-            ...replicated(7, { WriteCapacityUnits: 3 }),
-            BillingMode: 'PAY_PER_REQUEST',
-          })
-        ).resolves.toBeDefined();
+          update(literal, { ...literal, BillingMode: 'PAY_PER_REQUEST' })
+        ).rejects.toThrow(/auto-scaled write side/);
+        expect(updates()).toEqual([]);
+      });
+
+      const leavesOneRegion = (write: Rec): Rec => ({
+        ...replicated(7, write),
+        Replicas: (replicated(7, write)['Replicas'] as Rec[]).slice(0, 1),
+      });
+      const dropReplicaOnDelete = (): void => {
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { input: Rec }) => {
+          if ((command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Delete']) {
+            live = { ...live, Replicas: (live['Replicas'] as Rec[]).slice(0, 1) };
+          }
+          return respond(command);
+        });
+      };
+
+      it.each([
+        ['forward', {}],
+        ['replay', { replayingState: true }],
+      ])(
+        'takes a literal write on the table dropping its last other region (%s)',
+        async (_label, context) => {
+          dropReplicaOnDelete();
+          await update(leavesOneRegion({ WriteCapacityUnits: 4 }), replicated(7, scaling(3)), context);
+          expect(throughputs()).toEqual([{ ReadCapacityUnits: 7, WriteCapacityUnits: 4 }]);
+          expect(replicaUpdates().filter((u) => (u as Rec)['Update'])).toEqual([]);
+          expect(warned()).not.toContain('auto-scaled write side');
+          expect(
+            scalingSend.mock.calls.filter(
+              (c) => (c[0] as object).constructor.name === 'DeregisterScalableTargetCommand'
+            )
+          ).toHaveLength(1);
+        }
+      );
+
+      it('sends a read change as ProvisionedThroughput on the table leaving one region', async () => {
+        dropReplicaOnDelete();
+        const moved = leavesOneRegion(scaling(3));
+        (moved['Replicas'] as Rec[])[0]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 8,
+        };
+        await update(moved, replicated(7, scaling(3)));
+        expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 3 }]);
+      });
+
+      it('waits for the whole group before the next replica step', async () => {
+        const statuses = ['UPDATING', 'ACTIVE'];
+        let leftAtReplicaStep: number | undefined;
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+          const entry = (command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0];
+          const region = (entry?.['Update'] as Rec | undefined)?.['RegionName'];
+          if (region === 'us-west-2') leftAtReplicaStep ??= statuses.length;
+          const moved = updates().some((u) => u['ReplicaUpdates']);
+          if (moved && command.constructor.name === 'DescribeTableCommand') {
+            const ReplicaStatus = statuses.shift() ?? 'ACTIVE';
+            const Replicas = (live['Replicas'] as Rec[]).map((r) => ({ ...r, ReplicaStatus }));
+            return Promise.resolve({ Table: { ...live, Replicas } });
+          }
+          return respond(command);
+        });
+        const next = replicated(8, scaling(3));
+        (next['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 6,
+        };
+        await update(next, replicated(7, scaling(3)));
+        expect(leftAtReplicaStep).toBe(0);
       });
 
       it('masks the refusal and the warning', async () => {
