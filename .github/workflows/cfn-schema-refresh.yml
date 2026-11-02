@@ -114,7 +114,7 @@ jobs:
       # `actions/labeler` asks for and nothing more.
       #
       # `issues: write` used to be here for the umbrella fold, which is now its
-      # own workflow (`backfill-umbrella-sync.yml`) driven by pushes to `main`.
+      # own workflow (`backfill-issues-sync.yml`) driven by pushes to `main`.
       # That move is why this job no longer touches an issue, and dropping the
       # scope is the point rather than a side effect: this is the repo's only
       # unattended job holding `contents: write`.

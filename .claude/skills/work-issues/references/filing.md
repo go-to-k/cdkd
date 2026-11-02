@@ -34,17 +34,16 @@ needing a clause the issue does not name. On a trip, STATE the call in one line
 when it would more than double the diff. What the fix would leave WRONG if
 omitted is a FORCED parallel change.
 
-**Do not fan one campaign out into generated per-item issues**
-(go-to-k/cdkd#2949): each slice counts in the open-issue total and every listing
-must filter it. The backfill campaign is ONE umbrella issue:
-`.github/workflows/backfill-umbrella-sync.yml` rewrites only the region between
-`<!-- backfill-types:start -->` and `<!-- backfill-types:end -->`, one `- [ ]`
-row per type. Every backlog listing in `triage.md` (§1, §3-0, §3-a)
-EXCLUDES the label (`backfill-type`),
-and so does §10's folded-finding count in `retro.md`, where it matters most:
-it also excludes `backfill-umbrella`, whose body a sync rewrites. A listing
-added to either file carries both. A PR wiring one type writes `Refs`, not
-`Closes`; the row disappears when the coverage map says the type is done.
+**The backfill campaign is the one generated fan-out**: one issue per resource
+type, labelled `backfill-type` and with no parent, which
+`.github/workflows/backfill-issues-sync.yml` creates, updates and
+closes. Do not start another: each slice counts in the open-issue total and
+every listing must filter it (go-to-k/cdkd#3423).
+Every backlog listing in `triage.md` (§1, §3-0, §3-a) EXCLUDES the label (`backfill-type`), and so does §10's folded-finding count in `retro.md`, where it matters because a sync
+rewrites every generated body into `- [ ]` rows; a listing added to either file
+carries it. Put a type's claim, measurement or decision in a comment on ITS
+issue; the sync never rewrites comments. A PR writes `Closes` on the type's
+issue only if it takes that type to zero, `Refs` otherwise.
 
 **Resolve whatever you file against the issues ALREADY OPEN** — a sibling
 ISSUE, not a sibling site.

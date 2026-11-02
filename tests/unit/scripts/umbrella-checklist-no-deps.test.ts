@@ -2,7 +2,7 @@
  * `--umbrella-checklist` must RUN with the repo's dependencies unavailable
  * (issue [#2858](https://github.com/go-to-k/cdkd/issues/2858)).
  *
- * `.github/workflows/backfill-umbrella-sync.yml` deliberately sets
+ * `.github/workflows/backfill-issues-sync.yml` deliberately sets
  * `run-install: false`, so its render step — which holds no token — cannot fail
  * on dependency resolution. The mode calls only `node:` builtins and reads one
  * committed file, and the workflow's comment said so. It was still wrong: ESM
@@ -187,8 +187,8 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(run.stdout).toMatch(WORKFLOW_SHAPE);
   }, 60_000);
 
-  it('renders the PER-TYPE plan in the same corpus — every render-only mode, not one', () => {
-    // The mode the sync workflow actually consumes.
+  it('renders the SUB-ISSUE plan in the same corpus — every render-only mode, not one', () => {
+    // The mode the sync workflow actually consumes since go-to-k/cdkd#2949.
     // Asserted as its OWN spawn rather than trusted to the sibling above: they
     // share a parser but not an entry-point arm, and the no-dependency property
     // is about what the process LOADS before either arm runs — so a mode added
@@ -199,20 +199,17 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
 
     const run = spawnSync(
       process.execPath,
-      ['scripts/diagnose-schema-refresh.mjs', '--umbrella-types'],
+      ['scripts/diagnose-schema-refresh.mjs', '--backfill-issues'],
       { cwd: root, encoding: 'utf8' }
     );
     expect(run.stderr).toBe('');
     expect(run.status).toBe(0);
-    const plan = JSON.parse(run.stdout) as { types: Array<{ type: string; properties: string[] }> };
+    const plan = JSON.parse(run.stdout) as { types: Array<{ type: string; body: string }> };
     expect(Array.isArray(plan.types)).toBe(true);
     expect(plan.types.length, 'the fixture corpus rendered no types').toBeGreaterThan(0);
-    // Each entry carries the property NAMES — the field the reconciler renders
-    // each row from, and the one whose absence would publish a row saying a type
-    // has `undefined` left to do.
-    expect(plan.types[0]!.properties.length, 'a plan entry carries no properties').toBeGreaterThan(
-      0
-    );
+    // The body carries the marker the reconciler keys on — the one field whose
+    // absence would make every run mint duplicates.
+    expect(plan.types[0]!.body).toContain(`<!-- backfill-type: ${plan.types[0]!.type} -->`);
   }, 60_000);
 
   it('CONTROL: the same corpus DOES fail when a dependency-bearing import is static', () => {
@@ -474,7 +471,7 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     // installs dependencies there, this fence is still true but no longer
     // load-bearing, and the reader should be told rather than left guessing.
     const workflow = readFileSync(
-      join(repoRoot, '.github/workflows/backfill-umbrella-sync.yml'),
+      join(repoRoot, '.github/workflows/backfill-issues-sync.yml'),
       'utf8'
     );
     // Bound to the SAME job, not merely to the file: `toContain` on the whole
@@ -486,13 +483,13 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     expect(jobs.match(/^ {2}[\w-]+:$/gm)).toEqual(['  sync:']);
     const syncJob = jobs.slice(jobs.indexOf('\n  sync:'));
     expect(syncJob).toContain('run-install: false');
-    expect(syncJob).toContain('node scripts/diagnose-schema-refresh.mjs --umbrella-types');
-    // The SECOND no-dependency consumer in the same job. It runs under the same
-    // `run-install: false`, so the no-`node_modules` guarantee this file
-    // measures has to cover it too — and it is the one that WRITES the
-    // campaign's public page, so a load-time crash there leaves the published
-    // checklist asserting whatever `main` said last time it ran.
-    expect(syncJob).toContain('node scripts/sync-backfill-umbrella.ts');
+    expect(syncJob).toContain('node scripts/diagnose-schema-refresh.mjs --backfill-issues');
+    // The SECOND no-dependency consumer in the same job (go-to-k/cdkd#2949).
+    // It runs under the same `run-install: false`, so the no-`node_modules`
+    // guarantee this file measures has to cover it too — and it is the one that
+    // WRITES, across ~44 public issues, so a load-time crash there is not a
+    // missing checklist but a half-applied reconciliation.
+    expect(syncJob).toContain('node scripts/sync-backfill-issues.ts');
   });
 
   it('the reconciler imports nothing outside node: builtins either', () => {
@@ -501,7 +498,7 @@ describe('--umbrella-checklist runs without the repo dependencies', () => {
     // module's WHOLE graph before any code runs, so the check that matters is
     // static: every import specifier is either `node:`-prefixed or a relative
     // path INSIDE scripts/ that is itself covered by the spawns above.
-    const src = readFileSync(join(repoRoot, 'scripts/sync-backfill-umbrella.ts'), 'utf8');
+    const src = readFileSync(join(repoRoot, 'scripts/sync-backfill-issues.ts'), 'utf8');
     const specifiers = [...src.matchAll(/^import\s[\s\S]*?from\s+'([^']+)';$/gm)].map((m) => m[1]!);
     expect(specifiers.length, 'no imports were found — the scan is looking at nothing').toBeGreaterThan(0);
     for (const spec of specifiers) {

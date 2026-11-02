@@ -396,6 +396,7 @@ which PR took it, so nobody picks it up twice.
 | — | skill(work-issues): in the go-to-k/cdkd#2762 DocDB and Neptune run a claim collision around Global Tables surfaced only after the lane had launched. `claim.md` §4 already re-checks claims on other issues before each claim. An already-stated rule, first occurrence, so nothing is built. |
 | — | skill(work-issues): on go-to-k/cdkd#5611 the `StorageType` change outlasted the five-minute read-back wait, so the observed baseline held the old value and `drift` failed, but the first integ run passed on timing variance. One PASS is no evidence for a bounded wait. First occurrence, so nothing is built; candidate if it recurs: `verify.md` §8-d asks a wait-bound arm for the slowest measured case, not a green run. |
 | — | skill(work-issues): the go-to-k/cdkd#2762 parent skipped `verify.md` §8-d's real-AWS probe before the final integ and ran it afterwards. It went RED in the #5507 shape and `src` had not changed, so no re-run was owed; a RED needing a `src` change would have voided the final run. An already-stated rule, first occurrence, so nothing is built. |
+| — | ci(issue-conventions): `English-only (pull request)` failed on dependabot PR go-to-k/cdkd#5622 because the body quotes upstream release notes that contain Japanese sample text. First occurrence; the body was edited by hand to drop the quoted CJK, and nothing is built. |
 
 ## Deferred test-coverage gaps
 
