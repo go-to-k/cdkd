@@ -228,14 +228,14 @@ cleanup() {
   # but a clean not-found counts as existing: keeping a record costs nothing.
   STATE_LEFT=0
   if [ -n "${STATE_BUCKET:-}" ]; then
-    if STATE_HEAD="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1 >/dev/null)"; then
+    if STATE_HEAD="$(aws s3api head-object --bucket "${STATE_BUCKET:-}" --key "${STATE_KEY}" 2>&1 >/dev/null)"; then
       STATE_LEFT=1
-    elif ! grep -qiE '404|not ?found' <<< "${STATE_HEAD}"; then
+    elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<< "${STATE_HEAD}"; then
       STATE_LEFT=1
     fi
   fi
   if [ "${STATE_LEFT}" = "1" ] && [ -f "${LOCAL_DIST}" ] &&
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null 2>&1; then
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1; then
     STATE_LEFT=0
   fi
   # The function before its provider: deleting it deletes every version, which
@@ -277,10 +277,10 @@ cleanup() {
   esac
   # The state is the only record of what a failed `state destroy` left behind.
   if [ "${STATE_LEFT}" = "1" ]; then
-    echo "WARN: state destroy failed: s3://${STATE_BUCKET}/${STATE_KEY} is kept, and resources of ${STACK} (VPC, operator roles, security group) may remain" >&2
+    echo "WARN: state destroy failed: s3://${STATE_BUCKET:-}/${STATE_KEY} is kept, and resources of ${STACK} (VPC, operator roles, security group) may remain" >&2
   fi
   if [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
+    aws s3 rm "s3://${STATE_BUCKET:-}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
   # A failed run must not leave capacity billing, and a failed read must not read
   # as none left. Phase 1 may have failed before VPC_ID was set: CDK names the VPC.
