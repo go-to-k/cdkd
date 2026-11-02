@@ -1446,6 +1446,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -1559,6 +1560,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -1697,6 +1701,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -1804,6 +1809,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -1965,6 +1973,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -2078,6 +2087,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -2215,6 +2227,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -2328,6 +2341,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -2460,6 +2476,7 @@
         "ec2-vpc",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -2544,6 +2561,9 @@
           "literal"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "emr-cluster": [
@@ -2696,6 +2716,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -2817,6 +2838,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -2986,6 +3010,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -3093,6 +3118,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -3224,6 +3252,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -3351,6 +3380,9 @@
           "literal"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -3532,6 +3564,7 @@
         "efs-lambda",
         "efs-standalone",
         "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns",
         "elbv2-same-name-replacement",
         "emr-cluster",
         "emr-instance-configs",
@@ -3645,6 +3678,9 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "elbv2-same-name-replacement": [
@@ -4171,7 +4207,8 @@
       "resourceType": "AWS::ElastiCache::CacheCluster",
       "integs": [
         "cache-streaming",
-        "cc-final-snapshot-handlers"
+        "cc-final-snapshot-handlers",
+        "elasticache-snapshot-arns"
       ],
       "signals": {
         "cache-streaming": [
@@ -4179,6 +4216,11 @@
           "l2"
         ],
         "cc-final-snapshot-handlers": [
+          "l1",
+          "l2",
+          "literal"
+        ],
+        "elasticache-snapshot-arns": [
           "l1",
           "l2",
           "literal"
@@ -4190,7 +4232,8 @@
       "integs": [
         "cache-streaming",
         "cc-final-snapshot-handlers",
-        "elasticache-replicationgroup-getatt"
+        "elasticache-replicationgroup-getatt",
+        "elasticache-snapshot-arns"
       ],
       "signals": {
         "cache-streaming": [
@@ -4202,6 +4245,10 @@
           "l2"
         ],
         "elasticache-replicationgroup-getatt": [
+          "l1",
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l1",
           "l2"
         ]
@@ -5728,6 +5775,7 @@
         "dynamodb-streams",
         "ecr",
         "efs-lambda",
+        "elasticache-snapshot-arns",
         "event-driven",
         "eventbridge",
         "eventbridge-scheduler",
@@ -5918,6 +5966,9 @@
           "l2"
         ],
         "efs-lambda": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "event-driven": [
@@ -6425,6 +6476,7 @@
         "ec2-vpc",
         "ecs-fargate",
         "ecs-service-update-props",
+        "elasticache-snapshot-arns",
         "fallback-recreate-children",
         "fsx-lustre",
         "full-stack-demo",
@@ -6499,6 +6551,9 @@
           "l2"
         ],
         "ecs-service-update-props": [
+          "l2"
+        ],
+        "elasticache-snapshot-arns": [
           "l2"
         ],
         "fallback-recreate-children": [

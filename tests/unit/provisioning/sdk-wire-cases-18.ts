@@ -419,6 +419,7 @@ const REDIS_CLUSTER: Bag = {
   AutoMinorVersionUpgrade: true,
   NotificationTopicArn: TOPIC_ARN,
   SnapshotName: 'snap',
+  SnapshotArns: ['arn:aws:s3:::seed-bucket/dump.rdb'],
   LogDeliveryConfigurations: [
     {
       LogType: 'slow-log',

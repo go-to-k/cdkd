@@ -90,6 +90,17 @@ const NODE_TYPE_MODIFY_WAIT_MS = Math.max(
 const MODIFY_DROPPED_AFTER_MS = 2 * 60_000;
 
 /**
+ * `CacheClusterStatus` values (the SDK's documented set) a cluster does not
+ * leave without a user action, so the available-wait fails on them at once:
+ * `restore-failed` (a seed RDB from SnapshotArns it could not load; AWS's
+ * guide says delete the cluster and start over) and `incompatible-network`.
+ */
+const TERMINAL_CLUSTER_STATUSES: ReadonlySet<string> = new Set([
+  'restore-failed',
+  'incompatible-network',
+]);
+
+/**
  * The members of `a` left after taking out one occurrence per member of `b`
  * (a multiset difference): the Availability Zones a desired
  * `PreferredAvailabilityZones` list asks for that no live node occupies.
@@ -345,6 +356,7 @@ export class ElastiCacheProvider implements ResourceProvider {
         'Tags',
         'NotificationTopicArn',
         'SnapshotName',
+        'SnapshotArns',
         'LogDeliveryConfigurations',
         'NetworkType',
         'IpDiscovery',
@@ -766,6 +778,10 @@ export class ElastiCacheProvider implements ResourceProvider {
           AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean | undefined,
           NotificationTopicArn: properties['NotificationTopicArn'] as string | undefined,
           SnapshotName: properties['SnapshotName'] as string | undefined,
+          // go-to-k/cdkd#5635: create-only (a change replaces the cluster),
+          // and DescribeCacheClusters has no member for it, so it is sent
+          // here and nowhere else.
+          SnapshotArns: properties['SnapshotArns'] as string[] | undefined,
           LogDeliveryConfigurations: properties['LogDeliveryConfigurations'] as
             | LogDeliveryConfigurationRequest[]
             | undefined,
@@ -1468,6 +1484,15 @@ export class ElastiCacheProvider implements ResourceProvider {
 
       this.logger.debug(`CacheCluster ${cacheClusterId} status: ${status}`);
 
+      // go-to-k/cdkd#5635: statuses the cluster never leaves on its own (a
+      // seed RDB from SnapshotArns ElastiCache could not load leaves it
+      // `restore-failed`): fail now, not at the cap.
+      if (status !== undefined && TERMINAL_CLUSTER_STATUSES.has(status)) {
+        throw new Error(
+          safeMsg`CacheCluster ${cacheClusterId} is ${status} and will not become available. Check the cluster's events (aws elasticache describe-events --source-type cache-cluster --source-identifier ${cacheClusterId}) for the reason.`
+        );
+      }
+
       const liveNodeType = cluster?.CacheNodeType;
       // A removal is done when the describe lists none of the removed nodes
       // (issue #5441): right after the Modify the cluster can still read
@@ -1561,6 +1586,18 @@ export class ElastiCacheProvider implements ResourceProvider {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Create-only seeds DescribeCacheClusters has no member for (go-to-k/cdkd#5635):
+   * `readCurrentState` never emits them, so a drift run whose baseline is the
+   * template `properties` (a record with no observed capture) would report
+   * them as removed from AWS on every run.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::ElastiCache::CacheCluster'
+      ? ['SnapshotArns', 'SnapshotName']
+      : [];
   }
 
   /**
