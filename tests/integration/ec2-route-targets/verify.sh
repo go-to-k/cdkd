@@ -382,8 +382,11 @@ if env -u CDKD_TEST_UPDATE CDKD_TEST_ODB_PROBE=true CDKD_SDK_CALL_LOG="${ODB_CAL
 fi
 # AWS's own text, from a real CreateRoute call: "The odbNetworkArn ID '<arn>'
 # does not exist" (error code InvalidOdbNetworkArn.NotFound). Both the field
-# name and the ARN must appear, so an unrelated failure cannot pass.
-if ! grep -qF "odbNetworkArn ID '${ODB_ARN}' does not exist" "${ODB_OUT}"; then
+# name and the ARN must appear, so an unrelated failure cannot pass. cdkd
+# masks an ARN's account segment as `<account-id>` in the errors it prints
+# (ACCOUNT_ID_MASK), so the account is matched in either form.
+ODB_ARN_RE="arn:${PARTITION}:odb:${REGION}:(${ACCOUNT_ID}|<account-id>):odb-network/odbnet_cdkd5631probe"
+if ! grep -qE "odbNetworkArn ID '${ODB_ARN_RE}' does not exist" "${ODB_OUT}"; then
   echo "FAIL: the Phase 1b deploy failed, but not with EC2's rejection of the ODB network ARN (issue #5631)" >&2
   tail -40 "${ODB_OUT}" >&2
   exit 1
