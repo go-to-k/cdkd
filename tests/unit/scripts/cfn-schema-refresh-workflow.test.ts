@@ -85,7 +85,7 @@ const parsed: any = parseYaml(workflow);
 /**
  * The body of the guard arm introduced by `needle`, up to its closing `fi`.
  *
- * Ported from the sibling `backfill-umbrella-sync-workflow.test.ts` — and the
+ * Ported from the sibling `backfill-issues-sync-workflow.test.ts` — and the
  * duplication is deliberate for the reason that file's header gives: a shared
  * helper would let a deletion there silently empty this file too.
  *
@@ -387,7 +387,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     });
 
     it('no longer writes the umbrella from here, and gives up the scope that took', () => {
-      // The splice moved to `backfill-umbrella-sync.yml`, driven by pushes to
+      // The splice moved to `backfill-issues-sync.yml`, driven by pushes to
       // `main`. Writing it from HERE meant writing it from the job's own
       // post-refresh workspace, before the PR was reviewed — so closing the PR
       // left the issue asserting properties `main` does not have (measured
@@ -1907,7 +1907,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     expect(workflow).toMatch(/^\s+contents: write$/m);
     expect(workflow).toMatch(/^\s+pull-requests: write$/m);
     // `issues: write` used to be asserted PRESENT here, for the umbrella fold.
-    // That fold now lives in `backfill-umbrella-sync.yml`, so the scope is
+    // That fold now lives in `backfill-issues-sync.yml`, so the scope is
     // asserted ABSENT instead — and the two directions are held together by
     // the same anti-vacuity floor as before, one polarity over: the permission
     // may be gone only while no step actually calls the issue API.
@@ -1946,7 +1946,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
     const usesIssueApi = /gh issue |\/issues\//.test(shellBodies);
     expect(
       usesIssueApi,
-      'a step calls the issue API again — it needs issues: write back, or it belongs in backfill-umbrella-sync.yml'
+      'a step calls the issue API again — it needs issues: write back, or it belongs in backfill-issues-sync.yml'
     ).toBe(false);
     expect(workflow, 'issues: write is back without a caller').not.toMatch(/^\s+issues: write$/m);
   });

@@ -30,12 +30,12 @@ verdict. Then split the filed count by what §5-f did with each:
 ```bash
 # Folded INTO an existing issue: `updatedAt` alone cannot tell (§4's claim
 # comments touch every taken issue), so count BODIES that gained a `- [ ]` row.
-# Keep BOTH label exclusions: a coverage-map sync rewrites a backfill issue's
-# generated block, all `- [ ]` rows.
+# Keep the `backfill-type` exclusion: a coverage-map sync rewrites every such
+# body.
 gh issue list --state open --limit 200 --json number,title,updatedAt,labels \
   --jq '.[] | select(.updatedAt > "<this run start ISO>")
         | select([.labels[].name] | index("backfill-type") | not)
-        | select([.labels[].name] | index("backfill-umbrella") | not) | .number' \
+        | .number' \
 | while read -r n; do
     gh issue view "$n" --json body -q '.body' \
       | grep -qE '^[[:space:]]*- \[ \]' && echo "$n"

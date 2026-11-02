@@ -3179,7 +3179,7 @@ describe('--umbrella-checklist returns before the refresh-report setup', () => {
     // used to return further down — after `assertFixtureFloor` and after
     // `collectFixtureDeltas`, which shells out to `git show` per fixture. None
     // of that feeds the checklist and all of it can fail, which matters now
-    // that `backfill-umbrella-sync.yml` runs this mode from a plain `main`
+    // that `backfill-issues-sync.yml` runs this mode from a plain `main`
     // checkout with no refresh in front of it.
     //
     // An empty fixtures directory is the cheapest proof of the ordering: the
@@ -3274,21 +3274,19 @@ describe('the finished-campaign sentinel', () => {
     // rows-or-nothing guard kill the step under `set -e` with no annotation,
     // and the umbrella kept its last stale rows permanently.
     expect(UMBRELLA_EMPTY_SENTINEL).toMatch(/^_No remaining silent-drop properties/);
-    // ONE SPELLING of this sentence, in two renderers. The reconciler now owns
-    // the umbrella's generated block and needs the finished-campaign sentence
-    // for it — an empty block reads as a broken job — so it IMPORTS this
-    // constant rather than carrying a copy. A second literal is how the flat
-    // checklist and the published block come to disagree about whether the
-    // campaign is over.
-    const reconciler = readFileSync(join(REPO_ROOT, 'scripts/sync-backfill-umbrella.ts'), 'utf8');
+    // ONE renderer emits this sentence again. go-to-k/cdkd#2949 briefly gave it
+    // a second — the parent's per-type index — and go-to-k/cdkd#2998 deleted
+    // that along with the whole parent-body splice, so the reconciler must not
+    // carry a copy of the text OR an unused import of it.
+    const reconciler = readFileSync(join(REPO_ROOT, 'scripts/sync-backfill-issues.ts'), 'utf8');
     expect(
       reconciler.includes(UMBRELLA_EMPTY_SENTINEL),
-      'the sentinel text was copied into the reconciler instead of imported'
+      'the sentinel text was copied into the reconciler'
     ).toBe(false);
     expect(
       reconciler,
-      'the reconciler no longer reads the sentinel — an empty campaign renders as a blank block'
-    ).toContain('UMBRELLA_EMPTY_SENTINEL');
+      'the reconciler imports the sentinel again — it renders no campaign-level text'
+    ).not.toContain('UMBRELLA_EMPTY_SENTINEL');
   });
 
   it('renders rows on the real map, so the sentinel arm is not the live one', () => {
