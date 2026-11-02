@@ -656,8 +656,8 @@ conditional the escape is:
   deleted from the template still needs Cloud Control to unset it, so the flip
   waits one deploy. `AWS::SNS::Topic`,
   `AWS::ElasticLoadBalancingV2::Listener`, `AWS::Lambda::WebFunctionRevision`,
-  `AWS::Lambda::WebFunctionEndpoint` and `AWS::Lambda::NetworkConnector` are
-  the members today.
+  `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::NetworkConnector`,
+  `AWS::EFS::MountTarget` and `AWS::Route53::HostedZone` are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

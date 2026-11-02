@@ -5078,9 +5078,6 @@ export class CloudControlProvider implements ResourceProvider {
       'AWS::CDK::Metadata',
       'Custom::CDKBucketDeployment',
       'Custom::S3AutoDeleteObjects',
-
-      // Route53 hosted zones (complex)
-      'AWS::Route53::HostedZone',
     ]);
 
     if (unsupportedTypes.has(resourceType)) {

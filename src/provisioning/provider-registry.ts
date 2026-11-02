@@ -377,6 +377,39 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'alb',
     },
   ],
+  [
+    'AWS::EFS::MountTarget',
+    {
+      // Pinned to cc-api: every mount target first deployed while declaring a
+      // property the provider did not handle yet (go-to-k/cdkd#2762 wired
+      // IpAddress, IpAddressType and Ipv6Address). Cloud Control manages it
+      // correctly; this is admitted for the SDK path's speed.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `fsmt-...` id: the schema primaryIdentifier is Id ' +
+        'and EFSProvider.create records the CreateMountTarget MountTargetId (Cloud ' +
+        'Control Identifier measured us-east-1, 2026-11-02)',
+      issue: 'https://github.com/go-to-k/cdkd/issues/5641',
+      integFixture: 'cc-to-sdk-reroute-mount-target',
+    },
+  ],
+  [
+    'AWS::Route53::HostedZone',
+    {
+      // Pinned to cc-api: every zone first deployed while declaring a property
+      // the provider did not handle yet, DelegationSetId among them
+      // (go-to-k/cdkd#2762). Cloud Control manages it correctly; this is
+      // admitted for the SDK path's speed.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'both layers store the bare `Z...` zone id, without the `/hostedzone/` prefix ' +
+        'Route 53 answers with: the schema primaryIdentifier is Id, Route53Provider.create ' +
+        'strips the prefix, and the Cloud Control Identifier has none (measured ' +
+        'us-east-1, 2026-11-02)',
+      issue: 'https://github.com/go-to-k/cdkd/issues/5641',
+      integFixture: 'cc-to-sdk-reroute-hosted-zone',
+    },
+  ],
 ]);
 
 /** Why a `'cc-broken'` type cannot be routed to Cloud Control, as users read it. */

@@ -2823,7 +2823,9 @@ To admit a type:
    user-supplied name keeps its id through a destroy + recreate, so that
    fixture also attaches an out-of-band subscription cdkd does not manage and
    asserts it survives. Without such a witness the arm cannot tell an in-place
-   update from a replacement, which is the whole claim.
+   update from a replacement, which is the whole claim. An AWS-minted id is its
+   own witness, once the recreate is seen to change it
+   ([`tests/integration/cc-to-sdk-reroute-mount-target/`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/cc-to-sdk-reroute-mount-target/)).
 4. Add the entry naming that fixture. `tests/unit/provisioning/sticky-exempt-registry.test.ts`
    refuses an entry whose fixture does not exist or has no row in the integ
    ledger. A fixture that ran before your arm was added still passes that
