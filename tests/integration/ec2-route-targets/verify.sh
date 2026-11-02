@@ -380,13 +380,15 @@ if env -u CDKD_TEST_UPDATE CDKD_TEST_ODB_PROBE=true CDKD_SDK_CALL_LOG="${ODB_CAL
   tail -40 "${ODB_OUT}" >&2
   exit 1
 fi
-# AWS's own text, from a real CreateRoute call: "The odbNetworkArn ID '<arn>'
-# does not exist" (error code InvalidOdbNetworkArn.NotFound). Both the field
-# name and the ARN must appear, so an unrelated failure cannot pass. cdkd
-# masks an ARN's account segment as `<account-id>` in the errors it prints
-# (ACCOUNT_ID_MASK), so the account is matched in either form.
+# EC2's refusal of the ODB network ARN, in the form each route prints it (both
+# copied from real runs): the SDK provider prints only the error code without
+# --verbose ("Failed to create Route OdbProbeRoute:
+# InvalidOdbNetworkArn.NotFound."), while Cloud Control relays AWS's message
+# ("The odbNetworkArn ID '<arn>' does not exist"), its account segment masked
+# as `<account-id>` (ACCOUNT_ID_MASK). Either names the ODB field, so an
+# unrelated failure cannot pass; the call counts below tell the routes apart.
 ODB_ARN_RE="arn:${PARTITION}:odb:${REGION}:(${ACCOUNT_ID}|<account-id>):odb-network/odbnet_cdkd5631probe"
-if ! grep -qE "odbNetworkArn ID '${ODB_ARN_RE}' does not exist" "${ODB_OUT}"; then
+if ! grep -qE "OdbProbeRoute: InvalidOdbNetworkArn\.NotFound\b|odbNetworkArn ID '${ODB_ARN_RE}' does not exist" "${ODB_OUT}"; then
   echo "FAIL: the Phase 1b deploy failed, but not with EC2's rejection of the ODB network ARN (issue #5631)" >&2
   tail -40 "${ODB_OUT}" >&2
   exit 1
