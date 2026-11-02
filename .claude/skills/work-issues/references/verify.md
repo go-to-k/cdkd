@@ -104,12 +104,11 @@ the throwaway tree only, never the PR, and re-run (#5414), at most two such work
 (#5528) — a third stops the probe for the parent; at an older step, harden it and
 re-run (#5218). A refusal at the arm's OWN deploy, emitted by the route the
 fix replaces while the fixed route accepts the shape, IS the symptom (#5507);
-one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
-(#4927). A failure HINT's needle, a provider retry regex's, or a fixture's
-grep of an AWS refusal is copied from a real red run, never reasoned
-(#4336, #5592) — from CDKD's output on EACH route the arm reaches, never
-`aws` CLI's: cdkd masks ARN account ids, and an SDK provider prints only the
-code without `--verbose` (#5680: two rounds); a refusal the
+one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework
+the arm so the symptom reaches AWS (#4927). A NEEDLE (hint, retry regex,
+fixture refusal grep) is copied from cdkd's red output on EACH route, never
+reasoned nor the `aws` CLI's (#4336, #5592; #5680: masked account ids,
+code-only SDK errors); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert in a
 THROWAWAY detached tree at the PUSHED final sha, never the lane's** — the lane
