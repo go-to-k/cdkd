@@ -1078,6 +1078,11 @@
       "scenarios": []
     },
     {
+      "name": "ecs-gateway-role-propagation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ecs-schedule-targets",
       "annotated": false,
       "scenarios": []
@@ -3594,6 +3599,7 @@
     "ec2-route-targets",
     "ec2-sg-source-group-name",
     "ecr-scanning",
+    "ecs-gateway-role-propagation",
     "ecs-schedule-targets",
     "ecs-taskdef-tags-launch-type",
     "efs-immutable-replacement",
