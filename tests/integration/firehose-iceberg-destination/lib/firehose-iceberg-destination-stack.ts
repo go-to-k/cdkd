@@ -30,6 +30,13 @@ export const ROLE_NAME_PREFIX = 'CdkdFirehoseIceberg5636Role';
  * `FailedDataOnly`, the only value Firehose accepts for Iceberg today (the
  * SDK's member docs), so no phase can change it.
  *
+ * `SchemaEvolutionConfiguration` and `TableCreationConfiguration` are left out:
+ * Firehose refuses an enabled schema evolution on a DirectPut stream
+ * ("Iceberg schema evolution can not be enabled for the request type of
+ * stream", InvalidArgumentException, measured 2026-11-02 on both routes), and
+ * AWS documents both only for a database source, which needs a reachable
+ * database. Their mapping is pinned by the unit tests only.
+ *
  * No record is ever put, so Firehose creates no table and writes nothing to
  * the bucket: only control-plane resources exist.
  */
@@ -110,8 +117,6 @@ export class FirehoseIcebergDestinationStack extends cdk.Stack {
             destinationTableName: isUpdate ? 'events_v2' : 'events',
           },
         ],
-        schemaEvolutionConfiguration: { enabled: true },
-        tableCreationConfiguration: { enabled: true },
         bufferingHints: { intervalInSeconds: isUpdate ? 120 : 60, sizeInMBs: 1 },
         retryOptions: { durationInSeconds: isUpdate ? 600 : 300 },
         s3BackupMode: 'FailedDataOnly',

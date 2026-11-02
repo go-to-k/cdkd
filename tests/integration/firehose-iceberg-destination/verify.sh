@@ -22,6 +22,12 @@
 #   3. Destroy; assert the stream, database, bucket, role and state file are
 #      gone.
 #
+# SchemaEvolutionConfiguration and TableCreationConfiguration are not
+# templated: an enabled schema evolution is refused on a DirectPut stream
+# (InvalidArgumentException "Iceberg schema evolution can not be enabled for
+# the request type of stream", measured 2026-11-02), and AWS documents both
+# only for a database source. They are pinned by the unit tests only.
+#
 # The backup mode stays FailedDataOnly in both phases: it is the only value
 # Firehose accepts for Iceberg (the SDK's member docs) and also its default,
 # so the write side of `s3BackupMode` cannot be told apart on AWS. Its READ
@@ -206,8 +212,6 @@ assert_fixed_members() { # usage: assert_fixed_members <desc json>
   assert_eq "CatalogConfiguration.CatalogARN" "$(jq -r '.CatalogConfiguration.CatalogARN' <<<"${desc}")" "${CATALOG_ARN}"
   assert_eq "CatalogConfiguration.WarehouseLocation" \
     "$(jq -r '.CatalogConfiguration.WarehouseLocation' <<<"${desc}")" "s3://${BUCKET_NAME}/warehouse/"
-  assert_eq "SchemaEvolutionConfiguration.Enabled" "$(jq -r '.SchemaEvolutionConfiguration.Enabled' <<<"${desc}")" "true"
-  assert_eq "TableCreationConfiguration.Enabled" "$(jq -r '.TableCreationConfiguration.Enabled' <<<"${desc}")" "true"
   assert_eq "BufferingHints.SizeInMBs" "$(jq -r '.BufferingHints.SizeInMBs' <<<"${desc}")" "1"
   assert_eq "RoleARN" "$(jq -r '.RoleARN' <<<"${desc}")" "${ROLE_ARN}"
   assert_eq "S3 BucketARN" "$(jq -r '.S3DestinationDescription.BucketARN' <<<"${desc}")" "arn:aws:s3:::${BUCKET_NAME}"
