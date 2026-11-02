@@ -21,8 +21,9 @@ import {
  *  - `TableType`: no API member; `Regional` on two replicas is refused.
  */
 
-const { mockSend, warnSpy, debugSpy, settleSpy, deadline, watchLabels } = vi.hoisted(() => ({
+const { mockSend, scalingSend, warnSpy, debugSpy, settleSpy, deadline, watchLabels } = vi.hoisted(() => ({
   mockSend: vi.fn(),
+  scalingSend: vi.fn(),
   warnSpy: vi.fn(),
   debugSpy: vi.fn(),
   settleSpy: vi.fn(),
@@ -89,7 +90,7 @@ vi.mock('@aws-sdk/client-application-auto-scaling', async () => {
   return {
     ...actual,
     ApplicationAutoScalingClient: vi.fn().mockImplementation(() => ({
-      send: vi.fn().mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] }),
+      send: scalingSend,
     })),
   };
 });
@@ -164,6 +165,7 @@ beforeEach(() => {
   deadline.remainingMs = Number.POSITIVE_INFINITY;
   deleteTableRetryDelays.sleep = () => Promise.resolve();
   live = { TableName: TABLE, TableArn: TABLE_ARN, TableStatus: 'ACTIVE', TableId: 'tid' };
+  scalingSend.mockResolvedValue({ ScalableTargets: [], ScalingPolicies: [] });
   mockSend.mockImplementation((command: { constructor: { name: string } }) => {
     switch (command.constructor.name) {
       case 'CreateTableCommand':
@@ -1171,6 +1173,125 @@ describe('update', () => {
         expect(throughputs()).toEqual([]);
       });
 
+      // AWS as measured: with the local write target gone, every replica Update is refused.
+      const refuseReplicaUpdatesOnceTargetGone = (): void => {
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        let targetGone = false;
+        scalingSend.mockImplementation((command: { constructor: { name: string } }) => {
+          if (command.constructor.name === 'DeregisterScalableTargetCommand') targetGone = true;
+          return Promise.resolve({ ScalableTargets: [{}], ScalingPolicies: [] });
+        });
+        mockSend.mockImplementation((command: { input: Rec }) => {
+          const update = (command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Update'];
+          return update && targetGone
+            ? Promise.reject(new Error('Table write capacity should either be Pay-Per-Request or AutoScaled'))
+            : respond(command);
+        });
+      };
+      const deregistered = (): number =>
+        scalingSend.mock.calls.filter(
+          (c) => (c[0] as object).constructor.name === 'DeregisterScalableTargetCommand'
+        ).length;
+
+      it('recovers on a re-run with the write target still registered', async () => {
+        let failPutBack = true;
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { input: Rec }) =>
+          failPutBack && command.input['ReplicaUpdates']
+            ? Promise.reject(new Error('throttled'))
+            : respond(command)
+        );
+        refuseReplicaUpdatesOnceTargetGone();
+        const declared = replicated(7, { WriteCapacityUnits: 4 });
+        await expect(update(declared, replicated(7, scaling(3)))).rejects.toThrow();
+        expect(deregistered()).toBe(0);
+
+        failPutBack = false;
+        live = { ...live, ProvisionedThroughput: { ReadCapacityUnits: 7, WriteCapacityUnits: 4 } };
+        await update(declared, {
+          ...replicated(7, scaling(3)),
+          Replicas: (declared['Replicas'] as Rec[]).map((r) => ({ Region: r['Region'] })),
+        });
+        expect(replicaUpdates()).toContainEqual({
+          Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override },
+        });
+        expect(deregistered()).toBe(1);
+      });
+
+      it('takes a replica change in the deploy that removes the write target', async () => {
+        refuseReplicaUpdatesOnceTargetGone();
+        const moved = replicated(7, { WriteCapacityUnits: 4 });
+        (moved['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 6,
+        };
+        await update(moved, replicated(7, scaling(3)));
+        expect(replicaUpdates()).toContainEqual({
+          Update: {
+            RegionName: 'us-west-2',
+            ProvisionedThroughputOverride: { ReadCapacityUnits: 6 },
+          },
+        });
+        expect(deregistered()).toBe(1);
+      });
+
+      it('registers a declared write target before a capacity send', async () => {
+        const order: string[] = [];
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        scalingSend.mockImplementation((command: { constructor: { name: string } }) => {
+          order.push(command.constructor.name);
+          return Promise.resolve({ ScalableTargets: [], ScalingPolicies: [] });
+        });
+        mockSend.mockImplementation((command: { input: Rec }) => {
+          if (command.input['ReplicaUpdates']) order.push('ReplicaUpdates');
+          return respond(command);
+        });
+        await update(replicated(8, scaling(3)), replicated(7, { WriteCapacityUnits: 3 }));
+        expect(order.indexOf('RegisterScalableTargetCommand')).toBeGreaterThanOrEqual(0);
+        expect(order.indexOf('RegisterScalableTargetCommand')).toBeLessThan(
+          order.indexOf('ReplicaUpdates')
+        );
+      });
+
+      it.each([['replayingState'], ['desiredFromAwsReadback']])(
+        'warns and sends no capacity on a %s bag it could not put a region back after',
+        async (flag) => {
+          await update(
+            replicated(7, { WriteCapacityUnits: 4 }),
+            replicated(7, { WriteCapacityUnits: 3 }),
+            { [flag]: true }
+          );
+          expect(throughputs()).toEqual([]);
+          expect(warned()).toContain('the capacity was not sent');
+        }
+      );
+
+      it('puts back no region the template drops', async () => {
+        const dropped = replicated(7, { WriteCapacityUnits: 4 });
+        dropped['Replicas'] = (dropped['Replicas'] as Rec[]).slice(0, 1);
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { input: Rec }) => {
+          if ((command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Delete']) {
+            live = { ...live, Replicas: (live['Replicas'] as Rec[]).slice(0, 1) };
+          }
+          return respond(command);
+        });
+        await update(dropped, replicated(7, scaling(3)));
+        expect(replicaUpdates().filter((u) => (u as Rec)['Update'])).toEqual([]);
+      });
+
+      it('takes a drop or a declared sent read as no reason to refuse', async () => {
+        const atSent = replicated(7, { WriteCapacityUnits: 4 });
+        (atSent['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 7,
+        };
+        const before = replicated(7, { WriteCapacityUnits: 3 });
+        (before['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 7,
+        };
+        await update(atSent, before);
+        expect(throughputs()).toEqual([{ ReadCapacityUnits: 7, WriteCapacityUnits: 4 }]);
+      });
+
       it('leaves the capacity unchanged when a region cannot be read before the send', async () => {
         regionalClient().mockImplementation(() => ({
           send: () => Promise.reject(new Error('denied')),
@@ -1224,6 +1345,39 @@ describe('update', () => {
           calls.findIndex((u) => u['ReplicaUpdates'])
         );
       });
+    });
+
+    it('re-sends an added replica override: DynamoDB drops the one on Create', async () => {
+      const west = {
+        Region: 'us-west-2',
+        ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 },
+      };
+      const one = local({ ReadCapacityUnits: 7 }, scaling(3));
+      const two = { ...one, Replicas: [...(one['Replicas'] as Rec[]), west] };
+      let created = false;
+      const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+      mockSend.mockImplementation((command: { input: Rec }) => {
+        if ((command.input['ReplicaUpdates'] as Rec[] | undefined)?.[0]?.['Create']) {
+          created = true;
+          live = {
+            ...live,
+            Replicas: [{ RegionName: 'us-west-2', ReplicaStatus: 'ACTIVE' }],
+          };
+        }
+        return respond(command);
+      });
+      await update(two, one);
+      expect(created).toBe(true);
+      const sentUpdates = updates().flatMap((u) => (u['ReplicaUpdates'] as Rec[] | undefined) ?? []);
+      expect(sentUpdates).toContainEqual({
+        Update: {
+          RegionName: 'us-west-2',
+          ProvisionedThroughputOverride: { ReadCapacityUnits: 2 },
+        },
+      });
+      expect(sentUpdates.findIndex((u) => u['Create'])).toBeLessThan(
+        sentUpdates.findIndex((u) => u['Update'])
+      );
     });
 
     it('sends a cross-region override with the replica, not ProvisionedThroughput', async () => {
