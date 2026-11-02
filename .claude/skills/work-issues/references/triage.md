@@ -26,7 +26,9 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
 
 To WORK the campaign, take a type's own issue (`gh issue list --label
-backfill-type`) and read its comments, which hold the claims and measurements;
+backfill-type`) and read its comments, which hold the claims and measurements —
+REQUIRED before returning an empty pick, since this query hides them
+(2026-11-02: a "0 picks" left four unclaimed type issues unread);
 §4's claim comment goes there, and `filing.md` §5-f says when to write `Closes`.
 
 ## 2. Map the collision landscape
