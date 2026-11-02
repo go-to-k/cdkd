@@ -2433,6 +2433,7 @@
     "--from-state",
     "--frozen-lockfile",
     "--function-name",
+    "--function-scaling-config",
     "--global-cluster-identifier",
     "--global-secondary-index-updates",
     "--graph-identifier",

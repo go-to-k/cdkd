@@ -2311,6 +2311,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'Architectures',
+        'CapacityProviderConfig',
         'Code',
         'CodeSigningConfigArn',
         'DeadLetterConfig',
@@ -2320,6 +2321,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'EphemeralStorage',
         'FileSystemConfigs',
         'FunctionName',
+        'FunctionScalingConfig',
         'Handler',
         'ImageConfig',
         'KmsKeyArn',
@@ -2327,6 +2329,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'LoggingConfig',
         'MemorySize',
         'PackageType',
+        'PublishToLatestPublished',
         'RecursiveLoop',
         'ReservedConcurrentExecutions',
         'Role',
@@ -2339,14 +2342,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TracingConfig',
         'VpcConfig',
       ]),
-      silentDrop: new Map<string, string>([
-        ['CapacityProviderConfig', 'not yet implemented by cdkd'],
-        ['FunctionScalingConfig', 'not yet implemented by cdkd'],
-        [
-          'PublishToLatestPublished',
-          'CloudFormation-only version-publishing directive with no AWS SDK equivalent',
-        ],
-      ]),
+      silentDrop: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnapStartResponse']),
       ccRouteUnavailable: false,

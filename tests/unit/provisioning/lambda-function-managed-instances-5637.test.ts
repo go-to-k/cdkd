@@ -1,0 +1,910 @@
+/**
+ * go-to-k/cdkd#5637: Lambda Managed Instances on the SDK route. Every semantic
+ * here was measured on CloudFormation and the SDK (us-east-1, 2026-11-02):
+ *
+ * - `Function.FunctionScalingConfig` applies to `$LATEST.PUBLISHED`; CFn makes
+ *   no numbered version.
+ * - CFn's CreateFunction carries `Publish` + `PublishTo: LATEST_PUBLISHED` even
+ *   with `PublishToLatestPublished: false`.
+ * - On update CFn publishes unless that flag is false.
+ * - Removing the scaling block resets it (`Put` with `{}`).
+ * - Removing `CapacityProviderConfig` fails, and scaling without one fails.
+ * - `$LATEST` stops at `ActiveNonInvocable`, so the settle reads the qualifier.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import {
+  CreateFunctionCommand,
+  DeleteFunctionCommand,
+  GetFunctionCommand,
+  GetFunctionConfigurationCommand,
+  GetFunctionScalingConfigCommand,
+  PublishVersionCommand,
+  PutFunctionConcurrencyCommand,
+  PutFunctionRecursionConfigCommand,
+  PutFunctionScalingConfigCommand,
+  PutRuntimeManagementConfigCommand,
+  ResourceNotFoundException,
+  UpdateFunctionConfigurationCommand,
+} from '@aws-sdk/client-lambda';
+
+const mockSend = vi.fn();
+const warn = vi.hoisted(() => vi.fn());
+
+vi.mock('../../../src/utils/aws-clients.js', () => ({
+  getAwsClients: () => ({
+    lambda: { send: mockSend, config: { region: () => Promise.resolve('us-east-1') } },
+    ec2: { send: vi.fn() },
+  }),
+}));
+
+vi.mock('../../../src/utils/logger.js', () => {
+  const childLogger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn,
+    error: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  };
+  return {
+    getLogger: () => ({
+      child: () => childLogger,
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    }),
+  };
+});
+
+import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
+import { ProvisioningError } from '../../../src/utils/error-handler.js';
+import { isDeleteStarted } from '../../../src/provisioning/delete-started.js';
+
+const TYPE = 'AWS::Lambda::Function';
+const QUALIFIER = '$LATEST.PUBLISHED';
+const CAPACITY = {
+  LambdaManagedInstancesCapacityProviderConfig: {
+    CapacityProviderArn: 'arn:aws:lambda:us-east-1:123456789012:capacity-provider:cp',
+  },
+};
+const SCALING = { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 2 };
+const BASE = {
+  FunctionName: 'fn',
+  Code: { S3Bucket: 'b', S3Key: 'k' },
+  Role: 'arn:aws:iam::123456789012:role/exec',
+  Runtime: 'python3.13',
+  Handler: 'index.handler',
+};
+const MANAGED = { ...BASE, CapacityProviderConfig: CAPACITY };
+
+type Handler = (command: unknown) => unknown;
+
+/** Answers every call as a settled function, unless `override` answers first. */
+function arm(override?: Handler, liveManaged = true): void {
+  let deleted = false;
+  mockSend.mockImplementation(async (command: unknown) => {
+    const answer = override?.(command);
+    if (answer !== undefined) return answer;
+    if (command instanceof DeleteFunctionCommand) deleted = true;
+    if (command instanceof GetFunctionCommand && deleted) {
+      throw new ResourceNotFoundException({ message: 'gone', $metadata: {} });
+    }
+    if (command instanceof CreateFunctionCommand) {
+      return { FunctionName: 'fn', FunctionArn: 'arn:fn', LastModified: 't' };
+    }
+    if (command instanceof GetFunctionConfigurationCommand) {
+      return { State: 'Active', LastUpdateStatus: 'Successful' };
+    }
+    if (command instanceof GetFunctionCommand) {
+      return {
+        Configuration: {
+          FunctionArn: 'arn:fn',
+          FunctionName: 'fn',
+          LastUpdateStatus: 'Successful',
+          ...(liveManaged && { CapacityProviderConfig: CAPACITY }),
+        },
+      };
+    }
+    return {};
+  });
+}
+
+function sent<T>(ctor: new (...args: never[]) => T): T[] {
+  return mockSend.mock.calls.map((c) => c[0]).filter((c): c is T => c instanceof ctor);
+}
+
+/** The constructor name of each call, in order, for the given commands. */
+function order(...ctors: (new (...args: never[]) => unknown)[]): string[] {
+  return mockSend.mock.calls
+    .map((c) => c[0] as object)
+    .filter((c) => ctors.some((ctor) => c instanceof ctor))
+    .map((c) => c.constructor.name);
+}
+
+describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
+  let provider: LambdaFunctionProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSend.mockReset();
+    provider = new LambdaFunctionProvider();
+    Object.assign(provider, { latestPublishedPollMs: 0, cleanupDeleteRetryDelayMs: 0 });
+    arm();
+  });
+
+  describe('create', () => {
+    it.each([
+      ['absent', undefined],
+      ['true', true],
+      ['false', false],
+    ])('publishes whatever the flag says (%s)', async (_name, flag) => {
+      await provider.create('Fn', TYPE, {
+        ...MANAGED,
+        ...(flag !== undefined && { PublishToLatestPublished: flag }),
+      });
+      const input = sent(CreateFunctionCommand)[0]!.input;
+      expect(input.CapacityProviderConfig).toEqual(CAPACITY);
+      expect(input.Publish).toBe(true);
+      expect(input.PublishTo).toBe('LATEST_PUBLISHED');
+    });
+
+    it('waits on the published version, then applies scaling to it, then waits again', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 1) {
+          return { State: 'Pending', LastUpdateStatus: 'Successful' };
+        }
+        return undefined;
+      });
+      await provider.create('Fn', TYPE, { ...MANAGED, FunctionScalingConfig: SCALING });
+
+      expect(sent(GetFunctionConfigurationCommand)[0]!.input).toEqual({
+        FunctionName: 'fn',
+        Qualifier: QUALIFIER,
+      });
+      expect(sent(PutFunctionScalingConfigCommand)[0]!.input).toEqual({
+        FunctionName: 'fn',
+        Qualifier: QUALIFIER,
+        FunctionScalingConfig: SCALING,
+      });
+      const steps = order(
+        CreateFunctionCommand,
+        GetFunctionConfigurationCommand,
+        PutFunctionScalingConfigCommand
+      );
+      expect(steps[0]).toBe('CreateFunctionCommand');
+      // Pending, then settled, before the Put; then the Put's own settle.
+      expect(steps.indexOf('PutFunctionScalingConfigCommand')).toBeGreaterThanOrEqual(3);
+      expect(steps.at(-1)).toBe('GetFunctionConfigurationCommand');
+    });
+
+    it('waits while the version is Active with an update in progress', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 1) {
+          return { State: 'Active', LastUpdateStatus: 'InProgress' };
+        }
+        return undefined;
+      });
+      await provider.create('Fn', TYPE, MANAGED);
+      expect(reads).toBe(2);
+    });
+
+    it('leaves a plain function alone', async () => {
+      await provider.create('Fn', TYPE, BASE);
+      const input = sent(CreateFunctionCommand)[0]!.input;
+      expect(input.Publish).toBeUndefined();
+      expect(input.PublishTo).toBeUndefined();
+      expect(sent(GetFunctionConfigurationCommand)).toHaveLength(0);
+    });
+
+    it('refuses scaling without a capacity provider before any call', async () => {
+      await expect(
+        provider.create('Fn', TYPE, { ...BASE, FunctionScalingConfig: SCALING })
+      ).rejects.toThrow(/FunctionScalingConfig without CapacityProviderConfig/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('refuses the publish flag without a capacity provider before any call', async () => {
+      await expect(
+        provider.create('Fn', TYPE, { ...BASE, PublishToLatestPublished: false })
+      ).rejects.toThrow(/PublishToLatestPublished without CapacityProviderConfig/);
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the flag', { PublishToLatestPublished: true }],
+      ['scaling', { FunctionScalingConfig: SCALING }],
+    ])('warns instead on a replay of a record that holds %s', async (_name, extra) => {
+      await provider.create('Fn', TYPE, { ...BASE, ...extra }, { replayingState: true });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ignoring it for this replay/));
+      expect(sent(CreateFunctionCommand)[0]!.input.Publish).toBeUndefined();
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('waits out the cleanup when the scaling call fails', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) throw new Error('refused');
+        if (command instanceof GetFunctionCommand && ++reads < 2) return { Configuration: {} };
+        return undefined;
+      });
+      await expect(
+        provider.create('Fn', TYPE, { ...MANAGED, FunctionScalingConfig: SCALING })
+      ).rejects.toThrow(/Failed to set FunctionScalingConfig/);
+      expect(reads).toBe(2);
+    });
+
+    it('rejects when the final read after the scaling call is Failed', async () => {
+      let puts = 0;
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) puts++;
+        if (command instanceof GetFunctionConfigurationCommand && puts > 0) {
+          return { State: 'Active', LastUpdateStatus: 'Failed' };
+        }
+        return undefined;
+      });
+      await expect(
+        provider.create('Fn', TYPE, { ...MANAGED, FunctionScalingConfig: SCALING })
+      ).rejects.toThrow(/Failed to set FunctionScalingConfig/);
+      expect(sent(DeleteFunctionCommand)).toHaveLength(1);
+    });
+
+    it('drops the identity token before the first wait, naming the function alone', async () => {
+      const seen: unknown[][] = [];
+      const sink = await import('../../../src/provisioning/created-resource-sink.js');
+      const spy = vi.spyOn(sink, 'reportCreatedResource').mockImplementation((...args) => {
+        seen.push(args);
+      });
+      try {
+        await provider.create('Fn', TYPE, MANAGED);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(seen[0]).toHaveLength(4);
+      expect(seen[1]).toEqual(['Fn', TYPE, 'fn']);
+    });
+
+    it.each([
+      ['RecursiveLoop', { RecursiveLoop: 'Allow' }, PutFunctionRecursionConfigCommand],
+      [
+        'ReservedConcurrentExecutions',
+        { ReservedConcurrentExecutions: 5 },
+        PutFunctionConcurrencyCommand,
+      ],
+      [
+        'RuntimeManagementConfig',
+        { RuntimeManagementConfig: { UpdateRuntimeOn: 'Auto' } },
+        PutRuntimeManagementConfigCommand,
+      ],
+    ])('waits out the cleanup when %s fails too', async (_name, extra, ctor) => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof ctor) throw new Error('refused');
+        if (command instanceof GetFunctionCommand && ++reads < 2) return { Configuration: {} };
+        return undefined;
+      });
+      await expect(provider.create('Fn', TYPE, { ...MANAGED, ...extra })).rejects.toThrow();
+      expect(reads).toBe(2);
+    });
+
+    it('reports the create failure when the cleanup wait expires', async () => {
+      Object.assign(provider, { functionUpdateMaxWaitSeconds: 0 });
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand) return { State: 'Failed' };
+        if (command instanceof GetFunctionCommand) return { Configuration: {} };
+        return undefined;
+      });
+      await expect(provider.create('Fn', TYPE, MANAGED)).rejects.toThrow(
+        /Failed to set CapacityProviderConfig/
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/still being deleted/));
+    });
+
+    it('deletes the function when the published version fails', async () => {
+      arm((command) =>
+        command instanceof GetFunctionConfigurationCommand
+          ? {
+              State: 'Failed',
+              StateReasonCode: 'InternalError',
+              StateReason: 'denied for arn:aws:iam::123456789012:role/caller',
+            }
+          : undefined
+      );
+      const error = await provider.create('Fn', TYPE, MANAGED).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      // A status reason can name the account: the persisted message has its
+      // code and the pointer, never its text (go-to-k/cdkd#2319).
+      expect(String(error)).toMatch(/Failed to set CapacityProviderConfig.*InternalError/);
+      expect(String(error)).toMatch(/--verbose/);
+      expect(String(error)).not.toContain('123456789012');
+      expect(sent(DeleteFunctionCommand)).toHaveLength(1);
+    });
+
+    it('waits until the cleaned-up function is gone: a retry reuses its name', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand) {
+          return { State: 'Failed', StateReason: 'no capacity' };
+        }
+        if (command instanceof GetFunctionCommand && ++reads < 2) return { Configuration: {} };
+        return undefined;
+      });
+      await expect(provider.create('Fn', TYPE, MANAGED)).rejects.toThrow();
+      expect(reads).toBe(2);
+    });
+
+    it('deletes the function when the scaling call fails', async () => {
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) {
+          throw new Error('refused');
+        }
+        return undefined;
+      });
+      await expect(
+        provider.create('Fn', TYPE, { ...MANAGED, FunctionScalingConfig: SCALING })
+      ).rejects.toThrow(/Failed to set FunctionScalingConfig/);
+      expect(sent(DeleteFunctionCommand)).toHaveLength(1);
+    });
+
+    it('does not wait on $LATEST for RuntimeManagementConfig: it never reads Active', async () => {
+      await provider.create('Fn', TYPE, {
+        ...MANAGED,
+        RuntimeManagementConfig: { UpdateRuntimeOn: 'Auto' },
+      });
+      expect(sent(GetFunctionCommand)).toHaveLength(0);
+      expect(sent(PutRuntimeManagementConfigCommand)).toHaveLength(1);
+    });
+  });
+
+  describe('update', () => {
+    const update = (
+      next: Record<string, unknown>,
+      previous: Record<string, unknown>,
+      context?: Parameters<LambdaFunctionProvider['update']>[5]
+    ) => provider.update('Fn', 'fn', TYPE, next, previous, context);
+
+    it.each([
+      ['absent', undefined],
+      ['true', true],
+    ])('publishes after the configuration change with the flag %s', async (_name, flag) => {
+      await update(
+        {
+          ...MANAGED,
+          Description: 'new',
+          ...(flag !== undefined && { PublishToLatestPublished: flag }),
+        },
+        { ...MANAGED, Description: 'old' }
+      );
+      expect(sent(PublishVersionCommand)[0]!.input).toEqual({
+        FunctionName: 'fn',
+        Description: 'new',
+        PublishTo: 'LATEST_PUBLISHED',
+      });
+      expect(order(UpdateFunctionConfigurationCommand, PublishVersionCommand)).toEqual([
+        'UpdateFunctionConfigurationCommand',
+        'PublishVersionCommand',
+      ]);
+    });
+
+    it('does not publish with the flag false, and still applies scaling', async () => {
+      await update(
+        { ...MANAGED, PublishToLatestPublished: false, FunctionScalingConfig: SCALING },
+        { ...MANAGED, PublishToLatestPublished: false }
+      );
+      expect(sent(PublishVersionCommand)).toHaveLength(0);
+      expect(sent(PutFunctionScalingConfigCommand)[0]!.input.FunctionScalingConfig).toEqual(
+        SCALING
+      );
+    });
+
+    it('resends the capacity provider on any configuration change, as CloudFormation does', async () => {
+      await update({ ...MANAGED, Timeout: 9 }, { ...MANAGED, Timeout: 3 });
+      expect(sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig).toEqual({
+        LambdaManagedInstancesCapacityProviderConfig: {
+          ...CAPACITY.LambdaManagedInstancesCapacityProviderConfig,
+          ExecutionEnvironmentMemoryGiBPerVCpu: 2,
+        },
+      });
+    });
+
+    it('resets an absent memory ratio and leaves an absent concurrency out, as CloudFormation does', async () => {
+      await update(
+        { ...BASE, CapacityProviderConfig: CAPACITY, Timeout: 9 },
+        {
+          ...BASE,
+          Timeout: 3,
+          CapacityProviderConfig: {
+            LambdaManagedInstancesCapacityProviderConfig: {
+              ...CAPACITY.LambdaManagedInstancesCapacityProviderConfig,
+              PerExecutionEnvironmentMaxConcurrency: 8,
+              ExecutionEnvironmentMemoryGiBPerVCpu: 4,
+            },
+          },
+        }
+      );
+      const sentConfig = sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig;
+      expect(sentConfig?.LambdaManagedInstancesCapacityProviderConfig).toEqual({
+        ...CAPACITY.LambdaManagedInstancesCapacityProviderConfig,
+        ExecutionEnvironmentMemoryGiBPerVCpu: 2,
+      });
+    });
+
+    it('sends a changed capacity provider', async () => {
+      const moved = {
+        LambdaManagedInstancesCapacityProviderConfig: {
+          CapacityProviderArn: 'arn:aws:lambda:us-east-1:123456789012:capacity-provider:other',
+        },
+      };
+      await update({ ...BASE, CapacityProviderConfig: moved }, MANAGED);
+      expect(
+        sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig
+          ?.LambdaManagedInstancesCapacityProviderConfig?.CapacityProviderArn
+      ).toBe(moved.LambdaManagedInstancesCapacityProviderConfig.CapacityProviderArn);
+    });
+
+    it('resets a removed scaling block with an empty one', async () => {
+      await update(MANAGED, { ...MANAGED, FunctionScalingConfig: SCALING });
+      expect(sent(PutFunctionScalingConfigCommand)[0]!.input).toEqual({
+        FunctionName: 'fn',
+        Qualifier: QUALIFIER,
+        FunctionScalingConfig: {},
+      });
+    });
+
+    it('sends no scaling call for an unchanged block, whatever its key order', async () => {
+      await update(
+        {
+          ...MANAGED,
+          FunctionScalingConfig: { MaxExecutionEnvironments: 2, MinExecutionEnvironments: 1 },
+        },
+        { ...MANAGED, FunctionScalingConfig: SCALING }
+      );
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('resends an unsettled scaling block', async () => {
+      await update(
+        { ...MANAGED, FunctionScalingConfig: SCALING },
+        { ...MANAGED, FunctionScalingConfig: SCALING },
+        { unsettledProperties: new Set(['FunctionScalingConfig']) }
+      );
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(1);
+    });
+
+    it('marks scaling unsettled before the call', async () => {
+      const markUnsettled = vi.fn();
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) throw new Error('refused');
+        return undefined;
+      });
+      await expect(
+        update({ ...MANAGED, FunctionScalingConfig: SCALING }, MANAGED, { markUnsettled })
+      ).rejects.toThrow(/refused/);
+      expect(markUnsettled).toHaveBeenCalledWith('FunctionScalingConfig');
+    });
+
+    it('refuses a removed capacity provider that is live, before any change', async () => {
+      await expect(update(BASE, MANAGED)).rejects.toThrow(/cannot lose its CapacityProviderConfig/);
+      expect(mockSend.mock.calls.every((c) => c[0] instanceof GetFunctionCommand)).toBe(true);
+    });
+
+    it('lets rollback --revert-failed past a block only the failed attempt held', async () => {
+      arm(undefined, false);
+      await update({ ...BASE, Timeout: 3 }, { ...MANAGED, Timeout: 9 }, { replayingState: true });
+      expect(sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig).toBeUndefined();
+      expect(sent(PublishVersionCommand)).toHaveLength(0);
+    });
+
+    describe('a block on record that AWS never received (an import, an older binary)', () => {
+      beforeEach(() => arm(undefined, false));
+
+      it('updates it as a plain function, and says so', async () => {
+        await update(
+          { ...MANAGED, FunctionScalingConfig: SCALING, Timeout: 9 },
+          { ...MANAGED, FunctionScalingConfig: { MaxExecutionEnvironments: 9 }, Timeout: 3 }
+        );
+        expect(
+          sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig
+        ).toBeUndefined();
+        expect(sent(PublishVersionCommand)).toHaveLength(0);
+        expect(sent(GetFunctionConfigurationCommand)).toHaveLength(0);
+        expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/not a Managed Instances function/));
+      });
+
+      it('rolls back to a bag without the block', async () => {
+        await update({ ...BASE }, MANAGED, { replayingState: true });
+        expect(sent(PublishVersionCommand)).toHaveLength(0);
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('makes no configuration call when the block is the only difference', async () => {
+        const moved = {
+          LambdaManagedInstancesCapacityProviderConfig: {
+            CapacityProviderArn: 'arn:aws:lambda:us-east-1:123456789012:capacity-provider:other',
+          },
+        };
+        await update({ ...BASE, CapacityProviderConfig: moved }, MANAGED);
+        expect(sent(UpdateFunctionConfigurationCommand)).toHaveLength(0);
+      });
+    });
+
+    it('sends a real addition to AWS, which refuses it as on CloudFormation', async () => {
+      arm(undefined, false);
+      await update({ ...MANAGED, Timeout: 9 }, { ...BASE, Timeout: 3 });
+      expect(sent(UpdateFunctionConfigurationCommand)[0]!.input.CapacityProviderConfig).toBeDefined();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the final read after the scaling call is Failed', async () => {
+      let puts = 0;
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) puts++;
+        if (command instanceof GetFunctionConfigurationCommand && puts > 0) {
+          return { State: 'Active', LastUpdateStatus: 'Failed' };
+        }
+        return undefined;
+      });
+      await expect(
+        update({ ...MANAGED, FunctionScalingConfig: SCALING }, MANAGED)
+      ).rejects.toThrow(/\$LATEST\.PUBLISHED failed/);
+    });
+
+    it('refuses scaling without a capacity provider before any call', async () => {
+      await expect(update({ ...BASE, FunctionScalingConfig: SCALING }, BASE)).rejects.toThrow(
+        /FunctionScalingConfig without CapacityProviderConfig/
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    });
+
+    it('names the function on a refusal of the flag', async () => {
+      const error = (await update(
+        { ...BASE, PublishToLatestPublished: false },
+        BASE
+      ).catch((e: unknown) => e)) as ProvisioningError;
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error.message).toMatch(/PublishToLatestPublished without CapacityProviderConfig/);
+      expect(error.physicalId).toBe('fn');
+    });
+
+    it.each([
+      ['the flag', { PublishToLatestPublished: true }],
+      ['scaling', { FunctionScalingConfig: SCALING }],
+    ])('warns instead on a replay of a record that holds %s', async (_name, extra) => {
+      await update({ ...BASE, ...extra, Timeout: 9 }, { ...BASE, Timeout: 3 }, {
+        replayingState: true,
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ignoring it for this replay/));
+      expect(sent(UpdateFunctionConfigurationCommand)).toHaveLength(1);
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('fails before any change when the live read fails', async () => {
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) throw new Error('throttled');
+        return undefined;
+      });
+      const error = await update({ ...MANAGED, Timeout: 9 }, { ...MANAGED, Timeout: 3 }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(String(error)).toMatch(/Failed to update Lambda function Fn/);
+      expect(sent(UpdateFunctionConfigurationCommand)).toHaveLength(0);
+    });
+
+    it('makes no Managed Instances call for a plain function', async () => {
+      await update({ ...BASE, Timeout: 9 }, { ...BASE, Timeout: 3 });
+      // No live check before the change: neither side names the block.
+      expect(mockSend.mock.calls[0]![0]).toBeInstanceOf(UpdateFunctionConfigurationCommand);
+      expect(sent(PublishVersionCommand)).toHaveLength(0);
+      expect(sent(GetFunctionConfigurationCommand)).toHaveLength(0);
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('fails the update when the publish fails, withholding the reason', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 2) {
+          return { State: 'Active', LastUpdateStatus: 'Failed', LastUpdateStatusReason: 'boom' };
+        }
+        return undefined;
+      });
+      const error = await update(MANAGED, { ...MANAGED, Timeout: 3 }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(String(error)).toMatch(/\$LATEST\.PUBLISHED failed/);
+      expect(String(error)).not.toContain('boom');
+    });
+
+    it('keeps cdkd\'s fallback when a failure carries no reason', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 2) {
+          return { State: 'Failed' };
+        }
+        return undefined;
+      });
+      await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(/no reason given/);
+    });
+
+    it('lets a fixed template past a Failed version left by an earlier attempt', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 1) {
+          return { State: 'Failed', StateReason: 'earlier attempt' };
+        }
+        return undefined;
+      });
+      await update(MANAGED, { ...MANAGED, Timeout: 3 });
+      expect(sent(PublishVersionCommand)).toHaveLength(1);
+    });
+
+    it('stops at a version a publish left Failed: the scaling call would be refused', async () => {
+      arm((command) =>
+        command instanceof GetFunctionConfigurationCommand
+          ? {
+              State: 'Failed',
+              StateReasonCode: 'CapacityProviderScalingLimitExceeded',
+              StateReason: 'over the limit',
+            }
+          : undefined
+      );
+      await expect(
+        update(
+          { ...MANAGED, FunctionScalingConfig: SCALING },
+          {
+            ...MANAGED,
+            FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 9 },
+          }
+        )
+      ).rejects.toThrow(/CapacityProviderScalingLimitExceeded/);
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('applies a scaling change to a Deactivated version', async () => {
+      arm((command) =>
+        command instanceof GetFunctionConfigurationCommand
+          ? { State: 'Deactivated', LastUpdateStatus: 'Successful' }
+          : undefined
+      );
+      await update(
+        { ...MANAGED, PublishToLatestPublished: false, FunctionScalingConfig: SCALING },
+        {
+          ...MANAGED,
+          PublishToLatestPublished: false,
+          FunctionScalingConfig: { MinExecutionEnvironments: 0, MaxExecutionEnvironments: 0 },
+        }
+      );
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(1);
+    });
+
+    it('waits through Deactivating', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand && ++reads === 2) {
+          return { State: 'Deactivating', LastUpdateStatus: 'Successful' };
+        }
+        return undefined;
+      });
+      await update(
+        { ...MANAGED, PublishToLatestPublished: false, FunctionScalingConfig: SCALING },
+        { ...MANAGED, PublishToLatestPublished: false }
+      );
+      expect(reads).toBe(3);
+    });
+
+    it('leaves a publish its own margin inside a short resource deadline', async () => {
+      const deadline = await import('../../../src/deployment/resource-deadline.js');
+      const spy = vi.spyOn(deadline, 'enclosingDeadlineRemainingMs').mockReturnValue(180_000);
+      try {
+        Object.assign(provider, { latestPublishedPollMs: 0 });
+        const realNow = Date.now;
+        let nowMs = realNow();
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => (nowMs += 1000));
+        arm((command) =>
+          command instanceof GetFunctionConfigurationCommand
+            ? { State: 'Pending', LastUpdateStatus: 'Successful' }
+            : undefined
+        );
+        await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(
+          /did not settle within 165s/
+        );
+        clock.mockRestore();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('stops at the enclosing resource deadline, not the 10 minute budget', async () => {
+      const deadline = await import('../../../src/deployment/resource-deadline.js');
+      const spy = vi.spyOn(deadline, 'enclosingDeadlineRemainingMs').mockReturnValue(0);
+      try {
+        arm((command) =>
+          command instanceof GetFunctionConfigurationCommand
+            ? { State: 'Pending', LastUpdateStatus: 'Successful' }
+            : undefined
+        );
+        await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(
+          /did not settle within 0s/
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('gives up on a version that never settles, naming its state', async () => {
+      Object.assign(provider, { functionUpdateMaxWaitSeconds: 0 });
+      arm((command) =>
+        command instanceof GetFunctionConfigurationCommand
+          ? { State: 'Pending', LastUpdateStatus: 'Successful' }
+          : undefined
+      );
+      await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(
+        /did not settle within 0s \(State Pending/
+      );
+    });
+  });
+
+  describe('delete', () => {
+    it('waits until the function is gone: its capacity provider is deleted next', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionCommand && ++reads < 3) return { Configuration: {} };
+        return undefined;
+      });
+      await provider.delete('Fn', 'fn', TYPE, MANAGED);
+      expect(reads).toBe(3);
+    });
+
+    it('does not fail a landed delete when the read fails, and warns', async () => {
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) throw new Error('throttled');
+        return undefined;
+      });
+      await provider.delete('Fn', 'fn', TYPE, MANAGED);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Waiting for Lambda function/));
+    });
+
+    it('throws with the delete marked started when the budget runs out', async () => {
+      Object.assign(provider, { functionUpdateMaxWaitSeconds: 0 });
+      arm((command) => (command instanceof GetFunctionCommand ? { Configuration: {} } : undefined));
+      const error = await provider.delete('Fn', 'fn', TYPE, MANAGED).catch((e: unknown) => e);
+      expect(String(error)).toMatch(/still being deleted/);
+      expect(isDeleteStarted(error)).toBe(true);
+    });
+
+    it('does not wait when the delete was given no properties', async () => {
+      await provider.delete('Fn', 'fn', TYPE);
+      expect(sent(GetFunctionCommand)).toHaveLength(0);
+    });
+
+    it('does not wait for a plain function', async () => {
+      await provider.delete('Fn', 'fn', TYPE, BASE);
+      expect(sent(GetFunctionCommand)).toHaveLength(0);
+    });
+  });
+
+  it('does not read the write-only publish flag back for drift', () => {
+    expect(provider.getDriftUnknownPaths()).toContain('PublishToLatestPublished');
+  });
+
+  describe('readCurrentState', () => {
+    const armRead = (scaling: Handler): void =>
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) {
+          return {
+            Configuration: { FunctionName: 'fn', CapacityProviderConfig: CAPACITY },
+          };
+        }
+        if (command instanceof GetFunctionScalingConfigCommand) return scaling(command);
+        return undefined;
+      });
+
+    it('reads both, the scaling from the published version', async () => {
+      armRead(() => ({ AppliedFunctionScalingConfig: SCALING }));
+      const live = (await provider.readCurrentState('fn', 'Fn', TYPE)) as Record<string, unknown>;
+      expect(live['CapacityProviderConfig']).toEqual(CAPACITY);
+      expect(live['FunctionScalingConfig']).toEqual(SCALING);
+      expect(sent(GetFunctionScalingConfigCommand)[0]!.input).toEqual({
+        FunctionName: 'fn',
+        Qualifier: QUALIFIER,
+      });
+    });
+
+    it('prefers the requested block while AWS is applying it', async () => {
+      armRead(() => ({
+        AppliedFunctionScalingConfig: { MinExecutionEnvironments: 3 },
+        RequestedFunctionScalingConfig: SCALING,
+      }));
+      const live = (await provider.readCurrentState('fn', 'Fn', TYPE)) as Record<string, unknown>;
+      expect(live['FunctionScalingConfig']).toEqual(SCALING);
+    });
+
+    it('omits scaling with no warning when nothing is published', async () => {
+      armRead(() => {
+        throw new ResourceNotFoundException({ message: 'gone', $metadata: {} });
+      });
+      const live = (await provider.readCurrentState('fn', 'Fn', TYPE)) as Record<string, unknown>;
+      expect(live).not.toHaveProperty('FunctionScalingConfig');
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('warns when the scaling read fails, since that reads as a removal', async () => {
+      armRead(() => {
+        throw new Error('throttled');
+      });
+      const live = (await provider.readCurrentState('fn', 'Fn', TYPE)) as Record<string, unknown>;
+      expect(live).not.toHaveProperty('FunctionScalingConfig');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/GetFunctionScalingConfig failed/));
+    });
+
+    it('makes no scaling read for a plain function', async () => {
+      arm(undefined, false);
+      await provider.readCurrentState('fn', 'Fn', TYPE);
+      expect(sent(GetFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+  });
+
+  describe('unsettled', () => {
+    const readUnsettledWith = async (scaling: object): Promise<Record<string, unknown>> => {
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) {
+          return { Configuration: { FunctionName: 'fn', CapacityProviderConfig: CAPACITY } };
+        }
+        if (command instanceof GetFunctionScalingConfigCommand) return scaling;
+        return undefined;
+      });
+      return (await provider.readUnsettled(
+        'fn',
+        'Fn',
+        TYPE,
+        new Set(['FunctionScalingConfig'])
+      )) as Record<string, unknown>;
+    };
+
+    it('takes the applied block of an unsettled read when nothing is requested', async () => {
+      const live = await readUnsettledWith({
+        AppliedFunctionScalingConfig: { MinExecutionEnvironments: 3 },
+      });
+      expect(live['FunctionScalingConfig']).toEqual({ MinExecutionEnvironments: 3 });
+    });
+
+    it('takes the requested block of an unsettled read over the applied one', async () => {
+      const live = await readUnsettledWith({
+        AppliedFunctionScalingConfig: { MinExecutionEnvironments: 3 },
+        RequestedFunctionScalingConfig: SCALING,
+      });
+      expect(live['FunctionScalingConfig']).toEqual(SCALING);
+      const reads = sent(GetFunctionScalingConfigCommand);
+      expect(reads.at(-1)!.input).toEqual({ FunctionName: 'fn', Qualifier: QUALIFIER });
+    });
+
+    it('reads an unsettled scaling block strictly', async () => {
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) {
+          return { Configuration: { FunctionName: 'fn', CapacityProviderConfig: CAPACITY } };
+        }
+        if (command instanceof GetFunctionScalingConfigCommand) throw new Error('throttled');
+        return undefined;
+      });
+      await expect(
+        provider.readUnsettled('fn', 'Fn', TYPE, new Set(['FunctionScalingConfig']))
+      ).rejects.toThrow(/throttled/);
+    });
+
+    it('treats scaling as applied by its own call, not by the function transition', async () => {
+      arm((command) =>
+        command instanceof GetFunctionCommand
+          ? { Configuration: { State: 'Pending' } }
+          : undefined
+      );
+      const left = await provider.unsettledInTransition(
+        'fn',
+        'Fn',
+        TYPE,
+        new Set(['FunctionScalingConfig', 'Timeout'])
+      );
+      expect([...left]).toEqual(['Timeout']);
+    });
+  });
+});

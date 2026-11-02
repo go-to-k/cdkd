@@ -29,11 +29,8 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  * case `docs/integ-fixture-conventions.md` ("Never seed a Cloud Control
  * route from an unhandled property") allows. This fixture keyed on Lambda's
  * `RuntimeManagementConfig` until #1621 wired it; the item-3 assertion then
- * failed on correct behaviour (live, 2026-09-17). Lambda's remaining silent
- * drops cannot carry a cheap fixture (`CapacityProviderConfig` /
- * `FunctionScalingConfig` need Lambda Managed Instances capacity;
- * `PublishToLatestPublished` is refused by AWS outside Managed Instance
- * functions). `Body`'s rationale is architectural rather than backlog
+ * failed on correct behaviour (live, 2026-09-17), and Lambda has no silent
+ * drop left (go-to-k/cdkd#5637). `Body`'s rationale is architectural rather than backlog
  * position — cdkd models routes as explicit resources instead of adopting
  * the ImportApi path — and it is the trigger `cc-api-fallback` settled on for
  * the same reason (its stack file carries the selection rule). verify.sh's

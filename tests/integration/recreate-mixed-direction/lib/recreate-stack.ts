@@ -27,10 +27,8 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * through `LoggingConfig`, then `RecursiveLoop`, then
  * `RuntimeManagementConfig`, and each was later wired into
  * `lambda-function-provider.ts`, after which BackProbe silently landed on
- * `'sdk'` and the run failed before reaching anything it tests. The type's
- * remaining silent drops cannot carry a fixture (`CapacityProviderConfig` /
- * `FunctionScalingConfig` need Lambda Managed Instances capacity;
- * `PublishToLatestPublished` is an undocumented CloudFormation directive).
+ * `'sdk'` and the run failed before reaching anything it tests, and
+ * go-to-k/cdkd#5637 wired the type's last silent drops.
  * The explicit flag depends on no coverage table, so a backfill cannot rot it.
  *
  * `RuntimeManagementConfig` (default `UpdateRuntimeOn: 'Auto'`; set

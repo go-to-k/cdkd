@@ -91,26 +91,6 @@ describe('AWS::Lambda::Function #609 property backfill', () => {
       expect(handled?.has('DurableConfig')).toBe(true);
       expect(handled?.has('TenancyConfig')).toBe(true);
     });
-
-    it('declares PublishToLatestPublished unhandled-by-design with a rationale', () => {
-      // No member on ANY @aws-sdk/client-lambda request shape — it is a
-      // CloudFormation-orchestration directive, so there is nothing to send.
-      const rationale = provider.unhandledByDesign
-        ?.get('AWS::Lambda::Function')
-        ?.get('PublishToLatestPublished');
-      expect(rationale).toBeTruthy();
-      expect(rationale).toMatch(/CloudFormation-only/i);
-    });
-
-    it('does NOT claim the two Lambda-managed-instances properties', () => {
-      // FunctionScalingConfig is rejected by AWS unless the function carries a
-      // CapacityProviderConfig ("The function provided by the arn does not
-      // contain a capacity provider configuration"), so the pair is deferred
-      // together rather than half-wired.
-      const handled = provider.handledProperties.get('AWS::Lambda::Function');
-      expect(handled?.has('CapacityProviderConfig')).toBe(false);
-      expect(handled?.has('FunctionScalingConfig')).toBe(false);
-    });
   });
 
   describe('create', () => {

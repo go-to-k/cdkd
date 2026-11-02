@@ -89,10 +89,6 @@
       "MSKSourceConfiguration",
       "SnowflakeDestinationConfiguration"
     ],
-    "AWS::Lambda::Function": [
-      "CapacityProviderConfig",
-      "FunctionScalingConfig"
-    ],
     "AWS::Neptune::DBCluster": [
       "RestoreToTime",
       "RestoreType",

@@ -15,7 +15,7 @@ this page.
 # cdkd picks every route
 cdkd deploy MyStack
 cdkd deploy MyStack \
-  --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig
+  --prefer-sdk-route AWS::ApiGatewayV2::Api:Body
 
 # hold one resource on Cloud Control
 cdkd deploy MyStack --pin-cc-api MyListener
@@ -46,10 +46,10 @@ property map to AWS. You pass no flag, and the deploy logs one line for the
 resource:
 
 ```text
-[info] MyLambda (AWS::Lambda::Function): routing via Cloud Control API
-       (cdkd's SDK Provider does not yet wire CapacityProviderConfig — CC API
+[info] MyApi (AWS::ApiGatewayV2::Api): routing via Cloud Control API
+       (cdkd's SDK Provider does not yet wire Body — CC API
         will forward the full property map. Override via
-        --prefer-sdk-route AWS::Lambda::Function:CapacityProviderConfig.)
+        --prefer-sdk-route AWS::ApiGatewayV2::Api:Body.)
 ```
 
 ```text diagram=safety-route-choice
@@ -122,9 +122,9 @@ otherwise move it to Cloud Control. The price is that the property you name is
 not written to AWS.
 
 ```bash
-CAPACITY=AWS::Lambda::Function:CapacityProviderConfig
-SCALING=AWS::Lambda::Function:FunctionScalingConfig
-cdkd deploy MyStack --prefer-sdk-route "$CAPACITY,$SCALING"
+API_BODY=AWS::ApiGatewayV2::Api:Body
+DB_STORAGE=AWS::RDS::DBCluster:AllocatedStorage
+cdkd deploy MyStack --prefer-sdk-route "$API_BODY,$DB_STORAGE"
 ```
 
 Each entry is a `<ResourceType>:<PropertyName>` pair. Separate entries with
