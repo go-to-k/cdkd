@@ -762,7 +762,7 @@ export class ProviderRegistry {
       safeMsg`${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
       safeMsg`this type cannot fall back to Cloud Control API (${reason}):\n` +
       `${details}\n` +
-      `Remove the properties, or force the SDK provider path and accept the drop via ` +
+      `Remove the properties, or force the SDK provider path and accept leaving them unwritten via ` +
       `--prefer-sdk-route ${overrideHint} ` +
       `(the provider may still reject the resource if the property is required).`
     );

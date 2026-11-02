@@ -3468,8 +3468,8 @@ export function renderChangelogFragment({
     push(
       `${removedUnroutableNames.join(' / ')} never took that route — ` +
         `${unroutableKeeping.length === 1 ? 'its provider declines' : 'their providers decline'} the ` +
-        `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — so the drops it still ` +
-        `carries are REFUSED at pre-flight there rather than routed.`,
+        `Cloud Control fallback, or AWS reports the type NON_PROVISIONABLE — so the SDK-unwired ` +
+        `properties it still carries are REFUSED at pre-flight there rather than routed.`,
       CONSEQUENCE
     );
   }
@@ -3723,13 +3723,13 @@ export function renderSubIssueBody({ type, properties }) {
     'error instead.',
     '',
     'And `--prefer-sdk-route` (formerly `--allow-unsupported-properties`) runs the OTHER way:',
-    'it opts IN to not writing the property, keeping the resource on the SDK path and accepting that the',
-    'value is not written — the point being that the Cloud Control route is sticky. It is',
+    'it keeps the resource on the SDK path and accepts that the value is not written —',
+    'the point being that the Cloud Control route is sticky. It is',
     'not the flag that reaches Cloud Control — `--recreate-via-cc-api` is. (Nor is',
     '`--allow-unsupported-types`: its route is only reachable when NO SDK provider is',
     'registered, and every type in this campaign has one.) Routing is per RESOURCE',
     'while the allow list is per `<Type>:<Prop>`, so the flag only keeps a resource on the',
-    'SDK path when EVERY drop on it is allow-listed: one un-allowed sibling sends the',
+    'SDK path when EVERY SDK-unwired property on it is allow-listed: one un-allowed sibling sends the',
     'whole resource to Cloud Control, and then the allow-listed properties reach AWS too.',
     '',
     '## Remaining',

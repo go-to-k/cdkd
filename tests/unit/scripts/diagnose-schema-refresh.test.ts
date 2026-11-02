@@ -3607,7 +3607,7 @@ describe('renderChangelogFragment', () => {
     expect(fragment).toContain('now deploys on the SDK path');
     // The keeps-a-drop wording would be vacuous here -- it describes drops the
     // type no longer has.
-    expect(fragment).not.toContain('the drops it still carries are REFUSED');
+    expect(fragment).not.toContain('properties it still carries are REFUSED');
   });
 
   it('fits the cap with every bucket populated, and says what it omitted', () => {

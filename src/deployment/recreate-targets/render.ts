@@ -311,7 +311,7 @@ export function renderRecreateTargetsErrors(validation: RecreateTargetsValidatio
     lines.push(
       `  Fix: pass each SDK-unwired property to --prefer-sdk-route as TYPE:PROPERTY ` +
         `so the recreated resource stays on SDK with the ` +
-        `property explicitly dropped. Or drop --recreate-via-sdk-provider — ` +
+        `property explicitly left unwritten. Or drop --recreate-via-sdk-provider — ` +
         `the resource already routes via CC and honors the property.`
     );
   }
