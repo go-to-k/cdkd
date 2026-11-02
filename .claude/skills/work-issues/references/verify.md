@@ -108,8 +108,10 @@ one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework the
 copied from a real red run, never reasoned (#4336, #5592); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert in a
-THROWAWAY detached tree at the PUSHED final sha, never the lane's** — there is
-nothing to restore, and a restore in the lane tree is refused by
+THROWAWAY detached tree at the PUSHED final sha, never the lane's** — the lane
+tree then has nothing to restore (a SECOND probe in the throwaway tree restores
+the first's edit with `CDKD_ALLOW_DIRTY_RESTORE=1`, never `git show >` around
+the gate: #5657), and a restore in the lane tree is refused by
 `dirty-path-restore-gate` and, as `cp`, by the classifier (#5401). Inside
 `bash -c` (zsh mangles `$B:src`), each copy written beside the file FIRST — a
 redirect onto the file truncates it even when `git show` fails:
@@ -133,7 +135,9 @@ the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
 restored by hand. The pre-fix run can mint resources the fixture's sweep cannot
 name: scan the account by stack prefix and resource family too. Probe each HALF
 of a multi-part fix separately (a pre-fix run stops at its first failing arm:
-remove that phase to prove the next), and add a NEGATIVE CONTROL. Where the fix
+remove that phase to prove the next; where the kept half WAITS for the removed
+call's effect, the RED is that wait's timeout, ~30 min per resource, before any
+fixture assertion — predict and budget it, #5657), and add a NEGATIVE CONTROL. Where the fix
 SKIPS
 something, give the fixture a second, ORDINARY difference — a phase redeploying
 a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
