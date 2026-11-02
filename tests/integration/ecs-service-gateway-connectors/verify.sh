@@ -27,15 +27,14 @@
 #   Phase 4 (clear):   CDKD_TEST_UPDATE=true,remove,clear DECLARES `[]` -> the
 #                      clearing form under CloudFormation; the new revision
 #                      must carry no connector.
-#   Phase 5:           disassociate THIS run's gateway from the cluster out
-#                      of band (workaround for go-to-k/cdkd#5664: cdkd's
-#                      destroy returns from the association delete while it
-#                      is still DISASSOCIATING, deletes the infrastructure
-#                      role, and the gateway delete then fails with "active
-#                      cluster associations"), then `cdkd destroy`; assert the
-#                      Service, cluster, gateway, association, infrastructure
-#                      role, VPC and state file are gone — everything except
-#                      the association is still cdkd's to delete.
+#   Phase 5:           a plain `cdkd destroy`; assert the Service, cluster,
+#                      gateway, association, infrastructure role, VPC and
+#                      state file are gone. This is the arm for
+#                      go-to-k/cdkd#5664: the SDK service delete returned while
+#                      the service was still DRAINING, the gateway's cluster
+#                      association then stayed DISASSOCIATING, and the gateway
+#                      delete was refused ("active cluster associations"). The
+#                      delete now waits for INACTIVE, as CloudFormation does.
 #
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -259,41 +258,6 @@ sweep_owned() { (
   fi
 ) }
 
-# Workaround for go-to-k/cdkd#5664 (see the header): disassociate THIS run's
-# gateway — the fixed-name gateway carrying this run's tag — from the fixture
-# cluster, and wait (bounded, 10 min) until no association is ACTIVE or
-# DISASSOCIATING. The gateway and the role stay for cdkd to delete. Returns 0
-# once clear (or when this run owns no gateway), 1 if still associated at the
-# deadline. A subshell with `set +eu`, so a failed read only costs a poll.
-disassociate_owned_gateway() { (
-  set +eu
-  local gw gw_tags remaining i
-  for gw in $(aws ecs list-gateways --names "${GATEWAY_NAME}" --region "${REGION}" --output json 2>/dev/null \
-    | jq -r --arg n "${GATEWAY_NAME}" '.gateways[]? | select(.name == $n and .status != "DELETED") | .gatewayArn'); do
-    gw_tags=$(aws ecs list-tags-for-resource --resource-arn "${gw}" --region "${REGION}" --output json 2>/dev/null)
-    if printf '%s' "${gw_tags}" | jq '.tags // []' | owned_by_this_run; then
-      :
-    else
-      echo "    #5664 workaround: leaving gateway ${gw} alone (no ${RUN_TAG_KEY}=${RUN_ID} tag)"
-      continue
-    fi
-    echo "    #5664 workaround: disassociating gateway ${gw} from ${FIXTURE_CLUSTER_NAME}"
-    aws ecs disassociate-gateway-from-cluster --no-cli-auto-prompt --gateway "${gw}" \
-      --cluster "${FIXTURE_CLUSTER_NAME}" --region "${REGION}" >/dev/null 2>&1
-    for i in $(seq 1 60); do
-      remaining=$(aws ecs list-gateway-cluster-associations --gateway "${gw}" --region "${REGION}" --output json 2>/dev/null \
-        | jq -r '[.gatewayClusterAssociations[]? | select((.status // "MISSING") != "INACTIVE")] | length')
-      [ "${remaining}" = "0" ] && break
-      sleep 10
-    done
-    if [ "${remaining}" != "0" ]; then
-      echo "    #5664 workaround: gateway ${gw} still has an association that is not INACTIVE after 10 min" >&2
-      exit 1
-    fi
-  done
-  exit 0
-) }
-
 cleanup() {
   echo "==> Cleanup: dropping this run's state + AWS resources"
   set +eu
@@ -304,8 +268,6 @@ cleanup() {
     set -eu
     return 0
   fi
-  # #5664: clear this run's gateway association before cdkd deletes anything.
-  disassociate_owned_gateway
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
     rc=$?
@@ -494,12 +456,6 @@ INFRA_ROLE_NAME=$(printf '%s' "${STATE}" | jq -r '[.resources | to_entries[] | s
 VPC_ID=$(printf '%s' "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::VPC") | .value.physicalId] | first // empty')
 if [ -z "${INFRA_ROLE_NAME}" ] || [ -z "${VPC_ID}" ]; then
   echo "FAIL: phase 5: cannot read the infrastructure role / VPC physical id from state" >&2
-  exit 1
-fi
-# go-to-k/cdkd#5664 workaround (see the header): only the association is
-# cleared out of band; the gateway, the role and everything else stay cdkd's.
-if ! disassociate_owned_gateway; then
-  echo "FAIL: phase 5: this run's gateway association did not clear before the destroy (#5664 workaround)" >&2
   exit 1
 fi
 node "${LOCAL_DIST}" destroy "${STACK}" \

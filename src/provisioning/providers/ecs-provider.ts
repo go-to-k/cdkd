@@ -98,6 +98,7 @@ import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -456,6 +457,16 @@ function isEcsErrorNamed(error: unknown, names: readonly string[]): boolean {
  */
 export const settleRolloutDelays = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
+
+/**
+ * Test seam for `deleteService`'s wait for the service to reach `INACTIVE`
+ * (go-to-k/cdkd#5664) — tests replace `sleep` to skip the real poll interval
+ * and `now` to drive the deadline.
+ */
+export const serviceInactiveWait = {
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
 };
 
 /**
@@ -2934,6 +2945,12 @@ export class ECSProvider implements ResourceProvider {
           this.logger.debug(
             `ECS service ${physicalId} not found during scale down, skipping deletion`
           );
+          // go-to-k/cdkd#5664: NOT ACTIVE is not gone. A service an earlier
+          // attempt already deleted is still DRAINING, and what depends on it
+          // must not be deleted before it is INACTIVE.
+          if (this.isServiceNotActiveException(error)) {
+            await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
+          }
           return;
         }
         throw error;
@@ -2959,6 +2976,9 @@ export class ECSProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(`ECS service ${physicalId} not found, skipping deletion`);
+        if (this.isServiceNotActiveException(error)) {
+          await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
+        }
         return;
       }
       const cause = error instanceof Error ? error : undefined;
@@ -2982,6 +3002,91 @@ export class ECSProvider implements ResourceProvider {
         ? wrapped
         : markNotGoneOnNotFoundClass(error, wrapped);
       throw stripped ? markDeleteStarted(failure) : failure;
+    }
+
+    // go-to-k/cdkd#5664: DeleteService returns while the service is still
+    // DRAINING. Wait for INACTIVE before reporting it deleted, as
+    // CloudFormation does, so nothing that depends on it is deleted first.
+    await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
+  }
+
+  /**
+   * Wait for a deleted ECS service to reach `INACTIVE` (go-to-k/cdkd#5664).
+   *
+   * `DeleteService` (with `force`) returns while the service is still
+   * `DRAINING`. CloudFormation waits for `INACTIVE` before it reports the
+   * service deleted; cdkd returned at once, so a dependent's delete ran
+   * against a live service. Measured: an `AWS::ECS::Gateway`'s cluster
+   * association stayed `DISASSOCIATING` and the gateway delete was refused
+   * ("Cannot delete gateway with active cluster associations") while the
+   * service with a gateway connector drained; after `INACTIVE` (~42s for a
+   * desiredCount-0 service) the disassociation and the gateway delete were
+   * immediate. Every SDK-routed service waits, not only one with a connector:
+   * a draining service also holds task ENIs, target-group registrations and
+   * Cloud Map instances that its dependents' deletes run into, and waiting
+   * is what CloudFormation does for every service.
+   *
+   * Like the other destroy waits (NAT gateway, Kinesis), this runs whatever
+   * the deploy wait mode: `--no-wait` / `CDKD_NO_WAIT` is a deploy-time flag.
+   * The cap is the create/update wait's: 600s, lifted (never lowered) by an
+   * explicit `--resource-timeout`. Running out THROWS, marked delete-started
+   * and non-retryable — a warning would let the destroy delete the
+   * service's dependents against a still-draining service, which is the
+   * defect this wait exists for, and a retry would re-run the same wait.
+   * The service counts as gone once DescribeServices reports it `INACTIVE`,
+   * reports it `MISSING`, or its cluster is gone.
+   */
+  private async waitForServiceInactive(
+    logicalId: string,
+    physicalId: string,
+    cluster: string | undefined,
+    resourceType: string
+  ): Promise<void> {
+    const client = this.getClient();
+    const maxWaitSeconds = Math.max(
+      600,
+      (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
+    );
+    const deadline = serviceInactiveWait.now() + maxWaitSeconds * 1000;
+    let delayMs = 2_000;
+    let lastStatus = 'unknown';
+    for (;;) {
+      try {
+        const out = await client.send(
+          new DescribeServicesCommand({ cluster, services: [physicalId] })
+        );
+        if ((out?.failures ?? []).some((failure) => failure.reason === 'MISSING')) return;
+        const status = out?.services?.[0]?.status;
+        if (status === 'INACTIVE') return;
+        lastStatus = status ?? 'unknown';
+      } catch (error) {
+        if (this.isClusterNotFoundException(error)) return;
+        // Anything else (a throttle, a denial) ends the wait as a failed
+        // delete; the deploy engine's retry re-enters `deleteService`, whose
+        // scale-down then sees the service NOT ACTIVE and comes back here.
+        const readFailure = new ProvisioningError(
+          `Failed to confirm ECS service ${logicalId} deletion: ${error instanceof Error ? error.name : 'unknown error'}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+        throw markDeleteStarted(readFailure);
+      }
+      if (serviceInactiveWait.now() >= deadline) {
+        throw markNonRetryable(
+          markDeleteStarted(
+            new ProvisioningError(
+              `ECS service ${logicalIdShown(logicalId)} was deleted but did not reach INACTIVE within ${maxWaitSeconds}s (last status: ${lastStatus}). Re-run once the service is INACTIVE, or raise the limit with --resource-timeout AWS::ECS::Service=${commandHole('duration')}.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          )
+        );
+      }
+      await serviceInactiveWait.sleep(delayMs);
+      delayMs = Math.min(delayMs * 2, 10_000);
     }
   }
 
@@ -4302,6 +4407,11 @@ export class ECSProvider implements ResourceProvider {
   /**
    * Check if error is ServiceNotFoundException
    */
+  /** The NOT-ACTIVE arm of {@link isServiceNotFoundException} (go-to-k/cdkd#5664). */
+  private isServiceNotActiveException(error: unknown): boolean {
+    return error instanceof Error && error.name === 'ServiceNotActiveException';
+  }
+
   private isServiceNotFoundException(error: unknown): boolean {
     if (error instanceof Error) {
       return (
