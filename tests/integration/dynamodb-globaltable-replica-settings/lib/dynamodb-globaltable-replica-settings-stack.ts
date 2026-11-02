@@ -71,6 +71,8 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *   - `ts3`:     with `ts`, go-to-k/cdkd#5604: keep `table7`'s `ts2` read capacity
  *                while its write capacity moves back;
  *   - `ts4`:     with `ts3`, the second region of `table9` inherits, and its read moves;
+ *   - `ts5`:     with `ts3`, `table9`'s second region holds its own read again;
+ *   - `ts6`:     with `ts5`, `table9`'s write side turns literal;
  *   - `tsshape`: with `ts`, change `vec1`'s dimensions, which DynamoDB cannot
  *                do in place (the deploy must be refused);
  *   - `tsregional`: with `ts`, `TableType: Regional` on the two-replica table,
@@ -302,10 +304,13 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
       );
       // `ts2` adds a second region holding its own read capacity, which
       // `ProvisionedThroughput` would clear; `ts3` moves the local read beside it;
-      // `ts4` lets the second region inherit, so both move in one deploy.
+      // `ts4` lets the second region inherit, so both move in one deploy; `ts5` gives
+      // it its own read back; `ts6` turns the write side literal, which puts that
+      // read back after `ProvisionedThroughput` overwrites it. `ts6` comes last:
+      // DynamoDB refuses every later replica update once the write target is gone.
       const replicaReadCapacity = modes.has('ts4') ? {} : { readCapacity: ddb.Capacity.fixed(2) };
-      const localRead = modes.has('ts4') ? 5 : modes.has('ts3') ? 4 : 3;
-      new ddb.TableV2(this, 'ReplicaOverrideTable', {
+      const localRead = modes.has('ts4') || modes.has('ts5') ? 5 : modes.has('ts3') ? 4 : 3;
+      const replicaOverrideTable = new ddb.TableV2(this, 'ReplicaOverrideTable', {
         tableName: `${this.stackName}-table9`,
         partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
         billing: ddb.Billing.provisioned({
@@ -319,6 +324,16 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
             : [],
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
+      if (modes.has('ts6')) {
+        const cfnReplicaOverride = replicaOverrideTable.node.defaultChild as ddb.CfnGlobalTable;
+        cfnReplicaOverride.addPropertyDeletionOverride(
+          'WriteProvisionedThroughputSettings.WriteCapacityAutoScalingSettings'
+        );
+        cfnReplicaOverride.addPropertyOverride(
+          'WriteProvisionedThroughputSettings.WriteCapacityUnits',
+          3
+        );
+      }
       new ddb.TableV2(this, 'AutoScaledWriteTable', {
         tableName: `${this.stackName}-table8`,
         partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
