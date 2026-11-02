@@ -2173,14 +2173,14 @@ export class LambdaFunctionProvider implements ResourceProvider {
         return;
       }
       if (Date.now() >= deadline) {
-        throw markDeleteStarted(
-          new ProvisioningError(
-            `Lambda function ${logicalId} is still being deleted`,
-            resourceType,
-            logicalId,
-            functionName
-          )
+        const stillDeleting = new ProvisioningError(
+          `Lambda function ${logicalId} is still being deleted`,
+          resourceType,
+          logicalId,
+          functionName
         );
+        markDeleteStarted(stillDeleting);
+        throw stillDeleting;
       }
       await new Promise((resolve) => setTimeout(resolve, this.latestPublishedPollMs));
     }
