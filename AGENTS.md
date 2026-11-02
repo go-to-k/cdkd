@@ -128,7 +128,7 @@ site which gave way and why.
   the AWS CDK CLI succeeds, a lost or orphaned resource, state that disagrees
   with AWS, or an exposure [SECURITY.md](SECURITY.md) puts in scope. Wording, an
   input no CDK app produces, and SECURITY.md's out-of-scope class are a line in
-  the PR body, never an issue.
+  the PR body, never an issue — but work a PR DEFERS gets one.
 - **Decide routine calls yourself.** Reserve questions for the destructive,
   irreversible, or outward-facing. When a decision
   genuinely is the user's, ask it through your host's structured question tool

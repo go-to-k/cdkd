@@ -110,6 +110,7 @@ with NO body.
 **The filing bar is AGENTS.md's "File only what a user can hit"** — apply it
 BEFORE the duplicate search. A finding below it (wording, an input no CDK app
 produces, SECURITY.md's out-of-scope paste class) is one line in the PR body
-and is neither filed nor folded into an umbrella. A reviewer's finding meets
+and is neither filed nor folded into an umbrella — unless the PR DEFERS it to
+a later PR: deferred work is filed, since a PR body line tracks nothing. A reviewer's finding meets
 the same bar, and so does the user path a finding ASSUMES: confirm the named
 entry point exists (`cdkd <cmd> --help` for a flag) before filing (#4559).
