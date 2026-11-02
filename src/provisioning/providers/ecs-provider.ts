@@ -84,6 +84,7 @@ import {
   type ServiceConnectConfiguration,
   type ServiceVolumeConfiguration,
   type VpcLatticeConfiguration,
+  type GatewayConnector,
   type MonitoringConfiguration,
   type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
@@ -633,6 +634,41 @@ function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E)
   return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
 }
 
+/**
+ * The `GatewayConnectors` update gate's comparison key (go-to-k/cdkd#5634).
+ * Each connector's `Filters.AccessTypes` is CFn `insertionOrder: false`, so a
+ * reorder of it is not a change and must not start a deployment; it is
+ * compared sorted. Everything else, the connector list's own order included,
+ * compares as written. Used only for the change gate, never for the value
+ * sent. A shape this does not model (a non-array list, a non-object element,
+ * a non-array `AccessTypes`) falls through to the plain serialization.
+ */
+function gatewayConnectorsGateKey(value: unknown): string {
+  if (!Array.isArray(value)) return JSON.stringify(value ?? null);
+  return JSON.stringify(
+    value.map((connector: unknown) => {
+      if (typeof connector !== 'object' || connector === null || Array.isArray(connector)) {
+        return connector;
+      }
+      const filters = (connector as Record<string, unknown>)['Filters'];
+      if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
+        return connector;
+      }
+      const accessTypes = (filters as Record<string, unknown>)['AccessTypes'];
+      if (!Array.isArray(accessTypes)) return connector;
+      return {
+        ...(connector as Record<string, unknown>),
+        Filters: {
+          ...(filters as Record<string, unknown>),
+          // Sorted by serialization: the values are enum strings, but a
+          // malformed element must still sort deterministically.
+          AccessTypes: accessTypes.map((v) => JSON.stringify(v) ?? 'undefined').sort(),
+        },
+      };
+    })
+  );
+}
+
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
   private taskDefinitionCreateClient?: ECSClient;
@@ -645,8 +681,9 @@ export class ECSProvider implements ResourceProvider {
    * these are removed from the template: CapacityProviderStrategy,
    * PlacementConstraints, PlacementStrategies, PlatformVersion,
    * HealthCheckGracePeriodSeconds, EnableECSManagedTags, PropagateTags,
-   * EnableExecuteCommand, and (#1160) AvailabilityZoneRebalancing.
-   * `UpdateService` keeps an absent member, so sending nothing is parity.
+   * EnableExecuteCommand, (#1160) AvailabilityZoneRebalancing, and (#5634)
+   * GatewayConnectors. `UpdateService` keeps an absent member, so sending
+   * nothing is parity.
    * ServiceConnectConfiguration, VolumeConfigurations,
    * VpcLatticeConfigurations and Monitoring ARE reset by CloudFormation (see
    * `updateService`). The earlier #1160 resets for the keep list were
@@ -720,6 +757,8 @@ export class ECSProvider implements ResourceProvider {
         'ServiceConnectConfiguration',
         'VolumeConfigurations',
         'VpcLatticeConfigurations',
+        // go-to-k/cdkd#5634 — added by AWS in the 2026-10-20 schema refresh.
+        'GatewayConnectors',
       ]),
     ],
   ]);
@@ -1731,6 +1770,10 @@ export class ECSProvider implements ResourceProvider {
           monitoring: this.convertMonitoringConfiguration(
             properties['Monitoring'] as Record<string, unknown> | undefined
           ),
+          // go-to-k/cdkd#5634: the 2026-10-20 schema-refresh addition.
+          gatewayConnectors: this.convertGatewayConnectors(
+            properties['GatewayConnectors'] as Array<Record<string, unknown>> | undefined
+          ),
         })
       );
 
@@ -2597,6 +2640,8 @@ export class ECSProvider implements ResourceProvider {
     //   - AvailabilityZoneRebalancing -> no reset sent: CloudFormation KEEPS
     //     the live value (DISABLED stayed DISABLED, not the schema's ENABLED
     //     default), and UpdateService keeps an absent member.
+    //   - GatewayConnectors -> no reset sent (#5634): CloudFormation KEEPS
+    //     the live connector; see the block below.
     //   - Monitoring -> `{ metricConfigurations: [] }`: CloudFormation resets
     //     the service revision to exactly that, while UpdateService keeps an
     //     absent member (the old 20-second resolution survived).
@@ -2680,6 +2725,25 @@ export class ECSProvider implements ResourceProvider {
         )
       : undefined;
 
+    // go-to-k/cdkd#5634: GatewayConnectors, change-gated like the blobs above.
+    // A CloudFormation A/B settled removal: dropping the property (alone, or
+    // beside another change) starts no deployment and the live connector
+    // stays, so sending nothing is parity — UpdateService keeps an absent
+    // member. Only a DECLARED `[]` clears it (CloudFormation sends it, and
+    // the next service revision carries no connector), and it reaches here
+    // as a change like any other value. The gate compares
+    // `Filters.AccessTypes` as a set (CFn schema `insertionOrder: false`), so
+    // a pure reorder starts no deployment; the value SENT keeps the
+    // template's order.
+    const gatewayConnectorsChanged =
+      gatewayConnectorsGateKey(previousProperties['GatewayConnectors']) !==
+      gatewayConnectorsGateKey(properties['GatewayConnectors']);
+    const gatewayConnectorsInput = gatewayConnectorsChanged
+      ? this.convertGatewayConnectors(
+          properties['GatewayConnectors'] as Array<Record<string, unknown>> | undefined
+        )
+      : undefined;
+
     // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
     // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
     // field is a one-shot trigger, never persisted state).
@@ -2733,6 +2797,7 @@ export class ECSProvider implements ResourceProvider {
           volumeConfigurations: volumeConfigurationsInput,
           vpcLatticeConfigurations: vpcLatticeConfigurationsInput,
           monitoring: monitoringInput,
+          gatewayConnectors: gatewayConnectorsInput,
           forceNewDeployment: forceNewDeploymentInput,
         })
       );
@@ -4021,6 +4086,22 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * Convert the CFn PascalCase `GatewayConnectors` array to the ECS SDK
+   * camelCase input shape (go-to-k/cdkd#5634). Every key of `{PortName,
+   * HealthCheck: {HealthCheckProtocol, HealthCheckPort, HealthCheckPath,
+   * HealthCheckTimeoutSeconds, HealthCheckIntervalSeconds,
+   * HealthyThresholdCount, UnhealthyThresholdCount, Matcher: {HttpCode,
+   * GrpcCode}}, Filters: {AccessTypes}}` is a pure first-letter flip; the
+   * enum VALUES (`HTTP`, `PUBLIC`, ...) pass through untouched.
+   */
+  private convertGatewayConnectors(
+    items?: Array<Record<string, unknown>>
+  ): GatewayConnector[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as GatewayConnector[];
+  }
+
+  /**
    * Convert the CFn PascalCase `Monitoring` block to the ECS SDK camelCase
    * `monitoring` input shape (issue #609). Every key is a pure first-letter
    * flip (`MetricConfigurations[].{MetricNames, ResolutionSeconds}`).
@@ -4243,7 +4324,9 @@ export class ECSProvider implements ResourceProvider {
    *     the top-level `Service` shape (they surface only per-deployment
    *     under `deployments[]`, which is rollout metadata, not service
    *     config). `VolumeConfigurations` is also registry-recorded write-only.
-   *   - `Monitoring`: not returned by DescribeServices at all.
+   *   - `Monitoring` / `GatewayConnectors` (go-to-k/cdkd#5634): not returned
+   *     by DescribeServices at all — only the service REVISION carries them
+   *     (`GatewayConnectors` is also registry-recorded write-only).
    *   - `ForceNewDeployment`: a write-only rollout trigger, not persisted
    *     service state.
    *   - `Role`: AWS reports `Service.roleArn` as the service-linked
@@ -4260,6 +4343,7 @@ export class ECSProvider implements ResourceProvider {
         'Monitoring',
         'ForceNewDeployment',
         'Role',
+        'GatewayConnectors',
       ];
     }
     return [];
@@ -4540,10 +4624,11 @@ export class ECSProvider implements ResourceProvider {
     // issue #609 read-back additions. Only what the top-level `Service` shape
     // actually returns is surfaced: DescribeServices does NOT return
     // `serviceConnectConfiguration` / `volumeConfigurations` /
-    // `vpcLatticeConfigurations` / `monitoring` on the Service itself (the
-    // first three only appear per-deployment under `deployments[]`), and
-    // `ForceNewDeployment` is a write-only rollout trigger — all five are
-    // declared in `getDriftUnknownPaths` instead of being fabricated here.
+    // `vpcLatticeConfigurations` / `monitoring` / `gatewayConnectors`
+    // (#5634) on the Service itself (the first three only appear
+    // per-deployment under `deployments[]`), and `ForceNewDeployment` is a
+    // write-only rollout trigger — all six are declared in
+    // `getDriftUnknownPaths` instead of being fabricated here.
     // `Role` is deliberately NOT reverse-mapped from `Service.roleArn`: for
     // the typical template that omits Role, AWS reports the
     // AWSServiceRoleForECS service-linked role ARN there, and a template that

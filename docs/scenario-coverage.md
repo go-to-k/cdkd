@@ -187,6 +187,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`ec2-sg-source-group-name`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ec2-sg-source-group-name/)
 - [`ecr-scanning`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ecr-scanning/)
 - [`ecs-schedule-targets`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ecs-schedule-targets/)
+- [`ecs-service-gateway-connectors`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ecs-service-gateway-connectors/)
 - [`ecs-taskdef-tags-launch-type`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/ecs-taskdef-tags-launch-type/)
 - [`efs-immutable-replacement`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/efs-immutable-replacement/)
 - [`elasticache-snapshot-arns`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/elasticache-snapshot-arns/)

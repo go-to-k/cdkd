@@ -493,6 +493,19 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // surfacing. Surfaced by tests/integration/sns-sqs-event (fresh feedback
   // role + delivery-status topic in one stack, issue #1160 sns batch).
   'is not a valid role to allow SNS',
+  // AWS::ECS::Gateway (go-to-k/cdkd#5634): Cloud Control's create reports
+  // "AccessDenied: Could not assume the infrastructure role arn:aws:iam::...:
+  // role/... Restore the role and allow ecs.amazonaws.com to assume it, then
+  // retry. (Service: Ecs, Status Code: 400, ...)" when the gateway's
+  // `InfrastructureRoleArn` was created moments earlier in the same deploy.
+  // Copied from two real red runs of tests/integration/ecs-service-gateway-
+  // connectors, ~35-50s after the role's create; a CloudFormation stack with
+  // the IDENTICAL role (ecs.amazonaws.com trust +
+  // AmazonECSInfrastructureRoleForGatewayHostSharedALB) created the gateway,
+  // so the role shape is fine and this is propagation. Anchored on the ECS
+  // "infrastructure role" sentence so a different service's assume failure
+  // does not match; a genuinely broken role burns the bounded retries first.
+  'Could not assume the infrastructure role',
 ];
 
 /**

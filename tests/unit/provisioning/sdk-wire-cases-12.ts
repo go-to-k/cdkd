@@ -1013,6 +1013,23 @@ const SERVICE_TOP = {
       },
     },
   ],
+  // go-to-k/cdkd#5634: every member the registry schema declares.
+  GatewayConnectors: [
+    {
+      PortName: 'web',
+      HealthCheck: {
+        HealthCheckProtocol: 'HTTPS',
+        HealthCheckPort: 8443,
+        HealthCheckPath: '/health',
+        HealthCheckTimeoutSeconds: 5,
+        HealthCheckIntervalSeconds: 30,
+        HealthyThresholdCount: 3,
+        UnhealthyThresholdCount: 2,
+        Matcher: { HttpCode: '200-299', GrpcCode: '0' },
+      },
+      Filters: { AccessTypes: ['PUBLIC'] },
+    },
+  ],
 };
 
 /** ForceNewDeployment: a one-shot trigger CreateService has no member for. */
@@ -1070,6 +1087,8 @@ const SERVICE_CASE: TypeCase = {
           'the nonce is read only as changed-or-not against the previous one; any changed value sends the same `forceNewDeployment: true` (ecs-provider.ts:3739-3745)',
         'update-remove:AvailabilityZoneRebalancing':
           'left in place on removal: CloudFormation KEEPS the live value (DISABLED stayed DISABLED, CFn A/B #5004/#1160), and UpdateService keeps an absent member (ecs-provider.ts:2288-2290)',
+        'update-remove:GatewayConnectors':
+          'left in place on removal: a CloudFormation A/B (#5634) showed dropping it, alone or beside another change, starts no deployment and the live connector stays, and UpdateService keeps an absent member; a DECLARED `[]` is the clearing form, sent as a change',
         'update-remove:DeploymentController':
           'absent means the default ECS controller, and sending nothing keeps the live one; a controller change is sent only when declared and changed (ecs-provider.ts:2294-2298, 2310-2318). The provider does not reset by design; CloudFormation is unmeasured for this removal',
       },
