@@ -127,7 +127,7 @@ ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 sli
 ecs-bluegreen	2026-10-30T09:15:32Z	PASS	235	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-fargate	2026-10-30T09:15:32Z	PASS	435	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-schedule-targets	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-ecs-service-gateway-connectors	2026-11-02T14:43:57Z	FAIL	1500	verify.sh	phases 1-4 PASS (phase 3 kept, no new deployment); destroy FAILED: Gateway delete 'Cannot delete gateway with active cluster associations' (association left DISASSOCIATING, infra role deleted in parallel), watchdog fired; orphans hand-cleaned; #5634
+ecs-service-gateway-connectors	2026-11-02T16:56:31Z	FAIL	1500	verify.sh	phases 1-4 PASS (phase 3 kept, no new deployment); phase 5 FAIL: out-of-band disassociate stayed DISASSOCIATING past 10 min (40+ min observed, role present, cluster live), watchdog fired; orphans hand-cleaned; #5634 #5664
 ecs-service-update-props	2026-10-30T09:15:32Z	PASS	866	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-taskdef-tags-launch-type	2026-10-30T09:15:32Z	PASS	105	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 efs-immutable-replacement	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
