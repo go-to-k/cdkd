@@ -1396,7 +1396,7 @@ echo "    OK: vec2 removed in both regions, warm throughput kept, ceiling and ca
 echo "==> Phase 6f: both regions of ${TABLE9} move in one deploy (go-to-k/cdkd#5604)"
 deploy "${TS_BASE},ts3,ts4" "${LOG_DIR}/phase6f.log"
 expect_replica_read "${TABLE9}" 5 5 "Phase 6f"
-echo "    OK: the local update settled before the second region's"
+echo "    OK: both regions read 5 after one deploy"
 
 # --- Phase 7: destroy --remove-protection ---------------------------------
 echo "==> Phase 7: destroy --remove-protection"
