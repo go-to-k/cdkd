@@ -93,6 +93,7 @@ deletion-policy-snapshot	2026-10-25T00:07:44Z	PASS	245	verify.sh	rc 0, destroy 0
 deletion-policy-snapshot-heavy	2026-10-25T00:07:44Z	PASS	812	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 deployment-events	2026-10-13T02:41:29Z	PASS	35	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 destroy-data-guard	2026-10-11T09:33:22Z	PASS	110	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+destroy-failed-delete-keeps-dependencies	2026-11-02T21:00:04Z	PASS	76	verify.sh	us-east-1, 3 phases ok, orph clean
 destroy-interrupt	2026-10-18T04:10:16Z	PASS	376	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 destroy-nested-cross-region	2026-10-20T08:13:14Z	PASS	216	verify.sh	rc ok, orph clean; #5115 REST API arm
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
