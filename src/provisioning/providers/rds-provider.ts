@@ -11,6 +11,7 @@ import {
   DeleteDBInstanceCommand,
   ModifyDBInstanceCommand,
   DescribeDBInstancesCommand,
+  RebootDBInstanceCommand,
   CreateDBSubnetGroupCommand,
   DeleteDBSubnetGroupCommand,
   DescribeDBSubnetGroupsCommand,
@@ -19,6 +20,7 @@ import {
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
   type DBCluster,
+  type DBInstance,
   type ModifyDBClusterCommandInput,
   type ModifyDBInstanceCommandInput,
   type CreateDBInstanceCommandInput,
@@ -289,7 +291,7 @@ function isProvisionedIoStorage(properties: Record<string, unknown>): boolean {
 
 /**
  * go-to-k/cdkd#2762: the ModifyDBInstance members for the storage, backup,
- * maintenance, option group, certificate, Performance Insights, network type,
+ * maintenance, parameter group, option group, certificate, Performance Insights, network type,
  * license model, promotion tier, Database Insights and dedicated log volume
  * properties, plus `AllocatedStorage` and `EngineVersion`. Each follows the
  * handler's update translation (the archived
@@ -316,7 +318,9 @@ function isProvisionedIoStorage(properties: Record<string, unknown>): boolean {
  *   storage; cdkd only on a storage change, the rest being no-ops.
  * - A rollback replay (`replayingState`) takes the handler's rollback arm for
  *   the storage size, never sending a smaller one, and sends no
- *   `EngineVersion`.
+ *   `EngineVersion`, nor a `DBParameterGroupName` reverted beside it.
+ * - A changed `DBParameterGroupName` is applied by `updateDBInstance`'s
+ *   post-update reboot (`rebootForPendingParameterGroup`).
  * - `EnablePerformanceInsights`, `PerformanceInsightsKMSKeyId` and
  *   `PerformanceInsightsRetentionPeriod` are coupled: a changed flag or key
  *   sends both changes, an enabled flag sends the declared key, a changed key
@@ -410,6 +414,18 @@ async function instanceModifyBackfillMembers(
   if (changed('EngineVersion') && !rollback) {
     members.EngineVersion = String(properties['EngineVersion'] as string | number);
   }
+  // `DBParameterGroupName` goes out only when changed, as the handler sends
+  // `diff(previous, desired)`. On a rollback replay that also reverts
+  // `EngineVersion` it is left out with the version: across a major version
+  // the previous group belongs to the previous engine family, which RDS
+  // refuses on the version the instance still runs. (The handler instead
+  // checks the group's family against the reverted version, which always
+  // matches, and sends it.) A minor-version revert keeps the new group too,
+  // where the handler would restore the old one: no engine-neutral rule tells
+  // a family change from the version strings alone (MySQL 8.0 to 8.4 is one).
+  if (changed('DBParameterGroupName') && !(rollback && changed('EngineVersion'))) {
+    members.DBParameterGroupName = properties['DBParameterGroupName'] as string;
+  }
   if (
     changed('AllowMajorVersionUpgrade') ||
     (members.EngineVersion !== undefined && properties['AllowMajorVersionUpgrade'] != null)
@@ -460,6 +476,101 @@ async function instanceModifyBackfillMembers(
   return Object.fromEntries(
     Object.entries(members).filter(([, value]) => value !== undefined)
   ) as Partial<ModifyDBInstanceCommandInput>;
+}
+
+/**
+ * go-to-k/cdkd#2762: whether a DB instance holds a parameter group that only a
+ * reboot applies, the condition CloudFormation's update handler reboots on
+ * (`UpdateHandler.shouldReboot`, with `ApplyImmediately`, which cdkd always
+ * sends).
+ */
+function instanceParameterGroupPendingReboot(instance: DBInstance | undefined): boolean {
+  return (instance?.DBParameterGroups ?? []).some(
+    (group) => group.ParameterApplyStatus === 'pending-reboot'
+  );
+}
+
+/**
+ * go-to-k/cdkd#2762: whether a DB instance is still applying a parameter
+ * group, so a reboot it may need cannot be told yet.
+ */
+function instanceParameterGroupApplying(instance: DBInstance | undefined): boolean {
+  return (instance?.DBParameterGroups ?? []).some(
+    (group) => group.ParameterApplyStatus === 'applying'
+  );
+}
+
+/**
+ * go-to-k/cdkd#2762: whether a ModifyDBInstance applied immediately still has
+ * a change pending, CloudFormation's `isNoPendingChanges` negated (plus its
+ * `isCaCertificateChangesApplied`: a pending CA certificate counts only when
+ * `CertificateRotationRestart` is true). Right after the call RDS can still
+ * read `available` with the change only listed here, and a reboot then is
+ * refused or races the modification.
+ */
+function instanceHasPendingChanges(instance: DBInstance, caRotationRestarts: boolean): boolean {
+  const pending = instance.PendingModifiedValues;
+  if (pending === undefined) return false;
+  return (
+    pending.DBInstanceClass !== undefined ||
+    pending.AllocatedStorage !== undefined ||
+    pending.AutomationMode !== undefined ||
+    pending.BackupRetentionPeriod !== undefined ||
+    pending.DBInstanceIdentifier !== undefined ||
+    pending.DBSubnetGroupName !== undefined ||
+    pending.Engine !== undefined ||
+    pending.EngineVersion !== undefined ||
+    pending.IAMDatabaseAuthenticationEnabled !== undefined ||
+    pending.Iops !== undefined ||
+    pending.LicenseModel !== undefined ||
+    pending.MasterUserPassword !== undefined ||
+    pending.MultiAZ !== undefined ||
+    pending.PendingCloudwatchLogsExports !== undefined ||
+    pending.Port !== undefined ||
+    (pending.ProcessorFeatures ?? []).length > 0 ||
+    pending.ResumeFullAutomationModeTime !== undefined ||
+    pending.StorageThroughput !== undefined ||
+    pending.StorageType !== undefined ||
+    (caRotationRestarts && pending.CACertificateIdentifier !== undefined)
+  );
+}
+
+/**
+ * go-to-k/cdkd#2762: whether a ModifyDBInstance has settled enough to tell if
+ * it left a reboot pending, as CloudFormation's post-modify stabilization asks
+ * (`isStabilizedWithChangesAppliedImmediately`, the members a reboot needs):
+ * the instance is `available`, no parameter group is `applying`, and no
+ * change is pending. A group this update sent must also be the one listed
+ * (RDS stores the name lower-cased), so a read taken before RDS started the
+ * change does not count; an instance listing no group at all has nothing to
+ * wait for.
+ */
+function instanceParameterGroupSettled(
+  instance: DBInstance,
+  sentGroup: string | undefined,
+  caRotationRestarts: boolean
+): boolean {
+  if (instance.DBInstanceStatus !== 'available') return false;
+  if (instanceHasPendingChanges(instance, caRotationRestarts)) return false;
+  const groups = instance.DBParameterGroups ?? [];
+  if (groups.some((group) => group.ParameterApplyStatus === 'applying')) return false;
+  if (sentGroup === undefined || groups.length === 0) return true;
+  return groups.some(
+    (group) => group.DBParameterGroupName?.toLowerCase() === sentGroup.toLowerCase()
+  );
+}
+
+/**
+ * go-to-k/cdkd#2762: whether a reboot has applied the instance's groups, as
+ * CloudFormation's `isDBInstanceStabilizedAfterReboot` asks: `available`,
+ * every parameter group and option group `in-sync`.
+ */
+function instanceRebootApplied(instance: DBInstance): boolean {
+  return (
+    instance.DBInstanceStatus === 'available' &&
+    (instance.DBParameterGroups ?? []).every((group) => group.ParameterApplyStatus === 'in-sync') &&
+    (instance.OptionGroupMemberships ?? []).every((group) => group.Status === 'in-sync')
+  );
 }
 
 /** The template's `AWS::RDS::DBCluster` `ServerlessV2ScalingConfiguration`. */
@@ -842,6 +953,10 @@ export class RDSProvider implements ResourceProvider {
         'DedicatedLogVolume',
         'AllowMajorVersionUpgrade',
         'CertificateRotationRestart',
+        // go-to-k/cdkd#2762: rides CreateDBInstance and, when changed,
+        // ModifyDBInstance; an update leaving it `pending-reboot` reboots the
+        // instance, as CloudFormation does (`rebootForPendingParameterGroup`).
+        'DBParameterGroupName',
       ]),
     ],
   ]);
@@ -2117,6 +2232,11 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['DedicatedLogVolume'] != null && {
             DedicatedLogVolume: properties['DedicatedLogVolume'] as boolean,
           }),
+          // The group applies at create, so no reboot follows, as under
+          // CloudFormation's create handler.
+          ...(properties['DBParameterGroupName'] != null && {
+            DBParameterGroupName: properties['DBParameterGroupName'] as string,
+          }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -2337,7 +2457,26 @@ export class RDSProvider implements ResourceProvider {
       this.logger.debug(`Successfully updated DBInstance ${logicalId}`);
 
       // Describe to get updated attributes
-      const described = await this.describeDBInstance(physicalId);
+      let described = await this.describeDBInstance(physicalId);
+      // go-to-k/cdkd#2762: CloudFormation reboots after an update that leaves
+      // the parameter group `pending-reboot`, which a changed group always
+      // does; a group this update did not change but that already read
+      // `pending-reboot` (a static parameter edited in it) is rebooted too, as
+      // the handler checks on every update; one still `applying` that edit is
+      // waited out first, as the handler's stabilization does.
+      const sentGroup = backfillMembers.DBParameterGroupName;
+      if (
+        sentGroup !== undefined ||
+        instanceParameterGroupPendingReboot(described) ||
+        instanceParameterGroupApplying(described)
+      ) {
+        described = await this.rebootForPendingParameterGroup(
+          logicalId,
+          physicalId,
+          sentGroup,
+          String(properties['CertificateRotationRestart']) === 'true'
+        );
+      }
 
       // Apply tag diff using the instance ARN.
       if (described?.DBInstanceArn) {
@@ -3183,6 +3322,83 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#2762: CloudFormation's post-update reboot. Its
+   * `UpdateHandler` waits for the ModifyDBInstance to settle, reboots when the
+   * instance's parameter group then reads `pending-reboot` (`shouldReboot`),
+   * and waits for `available` with every parameter and option group `in-sync`
+   * (`rebootAwait`). Without the reboot a changed group never takes effect:
+   * RDS keeps it `pending-reboot` until something reboots the instance.
+   *
+   * Under `--no-wait` the settle wait and the reboot still run, since nothing
+   * else applies the group; only the wait for the reboot to finish is
+   * skipped. Returns the last instance read, for the update's attributes.
+   */
+  private async rebootForPendingParameterGroup(
+    logicalId: string,
+    physicalId: string,
+    sentGroup: string | undefined,
+    caRotationRestarts: boolean
+  ): Promise<DBInstance> {
+    const settled = await this.waitForInstanceState(
+      logicalId,
+      physicalId,
+      (instance) => instanceParameterGroupSettled(instance, sentGroup, caRotationRestarts),
+      'parameter group change to settle'
+    );
+    if (!instanceParameterGroupPendingReboot(settled)) return settled;
+    this.logger.info(
+      safeMsg`Rebooting DBInstance ${logicalId} to apply its parameter group (pending-reboot), as CloudFormation does after an update`
+    );
+    await this.getClient().send(new RebootDBInstanceCommand({ DBInstanceIdentifier: physicalId }));
+    if (process.env['CDKD_NO_WAIT'] === 'true') return settled;
+    return this.waitForInstanceState(
+      logicalId,
+      physicalId,
+      instanceRebootApplied,
+      'reboot to apply its parameter group'
+    );
+  }
+
+  /**
+   * Poll a DBInstance until `done` holds. A missing instance or a terminal
+   * status (`isTerminalDbWaitStatus`) fails at once. The budget is the
+   * resource's own deadline (`--resource-timeout`), so a settle that rides a
+   * long modification (a storage optimization, a major upgrade) waits as long
+   * as the deploy allows; 30 minutes when no deadline is in scope.
+   */
+  private async waitForInstanceState(
+    logicalId: string,
+    dbInstanceIdentifier: string,
+    done: (instance: DBInstance) => boolean,
+    change: string
+  ): Promise<DBInstance> {
+    const remaining = enclosingDeadlineRemainingMs();
+    const maxWaitMs = Number.isFinite(remaining) ? remaining : 1_800_000;
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const instance = await this.describeDBInstance(dbInstanceIdentifier);
+      if (instance === undefined) {
+        throw new Error(
+          safeMsg`DescribeDBInstances returned no instance for DBInstance ${logicalId} while waiting for its ${change}`
+        );
+      }
+      if (isTerminalDbWaitStatus(instance.DBInstanceStatus)) {
+        throw new Error(
+          safeMsg`DBInstance ${logicalId} entered status ${instance.DBInstanceStatus ?? ''} while waiting for its ${change}`
+        );
+      }
+      if (done(instance)) return instance;
+      this.logger.debug(
+        safeMsg`DBInstance ${logicalId} waiting for its ${change} (status ${instance.DBInstanceStatus ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(safeMsg`Timed out waiting for DBInstance ${logicalId}'s ${change}`);
+  }
+
+  /**
    * Wait for a DBInstance to become available. A terminal status
    * (`isTerminalDbWaitStatus`) fails at once rather than after the
    * 30-minute budget (issue #5426).
@@ -3581,6 +3797,12 @@ export class RDSProvider implements ResourceProvider {
       memberships[0]
     )?.OptionGroupName;
     if (optionGroupName !== undefined) result['OptionGroupName'] = optionGroupName;
+    // go-to-k/cdkd#2762: the first listed group, as CloudFormation's read
+    // handler reports it. RDS stores the name lower-cased; no fold, as for the
+    // DB cluster's group: drift compares against the `observedProperties`
+    // baseline every record this route writes carries.
+    const parameterGroupName = inst.DBParameterGroups?.[0]?.DBParameterGroupName;
+    if (parameterGroupName !== undefined) result['DBParameterGroupName'] = parameterGroupName;
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }

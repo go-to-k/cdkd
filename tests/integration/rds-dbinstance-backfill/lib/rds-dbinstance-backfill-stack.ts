@@ -106,6 +106,26 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       ],
     });
 
+    // go-to-k/cdkd#2762 (DBParameterGroupName): two custom groups, declared in
+    // every phase so neither is deleted mid-run. The instance starts on A; the
+    // phase-2b deploy (CDKD_TEST_PARAM_GROUP=b, nothing else changed) moves it
+    // to B, which leaves the group `pending-reboot` until a reboot, as any
+    // group change does; B also sets a static parameter. CloudFormation
+    // reboots the instance after that update, and so must cdkd.
+    const paramGroupFamily = 'postgres17';
+    const paramGroupA = new rds.CfnDBParameterGroup(this, 'ParamGroupA', {
+      family: paramGroupFamily,
+      description: 'cdkd rds-dbinstance-backfill parameter group A (go-to-k/cdkd#2762)',
+      parameters: { log_min_duration_statement: '2000' },
+    });
+    const paramGroupB = new rds.CfnDBParameterGroup(this, 'ParamGroupB', {
+      family: paramGroupFamily,
+      description: 'cdkd rds-dbinstance-backfill parameter group B (go-to-k/cdkd#2762)',
+      // Static: applies only on a reboot.
+      parameters: { max_connections: '60' },
+    });
+    const useParamGroupB = process.env.CDKD_TEST_PARAM_GROUP === 'b';
+
     // CfnDBInstance L1 — emits EXACTLY the properties listed below, with
     // no L2-injected defaults that would trip the silent-drop routing.
     // Each prop the #609 backfill closes is set explicitly so verify.sh
@@ -201,6 +221,9 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       licenseModel: 'postgresql-license',
       databaseInsightsMode: 'standard',
       allowMajorVersionUpgrade: true,
+      // go-to-k/cdkd#2762: before #2762 a declared group routed the instance
+      // to Cloud Control (the provisionedBy=sdk guard catches it).
+      dbParameterGroupName: (useParamGroupB ? paramGroupB : paramGroupA).ref,
     });
   }
 }

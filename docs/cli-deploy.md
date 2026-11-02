@@ -179,7 +179,7 @@ CloudFormation and Terraform do, for comparison.
 | `AWS::CloudFront::Distribution` | same as default | Return after the create / update call | Wait for `Deployed` (3-15 min) | Waits | Waits (`wait_for_deployment`, default true) |
 | `AWS::ECS::Service` | Return after `CreateService` / `UpdateService` | Wait for steady state; a failed or rolled-back rollout fails the deploy | same as default | Waits for steady state | Does not wait (`wait_for_steady_state`, default false) |
 | `AWS::CertificateManager::Certificate` | Return while `PENDING_VALIDATION` | Wait for `ISSUED` | same as default | Waits | Does not wait (waiting is a separate `aws_acm_certificate_validation` resource) |
-| `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply | same as default | Waits | Waits |
+| `AWS::RDS::DBCluster` / `DBInstance` | Return after the create or update call; an instance update leaving its parameter group `pending-reboot` still waits for it to settle, then reboots and returns | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply, and reboots an instance left `pending-reboot`, waiting for `in-sync` | same as default | Waits | Waits |
 | `AWS::DocDB::DBCluster` / `DBInstance` | Return after the create or update call | Wait for `available` (5-10 min); an update waits for a changed cluster port or security groups to apply, and for a changed log export, `NetworkType`, `StorageType`, serverless scaling, CA certificate or Performance Insights setting to read back | same as default | Waits | Waits |
 | `AWS::Neptune::DBCluster` / `DBInstance` | Return after the create or update call; a cluster whose `AssociatedRoles` change still waits for `available`, which attaching or detaching a role needs | Wait for `available` (5-10 min); an update waits for changed cluster security groups to apply, and for a changed role, log export, `NetworkType` or `PubliclyAccessible` to read back | same as default | Waits | Waits |
 | `AWS::ElastiCache::CacheCluster` etc. | Return after the create call | Wait for `available` | same as default | Waits | Waits |
@@ -208,6 +208,12 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
   deploy turns `HostedZoneFeatures.EnableAcceleratedRecovery` on or off: the
   zone refuses record changes until it reads `ENABLED` or `DISABLED` (about
   four minutes), and CloudFormation waits the same way.
+- **An `AWS::RDS::DBInstance` update reboots the instance when its parameter
+  group reads `pending-reboot` afterwards, in every mode.** A changed
+  `DBParameterGroupName` always leaves it so. A static parameter edited in the
+  group does too, and the next deploy that updates the instance reboots it;
+  editing the group alone reboots nothing. CloudFormation reboots the same way.
+  Under `--no-wait` cdkd returns once the reboot starts.
 - **`AWS::Lambda::NetworkConnector` waits for `ACTIVE` in every mode.** AWS
   rejects a web function revision that uses a connector still in `PENDING`, so
   an early return would only move the wait into a failure. See

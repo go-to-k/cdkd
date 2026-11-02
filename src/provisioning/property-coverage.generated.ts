@@ -2759,6 +2759,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'DBClusterIdentifier',
         'DBInstanceClass',
         'DBInstanceIdentifier',
+        'DBParameterGroupName',
         'DBSubnetGroupName',
         'DedicatedLogVolume',
         'DeletionProtection',
@@ -2808,7 +2809,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['CustomIAMInstanceProfile', 'not yet implemented by cdkd'],
         ['DBClusterSnapshotIdentifier', 'not yet implemented by cdkd'],
         ['DBName', 'not yet implemented by cdkd'],
-        ['DBParameterGroupName', 'not yet implemented by cdkd'],
         [
           'DBSecurityGroups',
           'EC2-Classic-only feature retired by AWS (2022-08-15); new accounts cannot use this — use VPCSecurityGroups instead',
