@@ -80,6 +80,13 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
+  # The bucket's name is generated, so read it from the record BEFORE the
+  # state destroy drops it: a failed destroy leaves no other way to find it.
+  local leftover_bucket=""
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    leftover_bucket="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}" 2>/dev/null |
+      jq -r '.resources.Bucket.physicalId // empty' 2>/dev/null)"
+  fi
   if [ -f "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --yes --state-bucket "${STATE_BUCKET:-}" --region "${REGION}"
     rc=$?
@@ -92,14 +99,25 @@ cleanup() {
   if aws firehose delete-delivery-stream --delivery-stream-name "${STREAM_NAME}" --allow-force-delete \
     --region "${REGION}" >/dev/null 2>&1; then
     for _ in $(seq 1 36); do
-      gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" \
-        --region "${REGION}" && break
+      # Subshell: an inconclusive probe (throttle, 5xx) exits only it, and
+      # counts as still present, so the deletes below still run.
+      (gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" \
+        --region "${REGION}") && break
       sleep 5
     done
   fi
   aws glue delete-database --name "${DATABASE_NAME}" --region "${REGION}" >/dev/null 2>&1 || true
   aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name iceberg >/dev/null 2>&1 || true
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1 || true
+  # A failed state destroy left the bucket: empty and delete it by the name
+  # read above, and name it loudly if it is still there.
+  if [ "${rc}" != "0" ] && [ -n "${leftover_bucket}" ]; then
+    aws s3 rm "s3://${leftover_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
+    aws s3api delete-bucket --bucket "${leftover_bucket}" --region "${REGION}" >/dev/null 2>&1 || true
+    if ! (gone_probe aws s3api head-bucket --bucket "${leftover_bucket}" --region "${REGION}"); then
+      echo "LEAK: bucket ${leftover_bucket} survived the cleanup -- delete it by hand" >&2
+    fi
+  fi
   if [ -n "${STATE_BUCKET:-}" ] && [ "${rc}" = "0" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true

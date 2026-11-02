@@ -1530,9 +1530,9 @@ const CASES_12_ELBV2: TypeCase[] = [LOAD_BALANCER_CASE, TARGET_GROUP_CASE, LISTE
  * destination is carried by bags of its own: a full one, and one with the
  * alternatives (a KMS-encrypted bucket where the full bag declares
  * `NoEncryptionConfig`, a VPC, the other serializer / deserializer, a Secrets
- * Manager credential). `IcebergDestinationConfiguration`,
- * `SnowflakeDestinationConfiguration`, `MSKSourceConfiguration` and
- * `DatabaseSourceConfiguration` are not handled, so no bag carries them.
+ * Manager credential). `SnowflakeDestinationConfiguration`,
+ * `MSKSourceConfiguration` and `DatabaseSourceConfiguration` are not handled,
+ * so no bag carries them.
  */
 
 const FIREHOSE_STREAM = 'stream';

@@ -2937,6 +2937,13 @@ export class FirehoseProvider implements ResourceProvider {
       result['ExtendedS3DestinationConfiguration'] = mapExtendedS3DescriptionToCfn(
         dest.ExtendedS3DestinationDescription as unknown as Record<string, unknown>
       );
+    } else if (dest?.IcebergDestinationDescription) {
+      // Ahead of the legacy S3 branch, as ExtendedS3 is: nothing in the SDK
+      // model rules out a top-level `S3DestinationDescription` beside it, and
+      // Iceberg's own bucket sits inside its description (go-to-k/cdkd#5636).
+      result['IcebergDestinationConfiguration'] = mapIcebergDescriptionToCfn(
+        dest.IcebergDestinationDescription as unknown as Record<string, unknown>
+      );
     } else if (dest?.S3DestinationDescription) {
       result['S3DestinationConfiguration'] = mapS3DescriptionToCfn(
         dest.S3DestinationDescription as unknown as Record<string, unknown>
@@ -2964,10 +2971,6 @@ export class FirehoseProvider implements ResourceProvider {
     } else if (dest?.HttpEndpointDestinationDescription) {
       result['HttpEndpointDestinationConfiguration'] = mapHttpEndpointDescriptionToCfn(
         dest.HttpEndpointDestinationDescription as unknown as Record<string, unknown>
-      );
-    } else if (dest?.IcebergDestinationDescription) {
-      result['IcebergDestinationConfiguration'] = mapIcebergDescriptionToCfn(
-        dest.IcebergDestinationDescription as unknown as Record<string, unknown>
       );
     }
 

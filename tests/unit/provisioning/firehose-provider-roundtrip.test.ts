@@ -1778,6 +1778,46 @@ describe('FirehoseProvider — Iceberg destination on the SDK route (#5636)', ()
     });
   });
 
+  it('readCurrentState reads the Iceberg destination even beside a top-level S3DestinationDescription', async () => {
+    const { S3Configuration } = template();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: PHYSICAL_ID,
+            DeliveryStreamType: 'DirectPut',
+            Destinations: [
+              {
+                DestinationId: 'destinationId-000000000001',
+                S3DestinationDescription: { ...S3Configuration, ...AWS_S3_DEFAULTS },
+                IcebergDestinationDescription: {
+                  RoleARN: ROLE,
+                  S3BackupMode: 'FailedDataOnly',
+                  CatalogConfiguration: { CatalogARN: CATALOG },
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (command instanceof ListTagsForDeliveryStreamCommand) {
+        return Promise.resolve({ Tags: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<
+      string,
+      unknown
+    >;
+    expect(observed).not.toHaveProperty('S3DestinationConfiguration');
+    expect(observed['IcebergDestinationConfiguration']).toEqual({
+      RoleARN: ROLE,
+      s3BackupMode: 'FailedDataOnly',
+      CatalogConfiguration: { CatalogArn: CATALOG },
+    });
+  });
+
   it('readCurrentState restores the CloudFormation spelling, and the read-back sends no update', async () => {
     const { s3BackupMode, CatalogConfiguration: _catalog, S3Configuration, ...same } = template();
     mockSend.mockImplementation((command: unknown) => {
