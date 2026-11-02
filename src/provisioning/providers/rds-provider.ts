@@ -3285,7 +3285,7 @@ export class RDSProvider implements ResourceProvider {
     );
     if (!instanceParameterGroupPendingReboot(settled)) return settled;
     this.logger.info(
-      `Rebooting DBInstance ${logicalId} to apply its parameter group (pending-reboot), as CloudFormation does after an update`
+      safeMsg`Rebooting DBInstance ${logicalId} to apply its parameter group (pending-reboot), as CloudFormation does after an update`
     );
     await this.getClient().send(new RebootDBInstanceCommand({ DBInstanceIdentifier: physicalId }));
     if (process.env['CDKD_NO_WAIT'] === 'true') return settled;
