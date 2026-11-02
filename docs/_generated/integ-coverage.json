@@ -7075,6 +7075,7 @@
         "custom-resource-provider",
         "data-analytics",
         "destroy-data-guard",
+        "destroy-failed-delete-keeps-dependencies",
         "diff-intrinsic-target-change",
         "drift-revert",
         "drift-revert-arrays",
@@ -7175,6 +7176,10 @@
         ],
         "destroy-data-guard": [
           "l2"
+        ],
+        "destroy-failed-delete-keeps-dependencies": [
+          "l2",
+          "literal"
         ],
         "diff-intrinsic-target-change": [
           "l2"
@@ -8142,6 +8147,7 @@
         "deep-getatt-chains",
         "deletion-policy-retain",
         "deployment-events",
+        "destroy-failed-delete-keeps-dependencies",
         "destroy-interrupt",
         "diff-fail-on-destructive",
         "docdb-neptune",
@@ -8304,6 +8310,10 @@
         ],
         "deployment-events": [
           "l2"
+        ],
+        "destroy-failed-delete-keeps-dependencies": [
+          "l2",
+          "literal"
         ],
         "destroy-interrupt": [
           "l2",

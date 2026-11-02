@@ -530,6 +530,18 @@ export interface DestroyRunnerResult {
    * state survives.
    */
   stateDeleted: boolean;
+  /**
+   * Number of resources this run did NOT try to delete because the delete of
+   * a resource that depends on them failed (go-to-k/cdkd#5670). CloudFormation's
+   * DELETE_FAILED keeps a failed resource's dependencies the same way:
+   * deleting them (an ECS gateway's infrastructure role, a VPC gateway
+   * attachment's internet gateway) strands the failed resource, which then
+   * cannot be deleted on a re-run either. Their records stay in state, so a
+   * re-run deletes them once the blocking resource is gone. Never counted in
+   * `skippedCount` (the provider was never asked) or `errorCount` (nothing
+   * failed); the failed row already makes the run exit non-zero.
+   */
+  blockedCount: number;
   /** Number of resources that failed to delete. State is preserved on >0 errors. */
   errorCount: number;
   /**
@@ -823,6 +835,7 @@ async function destroyStackInRegion(
     guardIndeterminateCount: 0,
     journaledOrphanSkips: 0,
     stateDeleted: false,
+    blockedCount: 0,
     errorCount: 0,
     interrupted: false,
   };
@@ -2117,6 +2130,14 @@ async function destroyStackInRegion(
       };
     }
 
+    // go-to-k/cdkd#5670: the edges a failed delete BLOCKS over -- the
+    // per-resource ones, without the type-pair ordering below. A type-pair
+    // rule orders EVERY resource of one type before EVERY one of another
+    // (each subnet before each Lambda function), so blocking over it would
+    // keep resources the failed one never referenced, which CloudFormation
+    // deletes. Entries are replaced, never mutated, so a shallow copy holds.
+    const blockingResources = { ...template.Resources };
+
     // Type-based implicit deletion ordering (shared with deploy DELETE phase).
     const typeToLogicalIds = new Map<string, string[]>();
     for (const [logicalId, resource] of Object.entries(state.resources)) {
@@ -2154,6 +2175,16 @@ async function destroyStackInRegion(
     // be deleted before `after`, so `before` DependsOn `after` (creation order
     // is reversed for deletion, so `before` is torn down first).
     for (const { before, after } of computeImplicitDeleteEdges(state.resources)) {
+      // Judged on its own: a type-pair rule may already have put this edge in
+      // `template` but never in `blockingResources`.
+      const blocking = blockingResources[before]?.DependsOn ?? [];
+      const blockingArray = Array.isArray(blocking) ? blocking : [blocking];
+      if (!blockingArray.includes(after)) {
+        blockingResources[before] = {
+          ...blockingResources[before]!,
+          DependsOn: [...blockingArray, after],
+        };
+      }
       const existing = template.Resources[before]?.DependsOn ?? [];
       const depsArray = Array.isArray(existing) ? existing : [existing];
       if (!depsArray.includes(after)) {
@@ -2169,9 +2200,30 @@ async function destroyStackInRegion(
 
     const dagBuilder = new DagBuilder();
     const graph = dagBuilder.buildGraph(template);
+    const blockingGraph = dagBuilder.buildGraph({ ...template, Resources: blockingResources });
     const executionLevels = dagBuilder.getExecutionLevels(graph);
 
     logger.debug(`Dependency graph: ${executionLevels.length} level(s)`);
+
+    // go-to-k/cdkd#5670: a resource whose delete FAILED may still need what it
+    // depends on to be deleted later -- an ECS gateway's infrastructure role,
+    // a VPC gateway attachment's internet gateway. So every resource it
+    // TRANSITIVELY depends on (over `blockingGraph`) is left in AWS and in state, mapped to the first
+    // failed resource that blocked it, as CloudFormation's DELETE_FAILED
+    // leaves them; resources unrelated to it are still deleted, as
+    // CloudFormation also does. A dependency always sits on a LATER deletion
+    // level than its dependent, so marking it when the dependent's delete
+    // settles is in time. A SKIP does not block: like the deploy engine's
+    // DELETE phase, which stops on a failure but not on a skip, the destroy
+    // still deletes what a skipped resource depends on -- the custom-resource
+    // skip flow relies on its backing Lambda being gone for the re-run.
+    const blockedBy = new Map<string, string>();
+    const blockedIds: string[] = [];
+    const blockDependenciesOf = (logicalId: string): void => {
+      for (const dependency of dagBuilder.getAllDependencies(blockingGraph, logicalId)) {
+        if (!blockedBy.has(dependency)) blockedBy.set(dependency, logicalId);
+      }
+    };
 
     // go-to-k/cdkd#3869: judged with the stack's `NoEcho` values too, each
     // record once (see `noEchoValues` above), plus what each record stores
@@ -2249,6 +2301,31 @@ async function destroyStackInRegion(
           const resource = state.resources[logicalId];
           if (!resource) {
             logger.warn(`Resource ${displaySafe(logicalId)} not found in state, skipping`);
+            return;
+          }
+
+          // go-to-k/cdkd#5670: the delete of a resource that depends on this
+          // one failed, so this one is not touched -- not even retained, which
+          // would drop its record while a re-run may still need it. The
+          // record stays for the re-run, as a skip's does.
+          const blocker = blockedBy.get(logicalId);
+          if (blocker !== undefined) {
+            const blockReason = `${blocker} depends on it and its delete failed`;
+            logger.info(
+              safeMsg`  ${formatResourceLine('skipped', logicalId, resource.resourceType, `not deleted (${blockReason})`)}`
+            );
+            result.blockedCount++;
+            blockedIds.push(logicalId);
+            recordDestroyEvent(ctx.eventRecorder, {
+              eventType: 'RESOURCE_SKIPPED',
+              stackName,
+              operation: 'DELETE',
+              logicalId,
+              resourceType: resource.resourceType,
+              ...(resource.provisionedBy && { provisionedBy: resource.provisionedBy }),
+              ...(resource.physicalId && { physicalId: resource.physicalId }),
+              reason: blockReason,
+            });
             return;
           }
 
@@ -2848,6 +2925,7 @@ async function destroyStackInRegion(
               logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, wrapped.message);
               result.errorCount++;
               failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
+              blockDependenciesOf(logicalId);
               recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_FAILED',
                 stackName,
@@ -2862,6 +2940,7 @@ async function destroyStackInRegion(
               logger.error(`  ✗ Failed to delete ${displaySafe(logicalId)}:`, safeStringify(error));
               result.errorCount++;
               failedStateTargets.add(stateTargetFor(logicalId, resource.resourceType));
+              blockDependenciesOf(logicalId);
               recordDestroyEvent(ctx.eventRecorder, {
                 eventType: 'RESOURCE_FAILED',
                 stackName,
@@ -3013,6 +3092,7 @@ async function destroyStackInRegion(
     const preserveState =
       result.errorCount > 0 ||
       result.interrupted ||
+      result.blockedCount > 0 ||
       result.skippedCount > result.journaledOrphanSkips;
     // Publish the per-stack "is there work left in this stack" answer to the
     // outer `finally` BEFORE the branch below acts on it, so the re-sync there
@@ -3110,6 +3190,15 @@ async function destroyStackInRegion(
             `resources stay traceable).`
         );
       }
+      if (result.blockedCount > 0) {
+        logger.warn(
+          safeMsg`${result.blockedCount} resource(s) not deleted because the delete of a resource that ` +
+            'depends on them failed, as CloudFormation leaves them: ' +
+            safeMsg`${blockedIds.map((id) => plainOrDescribed(id, 'logical id')).join(', ')}. ` +
+            'Their records are kept: once the resource blocking them is deleted, a re-run of ' +
+            "'cdkd destroy' / 'cdkd state destroy' deletes them."
+        );
+      }
     }
 
     // Summary glyph distinguishes clean destroy (✓) from partial failure /
@@ -3121,7 +3210,11 @@ async function destroyStackInRegion(
     // Issue #1752: `skipped` is only rendered when non-zero, so every existing
     // summary line (and the scripts / tests that grep it) is byte-identical on
     // a run with no skips.
-    const skippedSuffix = result.skippedCount > 0 ? `, ${yellow(result.skippedCount)} skipped` : '';
+    // go-to-k/cdkd#5670: appended to the skip count, so a summary with no
+    // blocked resource is byte-identical to before.
+    const skippedSuffix =
+      (result.skippedCount > 0 ? `, ${yellow(result.skippedCount)} skipped` : '') +
+      (result.blockedCount > 0 ? `, ${yellow(result.blockedCount)} blocked` : '');
     // Issue #2301: rendered on EVERY arm below, the clean-destroy one included
     // — which is the arm that matters most here. A suppressed guard does not
     // preserve state and does not fail the run, so a destroy that proceeded
