@@ -1103,8 +1103,6 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "Invalid InstanceProfile",
       "Failed to authorize instance profile",
       "is not a valid role to allow SNS",
-      // Issue #5634 — see its EXAMINED_NON_FRONT_DOOR entry below.
-      "Could not assume the infrastructure role",
     ];
     // Order included: the list is authored, not derived, so a reordering is an
     // edit a reviewer should see.
@@ -1163,17 +1161,12 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       // substring opens with the ESM stream-read prefix, which no CR `Invoke`
       // or SNS `Publish` failure carries.
       'Received Exception while reading from provided stream. The security token included in the request is invalid',
-      // Issue #5634, argument (a), the #3174 shape: the AWS::ECS::Gateway
-      // Cloud Control handler rejecting a same-deploy infrastructure role
-      // after its own request was accepted. Unreachable here: no CR `Invoke`
-      // or SNS `Publish` failure carries ECS's "infrastructure role" sentence.
-      'Could not assume the infrastructure role',
     ];
     // Cardinality FIRST, and asserted rather than derived: an empty list
     // satisfies both the loop (which then runs no assertion at all) and a
     // `length <` comparison, so either alone lets this case pass while
     // asserting nothing. Raising the number is the deliberate act.
-    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(6);
+    expect(EXAMINED_NON_FRONT_DOOR).toHaveLength(5);
     // DISTINCT, or the length is satisfied by the same entry twice -- and the
     // name would then credit two examined members where there is one.
     expect(new Set(EXAMINED_NON_FRONT_DOOR).size).toBe(EXAMINED_NON_FRONT_DOOR.length);

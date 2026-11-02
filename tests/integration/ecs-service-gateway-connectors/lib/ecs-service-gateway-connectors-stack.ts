@@ -17,7 +17,11 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * reads the value back from the service REVISION (DescribeServices has no
  * `gatewayConnectors` member):
  *
- * - phase 1 (`CDKD_TEST_UPDATE` unset): CreateService with a full connector.
+ * - phase 0 (`CDKD_INTEG_PHASE=0`): only the gateway's infrastructure role
+ *   and its role-independent prerequisites, ahead of the gateway, because of
+ *   go-to-k/cdkd#5661 (see the comment above the `isPhase0` return).
+ * - phase 1 (`CDKD_TEST_UPDATE` unset): the gateway, the association and
+ *   CreateService with a full connector.
  * - phase 2 (`true`): a CHANGED connector reaches UpdateService.
  * - phase 3 (`true,remove`): the property is DROPPED. A CloudFormation A/B
  *   (recorded on the issue) showed CloudFormation KEEPS the live connector,
@@ -47,6 +51,7 @@ export class EcsServiceGatewayConnectorsStack extends cdk.Stack {
     const isUpdate = updateMode.includes('true');
     const isRemove = updateMode.includes('remove');
     const isClear = updateMode.includes('clear');
+    const isPhase0 = process.env.CDKD_INTEG_PHASE === '0';
 
     const vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs: 2,
@@ -60,6 +65,33 @@ export class EcsServiceGatewayConnectorsStack extends cdk.Stack {
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonECSInfrastructureRoleForGatewayHostSharedALB'),
       ],
     });
+
+    const cluster = new ecs.Cluster(this, 'Cluster', {
+      vpc,
+      clusterName: 'cdkd-ecs-svc-gw-connectors',
+    });
+    cdk.Tags.of(cluster).add(runTag.Key, runTag.Value);
+
+    const taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDef', {
+      memoryLimitMiB: 512,
+      cpu: 256,
+    });
+    taskDefinition.addContainer('App', {
+      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'),
+      portMappings: [{ containerPort: 80, name: 'web', appProtocol: ecs.AppProtocol.http }],
+    });
+
+    new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
+
+    // go-to-k/cdkd#5661: an AWS::ECS::Gateway created in the SAME deploy as
+    // its infrastructure role is rejected while the role propagates ("Could
+    // not assume the infrastructure role", then "AWS was not able to validate
+    // the provided access credentials"), and cdkd does not yet ride that out.
+    // Phase 0 (`CDKD_INTEG_PHASE=0`) therefore deploys only the role and
+    // everything the gateway needs that does not depend on it (VPC, cluster,
+    // task definition); verify.sh waits before phase 1 adds the gateway, the
+    // association and the service. Every later phase keeps all of them.
+    if (isPhase0) return;
 
     // The gateway API accepts only HTTPS on 443 today ("Only HTTPS on port
     // 443 is currently supported"), with no certificate to supply.
@@ -95,27 +127,12 @@ export class EcsServiceGatewayConnectorsStack extends cdk.Stack {
       gateway.node.addDependency(subnet.internetConnectivityEstablished);
     }
 
-    const cluster = new ecs.Cluster(this, 'Cluster', {
-      vpc,
-      clusterName: 'cdkd-ecs-svc-gw-connectors',
-    });
-    cdk.Tags.of(cluster).add(runTag.Key, runTag.Value);
-
     const association = new cdk.CfnResource(this, 'GatewayClusterAssociation', {
       type: 'AWS::ECS::GatewayClusterAssociations',
       properties: {
         Gateway: gateway.getAtt('Arn').toString(),
         Cluster: cluster.clusterName,
       },
-    });
-
-    const taskDefinition = new ecs.FargateTaskDefinition(this, 'TaskDef', {
-      memoryLimitMiB: 512,
-      cpu: 256,
-    });
-    taskDefinition.addContainer('App', {
-      image: ecs.ContainerImage.fromRegistry('public.ecr.aws/nginx/nginx:latest'),
-      portMappings: [{ containerPort: 80, name: 'web', appProtocol: ecs.AppProtocol.http }],
     });
 
     const service = new ecs.FargateService(this, 'Svc', {
@@ -147,7 +164,6 @@ export class EcsServiceGatewayConnectorsStack extends cdk.Stack {
       cfnService.addPropertyOverride('GatewayConnectors', []);
     }
 
-    new cdk.CfnOutput(this, 'ClusterName', { value: cluster.clusterName });
     new cdk.CfnOutput(this, 'ServiceName', { value: service.serviceName });
   }
 }

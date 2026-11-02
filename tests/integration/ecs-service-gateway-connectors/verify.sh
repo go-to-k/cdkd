@@ -7,7 +7,15 @@
 # the SDK route AND reads the connector back from the service REVISION —
 # DescribeServices has no `gatewayConnectors` member.
 #
-#   Phase 1 (create):  CDKD_TEST_UPDATE unset -> CreateService carries a
+#   Phase 0 (setup):   CDKD_INTEG_PHASE=0 deploys only the gateway's
+#                      infrastructure role and what the gateway needs that
+#                      does not depend on it (VPC, cluster, task definition),
+#                      then waits GATEWAY_ROLE_SETTLE_SECONDS (30s). Reason:
+#                      go-to-k/cdkd#5661 — a gateway created in the SAME deploy
+#                      as its role is rejected while the role propagates, and
+#                      cdkd does not ride that out yet. No assertion here.
+#   Phase 1 (create):  CDKD_TEST_UPDATE unset -> adds the gateway, the
+#                      cluster association and the service; CreateService carries a
 #                      connector with every nested block (PortName,
 #                      HealthCheck, Filters); the revision echoes it exactly.
 #   Phase 2 (update):  CDKD_TEST_UPDATE=true CHANGES the connector's filters
@@ -326,9 +334,24 @@ if [ -n "${STATE_BUCKET:-}" ] && ! gone_probe aws s3api head-object --bucket "${
   exit 1
 fi
 
+# --- Phase 0: the gateway's infrastructure role, ahead of the gateway ---------
+# go-to-k/cdkd#5661: created in the same deploy as the gateway, the role is
+# rejected while it propagates. Deploy it (and the gateway's other
+# role-independent prerequisites) first, then wait an explicit, documented
+# interval before phase 1 creates the gateway. Covered by `state destroy` and
+# the ownership sweep exactly like every later phase's resources.
+GATEWAY_ROLE_SETTLE_SECONDS=30
+echo "==> Phase 0: deploy the gateway's infrastructure role and prerequisites (CDKD_INTEG_PHASE=0)"
+DEPLOY_STARTED=1
+env -u CDKD_TEST_UPDATE CDKD_INTEG_PHASE=0 node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+echo "    waiting ${GATEWAY_ROLE_SETTLE_SECONDS}s for the infrastructure role to propagate (#5661)"
+sleep "${GATEWAY_ROLE_SETTLE_SECONDS}"
+
 # --- Phase 1: create ----------------------------------------------------------
 echo "==> Phase 1: deploy (CreateService with a full GatewayConnector)"
-DEPLOY_STARTED=1
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \

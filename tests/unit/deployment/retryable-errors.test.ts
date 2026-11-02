@@ -1374,13 +1374,6 @@ describe('isIamPropagationError', () => {
     ['Invalid principal in policy', 'S3 bucket policy'],
     ['Invalid parameter: Policy Error: PrincipalNotFound', 'SNS topic policy'],
     ['Caught ServiceAccessDeniedException for ECSInfrastructureRole[arn:...]', 'ECS CC API'],
-    // AWS::ECS::Gateway racing its same-deploy InfrastructureRoleArn
-    // (go-to-k/cdkd#5634), spelled exactly as the real red run's Cloud
-    // Control create failure printed it.
-    [
-      'CREATE failed for Gateway: AccessDenied: Could not assume the infrastructure role arn:aws:iam::<account-id>:role/CdkdEcsServiceGatewayConnectorsExample-GatewayInfra-ebdc2d2f4fca. Restore the role and allow ecs.amazonaws.com to assume it, then retry. (Service: Ecs, Status Code: 400, Request ID: 34d7c614-53f2-488c-80b2-1121f89521c2) (SDK Attempt Count: 1)',
-      'ECS Gateway infrastructure role',
-    ],
     ['Invalid InstanceProfile: EmrRole.', 'EMR'],
     ['Failed to authorize instance profile arn:aws:iam::1:instance-profile/p.', 'EMR authorize'],
     // IAM-to-IAM eventual consistency: CreateAccessKey right after the same
