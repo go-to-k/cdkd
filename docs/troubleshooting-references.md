@@ -36,7 +36,7 @@ cdkd resolves `Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`,
 - **It is in the list**: the installed cdkd predates its support. Upgrade:
 
 <pm>
-npm i -g @go-to-k/cdkd
+npm i -g @cdkd/cli
 </pm>
 
 ## "Refusing to resolve" a reference whose service cdkd does not resolve

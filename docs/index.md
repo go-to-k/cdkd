@@ -38,7 +38,7 @@ features:
 
 <div data-ox-island="cdkd-key-visual" data-cdkd-slot="hero-image"></div>
 
-<div data-ox-island="cdkd-command" data-cdkd-slot="hero-content" data-ox-props='{"label":"Install cdkd","group":"pkg-manager","initial":"npm","tabs":[{"label":"npm","lines":["npm i -g @go-to-k/cdkd"]},{"label":"pnpm","lines":["pnpm add -g @go-to-k/cdkd"]},{"label":"yarn","lines":["yarn global add @go-to-k/cdkd"]},{"label":"bun","lines":["bun add -g @go-to-k/cdkd"]},{"label":"vp","lines":["vp install -g @go-to-k/cdkd"]}]}'></div>
+<div data-ox-island="cdkd-command" data-cdkd-slot="hero-content" data-ox-props='{"label":"Install cdkd","group":"pkg-manager","initial":"npm","tabs":[{"label":"npm","lines":["npm i -g @cdkd/cli"]},{"label":"pnpm","lines":["pnpm add -g @cdkd/cli"]},{"label":"yarn","lines":["yarn global add @cdkd/cli"]},{"label":"bun","lines":["bun add -g @cdkd/cli"]},{"label":"vp","lines":["vp install -g @cdkd/cli"]}]}'></div>
 
 ## Benchmarks
 

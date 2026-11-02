@@ -11,7 +11,7 @@ faster, and your CDK code does not change. You run `cdkd deploy` where you ran
 `cdk deploy`:
 
 ```bash
-npm i -g @go-to-k/cdkd
+npm i -g @cdkd/cli
 cdkd bootstrap        # once per AWS account
 cdkd deploy MyStack   # from the directory that holds your cdk.json
 ```

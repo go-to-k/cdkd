@@ -54,7 +54,7 @@ const specs = collectCommandSpecs(buildProgram());
  *    and reported them as missing COMMANDS. A checker that invents findings
  *    teaches the next reader to ignore it. → code only.
  * 2. `\bcdkd` matched inside the package NAME in
- *    `npm view @go-to-k/cdkd version`. → `(?<![\w@/-])`.
+ *    `npm view @cdkd/cli version`. → `(?<![\w@/-])`.
  * 3. Only `(command, flag)` PAIRS were pushed, so a FLAGLESS invocation was
  *    never recorded and the command case was vacuous — `cdkd nosuchcmd
  *    <stack>` passed. → a flagless invocation is recorded too.
