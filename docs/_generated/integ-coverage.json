@@ -1482,6 +1482,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
@@ -1646,6 +1647,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "neptune-restore": [
+          "l2"
+        ],
         "nlb-quic-server-id": [
           "l2"
         ],
@@ -1748,6 +1752,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
@@ -1901,6 +1906,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "neptune-restore": [
           "l2"
         ],
         "nlb-quic-server-id": [
@@ -2033,6 +2041,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
@@ -2198,6 +2207,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "neptune-restore": [
+          "l2"
+        ],
         "nlb-quic-server-id": [
           "l2"
         ],
@@ -2299,6 +2311,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
@@ -2461,6 +2474,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "neptune-restore": [
           "l2"
         ],
         "nlb-quic-server-id": [
@@ -2806,6 +2822,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
@@ -2983,6 +3000,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "neptune-restore": [
+          "l2"
+        ],
         "nlb-quic-server-id": [
           "l2"
         ],
@@ -3109,6 +3129,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
@@ -3265,6 +3286,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "neptune-restore": [
+          "l2"
+        ],
         "nlb-quic-server-id": [
           "l2"
         ],
@@ -3368,6 +3392,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "partial-create-handback",
@@ -3563,6 +3588,9 @@
         "neptune-fix-forward-orphan": [
           "l2"
         ],
+        "neptune-restore": [
+          "l2"
+        ],
         "nlb-quic-server-id": [
           "l2"
         ],
@@ -3688,6 +3716,7 @@
         "local-start-alb-from-state",
         "multi-stack-deps",
         "neptune-fix-forward-orphan",
+        "neptune-restore",
         "nlb-quic-server-id",
         "nlb-source-nat",
         "propagation-races-2",
@@ -3851,6 +3880,9 @@
           "l2"
         ],
         "neptune-fix-forward-orphan": [
+          "l2"
+        ],
+        "neptune-restore": [
           "l2"
         ],
         "nlb-quic-server-id": [
@@ -6799,7 +6831,8 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
-        "neptune-fix-forward-orphan"
+        "neptune-fix-forward-orphan",
+        "neptune-restore"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
@@ -6811,6 +6844,10 @@
         ],
         "neptune-fix-forward-orphan": [
           "l1"
+        ],
+        "neptune-restore": [
+          "l1",
+          "literal"
         ]
       }
     },
@@ -6818,13 +6855,17 @@
       "resourceType": "AWS::Neptune::DBInstance",
       "integs": [
         "docdb-neptune",
-        "neptune-fix-forward-orphan"
+        "neptune-fix-forward-orphan",
+        "neptune-restore"
       ],
       "signals": {
         "docdb-neptune": [
           "l1"
         ],
         "neptune-fix-forward-orphan": [
+          "l1"
+        ],
+        "neptune-restore": [
           "l1"
         ]
       }
@@ -6834,7 +6875,8 @@
       "integs": [
         "cc-final-snapshot-handlers",
         "docdb-neptune",
-        "neptune-fix-forward-orphan"
+        "neptune-fix-forward-orphan",
+        "neptune-restore"
       ],
       "signals": {
         "cc-final-snapshot-handlers": [
@@ -6844,6 +6886,9 @@
           "l1"
         ],
         "neptune-fix-forward-orphan": [
+          "l1"
+        ],
+        "neptune-restore": [
           "l1"
         ]
       }

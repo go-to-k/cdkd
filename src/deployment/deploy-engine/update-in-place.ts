@@ -101,6 +101,7 @@ import { updatePartialMessage, updatePartialReason } from '../update-outcome.js'
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { refuseRestoreFromItself } from '../../provisioning/restore-source-guard.js';
 import { buildResolverContext, maskedInputSources } from './resolver-context.js';
 import { keyOrderFreeJson } from '../deploy-value-equality.js';
 
@@ -848,6 +849,11 @@ export async function updateInPlace(
           await noteRetainedResource(resourceType, logicalId);
         }
         if (!retainOldOnReplace && !createFirst) {
+          // go-to-k/cdkd#5638: before the delete, which is what would lose the source.
+          refuseRestoreFromItself(resourceType, replProps, currentResource.physicalId, logicalId, {
+            region: engine.stackRegion,
+            account: engine.options.consumerAccount,
+          });
           // `UpdateReplacePolicy: Snapshot` (issue #1354): snapshot the
           // old resource before the fallback replacement's delete. The
           // TEMPLATE is authoritative here — unlike a destroy, an update

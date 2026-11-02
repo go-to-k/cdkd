@@ -64,6 +64,7 @@ import { equalIdNamesSameResource } from '../type-change-guard.js';
 import type { LiveRenderer } from '../../utils/live-renderer.js';
 import type { RecordedSecretValues } from '../secret-redaction.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { refuseRestoreFromItself } from '../../provisioning/restore-source-guard.js';
 import { maskedInputSources } from './resolver-context.js';
 
 /** A branch of `provisionUpdate` (`update.ts`), split out of it (#4350). */
@@ -429,6 +430,11 @@ export async function updateByReplacement(
       noEchoDeleteValues,
     });
   } else if (recreateFlagged) {
+    // go-to-k/cdkd#5638: before the delete, which is what would lose the source.
+    refuseRestoreFromItself(resourceType, replaceProps, currentResource.physicalId, logicalId, {
+      region: engine.stackRegion,
+      account: engine.options.consumerAccount,
+    });
     // Destroy-then-create path. Same `UpdateReplacePolicy:
     // Retain` semantics — retained old resources leak (named the
     // same as the new); document via warning. CFn would refuse a

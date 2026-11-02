@@ -2002,6 +2002,11 @@
       "scenarios": []
     },
     {
+      "name": "neptune-restore",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "nested-required-preflight",
       "annotated": false,
       "scenarios": []
@@ -3664,6 +3669,7 @@
     "logs-loggroup-fix-forward-orphan",
     "lost-child-after-failed-deploy",
     "neptune-fix-forward-orphan",
+    "neptune-restore",
     "nested-required-preflight",
     "nested-stack",
     "nested-stack-deep",
