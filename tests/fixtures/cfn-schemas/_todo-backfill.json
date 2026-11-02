@@ -23,11 +23,7 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::CodeBuild::Project": [
-      "Triggers"
-    ],
     "AWS::DocDB::DBCluster": [
-      "GlobalClusterIdentifier",
       "RestoreToTime",
       "RestoreType",
       "SnapshotIdentifier",

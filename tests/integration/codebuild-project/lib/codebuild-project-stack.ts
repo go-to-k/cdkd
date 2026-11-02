@@ -189,15 +189,6 @@ export class CodeBuildProjectStack extends cdk.Stack {
       cfnProject.addPropertyDeletionOverride('EncryptionKey');
     }
 
-    // Issue #3866 refusal phase (verify.sh Phase 0): `Triggers` (CDK's
-    // `webhook: true`) is a property the SDK provider does not handle, on a
-    // type Cloud Control has no handlers for, so cdkd must refuse the deploy
-    // pre-flight rather than route the project to Cloud Control. Never set on
-    // a deploy that succeeds. (It was `Visibility` until #2762 handled it.)
-    if (process.env['CDKD_TEST_NONPROV_REFUSAL'] === 'true') {
-      cfnProject.addPropertyOverride('Triggers', { Webhook: true });
-    }
-
     new cdk.CfnOutput(this, 'ProjectName', { value: project.projectName });
   }
 }

@@ -651,6 +651,11 @@
       "scenarios": []
     },
     {
+      "name": "codebuild-webhook",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "codecommit",
       "annotated": true,
       "scenarios": []
@@ -899,6 +904,11 @@
     },
     {
       "name": "docdb-fix-forward-orphan",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "docdb-global-cluster",
       "annotated": false,
       "scenarios": []
     },
@@ -3542,6 +3552,7 @@
     "cdk-cross-account-lookup-role",
     "cloudtrail-trail",
     "codebuild-project",
+    "codebuild-webhook",
     "codedeploy-lambda-deployment-group",
     "cognito-custom-attribute-add",
     "cognito-identity-pool",
@@ -3556,6 +3567,7 @@
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",
+    "docdb-global-cluster",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",

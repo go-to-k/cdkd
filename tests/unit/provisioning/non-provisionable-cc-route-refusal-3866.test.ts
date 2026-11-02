@@ -1,6 +1,6 @@
 /**
- * Issue #3866: `AWS::CodeBuild::Project`, `AWS::DocDB::DBCluster` and
- * `AWS::DocDB::DBInstance` are `ProvisioningType: NON_PROVISIONABLE`, so a
+ * Issue #3866: `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
+ * `ProvisioningType: NON_PROVISIONABLE`, so a
  * template using one of their SDK providers' silent-drop properties must be
  * REFUSED pre-flight rather than auto-routed to Cloud Control, which has no
  * handlers for them. `AWS::DocDB::DBSubnetGroup` is provisionable and must
@@ -28,13 +28,6 @@ const REFUSED: ReadonlyArray<{
   value: unknown;
   handled: Record<string, unknown>;
 }> = [
-  {
-    resourceType: 'AWS::CodeBuild::Project',
-    // What CDK's `webhook: true` emits.
-    property: 'Triggers',
-    value: { Webhook: true },
-    handled: { Name: 'p', ServiceRole: 'arn:aws:iam::123456789012:role/r' },
-  },
   {
     resourceType: 'AWS::DocDB::DBCluster',
     property: 'UseLatestRestorableTime',

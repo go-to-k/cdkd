@@ -1688,6 +1688,18 @@ Checklist when writing or reviewing an `update()`:
   setting: cdkd sends it when the template turns it to `true`, never again while
   it stays `true`, and never from a rollback or `drift --revert`. To rotate
   again, deploy `false`, then `true`.
+  Real CloudFormation A/B, go-to-k/cdkd#5628 (us-east-1, engine 5.0.0): an
+  `AWS::DocDB::DBCluster` whose `GlobalClusterIdentifier` is removed, or set to
+  `""`, is updated in place: the cluster is detached from its global cluster
+  and stays `available`, standalone. Adding one, or changing it to another
+  global cluster, fails ("Changing GlobalClusterIdentifier to a different
+  global cluster is not supported unless the cluster is already part of the
+  target global cluster"), from a non-member cluster and from a member alike;
+  a member stays in its global cluster after the rollback. A stack delete
+  deletes a member cluster. `update()` detaches on a template removal, refuses
+  an add or change before any write unless the cluster is already part of the
+  target, and leaves a rollback's removal alone: cdkd only ever accepted that
+  membership, never added it.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and
@@ -1707,6 +1719,21 @@ Checklist when writing or reviewing an `update()`:
   `SecondaryArtifacts`, `SecondarySourceVersions` or `BadgeEnabled` is KEPT
   (CloudFormation's `UpdateProject` omits it, alone or beside another change),
   so cdkd sends nothing for it either.
+  Real CloudFormation A/B plus CloudTrail on a real GitHub repository,
+  go-to-k/cdkd#5627: `AWS::CodeBuild::Project` `Triggers` rides the webhook calls,
+  picked by `project.webhook` in `UpdateProject`'s answer. With `Webhook: true`,
+  every project update sends `UpdateWebhook` (an unchanged `Triggers` too), a
+  removed `FilterGroups` as `[]`, a removed `BuildType` as `BUILD`, and a removed
+  `PullRequestBuildPolicy` omitted, so the live policy is KEPT; with none live,
+  `CreateWebhook`, so a webhook deleted out of band comes back. `Webhook: false`
+  sends `DeleteWebhook` only when one is live. A removed `Triggers`, or one with
+  no `Webhook` and neither `FilterGroups` nor `BuildType` (CloudFormation refuses
+  those beside no enabled webhook, and so does cdkd), sends nothing and the live
+  webhook is KEPT. `ScopeConfiguration` beside `Webhook: true` on a source
+  location other than `CODEBUILD_DEFAULT_WEBHOOK_SOURCE_LOCATION` is refused too.
+  `UpdateWebhook` has no scope member, so a declared scope that differs from the
+  live webhook's is warned about and does not reach AWS. `DeleteProject`
+  removes the webhook from the repository, so `delete()` needs no webhook call.
   `AWS::EC2::NatGateway` `AvailabilityZoneAddresses` (real CloudFormation A/B,
   go-to-k/cdkd#2762): on a gateway created with it, a change updates in place
   and REMOVING it FAILS, so `EC2Provider` refuses the removal; ADDING it to an
