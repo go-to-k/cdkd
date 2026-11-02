@@ -1589,6 +1589,18 @@ export class ElastiCacheProvider implements ResourceProvider {
   }
 
   /**
+   * Create-only seeds DescribeCacheClusters has no member for (go-to-k/cdkd#5635):
+   * `readCurrentState` never emits them, so a drift run whose baseline is the
+   * template `properties` (a record with no observed capture) would report
+   * them as removed from AWS on every run.
+   */
+  getDriftUnknownPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::ElastiCache::CacheCluster'
+      ? ['SnapshotArns', 'SnapshotName']
+      : [];
+  }
+
+  /**
    * Read the AWS-current ElastiCache resource configuration in CFn-property shape.
    *
    * Dispatch per resource type:
@@ -1610,18 +1622,6 @@ export class ElastiCacheProvider implements ResourceProvider {
    * AWS reports no user tags. Returns `RESOURCE_NOT_FOUND` when the resource
    * is gone (`*NotFoundFault` or an empty describe list).
    */
-  /**
-   * Create-only seeds DescribeCacheClusters has no member for (go-to-k/cdkd#5635):
-   * `readCurrentState` never emits them, so a drift run whose baseline is the
-   * template `properties` (a record with no observed capture) would report
-   * them as removed from AWS on every run.
-   */
-  getDriftUnknownPaths(resourceType: string): string[] {
-    return resourceType === 'AWS::ElastiCache::CacheCluster'
-      ? ['SnapshotArns', 'SnapshotName']
-      : [];
-  }
-
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
