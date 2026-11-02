@@ -138,6 +138,8 @@ echo "==> Installing fixture deps"
 
 echo "==> Pre-run cleanup"
 cleanup
+# cleanup removes WORK_DIR (it is also the EXIT handler): re-create it.
+mkdir -p "${WORK_DIR}"
 
 echo "==> Step 1: seed the RDB file in s3://${SEED_BUCKET}/${SEED_OBJECT}"
 if [ "${REGION}" = "us-east-1" ]; then
@@ -215,16 +217,22 @@ aws elasticache describe-events --source-type cache-cluster --source-identifier 
 READ_OUT="${WORK_DIR}/read.json"
 INVOKE_ERR=""
 for attempt in 1 2 3 4 5; do
-  INVOKE_META=$(aws lambda invoke --function-name "${READER_FN}" --region "${REGION}" \
+  rm -f "${READ_OUT}"
+  # A CLI-level failure (function still Pending, throttling) is retried like
+  # a function error rather than ending the run under `set -e`.
+  if INVOKE_META=$(aws lambda invoke --function-name "${READER_FN}" --region "${REGION}" \
     --cli-binary-format raw-in-base64-out --payload "{\"key\":\"${SEED_KEY}\"}" \
-    "${READ_OUT}" --output json)
-  INVOKE_ERR=$(jq -r '.FunctionError // ""' <<<"${INVOKE_META}")
+    "${READ_OUT}" --output json); then
+    INVOKE_ERR=$(jq -r '.FunctionError // ""' <<<"${INVOKE_META}")
+  else
+    INVOKE_ERR="aws lambda invoke failed"
+  fi
   [ -z "${INVOKE_ERR}" ] && break
-  echo "    reader attempt ${attempt} failed (${INVOKE_ERR}): $(cat "${READ_OUT}")"
+  echo "    reader attempt ${attempt} failed (${INVOKE_ERR}): $(cat "${READ_OUT}" 2>/dev/null)"
   sleep 15
 done
 if [ -n "${INVOKE_ERR}" ]; then
-  echo "FAIL: the seed reader kept failing: $(cat "${READ_OUT}")" >&2
+  echo "FAIL: the seed reader kept failing (${INVOKE_ERR}): $(cat "${READ_OUT}" 2>/dev/null)" >&2
   exit 1
 fi
 FOUND=$(jq -r '.found' "${READ_OUT}")
