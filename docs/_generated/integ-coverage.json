@@ -2560,6 +2560,7 @@
         "emr-instance-configs",
         "emr-instance-fleets",
         "export",
+        "firehose-msk-source",
         "fsx-lustre",
         "generated-name-security-group",
         "lambda-capacity-provider-default-name",
@@ -2662,6 +2663,10 @@
         ],
         "export": [
           "l1"
+        ],
+        "firehose-msk-source": [
+          "l1",
+          "literal"
         ],
         "fsx-lustre": [
           "l2",
@@ -2806,6 +2811,7 @@
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
+        "firehose-msk-source",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -2949,6 +2955,10 @@
         ],
         "emr-instance-fleets": [
           "l2"
+        ],
+        "firehose-msk-source": [
+          "l1",
+          "literal"
         ],
         "fsx-lustre": [
           "l2"
@@ -3375,6 +3385,7 @@
         "emr-instance-configs",
         "emr-instance-fleets",
         "export",
+        "firehose-msk-source",
         "fsx-lustre",
         "fsx-ontap",
         "fsx-openzfs",
@@ -3529,6 +3540,10 @@
         ],
         "export": [
           "l1"
+        ],
+        "firehose-msk-source": [
+          "l1",
+          "literal"
         ],
         "fsx-lustre": [
           "l2",
@@ -5101,6 +5116,7 @@
         "eventbridge-scheduler",
         "export",
         "firehose-iceberg-destination",
+        "firehose-msk-source",
         "gc-custom-asset-names",
         "generated-name-lifecycle",
         "glue-update-hardening",
@@ -5294,6 +5310,9 @@
           "literal"
         ],
         "firehose-iceberg-destination": [
+          "l1"
+        ],
+        "firehose-msk-source": [
           "l1"
         ],
         "gc-custom-asset-names": [
@@ -5831,11 +5850,16 @@
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
         "firehose-iceberg-destination",
+        "firehose-msk-source",
         "log-pipeline",
         "stream-delete-redeploy"
       ],
       "signals": {
         "firehose-iceberg-destination": [
+          "l1",
+          "literal"
+        ],
+        "firehose-msk-source": [
           "l1",
           "literal"
         ],
@@ -7057,6 +7081,7 @@
         "event-driven",
         "export",
         "firehose-iceberg-destination",
+        "firehose-msk-source",
         "full-stack-demo",
         "generated-name-lifecycle",
         "glue-update-hardening",
@@ -7168,6 +7193,9 @@
           "literal"
         ],
         "firehose-iceberg-destination": [
+          "l1"
+        ],
+        "firehose-msk-source": [
           "l1"
         ],
         "full-stack-demo": [
@@ -8931,6 +8959,8 @@
     "AWS::Logs::MetricFilter",
     "AWS::Logs::ResourcePolicy",
     "AWS::Logs::SubscriptionFilter",
+    "AWS::MSK::ClusterPolicy",
+    "AWS::MSK::ServerlessCluster",
     "AWS::Neptune::DBClusterParameterGroup",
     "AWS::Neptune::DBParameterGroup",
     "AWS::NeptuneGraph::Graph",

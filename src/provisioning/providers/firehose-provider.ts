@@ -35,10 +35,11 @@ import {
   type SplunkDestinationConfiguration,
   type AmazonOpenSearchServerlessDestinationConfiguration,
   type DeliveryStreamEncryptionConfigurationInput,
+  type MSKSourceConfiguration,
 } from '@aws-sdk/client-firehose';
 import { getLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { markNotGone } from '../not-gone.js';
 import {
   CdkdError,
@@ -343,6 +344,7 @@ export class FirehoseProvider implements ResourceProvider {
         'AmazonOpenSearchServerlessDestinationConfiguration',
         'DeliveryStreamEncryptionConfigurationInput',
         'IcebergDestinationConfiguration',
+        'MSKSourceConfiguration',
       ]),
     ],
   ]);
@@ -411,6 +413,18 @@ export class FirehoseProvider implements ResourceProvider {
       );
     }
 
+    // go-to-k/cdkd#5636: a ReadFromTimestamp CloudFormation refuses (anything
+    // but epoch milliseconds) is refused here, before any AWS call.
+    const mskSource =
+      properties['MSKSourceConfiguration'] === undefined
+        ? undefined
+        : mapMskSourceConfiguration(
+            properties['MSKSourceConfiguration'] as Record<string, unknown>,
+            maskerOrIdentity(context?.maskSecrets),
+            resourceType,
+            logicalId
+          );
+
     // go-to-k/cdkd#4583: the stream's name once CreateDeliveryStream returned
     // (no self-cleanup), so a later failure can name it for rollback.
     let createdStreamName: string | undefined;
@@ -420,11 +434,13 @@ export class FirehoseProvider implements ResourceProvider {
         // a legacy stack keeps the bare logical id.
         DeliveryStreamName:
           deliveryStreamName || generatedNameFor('AWS::KinesisFirehose::DeliveryStream', logicalId),
-        DeliveryStreamType: deliveryStreamType as
-          | 'DirectPut'
-          | 'KinesisStreamAsSource'
-          | 'MSKAsSource',
+        DeliveryStreamType:
+          deliveryStreamType as CreateDeliveryStreamCommandInput['DeliveryStreamType'],
       };
+
+      // go-to-k/cdkd#5636: create-only in the CloudFormation schema, so a
+      // change plans a replacement and update() never sends it.
+      if (mskSource !== undefined) input.MSKSourceConfiguration = mskSource;
 
       // Map S3DestinationConfiguration (CFn PascalCase -> SDK format)
       if (properties['S3DestinationConfiguration']) {
@@ -2833,7 +2849,9 @@ export class FirehoseProvider implements ResourceProvider {
    * cdkd state — `DeliveryStreamName`, `DeliveryStreamType`, and the
    * `KinesisStreamSourceConfiguration` parent fields when present (the
    * `DescribeDeliveryStream` response splits source under `Source.KinesisStreamSourceDescription`),
-   * and `DirectPutSourceConfiguration` from `Source.DirectPutSourceDescription`.
+   * `DirectPutSourceConfiguration` from `Source.DirectPutSourceDescription`, and
+   * `MSKSourceConfiguration` from `Source.MSKSourceDescription`
+   * (`ReadFromTimestamp` in the template's epoch-millisecond spelling).
    *
    * **Destination configurations**: full coverage for S3 / ExtendedS3.
    * AWS returns destination config under `Destinations[0].*DestinationDescription`
@@ -2883,7 +2901,8 @@ export class FirehoseProvider implements ResourceProvider {
   async readCurrentState(
     physicalId: string,
     _logicalId: string,
-    _resourceType: string
+    _resourceType: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     let desc;
     try {
@@ -2905,8 +2924,8 @@ export class FirehoseProvider implements ResourceProvider {
       result['DeliveryStreamType'] = desc.DeliveryStreamType;
     }
 
-    // Source: the Kinesis and Direct PUT descriptions, the two sources cdkd
-    // sends (MSK and database sources route through Cloud Control).
+    // Source: the Kinesis, Direct PUT and MSK descriptions, the sources cdkd
+    // sends (a database source routes through Cloud Control).
     if (desc.Source?.KinesisStreamSourceDescription) {
       const src = desc.Source.KinesisStreamSourceDescription;
       const srcOut: Record<string, unknown> = {};
@@ -2925,6 +2944,15 @@ export class FirehoseProvider implements ResourceProvider {
       result['DirectPutSourceConfiguration'] = {
         ThroughputHintInMBs: directPut.ThroughputHintInMBs,
       };
+    }
+
+    // go-to-k/cdkd#5636: create-only, so no placeholder.
+    const msk = desc.Source?.MSKSourceDescription;
+    if (msk) {
+      result['MSKSourceConfiguration'] = mapMskSourceDescriptionToCfn(
+        msk,
+        properties?.['MSKSourceConfiguration']
+      );
     }
 
     // Destinations: Firehose holds at most one destination on a delivery
@@ -3374,6 +3402,106 @@ function mapRedshiftDescriptionToCfn(desc: Record<string, unknown>): Record<stri
     out['S3BackupConfiguration'] = mapS3DescriptionToCfn(
       desc['S3BackupDescription'] as Record<string, unknown>
     );
+  }
+  return out;
+}
+
+/**
+ * CloudFormation reads `MSKSourceConfiguration.ReadFromTimestamp` as a string
+ * of epoch MILLISECONDS (go-to-k/cdkd#5636, measured through Cloud Control:
+ * `1761955200` reached Firehose as 1970-01-21T09:25:55.200Z, and
+ * `2026-11-01T00:00:00Z`, `2026-11-01T00:00:00` and `2026-11-01` were each
+ * refused with `For input string: "<value>"`). The same spellings a Java
+ * `Long.parseLong` takes: an optional sign, then digits. A whole-number value
+ * is read as its decimal string, as CloudFormation coerces a scalar to the
+ * schema's `string` type (a raw template's unquoted `1767225600000`).
+ */
+const EPOCH_MILLIS = /^[+-]?\d+$/;
+
+/** The instant an epoch-milliseconds `ReadFromTimestamp` names, or `undefined`. */
+function epochMillisTimestamp(value: unknown): Date | undefined {
+  if (typeof value === 'number' && Number.isSafeInteger(value)) value = String(value);
+  if (typeof value !== 'string' || !EPOCH_MILLIS.test(value)) return undefined;
+  const date = new Date(Number(value));
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/**
+ * Map CFn `MSKSourceConfiguration` to the SDK create shape
+ * (go-to-k/cdkd#5636). The members share their names; `ReadFromTimestamp` is
+ * a string of epoch milliseconds in the template, as CloudFormation reads it
+ * ({@link EPOCH_MILLIS}), and a `Date` on the wire. Any other spelling, an ISO
+ * 8601 date-time included, is refused here as CloudFormation refuses it,
+ * before any AWS call, naming the property.
+ */
+function mapMskSourceConfiguration(
+  config: Record<string, unknown>,
+  mask: MaskerFn,
+  resourceType: string,
+  logicalId: string
+): MSKSourceConfiguration {
+  const auth = config['AuthenticationConfiguration'] as Record<string, unknown> | undefined;
+  const result: MSKSourceConfiguration = {
+    MSKClusterARN: config['MSKClusterARN'] as string,
+    TopicName: config['TopicName'] as string,
+    AuthenticationConfiguration: auth && {
+      RoleARN: auth['RoleARN'] as string,
+      Connectivity: auth['Connectivity'] as 'PUBLIC' | 'PRIVATE',
+    },
+  };
+  const raw = config['ReadFromTimestamp'];
+  if (raw !== undefined) {
+    const parsed = epochMillisTimestamp(raw);
+    if (parsed === undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `MSKSourceConfiguration.ReadFromTimestamp of Firehose delivery stream ${logicalId} is ` +
+            `not a string of epoch milliseconds: ${JSON.stringify(maskDeep(raw, mask))} — ` +
+            `CloudFormation reads it as one and refuses any other spelling, an ISO 8601 date ` +
+            `included; write e.g. '1767225600000' for 2026-01-01T00:00:00Z. The delivery ` +
+            `stream was not created`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+    result.ReadFromTimestamp = parsed;
+  }
+  return result;
+}
+
+/**
+ * Map `Source.MSKSourceDescription` → CFn `MSKSourceConfiguration`
+ * (go-to-k/cdkd#5636). `ReadFromTimestamp` comes back as a `Date` and is
+ * written as epoch milliseconds, the template's spelling ({@link EPOCH_MILLIS}),
+ * keeping the recorded string when it names the same instant (`+0…` forms).
+ * A stream created without one read back none (measured 2026-11-03, a
+ * stream ACTIVE for minutes: only `DeliveryStartTimestamp`); should AWS
+ * report one anyway, it is written as epoch milliseconds and lands in the
+ * observed baseline, never the template's keys. The read-only
+ * `DeliveryStartTimestamp` is not a template member.
+ */
+function mapMskSourceDescriptionToCfn(
+  desc: NonNullable<NonNullable<DeliveryStreamDescription['Source']>['MSKSourceDescription']>,
+  recorded: unknown
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (desc.MSKClusterARN !== undefined) out['MSKClusterARN'] = desc.MSKClusterARN;
+  if (desc.TopicName !== undefined) out['TopicName'] = desc.TopicName;
+  const auth = desc.AuthenticationConfiguration;
+  if (auth) {
+    out['AuthenticationConfiguration'] = {
+      ...(auth.RoleARN !== undefined && { RoleARN: auth.RoleARN }),
+      ...(auth.Connectivity !== undefined && { Connectivity: auth.Connectivity }),
+    };
+  }
+  const live = desc.ReadFromTimestamp;
+  if (live instanceof Date && !Number.isNaN(live.getTime())) {
+    const spelled = isPlainRecord(recorded) ? recorded['ReadFromTimestamp'] : undefined;
+    out['ReadFromTimestamp'] =
+      epochMillisTimestamp(spelled)?.getTime() === live.getTime()
+        ? spelled
+        : String(live.getTime());
   }
   return out;
 }
