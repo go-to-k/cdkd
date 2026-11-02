@@ -3,7 +3,7 @@
 ## 5-f. Filing what you find mid-lane
 
 **A finding about the TOOLING is a ROW in `docs/tooling-backlog.md`, not an
-issue** (AGENTS.md's Tooling Policy: a fence only on a SECOND occurrence).
+issue** (AGENTS.md's Tooling Policy).
 
 **N sites of one root cause is ONE issue and ONE PR, never N issues** — each
 split pays the full fixed cost (claim through merge) for the same edit. Sweep
@@ -28,7 +28,7 @@ gh pr list --state open --limit 200 --json number,files,changedFiles \
 ```
 
 **Scope creep reaches an unreviewable PR one small, real step at a time**
-(go-to-k/cdkd#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
+(#2514). Tripwires: a SECOND unrequested widening, or a PR TITLE
 needing a clause the issue does not name. On a trip, STATE the call in one line
 (LOC so far, what the next adds, in-PR versus filed), and `AskUserQuestion`
 when it would more than double the diff. What the fix would leave WRONG if
@@ -37,8 +37,7 @@ omitted is a FORCED parallel change.
 **The backfill campaign is the one generated fan-out**: one issue per resource
 type, labelled `backfill-type` and with no parent, which
 `.github/workflows/backfill-issues-sync.yml` creates, updates and
-closes. Do not start another: each slice counts in the open-issue total and
-every listing must filter it (go-to-k/cdkd#3423).
+closes. Do not start another (#3423).
 Every backlog listing in `triage.md` (§1, §3-0, §3-a) EXCLUDES the label (`backfill-type`), and so does §10's folded-finding count in `retro.md`, where it matters because a sync
 rewrites every generated body into `- [ ]` rows; a listing added to either file
 carries it. Put a type's claim, measurement or decision in a comment on ITS
@@ -90,6 +89,9 @@ gh issue create -t 'fix(provider): ...' \
   --body-file /tmp/wi-issue-body-<issue-slug>.md \
   --label severity:high --label effort:large
 ```
+
+**A `now` you file names itself in the lane report**: the PARENT claims it that
+turn (claim.md, which no lane reads; #5615).
 
 **A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds the lines this fix needs`), never a

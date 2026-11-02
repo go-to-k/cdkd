@@ -66,16 +66,15 @@ done                                                               # RIGHT
 
 - A fix round owes the same sweep, over the CODE not the diff's files:
   `grep -rn "<field / helper / message changed>" src/ tests/integration/` —
-  `verify.sh` greps pin wording the unit suite cannot see (go-to-k/cdkd#3706).
+  `verify.sh` greps pin wording the unit suite cannot see (#3706).
   A change that REFUSES what it used to accept (warn → refuse) also greps the
   property through `tests/integration/*/{lib,verify.sh}` before claiming "no
-  fixture impact": fixtures deploy malformed values ON PURPOSE (go-to-k/cdkd#3780).
+  fixture impact": fixtures deploy malformed values ON PURPOSE (#3780).
 - **Count the population BEFORE the fix, assert it afterwards.** A fix REMOVING
   a behaviour owes a second count: the assertions that it happens, which stay green when it stops (§8-d).
   A masking fix's population is every SINK the value reaches, each `warn` that
   names the error CLASS included (a test puts the secret IN the class), and the
-  lane prompt NAMES each one: "warn cases" alone missed it 4x (#5248, #5267,
-  #5268, #5270).
+  lane prompt NAMES each one (#5248).
 - A defect this lane is NOT fixing gets FILED (`filing.md`, §5-f).
 
 ### 5-c. The fix itself
@@ -128,7 +127,7 @@ parser and fails CLOSED on anything unmodelled.
 - **A CLASSIFIER change cannot be fenced by hand-picked cases** — walk an
   enumerated input space against a transcription of the old implementation
   (`git show origin/main:<path>`), failing on any difference outside the
-  intended classes, with a floor per class (go-to-k/cdkd#2001).
+  intended classes, with a floor per class (#2001).
 
 ### 5-g. Fan-out mechanics
 
@@ -140,34 +139,36 @@ SHAPE — the FINAL report IS the deliverable**, since a lane's tool output
 never reaches you. **Name the parent's `SendMessage` address, `main`** (a guessed one fails), and say a
 mid-task report ends NOTHING: the lane goes on unless the parent SAYS stop.
 Never wait on a quiet lane: list the agents; send "REPORT ONLY" to any
-`completed`, or running with a frozen tool count and its PR green (#5593).
+`completed`, or running with a frozen tool count and its PR green (#5593). Read
+a completion when it arrives, and check the PR and tree before believing it.
 A subagent's Bash bypasses the PreToolUse hooks.
 
 **Guardrails every lane prompt must carry:**
 
 - **Name the §5-8 stage files and `/check` minus step 4, never your own
-  command list** — fix rounds too: one dropped `gen:all-matrices`, another
-  `typecheck:test` (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
+  command list** — fix rounds too (#4561). **Forbid step 4, the FULL SUITE; run it yourself,
   serially** — concurrent suites trip the 600s watchdog in untouched files.
   Each runs `vp test run <its own suite>`, its files spelled out or inside
   `bash -c`: zsh passes an unquoted `$files` as ONE argument.
 - A lane is killed at 600s of silence inside a tool call: background long runs
   via `run_in_background` with a log redirect and wake on ITS exit — never a
   per-line watcher (`tail -F`, a line-emitting `Monitor`).
-  A turn ended with nothing in the background is final; a MERGE-READY one
+  A turn ended with nothing in the background is final, so a lane's last
+  message is merge-ready or a blocker, never "waiting"; a MERGE-READY one
   leaves nothing there, CI watchers included: the parent's integ takes that
   tree next (#5109, #5114).
+- **Every ad hoc `aws` call, a throwaway probe included, carries
+  `AWS_CLI_AUTO_PROMPT=off AWS_PAGER=`**: the profile's auto-prompt hangs on a
+  rejected command, `/run-integ` covers `verify.sh` alone.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.
-- **A reviewer's mutation probe never touches the lane tree** — one overwrote a
-  lane's uncommitted edits, another failed two full-suite runs (2026-10-30).
+- **A reviewer's mutation probe never touches the lane tree**.
   Commit the lane before dispatching any and name the sha in each prompt: it
   probes an extract in its own scratch dir (`.claude/agents/pr-code-reviewer.md`
   holds the recipe). Leave the tree alone until the round ends: a dirty tree in
   a reviewer's END `git status --porcelain` line stops it.
 - Give each agent a unique scratch dir IN ITS PROMPT, one per AGENT, the
   parent's reviewers too (`$SCRATCHPAD/lane<issue><slice>-<role>/`): same-named
-  files overwrite (a reviewer's `git archive` clobbered a peer's probe tree, #5268).
+  files overwrite (#5268).
   A lane's OWN files take the issue number too (`pr<issue>-body.md`,
-  `lane<issue>-suite.log`): sibling lanes share one session scratchpad, and
-  three lost a `pr-body.md` / `suite3.log` to it (2026-10-30).
+  `lane<issue>-suite.log`): sibling lanes share one session scratchpad.
