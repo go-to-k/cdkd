@@ -510,7 +510,13 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // A CloudFormation stack with the identical role (ecs.amazonaws.com trust,
   // AmazonECSInfrastructureRoleForGatewayHostSharedALB) created the gateway,
   // and the fixture passed once the role had a 30s head start, so this is
-  // propagation, not the role's shape.
+  // propagation, not the role's shape. The budget covers the window measured
+  // there: in a throwaway CloudFormation stack of the same role + gateway
+  // (2026-11-03), the role took 17s to complete (CloudFormation's role handler
+  // waits for propagation) and the gateway began 11s later and succeeded, so
+  // ~28s from the role's create, against this class's 47.75s of backoff from
+  // the gateway's first rejection (each retry adding a Cloud Control round
+  // trip on top).
   //
   // (1) is anchored on ECS's own "infrastructure role" sentence, so another
   // service's assume failure does not match. (2) is anchored on the

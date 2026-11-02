@@ -1777,6 +1777,50 @@ describe('ECS Gateway infrastructure-role propagation (#5661)', () => {
     expect(sleeps.reduce((a, b) => a + b, 0)).toBe(250 + 500 + 1000 + 2000);
   });
 
+  // The credentials wording ALONE, so its cadence is not inherited from an
+  // earlier assume rejection: its first delay is the dense 250ms, which only
+  // the propagation class gets (the generic schedule starts at 1s).
+  it('puts the credentials wording on the dense schedule by itself', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const op = async (): Promise<string> => {
+      if (calls++ === 0) throw ccError(CREDENTIALS);
+      return 'ok';
+    };
+    await expect(
+      withRetry(op, 'Gateway', {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).resolves.toBe('ok');
+    expect(sleeps).toEqual([250]);
+  });
+
+  // Near-misses that bound each anchor's LENGTH, as the #3174 block does.
+  // Constructed, not messages AWS has been observed to emit. Each premise
+  // asserts no OTHER pattern matches, so a terminal verdict is about the
+  // anchor under test.
+  it.each([
+    [
+      'shares the assume anchor head, then diverges',
+      'CREATE failed for Gateway: Could not assume the infrastructure configuration is valid. (Service: Ecs, Status Code: 400)',
+    ],
+    [
+      'shares the assume anchor tail under another verb',
+      'CREATE failed for Gateway: Could not validate the infrastructure role. (Service: Ecs, Status Code: 400)',
+    ],
+    [
+      'shares the credentials anchor tail and trailer under another head',
+      'CREATE failed for Gateway: Access denied: the gateway could not refresh the provided access credentials (Service: Ecs, Status Code: 400)',
+    ],
+  ])('does not retry a rejection that %s', (_label, message) => {
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => message.includes(p))).toEqual([]);
+    expect(isIamPropagationError(message)).toBe(false);
+    expect(isRetryableTransientError(ccError(message), message)).toBe(false);
+  });
+
   // Bounded: a role that never becomes assumable (a wrong or deleted ARN
   // gives the same assume wording) surfaces after the propagation budget
   // instead of being retried forever.
