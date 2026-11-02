@@ -416,8 +416,8 @@ export function narrowRouteDestinations(properties: Record<string, unknown>): {
  * send (issue #5068), read from one list so the two calls cannot disagree on
  * which targets they carry. Every one is an "Update requires: No interruption"
  * property in the CloudFormation schema and a field of both `CreateRouteRequest`
- * and `ReplaceRouteRequest`. `OdbNetworkArn` is in neither call: cdkd records
- * it as not yet implemented (`property-coverage.generated.ts`).
+ * and `ReplaceRouteRequest`, `OdbNetworkArn` (an Oracle Database@AWS network,
+ * issue #5631) included.
  */
 function routeTargetParams(properties: Record<string, unknown>) {
   return {
@@ -429,6 +429,7 @@ function routeTargetParams(properties: Record<string, unknown>) {
     EgressOnlyInternetGatewayId: (properties['EgressOnlyInternetGatewayId'] as string) ?? undefined,
     InstanceId: (properties['InstanceId'] as string) ?? undefined,
     NetworkInterfaceId: (properties['NetworkInterfaceId'] as string) ?? undefined,
+    OdbNetworkArn: (properties['OdbNetworkArn'] as string) ?? undefined,
     TransitGatewayId: (properties['TransitGatewayId'] as string) ?? undefined,
     VpcEndpointId: (properties['VpcEndpointId'] as string) ?? undefined,
     VpcPeeringConnectionId: (properties['VpcPeeringConnectionId'] as string) ?? undefined,
@@ -1203,6 +1204,7 @@ export class EC2Provider implements ResourceProvider {
         'EgressOnlyInternetGatewayId',
         'InstanceId',
         'NetworkInterfaceId',
+        'OdbNetworkArn',
         'TransitGatewayId',
         'VpcEndpointId',
         'VpcPeeringConnectionId',
@@ -11400,7 +11402,7 @@ export class EC2Provider implements ResourceProvider {
    * Surfaces the target field (`GatewayId` / `NatGatewayId` / `InstanceId` /
    * `NetworkInterfaceId` / `VpcPeeringConnectionId` / `EgressOnlyInternetGatewayId` /
    * `TransitGatewayId` / `LocalGatewayId` / `CarrierGatewayId` / `CoreNetworkArn` /
-   * `VpcEndpointId`) AWS reports for that route. Drift signal: route target changed.
+   * `OdbNetworkArn` / `VpcEndpointId`) AWS reports for that route. Drift signal: route target changed.
    */
   private async readRouteCurrentState(
     physicalId: string
@@ -11467,6 +11469,9 @@ export class EC2Provider implements ResourceProvider {
     }
     if (route.CoreNetworkArn !== undefined) {
       result['CoreNetworkArn'] = route.CoreNetworkArn;
+    }
+    if (route.OdbNetworkArn !== undefined) {
+      result['OdbNetworkArn'] = route.OdbNetworkArn;
     }
     return result;
   }

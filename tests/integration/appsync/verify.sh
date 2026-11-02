@@ -52,7 +52,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -443,7 +443,7 @@ if [ "${UPDATE_RC}" -ne 0 ]; then
   # updates on CloudFormation; pre-fix cdkd refused both.
   UPDATE_PLAIN="$(printf '%s' "${UPDATE_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
   for refusal in "GraphqlApi.Name is immutable" "DataSource.Type is immutable"; do
-    if printf '%s' "${UPDATE_PLAIN}" | grep -qF "${refusal}"; then
+    if grep -qF "${refusal}" <<<"${UPDATE_PLAIN}"; then
       echo "FAIL [issue #5359]: the update was refused with '${refusal}'; CloudFormation updates it in place" >&2
     fi
   done
@@ -456,7 +456,7 @@ fi
 # returning `{}` degrades every later Fn::GetAtt to the physical-id fallback.
 # The stack's GraphQLApiUrl output is that Fn::GetAtt, so a URL here is the
 # live proof it survived the update.
-if ! echo "${UPDATE_OUT}" | grep -qE 'GraphQLApiUrl = https://'; then
+if ! grep -qE 'GraphQLApiUrl = https://' <<<"${UPDATE_OUT}"; then
   echo "FAIL: GraphQLApiUrl output did not resolve after the update — the update path wiped the create-time attributes" >&2
   echo "${UPDATE_OUT}" | grep -iE 'GraphQLApiUrl|Cannot resolve' >&2
   exit 1
@@ -533,13 +533,13 @@ if [ "${PHASE2B_RC}" -eq 0 ]; then
   exit 1
 fi
 # Two independent markers: the per-key sentence and the pre-flight's suffix.
-if ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' ||
-   ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'fix the template value'; then
+if ! grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' <<<"${PHASE2B_PLAIN}" ||
+   ! grep -q 'fix the template value' <<<"${PHASE2B_PLAIN}"; then
   echo "FAIL [phase 2b]: the deploy failed, but not with the #3781 template-path refusal" >&2
   exit 1
 fi
 # The value itself never reaches the output (a variable can hold a secret).
-if printf '%s' "${PHASE2B_PLAIN}" | grep -q 'cdkd-integ-not-a-string'; then
+if grep -q 'cdkd-integ-not-a-string' <<<"${PHASE2B_PLAIN}"; then
   echo "FAIL [phase 2b]: the refusal quoted the environment-variable VALUE" >&2
   exit 1
 fi
@@ -567,7 +567,7 @@ if [ "${PHASE2D_RC}" -eq 0 ]; then
   echo "FAIL [phase 2d]: the ApiId move deployed (exit 0); issue #5359 refuses it rather than leaving the schema on the old API" >&2
   exit 1
 fi
-if ! printf '%s' "${PHASE2D_PLAIN}" | grep -qF 'GraphQLSchema.ApiId cannot move a schema to another API in place'; then
+if ! grep -qF 'GraphQLSchema.ApiId cannot move a schema to another API in place' <<<"${PHASE2D_PLAIN}"; then
   echo "FAIL [phase 2d]: the deploy failed, but not with the #5359 refusal" >&2
   exit 1
 fi
@@ -627,12 +627,12 @@ if [ "${PHASE2C_ROLLBACK_RC}" -ne 0 ]; then
 fi
 PHASE2C_PLAIN="$(printf '%s' "${PHASE2C_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
 # Two independent markers: the per-key sentence and the keep decision.
-if ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' ||
-   ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'leaving the live environment variables untouched'; then
+if ! grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' <<<"${PHASE2C_PLAIN}" ||
+   ! grep -q 'leaving the live environment variables untouched' <<<"${PHASE2C_PLAIN}"; then
   echo "FAIL [phase 2c]: the revert did not warn and keep the live environment variables" >&2
   exit 1
 fi
-if printf '%s' "${PHASE2C_PLAIN}" | grep -q 'cdkd-integ-not-a-string'; then
+if grep -q 'cdkd-integ-not-a-string' <<<"${PHASE2C_PLAIN}"; then
   echo "FAIL [phase 2c]: the replay warning quoted the environment-variable VALUE" >&2
   exit 1
 fi
@@ -750,23 +750,23 @@ set -e
 # and run every assertion in this block against the plain text.
 EXPORT_OUT="$(printf '%s\n' "${EXPORT_OUT}" | sed $'s/\x1b\\[[0-9;]*m//g')"
 if [ "${EXPORT_RC}" -eq 0 ]; then
-  if ! printf '%s\n' "${EXPORT_OUT}" | grep -qE 'Import plan for CloudFormation stack'; then
+  if ! grep -qE 'Import plan for CloudFormation stack' <<<"${EXPORT_OUT}"; then
     echo "FAIL: export --dry-run exited 0 without printing an import plan" >&2
     printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
     exit 1
   fi
-  printf '%s\n' "${EXPORT_OUT}" | grep -qE '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:' \
+  grep -qE '\(AWS::AppSync::GraphQLApi\).*Arn=arn:aws:appsync:' <<<"${EXPORT_OUT}" \
     || { echo "FAIL: export plan did not resolve the GraphQLApi identifier from the recorded Arn" >&2; exit 1; }
-  printf '%s\n' "${EXPORT_OUT}" | grep -qE "\(AWS::AppSync::ApiKey\).*ApiId=${API_ID}, ApiKeyId=da2-" \
+  grep -qE "\(AWS::AppSync::ApiKey\).*ApiId=${API_ID}, ApiKeyId=da2-" <<<"${EXPORT_OUT}" \
     || { echo "FAIL: export plan did not resolve the ApiKey composite identifier" >&2; exit 1; }
 else
-  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q 'block migration'; then
+  if ! grep -q 'block migration' <<<"${EXPORT_OUT}"; then
     echo "FAIL: export --dry-run failed for a reason other than blocked resources (rc=${EXPORT_RC})" >&2
     printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
     exit 1
   fi
   for blocker in 'GraphQLSchema (AWS::AppSync::GraphQLSchema)' 'GraphQLApi (AWS::AppSync::GraphQLApi)'; do
-    if ! printf '%s\n' "${EXPORT_OUT}" | grep -qF -- "- ${blocker}"; then
+    if ! grep -qF -- "- ${blocker}" <<<"${EXPORT_OUT}"; then
       echo "FAIL: the blocked list does not name ${blocker} (an expected blocker)" >&2
       printf '%s\n' "${EXPORT_OUT}" | sed 's/^/  /' >&2
       exit 1
@@ -776,7 +776,7 @@ else
   # thrown message carries the number of blocked resources, so pin it at two
   # — a third blocker with any wording the loop below does not know (a masked
   # id, a row missing from state) would otherwise pass silently.
-  if ! printf '%s\n' "${EXPORT_OUT}" | grep -q '2 resource(s) block migration'; then
+  if ! grep -q '2 resource(s) block migration' <<<"${EXPORT_OUT}"; then
     echo "FAIL: unexpected blocker count (expected exactly GraphQLSchema + GraphQLApi):" >&2
     printf '%s\n' "${EXPORT_OUT}" | grep -E 'block migration|^\s+- ' | sed 's/^/  /' >&2
     exit 1
@@ -788,7 +788,7 @@ else
   # before the ANSI strip above), or the loop below is comparing the whole
   # output and the comment two lines up is a lie.
   OTHER_LINES="$(printf '%s\n' "${EXPORT_OUT}" | grep -vE '^\s+- (GraphQLSchema|GraphQLApi) \(')"
-  if printf '%s\n' "${OTHER_LINES}" | grep -qE '^\s+- (GraphQLSchema|GraphQLApi) \('; then
+  if grep -qE '^\s+- (GraphQLSchema|GraphQLApi) \(' <<<"${OTHER_LINES}"; then
     echo "FAIL: the blocked-line exclusion did not remove the expected blockers (ANSI or format drift)" >&2
     exit 1
   fi
@@ -799,7 +799,7 @@ else
   fi
   for unresolved in 'could not resolve resource identifier' 'COMPOSITE_ID_SPLITTERS' \
     'AWS::AppSync::ApiKey' 'AWS::AppSync::DataSource' 'AWS::AppSync::Resolver'; do
-    if printf '%s\n' "${OTHER_LINES}" | grep -qF -- "${unresolved}"; then
+    if grep -qF -- "${unresolved}" <<<"${OTHER_LINES}"; then
       echo "FAIL: export --dry-run reports an unresolved identifier (${unresolved}):" >&2
       printf '%s\n' "${OTHER_LINES}" | grep -F -- "${unresolved}" | sed 's/^/  /' >&2
       exit 1

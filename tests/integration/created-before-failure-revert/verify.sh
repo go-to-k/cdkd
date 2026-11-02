@@ -91,7 +91,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -364,7 +364,7 @@ fi
 # PREMISE: CreateRepository returned. Without it the failure came before the
 # create and nothing below tests #4583.
 if ! E1_DESCRIBE="$(aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${REGION}" 2>&1)"; then
-  if printf '%s' "${E1_DESCRIBE}" | grep -qF 'RepositoryNotFoundException'; then
+  if grep -qF 'RepositoryNotFoundException' <<<"${E1_DESCRIBE}"; then
     echo "[verify] FAIL: phase E1: ${REPO_NAME} does not exist after the failed deploy — the CREATE failed before CreateRepository, so this phase tests nothing" >&2
   else
     echo "[verify] FAIL: phase E1: describe-repositories for ${REPO_NAME} failed for another reason, so the premise is undetermined: ${E1_DESCRIBE}" >&2

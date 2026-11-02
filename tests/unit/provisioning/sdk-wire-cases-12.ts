@@ -1549,9 +1549,8 @@ const CASES_12_ELBV2: TypeCase[] = [LOAD_BALANCER_CASE, TARGET_GROUP_CASE, LISTE
  * destination is carried by bags of its own: a full one, and one with the
  * alternatives (a KMS-encrypted bucket where the full bag declares
  * `NoEncryptionConfig`, a VPC, the other serializer / deserializer, a Secrets
- * Manager credential). `SnowflakeDestinationConfiguration`,
- * `MSKSourceConfiguration` and `DatabaseSourceConfiguration` are not handled,
- * so no bag carries them.
+ * Manager credential). `SnowflakeDestinationConfiguration` and
+ * `DatabaseSourceConfiguration` are not handled, so no bag carries them.
  */
 
 const FIREHOSE_STREAM = 'stream';
@@ -1893,6 +1892,26 @@ const FIREHOSE_CASE: TypeCase = {
           RoleARN: FIREHOSE_ROLE,
         },
       },
+    },
+    {
+      // go-to-k/cdkd#5636. Create-only, so only its create probes run.
+      name: 'MSK source, every member',
+      bag: {
+        DeliveryStreamName: FIREHOSE_STREAM,
+        DeliveryStreamType: 'MSKAsSource',
+        MSKSourceConfiguration: {
+          MSKClusterARN: `arn:aws:kafka:us-east-1:${ACCOUNT}:cluster/c/0000-s1`,
+          TopicName: 'topic',
+          AuthenticationConfiguration: { RoleARN: FIREHOSE_ROLE, Connectivity: 'PRIVATE' },
+          ReadFromTimestamp: '1767225600000',
+        },
+        ExtendedS3DestinationConfiguration: {
+          BucketARN: 'arn:aws:s3:::dest',
+          RoleARN: FIREHOSE_ROLE,
+        },
+      },
+      // The default variation is no epoch-milliseconds string, which create() refuses.
+      variants: { 'MSKSourceConfiguration.ReadFromTimestamp': '1769904000000' },
     },
     {
       // go-to-k/cdkd#5636. The catalog is create-only, so only its create

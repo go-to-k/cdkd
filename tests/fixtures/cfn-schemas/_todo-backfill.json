@@ -59,9 +59,6 @@
       "Tenancy",
       "Volumes"
     ],
-    "AWS::EC2::Route": [
-      "OdbNetworkArn"
-    ],
     "AWS::EC2::Subnet": [
       "AssignIpv6AddressOnCreation",
       "AvailabilityZoneId",
@@ -83,7 +80,6 @@
     ],
     "AWS::KinesisFirehose::DeliveryStream": [
       "DatabaseSourceConfiguration",
-      "MSKSourceConfiguration",
       "SnowflakeDestinationConfiguration"
     ],
     "AWS::RDS::DBCluster": [

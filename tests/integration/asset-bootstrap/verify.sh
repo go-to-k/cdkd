@@ -56,7 +56,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -204,7 +204,7 @@ DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
 
-if ! echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
+if ! grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: legacy-mode deploy did not print the 'cdk gc' hazard info line" >&2
   exit 1
 fi
@@ -274,19 +274,19 @@ fi
 # A non-zero rc is NOT the discriminator: before the fix this refused too, via
 # normalizeAwsError's generic 301 rendering. Only the fixed path names the two
 # regions, so that is what is asserted.
-if ! printf '%s' "${XREGION_OUT}" | grep -q "resolves to a bucket in ${XREGION_REGION}"; then
+if ! grep -q "resolves to a bucket in ${XREGION_REGION}" <<<"${XREGION_OUT}"; then
   echo "FAIL: refusal does not name the bucket's region (${XREGION_REGION}); output:" >&2
   printf '%s\n' "${XREGION_OUT}" >&2
   exit 1
 fi
-if ! printf '%s' "${XREGION_OUT}" | grep -q "targets ${REGION}"; then
+if ! grep -q "targets ${REGION}" <<<"${XREGION_OUT}"; then
   echo "FAIL: refusal does not name the target region (${REGION}); output:" >&2
   printf '%s\n' "${XREGION_OUT}" >&2
   exit 1
 fi
 # The PRE-fix wording, which told the user to file a bug for their own naming
 # collision. Its absence is what says the new arm ran rather than the old one.
-if printf '%s' "${XREGION_OUT}" | grep -q 'please report it'; then
+if grep -q 'please report it' <<<"${XREGION_OUT}"; then
   echo "FAIL: still emitting the pre-fix 301 wording; output:" >&2
   printf '%s\n' "${XREGION_OUT}" >&2
   exit 1
@@ -311,7 +311,7 @@ XREGION_POLICY_OUT=$(aws s3api get-bucket-policy --bucket "${XREGION_BUCKET}" \
   printf '%s\n' "${XREGION_POLICY_OUT}" >&2
   exit 1
 }
-if ! printf '%s' "${XREGION_POLICY_OUT}" | grep -q 'NoSuchBucketPolicy'; then
+if ! grep -q 'NoSuchBucketPolicy' <<<"${XREGION_POLICY_OUT}"; then
   echo "FAIL: undetermined bucket-policy probe on ${XREGION_BUCKET}: ${XREGION_POLICY_OUT}" >&2
   exit 1
 fi
@@ -386,7 +386,7 @@ DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes 2>&1)
 echo "${DEPLOY_OUT}" | tail -3
 
-if echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
+if grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: cdkd-assets mode deploy still printed the legacy gc-hazard line" >&2
   exit 1
 fi
@@ -407,12 +407,12 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   echo "FAIL: deploy succeeded although the container repo named by the marker is deleted" >&2
   exit 1
 fi
-if ! echo "${DEPLOY_OUT}" | grep -qF "${CONTAINER_REPO}"; then
+if ! grep -qF "${CONTAINER_REPO}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: hard error does not name the missing repo. Output tail:" >&2
   echo "${DEPLOY_OUT}" | tail -5 >&2
   exit 1
 fi
-if ! echo "${DEPLOY_OUT}" | grep -qF "cdkd bootstrap"; then
+if ! grep -qF "cdkd bootstrap" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: hard error does not point at the 'cdkd bootstrap' fix" >&2
   exit 1
 fi

@@ -117,7 +117,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -653,11 +653,11 @@ echo "    OK: the record carries no observed baseline yet (phase 2 is armed)"
 # secrets scoping deliberately does not cross records. A whole-document grep
 # would therefore fail on CORRECT behavior. The sibling fixture documents the
 # same trap. grep -qF so the plaintext is never echoed.
-if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<<"${TD_RECORD}"; then
   echo "FAIL: the resolved secret plaintext is present in the task definition record after phase 1" >&2
   exit 1
 fi
-if printf '%s' "${TD_RECORD}" | grep -qF "cdkd-decoy-never-created"; then
+if grep -qF "cdkd-decoy-never-created" <<<"${TD_RECORD}"; then
   echo "FAIL: the token-shaped secret plaintext is present in the task definition record after phase 1 (issue #1917)" >&2
   exit 1
 fi
@@ -667,7 +667,7 @@ fi
 # refused position now fails closed there too.) grep -qF and no echo of the
 # needle, like the two above.
 for anchor_needle in "${EXPECTED_ANCHOR_PW}" "${EXPECTED_AMBIG_ALPHA}" "${EXPECTED_AMBIG_BRAVO}"; do
-  if printf '%s' "${TD_RECORD}" | grep -qF "${anchor_needle}"; then
+  if grep -qF "${anchor_needle}" <<<"${TD_RECORD}"; then
     echo "FAIL: an anchor-arm plaintext is present in the task definition record after phase 1 (issue #2012)" >&2
     exit 1
   fi
@@ -1215,11 +1215,11 @@ fi
 echo "    OK: the anchor gate REFUSED the indistinguishable array and FAILED CLOSED to the mask"
 
 # Scoped to the consumer's record for the reason phase 1 gives.
-if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_PASSWORD}"; then
+if grep -qF "${EXPECTED_PASSWORD}" <<<"${TD_RECORD}"; then
   echo "FAIL: the resolved secret plaintext is present in the task definition record after the unchanged redeploy (issue #1915)" >&2
   exit 1
 fi
-if printf '%s' "${TD_RECORD}" | grep -qF "cdkd-decoy-never-created"; then
+if grep -qF "cdkd-decoy-never-created" <<<"${TD_RECORD}"; then
   echo "FAIL: the token-shaped secret plaintext is present in the task definition record after the unchanged redeploy (issue #1917)" >&2
   exit 1
 fi
@@ -1229,12 +1229,12 @@ fi
 # to the mask, so their absence is the stronger assertion. Read these as a
 # PAIR with the positive markers above: "no plaintext" on its own is also
 # satisfied by an arm that never ran.
-if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_ANCHOR_PW}"; then
+if grep -qF "${EXPECTED_ANCHOR_PW}" <<<"${TD_RECORD}"; then
   echo "FAIL: the anchor-paired plaintext is present in the task definition record after the unchanged redeploy (issue #2012)" >&2
   exit 1
 fi
-if printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_AMBIG_ALPHA}" \
-  || printf '%s' "${TD_RECORD}" | grep -qF "${EXPECTED_AMBIG_BRAVO}"; then
+if grep -qF "${EXPECTED_AMBIG_ALPHA}" <<<"${TD_RECORD}" \
+  || grep -qF "${EXPECTED_AMBIG_BRAVO}" <<<"${TD_RECORD}"; then
   echo "FAIL: a refused indistinguishable position persisted its decrypted readback -- the issue #2852 fail-closed contract is broken" >&2
   exit 1
 fi
@@ -1620,7 +1620,7 @@ if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --
 elif ! SECRET_DELETED_DATE=$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" \
     --region "${REGION}" --query 'DeletedDate' --output text 2>&1); then
   # TOCTOU: the secret can vanish between gone_probe and this requery.
-  printf '%s' "${SECRET_DELETED_DATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${SECRET_DELETED_DATE}" \
     && SECRET_DELETED_DATE="GONE" \
     || { echo "FAIL: describe-secret requery undetermined: ${SECRET_DELETED_DATE}" >&2; exit 1; }
 fi

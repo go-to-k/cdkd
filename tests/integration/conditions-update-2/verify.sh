@@ -57,7 +57,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -107,7 +107,7 @@ queue_url() {
   if ! out="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
       --query 'QueueUrl' --output text 2>&1)"; then
     # TOCTOU: the queue can vanish between gone_probe and this requery.
-    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" \
       && { echo ""; return 0; } \
       || { echo "FAIL: get-queue-url requery undetermined (${name}): ${out}" >&2; exit 1; }
   fi
@@ -183,7 +183,7 @@ ssm_value() {
   if ! out="$(aws ssm get-parameter --name "$1" --region "${REGION}" \
       --query 'Parameter.Value' --output text 2>&1)"; then
     # TOCTOU: the parameter can vanish between gone_probe and this requery.
-    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" \
       && { echo ""; return 0; } \
       || { echo "FAIL: get-parameter requery undetermined ($1): ${out}" >&2; exit 1; }
   fi
@@ -275,7 +275,7 @@ echo "    OK: WorkQueue RedrivePolicy SET in phase a (maxReceiveCount=3)"
 
 # --- Case 3: MoverParamName output (gated on IsPhaseA) PRESENT -------
 KEYS=$(state_output_keys)
-if ! echo "${KEYS}" | grep -qx "MoverParamName"; then
+if ! grep -qx "MoverParamName" <<<"${KEYS}"; then
   echo "FAIL: MoverParamName output is ABSENT from cdkd state outputs but should exist in phase a" >&2
   echo "      state output keys were: ${KEYS}" >&2
   exit 1
@@ -352,7 +352,7 @@ echo "    OK: WorkQueue RedrivePolicy nested block REMOVED in place in phase b"
 
 # --- Case 3: MoverParamName output (gated on IsPhaseA) now ABSENT ----
 KEYS=$(state_output_keys)
-if echo "${KEYS}" | grep -qx "MoverParamName"; then
+if grep -qx "MoverParamName" <<<"${KEYS}"; then
   echo "FAIL: MoverParamName output STILL in cdkd state outputs but should be absent in phase b" >&2
   echo "      state output keys were: ${KEYS}" >&2
   exit 1

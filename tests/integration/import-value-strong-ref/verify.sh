@@ -35,7 +35,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -147,17 +147,17 @@ if [[ "${DESTROY_RC}" -eq 0 ]]; then
   echo "${DESTROY_OUTPUT}"
   exit 1
 fi
-if ! echo "${DESTROY_OUTPUT}" | grep -q "Cannot destroy stack"; then
+if ! grep -q "Cannot destroy stack" <<<"${DESTROY_OUTPUT}"; then
   echo "FAIL: destroy failed but error message does not match StackHasActiveImportsError shape"
   echo "${DESTROY_OUTPUT}"
   exit 1
 fi
-if ! echo "${DESTROY_OUTPUT}" | grep -q "IntegBucketArn"; then
+if ! grep -q "IntegBucketArn" <<<"${DESTROY_OUTPUT}"; then
   echo "FAIL: error message does not name the offending export"
   echo "${DESTROY_OUTPUT}"
   exit 1
 fi
-if ! echo "${DESTROY_OUTPUT}" | grep -q "${CONSUMER}"; then
+if ! grep -q "${CONSUMER}" <<<"${DESTROY_OUTPUT}"; then
   echo "FAIL: error message does not name the consumer stack"
   echo "${DESTROY_OUTPUT}"
   exit 1

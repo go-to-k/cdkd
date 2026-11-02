@@ -67,7 +67,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -134,7 +134,7 @@ if [ "${DEPLOY_RC}" -eq 0 ]; then
   exit 1
 fi
 for needle in 'Cannot resolve Fn::GetAtt' 'is not an ARN' 'https://github.com/go-to-k/cdkd/issues'; do
-  if ! printf '%s' "${DEPLOY_OUT}" | grep -qF "${needle}"; then
+  if ! grep -qF "${needle}" <<<"${DEPLOY_OUT}"; then
     echo "FAIL: deploy output lacks guard message fragment: ${needle}" >&2
     exit 1
   fi
@@ -149,7 +149,7 @@ echo "==> Destroy"
 DESTROY_RC=0
 DESTROY_OUT="$(node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)" || DESTROY_RC=$?
 printf '%s\n' "${DESTROY_OUT}"
-if [ "${DESTROY_RC}" -ne 0 ] || printf '%s' "${DESTROY_OUT}" | grep -qi 'No state found'; then
+if [ "${DESTROY_RC}" -ne 0 ] || grep -qi 'No state found' <<<"${DESTROY_OUT}"; then
   echo "    WARN: cdkd destroy had nothing to destroy (or failed); best-effort direct cleanup"
   aws ssm delete-parameter --name "${PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "${CONSUMER_PARAM}" --region "${REGION}" >/dev/null 2>&1 || true
@@ -177,7 +177,7 @@ if [ "${STRICT_RC}" -eq 0 ]; then
   exit 1
 fi
 for needle in 'Cannot resolve Fn::GetAtt' 'BogusName' '--strict-getatt'; do
-  if ! printf '%s' "${STRICT_OUT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${STRICT_OUT}"; then
     echo "FAIL: strict deploy output lacks message fragment: ${needle}" >&2
     exit 1
   fi
@@ -205,12 +205,12 @@ if [ "${WARN_RC}" -ne 0 ]; then
   exit 1
 fi
 for needle in 'Unknown attribute BogusName' 'fell back to the physical ID' '--strict-getatt'; do
-  if ! printf '%s' "${WARN_OUT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${WARN_OUT}"; then
     echo "FAIL: default-mode deploy output lacks fragment: ${needle}" >&2
     exit 1
   fi
 done
-if ! printf '%s' "${WARN_OUT}" | grep -qE '[1-9][0-9]* attribute resolution\(s\) fell back to the physical ID'; then
+if ! grep -qE '[1-9][0-9]* attribute resolution\(s\) fell back to the physical ID' <<<"${WARN_OUT}"; then
   echo "FAIL: deploy-summary fallback line missing its non-zero count" >&2
   exit 1
 fi
@@ -240,7 +240,7 @@ if [ "${OUTPUT_RC}" -eq 0 ]; then
   exit 1
 fi
 for needle in 'Failed to resolve output BadOutput' '--strict-getatt'; do
-  if ! printf '%s' "${OUTPUT_OUT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${OUTPUT_OUT}"; then
     echo "FAIL: output-strict deploy output lacks fragment: ${needle}" >&2
     exit 1
   fi
@@ -254,7 +254,7 @@ if ! aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev
 fi
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)" || { echo "FAIL: could not read the persisted state file for content assertions" >&2; exit 1; }
 for needle in '"Probe"' '"Consumer"' "${PARAM}" "${CONSUMER_PARAM}"; do
-  if ! printf '%s' "${STATE_JSON}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${STATE_JSON}"; then
     echo "FAIL: persisted state lacks ${needle} after the strict output failure" >&2
     exit 1
   fi
@@ -337,7 +337,7 @@ if [ "${ARN_RC}" -ne 0 ]; then
   echo "FAIL: arn-resolves deploy exited ${ARN_RC}; Fn::GetAtt [Probe, Arn] must resolve now" >&2
   exit 1
 fi
-if printf '%s' "${ARN_OUT}" | grep -qF 'is not an ARN'; then
+if grep -qF 'is not an ARN' <<<"${ARN_OUT}"; then
   echo "FAIL: arn-resolves deploy hit the *Arn shape guard — the Arn attribute is not cached" >&2
   exit 1
 fi

@@ -48,7 +48,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -213,7 +213,7 @@ echo "    OK: Lambda Code.ImageUri == ${IMAGE_URI}"
 ECR_REPO=$(echo "${IMAGE_URI}" | sed -E 's#^[^/]+/##; s#[@:].*$##')
 # Extract the `:tag` only (skip the `@sha256:...` digest form): take the part
 # after the LAST `:` but only if the URI has no `@` digest separator.
-if echo "${IMAGE_URI}" | grep -q '@'; then
+if grep -q '@' <<<"${IMAGE_URI}"; then
   IMAGE_TAG=""
 else
   IMAGE_TAG="${IMAGE_URI##*:}"
@@ -332,7 +332,7 @@ echo "==> Phase 1d: redeploy adding RuntimeManagementConfig must be refused by c
 for mode in Auto FunctionUpdate; do
   PUT_ERR=$(aws lambda put-runtime-management-config --function-name "${FN_NAME}" \
     --update-runtime-on "${mode}" --region "${REGION}" 2>&1 >/dev/null || true)
-  if ! printf '%s' "${PUT_ERR}" | grep -q 'InvalidParameterValueException'; then
+  if ! grep -q 'InvalidParameterValueException' <<<"${PUT_ERR}"; then
     echo "FAIL (issue #1894 premise): AWS did not reject PutRuntimeManagementConfig(${mode}) on the image function -- got: ${PUT_ERR:-success}" >&2
     exit 1
   fi

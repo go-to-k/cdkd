@@ -884,6 +884,11 @@
       ]
     },
     {
+      "name": "destroy-failed-delete-keeps-dependencies",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "destroy-interrupt",
       "annotated": true,
       "scenarios": [
@@ -1078,6 +1083,11 @@
       "scenarios": []
     },
     {
+      "name": "ecs-gateway-role-propagation",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ecs-schedule-targets",
       "annotated": false,
       "scenarios": []
@@ -1217,6 +1227,11 @@
     },
     {
       "name": "firehose-iceberg-destination",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
+      "name": "firehose-msk-source",
       "annotated": false,
       "scenarios": []
     },
@@ -3581,6 +3596,7 @@
     "cross-region-concurrent-stacks",
     "custom-resource-noecho-nested",
     "custom-resource-service-token-change",
+    "destroy-failed-delete-keeps-dependencies",
     "destroy-nested-cross-region",
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",
@@ -3599,6 +3615,7 @@
     "ec2-route-targets",
     "ec2-sg-source-group-name",
     "ecr-scanning",
+    "ecs-gateway-role-propagation",
     "ecs-schedule-targets",
     "ecs-service-gateway-connectors",
     "ecs-taskdef-tags-launch-type",
@@ -3614,6 +3631,7 @@
     "fallback-recreate-children",
     "fifo-sqs-event-source",
     "firehose-iceberg-destination",
+    "firehose-msk-source",
     "generated-name-security-group",
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",

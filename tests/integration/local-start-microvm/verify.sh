@@ -149,17 +149,17 @@ grep -q '/run hook answered 200' "${OUT_FILE}" || fail "/run was not called"
 MVM_ID="$(grep -oE 'MicroVM mvm-[0-9a-f-]+ listening' "${OUT_FILE}" | awk 'NR == 1 {print $2}')"
 [[ -n "${MVM_ID}" ]] || fail "no microvmId in the ready banner"
 BODY="$(curl -s --max-time 10 "${URL}/hello")"
-echo "${BODY}" | grep -q '"port":8080' || fail "default request not routed to 8080: ${BODY}"
-echo "${BODY}" | grep -q "\"microvmId\":\"${MVM_ID}\"" || fail "/run microvmId not seen by the app: ${BODY}"
-echo "${BODY}" | grep -q "\"runHookPayload\":\"${PAYLOAD}\"" || fail "run payload not seen by the app: ${BODY}"
-echo "${BODY}" | grep -q '"greeting":"hello-from-microvm"' || fail "EnvironmentVariables not injected: ${BODY}"
-echo "${BODY}" | grep -q '"hooks":\["ready","validate","run"\]' || fail "hook order wrong: ${BODY}"
+grep -q '"port":8080' <<<"${BODY}" || fail "default request not routed to 8080: ${BODY}"
+grep -q "\"microvmId\":\"${MVM_ID}\"" <<<"${BODY}" || fail "/run microvmId not seen by the app: ${BODY}"
+grep -q "\"runHookPayload\":\"${PAYLOAD}\"" <<<"${BODY}" || fail "run payload not seen by the app: ${BODY}"
+grep -q '"greeting":"hello-from-microvm"' <<<"${BODY}" || fail "EnvironmentVariables not injected: ${BODY}"
+grep -q '"hooks":\["ready","validate","run"\]' <<<"${BODY}" || fail "hook order wrong: ${BODY}"
 echo "    ${MVM_ID}: ${BODY}"
 
 echo "==> Arm 2: port routing and header stripping"
 BODY="$(curl -s --max-time 10 "${URL}/alt" -H 'X-aws-proxy-port: 9000' -H 'X-aws-proxy-auth: token' -H 'X-aws-proxy-extra: 1')"
-echo "${BODY}" | grep -q '"port":9000' || fail "X-aws-proxy-port: 9000 not routed to 9000: ${BODY}"
-echo "${BODY}" | grep -q '"proxyHeaders":\[\]' || fail "X-aws-proxy-* headers reached the app: ${BODY}"
+grep -q '"port":9000' <<<"${BODY}" || fail "X-aws-proxy-port: 9000 not routed to 9000: ${BODY}"
+grep -q '"proxyHeaders":\[\]' <<<"${BODY}" || fail "X-aws-proxy-* headers reached the app: ${BODY}"
 [[ "$(status_of "${URL}/" -H 'X-aws-proxy-port: abc')" = "400" ]] || fail "invalid X-aws-proxy-port not 400"
 [[ "$(status_of "${URL}/" -H 'X-aws-proxy-port: 9200')" = "403" ]] || fail "unpublished port not 403"
 [[ "$(status_of "${URL}/" -H 'X-aws-proxy-port: 9100')" = "502" ]] \
@@ -181,9 +181,9 @@ ws.onmessage = (m) => {
   }
 };
 ' "ws://127.0.0.1:${PORT}/ws")" || fail "WebSocket client failed: ${WS_OUT}"
-echo "${WS_OUT}" | grep -q '"protocol":"lambda-microvms"' || fail "101 did not select lambda-microvms: ${WS_OUT}"
-echo "${WS_OUT}" | grep -q 'subprotocolHeader\\":null' || fail "the app saw a subprotocol header: ${WS_OUT}"
-echo "${WS_OUT}" | grep -q '"echo:ping"' || fail "the echo did not round-trip through port 9000: ${WS_OUT}"
+grep -q '"protocol":"lambda-microvms"' <<<"${WS_OUT}" || fail "101 did not select lambda-microvms: ${WS_OUT}"
+grep -q 'subprotocolHeader\\":null' <<<"${WS_OUT}" || fail "the app saw a subprotocol header: ${WS_OUT}"
+grep -q '"echo:ping"' <<<"${WS_OUT}" || fail "the echo did not round-trip through port 9000: ${WS_OUT}"
 echo "    ${WS_OUT}"
 
 echo "==> Arm 4: control endpoint: cross-origin refused, suspend -> 503 -> resume -> served"
@@ -203,7 +203,7 @@ CONTAINER="$(grep -oE '\(container cdkd-local-microvm-[^)]+\)' "${OUT_FILE}" | a
 curl -s --max-time 10 -X POST "${URL}/_cdkl/microvm/resume" | grep -q '"state":"running"' \
   || fail "resume did not report running"
 BODY="$(curl -s --max-time 10 "${URL}/after-resume")"
-echo "${BODY}" | grep -q '"hooks":\["ready","validate","run","suspend","resume"\]' \
+grep -q '"hooks":\["ready","validate","run","suspend","resume"\]' <<<"${BODY}" \
   || fail "/resume hook not observed by the app: ${BODY}"
 
 echo "==> Arm 5: SIGTERM calls /terminate and removes the container"

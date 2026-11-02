@@ -97,7 +97,7 @@ own line:
 
 The event is recorded by `cdkd destroy`, by `cdkd state destroy`, and by a
 `cdkd deploy` that deletes a resource you removed from the template. There
-are four causes:
+are five causes:
 
 - **The physical id in state is malformed.** cdkd makes no AWS call.
 - **The state record lacks what the delete needs.** This applies to a Lambda
@@ -106,6 +106,9 @@ are four causes:
   cdkd makes no AWS call.
 - **A nested stack's own destroy skipped a resource or was interrupted.** The
   nested stack's other resources were deleted first.
+- **A resource that depends on it failed to delete.** On a destroy, cdkd
+  keeps what a failed resource depends on, and `reason` names the failed
+  resource. No provider is asked about it.
 - **A replacement could not delete the old resource.** The update itself
   succeeded.
 

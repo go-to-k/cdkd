@@ -42,8 +42,9 @@ re-run it on the rebased head (#3726).
   included": a COMMENT-ONLY nit found after the integ may ride this run's next
   lane on that file, whose integ re-runs anyway, named in that lane's PR body
   (#3977); with no such lane, fix it here and re-run. Scope the reviewers to the
-  delta and paste its COMMIT MESSAGE into the brief: they read `gh pr diff`, not
-  `git log`.
+  delta by `git range-diff` or the PR's file list (a two-dot diff over a
+  rebase shows peers' files, #5651) and paste its COMMIT MESSAGE into the brief:
+  they read `gh pr diff`, not `git log`.
 
 ### 8-c. The live-test tiers
 
@@ -103,16 +104,18 @@ the throwaway tree only, never the PR, and re-run (#5414), at most two such work
 (#5528) — a third stops the probe for the parent; at an older step, harden it and
 re-run (#5218). A refusal at the arm's OWN deploy, emitted by the route the
 fix replaces while the fixed route accepts the shape, IS the symptom (#5507);
-one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework the arm so the symptom reaches AWS
-(#4927). A failure HINT's needle, or a provider retry regex's, is
-copied from a real red run, never reasoned (#4336, #5592); a refusal the
+one on either route is #5204's. A GREEN pre-fix run BLOCKS the merge: rework
+the arm so the symptom reaches AWS (#4927). A NEEDLE (hint, retry regex,
+fixture refusal grep) is copied from cdkd's red output on EACH route, never
+reasoned nor the `aws` CLI's (#4336, #5592; #5680: masked account ids,
+code-only SDK errors); a refusal the
 log tail lacks is the failed resource's `error.message` / `awsErrorCode` in
 `s3://<bucket>/<prefix>/<Stack>/<region>/deployments/*.jsonl`. **Revert in a
 THROWAWAY detached tree at the PUSHED final sha, never the lane's** — the lane
 tree then has nothing to restore (a SECOND probe in the throwaway tree restores
 the first's edit with `CDKD_ALLOW_DIRTY_RESTORE=1`, never `git show >` around
 the gate: #5657), and a restore in the lane tree is refused by
-`dirty-path-restore-gate` and, as `cp`, by the classifier (#5401). Inside
+`dirty-path-restore-gate`, and `cp` by the classifier. Inside
 `bash -c` (zsh mangles `$B:src`), each copy written beside the file FIRST — a
 redirect onto the file truncates it even when `git show` fails:
 
@@ -141,19 +144,19 @@ fixture assertion — predict and budget it, #5657), and add a NEGATIVE CONTROL.
 SKIPS
 something, give the fixture a second, ORDINARY difference — a phase redeploying
 a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
-test. Two more vacuity shapes:
+test. More vacuity shapes:
 
-- **Every assertion PREDATES your change → the run is somebody else's
-  regression net.** `git diff origin/main -- <fixture>`, then add the one that
+- **Every assertion PREDATES your change → a regression net, not your
+  proof.** `git diff origin/main -- <fixture>`, then add the one that
   could only pass AFTER it, guarded against vacuity — a `NOTE` naming your
   issue is that slot: make it a `FAIL` before the run (#4548).
 - **When a fix REMOVES a behaviour, an assertion that it HAPPENS goes
   over-determined, not red.**
+- **A self-compared baseline, or a 0 count with no prior 1, proves nothing**: change the value out of band first (#5648, #5649).
 
 ### 8-e. Watching runs and pollers
 
-**Never leave a real-AWS run unwatched**: `/run-integ` step 5 carries the
-watchdog recipe. **ANCHOR the
+**Never leave a real-AWS run unwatched**: `/run-integ` step 5's watchdog. **ANCHOR the
 predicate a poller waits on**: a line written only at the END
 (`grep -q "^suite_rc="` — unanchored, `test_rc=` matches `typecheck_test_rc=`)
 plus `kill -0 <YOUR run's PID>`, never `pgrep -f <name>`, which also matches
@@ -197,14 +200,11 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
 ### 8-i. Fresh deploys, and who verifies what
 
 **A fresh deploy is a fresh FIXTURE**: `/new-integ` scaffolds one, `/run-integ`
-deploys and tears it down. **UNIQUE stack names only**
-(e.g. `Cdkd<Issue>Verify`): the account may hold the maintainer's production
+deploys and tears it down. **UNIQUE stack names only**:
+the account may hold the maintainer's production
 stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
 run AGENTS.md's leftover check, which the `deployments/` store survives.
-
-**`/run-integ` records `integ-destroy`, which `gh pr merge` needs beside
-`main`'s ruleset checks**; `/verify-pr` and `/review-pr` record nothing — run them anyway.
 
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
 never substitute for it** (#2383) — they are its children and

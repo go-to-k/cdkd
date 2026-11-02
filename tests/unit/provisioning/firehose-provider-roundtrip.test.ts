@@ -209,6 +209,57 @@ describe('FirehoseProvider read-update round-trip', () => {
       );
     }
   });
+
+  it('round-trip: a read-back MSKSourceConfiguration reaches no update call (#5636)', async () => {
+    // Create-only, as the Direct PUT hint is: no update API carries it.
+    const cluster = 'arn:aws:kafka:us-east-1:111:cluster/c/0000-s1';
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: PHYSICAL_ID,
+            DeliveryStreamARN: `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`,
+            DeliveryStreamType: 'MSKAsSource',
+            VersionId: '1',
+            Source: {
+              MSKSourceDescription: {
+                MSKClusterARN: cluster,
+                TopicName: 'topic',
+                AuthenticationConfiguration: { RoleARN: 'arn:aws:iam::111:role/r', Connectivity: 'PRIVATE' },
+                ReadFromTimestamp: new Date(Date.UTC(2026, 10, 1)),
+              },
+            },
+            Destinations: [{ DestinationId: 'destinationId-000000000001' }],
+          },
+        });
+      }
+      if (command instanceof ListTagsForDeliveryStreamCommand) {
+        return Promise.resolve({ Tags: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<
+      string,
+      unknown
+    >;
+    expect(observed['MSKSourceConfiguration']).toMatchObject({ TopicName: 'topic' });
+
+    mockSend.mockClear();
+    const previous = {
+      ...observed,
+      MSKSourceConfiguration: {
+        ...(observed['MSKSourceConfiguration'] as Record<string, unknown>),
+        TopicName: 'other',
+      },
+    };
+    const result = await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, previous);
+    expect(result.wasReplaced).toBe(false);
+    expect(mockSend.mock.calls.length).toBeGreaterThan(0);
+    for (const [command] of mockSend.mock.calls) {
+      expect(JSON.stringify((command as { input: unknown }).input)).not.toContain(cluster);
+    }
+  });
 });
 
 // #477: in-place updates for Firehose delivery streams.

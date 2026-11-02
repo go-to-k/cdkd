@@ -30,6 +30,7 @@ import {
 } from '../../../src/utils/error-handler.js';
 import { CloudControlOperationFailedError } from '../../../src/provisioning/cloud-control-provider.js';
 import { awsSdkError } from '../_aws-sdk-error.js';
+import { IAM_PROPAGATION_MAX_RETRIES, withRetry } from '../../../src/deployment/retry.js';
 import { maskSecretsInError } from '../../../src/deployment/secret-redaction.js';
 
 describe('isRetryableTransientError', () => {
@@ -1692,6 +1693,179 @@ describe('Lambda CapacityProvider security-group propagation (#3227)', () => {
       'supported. Select subnets from supported Availability Zones. (Service: Lambda, Status Code: 400)';
     expect(isIamPropagationError(unrelated)).toBe(false);
     expect(isRetryableTransientError(new Error(unrelated), unrelated)).toBe(false);
+  });
+});
+
+/**
+ * AWS::ECS::Gateway infrastructure-role propagation (issue #5661).
+ *
+ * Cloud Control's create of a gateway whose `InfrastructureRoleArn` role was
+ * created seconds earlier in the same deploy is rejected twice over, the
+ * wording moving as the role propagates: first the role cannot be assumed,
+ * then the session it yields is not valid yet. Both texts are verbatim from
+ * real runs of the #5634 gateway fixture (2026-11-02, us-east-1; account id
+ * replaced), in the CREATE-failure shape `CloudControlProvider` builds.
+ */
+describe('ECS Gateway infrastructure-role propagation (#5661)', () => {
+  const ASSUME_ANCHOR = 'Could not assume the infrastructure role';
+  const CREDENTIALS_ANCHOR =
+    'AWS was not able to validate the provided access credentials (Service: Ecs,';
+  const ASSUME =
+    'CREATE failed for Gateway: AccessDenied: Could not assume the infrastructure role ' +
+    'arn:aws:iam::123456789012:role/CdkdEcsServiceGatewayConnectorsExample-GatewayInfra-ebdc2d2f4fca. ' +
+    'Restore the role and allow ecs.amazonaws.com to assume it, then retry. ' +
+    '(Service: Ecs, Status Code: 400, Request ID: 34d7c614-53f2-488c-80b2-1121f89521c2) (SDK Attempt Count: 1)';
+  const CREDENTIALS =
+    'CREATE failed for Gateway: Access denied: AWS was not able to validate the provided access credentials ' +
+    '(Service: Ecs, Status Code: 400, Request ID: e0ace6b5-d3b7-45dc-bdd1-05eafe361471) (SDK Attempt Count: 1)';
+
+  const ccError = (message: string): CloudControlOperationFailedError =>
+    new CloudControlOperationFailedError(
+      message,
+      'AWS::ECS::Gateway',
+      'Gateway',
+      undefined,
+      'AccessDenied',
+      'CREATE'
+    );
+
+  // Exact sets across EVERY message pattern, as in the #3174 block: each
+  // wording is carried by its own entry and by nothing else, so deleting an
+  // entry goes red with an empty array rather than falling through to a
+  // neighbour.
+  it('matches each wording by exactly its own entry', () => {
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => ASSUME.includes(p))).toEqual([
+      ASSUME_ANCHOR,
+    ]);
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => CREDENTIALS.includes(p))).toEqual([
+      CREDENTIALS_ANCHOR,
+    ]);
+    expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(ASSUME_ANCHOR);
+    expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(CREDENTIALS_ANCHOR);
+  });
+
+  it('classifies both wordings as IAM propagation and as retryable', () => {
+    for (const message of [ASSUME, CREDENTIALS]) {
+      expect(isIamPropagationError(message)).toBe(true);
+      expect(isRetryableTransientError(ccError(message), message)).toBe(true);
+    }
+  });
+
+  // The sequence the issue's third run saw: the assume wording, retried, then
+  // the credentials wording. Before the second entry that one ended the
+  // create ("gave up after 2 IAM-propagation retries over 0.75s"); now the
+  // create rides it out on the dense schedule and succeeds.
+  it('rides the assume wording, then the credentials wording, to a successful create', async () => {
+    const sequence = [ASSUME, ASSUME, CREDENTIALS, CREDENTIALS];
+    let calls = 0;
+    const sleeps: number[] = [];
+    const op = async (): Promise<string> => {
+      const next = sequence[calls++];
+      if (next !== undefined) throw ccError(next);
+      return 'arn:aws:ecs:us-east-1:123456789012:gateway/cdkd';
+    };
+    await expect(
+      withRetry(op, 'Gateway', {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).resolves.toBe('arn:aws:ecs:us-east-1:123456789012:gateway/cdkd');
+    expect(calls).toBe(sequence.length + 1);
+    // The dense propagation grid, not the generic 1s/2s/4s/8s one.
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(250 + 500 + 1000 + 2000);
+  });
+
+  // The credentials wording ALONE, so its cadence is not inherited from an
+  // earlier assume rejection: its first delay is the dense 250ms, which only
+  // the propagation class gets (the generic schedule starts at 1s).
+  it('puts the credentials wording on the dense schedule by itself', async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const op = async (): Promise<string> => {
+      if (calls++ === 0) throw ccError(CREDENTIALS);
+      return 'ok';
+    };
+    await expect(
+      withRetry(op, 'Gateway', {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      })
+    ).resolves.toBe('ok');
+    expect(sleeps).toEqual([250]);
+  });
+
+  // Near-misses that bound each anchor's LENGTH, as the #3174 block does.
+  // Constructed, not messages AWS has been observed to emit. Each premise
+  // asserts no OTHER pattern matches, so a terminal verdict is about the
+  // anchor under test.
+  it.each([
+    [
+      'shares the assume anchor head, then diverges',
+      'CREATE failed for Gateway: Could not assume the infrastructure configuration is valid. (Service: Ecs, Status Code: 400)',
+    ],
+    [
+      'shares the assume anchor tail under another verb',
+      'CREATE failed for Gateway: Could not validate the infrastructure role. (Service: Ecs, Status Code: 400)',
+    ],
+    [
+      'shares the credentials anchor tail and trailer under another head',
+      'CREATE failed for Gateway: Access denied: the gateway could not refresh the provided access credentials (Service: Ecs, Status Code: 400)',
+    ],
+  ])('does not retry a rejection that %s', (_label, message) => {
+    expect(RETRYABLE_ERROR_MESSAGE_PATTERNS.filter((p) => message.includes(p))).toEqual([]);
+    expect(isIamPropagationError(message)).toBe(false);
+    expect(isRetryableTransientError(ccError(message), message)).toBe(false);
+  });
+
+  // Bounded: a role that never becomes assumable (a wrong or deleted ARN
+  // gives the same assume wording) surfaces after the propagation budget
+  // instead of being retried forever.
+  it('gives up on a role that never becomes assumable after the propagation budget', async () => {
+    let calls = 0;
+    const op = async (): Promise<never> => {
+      calls++;
+      throw ccError(ASSUME);
+    };
+    await expect(withRetry(op, 'Gateway', { sleep: () => Promise.resolve() })).rejects.toThrow(
+      ASSUME_ANCHOR
+    );
+    expect(calls).toBe(IAM_PROPAGATION_MAX_RETRIES + 1);
+  });
+
+  // The negative case the `(Service: Ecs,` anchor exists for: the bare sentence
+  // is EC2's `AuthFailure` text, which cdkd's OWN invalid credentials produce
+  // through the JS SDK (no Java-SDK trailer). That must keep failing fast
+  // rather than burn the propagation budget.
+  it("does not retry cdkd's own invalid credentials (the bare AuthFailure sentence)", () => {
+    const own = 'AuthFailure: AWS was not able to validate the provided access credentials';
+    expect(isIamPropagationError(own)).toBe(false);
+    expect(isRetryableTransientError(new Error(own), own)).toBe(false);
+  });
+
+  // The same sentence relayed by ANOTHER service's handler stays terminal too:
+  // the entry is scoped to ECS's relay, the only one observed racing a role.
+  it('does not retry the credentials sentence relayed by a service other than ECS', () => {
+    const other =
+      'CREATE failed for Instance: AuthFailure: AWS was not able to validate the provided access credentials ' +
+      '(Service: Ec2, Status Code: 401, Request ID: 00000000-0000-0000-0000-000000000000)';
+    expect(isIamPropagationError(other)).toBe(false);
+    expect(isRetryableTransientError(new Error(other), other)).toBe(false);
+  });
+
+  // A different 400 from the same gateway handler stays terminal, so the two
+  // entries did not widen the classifier for the type generally. Constructed
+  // from the gateway API's own documented refusal ("Only HTTPS on port 443 is
+  // currently supported", seen while authoring the #5634 fixture).
+  it('leaves an unrelated rejection from the same handler terminal', () => {
+    const unrelated =
+      'CREATE failed for Gateway: InvalidParameterException: Only HTTPS on port 443 is currently supported. ' +
+      '(Service: Ecs, Status Code: 400, Request ID: 00000000-0000-0000-0000-000000000000)';
+    expect(isIamPropagationError(unrelated)).toBe(false);
+    expect(isRetryableTransientError(ccError(unrelated), unrelated)).toBe(false);
   });
 });
 

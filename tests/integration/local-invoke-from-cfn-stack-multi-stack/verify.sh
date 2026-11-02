@@ -154,7 +154,7 @@ invoke_with_retry() {
   err="$(mktemp)"
   while [ $i -le $attempts ]; do
     if out=$(${CLI} local invoke "${args[@]}" 2>"${err}" | tail -1) && \
-       echo "${out}" | grep -q '"sharedValue":'; then
+       grep -q '"sharedValue":' <<<"${out}"; then
       rm -f "${err}"
       printf '%s' "${out}"
       return 0
@@ -176,11 +176,11 @@ invoke_with_retry() {
 echo "[verify] step 5: cdkd local invoke (no --from-cfn-stack) — expect SHARED_VALUE=unset"
 RESULT_BASELINE=$(invoke_with_retry "${CONSUMER_STACK}/EchoSharedHandler" --no-pull)
 echo "[verify]   response: ${RESULT_BASELINE}"
-echo "${RESULT_BASELINE}" | grep -q '"sharedValue":"unset"' || {
+grep -q '"sharedValue":"unset"' <<<"${RESULT_BASELINE}" || {
   echo "[verify] FAIL: expected SHARED_VALUE to be dropped (default warn-and-drop), got: ${RESULT_BASELINE}"
   exit 1
 }
-echo "${RESULT_BASELINE}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_BASELINE}" || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in baseline response, got: ${RESULT_BASELINE}"
   exit 1
 }
@@ -193,11 +193,11 @@ echo "[verify] step 6: cdkd local invoke --from-cfn-stack — expect SHARED_VALU
 # import.
 RESULT_FROM_CFN=$(invoke_with_retry "${CONSUMER_STACK}/EchoSharedHandler" --from-cfn-stack --no-pull)
 echo "[verify]   response: ${RESULT_FROM_CFN}"
-echo "${RESULT_FROM_CFN}" | grep -q "\"sharedValue\":\"${DEPLOYED_VALUE}\"" || {
+grep -q "\"sharedValue\":\"${DEPLOYED_VALUE}\"" <<<"${RESULT_FROM_CFN}" || {
   echo "[verify] FAIL: expected SHARED_VALUE=${DEPLOYED_VALUE}, got: ${RESULT_FROM_CFN}"
   exit 1
 }
-echo "${RESULT_FROM_CFN}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_FROM_CFN}" || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-cfn-stack, got: ${RESULT_FROM_CFN}"
   exit 1
 }

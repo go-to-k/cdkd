@@ -34,7 +34,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -109,11 +109,11 @@ echo "${OUT}"
 
 # Premise sentinels first, so a failure that never reached the guard is
 # reported as itself rather than as an issue #2548 regression.
-if printf '%s\n' "${OUT}" | grep -q 'uses properties cdkd'; then
+if grep -q 'uses properties cdkd' <<<"${OUT}"; then
   echo "FAIL: premise -- the StackName drop was not accepted, so the diff never ran." >&2
   exit 1
 fi
-if ! printf '%s\n' "${OUT}" | grep -q 'Deploying stack:'; then
+if ! grep -q 'Deploying stack:' <<<"${OUT}"; then
   echo "FAIL: the deploy never reached the stack -- this is NOT a guard result." >&2
   exit 1
 fi
@@ -123,9 +123,9 @@ fi
 GUARD_LINE=$(printf '%s\n' "${OUT}" \
   | grep -m1 'requires replacement (immutable property changed:' || true)
 if [ -z "${GUARD_LINE}" ]; then
-  if printf '%s\n' "${OUT}" | grep -q 'name-idempotent'; then
+  if grep -q 'name-idempotent' <<<"${OUT}"; then
     echo "FAIL: the replacement reached the create and the idempotent-create path (issue #2548 regression)" >&2
-  elif printf '%s\n' "${OUT}" | grep -q 'but it is a stateful resource'; then
+  elif grep -q 'but it is a stateful resource' <<<"${OUT}"; then
     echo "FAIL: a stateful refusal fired but not the property-driven one this fixture parses" >&2
   else
     echo "FAIL: no property-driven stateful refusal in the output (issue #2548 regression)" >&2

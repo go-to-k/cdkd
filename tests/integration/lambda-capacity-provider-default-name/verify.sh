@@ -87,7 +87,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -477,7 +477,7 @@ for pair in "${PROVIDER_LOGICAL} ${STATE_PROVIDER_ID}" "${SPARE_LOGICAL} ${STATE
   base="${STACK}-${logical}"
   base="${base:0:51}"
   base="${base%-}"
-  printf '%s' "${id}" | grep -qE "^${base}-[0-9a-f]{12}\$" ||
+  grep -qE "^${base}-[0-9a-f]{12}\$" <<<"${id}" ||
     { echo "FAIL: ${logical} physicalId '${id}' is not the generated ${base}-<12 hex>" >&2; exit 1; }
 done
 # The capacity providers and the function share the stack's one suffix

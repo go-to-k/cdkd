@@ -91,7 +91,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -484,11 +484,11 @@ echo "    OK: deploy exited ${DEPLOY_RC}"
 # occur" stays distinguishable from "the wording moved and the grep went blind":
 # cdkd's own refusal, and SNS's `Invalid parameter` it wraps.
 READ_REFUSED=0
-if printf '%s' "${DEPLOY_TXT}" | grep -q 'could not read its attributes'; then
+if grep -q 'could not read its attributes' <<<"${DEPLOY_TXT}"; then
   READ_REFUSED=1
 fi
 SNS_INVALID=0
-if printf '%s' "${DEPLOY_TXT}" | grep -qiE 'invalid ?parameter'; then
+if grep -qiE 'invalid ?parameter' <<<"${DEPLOY_TXT}"; then
   SNS_INVALID=1
 fi
 if [ "${READ_REFUSED}" -eq 0 ] && [ "${SNS_INVALID}" -eq 1 ]; then
@@ -505,7 +505,7 @@ echo "    OK: the readback of the malformed ARN was refused"
 
 # No replacement was attempted: `Failed to delete old subscription` is logged
 # only by the replacement path's Unsubscribe.
-if printf '%s' "${DEPLOY_TXT}" | grep -q 'Failed to delete old subscription'; then
+if grep -q 'Failed to delete old subscription' <<<"${DEPLOY_TXT}"; then
   echo "FAIL: phase 3: cdkd attempted the replacement's Unsubscribe after the refused readback" >&2
   exit 1
 fi
@@ -517,7 +517,7 @@ fi
 # of SNS's message proves the create was never issued. SNS's text reaches only
 # the debug log since go-to-k/cdkd#2319 (this deploy is not --verbose), so the
 # create wrap's own prefix is the marker that is printed.
-if printf '%s' "${DEPLOY_TXT}" | grep -qE 'already exists with different attributes|Failed to create SNS subscription'; then
+if grep -qE 'already exists with different attributes|Failed to create SNS subscription' <<<"${DEPLOY_TXT}"; then
   echo "FAIL: phase 3: cdkd issued a Subscribe after the refused readback." >&2
   echo "    SNS refused it ('already exists with different attributes'): the create" >&2
   echo "    must not be attempted at all." >&2

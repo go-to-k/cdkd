@@ -55,7 +55,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -197,7 +197,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -295,12 +295,12 @@ DENY_PROBE=""
 for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws rds describe-db-clusters --max-records 20 --region "${REGION}" 2>&1)"; then
     DENY_PROBE=""
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DescribeDBClusters never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -438,7 +438,7 @@ assert_failed_event_redacted() { # usage: assert_failed_event_redacted <logicalI
     echo "[verify] FAIL: no RESOURCE_FAILED event with an error message for $1 under s3://${STATE_BUCKET}/${STATE_PREFIX}deployments/ after step 2 (the #2319 checks below would pass for free)" >&2
     exit 1
   fi
-  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  if ! grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${msg}"; then
     echo "[verify] FAIL: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi

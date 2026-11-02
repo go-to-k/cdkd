@@ -51,7 +51,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -237,7 +237,7 @@ RECORDED_METRICS="$(printf '%s' "${STATE_JSON}" \
   | jq -r --arg n "${STREAM_NAME}" '[.resources[] | select(.resourceType == "AWS::Kinesis::Stream" and .physicalId == $n)
             | .properties.DesiredShardLevelMetrics // []] | if length == 1 then first | sort | join(" ") else "NO-UNIQUE-RECORD-FOR-\($n)" end')"
 echo "    cdkd state DesiredShardLevelMetrics: ${RECORDED_METRICS}"
-if printf '%s' "${RECORDED_METRICS}" | grep -qw "ALL"; then
+if grep -qw "ALL" <<<"${RECORDED_METRICS}"; then
   echo "FAIL: cdkd state recorded the literal 'ALL' — AWS stores the expanded seven, so this is permanent phantom drift (effectiveProperties not applied?)" >&2
   exit 1
 fi
@@ -269,7 +269,7 @@ printf '%s\n' "${DIFF_OUT}" | sed 's/^/    | /'
 # satisfied by a diff that printed nothing at all (a crash, a wrong stack name,
 # an empty template), so it would pass for entirely the wrong reason. Requiring
 # the explicit no-changes line makes the negative below meaningful.
-if ! printf '%s' "${DIFF_OUT}" | grep -q "No changes detected"; then
+if ! grep -q "No changes detected" <<<"${DIFF_OUT}"; then
   echo "FAIL: cdkd diff did not report 'No changes detected' for ${STACK} — the cleanliness check below would pass vacuously" >&2
   exit 1
 fi
@@ -282,7 +282,7 @@ if [ -z "${DIFF_BODY}" ]; then
   exit 1
 fi
 for PROP in DesiredShardLevelMetrics MaxRecordSizeInKiB RecordDistributionStrategy; do
-  if printf '%s' "${DIFF_BODY}" | grep -q "${PROP}"; then
+  if grep -q "${PROP}" <<<"${DIFF_BODY}"; then
     echo "FAIL: cdkd diff reports a ${PROP} change on an untouched stream — the desired and wire-path narrowing disagree" >&2
     exit 1
   fi

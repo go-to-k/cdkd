@@ -129,12 +129,12 @@ if RESULT_3=$(${CDKD} local invoke CdkdLocalInvokeProvidedFixture/ProvidedAl2023
   echo "FAIL: expected non-zero exit on inline provided.al2023, got success: ${RESULT_3}"
   exit 1
 fi
-echo "${RESULT_3}" | grep -q "Inline 'Code.ZipFile' is not supported" || {
+grep -q "Inline 'Code.ZipFile' is not supported" <<<"${RESULT_3}" || {
   echo "FAIL: expected 'Inline Code.ZipFile is not supported' message, got:"
   echo "${RESULT_3}"
   exit 1
 }
-echo "${RESULT_3}" | grep -q "Code.fromAsset" || {
+grep -q "Code.fromAsset" <<<"${RESULT_3}" || {
   echo "FAIL: expected 'Code.fromAsset' routing in message, got:"
   echo "${RESULT_3}"
   exit 1
@@ -148,12 +148,12 @@ if RESULT_4=$(${CDKD} local invoke CdkdLocalInvokeProvidedFixture/Go1xHandler --
   echo "FAIL: expected non-zero exit on go1.x, got success: ${RESULT_4}"
   exit 1
 fi
-echo "${RESULT_4}" | grep -q "go1.x" || {
+grep -q "go1.x" <<<"${RESULT_4}" || {
   echo "FAIL: expected message naming go1.x, got:"
   echo "${RESULT_4}"
   exit 1
 }
-echo "${RESULT_4}" | grep -q "PROVIDED_AL2023" || {
+grep -q "PROVIDED_AL2023" <<<"${RESULT_4}" || {
   echo "FAIL: expected migration pointer to PROVIDED_AL2023, got:"
   echo "${RESULT_4}"
   exit 1

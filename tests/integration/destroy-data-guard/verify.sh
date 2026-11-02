@@ -44,7 +44,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -186,11 +186,11 @@ if [ "${DESTROY1_RC}" -eq 0 ]; then
   echo "FAIL: first destroy SUCCEEDED — the data guard did not fire (guarded bucket/repo were force-cleaned?)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY1_LOG}" | grep -q "is not empty"; then
+if ! grep -q "is not empty" <<<"${DESTROY1_LOG}"; then
   echo "FAIL: first destroy output lacks the S3 'is not empty' guard error" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY1_LOG}" | grep -q "still contains images"; then
+if ! grep -q "still contains images" <<<"${DESTROY1_LOG}"; then
   echo "FAIL: first destroy output lacks the ECR 'still contains images' guard error" >&2
   exit 1
 fi

@@ -38,7 +38,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -253,7 +253,7 @@ fi
 P1_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
 # Anywhere in the record (properties, observedProperties, attributes), not
 # only the Description: a redaction regression fails here. Value withheld.
-if printf '%s' "${P1_STATE}" | grep -qF -- "${SECRET_DESC}"; then
+if grep -qF -- "${SECRET_DESC}" <<<"${P1_STATE}"; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the resolved secret value (value withheld)" >&2
   exit 1
 fi
@@ -270,7 +270,7 @@ if [ -z "${NOECHO_DESC}" ] || [ "${NOECHO_DESC}" = "None" ]; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): ${NOECHO_HC_KEPT_NAME} has no Description on AWS" >&2
   exit 1
 fi
-if printf '%s' "${P1_STATE}" | grep -qF -- "${NOECHO_DESC}"; then
+if grep -qF -- "${NOECHO_DESC}" <<<"${P1_STATE}"; then
   echo "FAIL: phase 1 baseline (go-to-k/cdkd#5112): state.json holds the NoEcho Description (value withheld)" >&2
   exit 1
 fi
@@ -294,7 +294,7 @@ echo "    OK: phase 1 baseline (Descriptions, TTL 90, HealthCheckConfig threshol
 # characters. A fresh stack always carries an instance id, so the 12-hex
 # suffix is required (a suffix-less legacy name here would be a regression).
 NAMELESS_NAME=$(printf '%s' "${P1_STATE}" | jq -r '.outputs.NamelessServiceName // empty')
-if ! printf '%s' "${NAMELESS_NAME}" | grep -qE '^ServiceDiscoveryStack-NamelessService-[0-9a-f]{12}$'; then
+if ! grep -qE '^ServiceDiscoveryStack-NamelessService-[0-9a-f]{12}$' <<<"${NAMELESS_NAME}"; then
   echo "FAIL: the nameless Cloud Map service is named '${NAMELESS_NAME}', expected the generated ServiceDiscoveryStack-NamelessService-<12 hex> (go-to-k/cdkd#5348)" >&2
   exit 1
 fi
@@ -330,7 +330,7 @@ fi
 # changed. CloudFormation completes the update without applying either and
 # without replacing the service; cdkd must match that, and say so.
 P2_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${P2_LOG}" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${P2_FLAT}" | grep -qF "PinnedDnsService (AWS::ServiceDiscovery::Service): DnsConfig.NamespaceId and DnsConfig.RoutingPolicy changed, but Cloud Map cannot change them on an existing service"; then
+if ! grep -qF "PinnedDnsService (AWS::ServiceDiscovery::Service): DnsConfig.NamespaceId and DnsConfig.RoutingPolicy changed, but Cloud Map cannot change them on an existing service" <<<"${P2_FLAT}"; then
   echo "FAIL: the phase 2 deploy did not warn that PinnedDnsService's DnsConfig.NamespaceId and RoutingPolicy changes were not applied (go-to-k/cdkd#5373)" >&2
   exit 1
 fi
@@ -414,7 +414,7 @@ fi
 # error class plus the verbose-mode pointer, so the refusal is read by its
 # class here, and its text must not be in the default-verbosity output.
 P4_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${P4_LOG}" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${P4_FLAT}" | grep -qE "Failed to update service discovery service RefusedService: InvalidInput\. Re-run with [-][-]verbose for AWS's own message\."; then
+if ! grep -qE "Failed to update service discovery service RefusedService: InvalidInput\. Re-run with [-][-]verbose for AWS's own message\." <<<"${P4_FLAT}"; then
   echo "FAIL: the phase 4 deploy failed, but not with AWS's InvalidInput refusal of the update, named by its class (issue #1160, go-to-k/cdkd#2319)" >&2
   exit 1
 fi

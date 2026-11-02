@@ -465,10 +465,12 @@ describe('runDestroyForStack - #808 deployment events', () => {
           childSettled = true;
           throw hostile;
         }
-        expect(
-          childSettled,
-          'Parent must be deleted in a LATER level, after Child settled'
-        ).toBe(true);
+        if (logicalId === 'Parent') {
+          expect(
+            childSettled,
+            'Parent must be deleted in a LATER level, after Child settled'
+          ).toBe(true);
+        }
         deleted.push(logicalId);
         return undefined;
       }),
@@ -483,12 +485,31 @@ describe('runDestroyForStack - #808 deployment events', () => {
         dependencies: [],
         provisionedBy: 'sdk',
       },
+      // `Top` puts `Parent` on the SECOND level without making it a
+      // dependency of `Child`: a failed delete's own dependencies are kept
+      // (go-to-k/cdkd#5670), which is what `Anchor` is.
+      Top: {
+        physicalId: 'phys-top',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: ['Parent'],
+        provisionedBy: 'sdk',
+      },
+      Anchor: {
+        physicalId: 'phys-anchor',
+        resourceType: 'AWS::S3::Bucket',
+        properties: {},
+        attributes: {},
+        dependencies: [],
+        provisionedBy: 'sdk',
+      },
       Child: {
         physicalId: 'phys-child',
         resourceType: 'AWS::S3::Bucket',
         properties: {},
         attributes: {},
-        dependencies: ['Parent'],
+        dependencies: ['Anchor'],
         provisionedBy: 'sdk',
       },
     });
@@ -500,12 +521,13 @@ describe('runDestroyForStack - #808 deployment events', () => {
     //    Asserted as the ORDERED pair, not `toContain` -- review measured that
     //    flattening the fixture to `dependencies: []` left a `toContain` green,
     //    so it passed in a single level and the level-2 claim was unasserted.
-    expect(deleted, 'the level after the failure must still be deleted').toEqual([
-      'Child',
-      'Parent',
-    ]);
-    expect(result.deletedCount).toBe(1);
+    expect(
+      deleted.filter((id) => id !== 'Top'),
+      'the level after the failure must still be deleted'
+    ).toEqual(['Child', 'Parent']);
+    expect(result.deletedCount).toBe(2);
     expect(result.errorCount).toBe(1);
+    expect(result.blockedCount).toBe(1);
 
     // 2. The row says what happened, not what stringifying it did. Before the
     //    fix this read `TypeError: Cannot convert object to primitive value`.

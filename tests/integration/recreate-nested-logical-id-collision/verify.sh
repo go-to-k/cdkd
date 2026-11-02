@@ -76,7 +76,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -298,7 +298,7 @@ if ! HEAD_ERR="$(aws s3api head-bucket --bucket "${BUCKET_NAME}" --region "${REG
   # Discriminate before naming a cause. A 403, a redirect or a throttle is not
   # evidence of deletion, and reporting #2567 for one would be the same
   # confident-wrong-cause class this check exists to prevent.
-  if printf '%s' "${HEAD_ERR}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_ERR}"; then
     echo "FAIL: the child bucket ${BUCKET_NAME} is GONE after the flagged deploy — the parent's recreate target was honoured in the CHILD stack (issue #2567)" >&2
   else
     echo "FAIL: could not establish whether the child bucket ${BUCKET_NAME} still exists: ${HEAD_ERR}" >&2

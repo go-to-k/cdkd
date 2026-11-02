@@ -74,7 +74,11 @@ export type DeploymentResourceOperation = 'CREATE' | 'UPDATE' | 'DELETE';
  *   permission, Custom Resource, IAM policy / user-group (issue
  *   [#1770](https://github.com/go-to-k/cdkd/issues/1770)) — both of which issue
  *   no AWS call at all; and a nested stack whose own destroy skipped or was
- *   interrupted, where the child's other resources WERE deleted first. So the
+ *   interrupted, where the child's other resources WERE deleted first; and, on
+ *   destroy, a resource left `blocked` because the delete of a resource that
+ *   depends on it failed (issue
+ *   [#5670](https://github.com/go-to-k/cdkd/issues/5670)), whose `reason`
+ *   names that resource and which no provider was asked about. So the
  *   invariant is "the resource this row names was not destroyed", NOT "nothing
  *   happened". The opposite of `RESOURCE_RETAINED` in both halves: keeping the
  *   AWS resource is NOT intended, and the state record is KEPT so the orphan

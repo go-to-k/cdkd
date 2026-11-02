@@ -65,7 +65,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -231,7 +231,7 @@ echo "    OK: Docker Lambda Code.ImageUri == ${IMAGE_URI}"
 # supported here: cdkd pushes by tag, so we expect the tag form and treat a
 # digest URI as a parse failure (IMAGE_TAG stays empty -> the check below fails).
 ECR_REPO=$(echo "${IMAGE_URI}" | sed -E 's#^[^/]+/##; s#[@:].*$##')
-if echo "${IMAGE_URI}" | grep -q '@'; then
+if grep -q '@' <<<"${IMAGE_URI}"; then
   IMAGE_TAG=""
 else
   IMAGE_TAG="${IMAGE_URI##*:}"

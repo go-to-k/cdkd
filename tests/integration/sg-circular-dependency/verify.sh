@@ -114,7 +114,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -606,7 +606,7 @@ while IFS=' ' read -r LID RID; do
   fi
   # The exact recorded value, not merely 'an sgr- shaped string': that is what
   # excludes a plan built from anything other than the attribute this PR records.
-  if ! printf '%s\n' "${PLAN_LINE}" | grep -qF "Id=${RID}"; then
+  if ! grep -qF "Id=${RID}" <<<"${PLAN_LINE}"; then
     echo "FAIL: import-plan row for ${LID} does not carry the recorded rule id 'Id=${RID}' — got: ${PLAN_LINE}" >&2
     exit 1
   fi
@@ -721,7 +721,7 @@ while IFS=' ' read -r LID RID; do
   # Asserted against the id AWS holds, read back by this script's own
   # describe-security-group-rules call — state carries none at this point, so
   # nothing here can be satisfied by a value cdkd merely echoed.
-  if ! printf '%s\n' "${PLAN_LINE}" | grep -qF "Id=${AWS_RULE_ID}"; then
+  if ! grep -qF "Id=${AWS_RULE_ID}" <<<"${PLAN_LINE}"; then
     echo "FAIL: import-plan row for ${LID} does not carry the rule id AWS holds ('Id=${AWS_RULE_ID}') — got: ${PLAN_LINE}" >&2
     exit 1
   fi
@@ -842,7 +842,7 @@ fi
 # the exit code alone proves nothing. The rule IDS are the discriminator: only a
 # live DescribeSecurityGroupRules lookup can name them.
 for TOKEN in "${AMBIG_ROW}" "${AMBIG_RULE_ID_1}" "${AMBIG_RULE_ID_2}"; do
-  if ! printf '%s\n' "${AMBIG_EXPORT}" | grep -qF "${TOKEN}"; then
+  if ! grep -qF "${TOKEN}" <<<"${AMBIG_EXPORT}"; then
     echo "FAIL: the export refusal does not name '${TOKEN}'. It must name the ROW and BOTH candidate rule ids (${AMBIG_RULE_ID_1}, ${AMBIG_RULE_ID_2}) — a refusal naming neither id is the pre-#1791 state-only message, which tells the user to re-deploy and would not help here. Full output:" >&2
     printf '%s\n' "${AMBIG_EXPORT}" >&2
     exit 1
@@ -888,7 +888,7 @@ stranger_rule_present() {
     [ "$(printf '%s' "${out}" | jq '.SecurityGroupRules | length')" -eq 1 ]
     return
   fi
-  if printf '%s' "${out}" | grep -qiE 'NotFound|does not exist'; then
+  if grep -qiE 'NotFound|does not exist' <<<"${out}"; then
     return 1
   fi
   echo "FAIL: describe-security-group-rules on ${STRANGER_RULE_ID} undetermined: ${out}" >&2
@@ -913,7 +913,7 @@ for ATTEMPT in first second; do
     exit 1
   fi
   for TOKEN in "${STRANGER_RULE_ID}" "already exists on security group ${STRANGER_GROUP_ID}" "nothing in this stack's records shows cdkd created it"; do
-    if ! printf '%s\n' "${STRANGER_OUT}" | grep -qF "${TOKEN}"; then
+    if ! grep -qF "${TOKEN}" <<<"${STRANGER_OUT}"; then
       echo "FAIL: the ${ATTEMPT} deploy failed, but not with the ownership refusal (missing '${TOKEN}'). Full output:" >&2
       printf '%s\n' "${STRANGER_OUT}" >&2
       exit 1
@@ -1001,7 +1001,7 @@ if [ "${STRANGER_EXIT}" -eq 0 ]; then
   exit 1
 fi
 for TOKEN in "${STRANGER_RULE_ID}" "already exists on security group ${STRANGER_GROUP_ID}"; do
-  if ! printf '%s\n' "${STRANGER_OUT}" | grep -qF "${TOKEN}"; then
+  if ! grep -qF "${TOKEN}" <<<"${STRANGER_OUT}"; then
     echo "FAIL: the update failed, but not with the ownership refusal (missing '${TOKEN}'). Full output:" >&2
     printf '%s\n' "${STRANGER_OUT}" >&2
     exit 1
@@ -1060,7 +1060,7 @@ if ADOPT_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   exit 1
 fi
 ADOPT_OUT=$(printf '%s' "${ADOPT_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
-if ! printf '%s\n' "${ADOPT_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it"; then
+if ! grep -qF "nothing in this stack's records shows cdkd created it" <<<"${ADOPT_OUT}"; then
   echo "FAIL: the ADOPT arm's first deploy failed, but not with the ownership refusal. Full output:" >&2
   printf '%s\n' "${ADOPT_OUT}" >&2
   exit 1
@@ -1069,7 +1069,7 @@ fi
 # journals no failed op: the journal is absent, or holds no StrangerIngress
 # failed op. Any other read failure is a FAIL.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  if printf '%s' "${ADOPT_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+  if grep -qE '\(404\)|NoSuchKey|Not Found' <<<"${ADOPT_JOURNAL}"; then
     ADOPT_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
       '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
   else
@@ -1110,14 +1110,14 @@ if STALE_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   exit 1
 fi
 STALE_OUT=$(printf '%s' "${STALE_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
-if ! printf '%s\n' "${STALE_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it"; then
+if ! grep -qF "nothing in this stack's records shows cdkd created it" <<<"${STALE_OUT}"; then
   echo "FAIL: the STALE arm's deploy failed, but not with the ownership refusal. Full output:" >&2
   printf '%s\n' "${STALE_OUT}" >&2
   exit 1
 fi
 # The refusal must come from a journal that WAS read: an unreadable one
 # refuses with the same sentence, which would make this arm pass vacuously.
-if printf '%s\n' "${STALE_OUT}" | grep -qF "could not be read"; then
+if grep -qF "could not be read" <<<"${STALE_OUT}"; then
   echo "FAIL: the STALE arm refused because the journal could not be read, not because a completed op is no evidence. Full output:" >&2
   printf '%s\n' "${STALE_OUT}" >&2
   exit 1
@@ -1166,8 +1166,8 @@ if STALE2_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   exit 1
 fi
 STALE2_OUT=$(printf '%s' "${STALE2_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
-if ! printf '%s\n' "${STALE2_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it" \
-  || printf '%s\n' "${STALE2_OUT}" | grep -qF "could not be read"; then
+if ! grep -qF "nothing in this stack's records shows cdkd created it" <<<"${STALE2_OUT}" \
+  || grep -qF "could not be read" <<<"${STALE2_OUT}"; then
   echo "FAIL: the STALE-2 arm's deploy failed, but not with the ownership refusal over a READ journal. Full output:" >&2
   printf '%s\n' "${STALE2_OUT}" >&2
   exit 1
@@ -1275,7 +1275,7 @@ fi
 # The refusal journals no failed op (go-to-k/cdkd#4356): the journal is absent
 # or holds no StrangerIngress failed op, so the attempt is appended by hand.
 if ! POP_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  if printf '%s' "${POP_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+  if grep -qE '\(404\)|NoSuchKey|Not Found' <<<"${POP_JOURNAL}"; then
     POP_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
       '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
   else
@@ -1311,7 +1311,7 @@ if POP_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   exit 1
 fi
 POP_OUT=$(printf '%s' "${POP_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
-if ! printf '%s\n' "${POP_OUT}" | grep -qF "adopting the existing identical rule ${STRANGER_RULE_ID}"; then
+if ! grep -qF "adopting the existing identical rule ${STRANGER_RULE_ID}" <<<"${POP_OUT}"; then
   echo "FAIL: the POP arm's deploy did not adopt ${STRANGER_RULE_ID} before failing — the arm cannot reach the pop. Full output:" >&2
   printf '%s\n' "${POP_OUT}" >&2
   exit 1
@@ -1345,8 +1345,8 @@ if POP2_RAW=$(node "${LOCAL_DIST}" deploy "${STRANGER_STACK}" \
   exit 1
 fi
 POP2_OUT=$(printf '%s' "${POP2_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
-if ! printf '%s\n' "${POP2_OUT}" | grep -qF "nothing in this stack's records shows cdkd created it" \
-  || printf '%s\n' "${POP2_OUT}" | grep -qF "could not be read"; then
+if ! grep -qF "nothing in this stack's records shows cdkd created it" <<<"${POP2_OUT}" \
+  || grep -qF "could not be read" <<<"${POP2_OUT}"; then
   echo "FAIL: the POP arm's last deploy failed, but not with the ownership refusal over a READ journal. Full output:" >&2
   printf '%s\n' "${POP2_OUT}" >&2
   exit 1
@@ -1419,7 +1419,7 @@ if ! SHARED_OUT=$(shared_deploy); then
   printf '%s\n' "${SHARED_OUT}" >&2
   exit 1
 fi
-if ! printf '%s\n' "${SHARED_OUT}" | grep -qE "(already held by|created in this deploy and is held by) (ExplicitIngress|TwinIngress) of this stack"; then
+if ! grep -qE "(already held by|created in this deploy and is held by) (ExplicitIngress|TwinIngress) of this stack" <<<"${SHARED_OUT}"; then
   echo "FAIL: the fresh deploy succeeded without either twin reporting the shared rule — the sharing arm is unreached. Full output:" >&2
   printf '%s\n' "${SHARED_OUT}" >&2
   exit 1
@@ -1470,7 +1470,7 @@ if SHARED_OUT=$(shared_deploy -c "sharedFailAfter=1"); then
   printf '%s\n' "${SHARED_OUT}" >&2
   exit 1
 fi
-if ! printf '%s\n' "${SHARED_OUT}" | grep -qF "already held by ExplicitIngress of this stack"; then
+if ! grep -qF "already held by ExplicitIngress of this stack" <<<"${SHARED_OUT}"; then
   echo "FAIL: the twin did not share the explicit rule before the deploy failed — the rollback arm is unreached. Full output:" >&2
   printf '%s\n' "${SHARED_OUT}" >&2
   exit 1
@@ -1508,7 +1508,7 @@ if ! SHARED_OUT=$(shared_deploy -c "sharedTwin=0"); then
   printf '%s\n' "${SHARED_OUT}" >&2
   exit 1
 fi
-if ! printf '%s\n' "${SHARED_OUT}" | grep -qF "also held by ExplicitIngress of this stack"; then
+if ! grep -qF "also held by ExplicitIngress of this stack" <<<"${SHARED_OUT}"; then
   echo "FAIL: the twin's DELETE did not report the rule as still held — the survivor arm is unreached. Full output:" >&2
   printf '%s\n' "${SHARED_OUT}" >&2
   exit 1

@@ -35,7 +35,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -113,7 +113,7 @@ if [ "${RETENTION_P1}" != "3" ]; then
 fi
 PATTERN_P1="$(aws events describe-archive --archive-name "${ARCHIVE_NAME}" --region "${REGION}" \
   --query 'EventPattern' --output text)"
-if ! printf '%s' "${PATTERN_P1}" | grep -q 'integ.app'; then
+if ! grep -q 'integ.app' <<<"${PATTERN_P1}"; then
   echo "FAIL: archive event pattern missing integ.app: ${PATTERN_P1}" >&2
   exit 1
 fi
@@ -134,7 +134,7 @@ if [ "${RETENTION_P2}" != "7" ]; then
 fi
 PATTERN_P2="$(aws events describe-archive --archive-name "${ARCHIVE_NAME}" --region "${REGION}" \
   --query 'EventPattern' --output text)"
-if ! printf '%s' "${PATTERN_P2}" | grep -q 'integ.worker'; then
+if ! grep -q 'integ.worker' <<<"${PATTERN_P2}"; then
   echo "FAIL: archive event pattern missing added integ.worker: ${PATTERN_P2}" >&2
   exit 1
 fi

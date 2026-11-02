@@ -409,7 +409,7 @@ echo "${ENV_LOGS}" | sed 's/^/[verify]     /'
 
 assert_in_logs() {
   local needle="$1"
-  if ! echo "${ENV_LOGS}" | grep -qF "${needle}"; then
+  if ! grep -qF "${needle}" <<<"${ENV_LOGS}"; then
     echo "[verify] FAIL: expected '${needle}' in env-task container output"
     exit 1
   fi
@@ -422,7 +422,7 @@ assert_in_logs "JOINED=${DEPLOYED_TABLE}|literal"
 # The generated secret is JSON like {"user":"cdkd","password":"<16char>"}
 # (~38-45 chars); assert a non-trivial DB_SECRET_LEN was injected. Cheap
 # regex: at least two digits, i.e. >= 10 chars resolved.
-if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
+if ! grep -qE 'DB_SECRET_LEN=[0-9]{2,}' <<<"${ENV_LOGS}"; then
   echo "[verify] FAIL: DB_SECRET was not resolved to a non-empty value"
   exit 1
 fi
@@ -479,7 +479,7 @@ echo "${ENV_LOGS}" | sed 's/^/[verify]     /'
 assert_in_logs "TABLE_NAME=${DEPLOYED_TABLE}"
 assert_in_logs "TABLE_ARN=arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/${DEPLOYED_TABLE}"
 assert_in_logs "ENDPOINT=local-${REGION}-${DEPLOYED_TABLE}"
-if ! echo "${ENV_LOGS}" | grep -qE 'DB_SECRET_LEN=[0-9]{2,}'; then
+if ! grep -qE 'DB_SECRET_LEN=[0-9]{2,}' <<<"${ENV_LOGS}"; then
   echo "[verify] FAIL: DB_SECRET was not resolved under AWS_REGION=${UPPER_REGION}"
   exit 1
 fi
@@ -539,7 +539,7 @@ if [ "${JSONKEY_RC}" -eq 0 ]; then
   echo "[verify] FAIL: json-key against a non-JSON secret exited 0 - expected a refusal"
   exit 1
 fi
-if echo "${JSONKEY_OUT}" | grep -qF "UNEXPECTED_RESOLUTION_SUCCEEDED"; then
+if grep -qF "UNEXPECTED_RESOLUTION_SUCCEEDED" <<<"${JSONKEY_OUT}"; then
   echo "[verify] FAIL: the container ran - resolution did not refuse"
   exit 1
 fi
@@ -554,7 +554,7 @@ fi
 # no wrapping, so asserting it costs nothing and is strictly stronger.
 for needle in "jsonkey" "DB_PASS" "password" "not valid JSON" \
   "secret DB_PASS specified json-key password but the secret value is not valid JSON"; do
-  if ! echo "${JSONKEY_OUT}" | grep -qF "${needle}"; then
+  if ! grep -qF "${needle}" <<<"${JSONKEY_OUT}"; then
     # Plain single quotes: they are literal inside a double-quoted string. The
     # `'"'"'` idiom escapes a quote inside SINGLE quotes, and using it here
     # closed the double quoting and left ${needle} unquoted -- a needle holding
@@ -566,11 +566,11 @@ done
 echo "[verify]   refusal reached the json-key branch and named the container, env var and key"
 
 # The actual issue #2189 assertion: no secret-derived text in the output.
-if echo "${JSONKEY_OUT}" | grep -qF "${PLAIN_SECRET_VALUE}"; then
+if grep -qF "${PLAIN_SECRET_VALUE}" <<<"${JSONKEY_OUT}"; then
   echo "[verify] FAIL: the refusal echoed the WHOLE secret plaintext"
   exit 1
 fi
-if echo "${JSONKEY_OUT}" | grep -qF "${PLAIN_SECRET_PREFIX}"; then
+if grep -qF "${PLAIN_SECRET_PREFIX}" <<<"${JSONKEY_OUT}"; then
   echo "[verify] FAIL: the refusal echoed the secret plaintext prefix (the #2189 leak)"
   exit 1
 fi
@@ -618,7 +618,7 @@ NOT_ASSUMABLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${NOT_ASSUMABLE_ROLE}"
 # The premise is NoSuchEntity specifically: a missing iam:GetRole grant would
 # also fail the probe while saying nothing about whether the role exists.
 GET_ROLE_ERR="$(aws iam get-role --role-name "${NOT_ASSUMABLE_ROLE}" 2>&1 >/dev/null || true)"
-if ! echo "${GET_ROLE_ERR}" | grep -qF "NoSuchEntity"; then
+if ! grep -qF "NoSuchEntity" <<<"${GET_ROLE_ERR}"; then
   echo "[verify] FAIL: premise broken - role ${NOT_ASSUMABLE_ROLE} is not known to be absent: ${GET_ROLE_ERR:-it exists}"
   exit 1
 fi
@@ -638,7 +638,7 @@ if [ "${ASSUME_RC}" -eq 0 ]; then
 fi
 for needle in "--assume-task-role: STS AssumeRole(${NOT_ASSUMABLE_ARN}) failed: AccessDenied: " \
   "Caused by: STS AssumeRole failed"; do
-  if ! echo "${ASSUME_OUT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${ASSUME_OUT}"; then
     echo "[verify] FAIL: the refusal did not carry '${needle}'"
     exit 1
   fi
@@ -648,7 +648,7 @@ if [ "${DIAGNOSIS_COUNT}" -ne 1 ]; then
   echo "[verify] FAIL: AWS's diagnosis printed ${DIAGNOSIS_COUNT} times, expected exactly once"
   exit 1
 fi
-if echo "${ASSUME_OUT}" | grep -qF "message withheld"; then
+if grep -qF "message withheld" <<<"${ASSUME_OUT}"; then
   echo "[verify] FAIL: a modeled AccessDenied was withheld - it is the diagnosis and must print"
   exit 1
 fi

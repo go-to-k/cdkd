@@ -80,11 +80,11 @@ RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler
 echo "    response: ${RESULT_1}"
 
 # 1a: counters layer — distinct module name, no path overlap.
-echo "${RESULT_1}" | grep -q '"counterSource":"counters"' || {
+grep -q '"counterSource":"counters"' <<<"${RESULT_1}" || {
   echo "FAIL: expected counterSource=counters (counters layer not mounted), got: ${RESULT_1}"
   exit 1
 }
-echo "${RESULT_1}" | grep -q '"counter":"count=7"' || {
+grep -q '"counter":"count=7"' <<<"${RESULT_1}" || {
   echo "FAIL: expected counter=count=7, got: ${RESULT_1}"
   exit 1
 }
@@ -92,7 +92,7 @@ echo "${RESULT_1}" | grep -q '"counter":"count=7"' || {
 # real.sh`) is executed THROUGH the link inside the container. Before issue
 # #3106 the cpSync merge rewrote the link to the host's absolute asset path,
 # so `/opt/bin/rel-link` was dangling in /opt and the handler threw ENOENT.
-echo "${RESULT_1}" | grep -q '"linkOutput":"real-via-link"' || {
+grep -q '"linkOutput":"real-via-link"' <<<"${RESULT_1}" || {
   echo "FAIL: expected linkOutput=real-via-link (relative layer symlink dangling in /opt, issue #3106), got: ${RESULT_1}"
   exit 1
 }
@@ -104,11 +104,11 @@ echo "${RESULT_1}" | grep -q '"linkOutput":"real-via-link"' || {
 # tmpdir on the host (copyLayerTreeLastWins, in template order) and
 # bind-mounts that at /opt — Docker rejects multiple -v ...:/opt:ro
 # entries, so we cannot rely on overlay layering at the runtime.
-echo "${RESULT_1}" | grep -q '"greetingSource":"greetings-b"' || {
+grep -q '"greetingSource":"greetings-b"' <<<"${RESULT_1}" || {
   echo "FAIL: expected greetingSource=greetings-b (last-layer-wins), got: ${RESULT_1}"
   exit 1
 }
-echo "${RESULT_1}" | grep -q '"greeting":"from-layer-B:hello-alice"' || {
+grep -q '"greeting":"from-layer-B:hello-alice"' <<<"${RESULT_1}" || {
   echo "FAIL: expected greeting=from-layer-B:hello-alice, got: ${RESULT_1}"
   exit 1
 }
@@ -121,11 +121,11 @@ trap 'rm -f "${EVENT_FILE}" "${EVENT2}"' EXIT
 echo '{"name":"bob","n":42}' > "${EVENT2}"
 RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --event "${EVENT2}" --no-pull)
 echo "    response: ${RESULT_2}"
-echo "${RESULT_2}" | grep -q '"greeting":"from-layer-B:hello-bob"' || {
+grep -q '"greeting":"from-layer-B:hello-bob"' <<<"${RESULT_2}" || {
   echo "FAIL: expected greeting=from-layer-B:hello-bob, got: ${RESULT_2}"
   exit 1
 }
-echo "${RESULT_2}" | grep -q '"counter":"count=42"' || {
+grep -q '"counter":"count=42"' <<<"${RESULT_2}" || {
   echo "FAIL: expected counter=count=42, got: ${RESULT_2}"
   exit 1
 }
@@ -145,7 +145,7 @@ LOG_OUTPUT=$(${CDKD} local invoke CdkdLocalInvokeLayersFixture/EchoHandler --eve
 if [ "${LOG_RC}" -ne 0 ]; then
   echo "[verify] cdkd local invoke exited ${LOG_RC}; its output is echoed by the assertion below" >&2
 fi
-echo "${LOG_OUTPUT}" | grep -q 'Mounting 3 Lambda layers at /opt' || {
+grep -q 'Mounting 3 Lambda layers at /opt' <<<"${LOG_OUTPUT}" || {
   echo "FAIL: expected 'Mounting 3 Lambda layers' message in cdkd output, got:"
   echo "${LOG_OUTPUT}"
   exit 1
@@ -175,12 +175,12 @@ if [[ ${MISMATCH_RC} -eq 0 ]]; then
   echo "${MISMATCH_OUTPUT}"
   exit 1
 fi
-echo "${MISMATCH_OUTPUT}" | grep -q 'cdkd cannot resolve locally' || {
+grep -q 'cdkd cannot resolve locally' <<<"${MISMATCH_OUTPUT}" || {
   echo "FAIL: expected the layer-resolution refusal for the mismatched ARN, got:"
   echo "${MISMATCH_OUTPUT}"
   exit 1
 }
-echo "${MISMATCH_OUTPUT}" | grep -q 'arn:aws-cn:lambda:us-east-1:111122223333:layer:Mismatched:1' || {
+grep -q 'arn:aws-cn:lambda:us-east-1:111122223333:layer:Mismatched:1' <<<"${MISMATCH_OUTPUT}" || {
   echo "FAIL: expected the refusal to name the offending ARN, got:"
   echo "${MISMATCH_OUTPUT}"
   exit 1
@@ -188,7 +188,7 @@ echo "${MISMATCH_OUTPUT}" | grep -q 'arn:aws-cn:lambda:us-east-1:111122223333:la
 # The refusal must name the DERIVATION, not merely refuse: a bundle whose
 # layer parse broke wholesale would also refuse, and would satisfy the two
 # greps above. This sentence only exists on the partition-mismatch arm.
-echo "${MISMATCH_OUTPUT}" | grep -qF "The partition 'aws-cn' does not match region 'us-east-1': no partition prefix matches that region, so cdkd resolves it to the commercial partition 'aws'." || {
+grep -qF "The partition 'aws-cn' does not match region 'us-east-1': no partition prefix matches that region, so cdkd resolves it to the commercial partition 'aws'." <<<"${MISMATCH_OUTPUT}" || {
   echo "FAIL: expected the refusal to name the partition/region disagreement, got:"
   echo "${MISMATCH_OUTPUT}"
   exit 1

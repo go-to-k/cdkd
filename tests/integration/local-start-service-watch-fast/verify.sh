@@ -190,7 +190,7 @@ curl_until() {
   local response=""
   for _ in $(seq 1 "${tries}"); do
     if response=$(curl -sf --max-time 3 "${url}" 2>&1); then
-      if echo "${response}" | grep -q "${needle}"; then
+      if grep -q "${needle}" <<<"${response}"; then
         echo "    [${label}] OK (response: ${response})"
         return 0
       fi

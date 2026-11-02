@@ -37,7 +37,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -275,7 +275,7 @@ if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KE
   echo "    state file absent (nothing left to record)"
 else
   STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
-  if printf '%s' "${STATE_JSON}" | grep -q '"VolumeSnap"'; then
+  if grep -q '"VolumeSnap"' <<<"${STATE_JSON}"; then
     echo "FAIL: VolumeSnap is still recorded in cdkd state after the rollback" >&2
     exit 1
   fi

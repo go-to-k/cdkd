@@ -44,7 +44,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -228,7 +228,7 @@ echo "    judge evaluator ${JUDGE_ID_P1} created with dimensions: ${JUDGE_P1#* }
 # The adopted defaults must be surfaced through the stack outputs.
 STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)"
 for expected in "browser/aws.browser.v1" "code-interpreter/aws.codeinterpreter.v1"; do
-  if ! echo "${STATE_JSON}" | grep -q "${expected}"; then
+  if ! grep -q "${expected}" <<<"${STATE_JSON}"; then
     echo "FAIL: state.json does not carry the adopted default (${expected})" >&2
     exit 1
   fi

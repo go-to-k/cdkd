@@ -42,7 +42,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -166,7 +166,7 @@ if [ -z "${KEY_ID_1}" ]; then
 fi
 
 KEYS=$(list_keys)
-if ! printf '%s' "${KEYS}" | grep -q "${KEY_ID_1}[[:space:]]*Active"; then
+if ! grep -q "${KEY_ID_1}[[:space:]]*Active" <<<"${KEYS}"; then
   echo "FAIL: access key ${KEY_ID_1} is not Active on AWS after create (got: ${KEYS})" >&2
   exit 1
 fi
@@ -177,11 +177,11 @@ echo "    OK: access key ${KEY_ID_1} exists and is Active"
 # never returns the secret again after CreateAccessKey).
 SECRET_VALUE_1=$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" \
   --region "${REGION}" --query 'SecretString' --output text)
-if ! printf '%s' "${SECRET_VALUE_1}" | grep -qE '^[A-Za-z0-9/+=]{40}$'; then
+if ! grep -qE '^[A-Za-z0-9/+=]{40}$' <<<"${SECRET_VALUE_1}"; then
   echo "FAIL: secret value is not a 40-char IAM secret access key (got length: ${#SECRET_VALUE_1})" >&2
   exit 1
 fi
-if printf '%s' "${SECRET_VALUE_1}" | grep -q 'Fn::GetAtt\|Token'; then
+if grep -q 'Fn::GetAtt\|Token' <<<"${SECRET_VALUE_1}"; then
   echo "FAIL: secret value carries an unresolved intrinsic: ${SECRET_VALUE_1}" >&2
   exit 1
 fi
@@ -195,7 +195,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes
 
 KEYS=$(list_keys)
-if ! printf '%s' "${KEYS}" | grep -q "${KEY_ID_1}[[:space:]]*Inactive"; then
+if ! grep -q "${KEY_ID_1}[[:space:]]*Inactive" <<<"${KEYS}"; then
   echo "FAIL: access key ${KEY_ID_1} is not Inactive after the Status update (got: ${KEYS})" >&2
   exit 1
 fi
@@ -236,7 +236,7 @@ fi
 # The ARN embeds the path, so the recorded one must be the moved principal's.
 STATE_ARNS=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | python3 -c "import json,sys; s=json.load(sys.stdin); [print(r.get('attributes',{}).get('Arn','')) for r in s['resources'].values() if r['resourceType'] in ('AWS::IAM::User','AWS::IAM::Group')]")
 for want in "user${MOVED_PATH}${USER_NAME}" "group${MOVED_PATH}${GROUP_NAME}"; do
-  if ! printf '%s\n' "${STATE_ARNS}" | grep -qF ":${want}"; then
+  if ! grep -qF ":${want}" <<<"${STATE_ARNS}"; then
     echo "FAIL: state records no ARN ending in ${want} after the Path update (got: ${STATE_ARNS})" >&2
     exit 1
   fi

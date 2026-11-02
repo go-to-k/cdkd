@@ -55,7 +55,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -198,7 +198,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -294,12 +294,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws dynamodb delete-table --table-name "${BASE_TABLE}" --region "${REGION}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${BASE_TABLE} (its policy must refuse DeleteTable)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeleteTable never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -461,27 +461,27 @@ assert_record BaseTable "${BASE_TABLE}"
 # below only confirm the deploy's account of it, so a reworded line fails
 # here, never silently above.
 FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanA'; then
+if ! grep -qF 'deleting partially-created OrphanA' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
   exit 1
 fi
 # The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
-if printf '%s' "${FF_FLAT}" | grep -qF 'OrphanA (AWS::DynamoDB::Table), which a failed deploy'; then
+if grep -qF 'OrphanA (AWS::DynamoDB::Table), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2
   exit 1
 fi
 # Sentinel for the wording above: OrphanC's keep warning uses the same head,
 # so a reword that would blind the OrphanA check fails here first.
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'OrphanC (AWS::DynamoDB::Table), which a failed deploy'; then
+if ! grep -qF 'OrphanC (AWS::DynamoDB::Table), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::DynamoDB::Table), which a failed deploy' in the output): update the OrphanA check above" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanC'; then
+if grep -qF 'deleting partially-created OrphanC' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy tried to delete OrphanC's re-used name (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'is not deleted: the resource now under its physical id is another one'; then
+if ! grep -qF 'is not deleted: the resource now under its physical id is another one' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not warn that OrphanC's name now holds another table (output above)" >&2
   exit 1
 fi

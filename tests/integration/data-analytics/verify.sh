@@ -60,7 +60,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -514,7 +514,7 @@ fi
 # Refused -- but for the RIGHT reason. Any old failure (bad shape, auth,
 # throttle) would otherwise read as a pass and vouch for a guard that does not
 # work. AWS raises ConcurrentModificationException for this.
-if ! printf '%s' "${STALE_UPDATE_OUT}" | grep -qiE 'ConcurrentModification|concurrent'; then
+if ! grep -qiE 'ConcurrentModification|concurrent' <<<"${STALE_UPDATE_OUT}"; then
   echo "FAIL: the stale-VersionId UpdateTable was refused, but NOT with a concurrency error -- so this does not prove the precondition works. AWS said: ${STALE_UPDATE_OUT}" >&2
   exit 1
 fi

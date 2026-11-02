@@ -2,9 +2,6 @@
 
 ## Gotchas
 
-- **Claim before editing, always** — an unclaimed lane races a parallel agent
-  onto the same file, and **claiming is not winning**: read it back, yield to an
-  earlier `createdAt` (§4).
 - **A pushed branch with no PR is a live lane**, as is a worktree holding
   unpushed commits — the window only the claim covers (§2 owns the probes).
 - **A fresh issue is someone's deferral, not free backlog** (§3-0); §4 is its
@@ -74,4 +71,6 @@
   plain words plus what CloudFormation / the AWS CDK CLI does for the same
   shape, where one applies, and which option you recommend as the ideal tool
   behavior and why; without those the maintainer asks back instead of choosing (#2868).
+  Until it is answered, its answer stays out of every public text, and a reply
+  that asks back is no answer (a post published one, the #5637 run).
   Everything else you decide.

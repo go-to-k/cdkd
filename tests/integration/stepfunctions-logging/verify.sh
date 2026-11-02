@@ -76,7 +76,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -275,7 +275,7 @@ destroy_and_assert_gone() {
       describe_rc=$?
     fi
     if [ "${describe_rc}" != "0" ]; then
-      if echo "${status}" | grep -q "StateMachineDoesNotExist"; then
+      if grep -q "StateMachineDoesNotExist" <<<"${status}"; then
         sm_gone="yes"
         break
       fi

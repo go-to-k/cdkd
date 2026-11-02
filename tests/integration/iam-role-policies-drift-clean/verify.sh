@@ -57,7 +57,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -183,7 +183,7 @@ assert_no_role_drift() { # usage: assert_no_role_drift <label> [rename:true|fals
     out="$(env -u CDKD_TEST_RENAME -u CDKD_TEST_HANDOFF node "${LOCAL_DIST}" drift "${STACK}" \
       --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
   fi
-  if printf '%s' "${out}" | grep -q 'AWS::IAM::Role'; then
+  if grep -q 'AWS::IAM::Role' <<<"${out}"; then
     echo "FAIL: cdkd drift reported phantom drift on an AWS::IAM::Role (${label}):" >&2
     printf '%s\n' "${out}" | grep -B1 -A6 'AWS::IAM::Role' >&2
     exit 1
@@ -260,7 +260,7 @@ policy_action() { # usage: policy_action <policy-name> [role] -> its first state
     printf '%s' "${out}"
     return 0
   fi
-  if printf '%s' "${out}" | grep -q 'NoSuchEntity'; then
+  if grep -q 'NoSuchEntity' <<<"${out}"; then
     return 0
   fi
   echo "FAIL: get-role-policy $1 undetermined: ${out}" >&2

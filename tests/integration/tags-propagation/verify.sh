@@ -74,7 +74,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -294,7 +294,7 @@ probe_deny() { # usage: probe_deny <label> <created-flag var or -> <aws args...>
       [ "${flag}" = "-" ] || printf -v "${flag}" '%s' 1
       echo "[verify] FAIL: precondition -- ${ROLE} was ALLOWED an untagged ${label} (its deny must refuse it)" >&2
       exit 1
-    elif printf '%s' "${out}" | grep -qi 'explicit deny'; then
+    elif grep -qi 'explicit deny' <<<"${out}"; then
       return 0
     fi
     sleep 5
@@ -505,9 +505,9 @@ for _ in $(seq 1 24); do
     --tag-specifications 'ResourceType=vpc,Tags=[{Key=probe,Value=1}]' --region "${REGION}" 2>&1 || true)"
   REQ_PROBE="$(as_role aws ec2 create-vpc --dry-run --cidr-block 10.98.0.0/16 \
     --region "${REGION}" 2>&1 || true)"
-  if printf '%s' "${TAG_PROBE}" | grep -qF 'ec2:CreateTags' \
-    && printf '%s' "${TAG_PROBE}" | grep -qi 'explicit deny' \
-    && printf '%s' "${REQ_PROBE}" | grep -qF 'DryRunOperation'; then
+  if grep -qF 'ec2:CreateTags' <<<"${TAG_PROBE}" \
+    && grep -qi 'explicit deny' <<<"${TAG_PROBE}" \
+    && grep -qF 'DryRunOperation' <<<"${REQ_PROBE}"; then
     TAGS_DENY_BOUND=1
     break
   fi

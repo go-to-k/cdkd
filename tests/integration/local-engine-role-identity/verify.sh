@@ -52,7 +52,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -243,7 +243,7 @@ DENIED="$(
 set --
 unset ROLE_CREDS
 [ "${ROLE_AKID}" != "${CALLER_AKID}" ] || { echo "[verify] FAIL: premise broken: the role session has the caller's access key" >&2; exit 1; }
-echo "${DENIED}" | grep -q 'AccessDenied' \
+grep -q 'AccessDenied' <<<"${DENIED}" \
   || { echo "[verify] FAIL: premise broken: the no-permission role was not denied ssm:GetParameter (got: ${DENIED})" >&2; exit 1; }
 echo "[verify]   premise ok: the role session (${ROLE_AKID}) is denied the parameter; the caller is ${CALLER_AKID}"
 
@@ -280,7 +280,7 @@ fetch_akid_body() { # usage: fetch_akid_body <curl args...>
   local body=""
   for _ in $(seq 1 90); do
     body="$(curl -sS --max-time 20 "$@" 2>/dev/null || true)"
-    if printf '%s' "${body}" | grep -q '"akid"'; then printf '%s' "${body}"; return 0; fi
+    if grep -q '"akid"' <<<"${body}"; then printf '%s' "${body}"; return 0; fi
     kill -0 "${ENGINE_PID}" 2>/dev/null || fail "the engine exited while serving (last body: ${body})"
     sleep 1
   done
@@ -293,7 +293,7 @@ fetch_akid_body() { # usage: fetch_akid_body <curl args...>
 assert_workload_is_caller() { # usage: assert_workload_is_caller <what> <body>
   local what="$1" body="$2"
   echo "[verify]   ${what} workload said: ${body}"
-  if ! printf '%s' "${body}" | grep -qF "\"akid\":\"${CALLER_AKID}\""; then
+  if ! grep -qF "\"akid\":\"${CALLER_AKID}\"" <<<"${body}"; then
     fail "#3240: the ${what} workload did not run as the caller (expected \"akid\":\"${CALLER_AKID}\", got: ${body})"
   fi
   if ! awk -v arn="${ROLE_ARN}" 'index($0, "Assumed role ") && index($0, arn) { found = 1 } END { exit !found }' "${OUT_FILE}"; then
@@ -369,7 +369,7 @@ boot as_profile_only start-alb "${APP_STACK}:Alb" --lb-port "80=${PORT}" --conta
 wait_for_line 'Service\(s\) running:' 240
 BODY="$(fetch_akid_body "http://127.0.0.1:${PORT}/")"
 echo "[verify]   workload said: ${BODY}"
-printf '%s' "${BODY}" | grep -qF '"akid":null' \
+grep -qF '"akid":null' <<<"${BODY}" \
   || fail "#3240: the role's access key reached the workload with only AWS_PROFILE exported (expected \"akid\":null, got: ${BODY})"
 grep -qF 'is not handed to the emulated workload' "${OUT_FILE}" \
   || fail "cdk-local's stripped-credentials warning ('is not handed to the emulated workload') was not printed"

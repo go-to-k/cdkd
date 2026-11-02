@@ -46,7 +46,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -320,9 +320,9 @@ fi
 
 BODY="$(curl -s "http://127.0.0.1:${PORT}/whoami")"
 echo "    /whoami: ${BODY}"
-echo "${BODY}" | grep -q "\"arn\":\"arn:aws:sts::${ACCOUNT}:assumed-role/${ROLE_NAME}/" \
+grep -q "\"arn\":\"arn:aws:sts::${ACCOUNT}:assumed-role/${ROLE_NAME}/" <<<"${BODY}" \
   || fail "the container did not run as ${ROLE_NAME}: ${BODY}"
-echo "${BODY}" | grep -q "\"roleName\":\"${ROLE_NAME}\"" \
+grep -q "\"roleName\":\"${ROLE_NAME}\"" <<<"${BODY}" \
   || fail "ROLE_NAME (a Ref) was not resolved from state: ${BODY}"
 
 echo "==> SIGTERM removes the container"

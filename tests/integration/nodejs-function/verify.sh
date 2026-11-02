@@ -34,7 +34,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -128,7 +128,7 @@ if [ "${STATUS}" != "200" ]; then
   exit 1
 fi
 BODY="$(cat /tmp/cdkd-nodejs-out.json 2>/dev/null || echo "")"
-if ! echo "${BODY}" | grep -q "hello cdkd from nodejs-function"; then
+if ! grep -q "hello cdkd from nodejs-function" <<<"${BODY}"; then
   echo "FAIL: invoke response missing expected body; got: ${BODY}" >&2
   exit 1
 fi

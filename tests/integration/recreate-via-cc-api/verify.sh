@@ -35,7 +35,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -370,7 +370,7 @@ if [ -z "${FAILED_MSG}" ]; then
   echo "FAIL: RESOURCE_FAILED for RecreateProbeBucket has no error.message (the #2319 checks below would pass for free)" >&2
   exit 1
 fi
-if ! printf '%s' "${FAILED_MSG}" | grep -qE "^Failed to destroy old resource RecreateProbeBucket \(.*\) during --recreate-via-cc-api: .*[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+if ! grep -qE "^Failed to destroy old resource RecreateProbeBucket \(.*\) during --recreate-via-cc-api: .*[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${FAILED_MSG}"; then
   echo "FAIL: RESOURCE_FAILED message is not the destroy wrap carrying '<ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319)" >&2
   exit 1
 fi
@@ -379,9 +379,9 @@ fi
 LEAK=""
 if printf '%s' "${FAILED_MSG}" | sed -e "s/${BUCKET_NAME}//g" | grep -qF "${ACCOUNT_ID}"; then
   LEAK="the account id (outside the bucket name)"
-elif printf '%s' "${FAILED_MSG}" | grep -qiE "assumed-role|arn:aws:sts::"; then
+elif grep -qiE "assumed-role|arn:aws:sts::" <<<"${FAILED_MSG}"; then
   LEAK="a caller ARN"
-elif printf '%s' "${FAILED_MSG}" | grep -qiF "not authorized"; then
+elif grep -qiF "not authorized" <<<"${FAILED_MSG}"; then
   LEAK="AWS's 'not authorized' wording"
 fi
 if [ -n "${LEAK}" ]; then

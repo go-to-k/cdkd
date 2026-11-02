@@ -180,8 +180,8 @@ is already strict.)
 When a `gone_probe` branch precedes a strict value requery, guard the requery
 against the probe-to-requery race (TOCTOU): on a requery failure whose stderr
 matches the canonical not-found signature, treat it as gone; hard-fail on
-anything else (`elif ! v=$(aws ... 2>&1); then printf '%s' "$v" | grep -qiE
-'<canonical signature>' && v=GONE || { echo FAIL...; exit 1; }`).
+anything else (`elif ! v=$(aws ... 2>&1); then grep -qiE
+'<canonical signature>' <<<"$v" && v=GONE || { echo FAIL...; exit 1; }`).
 
 Best-effort cleanup code is exempt structurally: lines inside a
 `set +e`/`set +eu` ... `set -e`/`set -eu` span (bounded by the enclosing

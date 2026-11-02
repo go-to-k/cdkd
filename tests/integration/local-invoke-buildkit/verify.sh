@@ -65,24 +65,24 @@ RESULT_1=$(grep -E '"(buildArg|secretSha|fromBuildkitImage)"' /tmp/cdkd-buildkit
 echo "    response: ${RESULT_1}"
 
 # Every BuildKit feature must show up in the response.
-echo "${RESULT_1}" | grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" || {
+grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" <<<"${RESULT_1}" || {
   echo "FAIL: --build-arg did not flow through. Expected buildArg=${EXPECTED_BUILD_ARG}"
   echo "      response: ${RESULT_1}"
   cat /tmp/cdkd-buildkit-1.log
   exit 1
 }
-echo "${RESULT_1}" | grep -q "\"secretSha\":\"${EXPECTED_SECRET_SHA}\"" || {
+grep -q "\"secretSha\":\"${EXPECTED_SECRET_SHA}\"" <<<"${RESULT_1}" || {
   echo "FAIL: --secret did not flow through. Expected secretSha=${EXPECTED_SECRET_SHA}"
   echo "      response: ${RESULT_1}"
   cat /tmp/cdkd-buildkit-1.log
   exit 1
 }
-echo "${RESULT_1}" | grep -q '"multiStageTarget":"final"' || {
+grep -q '"multiStageTarget":"final"' <<<"${RESULT_1}" || {
   echo "FAIL: multi-stage --target final did not run (app.js missing from image)"
   cat /tmp/cdkd-buildkit-1.log
   exit 1
 }
-echo "${RESULT_1}" | grep -q '"greeting":"hello-buildkit"' || {
+grep -q '"greeting":"hello-buildkit"' <<<"${RESULT_1}" || {
   echo "FAIL: GREETING env var did not flow through"
   cat /tmp/cdkd-buildkit-1.log
   exit 1
@@ -120,7 +120,7 @@ echo "    ✓ secret content absent from all image layers"
 echo "==> [3/3] Re-invoking under --no-build to confirm tag stability"
 ${CDKD} local invoke CdkdLocalInvokeBuildkitFixture/BuildkitHandler --no-pull --no-build >/tmp/cdkd-buildkit-3.log 2>&1
 RESULT_3=$(grep -E '"buildArg"' /tmp/cdkd-buildkit-3.log | tail -1)
-echo "${RESULT_3}" | grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" || {
+grep -q "\"buildArg\":\"${EXPECTED_BUILD_ARG}\"" <<<"${RESULT_3}" || {
   echo "FAIL: --no-build re-invocation did not pick up the same baked image"
   cat /tmp/cdkd-buildkit-3.log
   exit 1

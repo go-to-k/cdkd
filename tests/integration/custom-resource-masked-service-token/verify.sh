@@ -54,7 +54,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -255,16 +255,16 @@ echo "    OK: destroy exited 2"
 # provider's skip reason via `destroy-runner.ts`. A summary with no matching
 # row means the reason wording moved, not that the fix did not fire.
 SUMMARY_SEEN=0
-if printf '%s' "${DESTROY_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY_TXT}"; then
   SUMMARY_SEEN=1
 fi
 ROW_SEEN=0
-if printf '%s' "${DESTROY_TXT}" | grep -q 'skipped (masked ServiceToken in state'; then
+if grep -q 'skipped (masked ServiceToken in state' <<<"${DESTROY_TXT}"; then
   ROW_SEEN=1
 fi
 if [ "${SUMMARY_SEEN}" -eq 1 ] && [ "${ROW_SEEN}" -eq 0 ]; then
   echo "FAIL: cdkd reported a skipped destroy but no row carried the #3938 reason." >&2
-  if printf '%s' "${DESTROY_TXT}" | grep -q 'Delete request to the handler did not complete'; then
+  if grep -q 'Delete request to the handler did not complete' <<<"${DESTROY_TXT}"; then
     echo "    The row carries the INVOKE-FAILURE reason instead: the mask was sent to" >&2
     echo "    Lambda as a function name — the pre-#3938 behaviour." >&2
   else
@@ -276,15 +276,15 @@ if [ "${ROW_SEEN}" -eq 0 ]; then
   echo "FAIL: destroy output carried no 'skipped (masked ServiceToken in state' row" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY_TXT}" | grep -q 'Delete request to the handler did not complete'; then
+if grep -q 'Delete request to the handler did not complete' <<<"${DESTROY_TXT}"; then
   echo "FAIL: a Delete invoke failed — the mask reached Lambda (pre-#3938 behaviour)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_TXT}" | grep -q 'Destroy skipped 1 entr'; then
+if ! grep -q 'Destroy skipped 1 entr' <<<"${DESTROY_TXT}"; then
   echo "FAIL: expected EXACTLY ONE skipped entry (the masked dependent)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_TXT}" | grep -q 'is recorded in state as the redaction mask'; then
+if ! grep -q 'is recorded in state as the redaction mask' <<<"${DESTROY_TXT}"; then
   echo "FAIL: the skip warning did not name the redaction mask" >&2
   exit 1
 fi
@@ -346,11 +346,11 @@ if [ "${REFUSE_RC}" -eq 0 ]; then
   exit 1
 fi
 HEAD_SEEN=0
-if printf '%s' "${REFUSE_TXT}" | grep -q 'pass a secure dynamic reference'; then
+if grep -q 'pass a secure dynamic reference' <<<"${REFUSE_TXT}"; then
   HEAD_SEEN=1
 fi
 LINE_SEEN=0
-if printf '%s' "${REFUSE_TXT}" | grep -q -- "- ${REFERENCE_ID}: ServiceToken"; then
+if grep -q -- "- ${REFERENCE_ID}: ServiceToken" <<<"${REFUSE_TXT}"; then
   LINE_SEEN=1
 fi
 if [ "${LINE_SEEN}" -eq 1 ] && [ "${HEAD_SEEN}" -eq 0 ]; then
@@ -431,16 +431,16 @@ if [ "${DESTROY_R_RC}" -ne 2 ]; then
   exit 1
 fi
 R_SUMMARY_SEEN=0
-if printf '%s' "${DESTROY_R_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY_R_TXT}"; then
   R_SUMMARY_SEEN=1
 fi
 R_ROW_SEEN=0
-if printf '%s' "${DESTROY_R_TXT}" | grep -q 'skipped (dynamic reference as ServiceToken in state'; then
+if grep -q 'skipped (dynamic reference as ServiceToken in state' <<<"${DESTROY_R_TXT}"; then
   R_ROW_SEEN=1
 fi
 if [ "${R_SUMMARY_SEEN}" -eq 1 ] && [ "${R_ROW_SEEN}" -eq 0 ]; then
   echo "FAIL: cdkd reported a skipped destroy but no row carried the #3960 reason." >&2
-  if printf '%s' "${DESTROY_R_TXT}" | grep -q 'Delete request to the handler did not complete'; then
+  if grep -q 'Delete request to the handler did not complete' <<<"${DESTROY_R_TXT}"; then
     echo "    The row carries the INVOKE-FAILURE reason instead: the reference was sent to" >&2
     echo "    Lambda as a function name — the pre-#3960 behaviour." >&2
   else
@@ -452,11 +452,11 @@ if [ "${R_ROW_SEEN}" -eq 0 ]; then
   echo "FAIL: destroy output carried no 'skipped (dynamic reference as ServiceToken in state' row" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY_R_TXT}" | grep -q 'Delete request to the handler did not complete'; then
+if grep -q 'Delete request to the handler did not complete' <<<"${DESTROY_R_TXT}"; then
   echo "FAIL: a Delete invoke failed — the reference reached Lambda (pre-#3960 behaviour)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_R_TXT}" | grep -q 'Destroy skipped 1 entr'; then
+if ! grep -q 'Destroy skipped 1 entr' <<<"${DESTROY_R_TXT}"; then
   echo "FAIL: expected EXACTLY ONE skipped entry (the reference dependent)" >&2
   exit 1
 fi
@@ -531,7 +531,7 @@ if [ "${DESTROY2_RC}" -ne 0 ]; then
   echo "FAIL: the clean destroy exited ${DESTROY2_RC}, expected 0" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY2_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY2_TXT}"; then
   echo "FAIL: the clean destroy still skipped something" >&2
   exit 1
 fi

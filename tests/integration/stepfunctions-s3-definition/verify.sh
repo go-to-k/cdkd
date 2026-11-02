@@ -52,7 +52,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -165,7 +165,7 @@ if [ "${GREETING}" != "hello-from-cdkd" ]; then
   echo "${DEFINITION}" >&2
   exit 1
 fi
-if echo "${DEFINITION}" | grep -q '${Greeting}'; then
+if grep -q '${Greeting}' <<<"${DEFINITION}"; then
   echo "FAIL: raw \${Greeting} token still present in deployed definition (substitution not applied)" >&2
   exit 1
 fi
@@ -198,7 +198,7 @@ assert_inline_result() {
     echo "${def}" >&2
     exit 1
   fi
-  if printf '%s' "${def}" | grep -qF "\${${token}}"; then
+  if grep -qF "\${${token}}" <<<"${def}"; then
     echo "FAIL: #5298 raw \${${token}} token still present in ${state_name}'s deployed definition" >&2
     exit 1
   fi
@@ -252,7 +252,7 @@ assert_sm_deleted() { # usage: assert_sm_deleted <arn>
   elif ! sm_status=$(aws stepfunctions describe-state-machine --state-machine-arn "${arn}" \
       --region "${REGION}" --query 'status' --output text 2>&1); then
     # TOCTOU: the machine can finish deleting between gone_probe and this requery.
-    printf '%s' "${sm_status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${sm_status}" \
       && sm_status="GONE" \
       || { echo "FAIL: describe-state-machine requery undetermined: ${sm_status}" >&2; exit 1; }
   fi

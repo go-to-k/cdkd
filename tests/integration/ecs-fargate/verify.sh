@@ -59,7 +59,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -156,7 +156,7 @@ if [ "${REJECT_RC}" -eq 0 ]; then
   echo "FAIL: deploy accepted --no-wait --full-wait; the pair must be rejected" >&2
   exit 1
 fi
-if ! printf '%s' "${REJECT_OUT}" | grep -q -- '--no-wait and --full-wait cannot be combined'; then
+if ! grep -q -- '--no-wait and --full-wait cannot be combined' <<<"${REJECT_OUT}"; then
   echo "FAIL: deploy failed for the wrong reason (expected the mutual-exclusion error):" >&2
   printf '%s\n' "${REJECT_OUT}" >&2
   exit 1
@@ -647,7 +647,7 @@ DEAD_SVC_ERR="$(mktemp)"
 if DEAD_SVC_OUT=$(aws ecs describe-services --cluster "${DEAD_CLUSTER_ID}" --services "${DEAD_SVC_ID}" \
   --region "${REGION}" --output json 2>"${DEAD_SVC_ERR}"); then
   DEAD_SVC_STATUS=$(printf '%s' "${DEAD_SVC_OUT}" | jq -r '.services[0].status // "not-listed"')
-elif DEAD_SVC_OUT="$(cat "${DEAD_SVC_ERR}")" && printf '%s' "${DEAD_SVC_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif DEAD_SVC_OUT="$(cat "${DEAD_SVC_ERR}")" && grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${DEAD_SVC_OUT}"; then
   DEAD_SVC_STATUS="not-listed"
 else
   echo "FAIL: describe-services for the deleted service did not answer: ${DEAD_SVC_OUT}" >&2
@@ -678,12 +678,12 @@ fi
 echo "${DEAD_VERDICTS}" | sed 's/^/    /'
 # All three must read as DELETED (go-to-k/cdkd#4283; before it, `notSupported`);
 # only the ones ECS still lists as INACTIVE are named as verified below.
-if ! echo "${DEAD_VERDICTS}" | grep -qx "drift_rc 1"; then
+if ! grep -qx "drift_rc 1" <<<"${DEAD_VERDICTS}"; then
   echo "FAIL: drift over the deleted ECS resources did not exit 1: $(echo "${DEAD_VERDICTS}" | grep '^drift_rc ')" >&2
   exit 1
 fi
 for type in AWS::ECS::Cluster AWS::ECS::Service AWS::ECS::TaskDefinition; do
-  if ! echo "${DEAD_VERDICTS}" | grep -qx "${type} deleted"; then
+  if ! grep -qx "${type} deleted" <<<"${DEAD_VERDICTS}"; then
     echo "FAIL: drift read the deleted ${type} as present (issue #4272): $(echo "${DEAD_VERDICTS}" | grep "^${type} ")" >&2
     exit 1
   fi

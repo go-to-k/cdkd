@@ -106,7 +106,10 @@ if ! gone_probe aws <service> <read-verb> [args...]; then ...still exists...; fi
 ```
 
 `gone_probe` accepts ONLY `'not ?found|no ?such|does ?not ?exist|non
-?existent|\(404'` and hard-FAILs on anything else. Probe state files with `s3api
+?existent|\(404'` and hard-FAILs on anything else. It matches with a here-string
+(`grep -qiE '<sig>' <<<"${out}"`), never `printf | grep -q`: `grep -q` exits on
+its first matching line, `printf` can take SIGPIPE on a multi-line capture, and
+`pipefail` reports that as a failed probe. Probe state files with `s3api
 head-object`, never `aws s3 ls` (exits 1 with empty output for "no keys"). Also
 banned: capture-form fallbacks (`N=$(aws ... 2>/dev/null || echo 0)` — a throttle
 reads as "0 remaining") and silenced function wrappers; `$(cmd 2>&1 >/dev/null ||

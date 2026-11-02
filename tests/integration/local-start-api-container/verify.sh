@@ -132,7 +132,7 @@ curl_assert() {
   local response=""
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     if response=$(curl -sf "$@" "${url}" 2>&1); then
-      if echo "${response}" | grep -q "${needle}"; then
+      if grep -q "${needle}" <<<"${response}"; then
         echo "    [${label}] OK  (${response})"
         return 0
       fi

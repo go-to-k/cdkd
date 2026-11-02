@@ -70,7 +70,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -277,7 +277,7 @@ for key in "${STATE_KEY}" "${JOURNAL_KEY}"; do
   if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" 2>&1)"; then
     echo "[verify] FAIL: ${key} already exists (left by an earlier run); destroy the stack, or delete what the journal records and then the journal, first" >&2
     exit 1
-  elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
     echo "[verify] FAIL: pre-probe of ${key} undetermined: ${HEAD_PRE}" >&2
     exit 1
   fi
@@ -403,12 +403,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws iam delete-policy --policy-arn "${TARGET_A}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${TARGET_A} (its policy must refuse that DeletePolicy)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeletePolicy never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -452,14 +452,14 @@ fi
 DEPLOY_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy.log" | tr '\n' ' ' | tr -s ' ')"
 # The premise: the replacement ran, and its delete of the old policy was
 # refused and left for the post-deploy retry the failure then pre-empted.
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Could not delete old Target (${TARGET_A}) yet"; then
+if ! grep -qF "Could not delete old Target (${TARGET_A}) yet" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: precondition -- the deploy did not report the refused delete of the old Target (${TARGET_A}); the replacement or the deny did not happen as designed (output above)" >&2
   exit 1
 fi
 # The CLI names the AWS failure by its class (AccessDenied); AWS's own
 # "explicit deny" text appears only under --verbose, so match the class on the
 # same line as Breaker's create.
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Failed to create IAM managed policy Breaker: AccessDenied"; then
+if ! grep -qF "Failed to create IAM managed policy Breaker: AccessDenied" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: precondition -- the deploy did not fail on the role's explicit deny of Breaker's create (output above)" >&2
   exit 1
 fi
@@ -478,7 +478,7 @@ fi
 # AWS refused DeletePolicy, so the survivor is a stripped policy and must not be
 # re-adopted. Before the fix the refusal by name read as `kept`: the rollback
 # re-adopted the detached policy and deleted the working new one.
-if printf '%s' "${DEPLOY_FLAT}" | grep -qF "the old resource of Target (${TARGET_A}) still exists"; then
+if grep -qF "the old resource of Target (${TARGET_A}) still exists" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: the rollback re-adopted the old Target (${TARGET_A}) although its delete had already detached it from ${HOLDER} -- go-to-k/cdkd#4946: a refused delete that stripped the resource is read as a whole survivor (output above)" >&2
   exit 1
 fi
@@ -606,12 +606,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws acm delete-certificate --certificate-arn "${CERT_OLD}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${CERT_OLD} (its policy must refuse that DeleteCertificate)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeleteCertificate never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -652,12 +652,12 @@ DEPLOY_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy-cert.log" | tr '\n' 
 # The premise: the PROVIDER replaced the certificate inside its update() and
 # its delete of the old one was refused (the engine's own replacement would
 # print step 2's "Could not delete old ... yet" instead).
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Failed to delete old ACM certificate" \
-  || printf '%s' "${DEPLOY_FLAT}" | grep -qF "Could not delete old Cert"; then
+if ! grep -qF "Failed to delete old ACM certificate" <<<"${DEPLOY_FLAT}" \
+  || grep -qF "Could not delete old Cert" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: precondition -- the deploy did not report the ACM provider's refused delete of the old certificate inside its own replacement (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "Failed to create IAM managed policy Breaker"; then
+if ! grep -qF "Failed to create IAM managed policy Breaker" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: precondition -- the deploy did not fail on Breaker's create (output above)" >&2
   exit 1
 fi
@@ -666,11 +666,11 @@ fi
 # the rollback read AWS, found the old certificate alive, re-adopted it and
 # deleted the replacement. Before the fix it requested a new copy of the old
 # certificate (a duplicate), leaving the old one untracked.
-if ! printf '%s' "${DEPLOY_FLAT}" | grep -qF "the old resource of Cert (${CERT_OLD}) still exists"; then
+if ! grep -qF "the old resource of Cert (${CERT_OLD}) still exists" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: the rollback did not report re-adopting the surviving old certificate (${CERT_OLD}) -- go-to-k/cdkd#4911: a provider's in-update replacement journals no survivor mark (output above)" >&2
   exit 1
 fi
-if printf '%s' "${DEPLOY_FLAT}" | grep -qF "Rollback failed for Cert"; then
+if grep -qF "Rollback failed for Cert" <<<"${DEPLOY_FLAT}"; then
   echo "[verify] FAIL: the rollback of Cert failed (output above)" >&2
   exit 1
 fi

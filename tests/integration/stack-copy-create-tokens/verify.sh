@@ -47,7 +47,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -130,7 +130,7 @@ sweep_fsx_and_wait() {
         aws fsx delete-file-system --file-system-id "${fsx_id}" --region "${REGION}" >/dev/null 2>&1 && break
         out=$(aws fsx describe-file-systems --file-system-ids "${fsx_id}" --region "${REGION}" \
           --query 'FileSystems[0].Lifecycle' --output text 2>&1)
-        printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && break
+        grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" && break
         [ "${out}" = "DELETING" ] && break
         sleep 20
       done
@@ -138,7 +138,7 @@ sweep_fsx_and_wait() {
     for fsx_id in ${ids}; do
       for _i in $(seq 1 120); do
         out=$(aws fsx describe-file-systems --file-system-ids "${fsx_id}" --region "${REGION}" 2>&1)
-        printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && break
+        grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" && break
         sleep 10
       done
     done
