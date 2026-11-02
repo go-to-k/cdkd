@@ -35,6 +35,8 @@ import {
   DeleteUserPermissionsBoundaryCommand,
   UpdateUserCommand,
   UpdateGroupCommand,
+  type Group,
+  type User,
 } from '@aws-sdk/client-iam';
 import { getLogger } from '../../utils/logger.js';
 import { definedAttributes } from '../attribute-map.js';
@@ -66,6 +68,7 @@ import {
   markCreatedBeforeFailure,
 } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { iamEntityLeftByThisCreate, isEntityAlreadyExists } from './iam-replay-adopt.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import {
   onlySecretDerived,
@@ -132,6 +135,20 @@ function isUserOrGroupType(resourceType: string): resourceType is UserOrGroupTyp
 function userOrGroupIdentityToken(id: string | undefined): string | undefined {
   return typeof id === 'string' && id !== '' ? id : undefined;
 }
+
+/**
+ * What `UpdateLoginProfile` throws while IAM cannot modify the profile yet, the
+ * SDK's documented case. Not observed on real IAM (2026-11-03): 15 updates
+ * within 5 `CreateLoginProfile` rounds all succeeded.
+ */
+const PROFILE_SETTLING_ERROR = 'EntityTemporarilyUnmodifiableException';
+
+/**
+ * Carries `concurrent update operation`, a phrase of the retryable table, so
+ * the engine replays the create (go-to-k/cdkd#5660).
+ */
+const LOGIN_PROFILE_SETTLING_MESSAGE =
+  'IAM cannot modify the login profile yet: a concurrent update operation has not settled';
 
 /**
  * The short `ResourceDeleteResult.reason` the no-properties
@@ -575,8 +592,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
       );
     }
 
-    // go-to-k/cdkd#4583: set once CreateUser returns; cleared when the
-    // partial-create cleanup deleted the user, so only a left-behind one is marked.
+    // go-to-k/cdkd#4583: set once CreateUser returns, or a replay adopts its own
+    // user (#5660); cleared when the partial-create cleanup deleted the user, so
+    // only a left-behind one is marked.
     let leftBehind = false;
     // go-to-k/cdkd#4606: the UserId CreateUser answered with, carried on the
     // mark so the journal needs no read of a user whose failure may fail that
@@ -600,10 +618,37 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
 
       const createClient = await this.createClient.get();
-      const response = await createClient.send(new CreateUserCommand(createParams));
+      let user: User | undefined;
+      let adopted = false;
+      try {
+        user = (await createClient.send(new CreateUserCommand(createParams))).User;
+      } catch (createError) {
+        // go-to-k/cdkd#5660: a replay colliding with the user its own earlier
+        // attempt left behind finishes that user; anything else fails as before.
+        // Repeating `PutUserPermissionsBoundary`, `AttachUserPolicy`,
+        // `AddUserToGroup` and `PutUserPolicy` each succeeded when measured on
+        // real IAM (2026-11-03). `CreateLoginProfile` answers
+        // `EntityAlreadyExists`, which is handled where it is sent.
+        user = await iamEntityLeftByThisCreate({
+          logicalId,
+          resourceType,
+          noun: 'user',
+          displayName: userName,
+          createError,
+          namesThisEntity: (reported) => reported === userName,
+          read: async () =>
+            (await this.iamClient.send(new GetUserCommand({ UserName: userName }))).User,
+          identityOf: (live) => userOrGroupIdentityToken(live?.UserId),
+          log,
+        });
+        if (user === undefined) throw createError;
+        adopted = true;
+      }
       leftBehind = true;
-      createdUserIdentity = userOrGroupIdentityToken(response.User?.UserId);
-      reportCreatedResource(logicalId, resourceType, userName, createdUserIdentity); // go-to-k/cdkd#5511
+      createdUserIdentity = userOrGroupIdentityToken(user?.UserId);
+      if (!adopted) {
+        reportCreatedResource(logicalId, resourceType, userName, createdUserIdentity); // go-to-k/cdkd#5511
+      }
 
       // CreateUserCommand has succeeded — AWS has now committed the User
       // (and the inline `Tags` from `createParams` if any). Every
@@ -616,7 +661,8 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // <X> already exists`. Wrap the wiring in an inner try/catch that
       // detaches every sub-resource (mirroring the order in
       // `deleteUser()`) before issuing `DeleteUserCommand` and
-      // re-throwing the original error.
+      // re-throwing the original error; an adopted user skips this cleanup
+      // (see the catch).
       try {
         // Set permissions boundary if specified
         const permissionsBoundary = properties['PermissionsBoundary'] as string | undefined;
@@ -635,14 +681,33 @@ export class IAMUserGroupProvider implements ResourceProvider {
           | { Password: string; PasswordResetRequired?: boolean }
           | undefined;
         if (loginProfile) {
-          await this.iamClient.send(
-            new CreateLoginProfileCommand({
-              UserName: userName,
-              Password: loginProfile.Password,
-              PasswordResetRequired: loginProfile.PasswordResetRequired ?? false,
-            })
-          );
-          log.debug(`Created login profile for user ${v(userName)}`);
+          const profile = {
+            UserName: userName,
+            Password: loginProfile.Password,
+            PasswordResetRequired: loginProfile.PasswordResetRequired ?? false,
+          };
+          try {
+            await this.iamClient.send(new CreateLoginProfileCommand(profile));
+            log.debug(`Created login profile for user ${v(userName)}`);
+          } catch (profileError) {
+            // go-to-k/cdkd#5660: `CreateLoginProfile` is the one wiring call that
+            // refuses a repeat. An adopted user's profile is set to the declared
+            // one rather than taken on trust, so success never rests on a
+            // password nobody confirmed.
+            if (!adopted || !isEntityAlreadyExists(profileError)) throw profileError;
+            try {
+              await this.iamClient.send(new UpdateLoginProfileCommand(profile));
+            } catch (updateError) {
+              if ((updateError as { name?: unknown } | null)?.name !== PROFILE_SETTLING_ERROR) {
+                throw updateError;
+              }
+              // Temporary, but no retry classifier knows this error, so it is
+              // restated in the words one does: the next replay updates again.
+              // Thrown as text of ours, carrying no AWS wording and no password.
+              throw new Error(LOGIN_PROFILE_SETTLING_MESSAGE, { cause: updateError });
+            }
+            log.debug(`Updated login profile for user ${v(userName)}`);
+          }
         }
 
         // Attach managed policies if specified
@@ -694,41 +759,45 @@ export class IAMUserGroupProvider implements ResourceProvider {
           }
         }
       } catch (innerError) {
-        try {
-          await this.removeUserFromAllGroups(userName, log);
-          await this.detachAllUserPolicies(userName, log);
-          await this.deleteAllUserInlinePolicies(userName, log);
+        // go-to-k/cdkd#5660: an adopted user is not stripped or deleted, see
+        // `iamEntityLeftByThisCreate`.
+        if (!adopted) {
           try {
-            await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: userName }));
-          } catch (err) {
-            if (!(err instanceof NoSuchEntityException)) throw err;
-          }
-          try {
-            await this.iamClient.send(
-              new DeleteUserPermissionsBoundaryCommand({ UserName: userName })
+            await this.removeUserFromAllGroups(userName, log);
+            await this.detachAllUserPolicies(userName, log);
+            await this.deleteAllUserInlinePolicies(userName, log);
+            try {
+              await this.iamClient.send(new DeleteLoginProfileCommand({ UserName: userName }));
+            } catch (err) {
+              if (!(err instanceof NoSuchEntityException)) throw err;
+            }
+            try {
+              await this.iamClient.send(
+                new DeleteUserPermissionsBoundaryCommand({ UserName: userName })
+              );
+            } catch (err) {
+              if (!(err instanceof NoSuchEntityException)) throw err;
+            }
+            await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
+            retractCreatedResource(logicalId, resourceType, userName);
+            leftBehind = false;
+            log.debug(
+              `Cleaned up partially-created IAM user ${logicalId} (${v(userName)}) after wiring failure`
             );
-          } catch (err) {
-            if (!(err instanceof NoSuchEntityException)) throw err;
+          } catch (cleanupError) {
+            // The name is `generateResourceNameWithFallback`'s output, whose
+            // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+            // (issue #3136), so it renders BARE -- but it can still BE a resolved
+            // secret, so every command goes through `pasteableAwsCommand` with the
+            // masker (issue #2177): a masked name is WITHHELD rather than printed
+            // as `***`, which would act on a different principal. Pinned by this
+            // type's partial-create cleanup test.
+            const aws = pasteableAwsCommand(log.mask);
+            const cleanupHead = `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): `;
+            log.warn(
+              `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
+            );
           }
-          await this.iamClient.send(new DeleteUserCommand({ UserName: userName }));
-          retractCreatedResource(logicalId, resourceType, userName);
-          leftBehind = false;
-          log.debug(
-            `Cleaned up partially-created IAM user ${logicalId} (${v(userName)}) after wiring failure`
-          );
-        } catch (cleanupError) {
-          // The name is `generateResourceNameWithFallback`'s output, whose
-          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // (issue #3136), so it renders BARE -- but it can still BE a resolved
-          // secret, so every command goes through `pasteableAwsCommand` with the
-          // masker (issue #2177): a masked name is WITHHELD rather than printed
-          // as `***`, which would act on a different principal. Pinned by this
-          // type's partial-create cleanup test.
-          const aws = pasteableAwsCommand(log.mask);
-          const cleanupHead = `Failed to clean up partially-created IAM user ${logicalId} (${v(userName)}): `;
-          log.warn(
-            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: remove from groups, detach managed policies, delete inline policies, delete login profile (${aws`aws iam delete-login-profile --user-name ${userName}`.render()}), remove permissions boundary (${aws`aws iam delete-user-permissions-boundary --user-name ${userName}`.render()}), then ${aws`aws iam delete-user --user-name ${userName}`.render()}`
-          );
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).
@@ -740,7 +809,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       return {
         physicalId: userName,
         attributes: {
-          Arn: response.User?.Arn,
+          Arn: user?.Arn,
         },
       };
     } catch (error) {
@@ -1415,8 +1484,9 @@ export class IAMUserGroupProvider implements ResourceProvider {
       { maxLength: GROUP_NAME_MAX_LENGTH }
     );
 
-    // go-to-k/cdkd#4583: set once CreateGroup returns; cleared when the
-    // partial-create cleanup deleted the group, so only a left-behind one is marked.
+    // go-to-k/cdkd#4583: set once CreateGroup returns, or a replay adopts its own
+    // group (#5660); cleared when the partial-create cleanup deleted the group, so
+    // only a left-behind one is marked.
     let leftBehind = false;
     // go-to-k/cdkd#4606: the GroupId CreateGroup answered with, as on the user.
     let createdGroupIdentity: string | undefined;
@@ -1433,10 +1503,34 @@ export class IAMUserGroupProvider implements ResourceProvider {
       }
 
       const createClient = await this.createClient.get();
-      const response = await createClient.send(new CreateGroupCommand(createParams));
+      let group: Group | undefined;
+      let adopted = false;
+      try {
+        group = (await createClient.send(new CreateGroupCommand(createParams))).Group;
+      } catch (createError) {
+        // go-to-k/cdkd#5660, as on the user. Repeating `AttachGroupPolicy` and
+        // `PutGroupPolicy` each succeeded when measured on real IAM (2026-11-03).
+        group = await iamEntityLeftByThisCreate({
+          logicalId,
+          resourceType,
+          noun: 'group',
+          displayName: groupName,
+          createError,
+          namesThisEntity: (reported) => reported === groupName,
+          read: async () =>
+            (await this.iamClient.send(new GetGroupCommand({ GroupName: groupName, MaxItems: 1 })))
+              .Group,
+          identityOf: (live) => userOrGroupIdentityToken(live?.GroupId),
+          log,
+        });
+        if (group === undefined) throw createError;
+        adopted = true;
+      }
       leftBehind = true;
-      createdGroupIdentity = userOrGroupIdentityToken(response.Group?.GroupId);
-      reportCreatedResource(logicalId, resourceType, groupName, createdGroupIdentity); // go-to-k/cdkd#5511
+      createdGroupIdentity = userOrGroupIdentityToken(group?.GroupId);
+      if (!adopted) {
+        reportCreatedResource(logicalId, resourceType, groupName, createdGroupIdentity); // go-to-k/cdkd#5511
+      }
 
       // CreateGroupCommand has succeeded — AWS has now committed the
       // Group. Every subsequent call wires sub-resources onto it
@@ -1449,7 +1543,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       // policies + DeleteGroupCommand before re-throwing the original
       // error. The cleanup mirrors the order in `deleteGroup()` (but
       // skips `removeAllUsersFromGroup` — a freshly-created group has
-      // no users).
+      // no users); an adopted group skips this cleanup (see the catch).
       try {
         // Attach managed policies if specified
         const managedPolicyArns = properties['ManagedPolicyArns'] as string[] | undefined;
@@ -1486,28 +1580,32 @@ export class IAMUserGroupProvider implements ResourceProvider {
           }
         }
       } catch (innerError) {
-        try {
-          await this.detachAllGroupPolicies(groupName, log);
-          await this.deleteAllGroupInlinePolicies(groupName, log);
-          await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
-          retractCreatedResource(logicalId, resourceType, groupName);
-          leftBehind = false;
-          log.debug(
-            `Cleaned up partially-created IAM group ${logicalId} (${v(groupName)}) after wiring failure`
-          );
-        } catch (cleanupError) {
-          // The name is `generateResourceNameWithFallback`'s output, whose
-          // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
-          // (issue #3136), so it renders BARE -- but it can still BE a resolved
-          // secret, so every command goes through `pasteableAwsCommand` with the
-          // masker (issue #2177): a masked name is WITHHELD rather than printed
-          // as `***`, which would act on a different principal. Pinned by this
-          // type's partial-create cleanup test.
-          const aws = pasteableAwsCommand(log.mask);
-          const cleanupHead = `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): `;
-          log.warn(
-            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
-          );
+        // go-to-k/cdkd#5660: an adopted group is not stripped or deleted, see
+        // `iamEntityLeftByThisCreate`.
+        if (!adopted) {
+          try {
+            await this.detachAllGroupPolicies(groupName, log);
+            await this.deleteAllGroupInlinePolicies(groupName, log);
+            await this.iamClient.send(new DeleteGroupCommand({ GroupName: groupName }));
+            retractCreatedResource(logicalId, resourceType, groupName);
+            leftBehind = false;
+            log.debug(
+              `Cleaned up partially-created IAM group ${logicalId} (${v(groupName)}) after wiring failure`
+            );
+          } catch (cleanupError) {
+            // The name is `generateResourceNameWithFallback`'s output, whose
+            // default `allowedPattern` rewrites everything outside `[A-Za-z0-9-]`
+            // (issue #3136), so it renders BARE -- but it can still BE a resolved
+            // secret, so every command goes through `pasteableAwsCommand` with the
+            // masker (issue #2177): a masked name is WITHHELD rather than printed
+            // as `***`, which would act on a different principal. Pinned by this
+            // type's partial-create cleanup test.
+            const aws = pasteableAwsCommand(log.mask);
+            const cleanupHead = `Failed to clean up partially-created IAM group ${logicalId} (${v(groupName)}): `;
+            log.warn(
+              `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, log)} Manual deletion may be required before the next deploy: detach managed policies + delete inline policies, then ${aws`aws iam delete-group --group-name ${groupName}`.render()}`
+            );
+          }
         }
         // The resource itself was created: an "already exists" from its wiring
         // is an auxiliary object's, not this resource's name collision (#3826).
@@ -1519,7 +1617,7 @@ export class IAMUserGroupProvider implements ResourceProvider {
       return {
         physicalId: groupName,
         attributes: {
-          Arn: response.Group?.Arn,
+          Arn: group?.Arn,
         },
       };
     } catch (error) {
