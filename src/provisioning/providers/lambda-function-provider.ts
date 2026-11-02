@@ -1054,7 +1054,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
         );
       }
 
-      // We deliberately do NOT wait for State=Active here. CreateFunction
+      // A plain function deliberately does NOT wait for State=Active. CreateFunction
       // returns synchronously while the function is still in `Pending`,
       // but the deploy-time consumers that actually break against a
       // Pending function are a synchronous Lambda Invoke (Custom Resources)
