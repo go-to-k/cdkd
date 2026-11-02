@@ -564,6 +564,7 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'ExtendedS3DestinationConfiguration.S3BackupConfiguration': ['S3BackupUpdate'],
       HttpEndpointDestinationConfiguration: ['HttpEndpointDestinationUpdate'],
       'HttpEndpointDestinationConfiguration.S3Configuration': ['S3Update'],
+      IcebergDestinationConfiguration: ['IcebergDestinationUpdate'],
       RedshiftDestinationConfiguration: ['RedshiftDestinationUpdate'],
       'RedshiftDestinationConfiguration.S3BackupConfiguration': ['S3BackupUpdate'],
       'RedshiftDestinationConfiguration.S3Configuration': ['S3Update'],

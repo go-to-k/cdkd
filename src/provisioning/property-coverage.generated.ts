@@ -2200,6 +2200,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ElasticsearchDestinationConfiguration',
         'ExtendedS3DestinationConfiguration',
         'HttpEndpointDestinationConfiguration',
+        'IcebergDestinationConfiguration',
         'KinesisStreamSourceConfiguration',
         'RedshiftDestinationConfiguration',
         'S3DestinationConfiguration',
@@ -2208,7 +2209,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       silentDrop: new Map<string, string>([
         ['DatabaseSourceConfiguration', 'not yet implemented by cdkd'],
-        ['IcebergDestinationConfiguration', 'not yet implemented by cdkd'],
         ['MSKSourceConfiguration', 'not yet implemented by cdkd'],
         ['SnowflakeDestinationConfiguration', 'not yet implemented by cdkd'],
       ]),

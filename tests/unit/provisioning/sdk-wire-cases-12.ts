@@ -1530,9 +1530,9 @@ const CASES_12_ELBV2: TypeCase[] = [LOAD_BALANCER_CASE, TARGET_GROUP_CASE, LISTE
  * destination is carried by bags of its own: a full one, and one with the
  * alternatives (a KMS-encrypted bucket where the full bag declares
  * `NoEncryptionConfig`, a VPC, the other serializer / deserializer, a Secrets
- * Manager credential). `IcebergDestinationConfiguration`,
- * `SnowflakeDestinationConfiguration`, `MSKSourceConfiguration` and
- * `DatabaseSourceConfiguration` are not handled, so no bag carries them.
+ * Manager credential). `SnowflakeDestinationConfiguration`,
+ * `MSKSourceConfiguration` and `DatabaseSourceConfiguration` are not handled,
+ * so no bag carries them.
  */
 
 const FIREHOSE_STREAM = 'stream';
@@ -1872,6 +1872,51 @@ const FIREHOSE_CASE: TypeCase = {
         ExtendedS3DestinationConfiguration: {
           BucketARN: 'arn:aws:s3:::dest',
           RoleARN: FIREHOSE_ROLE,
+        },
+      },
+    },
+    {
+      // go-to-k/cdkd#5636. The catalog is create-only, so only its create
+      // probes run; CloudFormation spells the backup mode `s3BackupMode` here.
+      name: 'Iceberg, every member',
+      bag: {
+        DeliveryStreamName: FIREHOSE_STREAM,
+        IcebergDestinationConfiguration: {
+          RoleARN: FIREHOSE_ROLE,
+          CatalogConfiguration: {
+            CatalogArn: `arn:aws:glue:us-east-1:${ACCOUNT}:catalog`,
+            WarehouseLocation: 's3://warehouse/',
+          },
+          DestinationTableConfigurationList: [
+            {
+              DestinationDatabaseName: 'db',
+              DestinationTableName: 't',
+              UniqueKeys: ['id', 'ts'],
+              PartitionSpec: { Identity: [{ SourceName: 'day' }, { SourceName: 'region' }] },
+              S3ErrorOutputPrefix: 'te/',
+            },
+          ],
+          SchemaEvolutionConfiguration: { Enabled: true },
+          TableCreationConfiguration: { Enabled: true },
+          BufferingHints: { IntervalInSeconds: 90, SizeInMBs: 8 },
+          CloudWatchLoggingOptions: firehoseLogging(),
+          ProcessingConfiguration: firehoseProcessing(),
+          RetryOptions: firehoseRetry(),
+          s3BackupMode: 'FailedDataOnly',
+          AppendOnly: true,
+          S3Configuration: firehoseS3Backup('iceberg'),
+        },
+      },
+      variants: { 'IcebergDestinationConfiguration.s3BackupMode': 'AllData' },
+    },
+    {
+      name: 'Iceberg, a KMS-encrypted bucket',
+      bag: {
+        DeliveryStreamName: FIREHOSE_STREAM,
+        IcebergDestinationConfiguration: {
+          RoleARN: FIREHOSE_ROLE,
+          CatalogConfiguration: { CatalogArn: `arn:aws:glue:us-east-1:${ACCOUNT}:catalog` },
+          S3Configuration: firehoseS3Kms('iceberg'),
         },
       },
     },

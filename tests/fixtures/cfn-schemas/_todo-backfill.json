@@ -93,7 +93,6 @@
     ],
     "AWS::KinesisFirehose::DeliveryStream": [
       "DatabaseSourceConfiguration",
-      "IcebergDestinationConfiguration",
       "MSKSourceConfiguration",
       "SnowflakeDestinationConfiguration"
     ],
