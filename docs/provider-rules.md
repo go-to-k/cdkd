@@ -1612,12 +1612,14 @@ Checklist when writing or reviewing an `update()`:
   `KeyConfiguration` to `AWS_OWNED_KEY`, so omitting it is the removal.
   `AWS::AutoScaling::AutoScalingGroup` is the per-type split (real
   CloudFormation A/B, issue #5004): removal RESETS `InstanceMaintenancePolicy`,
-  `MaxInstanceLifetime`, `CapacityReservationSpecification` and
-  `AvailabilityZoneDistribution`, but KEEPS `HealthCheckType`,
+  `MaxInstanceLifetime`, `CapacityReservationSpecification`,
+  `AvailabilityZoneDistribution` and `PlacementGroup`, but KEEPS
+  `HealthCheckType`,
   `HealthCheckGracePeriod`, `Cooldown`, `TerminationPolicies`,
   `NewInstancesProtectedFromScaleIn`, `CapacityRebalance`,
-  `DesiredCapacityType`, `DefaultInstanceWarmup` and `DeletionProtection` at
-  their live value, so `ASGProvider` sends nothing for those nine.
+  `DesiredCapacityType`, `DefaultInstanceWarmup`, `DeletionProtection` and
+  `InstanceLifecyclePolicy` at their live value, so `ASGProvider` sends nothing
+  for those ten.
   `AWS::ApiGatewayV2::*` is the same per-type split (issue #5004, real
   CloudFormation A/B): CloudFormation RESETS only Api `CorsConfiguration`, Stage
   `AutoDeploy` / `AccessLogSettings` / `RouteSettings` and Route
