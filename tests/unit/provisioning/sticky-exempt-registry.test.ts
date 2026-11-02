@@ -157,6 +157,28 @@ describe('sticky-CC exemption table', () => {
     }
   });
 
+  it.each([
+    ['AWS::EFS::MountTarget', { IpAddress: '10.0.0.100' }],
+    ['AWS::Route53::HostedZone', { DelegationSetId: 'N0123456789' }],
+  ])(
+    'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issue #5641)',
+    (resourceType, properties) => {
+      const registry = new ProviderRegistry();
+      registerAllProviders(registry, providerClasses);
+      const route = {
+        resourceType,
+        properties,
+        previousProperties: properties,
+        provisionedBy: 'cc-api' as const,
+      };
+      expect(STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode).toBe('sdk-coverage');
+      const flipped = registry.getProviderFor(route);
+      expect(flipped.provisionedBy).toBe('sdk');
+      expect(flipped.sdkMigration).toBe(true);
+      expect(registry.getProviderFor({ ...route, forceCcApi: true }).provisionedBy).toBe('cc-api');
+    },
+  );
+
   it('every entry names an integ fixture that has actually RUN', () => {
     const ran = ledgerTestNames();
     for (const [type, e] of entries()) {

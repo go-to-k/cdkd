@@ -105,8 +105,6 @@ export const RUNTIME_UNSUPPORTED_TYPES: ReadonlySet<string> = new Set([
   'AWS::CDK::Metadata',
   'Custom::CDKBucketDeployment',
   'Custom::S3AutoDeleteObjects',
-  // Route53 hosted zones (complex)
-  'AWS::Route53::HostedZone',
 ]);
 
 /**

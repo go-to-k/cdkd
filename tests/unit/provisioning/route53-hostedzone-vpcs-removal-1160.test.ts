@@ -34,6 +34,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import type { UpdateContext } from '../../../src/types/resource.js';
+import { settleUnsettledPrevious } from '../../../src/deployment/unsettled-convergence.js';
 
 const TYPE = 'AWS::Route53::HostedZone';
 const ZONE_ID = 'Z1234567890';
@@ -165,5 +166,175 @@ describe('Route53Provider HostedZone VPCs removal (#1160)', () => {
       update({ Name: 'example.internal' }, { Name: 'example.internal', VPCs: [VPC_A] })
     ).rejects.toThrow();
     expect(keptWarnings()).toHaveLength(0);
+  });
+
+  describe('a declared VPCs list (#5641)', () => {
+    const liveVpcs = (vpcs: unknown[], failing?: string) =>
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === failing) {
+          return Promise.reject(new Error('refused by Route 53'));
+        }
+        return Promise.resolve({
+          DelegationSet: { NameServers: [] },
+          HostedZone: { Name: 'example.internal.', Config: { PrivateZone: true } },
+          VPCs: vpcs,
+        });
+      });
+
+    it('SWAPPED: associates the new VPC, then disassociates the only old one', async () => {
+      liveVpcs([VPC_A]);
+
+      await update({ Name: 'example.internal', VPCs: [VPC_B] }, { VPCs: [VPC_A] });
+
+      expect(callsOf('AssociateVPCWithHostedZoneCommand').map((c) => c[0].input.VPC)).toEqual([
+        VPC_B,
+      ]);
+      expect(callsOf('DisassociateVPCFromHostedZoneCommand').map((c) => c[0].input.VPC)).toEqual([
+        VPC_A,
+      ]);
+      const order = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(order.indexOf('AssociateVPCWithHostedZoneCommand')).toBeLessThan(
+        order.indexOf('DisassociateVPCFromHostedZoneCommand')
+      );
+    });
+
+    it('a FAILED association rejects, naming the logical id, and disassociates nothing', async () => {
+      liveVpcs([VPC_A], 'AssociateVPCWithHostedZoneCommand');
+
+      await expect(
+        update({ Name: 'example.internal', VPCs: [VPC_B] }, { VPCs: [VPC_A] })
+      ).rejects.toThrow(/Failed to sync VPC associations for hosted zone MyZone/);
+      expect(callsOf('DisassociateVPCFromHostedZoneCommand')).toHaveLength(0);
+    });
+
+    it('a FAILED disassociation rejects too', async () => {
+      liveVpcs([VPC_A], 'DisassociateVPCFromHostedZoneCommand');
+
+      await expect(
+        update({ Name: 'example.internal', VPCs: [VPC_B] }, { VPCs: [VPC_A] })
+      ).rejects.toThrow(/Failed to sync VPC associations for hosted zone MyZone/);
+    });
+
+    it('a VPC associated out of band stays: the template never declared it', async () => {
+      liveVpcs([VPC_A, VPC_B]);
+
+      await update({ Name: 'example.internal', VPCs: [VPC_A] }, { VPCs: [VPC_A] });
+
+      expect(vpcCalls()).toHaveLength(0);
+    });
+
+    it('names VPCs unsettled before each write, so a half-done swap converges (#5380)', async () => {
+      liveVpcs([VPC_A], 'DisassociateVPCFromHostedZoneCommand');
+      const seen: string[] = [];
+      const markUnsettled = (key: string) => {
+        seen.push(`mark:${key}:${callsOf('AssociateVPCWithHostedZoneCommand').length}`);
+      };
+
+      await expect(
+        update({ Name: 'example.internal', VPCs: [VPC_B] }, { VPCs: [VPC_A] }, {
+          markUnsettled,
+        } as UpdateContext)
+      ).rejects.toThrow(/Failed to sync VPC associations/);
+
+      // Before the associate (0 sent), and again before the disassociate (1).
+      expect(seen).toEqual(['mark:VPCs:0', 'mark:VPCs:1']);
+    });
+
+    describe('after a failed update left VPCs unsettled (#5641)', () => {
+      const VPC_OUT_OF_BAND = { VPCId: 'vpc-cccc3333', VPCRegion: 'us-east-1' };
+      const settle = (desired: Record<string, unknown>) =>
+        settleUnsettledPrevious({
+          provider,
+          logicalId: 'MyZone',
+          physicalId: ZONE_ID,
+          resourceType: TYPE,
+          recordedProperties: { VPCs: [VPC_A] },
+          names: new Set(['VPCs']),
+          previous: { VPCs: [VPC_A] },
+          desired,
+          attemptedItems: new Map([['VPCs', new Set([VPC_B.VPCId])]]),
+        });
+      const disassociated = () =>
+        callsOf('DisassociateVPCFromHostedZoneCommand').map((c) => c[0].input.VPC.VPCId);
+
+      it('names an associated VPC as attempted only once the call resolved', async () => {
+        liveVpcs([VPC_A], 'DisassociateVPCFromHostedZoneCommand');
+        const markAttempted = vi.fn();
+
+        await expect(
+          update({ Name: 'example.internal', VPCs: [VPC_B] }, { VPCs: [VPC_A] }, {
+            markAttempted,
+          } as UpdateContext)
+        ).rejects.toThrow(/Failed to sync VPC associations/);
+        expect(markAttempted.mock.calls).toEqual([['VPCs', [VPC_B.VPCId]]]);
+
+        markAttempted.mockClear();
+        liveVpcs([VPC_A], 'AssociateVPCWithHostedZoneCommand');
+        await expect(
+          update({ Name: 'example.internal', VPCs: [VPC_B] }, { VPCs: [VPC_A] }, {
+            markAttempted,
+          } as UpdateContext)
+        ).rejects.toThrow(/Failed to sync VPC associations/);
+        expect(markAttempted).not.toHaveBeenCalled();
+      });
+
+      it('the redeploy finishes the swap and leaves an out-of-band VPC alone', async () => {
+        liveVpcs([VPC_A, VPC_B, VPC_OUT_OF_BAND]);
+        const desired = { Name: 'example.internal', VPCs: [VPC_B] };
+
+        await update(desired, await settle(desired));
+
+        expect(disassociated()).toEqual([VPC_A.VPCId]);
+      });
+
+      it('the rollback removes the attempted VPC and leaves an out-of-band VPC alone', async () => {
+        liveVpcs([VPC_A, VPC_B, VPC_OUT_OF_BAND]);
+        const restored = { Name: 'example.internal', VPCs: [VPC_A] };
+
+        await update(restored, await settle(restored));
+
+        expect(disassociated()).toEqual([VPC_B.VPCId]);
+      });
+
+      it('still warns when unsettled VPCs left the previous side', async () => {
+        liveVpcs([VPC_A, VPC_B]);
+
+        await update({ Name: 'example.internal' }, { Name: 'example.internal' }, {
+          unsettledProperties: new Set(['VPCs']),
+        } as UpdateContext);
+
+        expect(keptWarnings()).toHaveLength(1);
+      });
+
+      it('VPCs: [] reports no VPCs, so an empty desired side cannot stay unsettled', async () => {
+        liveVpcs([VPC_A, VPC_B]);
+
+        const live = await provider.readUnsettled(ZONE_ID, 'MyZone', TYPE, new Set(['VPCs']), {
+          VPCs: [VPC_A],
+        }, { VPCs: [] });
+
+        expect(live).not.toHaveProperty('VPCs');
+      });
+    });
+
+    it('a null entry on the previous side does not fail the update', async () => {
+      liveVpcs([VPC_A]);
+
+      await update({ Name: 'example.internal', VPCs: [VPC_A] }, { VPCs: [null] });
+
+      expect(vpcCalls()).toHaveLength(0);
+    });
+
+    it('UNCHANGED: sends neither call and marks nothing', async () => {
+      liveVpcs([VPC_A]);
+
+      const markUnsettled = vi.fn();
+      await update({ Name: 'example.internal', VPCs: [VPC_A] }, { VPCs: [VPC_A] }, {
+        markUnsettled,
+      } as UpdateContext);
+
+      expect(vpcCalls()).toHaveLength(0);
+      expect(markUnsettled).not.toHaveBeenCalled();
+    });
   });
 });

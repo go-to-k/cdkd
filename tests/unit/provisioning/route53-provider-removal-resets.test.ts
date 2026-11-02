@@ -385,6 +385,115 @@ describe('Route53Provider HostedZone removal resets (#1160 route53 batch)', () =
       });
     });
 
+    it('UNCHANGED: a Comment-only update makes no query logging call (#5641)', async () => {
+      const arn = 'arn:aws:logs:us-east-1:1:log-group:/aws/route53/same';
+      const block = { QueryLoggingConfig: { CloudWatchLogsLogGroupArn: arn } };
+      await update(
+        { Name: 'example.com', HostedZoneConfig: { Comment: 'new' }, ...block },
+        { Name: 'example.com', HostedZoneConfig: { Comment: 'old' }, ...block }
+      );
+
+      expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(0);
+      expect(callsOf('DeleteQueryLoggingConfigCommand')).toHaveLength(0);
+      expect(callsOf('CreateQueryLoggingConfigCommand')).toHaveLength(0);
+    });
+
+    const failCreate = (name: string) =>
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'CreateQueryLoggingConfigCommand') {
+          return Promise.reject(Object.assign(new Error('refused'), { name }));
+        }
+        if (command.constructor.name === 'ListQueryLoggingConfigsCommand') {
+          return Promise.resolve({ QueryLoggingConfigs: [] });
+        }
+        return Promise.resolve({ DelegationSet: { NameServers: [] } });
+      });
+    const arnBlock = (group: string) => ({
+      QueryLoggingConfig: { CloudWatchLogsLogGroupArn: `arn:aws:logs:us-east-1:1:log-group:${group}` },
+    });
+
+    it('a FAILED create on an update rejects, naming the logical id (#5641)', async () => {
+      failCreate('InsufficientCloudWatchLogsResourcePolicyException');
+
+      await expect(
+        update({ Name: 'example.com', ...arnBlock('/new') }, { Name: 'example.com', ...arnBlock('/old') })
+      ).rejects.toThrow(/Failed to apply query logging config to hosted zone MyZone/);
+    });
+
+    it('AlreadyExists on an update rejects: the old config outlived its swallowed delete (#5641)', async () => {
+      failCreate('QueryLoggingConfigAlreadyExists');
+
+      await expect(
+        update({ Name: 'example.com', ...arnBlock('/new') }, { Name: 'example.com', ...arnBlock('/old') })
+      ).rejects.toThrow(/Failed to apply query logging config to hosted zone MyZone/);
+    });
+
+    it('names QueryLoggingConfig unsettled before the delete, so a lost config converges (#5380)', async () => {
+      failCreate('InsufficientCloudWatchLogsResourcePolicyException');
+      const deletesAtMark: number[] = [];
+      const markUnsettled = (key: string) => {
+        expect(key).toBe('QueryLoggingConfig');
+        deletesAtMark.push(callsOf('ListQueryLoggingConfigsCommand').length);
+      };
+
+      await expect(
+        provider.update(
+          'MyZone',
+          ZONE_ID,
+          TYPE,
+          { Name: 'example.com', ...arnBlock('/new') },
+          { Name: 'example.com', ...arnBlock('/old') },
+          { markUnsettled } as never
+        )
+      ).rejects.toThrow(/Failed to apply query logging config/);
+
+      expect(deletesAtMark).toEqual([0]);
+    });
+
+    it('readUnsettled throws on a failed query logging read, which readCurrentState swallows', async () => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'ListQueryLoggingConfigsCommand'
+          ? Promise.reject(new Error('throttled'))
+          : Promise.resolve({ HostedZone: { Name: 'example.com.', Config: {} }, DelegationSet: {} })
+      );
+
+      await expect(
+        provider.readUnsettled(ZONE_ID, 'MyZone', TYPE, new Set(['QueryLoggingConfig']))
+      ).rejects.toThrow('throttled');
+      await expect(
+        provider.readCurrentState(ZONE_ID, 'MyZone', TYPE)
+      ).resolves.toMatchObject({ QueryLoggingConfig: {} });
+      // One read, so nothing can succeed first and fail where it is swallowed.
+      mockSend.mockClear();
+      await expect(
+        provider.readUnsettled(ZONE_ID, 'MyZone', TYPE, new Set(['QueryLoggingConfig']))
+      ).rejects.toThrow('throttled');
+      expect(callsOf('ListQueryLoggingConfigsCommand')).toHaveLength(1);
+    });
+
+    it('declares VPCs unordered, so the post-update proof ignores the order AWS answers in', () => {
+      expect(provider.getDriftUnorderedPaths(TYPE)).toEqual(['VPCs']);
+      expect(provider.getDriftUnorderedPaths('AWS::Route53::RecordSet')).toEqual([]);
+    });
+
+    it('a FAILED create on a CREATE rejects (#5641)', async () => {
+      failCreate('InsufficientCloudWatchLogsResourcePolicyException');
+      const created = {
+        HostedZone: { Id: `/hostedzone/${ZONE_ID}` },
+        DelegationSet: { NameServers: [] },
+      };
+      const failing = mockSend.getMockImplementation()!;
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        command.constructor.name === 'CreateHostedZoneCommand'
+          ? Promise.resolve(created)
+          : failing(command)
+      );
+
+      await expect(
+        provider.create('MyZone', TYPE, { Name: 'example.com', ...arnBlock('/new') })
+      ).rejects.toThrow(/Failed to apply query logging config to hosted zone MyZone/);
+    });
+
     it('CREATE is unchanged: an absent block is still a plain no-op', async () => {
       mockSend.mockResolvedValue({
         HostedZone: { Id: `/hostedzone/${ZONE_ID}` },
