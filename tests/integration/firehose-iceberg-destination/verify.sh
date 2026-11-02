@@ -239,6 +239,7 @@ assert_fixed_members() { # usage: assert_fixed_members <desc json>
   assert_eq "RoleARN" "$(jq -r '.RoleARN' <<<"${desc}")" "${ROLE_ARN}"
   assert_eq "S3 BucketARN" "$(jq -r '.S3DestinationDescription.BucketARN' <<<"${desc}")" "arn:aws:s3:::${BUCKET_NAME}"
   assert_eq "S3 ErrorOutputPrefix" "$(jq -r '.S3DestinationDescription.ErrorOutputPrefix' <<<"${desc}")" "errors/"
+  assert_eq "S3 RoleARN" "$(jq -r '.S3DestinationDescription.RoleARN' <<<"${desc}")" "${ROLE_ARN}"
   assert_eq "destination database" \
     "$(jq -r '.DestinationTableConfigurationList[0].DestinationDatabaseName' <<<"${desc}")" "${DATABASE_NAME}"
 }
@@ -292,6 +293,8 @@ assert_eq "observed DestinationTableConfigurationList[0] keys" \
   "DestinationDatabaseName,DestinationTableName"
 assert_eq "observed S3Configuration.BucketARN" \
   "$(jq -r '.S3Configuration.BucketARN // "<absent>"' <<<"${OBSERVED}")" "arn:aws:s3:::${BUCKET_NAME}"
+assert_eq "observed S3Configuration.RoleARN" \
+  "$(jq -r '.S3Configuration.RoleARN // "<absent>"' <<<"${OBSERVED}")" "${ROLE_ARN}"
 BASE_CREATED="$(create_timestamp)"
 
 # --- Phase 2: in-place update ------------------------------------------------
