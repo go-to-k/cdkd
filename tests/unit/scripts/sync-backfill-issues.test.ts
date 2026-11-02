@@ -257,11 +257,23 @@ describe('planReconciliation', () => {
     expect(readPreviousIssue((action as { body: string }).body)).toBe(30);
   });
 
+  it('restores a lost previous-issue link, and reads it without a trailing newline', () => {
+    const plan = planOf(entry('AWS::S3::Bucket', ['A']));
+    const lost = existing(40, 'AWS::S3::Bucket', ['A']);
+    const closed = existing(30, 'AWS::S3::Bucket', ['A'], 'CLOSED');
+    const [action] = planReconciliation(plan, [lost, closed]);
+    expect(readPreviousIssue((action as { body: string }).body)).toBe(30);
+    expect(readPreviousIssue(withPreviousIssue('b', 30).trimEnd())).toBe(30);
+  });
+
   it('does not count an open issue and a closed one of a type as a duplicate', () => {
     expect(
       planReconciliation(planOf(entry('AWS::S3::Bucket', ['A'])), [
         existing(10, 'AWS::S3::Bucket', ['A'], 'CLOSED'),
-        existing(11, 'AWS::S3::Bucket', ['A']),
+        {
+          ...existing(11, 'AWS::S3::Bucket', ['A']),
+          body: withPreviousIssue(entry('AWS::S3::Bucket', ['A']).body, 10),
+        },
       ])
     ).toEqual([]);
   });
@@ -654,7 +666,7 @@ describe('renderSubIssuePlan', () => {
 export const PROPERTY_COVERAGE = new Map([
   ['AWS::S3::Bucket', {
     handled: new Set(['BucketName']),
-    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'x'], ['Tags', 'y']]),
+    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'not yet implemented by cdkd'], ['Tags', 'not yet implemented by cdkd']]),
   }],
   ['AWS::SNS::Topic', {
     handled: new Set(['TopicName']),

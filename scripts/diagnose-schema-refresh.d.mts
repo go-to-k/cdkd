@@ -37,6 +37,9 @@ export interface SdkLagRow {
   matched: boolean;
 }
 export declare const NESTED_KEY_FAILURE_RE: RegExp;
+
+/** The `silentDrop` rationale of a row nobody decided on. */
+export declare const NOT_IMPLEMENTED_RATIONALE: string;
 /** The sdk-wire harness's announcement of nested paths no bag carries. */
 export declare const WIRE_MISSING_NESTED: string;
 export interface WireMissingNested {

@@ -462,8 +462,10 @@ hand edits are overwritten on the next sync, and COMMENTS are never touched, so
 a claim, a measurement or a question goes in a comment on the type it concerns.
 They close when their type runs out of silently-dropped properties. If it regains
 one, a NEW issue is filed ending `Previous issue: #N`: a closed issue is not
-reopened, so each round starts a short thread and nobody from the last round is
-notified.
+reopened, so each round starts a short thread.
+
+Only rows still marked `not yet implemented by cdkd` count. An `unhandledByDesign`
+row is a decision not to wire the property, so it gets no issue.
 
 A pull request should write `Closes` on a type's issue only if it takes that
 type to zero, and `Refs` otherwise. A premature `Closes` splits the work: the next
@@ -490,9 +492,9 @@ green run that changed nothing would be no notification at all.
   each is a live sub-issue the run cannot match to a type, so it would get a
   duplicate. Restore the marker, or remove the label from an issue a person filed.
 - `issues #A and #B both carry the marker for <type>` — close or unlabel one.
-- `gh issue list returned exactly 500 issues` — the listing may be truncated, and
-  a dropped issue would be duplicated. Something other than the campaign is
-  wearing the `backfill-type` label; remove it from that.
+- `gh issue list returned exactly 1000 issues` — the listing may be truncated, and
+  a dropped issue would be duplicated. Closed issues accumulate, so raise
+  `FETCH_LIMIT`.
 
 To see what a run WOULD do without touching anything:
 

@@ -91,6 +91,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
+          # `main`, whatever a dispatch or a re-run names: a closed issue is not
+          # reopened, so another branch's map could close types irreversibly.
+          ref: main
           # Nothing here pushes, so the token has no reason to persist into
           # `.git/config` where the render step's subprocesses could reach it.
           persist-credentials: false

@@ -11,8 +11,7 @@
  *   - a type with remaining properties and no issue  -> CREATE and label it
  *   - a type whose issue exists but is stale         -> UPDATE its body
  *   - a type whose last issue is closed              -> CREATE a new one that links
- *     back to it (`Previous issue: #N`), so each round gets a short thread and
- *     nobody who took part in the last one is notified
+ *     back to it (`Previous issue: #N`), so each round gets a short thread
  *   - an issue whose type is no longer in the plan   -> CLOSE
  *
  * Run by `.github/workflows/backfill-issues-sync.yml`, which fires on a push
@@ -25,7 +24,7 @@
  * bodies, and go-to-k/cdkd#2717 already made this move for the retired
  * PreToolUse hooks: a workflow's `run:` block is the one part of this repository
  * no test can read, and the failure mode here is not a wrong verdict but
- * MUTATION of ~44 public issues. The decision half is pure and exported
+ * MUTATION of dozens of public issues. The decision half is pure and exported
  * ({@link planReconciliation}); the `gh` half is a thin executor over an
  * injectable runner. `tests/unit/scripts/sync-backfill-issues.test.ts` drives
  * both.
@@ -42,7 +41,7 @@
  *
  * Every refusal below exits NON-ZERO and mutates nothing. A green run that
  * changed nothing is not a notification, and here the alternative to refusing is
- * not a stale list but a wrong one, publicly, at ~44 issues per run. The
+ * not a stale list but a wrong one, publicly, at dozens of issues per run. The
  * workflow fences this from its side too: nothing after the invocation of this
  * script may swallow its status.
  *
@@ -87,7 +86,7 @@ import {
  * A full page is indistinguishable from a truncated one, so reaching it is a
  * refusal ({@link fetchExisting}), not a silent cut.
  */
-export const FETCH_LIMIT = 500;
+export const FETCH_LIMIT = 1000;
 
 /** The label marking a generated per-type backfill issue. */
 export const SUBISSUE_LABEL = 'backfill-type';
@@ -198,7 +197,7 @@ export function readMarkerType(body: string): string | undefined {
 export class ReconcileRefusal extends Error {}
 
 /** The line a successor issue carries, always the last one of its body. */
-const PREVIOUS_ISSUE_LINE = /\n\nPrevious issue: #(\d+)\n$/;
+const PREVIOUS_ISSUE_LINE = /\n\nPrevious issue: #(\d+)\s*$/;
 
 /** Append the link to the type's previous issue. */
 export function withPreviousIssue(body: string, previous: number): string {
@@ -291,7 +290,7 @@ export function planReconciliation(
     }
     // Carried through a rewrite: the renderer cannot know it, and dropping it
     // would both lose the link and report this issue as changed on every run.
-    const previous = readPreviousIssue(issue.body);
+    const previous = readPreviousIssue(issue.body) ?? lastClosed.get(entry.type);
     const body = previous === undefined ? entry.body : withPreviousIssue(entry.body, previous);
     // Compared after the same CR strip `readMarkerType` applies, so a body a
     // human opened in the web UI does not report as changed on every run
@@ -353,8 +352,8 @@ export function fetchExisting(run: Runner, repo: string): ExistingIssue[] {
     // A FULL page is indistinguishable from a truncated one, and truncation here
     // is not a cosmetic loss: `gh` returns newest-first, so the issues that fall
     // off are the OLDEST — which then look new and get duplicated, the same
-    // unrecoverable outcome refusal 2 guards. Far more than the campaign's
-    // ~44 types, so reaching it means something else is wearing the label.
+    // unrecoverable outcome refusal 2 guards. CLOSED issues accumulate a round
+    // at a time, so a campaign could reach this honestly: raise the limit then.
     throw new ReconcileRefusal(
       `gh issue list returned exactly ${FETCH_LIMIT} issues, the requested limit — the result may be ` +
         'truncated, and a dropped issue looks new and gets duplicated. Refusing to reconcile ' +
@@ -468,8 +467,12 @@ function main(): void {
   const allowEmptyPlan = args.includes('--allow-empty-plan');
   const dryRun = args.includes('--dry-run');
   const repo = process.env['REPO'];
+  // A misspelt `--dry-run` must not become a real run against public issues.
+  const unknown = args.filter(
+    (a) => a.startsWith('-') && a !== '--dry-run' && a !== '--allow-empty-plan'
+  );
 
-  if (!planPath || !repo) {
+  if (!planPath || !repo || unknown.length > 0) {
     console.error(
       'usage: REPO=<owner/repo> sync-backfill-issues.ts <plan.json> [--dry-run] [--allow-empty-plan]'
     );

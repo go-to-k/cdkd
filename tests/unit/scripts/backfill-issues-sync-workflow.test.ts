@@ -160,6 +160,7 @@ describe('backfill-issues-sync workflow (issue #2774)', () => {
       const checkout = steps.find((s) => s.uses?.startsWith('actions/checkout@'));
       expect(checkout, 'no checkout step found').toBeDefined();
       expect(checkout!.with?.['persist-credentials']).toBe(false);
+      expect(checkout!.with?.['ref']).toBe('main');
     });
 
     it('pins every action to a full commit SHA', () => {

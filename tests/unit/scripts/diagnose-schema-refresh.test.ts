@@ -65,6 +65,7 @@ import {
   writeAutoTolerated,
   loadEvidenceDeps,
   classifyArgs,
+  NOT_IMPLEMENTED_RATIONALE,
   UMBRELLA_EMPTY_SENTINEL,
   renderUmbrellaChecklist,
   renderUmbrellaDocument,
@@ -4119,7 +4120,7 @@ export const PROPERTY_COVERAGE = new Map([
 export const PROPERTY_COVERAGE = new Map([
   ['AWS::S3::Bucket', {
     handled: new Set(['BucketName']),
-    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'x']]),
+    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'not yet implemented by cdkd']]),
   }],
 ]);
 `;
@@ -4132,6 +4133,15 @@ export const PROPERTY_COVERAGE = new Map([
     // in a function rather than inline in `main()`.
     expect(renderUmbrellaChecklist(FINISHED)).toEqual([]);
     expect(renderUmbrellaDocument(FINISHED)).toBe(UMBRELLA_EMPTY_SENTINEL);
+  });
+
+  it('leaves out a row with a by-design rationale, which is not remaining work', () => {
+    const designed = REMAINING.replace('not yet implemented by cdkd', "'CFn-only'");
+    expect(renderUmbrellaDocument(designed)).toContain(UMBRELLA_EMPTY_SENTINEL);
+    // The generator's own spelling: a drift here empties the whole campaign.
+    expect(
+      readFileSync(join(process.cwd(), 'scripts/gen-property-coverage.ts'), 'utf8')
+    ).toContain(`const NOT_IMPLEMENTED_RATIONALE = '${NOT_IMPLEMENTED_RATIONALE}';`);
   });
 
   it('emits the rows, and only the rows, when there are some', () => {

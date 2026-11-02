@@ -2886,6 +2886,14 @@ export function renderUmbrellaChecklist(generatedSource) {
  */
 
 /**
+ * The rationale `scripts/gen-property-coverage.ts` gives a row nobody decided on.
+ * Re-typed rather than imported because that module's graph is not free of
+ * dependencies, and this one must run with none (go-to-k/cdkd#2858).
+ * `diagnose-schema-refresh.test.ts` pins the two spellings together.
+ */
+export const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
+
+/**
  * The remaining silent-drop properties, GROUPED by the resource type that owns
  * them, in the coverage map's own order.
  *
@@ -2910,6 +2918,11 @@ export function renderUmbrellaChecklist(generatedSource) {
  * early. Property names are NOT so constrained (`[^']+`), which is why every one
  * of them reaches the page through {@link renderName} instead.
  *
+ * Only rows carrying {@link NOT_IMPLEMENTED_RATIONALE} count. `silentDrop` also
+ * holds every `unhandledByDesign` row, with its own rationale: a decision not to
+ * wire the property, not remaining work. Counting those filed an issue for types
+ * with nothing to do, 16 of 30 when measured, and no merge could ever close one.
+ *
  * @param {string} generatedSource
  * @returns {SilentDropGroup[]}
  */
@@ -2933,7 +2946,9 @@ export function parseSilentDropByType(generatedSource) {
     // finished type and contributes nothing.
     const drop = /silentDrop:\s*new Map<[^>]*>\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
     if (!drop) continue;
-    const properties = [...drop[1].matchAll(/\[\s*'([^']+)'\s*,/g)].map((m) => m[1]);
+    const properties = [...drop[1].matchAll(/\[\s*'([^']+)'\s*,\s*'([^']*)'/g)]
+      .filter((m) => m[2] === NOT_IMPLEMENTED_RATIONALE)
+      .map((m) => m[1]);
     if (properties.length === 0) continue;
     groups.push({ type, properties });
   }
@@ -3604,8 +3619,8 @@ export function renderUmbrellaDocument(generatedSource) {
  * original open forever. A marker in the BODY is regenerated on every sync, so
  * it self-heals, and it is invisible to a reader.
  *
- * Exported so the workflow's fence pins this spelling against the `grep` that
- * reads it — the failure mode of a drifted marker is silent DUPLICATE issue
+ * Exported so the workflow's fence pins this spelling against the reader in
+ * `scripts/sync-backfill-issues.ts` — the failure mode of a drifted marker is silent DUPLICATE issue
  * creation, once per type per run, which is the worst thing this design can do.
  */
 export const SUBISSUE_TYPE_MARKER_PREFIX = '<!-- backfill-type: ';
@@ -3726,13 +3741,16 @@ export function renderSubIssueBody({ type, properties }) {
     'Claim this type with a comment on this issue before starting. Comments are never',
     'rewritten by the sync, so claims, measurements and decisions live there.',
     '',
+    'To decide a property will not be wired, declare it in the provider\'s',
+    '`unhandledByDesign` with a rationale. It then leaves this list.',
+    '',
     'Each backfill pull request:',
     '',
     '1. Picks this type (or a small related set) and one or more of the properties above.',
     '2. Wires each property into the provider\'s `create()` / `update()` SDK call.',
     '3. Optionally adds `readCurrentState` support so drift detection sees the field.',
-    '4. Removes the property from `tests/fixtures/cfn-schemas/_todo-backfill.json` or',
-    '   `unhandledByDesign`, so it lands in `handledProperties`.',
+    '4. Adds the property to the provider\'s `handledProperties`, and removes it from',
+    '   `tests/fixtures/cfn-schemas/_todo-backfill.json` if it is listed there.',
     '5. Regenerates `src/provisioning/property-coverage.generated.ts` with',
     '   `vp run gen:property-coverage && vp run format`.',
     '6. Adds or extends an integ fixture that exercises the property. The integ MUST',
@@ -3748,7 +3766,7 @@ export function renderSubIssueBody({ type, properties }) {
     '',
     '## Classification',
     '',
-    `Dup-check: the sync reconciles by the \`backfill-type\` marker above, so this issue exists only because no open or closed issue carried the marker for ${renderName(type)}.`,
+    `Dup-check: the sync reconciles by the \`backfill-type\` marker above, so this issue exists only because no OPEN issue carried the marker for ${renderName(type)}.`,
     '',
     'Session-fit: next (not this session) — a standing campaign, taken up when a',
     'lane chooses this type; nothing here is time-critical.',
@@ -3767,8 +3785,8 @@ export function renderSubIssueBody({ type, properties }) {
  *
  * Rendered HERE rather than in the workflow because a body is multi-line
  * attacker-adjacent text assembled from a generated file, and shell is the worst
- * place to assemble one — the workflow reads each field with `jq -r` into a file
- * and never interpolates it into a command. It is also the half that can be
+ * place to assemble one — `scripts/sync-backfill-issues.ts` writes each body to a
+ * file and never interpolates it into a command. It is also the half that can be
  * tested: a workflow's heredoc cannot.
  *
  * JSON rather than the parent's Markdown because the consumer is a loop, not a
