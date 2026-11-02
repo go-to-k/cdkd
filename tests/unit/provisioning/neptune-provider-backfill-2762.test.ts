@@ -720,6 +720,8 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       armCluster({ logs: [], logsAfter: Number.POSITIVE_INFINITY });
       await update({ EnableCloudwatchLogsExports: ['audit'] }, {});
       expect(warn.mock.calls[0]![0]).toContain('did not read back');
+      expect(warn.mock.calls[0]![0]).toContain('Once it applies, run cdkd drift --accept.');
+      expect(warn.mock.calls[0]![0]).not.toContain('until it applies');
     });
 
     it('sends no empty log list on create', async () => {
