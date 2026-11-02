@@ -56,6 +56,13 @@
 # upgraded version live. A cdkd re-sending the unchanged EngineVersion fails
 # that deploy: RDS refuses it as a downgrade.
 #
+# go-to-k/cdkd#2762 (DBInstance DBParameterGroupName): the instance declares a
+# custom parameter group (A); the provisionedBy=sdk guard is what a pre-fix cdkd
+# fails, and phase 1 asserts A is live and in-sync. Phase 2b changes ONLY the
+# group, to B (CDKD_TEST_PARAM_GROUP=b), which RDS holds `pending-reboot` until
+# the instance reboots; CloudFormation reboots after that update, so the deploy
+# must return with B live and `in-sync`. Both groups must be gone after destroy.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -117,6 +124,9 @@ LOCAL_DIST="${PWD}/../../../dist/cli.js"
 # The fixture's DBInstance has no explicit instanceIdentifier, so CDK
 # auto-generates the physical name; resolve it from cdkd state after deploy.
 DB_INSTANCE_ID=""
+# go-to-k/cdkd#2762: the two custom parameter groups, resolved from state.
+PG_A_ID=""
+PG_B_ID=""
 # Issue #4030: when this run began (UTC, second precision, the prefix AWS's
 # SnapshotCreateTime is compared on).
 RUN_START=""
@@ -191,6 +201,19 @@ cleanup() {
         && echo "    cleanup: deleted this run's manual snapshot ${snap}"
     done
   fi
+  # go-to-k/cdkd#2762: the custom parameter groups, which RDS refuses to
+  # delete while an instance still uses them; `state destroy` deletes both on
+  # the happy path, so this is best-effort after an aborted one.
+  if [ -n "${PG_A_ID}${PG_B_ID}" ]; then
+    if [ -n "${DB_INSTANCE_ID}" ]; then
+      aws rds wait db-instance-deleted --db-instance-identifier "${DB_INSTANCE_ID}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+    for pg in ${PG_A_ID} ${PG_B_ID}; do
+      aws rds delete-db-parameter-group --db-parameter-group-name "${pg}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    done
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -242,6 +265,15 @@ if [ -z "${DB_INSTANCE_ID}" ] || [ "${DB_INSTANCE_ID}" = "null" ]; then
   exit 1
 fi
 echo "    resolved DBInstance identifier: ${DB_INSTANCE_ID}"
+
+# go-to-k/cdkd#2762: the two custom parameter groups, by logical id.
+PG_A_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBParameterGroup" and (.key | test("^ParamGroupA"))) | .value.physicalId] | first // ""')
+PG_B_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBParameterGroup" and (.key | test("^ParamGroupB"))) | .value.physicalId] | first // ""')
+if [ -z "${PG_A_ID}" ] || [ "${PG_A_ID}" = "null" ] || [ -z "${PG_B_ID}" ] || [ "${PG_B_ID}" = "null" ]; then
+  echo "FAIL: could not resolve the two DB parameter groups from state (A='${PG_A_ID}', B='${PG_B_ID}')" >&2
+  exit 1
+fi
+echo "    resolved DB parameter groups: A=${PG_A_ID} B=${PG_B_ID}"
 
 # Issue #4030 premise: the L1 instance declares NO DeletionPolicy, so the
 # destroy must apply CloudFormation's default for a standalone instance,
@@ -434,6 +466,12 @@ assert_instance_field '.PerformanceInsightsRetentionPeriod' '31' 'PerformanceIns
 assert_instance_field '.NetworkType' 'IPV4' 'NetworkType' 'phase 1'
 assert_instance_field '.LicenseModel' 'postgresql-license' 'LicenseModel' 'phase 1'
 assert_instance_field '.DatabaseInsightsMode' 'standard' 'DatabaseInsightsMode' 'phase 1'
+# go-to-k/cdkd#2762: DBParameterGroupName rode CreateDBInstance. RDS stores the
+# name lower-cased, so both sides are compared lower-cased.
+PG_A_LOWER=$(printf '%s' "${PG_A_ID}" | tr '[:upper:]' '[:lower:]')
+PG_B_LOWER=$(printf '%s' "${PG_B_ID}" | tr '[:upper:]' '[:lower:]')
+assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_A_LOWER}" 'DBParameterGroupName' 'phase 1'
+assert_instance_field '.DBParameterGroups[0].ParameterApplyStatus' 'in-sync' 'DBParameterGroupName applied at create' 'phase 1'
 
 # #5542 premise: the VPC's `default` group, which the phase-2 removal of
 # VPCSecurityGroups must attach. Resolved through the instance's own subnet
@@ -589,6 +627,25 @@ if [ "${AFTER_SGS}" != "${DEFAULT_SG}:active" ]; then
 fi
 echo "    OK: after removal, the instance is on the VPC default group ${DEFAULT_SG} only (#5542, matches CloudFormation)"
 
+# --- Phase 2b: change ONLY the parameter group (go-to-k/cdkd#2762) -------------
+# A -> B. RDS lists B `pending-reboot` until the instance reboots; CloudFormation
+# reboots after the update and waits for `in-sync`, so the deploy returning is
+# the moment to read: a cdkd that sends the group but never reboots leaves B
+# `pending-reboot` here, and one that does not send it leaves A.
+echo "==> Phase 2b: redeploy with CDKD_TEST_PARAM_GROUP=b (only the parameter group changes, A -> B; go-to-k/cdkd#2762)"
+CDKD_TEST_UPDATE=true CDKD_TEST_PARAM_GROUP=b node "${LOCAL_DIST}" deploy "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" \
+  --yes
+INSTANCE=$(aws rds describe-db-instances \
+  --db-instance-identifier "${DB_INSTANCE_ID}" \
+  --region "${REGION}" \
+  --query 'DBInstances[0]' --output json)
+assert_instance_field '.DBParameterGroups | length' '1' 'a single parameter group after the change' 'phase 2b'
+assert_instance_field '(.DBParameterGroups[0].DBParameterGroupName // "null") | ascii_downcase' "${PG_B_LOWER}" 'a changed DBParameterGroupName is sent' 'phase 2b'
+assert_instance_field '.DBParameterGroups[0].ParameterApplyStatus' 'in-sync' 'the reboot after a pending-reboot parameter group change' 'phase 2b'
+assert_instance_field '.DBInstanceStatus' 'available' 'the deploy waited for the reboot' 'phase 2b'
+
 # --- Phase 3: destroy -------------------------------------------------
 # --remove-protection: DeletionProtection is retained on removal (#5004), so
 # the destroy has to flip it off.
@@ -640,6 +697,11 @@ if [ "${FINAL_COUNT}" != "1" ] || [ -n "${OTHER_SNAPSHOTS}" ]; then
   exit 1
 fi
 echo "    OK: destroy took the final snapshot $(printf '%s' "${FINAL_SNAPSHOTS}") (issue #4030; cleanup deletes it)"
+
+# go-to-k/cdkd#2762: the destroy deleted both custom parameter groups.
+assert_gone "DB parameter group ${PG_A_ID} still exists after destroy" aws rds describe-db-parameter-groups --db-parameter-group-name "${PG_A_ID}" --region "${REGION}"
+assert_gone "DB parameter group ${PG_B_ID} still exists after destroy" aws rds describe-db-parameter-groups --db-parameter-group-name "${PG_B_ID}" --region "${REGION}"
+echo "    OK: both DB parameter groups are gone"
 
 echo ""
 echo "=== PASS: RDS::DBInstance #609 backfill integ (base + folded-in security props) + #5004 removal-keeps-value ==="

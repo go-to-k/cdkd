@@ -157,7 +157,6 @@
       "CustomIAMInstanceProfile",
       "DBClusterSnapshotIdentifier",
       "DBName",
-      "DBParameterGroupName",
       "DBSnapshotIdentifier",
       "DBSystemId",
       "Domain",
