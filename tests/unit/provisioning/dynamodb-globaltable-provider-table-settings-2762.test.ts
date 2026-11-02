@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateTableCommand,
   DeleteTableCommand,
@@ -966,7 +966,28 @@ describe('update', () => {
         ],
       });
       const override = { ReadCapacityUnits: 2 };
+      let regionalRead: number;
+      const regionalClient = () =>
+        vi.spyOn(
+          DynamoDBGlobalTableProvider.prototype as unknown as { getRegionalClient: () => unknown },
+          'getRegionalClient'
+        );
+      afterEach(() => {
+        regionalClient().mockRestore();
+      });
       beforeEach(() => {
+        regionalRead = 2;
+        regionalClient().mockImplementation(() => ({
+          send: (command: { constructor: { name: string } }) =>
+            command.constructor.name === 'DescribeTableCommand'
+              ? Promise.resolve({
+                  Table: {
+                    ...live,
+                    ProvisionedThroughput: { ReadCapacityUnits: regionalRead, WriteCapacityUnits: 3 },
+                  },
+                })
+              : mockSend(command),
+        }));
         live = {
           ...live,
           StreamSpecification: { StreamEnabled: true, StreamViewType: 'NEW_AND_OLD_IMAGES' },
@@ -1008,7 +1029,86 @@ describe('update', () => {
         );
       });
 
-      it('puts back no override equal to the read just sent: DynamoDB refuses a no-op', async () => {
+      it('puts back the read a region reports, with no override on record', async () => {
+        live = {
+          ...live,
+          Replicas: (live['Replicas'] as Rec[]).map(
+            ({ ProvisionedThroughputOverride: _dropped, ...r }) => r
+          ),
+        };
+        await update(
+          replicated(7, { WriteCapacityUnits: 4 }),
+          replicated(7, { WriteCapacityUnits: 3 })
+        );
+        expect(replicaUpdates()).toEqual([
+          { Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override } },
+        ]);
+      });
+
+      it('recovers a declared read on the re-run after a failed put-back', async () => {
+        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+          if (command.input['ReplicaUpdates']) {
+            return Promise.reject(new Error('throttled'));
+          }
+          return Promise.resolve(
+            command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
+          );
+        });
+        const markUnsettled = vi.fn();
+        await expect(
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }), {
+            markUnsettled,
+          })
+        ).rejects.toThrow();
+        expect(markUnsettled).toHaveBeenCalledWith('Replicas');
+        expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
+          /failed before putting back: us-west-2=2\. A value the template declares/
+        );
+
+        // `Replicas` unsettled: the previous side is the read-back, which has no
+        // flat cross-region read, so the declared one is a replica diff.
+        mockSend.mockReset();
+        mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+          Promise.resolve(
+            command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
+          )
+        );
+        const declared = replicated(7, { WriteCapacityUnits: 4 });
+        const readBack = {
+          ...declared,
+          Replicas: (declared['Replicas'] as Rec[]).map((r) => ({ Region: r['Region'] })),
+        };
+        await update(declared, readBack);
+        expect(replicaUpdates()).toContainEqual({
+          Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override },
+        });
+      });
+
+      it('does not warn when the failure leaves nothing to put back', async () => {
+        regionalRead = 7;
+        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+          if (command.input['ProvisionedThroughput']) return Promise.reject(new Error('refused'));
+          return Promise.resolve(
+            command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
+          );
+        });
+        await expect(
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }))
+        ).rejects.toThrow();
+        expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('putting back');
+      });
+
+      it('changes nothing when a region cannot be read before the send', async () => {
+        regionalClient().mockImplementation(() => ({
+          send: () => Promise.reject(new Error('denied')),
+        }));
+        await expect(
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }))
+        ).rejects.toThrow();
+        expect(throughputs()).toEqual([]);
+      });
+
+      it('puts back no region already at the read just sent', async () => {
         await update(
           replicated(2, { WriteCapacityUnits: 4 }),
           replicated(7, { WriteCapacityUnits: 3 })
