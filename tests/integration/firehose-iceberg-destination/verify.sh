@@ -111,11 +111,21 @@ cleanup() {
   aws iam delete-role --role-name "${ROLE_NAME}" >/dev/null 2>&1 || true
   # A failed state destroy left the bucket: empty and delete it by the name
   # read above, and name it loudly if it is still there.
+  # Only a value shaped like a bucket name AND carrying the name cdkd
+  # generates for this stack's `Bucket` (resource-name.ts: the lowercased
+  # `{StackName}-{LogicalId}`, plus `-{12 hex}` on a stack with an instance
+  # id) is deleted; anything else is named and left alone.
   if [ "${rc}" != "0" ] && [ -n "${leftover_bucket}" ]; then
-    aws s3 rm "s3://${leftover_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
-    aws s3api delete-bucket --bucket "${leftover_bucket}" --region "${REGION}" >/dev/null 2>&1 || true
-    if ! (gone_probe aws s3api head-bucket --bucket "${leftover_bucket}" --region "${REGION}"); then
-      echo "LEAK: bucket ${leftover_bucket} survived the cleanup -- delete it by hand" >&2
+    if [[ "${leftover_bucket}" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] &&
+      [[ "${leftover_bucket}" =~ ^cdkdfirehoseicebergdestinationexample-bucket(-[0-9a-f]{12})?$ ]]; then
+      aws s3 rm "s3://${leftover_bucket}" --recursive --region "${REGION}" >/dev/null 2>&1 || true
+      aws s3api delete-bucket --bucket "${leftover_bucket}" --region "${REGION}" >/dev/null 2>&1 || true
+      if ! (gone_probe aws s3api head-bucket --bucket "${leftover_bucket}" --region "${REGION}"); then
+        echo "LEAK: bucket ${leftover_bucket} survived the cleanup -- delete it by hand" >&2
+      fi
+    else
+      echo "SKIP: teardown sweep refused the recorded bucket name '${leftover_bucket}': not this fixture's generated name" >&2
+      echo "LEAK: bucket '${leftover_bucket}' may remain -- delete it by hand" >&2
     fi
   fi
   if [ -n "${STATE_BUCKET:-}" ] && [ "${rc}" = "0" ]; then
