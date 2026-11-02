@@ -347,6 +347,32 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
           3
         );
       }
+      // go-to-k/cdkd#5615: two regions and an auto-scaled write side from the first deploy.
+      new ddb.TableV2(this, 'TwoRegionCreateTable', {
+        tableName: `${this.stackName}-table10`,
+        partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
+        billing: ddb.Billing.provisioned({
+          readCapacity: ddb.Capacity.fixed(3),
+          writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+        }),
+        dynamoStream: ddb.StreamViewType.NEW_AND_OLD_IMAGES,
+        globalSecondaryIndexes: [
+          {
+            indexName: 'gsi1',
+            partitionKey: { name: 'g', type: ddb.AttributeType.STRING },
+            readCapacity: ddb.Capacity.fixed(4),
+            writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
+          },
+        ],
+        replicas: [
+          {
+            region: props.secondRegion,
+            readCapacity: ddb.Capacity.fixed(2),
+            globalSecondaryIndexOptions: { gsi1: { readCapacity: ddb.Capacity.fixed(6) } },
+          },
+        ],
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      });
       new ddb.TableV2(this, 'AutoScaledWriteTable', {
         tableName: `${this.stackName}-table8`,
         partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
