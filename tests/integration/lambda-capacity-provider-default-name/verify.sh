@@ -203,6 +203,7 @@ delete_provider() { ( # usage: delete_provider <name>
 ) }
 
 CLEANED_UP=0
+PRE_RUN=0
 cleanup() {
   if [ "${CLEANED_UP:-0}" = "1" ]; then
     return 0
@@ -238,26 +239,43 @@ cleanup() {
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1; then
     STATE_LEFT=0
   fi
-  # The function before its provider: deleting it deletes every version, which
-  # frees the provider it runs on.
-  [ -n "${FUNCTION_NAME}" ] && { aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true; }
-  [ -n "${PROVIDER_NAME}" ] && delete_provider "${PROVIDER_NAME}"
-  # A deploy that failed before state recorded them leaves names nothing above
-  # knows, so sweep by the stack prefix every generated name starts with.
+  # A deploy that failed before state recorded them leaves names nothing here
+  # knows, and every generated name starts with the stack. This account is
+  # shared and a peer may be running this fixture, so only this run's own
+  # teardown deletes by prefix: before the run, a match is reported and stops it.
+  LEFT_BY_PREFIX=""
   case "${STACK}" in
     CdkdLmi?*)
+      # Functions first: deleting one deletes every version, which frees the
+      # provider it runs on.
       if SWEPT_FUNCTIONS="$(aws lambda list-functions --region "${REGION}" \
         --query "Functions[?starts_with(FunctionName, '${STACK}-')].FunctionName" --output text 2>&1)"; then
         for fn in ${SWEPT_FUNCTIONS}; do
-          [ "${fn}" = "None" ] || aws lambda delete-function --function-name "${fn}" --region "${REGION}" >/dev/null 2>&1 || true
+          [ "${fn}" = "None" ] && continue
+          if [ "${PRE_RUN}" = "1" ]; then
+            LEFT_BY_PREFIX="${LEFT_BY_PREFIX} function:${fn}"
+          else
+            aws lambda delete-function --function-name "${fn}" --region "${REGION}" >/dev/null 2>&1 || true
+          fi
         done
       else
         echo "WARN: could not list functions of ${STACK}: ${SWEPT_FUNCTIONS}" >&2
       fi
+      ;;
+  esac
+  [ -n "${FUNCTION_NAME}" ] && { aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true; }
+  [ -n "${PROVIDER_NAME}" ] && delete_provider "${PROVIDER_NAME}"
+  case "${STACK}" in
+    CdkdLmi?*)
       if SWEPT_PROVIDERS="$(aws lambda list-capacity-providers --region "${REGION}" \
         --query "CapacityProviders[?contains(CapacityProviderArn, ':capacity-provider:${STACK}-')].CapacityProviderArn" --output text 2>&1)"; then
         for arn in ${SWEPT_PROVIDERS}; do
-          [ "${arn}" = "None" ] || delete_provider "${arn##*:}"
+          [ "${arn}" = "None" ] && continue
+          if [ "${PRE_RUN}" = "1" ]; then
+            LEFT_BY_PREFIX="${LEFT_BY_PREFIX} provider:${arn##*:}"
+          else
+            delete_provider "${arn##*:}"
+          fi
         done
       else
         echo "WARN: could not list capacity providers of ${STACK}: ${SWEPT_PROVIDERS}" >&2
@@ -299,6 +317,10 @@ cleanup() {
     fi
   fi
   set -eu
+  if [ -n "${LEFT_BY_PREFIX}" ]; then
+    echo "FAIL: ${STACK} resources exist before this run, possibly a peer's live run:${LEFT_BY_PREFIX}" >&2
+    exit 1
+  fi
 }
 trap cleanup EXIT
 trap '(exit 130); cleanup; exit 130' INT
@@ -310,7 +332,9 @@ if [ ! -f "${LOCAL_DIST}" ]; then echo "FAIL: build dist first (vp run build)" >
 echo "==> Installing fixture deps"
 [ -d node_modules ] || npm install
 echo "==> Pre-run cleanup"
+PRE_RUN=1
 cleanup
+PRE_RUN=0
 CLEANED_UP=0
 
 read_state() { # $1 = python expression over `s` (the state fetched into STATE_JSON)
