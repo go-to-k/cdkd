@@ -70,6 +70,7 @@ export interface DynamoDBGlobalTableReplicaSettingsStackProps extends cdk.StackP
  *                throughput, the read ceiling and the read capacity;
  *   - `ts3`:     with `ts`, go-to-k/cdkd#5604: keep `table7`'s `ts2` read capacity
  *                while its write capacity moves back;
+ *   - `ts4`:     with `ts3`, the second region of `table9` inherits, and its read moves;
  *   - `tsshape`: with `ts`, change `vec1`'s dimensions, which DynamoDB cannot
  *                do in place (the deploy must be refused);
  *   - `tsregional`: with `ts`, `TableType: Regional` on the two-replica table,
@@ -299,15 +300,23 @@ export class DynamoDBGlobalTableReplicaSettingsStack extends cdk.Stack {
         'WriteProvisionedThroughputSettings.WriteCapacityUnits',
         update2 ? 4 : 3
       );
-      // A second region with its own read capacity: `ProvisionedThroughput` would clear it.
+      // `ts2` adds a second region holding its own read capacity, which
+      // `ProvisionedThroughput` would clear; `ts3` moves the local read beside it;
+      // `ts4` lets the second region inherit, so both move in one deploy.
+      const replicaReadCapacity = modes.has('ts4') ? {} : { readCapacity: ddb.Capacity.fixed(2) };
+      const localRead = modes.has('ts4') ? 5 : modes.has('ts3') ? 4 : 3;
       new ddb.TableV2(this, 'ReplicaOverrideTable', {
         tableName: `${this.stackName}-table9`,
         partitionKey: { name: 'pk', type: ddb.AttributeType.STRING },
         billing: ddb.Billing.provisioned({
-          readCapacity: ddb.Capacity.fixed(update2 ? 4 : 3),
+          readCapacity: ddb.Capacity.fixed(localRead),
           writeCapacity: ddb.Capacity.autoscaled({ maxCapacity: 5 }),
         }),
-        replicas: [{ region: props.secondRegion, readCapacity: ddb.Capacity.fixed(2) }],
+        dynamoStream: ddb.StreamViewType.NEW_AND_OLD_IMAGES,
+        replicas:
+          update2 || modes.has('ts3')
+            ? [{ region: props.secondRegion, ...replicaReadCapacity }]
+            : [],
         removalPolicy: cdk.RemovalPolicy.DESTROY,
       });
       new ddb.TableV2(this, 'AutoScaledWriteTable', {

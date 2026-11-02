@@ -1284,15 +1284,15 @@ await_vector_indexes() { # usage: await_vector_indexes <region> <names> <message
   echo "FAIL: $3: ${TABLE4} in $1 holds '${got}', not '$2'" >&2
   exit 1
 }
-write_targets() { # usage: write_targets <table>; prints the count of its write scalable targets
+write_targets() { # usage: write_targets <table> [region]; prints the count of its write scalable targets
   aws application-autoscaling describe-scalable-targets --service-namespace dynamodb \
     --resource-ids "table/$1" --scalable-dimension dynamodb:table:WriteCapacityUnits \
-    --region "${REGION}" --query 'length(ScalableTargets)' --output text
+    --region "${2:-${REGION}}" --query 'length(ScalableTargets)' --output text
 }
-await_write_target() { # usage: await_write_target <table> <count> <message>
+await_write_target() { # usage: await_write_target <table> <count> <message> [region]
   local got=""
   for _ in $(seq 1 30); do
-    if got="$(write_targets "$1")" && [ "${got}" = "$2" ]; then
+    if got="$(write_targets "$1" "${4:-${REGION}}")" && [ "${got}" = "$2" ]; then
       return 0
     fi
     sleep 2
@@ -1340,7 +1340,7 @@ expect_table_field "${TABLE5}" 'Table.OnDemandThroughput.MaxReadRequestUnits' 50
 expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7 "Phase 6b"
 expect_capacity "${TABLE7}" 3 3 "Phase 6b"
 expect_capacity "${TABLE8}" 3 1 "Phase 6b"
-expect_replica_read "${TABLE9}" 3 2 "Phase 6b"
+expect_table_field "${TABLE9}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 3 "Phase 6b"
 # Application Auto Scaling is eventually consistent, so the read polls.
 await_write_target "${TABLE6}" 1 "Phase 6b: ${TABLE6} has no write scalable target"
 await_write_target "${TABLE8}" 1 "Phase 6b: ${TABLE8} has no write scalable target"
@@ -1359,9 +1359,7 @@ expect_capacity "${TABLE7}" 4 4 "Phase 6c (go-to-k/cdkd#5604)"
 # capacity and its scalable target.
 expect_capacity "${TABLE8}" 4 1 "Phase 6c (go-to-k/cdkd#5604)"
 await_write_target "${TABLE8}" 1 "Phase 6c: ${TABLE8} lost its write scalable target"
-# The local read moves; the second region keeps the capacity it declares, which
-# a `ProvisionedThroughput` send would have cleared.
-expect_replica_read "${TABLE9}" 4 2 "Phase 6c (go-to-k/cdkd#5604)"
+expect_replica_read "${TABLE9}" 3 2 "Phase 6c"
 run_drift 0 "Phase 6c"
 if grep -qE "${GT_ROW}" "${DRIFT_OUT}"; then
   echo "FAIL: Phase 6c: drift reports a table just deployed (go-to-k/cdkd#2762)" >&2
@@ -1390,8 +1388,15 @@ expect_table_field "${TABLE6}" 'Table.ProvisionedThroughput.ReadCapacityUnits' 7
 # go-to-k/cdkd#5604: the write literal alone moves; the read side stays.
 expect_capacity "${TABLE7}" 4 3 "Phase 6e (go-to-k/cdkd#5604)"
 expect_capacity "${TABLE8}" 3 1 "Phase 6e (go-to-k/cdkd#5604)"
-expect_replica_read "${TABLE9}" 3 2 "Phase 6e (go-to-k/cdkd#5604)"
+# The local read moves; the second region keeps the capacity it declares, which
+# a `ProvisionedThroughput` send would have cleared.
+expect_replica_read "${TABLE9}" 4 2 "Phase 6e (go-to-k/cdkd#5604)"
 echo "    OK: vec2 removed in both regions, warm throughput kept, ceiling and capacity back"
+
+echo "==> Phase 6f: both regions of ${TABLE9} move in one deploy (go-to-k/cdkd#5604)"
+deploy "${TS_BASE},ts3,ts4" "${LOG_DIR}/phase6f.log"
+expect_replica_read "${TABLE9}" 5 5 "Phase 6f"
+echo "    OK: the local update settled before the second region's"
 
 # --- Phase 7: destroy --remove-protection ---------------------------------
 echo "==> Phase 7: destroy --remove-protection"
@@ -1426,6 +1431,8 @@ for t in "${TABLE4}" "${TABLE5}" "${TABLE6}" "${TABLE7}" "${TABLE8}" "${TABLE9}"
 done
 await_write_target "${TABLE6}" 0 "Phase 7: ${TABLE6}'s write scalable target outlived the table"
 await_write_target "${TABLE8}" 0 "Phase 7: ${TABLE8}'s write scalable target outlived the table"
+await_write_target "${TABLE9}" 0 "Phase 7: ${TABLE9}'s write scalable target outlived the table"
+await_write_target "${TABLE9}" 0 "Phase 7: ${TABLE9}'s write scalable target outlived its replica" "${SECOND_REGION}"
 echo "    the Phase 6b tables deleted, and ${TABLE6}'s scalable target with them"
 
 assert_gone "state file ${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

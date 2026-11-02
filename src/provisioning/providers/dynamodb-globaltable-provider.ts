@@ -6050,9 +6050,20 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const readMoves = sendRead !== liveThroughput?.ReadCapacityUnits;
         const writeMoves = sendWrite !== liveThroughput?.WriteCapacityUnits;
         if (sendRead !== undefined && sendWrite !== undefined && (readMoves || writeMoves)) {
+          // Read before the send and marked with it: the send clears them, so a
+          // failed wait must leave them to the next deploy.
+          const overridesToRestore = (
+            writeMoves ? (describeResp.Table?.Replicas ?? []) : []
+          ).filter(
+            (r) =>
+              r.RegionName !== currentRegion &&
+              r.ProvisionedThroughputOverride?.ReadCapacityUnits !== undefined &&
+              r.ProvisionedThroughputOverride.ReadCapacityUnits !== sendRead
+          );
           markUnsettled(
             ...(readMoves ? tableCapacityChange.readKeys : []),
-            ...(writeMoves ? [TABLE_WRITE_PROVISIONED_KEY] : [])
+            ...(writeMoves ? [TABLE_WRITE_PROVISIONED_KEY] : []),
+            ...(overridesToRestore.length > 0 ? ['Replicas'] : [])
           );
           await this.dynamoDBClient.send(
             new UpdateTableCommand(
@@ -6077,27 +6088,34 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                   }
             )
           );
-          await this.waitForTableActiveAfterUpdate(
-            physicalId,
-            logicalId,
-            undefined,
-            undefined,
-            maskSecrets
-          );
-          for (const replica of writeMoves ? (describeResp.Table?.Replicas ?? []) : []) {
-            const region = replica.RegionName;
-            const override = replica.ProvisionedThroughputOverride;
-            if (region === undefined || region === currentRegion || !override) continue;
-            markUnsettled('Replicas');
+          // The whole group: another region moves with this one, and step 5 meets
+          // a refusal while a replica is still updating.
+          if (liveHasCrossRegionReplica) {
+            await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
+          } else {
+            await this.waitForTableActiveAfterUpdate(
+              physicalId,
+              logicalId,
+              undefined,
+              undefined,
+              maskSecrets
+            );
+          }
+          for (const replica of overridesToRestore) {
             await this.dynamoDBClient.send(
               new UpdateTableCommand({
                 TableName: physicalId,
                 ReplicaUpdates: [
-                  { Update: { RegionName: region, ProvisionedThroughputOverride: override } },
+                  {
+                    Update: {
+                      RegionName: replica.RegionName,
+                      ProvisionedThroughputOverride: replica.ProvisionedThroughputOverride,
+                    },
+                  },
                 ],
               })
             );
-            await this.waitForReplicaActive(physicalId, region, logicalId, undefined, maskSecrets);
+            await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
           }
         }
       }

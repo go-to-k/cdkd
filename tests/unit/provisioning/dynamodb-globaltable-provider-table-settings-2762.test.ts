@@ -864,6 +864,7 @@ describe('update', () => {
       const names = mockSend.mock.calls.map(
         (call) => (call[0] as { constructor: { name: string } }).constructor.name
       );
+      expect(names).toContain('UpdateTableCommand');
       expect(names[names.indexOf('UpdateTableCommand') + 1]).toBe('DescribeTableCommand');
     });
 
@@ -938,6 +939,17 @@ describe('update', () => {
       );
     });
 
+    it('masks the value the report names', async () => {
+      await update(
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 'abc' }),
+        local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: 3 }),
+        { maskSecrets: (text: string) => text.replaceAll('abc', '***') }
+      );
+      const warned = warnSpy.mock.calls.flat().join('\n');
+      expect(warned).toContain('did not resolve');
+      expect(warned).not.toContain('abc');
+    });
+
     it('does not report an unreadable block the update did not change', async () => {
       const bag = local({ ReadCapacityUnits: 7 }, { WriteCapacityUnits: { Ref: 'X' } });
       await update({ ...bag, Tags: [] }, bag);
@@ -980,6 +992,42 @@ describe('update', () => {
             ProvisionedThroughputOverride: { ReadCapacityUnits: 8 },
           },
         });
+      });
+
+      it('marks Replicas before the send that clears the override', async () => {
+        const markUnsettled = vi.fn();
+        await update(
+          replicated(7, { WriteCapacityUnits: 4 }),
+          replicated(7, { WriteCapacityUnits: 3 }),
+          { markUnsettled }
+        );
+        expect(markUnsettled).toHaveBeenCalledWith('Replicas');
+        const send = mockSend.mock.calls.findIndex((c) => c[0] instanceof UpdateTableCommand);
+        expect(markUnsettled.mock.invocationCallOrder[0]).toBeLessThan(
+          mockSend.mock.invocationCallOrder[send] ?? 0
+        );
+      });
+
+      it('puts back no override equal to the read just sent: DynamoDB refuses a no-op', async () => {
+        await update(
+          replicated(2, { WriteCapacityUnits: 4 }),
+          replicated(7, { WriteCapacityUnits: 3 })
+        );
+        expect(throughputs()).toEqual([{ ReadCapacityUnits: 2, WriteCapacityUnits: 4 }]);
+        expect(replicaUpdates()).toEqual([]);
+      });
+
+      it('waits for the other region to settle after the send', async () => {
+        const statuses = ['UPDATING', 'ACTIVE'];
+        mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+          if (command.constructor.name !== 'DescribeTableCommand') return Promise.resolve({});
+          const sentOne = updates().some((u) => u['ReplicaUpdates']);
+          const ReplicaStatus = sentOne ? (statuses.shift() ?? 'ACTIVE') : 'ACTIVE';
+          const Replicas = (live['Replicas'] as Rec[]).map((r) => ({ ...r, ReplicaStatus }));
+          return Promise.resolve({ Table: { ...live, Replicas } });
+        });
+        await update(replicated(8, scaling(3)), replicated(7, scaling(3)));
+        expect(statuses).toEqual([]);
       });
 
       it('puts back the override AWS held after a write change, read change included', async () => {
