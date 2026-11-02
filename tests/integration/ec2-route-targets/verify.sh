@@ -417,9 +417,10 @@ if [ "${ODB_ROUTE_LEFT}" != "0" ]; then
 fi
 ODB_RECORD="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s).state.resources;process.stdout.write(Object.keys(r).some(k=>k.startsWith("OdbProbeRoute"))?"present":"absent")})')"
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const k=Object.keys(JSON.parse(s).state.resources);process.stdout.write(!k.some(x=>x.startsWith("PrefixListRoute"))?"unread":k.some(x=>x.startsWith("OdbProbeRoute"))?"present":"absent")})')"
 if [ "${ODB_RECORD}" != "absent" ]; then
-  echo "FAIL: the refused ODB probe route has a state record" >&2
+  # "unread": the state lacks Phase 1's PrefixListRoute, so "no OdbProbeRoute" would prove nothing.
+  echo "FAIL: ODB probe route state check read '${ODB_RECORD}' (want absent)" >&2
   exit 1
 fi
 echo "    no ODB probe route in AWS or in state"
