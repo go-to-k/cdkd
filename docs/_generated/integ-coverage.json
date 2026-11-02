@@ -1457,6 +1457,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -1568,6 +1569,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -1724,6 +1728,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -1829,6 +1834,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -2008,6 +2016,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -2119,6 +2128,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -2274,6 +2286,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -2385,6 +2398,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -2779,6 +2795,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -2898,6 +2915,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -3085,6 +3105,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -3190,6 +3211,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -3339,6 +3363,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -3463,6 +3488,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -3663,6 +3691,7 @@
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
         "ecs-service-update-props",
         "efs-lambda",
@@ -3774,6 +3803,9 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2"
+        ],
+        "ecs-gateway-role-propagation": [
           "l2"
         ],
         "ecs-schedule-targets": [
@@ -5060,6 +5092,7 @@
         "drift-revert",
         "ec2-instance-fanout",
         "ecs-bluegreen",
+        "ecs-gateway-role-propagation",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -5230,6 +5263,10 @@
         ],
         "ecs-bluegreen": [
           "l2"
+        ],
+        "ecs-gateway-role-propagation": [
+          "l2",
+          "literal"
         ],
         "emr-cluster": [
           "l2",
@@ -8871,6 +8908,7 @@
     "AWS::EC2::VPCCidrBlock",
     "AWS::EC2::VPNGateway",
     "AWS::EC2::Volume",
+    "AWS::ECS::Gateway",
     "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ParameterGroup",

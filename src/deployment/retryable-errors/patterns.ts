@@ -493,6 +493,40 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // surfacing. Surfaced by tests/integration/sns-sqs-event (fresh feedback
   // role + delivery-status topic in one stack, issue #1160 sns batch).
   'is not a valid role to allow SNS',
+  // AWS::ECS::Gateway (go-to-k/cdkd#5661), created through Cloud Control
+  // seconds after the same deploy's `InfrastructureRoleArn` role. ECS rejects
+  // the not-yet-propagated role with TWO wordings in turn, both copied from
+  // real red runs of the #5634 gateway fixture on 2026-11-02 (us-east-1):
+  //
+  //   1. "AccessDenied: Could not assume the infrastructure role
+  //      arn:aws:iam::<acct>:role/<name>. Restore the role and allow
+  //      ecs.amazonaws.com to assume it, then retry. (Service: Ecs, ...)"
+  //   2. once (1) is retried: "Access denied: AWS was not able to validate
+  //      the provided access credentials (Service: Ecs, Status Code: 400,
+  //      Request ID: ...)" -- the role is assumable now, but the session it
+  //      yields is not valid yet (the Glue `security token` wording above is
+  //      the same stage).
+  //
+  // A CloudFormation stack with the identical role (ecs.amazonaws.com trust,
+  // AmazonECSInfrastructureRoleForGatewayHostSharedALB) created the gateway,
+  // and the fixture passed once the role had a 30s head start, so this is
+  // propagation, not the role's shape. The budget covers the window measured
+  // there: in a throwaway CloudFormation stack of the same role + gateway
+  // (2026-11-03), the role took 17s to complete (CloudFormation's role handler
+  // waits for propagation) and the gateway began 11s later and succeeded, so
+  // ~28s from the role's create, against this class's 47.75s of backoff from
+  // the gateway's first rejection (each retry adding a Cloud Control round
+  // trip on top).
+  //
+  // (1) is anchored on ECS's own "infrastructure role" sentence, so another
+  // service's assume failure does not match. (2) is anchored on the
+  // `(Service: Ecs,` trailer, for the reason the `(Service:` entry above
+  // gives: the bare sentence is EC2's `AuthFailure` text for cdkd's OWN
+  // invalid credentials (JS SDK, no trailer), which must keep failing fast;
+  // the trailer appears only when the ECS service relays it. A genuinely
+  // wrong or deleted role still surfaces, after the bounded retries.
+  'Could not assume the infrastructure role',
+  'AWS was not able to validate the provided access credentials (Service: Ecs,',
 ];
 
 /**
