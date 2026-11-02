@@ -17,9 +17,8 @@ Name a sibling worktree `.claude/worktrees/<branch>` and the launch tree by its
 basename; a lane brief that hands over absolute paths says so too.
 
 **Do NOT claim `LAUNCH_BRANCH` — it is the OUTER TOOL's branch**, to PUT BACK.
-Post now (the IN-PLACE `<ref>` above) — a claim that waits for the branch
-lands after the first edit. Such lanes are SERIAL (§3):
-claim the top one or the whole set, every lane after the first QUEUED.
+Post now: a claim that waits for the branch lands after the first edit. Such
+lanes are SERIAL (§3).
 
 ```bash
 gh issue comment <n> --body "QUEUED behind #<the lane running first> in \
@@ -60,7 +59,9 @@ gh issue comment <n> --body "Working on this in PR/branch <ref> — touching <fi
 Claiming to avoid collision with parallel agents."
 ```
 
-Mandatory, BEFORE the first edit.
+Mandatory, BEFORE the analysis and the first edit. A lane's `Agent` call goes in
+a LATER message, after the read-back below: sent beside a refused post, two
+lanes launched briefed "claim posted" (#5637).
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
 that list**: beside the fix, its unit test and (user-visible) its
 `changelog.d/entries/` file, each EXISTING suite whose
@@ -79,7 +80,7 @@ check-docs' two `version` files); a NEW SDK provider adds
 tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
 SDK client, `package.json` + `pnpm-lock.yaml` — a narrower list stops the lane
-mid-run to ask (go-to-k/cdkd#1160).
+mid-run to ask (#1160).
 
 **Correct the classification lines in the same turn as the claim**: rewrite a
 legacy packed body to the four-line shape (§3), fill a missing `Severity`, fix
@@ -88,8 +89,6 @@ what the evidence contradicts (`Notes` never enters a body).
 **Carry `--add-label` on that same `gh issue edit`** (`severity:<v>`,
 `effort:<v>`, plus `--remove-label` for the one superseded — else §3's query
 picks between TWO), BEFORE the lane's PR exists, so the PR inherits them.
-
-**Claim at SHORTLIST time, before the analysis.**
 
 **Then VERIFY the claim stuck** — posting is not winning:
 
@@ -100,7 +99,7 @@ gh issue view <n> --json comments \
 
 **Tie-break: the EARLIEST `createdAt` wins.** If a rival's claim predates yours,
 stand down naming the winning branch and pick another issue, unasked. Escalate
-when timestamps cannot settle it (go-to-k/cdkd#1446).
+when timestamps cannot settle it (#1446).
 
 **A QUEUED comment IS a claim, and its `createdAt` is what the tie-break reads.**
 Re-read the thread to the END before the tie-break. A missing branch is not

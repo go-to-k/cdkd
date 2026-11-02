@@ -97,7 +97,7 @@ unreached ones stood down with a four-field comment.
   or shortening a verification, and size it against the SHARED account pool.
   RE-TAKE it after every merge, a peer's too: a candidate held at triage frees
   when its holder merges, so read each holder's `gh pr view <N> --json state`
-  at every stage boundary (the user spotted #5254's), then re-run §2's `files`
+  at every stage boundary, then re-run §2's `files`
   query and `gh pr diff`.
 - An old packed body (`Session-fit: <d> — <reason> / Effort: <duration>` on one
   line): its `Effort:` is an **`Estimate`**, its `severity:*` label DERIVED
@@ -128,12 +128,13 @@ parser from `node_modules`, never by reading its source (#2221).
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
 maintainer-only step) or closing an AWS-side limit with
 docs: return its options, each fix and what CFn / the CDK CLI do, for ONE
-`AskUserQuestion` at triage (gotchas.md).
+`AskUserQuestion` at triage (gotchas.md). An issue's "Undecided" line is not yet
+a question: where the CFn premise above settles it, take that, unasked (#5637,
+#5656: the maintainer asked why CFn had not).
 
 ### 3-0. A FRESH issue belongs to the lane that FILED it
 
-**Skip every issue created less than 60 minutes ago** — the same span §2 calls a
-LIVE lane.
+**Skip every issue created less than 60 minutes ago.**
 
 ```bash
 CUT=$(date -u -v-60M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '60 min ago' +%Y-%m-%dT%H:%M:%SZ)
@@ -155,8 +156,8 @@ claim says you took it inside the window.
 
 ### 3-a. Ranking the eligible issues
 
-§2's disjointness and §3-0's quarantine are hard gates, not ranking factors. Rank
-what survives both, in order, moving on only to break a tie:
+Rank what survives §2's disjointness and §3-0's quarantine, in order, moving on
+only to break a tie:
 
 1. **Security first** — SECURITY.md's in-scope list is the canonical list (its
    out-of-scope class never ranks here); split a security umbrella into
@@ -178,7 +179,6 @@ user-reported breakage outranks the whole table except rule 1.
 Rules 4–5 read §1's title prefix (`fix(deploy):`); rule 3 reads a label:
 
 ```bash
-# rule 3's input is a LABEL — no per-candidate view:
 gh issue list --state open --limit 200 --json number,title,labels \
   --jq '.[] | select([.labels[].name] | index("backfill-type") | not)
         | [.number,
