@@ -92,8 +92,8 @@ cleanup() {
   if aws firehose delete-delivery-stream --delivery-stream-name "${STREAM_NAME}" --allow-force-delete \
     --region "${REGION}" >/dev/null 2>&1; then
     for _ in $(seq 1 36); do
-      aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" \
-        --region "${REGION}" >/dev/null 2>&1 || break
+      gone_probe aws firehose describe-delivery-stream --delivery-stream-name "${STREAM_NAME}" \
+        --region "${REGION}" && break
       sleep 5
     done
   fi
