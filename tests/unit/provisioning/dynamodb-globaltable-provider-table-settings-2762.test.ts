@@ -1019,7 +1019,7 @@ describe('update', () => {
         const markUnsettled = vi.fn();
         await update(
           replicated(7, { WriteCapacityUnits: 4 }),
-          replicated(7, { WriteCapacityUnits: 3 }),
+          replicated(7, scaling(3)),
           { markUnsettled }
         );
         expect(markUnsettled).toHaveBeenCalledWith('Replicas');
@@ -1038,7 +1038,7 @@ describe('update', () => {
         };
         await update(
           replicated(7, { WriteCapacityUnits: 4 }),
-          replicated(7, { WriteCapacityUnits: 3 })
+          replicated(7, scaling(3))
         );
         expect(replicaUpdates()).toEqual([
           { Update: { RegionName: 'us-west-2', ProvisionedThroughputOverride: override } },
@@ -1056,13 +1056,11 @@ describe('update', () => {
         });
         const markUnsettled = vi.fn();
         await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }), {
-            markUnsettled,
-          })
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)), { markUnsettled })
         ).rejects.toThrow();
         expect(markUnsettled).toHaveBeenCalledWith('Replicas');
         expect(warnSpy.mock.calls.flat().join('\n')).toMatch(
-          /failed before putting back: us-west-2=2\. A value the template declares/
+          /failed before putting back us-west-2=2\. A value the template declares/
         );
 
         // `Replicas` unsettled: the previous side is the read-back, which has no
@@ -1084,26 +1082,101 @@ describe('update', () => {
         });
       });
 
-      it('does not warn when the failure leaves nothing to put back', async () => {
-        regionalRead = 7;
+      const warned = (): string => warnSpy.mock.calls.flat().join('\n');
+      // Describes succeed until `failAfter` has gone out.
+      const failingSettle = (failAfter: (input: Rec) => boolean): void => {
+        let failing = false;
         mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
-          if (command.input['ProvisionedThroughput']) return Promise.reject(new Error('refused'));
+          if (command.constructor.name === 'DescribeTableCommand') {
+            return failing
+              ? Promise.reject(new Error('settle failed'))
+              : Promise.resolve({ Table: live });
+          }
+          if (failAfter(command.input)) failing = true;
+          return Promise.resolve({});
+        });
+      };
+      const threeRegions = (write: Rec): Rec => {
+        const bag = replicated(7, write);
+        return {
+          ...bag,
+          Replicas: [
+            ...(bag['Replicas'] as Rec[]),
+            { Region: 'eu-west-1', ReadProvisionedThroughputSettings: { ReadCapacityUnits: 2 } },
+          ],
+        };
+      };
+      const armThreeRegions = (): void => {
+        live = {
+          ...live,
+          Replicas: ['us-east-1', 'us-west-2', 'eu-west-1'].map((RegionName) => ({
+            RegionName,
+            ReplicaStatus: 'ACTIVE',
+          })),
+        };
+      };
+
+      it('does not warn when a failed settle leaves nothing to put back', async () => {
+        regionalRead = 7;
+        failingSettle((input) => input['ProvisionedThroughput'] !== undefined);
+        await expect(
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)))
+        ).rejects.toThrow('settle failed');
+        expect(warned()).not.toContain('us-west-2');
+        expect(warned()).not.toContain('every region');
+      });
+
+      it('names every region when the settle right after the send fails', async () => {
+        armThreeRegions();
+        failingSettle((input) => input['ProvisionedThroughput'] !== undefined);
+        await expect(
+          update(threeRegions({ WriteCapacityUnits: 4 }), threeRegions(scaling(3)))
+        ).rejects.toThrow('settle failed');
+        expect(warned()).toContain('failed before putting back us-west-2=2, eu-west-1=2.');
+        expect(warned()).not.toContain('AWS accepted');
+      });
+
+      it('names only the region the second put-back failed on', async () => {
+        armThreeRegions();
+        let putBacks = 0;
+        mockSend.mockImplementation((command: { constructor: { name: string }; input: Rec }) => {
+          if (command.input['ReplicaUpdates'] && ++putBacks === 2) {
+            return Promise.reject(new Error('throttled'));
+          }
           return Promise.resolve(
             command.constructor.name === 'DescribeTableCommand' ? { Table: live } : {}
           );
         });
         await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }))
-        ).rejects.toThrow();
-        expect(warnSpy.mock.calls.flat().join('\n')).not.toContain('putting back');
+          update(threeRegions({ WriteCapacityUnits: 4 }), threeRegions(scaling(3)))
+        ).rejects.toThrow('throttled');
+        expect(warned()).toContain('failed before putting back eu-west-1=2.');
+        expect(warned()).not.toContain('us-west-2');
       });
 
-      it('changes nothing when a region cannot be read before the send', async () => {
+      it('tells an accepted put-back whose settle failed from an unsent one', async () => {
+        armThreeRegions();
+        failingSettle((input) => input['ReplicaUpdates'] !== undefined);
+        await expect(
+          update(threeRegions({ WriteCapacityUnits: 4 }), threeRegions(scaling(3)))
+        ).rejects.toThrow('settle failed');
+        expect(warned()).toContain('AWS accepted the put-back of us-west-2=2');
+        expect(warned()).toContain('failed before putting back eu-west-1=2.');
+      });
+
+      it('refuses a write change it could not put a region back after', async () => {
+        await expect(
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }))
+        ).rejects.toThrow(/Declare WriteCapacityAutoScalingSettings/);
+        expect(throughputs()).toEqual([]);
+      });
+
+      it('leaves the capacity unchanged when a region cannot be read before the send', async () => {
         regionalClient().mockImplementation(() => ({
           send: () => Promise.reject(new Error('denied')),
         }));
         await expect(
-          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, { WriteCapacityUnits: 3 }))
+          update(replicated(7, { WriteCapacityUnits: 4 }), replicated(7, scaling(3)))
         ).rejects.toThrow();
         expect(throughputs()).toEqual([]);
       });
@@ -1111,7 +1184,7 @@ describe('update', () => {
       it('puts back no region already at the read just sent', async () => {
         await update(
           replicated(2, { WriteCapacityUnits: 4 }),
-          replicated(7, { WriteCapacityUnits: 3 })
+          replicated(7, scaling(3))
         );
         expect(throughputs()).toEqual([{ ReadCapacityUnits: 2, WriteCapacityUnits: 4 }]);
         expect(replicaUpdates()).toEqual([]);
@@ -1132,7 +1205,7 @@ describe('update', () => {
         );
         await update(
           replicated(8, { WriteCapacityUnits: 4 }),
-          replicated(7, { WriteCapacityUnits: 3 })
+          replicated(7, scaling(3))
         );
         expect(leftAtPutBack).toBe(0);
       });
@@ -1140,7 +1213,7 @@ describe('update', () => {
       it('puts back the override AWS held after a write change, read change included', async () => {
         await update(
           replicated(8, { WriteCapacityUnits: 4 }),
-          replicated(7, { WriteCapacityUnits: 3 })
+          replicated(7, scaling(3))
         );
         expect(throughputs()).toEqual([{ ReadCapacityUnits: 8, WriteCapacityUnits: 4 }]);
         expect(replicaUpdates()).toEqual([

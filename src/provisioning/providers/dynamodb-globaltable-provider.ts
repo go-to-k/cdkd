@@ -6068,7 +6068,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // region's override, which leaves the others alone (the result
       // CloudFormation reaches, measured), and a write change, which has no
       // such route, puts back each region's read, as that region reports it
-      // rather than from the override the local region lists.
+      // rather than from the override the local region lists. An override on an
+      // auto-scaled region is accepted and its scalable target stays (measured).
+      // That put-back has to come before step 4b: once the write target is gone
+      // from a table with a cross-region replica, DynamoDB refuses every
+      // `ReplicaUpdates` Update (measured), and `ProvisionedThroughput` still goes
+      // through, so such a table cannot put a region back.
       if (tableCapacityChange) {
         const liveThroughput = describeResp.Table?.ProvisionedThroughput;
         const sendRead = tableCapacityChange.read ?? liveThroughput?.ReadCapacityUnits;
@@ -6077,8 +6082,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         const writeMoves = sendWrite !== liveThroughput?.WriteCapacityUnits;
         if (sendRead !== undefined && sendWrite !== undefined && (readMoves || writeMoves)) {
           // Read before the send, which loses them. A region already at the sent
-          // read has nothing to put back. A failed read stops here, with nothing
-          // changed.
+          // read has nothing to put back. A failed read stops here with the
+          // capacity unchanged.
           const readsToRestore =
             writeMoves && liveHasCrossRegionReplica
               ? await this.readRegionReadsToRestore(
@@ -6088,6 +6093,23 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                   sendRead
                 )
               : [];
+          if (
+            readsToRestore.length > 0 &&
+            asRecord(previousProperties[TABLE_WRITE_PROVISIONED_KEY])?.[
+              'WriteCapacityAutoScalingSettings'
+            ] === undefined
+          ) {
+            throw new ProvisioningError(
+              `Cannot change the write capacity of AWS::DynamoDB::GlobalTable ${logicalId}: it ` +
+                `would overwrite the read capacity of ` +
+                `${readsToRestore.map((r) => r.region).join(', ')}, and DynamoDB refuses the ` +
+                `override that puts it back while the write side is not auto-scaled. Declare ` +
+                `WriteCapacityAutoScalingSettings and re-deploy. The capacity is unchanged.`,
+              resourceType,
+              logicalId,
+              physicalId
+            );
+          }
           // After a failure, `Replicas` makes the next deploy send what the
           // template declares for each region; a value it does not declare is
           // named in the warning below, and nothing recovers it.
@@ -6119,7 +6141,8 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                   }
             )
           );
-          const unrestored = [...readsToRestore];
+          const unsent = [...readsToRestore];
+          let unconfirmed: { region: string; read: number } | undefined;
           try {
             // The whole group: another region moves with this one, and step 5
             // meets a refusal while a replica is still updating.
@@ -6148,18 +6171,28 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
                   ],
                 })
               );
+              unsent.shift();
+              unconfirmed = { region, read };
               await this.waitForGlobalTableSettled(physicalId, logicalId, maskSecrets);
-              unrestored.shift();
+              unconfirmed = undefined;
             }
           } catch (putBackError) {
-            if (unrestored.length > 0) {
+            const list = (reads: ReadonlyArray<{ region: string; read: number }>): string =>
+              reads.map((r) => `${r.region}=${r.read}`).join(', ');
+            if (unconfirmed || unsent.length > 0) {
               warn(
                 `${maskSecrets(physicalId)}: the write capacity update set every region's read ` +
-                  `capacity to ${sendRead} and failed before putting back: ` +
-                  `${unrestored.map((r) => `${r.region}=${r.read}`).join(', ')}. A value the ` +
-                  `template declares goes out on the next deploy; any other stays at ` +
-                  `${sendRead} until set with UpdateTable ReplicaUpdates ` +
-                  `(ProvisionedThroughputOverride).`
+                  `capacity to ${sendRead}. ` +
+                  (unconfirmed
+                    ? `AWS accepted the put-back of ${list([unconfirmed])}, which was not seen to ` +
+                      `finish. `
+                    : '') +
+                  (unsent.length > 0
+                    ? `It failed before putting back ${list(unsent)}. A value the template ` +
+                      `declares goes out on the next deploy; set any other with UpdateTable ` +
+                      `ReplicaUpdates (ProvisionedThroughputOverride), or leave a region with a ` +
+                      `read scaling policy to it.`
+                    : '')
               );
             }
             throw putBackError;

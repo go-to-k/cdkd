@@ -1398,6 +1398,17 @@ deploy "${TS_BASE},ts3,ts4" "${LOG_DIR}/phase6f.log"
 expect_replica_read "${TABLE9}" 5 5 "Phase 6f"
 echo "    OK: both regions read 5 after one deploy"
 
+echo "==> Phase 6g: the second region of ${TABLE9} takes its own read again"
+deploy "${TS_BASE},ts3,ts5" "${LOG_DIR}/phase6g.log"
+expect_replica_read "${TABLE9}" 5 2 "Phase 6g"
+
+# Last for this table: DynamoDB refuses replica updates once its write target is gone.
+echo "==> Phase 6h: a write capacity send puts the second region's read back (go-to-k/cdkd#5604)"
+deploy "${TS_BASE},ts3,ts5,ts6" "${LOG_DIR}/phase6h.log"
+expect_table_field "${TABLE9}" 'Table.ProvisionedThroughput.WriteCapacityUnits' 3 "Phase 6h"
+expect_replica_read "${TABLE9}" 5 2 "Phase 6h (go-to-k/cdkd#5604)"
+echo "    OK: the write side moved and the second region reads 2"
+
 # --- Phase 7: destroy --remove-protection ---------------------------------
 echo "==> Phase 7: destroy --remove-protection"
 node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" \
