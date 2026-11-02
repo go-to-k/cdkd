@@ -4546,6 +4546,7 @@
       "integs": [
         "data-analytics",
         "drift-revert",
+        "firehose-iceberg-destination",
         "glue-update-hardening",
         "import-auto-mode"
       ],
@@ -4556,6 +4557,10 @@
         ],
         "drift-revert": [
           "l1"
+        ],
+        "firehose-iceberg-destination": [
+          "l1",
+          "literal"
         ],
         "glue-update-hardening": [
           "l1"
@@ -4883,6 +4888,7 @@
         "eventbridge-pipes",
         "eventbridge-scheduler",
         "export",
+        "firehose-iceberg-destination",
         "gc-custom-asset-names",
         "generated-name-lifecycle",
         "glue-update-hardening",
@@ -5070,6 +5076,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "firehose-iceberg-destination": [
+          "l1"
         ],
         "gc-custom-asset-names": [
           "literal"
@@ -5605,10 +5614,15 @@
     {
       "resourceType": "AWS::KinesisFirehose::DeliveryStream",
       "integs": [
+        "firehose-iceberg-destination",
         "log-pipeline",
         "stream-delete-redeploy"
       ],
       "signals": {
+        "firehose-iceberg-destination": [
+          "l1",
+          "literal"
+        ],
         "log-pipeline": [
           "l1",
           "literal"
@@ -6800,6 +6814,7 @@
         "drift-revert-arrays",
         "event-driven",
         "export",
+        "firehose-iceberg-destination",
         "full-stack-demo",
         "generated-name-lifecycle",
         "glue-update-hardening",
@@ -6909,6 +6924,9 @@
         "export": [
           "l2",
           "literal"
+        ],
+        "firehose-iceberg-destination": [
+          "l1"
         ],
         "full-stack-demo": [
           "l2"
