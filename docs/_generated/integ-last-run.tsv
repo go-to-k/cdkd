@@ -42,7 +42,7 @@ cc-api-fallback	2026-10-25T03:31:31Z	PASS	182	verify.sh	rc ok, orph clean, own b
 cc-api-fallback-transitions	2026-10-23T16:20:21Z	PASS	98	verify.sh	#634 items 3+4 verified end-to-end; both HTTP API probes + state files gone
 cc-final-snapshot-handlers	2026-11-01T16:07:44Z	PASS	941	verify.sh	rc ok, orph clean (PR 5592 final sha 1c4525d86)
 cc-getatt-readback	2026-10-18T04:24:32Z	PASS	104	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-cc-protection-flip	2026-10-22T15:37:12Z	PASS	547	verify.sh	rc ok, orph clean
+cc-protection-flip	2026-11-02T01:39:49Z	PASS	551	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 cc-protection-flip-eks	2026-10-03T01:13:56Z	PASS	2635	verify.sh	rc ok, orph clean (#4318 attempt-cap compensation)
 cc-required-name-generation	2026-10-20T05:58:39Z	PASS	75	verify.sh	deploy+destroy clean, 0 orphans
 cc-to-sdk-reroute	2026-10-11T09:33:22Z	PASS	230	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -95,8 +95,8 @@ destroy-nested-cross-region	2026-10-20T08:13:14Z	PASS	216	verify.sh	rc ok, orph 
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
 diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
-docdb-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	1830	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
-docdb-neptune	2026-11-01T16:07:44Z	PASS	5949	verify.sh	rc ok, orph clean (PR 5592 final sha 1c4525d86)
+docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
+docdb-neptune	2026-11-02T01:39:49Z	PASS	7542	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
 drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
@@ -208,7 +208,7 @@ lambda-config-field-removal	2026-10-02T01:44:21Z	PASS	110	verify.sh	PR #4378 rem
 lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
 lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
-lambda-esm-documentdb	2026-10-27T17:54:34Z	PASS	1048	verify.sh	rc ok, orph clean; #1160 ESM removal audit, DocDB update/removal arms
+lambda-esm-documentdb	2026-11-02T01:39:49Z	PASS	897	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 lambda-esm-self-managed-kafka	2026-11-01T00:07:49Z	PASS	201	verify.sh	rc ok, orph clean; #3850 Queue create/update, mode refusal, collision, --replace
 lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok, orph clean
 lambda-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	142	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
