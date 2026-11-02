@@ -38,6 +38,13 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+// The resource deadline the waits are bounded by; unbounded unless a case sets it.
+let deadlineMs = Number.POSITIVE_INFINITY;
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/deployment/resource-deadline.js')>()),
+  enclosingDeadlineRemainingMs: () => deadlineMs,
+}));
+
 import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 
 type Input = Record<string, unknown>;
@@ -110,6 +117,7 @@ describe('RDSProvider DBInstance DBParameterGroupName (go-to-k/cdkd#2762)', () =
   beforeEach(() => {
     mockSend.mockReset();
     delete process.env['CDKD_NO_WAIT'];
+    deadlineMs = Number.POSITIVE_INFINITY;
     provider = new RDSProvider();
     sleeps = 0;
     // A wait that never settles fails the case instead of spinning for the
@@ -328,6 +336,68 @@ describe('RDSProvider DBInstance DBParameterGroupName (go-to-k/cdkd#2762)', () =
       expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
       expect(sent('DescribeDBInstancesCommand')).toHaveLength(4);
       expect(sleeps).toBe(1);
+    });
+
+    it('a change still pending on an `available` instance is waited out before the reboot (CloudFormation\'s isNoPendingChanges)', async () => {
+      const pendingClass = {
+        ...read('pg-a', 'pending-reboot'),
+        PendingModifiedValues: { DBInstanceClass: 'db.t4g.small' },
+      };
+      arm([pendingClass, pendingClass, read('pg-a', 'pending-reboot'), read('pg-a', 'in-sync')]);
+      await update(
+        { ...BASE, DBParameterGroupName: 'pg-a', DBInstanceClass: 'db.t4g.small' },
+        { ...BASE, DBParameterGroupName: 'pg-a' }
+      );
+      const names = order();
+      // The reboot comes only after the pending class cleared (the third read).
+      expect(names.filter((n) => n === 'DescribeDBInstancesCommand').length).toBe(4);
+      expect(names.indexOf('RebootDBInstanceCommand')).toBe(
+        names.lastIndexOf('DescribeDBInstancesCommand') - 1
+      );
+      expect(sleeps).toBe(1);
+    });
+
+    it('a pending CA certificate holds the reboot only when CertificateRotationRestart is true', async () => {
+      const pendingCa = {
+        ...read('pg-b', 'pending-reboot'),
+        PendingModifiedValues: { CACertificateIdentifier: 'rds-ca-ecc384-g1' },
+      };
+      arm([pendingCa, pendingCa, read('pg-b', 'in-sync')]);
+      await update(
+        { ...BASE, DBParameterGroupName: 'pg-b', CertificateRotationRestart: false },
+        { ...BASE, DBParameterGroupName: 'pg-a', CertificateRotationRestart: false }
+      );
+      expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
+      expect(sleeps).toBe(0);
+
+      mockSend.mockReset();
+      sleeps = 0;
+      arm([pendingCa, pendingCa, read('pg-b', 'pending-reboot'), read('pg-b', 'in-sync')]);
+      await update(
+        { ...BASE, DBParameterGroupName: 'pg-b', CertificateRotationRestart: true },
+        { ...BASE, DBParameterGroupName: 'pg-a', CertificateRotationRestart: true }
+      );
+      expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
+      expect(sleeps).toBe(1);
+    });
+
+    it('an unchanged group still `applying` an edit is waited out and rebooted if it then reads `pending-reboot`', async () => {
+      arm([read('pg-a', 'applying'), read('pg-a', 'pending-reboot'), read('pg-a', 'in-sync')]);
+      await update(
+        { ...BASE, DBParameterGroupName: 'pg-a', BackupRetentionPeriod: 7 },
+        { ...BASE, DBParameterGroupName: 'pg-a', BackupRetentionPeriod: 3 }
+      );
+      expect(modify()).not.toHaveProperty('DBParameterGroupName');
+      expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
+    });
+
+    it('the waits are bounded by the resource deadline', async () => {
+      deadlineMs = 0;
+      arm([read('pg-b', 'pending-reboot')]);
+      await expect(
+        update({ ...BASE, DBParameterGroupName: 'pg-b' }, { ...BASE, DBParameterGroupName: 'pg-a' })
+      ).rejects.toThrow(/Timed out waiting for DBInstance Db's parameter group change to settle/);
+      expect(sent('RebootDBInstanceCommand')).toHaveLength(0);
     });
 
     it('the reboot waits for every option group to be in-sync too', async () => {

@@ -416,10 +416,13 @@ async function instanceModifyBackfillMembers(
   }
   // `DBParameterGroupName` goes out only when changed, as the handler sends
   // `diff(previous, desired)`. On a rollback replay that also reverts
-  // `EngineVersion` it is left out with the version: the previous group
-  // belongs to the previous engine family, which RDS refuses on the version
-  // the instance still runs. (The handler instead checks the group's family
-  // against the reverted version, which always matches, and sends it.)
+  // `EngineVersion` it is left out with the version: across a major version
+  // the previous group belongs to the previous engine family, which RDS
+  // refuses on the version the instance still runs. (The handler instead
+  // checks the group's family against the reverted version, which always
+  // matches, and sends it.) A minor-version revert keeps the new group too,
+  // where the handler would restore the old one: no engine-neutral rule tells
+  // a family change from the version strings alone (MySQL 8.0 to 8.4 is one).
   if (changed('DBParameterGroupName') && !(rollback && changed('EngineVersion'))) {
     members.DBParameterGroupName = properties['DBParameterGroupName'] as string;
   }
@@ -488,19 +491,67 @@ function instanceParameterGroupPendingReboot(instance: DBInstance | undefined): 
 }
 
 /**
+ * go-to-k/cdkd#2762: whether a DB instance is still applying a parameter
+ * group, so a reboot it may need cannot be told yet.
+ */
+function instanceParameterGroupApplying(instance: DBInstance | undefined): boolean {
+  return (instance?.DBParameterGroups ?? []).some(
+    (group) => group.ParameterApplyStatus === 'applying'
+  );
+}
+
+/**
+ * go-to-k/cdkd#2762: whether a ModifyDBInstance applied immediately still has
+ * a change pending, CloudFormation's `isNoPendingChanges` negated (plus its
+ * `isCaCertificateChangesApplied`: a pending CA certificate counts only when
+ * `CertificateRotationRestart` is true). Right after the call RDS can still
+ * read `available` with the change only listed here, and a reboot then is
+ * refused or races the modification.
+ */
+function instanceHasPendingChanges(instance: DBInstance, caRotationRestarts: boolean): boolean {
+  const pending = instance.PendingModifiedValues;
+  if (pending === undefined) return false;
+  return (
+    pending.DBInstanceClass !== undefined ||
+    pending.AllocatedStorage !== undefined ||
+    pending.AutomationMode !== undefined ||
+    pending.BackupRetentionPeriod !== undefined ||
+    pending.DBInstanceIdentifier !== undefined ||
+    pending.DBSubnetGroupName !== undefined ||
+    pending.Engine !== undefined ||
+    pending.EngineVersion !== undefined ||
+    pending.IAMDatabaseAuthenticationEnabled !== undefined ||
+    pending.Iops !== undefined ||
+    pending.LicenseModel !== undefined ||
+    pending.MasterUserPassword !== undefined ||
+    pending.MultiAZ !== undefined ||
+    pending.PendingCloudwatchLogsExports !== undefined ||
+    pending.Port !== undefined ||
+    (pending.ProcessorFeatures ?? []).length > 0 ||
+    pending.ResumeFullAutomationModeTime !== undefined ||
+    pending.StorageThroughput !== undefined ||
+    pending.StorageType !== undefined ||
+    (caRotationRestarts && pending.CACertificateIdentifier !== undefined)
+  );
+}
+
+/**
  * go-to-k/cdkd#2762: whether a ModifyDBInstance has settled enough to tell if
- * it left a reboot pending: the instance is `available` and no parameter
- * group is `applying`, as CloudFormation's post-modify stabilization asks
- * (`isDBInstanceAvailable`, `isDBParameterGroupNotApplying`). A group this
- * update sent must also be the one listed (RDS stores the name lower-cased),
- * so a read taken before RDS started the change does not count; an instance
- * listing no group at all has nothing to wait for.
+ * it left a reboot pending, as CloudFormation's post-modify stabilization asks
+ * (`isStabilizedWithChangesAppliedImmediately`, the members a reboot needs):
+ * the instance is `available`, no parameter group is `applying`, and no
+ * change is pending. A group this update sent must also be the one listed
+ * (RDS stores the name lower-cased), so a read taken before RDS started the
+ * change does not count; an instance listing no group at all has nothing to
+ * wait for.
  */
 function instanceParameterGroupSettled(
   instance: DBInstance,
-  sentGroup: string | undefined
+  sentGroup: string | undefined,
+  caRotationRestarts: boolean
 ): boolean {
   if (instance.DBInstanceStatus !== 'available') return false;
+  if (instanceHasPendingChanges(instance, caRotationRestarts)) return false;
   const groups = instance.DBParameterGroups ?? [];
   if (groups.some((group) => group.ParameterApplyStatus === 'applying')) return false;
   if (sentGroup === undefined || groups.length === 0) return true;
@@ -2411,10 +2462,20 @@ export class RDSProvider implements ResourceProvider {
       // the parameter group `pending-reboot`, which a changed group always
       // does; a group this update did not change but that already read
       // `pending-reboot` (a static parameter edited in it) is rebooted too, as
-      // the handler checks on every update.
+      // the handler checks on every update; one still `applying` that edit is
+      // waited out first, as the handler's stabilization does.
       const sentGroup = backfillMembers.DBParameterGroupName;
-      if (sentGroup !== undefined || instanceParameterGroupPendingReboot(described)) {
-        described = await this.rebootForPendingParameterGroup(logicalId, physicalId, sentGroup);
+      if (
+        sentGroup !== undefined ||
+        instanceParameterGroupPendingReboot(described) ||
+        instanceParameterGroupApplying(described)
+      ) {
+        described = await this.rebootForPendingParameterGroup(
+          logicalId,
+          physicalId,
+          sentGroup,
+          String(properties['CertificateRotationRestart']) === 'true'
+        );
       }
 
       // Apply tag diff using the instance ARN.
@@ -3275,12 +3336,13 @@ export class RDSProvider implements ResourceProvider {
   private async rebootForPendingParameterGroup(
     logicalId: string,
     physicalId: string,
-    sentGroup: string | undefined
+    sentGroup: string | undefined,
+    caRotationRestarts: boolean
   ): Promise<DBInstance> {
     const settled = await this.waitForInstanceState(
       logicalId,
       physicalId,
-      (instance) => instanceParameterGroupSettled(instance, sentGroup),
+      (instance) => instanceParameterGroupSettled(instance, sentGroup, caRotationRestarts),
       'parameter group change to settle'
     );
     if (!instanceParameterGroupPendingReboot(settled)) return settled;
@@ -3299,16 +3361,19 @@ export class RDSProvider implements ResourceProvider {
 
   /**
    * Poll a DBInstance until `done` holds. A missing instance or a terminal
-   * status (`isTerminalDbWaitStatus`) fails at once rather than after the
-   * 30-minute budget.
+   * status (`isTerminalDbWaitStatus`) fails at once. The budget is the
+   * resource's own deadline (`--resource-timeout`), so a settle that rides a
+   * long modification (a storage optimization, a major upgrade) waits as long
+   * as the deploy allows; 30 minutes when no deadline is in scope.
    */
   private async waitForInstanceState(
     logicalId: string,
     dbInstanceIdentifier: string,
     done: (instance: DBInstance) => boolean,
-    change: string,
-    maxWaitMs = 1_800_000
+    change: string
   ): Promise<DBInstance> {
+    const remaining = enclosingDeadlineRemainingMs();
+    const maxWaitMs = Number.isFinite(remaining) ? remaining : 1_800_000;
     const startTime = Date.now();
     let delay = 5_000;
     while (Date.now() - startTime < maxWaitMs) {

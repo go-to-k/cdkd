@@ -155,6 +155,16 @@ cleanup() {
   # destroy already handled it on the happy path), and the `s3 rm`
   # calls are expected to NotFound after state destroy succeeds.
   set +eu
+  # go-to-k/cdkd#2762: a run aborted before phase 1 resolved the parameter
+  # groups still names them in the state record `state destroy` reads; take
+  # them from it first, so the best-effort delete below can reach them.
+  if [ -z "${PG_A_ID}${PG_B_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    CLEANUP_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
+    if [ -n "${CLEANUP_STATE}" ]; then
+      PG_A_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBParameterGroup" and (.key | test("^ParamGroupA"))) | .value.physicalId // empty] | first // ""')
+      PG_B_ID=$(echo "${CLEANUP_STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBParameterGroup" and (.key | test("^ParamGroupB"))) | .value.physicalId // empty] | first // ""')
+    fi
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # Pass --state-bucket explicitly so the cdk.json default placeholder
     # ('your-cdkd-state-bucket') does not poison state destroy with a
@@ -242,6 +252,9 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+# A leftover record's groups are not this run's: re-resolve after phase 1.
+PG_A_ID=""
+PG_B_ID=""
 
 # --- Phase 1: deploy --------------------------------------------------
 RUN_START=$(date -u +%Y-%m-%dT%H:%M:%S)
