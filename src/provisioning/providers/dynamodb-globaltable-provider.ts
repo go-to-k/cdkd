@@ -4843,19 +4843,33 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // go-to-k/cdkd#5604: a table with a cross-region replica keeps an auto-scaled
       // write side. CloudFormation refuses a literal one, DynamoDB refuses every
       // `ReplicaUpdates` Update once the write target is gone (measured), and
-      // `ProvisionedThroughput` would overwrite the other regions' read. Before
-      // the first write of this update. A state-borne bag has no template to fix
-      // and a throw would strand what its revert applied, so it warns and skips.
+      // `ProvisionedThroughput` would overwrite the other regions' read. Asked of
+      // the table this update leaves: one dropping its last other region ends up
+      // single-region, where a literal write side is fine. Before the first write
+      // of this update. A state-borne bag has no template to fix and a throw would
+      // strand what its revert applied, so it warns and skips.
+      const declaredRegions = declaredCrossRegions(properties, currentRegion);
+      const staysReplicated = liveHasCrossRegionReplica && declaredRegions.length > 0;
       const literalWriteMoves =
-        liveHasCrossRegionReplica &&
+        staysReplicated &&
         literalWriteSideMoves(properties, previousProperties, currentRegion, describeResp.Table);
-      if (literalWriteMoves) {
+      const statePath =
+        context?.replayingState === true || context?.desiredFromAwsReadback === true;
+      // A region this update adds meets the same refusal from DynamoDB, mid-update.
+      const addsRegionToLiteral =
+        !statePath &&
+        properties['BillingMode'] === 'PROVISIONED' &&
+        !writeSideScaled(properties) &&
+        declaredRegions.some(
+          (region) => !describeResp.Table?.Replicas?.some((r) => r.RegionName === region)
+        );
+      if (literalWriteMoves || addsRegionToLiteral) {
         const refusal =
           `AWS::DynamoDB::GlobalTable ${logicalId}: a table with a cross-region replica needs ` +
           `an auto-scaled write side, and this update declares none: CloudFormation refuses a ` +
           `literal WriteCapacityUnits, and DynamoDB refuses every replica update without ` +
           `auto-scaling`;
-        if (context?.replayingState === true || context?.desiredFromAwsReadback === true) {
+        if (statePath) {
           warn(`${refusal}. The capacity was not sent.`);
         } else {
           throw new ProvisioningError(
@@ -6178,7 +6192,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           );
           await this.dynamoDBClient.send(
             new UpdateTableCommand(
-              liveHasCrossRegionReplica
+              staysReplicated
                 ? {
                     TableName: physicalId,
                     ReplicaUpdates: [
@@ -9443,14 +9457,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             // policy in its own region, so the local-region client can
             // only see the local replica's settings.
             //
-            // No flat `{ReadCapacityUnits: <n>}` fallback is emitted here:
-            // `DescribeTable` returns ONE `ProvisionedThroughput` block for
-            // the table, not one per replica, so cdkd cannot synthesize
-            // per-replica flat read capacity from the local read. When
-            // autoscaling owns the replica's read dimension the full
-            // settings shape is surfaced; otherwise the key is omitted
-            // entirely (drift will not fire on missing key, matching the
-            // pre-#395 behavior for non-autoscaled replicas).
+            // When autoscaling owns the replica's read dimension the full
+            // settings shape is surfaced. Otherwise the plain read omits the key
+            // (drift will not fire on a missing key, matching the pre-#395
+            // behavior for non-autoscaled replicas), and only the strict read
+            // of an unsettled `Replicas` reports the flat read below, from the
+            // region's own `DescribeTable`.
             if (billingMode === 'PROVISIONED') {
               const replicaAutoScalingClient = isLocal
                 ? undefined
@@ -11868,10 +11880,25 @@ export function derivePerCallProvisionedThroughput(
   };
 }
 
+/** The regions other than `region` a properties bag declares. */
+function declaredCrossRegions(properties: Record<string, unknown>, region: string): string[] {
+  const replicas = properties['Replicas'];
+  return (Array.isArray(replicas) ? replicas : [])
+    .map((replica) => asRecord(replica)?.['Region'])
+    .filter((name): name is string => typeof name === 'string' && name !== region);
+}
+
+/** Whether a properties bag declares write auto-scaling. */
+function writeSideScaled(bag: Record<string, unknown>): boolean {
+  return (
+    asRecord(bag[TABLE_WRITE_PROVISIONED_KEY])?.['WriteCapacityAutoScalingSettings'] !== undefined
+  );
+}
+
 /**
- * Whether this update moves a table's capacity with a write side that is not
- * auto-scaled: a literal or read change on a literal table, or the auto-scaling
- * removed. Only for a table whose billing mode holds PROVISIONED.
+ * Whether this update moves a PROVISIONED table's capacity with a write side that
+ * is not auto-scaled: a literal or read change on a literal table, the
+ * auto-scaling removed, or a flip from on-demand, whose capacity is all new.
  */
 function literalWriteSideMoves(
   properties: Record<string, unknown>,
@@ -11879,12 +11906,9 @@ function literalWriteSideMoves(
   region: string,
   live: TableDescription | undefined
 ): boolean {
-  if (properties['BillingMode'] !== 'PROVISIONED') return false;
-  if ((live?.BillingModeSummary?.BillingMode ?? 'PROVISIONED') !== 'PROVISIONED') return false;
-  const scaled = (bag: Record<string, unknown>): boolean =>
-    asRecord(bag[TABLE_WRITE_PROVISIONED_KEY])?.['WriteCapacityAutoScalingSettings'] !== undefined;
-  if (scaled(properties)) return false;
-  if (scaled(previousProperties)) return true;
+  if (properties['BillingMode'] !== 'PROVISIONED' || writeSideScaled(properties)) return false;
+  if (writeSideScaled(previousProperties)) return true;
+  if (live?.BillingModeSummary?.BillingMode === 'PAY_PER_REQUEST') return true;
   const change = readTableCapacityChange(properties, previousProperties, region, [], (t) => t);
   return (
     (change.write !== undefined &&

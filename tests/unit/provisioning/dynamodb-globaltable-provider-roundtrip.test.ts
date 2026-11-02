@@ -3413,7 +3413,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           BillingMode: 'PROVISIONED',
           WriteProvisionedThroughputSettings: { WriteCapacityUnits: 5 },
           Replicas: [{ Region: 'us-east-1' }],
-        }
+        },
+        // A literal write side with a region to add is refused on a template.
+        { replayingState: true }
       );
 
       const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
@@ -3498,7 +3500,9 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
               },
             },
           ],
-        }
+        },
+        // A literal write side with a region to add is refused on a template.
+        { replayingState: true }
       );
 
       const asCalls = mockAutoScalingSend.mock.calls.map((c) => c[0]);
