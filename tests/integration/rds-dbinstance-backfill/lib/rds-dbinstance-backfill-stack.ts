@@ -126,6 +126,16 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     });
     const useParamGroupB = process.env.CDKD_TEST_PARAM_GROUP === 'b';
 
+    // go-to-k/cdkd#5640 (EnableCloudwatchLogsExports): phase 1 exports
+    // `postgresql`; the phase-2 update adds `upgrade` (ModifyDBInstance's
+    // CloudwatchLogsExportConfiguration enables it); the phase-2c deploy
+    // (CDKD_TEST_LOGS_REMOVED=true) drops the property, which disables both, as
+    // CloudFormation's handler does (it disables what the previous template
+    // declared). Before #5640 the declared list routed the instance to Cloud
+    // Control (the provisionedBy=sdk guard catches it).
+    const logsRemoved = process.env.CDKD_TEST_LOGS_REMOVED === 'true';
+    const logExports = isUpdate ? ['postgresql', 'upgrade'] : ['postgresql'];
+
     // CfnDBInstance L1 — emits EXACTLY the properties listed below, with
     // no L2-injected defaults that would trip the silent-drop routing.
     // Each prop the #609 backfill closes is set explicitly so verify.sh
@@ -224,6 +234,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // go-to-k/cdkd#2762: before #2762 a declared group routed the instance
       // to Cloud Control (the provisionedBy=sdk guard catches it).
       dbParameterGroupName: (useParamGroupB ? paramGroupB : paramGroupA).ref,
+      ...(logsRemoved ? {} : { enableCloudwatchLogsExports: logExports }),
     });
   }
 }

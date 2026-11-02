@@ -96,6 +96,13 @@
 # discriminates (the values are AWS's defaults here); the unit and sdk-wire
 # suites own the CreateDBProxy / ModifyDBProxy send.
 #
+# go-to-k/cdkd#5639 (DBCluster EnableCloudwatchLogsExports): the
+# SecurityCluster exports `postgresql` in phase 1 (asserted live; before #5639
+# the provisionedBy=sdk guard fails) and swaps it for `iam-db-auth-error` in
+# phase 2, which ModifyDBCluster's CloudwatchLogsExportConfiguration enables
+# and disables in one call (asserted live). Cleanup deletes the CloudWatch log
+# groups RDS created for the exports.
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -289,6 +296,15 @@ cleanup() {
   if [ -n "${OOB_INSTANCE_ID}" ]; then
     delete_oob_instance "${OOB_INSTANCE_ID}" || true
   fi
+  # go-to-k/cdkd#5639: RDS creates one log group per exported log type and
+  # deletes none of them with the cluster. Named exactly, never swept by
+  # prefix; RDS names them by the lower-cased identifier. On the pre-run pass,
+  # the cluster a leftover state record names.
+  LOG_CLUSTER_ID="${DB_CLUSTER_ID}"
+  if [ -z "${LOG_CLUSTER_ID}" ] && [ -n "${STATE_BUCKET:-}" ]; then
+    LOG_CLUSTER_ID=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null |
+      jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.physicalId // empty] | first // ""')
+  fi
   if [ -x "${LOCAL_DIST}" ] && [ -n "${STATE_BUCKET:-}" ]; then
     # --remove-protection: an aborted run can leave the phase-1
     # DeletionProtection=true live on the SecurityCluster (#1160 fixture
@@ -333,6 +349,19 @@ cleanup() {
       printf '%s' "${PARAMS_DELETE_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
         || echo "WARN: cleanup could not delete the #2762 parameter group ${PARAMS_NAME}: ${PARAMS_DELETE_OUT}" >&2
     fi
+  fi
+  # go-to-k/cdkd#5639: the exported-log groups RDS created; resolved above,
+  # before `state destroy` deleted the record.
+  if [ -n "${LOG_CLUSTER_ID}" ]; then
+    LOG_CLUSTER_LOWER=$(printf '%s' "${LOG_CLUSTER_ID}" | tr '[:upper:]' '[:lower:]')
+    for log_type in postgresql iam-db-auth-error; do
+      LOG_GROUP="/aws/rds/cluster/${LOG_CLUSTER_LOWER}/${log_type}"
+      if LOG_DELETE_OUT=$(aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region "${REGION}" 2>&1); then
+        echo "    cleanup: deleted log group ${LOG_GROUP}"
+      elif ! printf '%s' "${LOG_DELETE_OUT}" | grep -q 'ResourceNotFoundException'; then
+        echo "    WARN: cleanup could not delete log group ${LOG_GROUP}; delete it by hand: ${LOG_DELETE_OUT}" >&2
+      fi
+    done
   fi
   # Issue #5467: the EngineCluster (DeletionPolicy Delete, no instance), both
   # before and after phase 2c's replacement; a no-op once destroyed. A forced
@@ -653,6 +682,19 @@ if [ "${BASE_2762}" != "${WANT_2762}" ]; then
   exit 1
 fi
 echo "    OK: base SecurityCluster carries the declared parameter group, windows, CopyTagsToSnapshot and StorageType (#2762)"
+
+# go-to-k/cdkd#5639: the exported log types, sorted (RDS answers in its own
+# order), with nothing pending: the deploy returns once the change applied.
+# usage: sec_log_exports <DescribeDBClusters JSON>
+sec_log_exports() {
+  echo "${1}" | jq -r '"\([.EnabledCloudwatchLogsExports[]?] | sort | join(" ")) pending=\(.PendingModifiedValues.PendingCloudwatchLogsExports // null | tojson)"'
+}
+BASE_LOGS=$(sec_log_exports "${CLUSTER}")
+if [ "${BASE_LOGS}" != "postgresql pending=null" ]; then
+  echo "FAIL: #5639: phase 1: SecurityCluster EnabledCloudwatchLogsExports is '${BASE_LOGS}', want 'postgresql pending=null' (CreateDBCluster did not send EnableCloudwatchLogsExports)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: SecurityCluster exports postgresql (#5639)"
 
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
@@ -1017,6 +1059,20 @@ if [ "${AFTER_2762}" != "${WANT_AFTER_2762}" ]; then
   exit 1
 fi
 echo "    OK: after phase 2, the maintenance window changed and the removed parameter group, backup window, CopyTagsToSnapshot and StorageType were kept (#2762)"
+
+# go-to-k/cdkd#5639: phase 2 swapped `postgresql` for `iam-db-auth-error`.
+# cdkd returns once the change applied, so a single read decides: a cdkd that
+# sends no CloudwatchLogsExportConfiguration leaves `postgresql`.
+AFTER_LOGS_JSON=$(aws rds describe-db-clusters \
+  --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" \
+  --query 'DBClusters[0]' --output json)
+AFTER_LOGS=$(sec_log_exports "${AFTER_LOGS_JSON}")
+if [ "${AFTER_LOGS}" != "iam-db-auth-error pending=null" ]; then
+  echo "FAIL: #5639: phase 2: SecurityCluster EnabledCloudwatchLogsExports is '${AFTER_LOGS}', want 'iam-db-auth-error pending=null' (ModifyDBCluster must enable the added log type and disable the dropped one)" >&2
+  exit 1
+fi
+echo "    OK: phase 2: SecurityCluster exports iam-db-auth-error only; postgresql was disabled (#5639)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")

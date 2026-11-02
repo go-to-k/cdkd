@@ -285,6 +285,12 @@ export class RdsAuroraStack extends cdk.Stack {
         maxCapacity: 1,
         secondsUntilAutoPause: isUpdate ? 1800 : 600,
       },
+      // go-to-k/cdkd#5639: `postgresql` in phase 1, swapped for
+      // `iam-db-auth-error` in phase 2, so the update's
+      // CloudwatchLogsExportConfiguration both enables and disables a log type.
+      // Before #5639 the declared list routed the SecurityCluster to Cloud
+      // Control (the provisionedBy=sdk guard in verify.sh catches it).
+      enableCloudwatchLogsExports: isUpdate ? ['iam-db-auth-error'] : ['postgresql'],
     });
     // Issue #1160: once phase 2 drops the Ref, this keeps the security group
     // deleted AFTER the cluster that may still hold it.
