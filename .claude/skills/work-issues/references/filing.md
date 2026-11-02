@@ -90,8 +90,8 @@ gh issue create -t 'fix(provider): ...' \
   --label severity:high --label effort:large
 ```
 
-**A `now` you file names itself in the lane report**: the PARENT claims it that
-turn (claim.md, which no lane reads; #5615).
+**A `now` you file goes to `main` by `SendMessage` that turn**: the PARENT claims
+it (claim.md; no lane reads it, #5615).
 
 **A `next` reason must still be true when someone reads it.** Write it as a
 condition a reader can CHECK (`PR #N holds the lines this fix needs`), never a

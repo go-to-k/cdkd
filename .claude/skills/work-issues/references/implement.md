@@ -159,7 +159,7 @@ A subagent's Bash bypasses the PreToolUse hooks.
   tree next (#5109, #5114).
 - **Every ad hoc `aws` call, a throwaway probe included, carries
   `AWS_CLI_AUTO_PROMPT=off AWS_PAGER=`**: the profile's auto-prompt hangs on a
-  rejected command, `/run-integ` covers `verify.sh` alone.
+  rejected command, and `/run-integ` sets them on `verify.sh` alone.
 - Never force-push over a commit you did not author: `git fetch`, inspect, and
   STOP on work that is not yours.
 - **A reviewer's mutation probe never touches the lane tree**.
