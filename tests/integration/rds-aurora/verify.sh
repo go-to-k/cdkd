@@ -346,7 +346,7 @@ cleanup() {
     fi
     if ! PARAMS_DELETE_OUT=$(aws rds delete-db-cluster-parameter-group \
       --db-cluster-parameter-group-name "${PARAMS_NAME}" --region "${REGION}" 2>&1); then
-      printf '%s' "${PARAMS_DELETE_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${PARAMS_DELETE_OUT}" \
         || echo "WARN: cleanup could not delete the #2762 parameter group ${PARAMS_NAME}: ${PARAMS_DELETE_OUT}" >&2
     fi
   fi
@@ -358,7 +358,7 @@ cleanup() {
       LOG_GROUP="/aws/rds/cluster/${LOG_CLUSTER_LOWER}/${log_type}"
       if LOG_DELETE_OUT=$(aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region "${REGION}" 2>&1); then
         echo "    cleanup: deleted log group ${LOG_GROUP}"
-      elif ! printf '%s' "${LOG_DELETE_OUT}" | grep -q 'ResourceNotFoundException'; then
+      elif ! grep -q 'ResourceNotFoundException' <<<"${LOG_DELETE_OUT}"; then
         echo "    WARN: cleanup could not delete log group ${LOG_GROUP}; delete it by hand: ${LOG_DELETE_OUT}" >&2
       fi
     done
@@ -1339,7 +1339,7 @@ assert_failed_event_class_only_2B() { # usage: <logicalId> <wrap prefix>
     echo "FAIL: phase 2b: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
     exit 1
   fi
-  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  if ! grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${msg}"; then
     echo "FAIL: phase 2b: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi
@@ -1417,7 +1417,7 @@ elif ! CLUSTER_STATUS=$(aws rds describe-db-clusters \
     --region "${REGION}" \
     --query 'DBClusters[0].Status' --output text 2>&1); then
   # TOCTOU: the cluster can vanish between gone_probe and this requery.
-  printf '%s' "${CLUSTER_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${CLUSTER_STATUS}" \
     && CLUSTER_STATUS="gone" \
     || { echo "FAIL: describe-db-clusters requery undetermined: ${CLUSTER_STATUS}" >&2; exit 1; }
 fi
@@ -1435,7 +1435,7 @@ elif ! ENGINE_STATUS=$(aws rds describe-db-clusters \
     --db-cluster-identifier "${ENGINE_CLUSTER_NEW}" \
     --region "${REGION}" \
     --query 'DBClusters[0].Status' --output text 2>&1); then
-  printf '%s' "${ENGINE_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${ENGINE_STATUS}" \
     && ENGINE_STATUS="gone" \
     || { echo "FAIL: describe-db-clusters requery undetermined: ${ENGINE_STATUS}" >&2; exit 1; }
 fi

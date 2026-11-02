@@ -272,12 +272,12 @@ if [ "${HELD_RC}" -eq 0 ]; then
   exit 1
 fi
 echo "    OK: deploy refused (rc=${HELD_RC})"
-if ! printf '%s' "${HELD_OUT}" | grep -q 'held by ANOTHER existing resource'; then
+if ! grep -q 'held by ANOTHER existing resource' <<<"${HELD_OUT}"; then
   echo "FAIL: the refusal does not say the name is held by another resource" >&2
   printf '%s\n' "${HELD_OUT}" >&2
   exit 1
 fi
-if ! printf '%s' "${HELD_OUT}" | grep -q -- '--replace was NOT applied and nothing was deleted'; then
+if ! grep -q -- <<<"${HELD_OUT}" '--replace was NOT applied and nothing was deleted'; then
   echo "FAIL: the refusal does not say --replace was withheld" >&2
   printf '%s\n' "${HELD_OUT}" >&2
   exit 1
@@ -285,7 +285,7 @@ fi
 echo "    OK: refusal names another holder and withholds --replace"
 # The delete-first fallback's own log line; the refusal above is already proven
 # present, so an absence here is not a wording drift.
-if printf '%s' "${HELD_OUT}" | grep -q 'deleting old'; then
+if grep -q 'deleting old' <<<"${HELD_OUT}"; then
   echo "FAIL: the delete-first fallback ran against the managed function" >&2
   printf '%s\n' "${HELD_OUT}" >&2
   exit 1
@@ -339,14 +339,14 @@ echo "    OK: deploy refused (rc=${DEPLOY_RC})"
 # stateful-replace-blocked arms print that too, so a generic grep could not
 # tell WHICH refusal fired. (`eventbridge-pipes/verify.sh` uses the same
 # collision-unique phrase.)
-if ! printf '%s' "${DEPLOY_OUT}" | grep -q 'custom-named resource requires replacing'; then
+if ! grep -q 'custom-named resource requires replacing' <<<"${DEPLOY_OUT}"; then
   echo "FAIL: the refusal is not cdkd's create-first collision error — the collision" >&2
   echo "      signature was not recognized (issue #1625: AWS spells it 'already exist')" >&2
   printf '%s\n' "${DEPLOY_OUT}" >&2
   exit 1
 fi
 echo "    OK: refusal names the create-first collision"
-if ! printf '%s' "${DEPLOY_OUT}" | grep -q -- '--replace'; then
+if ! grep -q -- <<<"${DEPLOY_OUT}" '--replace'; then
   echo "FAIL: the refusal does not point at the --replace escape hatch" >&2
   printf '%s\n' "${DEPLOY_OUT}" >&2
   exit 1
@@ -379,7 +379,7 @@ printf '%s\n' "${REPLACE_OUT}"
 # The end-state assertions below cannot tell WHICH path produced them, so pin
 # the fallback itself: a future re-route through some other destroy-then-create
 # path would still clear the durable config and silently pass otherwise.
-if ! printf '%s' "${REPLACE_OUT}" | grep -q 'deleting old'; then
+if ! grep -q 'deleting old' <<<"${REPLACE_OUT}"; then
   echo "FAIL: the --replace deploy did not take the delete-first fallback" >&2
   printf '%s\n' "${REPLACE_OUT}" >&2
   exit 1

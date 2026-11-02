@@ -53,7 +53,7 @@ state_json_exists() {
   if [ -z "${err}" ]; then
     return 0
   fi
-  if printf '%s' "${err}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|404' <<<"${err}"; then
     return 1
   fi
   echo "ERROR: unexpected error probing state.json for ${stack}: ${err}" >&2

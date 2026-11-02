@@ -345,7 +345,7 @@ for pair in "root|${ROOT_STATE}" "child|${CHILD_STATE}"; do
   label="${pair%%|*}"
   body="${pair#*|}"
   [ -n "${body}" ] || { echo "[verify] FAIL: ${label} state is empty" >&2; exit 1; }
-  if printf '%s' "${body}" | grep -qF "${SECRET_PLAINTEXT}"; then
+  if grep -qF "${SECRET_PLAINTEXT}" <<<"${body}"; then
     echo "[verify] FAIL: the DECRYPTED secret is in the ${label} state.json" >&2
     exit 1
   fi
@@ -504,7 +504,7 @@ assert_no_plaintext_in_versions() { # usage: assert_no_plaintext_in_versions <pr
       exit 1
     fi
     # -qF: a match is never echoed.
-    if printf '%s' "${body}" | grep -qF "${SECRET_PLAINTEXT}"; then
+    if grep -qF "${SECRET_PLAINTEXT}" <<<"${body}"; then
       echo "[verify] FAIL: ${desc}: ${key} version ${vid} carries the DECRYPTED secret" >&2
       exit 1
     fi
@@ -571,7 +571,7 @@ for pair in "root|${ROOT_STATE_2}" "child|${CHILD_STATE_2}"; do
   label="${pair%%|*}"
   body="${pair#*|}"
   [ -n "${body}" ] || { echo "[verify] FAIL: ${label} state is empty after the redeploy" >&2; exit 1; }
-  if printf '%s' "${body}" | grep -qF "${SECRET_PLAINTEXT}"; then
+  if grep -qF "${SECRET_PLAINTEXT}" <<<"${body}"; then
     echo "[verify] FAIL: the DECRYPTED secret is in the ${label} state.json after the redeploy" >&2
     exit 1
   fi
@@ -673,7 +673,7 @@ fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 ROOT_STATE_3="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
 [ -n "${ROOT_STATE_3}" ] || { echo "[verify] FAIL: root state is empty after the re-import" >&2; exit 1; }
-if printf '%s' "${ROOT_STATE_3}" | grep -qF "${SECRET_PLAINTEXT}"; then
+if grep -qF "${SECRET_PLAINTEXT}" <<<"${ROOT_STATE_3}"; then
   echo "[verify] FAIL: the DECRYPTED secret is in the root state.json after the re-import" >&2
   exit 1
 fi
@@ -694,7 +694,7 @@ assert_record root-reimported "${ROOT_STATE_3}" SecretEnvFn refused
 # read the reason); `RootPwParam`'s seeded stale baseline is DROPPED (issue #2872), which `marked`
 # checks as the absence of `observedProperties`.
 assert_record root-reimported "${ROOT_STATE_3}" RootPwParam marked
-if printf '%s' "${ROOT_STATE_3}" | grep -qF "${STALE_BASELINE_SENTINEL}"; then
+if grep -qF "${STALE_BASELINE_SENTINEL}" <<<"${ROOT_STATE_3}"; then
   echo "[verify] FAIL: the stale baseline seeded on the preserved, refused RootPwParam survived the re-import (issue #2872)" >&2
   exit 1
 fi
@@ -828,7 +828,7 @@ if grep -qF "${SECRET_PLAINTEXT}" "${ACCEPT_LOG}"; then
 fi
 ASSERTIONS_RUN=$((ASSERTIONS_RUN + 1))
 ROOT_STATE_6="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - --region "${REGION}")"
-if printf '%s' "${ROOT_STATE_6}" | grep -qF "${SECRET_PLAINTEXT}"; then
+if grep -qF "${SECRET_PLAINTEXT}" <<<"${ROOT_STATE_6}"; then
   echo "[verify] FAIL: the DECRYPTED secret is in the root state.json after --accept-refused" >&2
   exit 1
 fi

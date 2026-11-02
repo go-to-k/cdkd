@@ -95,7 +95,7 @@ if [ -z "${PATTERN}" ] || [ "${PATTERN}" = "None" ]; then
   echo "FAIL: ESM FilterCriteria.Filters[0].Pattern is empty (silent-drop?)" >&2
   exit 1
 fi
-if ! printf '%s' "${PATTERN}" | grep -q 'order'; then
+if ! grep -q 'order' <<<"${PATTERN}"; then
   echo "FAIL: ESM FilterCriteria pattern does not contain the templated 'order' filter: ${PATTERN}" >&2
   exit 1
 fi
@@ -133,7 +133,7 @@ echo "    OK: BisectBatchOnFunctionError RESET to False on AWS after removal"
 # The retained sibling: the filter is still declared, so it must survive.
 PATTERN_AFTER=$(aws lambda list-event-source-mappings --function-name "${FN}" --region "${REGION}" \
   --query 'EventSourceMappings[0].FilterCriteria.Filters[0].Pattern' --output text)
-if ! printf '%s' "${PATTERN_AFTER}" | grep -q 'order'; then
+if ! grep -q 'order' <<<"${PATTERN_AFTER}"; then
   echo "FAIL: after the update, the still-declared filter is gone: '${PATTERN_AFTER}'" >&2
   exit 1
 fi

@@ -645,7 +645,7 @@ for iid in ${ASG_INSTANCE_IDS}; do
   elif ! state="$(aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}" \
       --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1)"; then
     # TOCTOU: the record can be swept between gone_probe and this requery.
-    printf '%s' "${state}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${state}" \
       && state="terminated" \
       || { echo "[verify] FAIL: describe-instances requery undetermined: ${state}"; exit 1; }
   fi

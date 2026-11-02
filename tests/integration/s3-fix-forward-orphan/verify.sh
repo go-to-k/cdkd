@@ -185,7 +185,7 @@ plant_bucket() { # usage: plant_bucket <bucket>
     if out="$(aws s3api create-bucket --bucket "$1" --region "${REGION}" ${CREATE_CFG[@]+"${CREATE_CFG[@]}"} 2>&1)"; then
       return 0
     fi
-    if ! printf '%s' "${out}" | grep -q 'OperationAborted'; then
+    if ! grep -q 'OperationAborted' <<<"${out}"; then
       echo "[verify] FAIL: create-bucket $1: ${out}" >&2
       return 1
     fi
@@ -276,7 +276,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -376,12 +376,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws s3api delete-bucket --bucket "${BASE_BUCKET}" --region "${REGION}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${BASE_BUCKET} (its policy must refuse DeleteBucket)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeleteBucket never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -582,31 +582,31 @@ assert_record BaseBucket "${BASE_BUCKET}"
 # below only confirm the deploy's account of it, so a reworded line fails
 # here, never silently above.
 FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanA'; then
+if ! grep -qF 'deleting partially-created OrphanA' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
   exit 1
 fi
 # The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
-if printf '%s' "${FF_FLAT}" | grep -qF 'OrphanA (AWS::S3::Bucket), which a failed deploy'; then
+if grep -qF 'OrphanA (AWS::S3::Bucket), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2
   exit 1
 fi
 # Sentinel for the wording above: OrphanC's keep warning uses the same head,
 # so a reword that would blind the OrphanA check fails here first.
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'OrphanC (AWS::S3::Bucket), which a failed deploy'; then
+if ! grep -qF 'OrphanC (AWS::S3::Bucket), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::S3::Bucket), which a failed deploy' in the output): update the OrphanA check above" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanC'; then
+if grep -qF 'deleting partially-created OrphanC' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy tried to delete OrphanC's re-used name (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'cdkd never empties such a bucket'; then
+if ! grep -qF 'cdkd never empties such a bucket' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not say why it kept OrphanD's non-empty bucket (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'is not deleted: the resource now under its physical id is another one'; then
+if ! grep -qF 'is not deleted: the resource now under its physical id is another one' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not warn that OrphanC's name now holds another bucket (output above)" >&2
   exit 1
 fi
@@ -646,7 +646,7 @@ if [ "${SD_RC}" -ne 2 ]; then
   exit 1
 fi
 SD_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/settle-d.log" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${SD_FLAT}" | grep -qF 'deleting partially-created OrphanD'; then
+if ! grep -qF 'deleting partially-created OrphanD' <<<"${SD_FLAT}"; then
   echo "[verify] FAIL: the deploy after emptying ${BUCKET_D} did not delete it (output above)" >&2
   exit 1
 fi
@@ -705,7 +705,7 @@ DESTROY_RC=$?
 set -e
 sed 's/^/  /' "${LOG_DIR}/destroy.log" || true
 DS_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/destroy.log" | tr '\n' ' ' | tr -s ' ')"
-if printf '%s' "${DS_FLAT}" | grep -qF 'which is not the resource state tracks under this id'; then
+if grep -qF 'which is not the resource state tracks under this id' <<<"${DS_FLAT}"; then
   echo "[verify] FAIL: the destroy skipped a kept orphan unchecked (\"manual attention\", go-to-k/cdkd#4754 -- output above)" >&2
   exit 1
 fi
@@ -713,11 +713,11 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "[verify] FAIL: the destroy exited ${DESTROY_RC} (expected 0: ${BUCKET_E} deleted, ${BUCKET_F} found gone -- output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${DS_FLAT}" | grep -qF 'deleting partially-created OrphanE'; then
+if ! grep -qF 'deleting partially-created OrphanE' <<<"${DS_FLAT}"; then
   echo "[verify] FAIL: the destroy did not delete OrphanE's emptied bucket (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${DS_FLAT}" | grep -qF 'partially-created OrphanF (AWS::S3::Bucket) is already gone'; then
+if ! grep -qF 'partially-created OrphanF (AWS::S3::Bucket) is already gone' <<<"${DS_FLAT}"; then
   echo "[verify] FAIL: the destroy did not settle OrphanF's hand-deleted bucket as gone (output above)" >&2
   exit 1
 fi

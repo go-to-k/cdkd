@@ -299,7 +299,7 @@ resolve_equalbags_names() {
   arn="$(state_field EqualBags physicalId)" || return 1
   name="${arn##*:}"
   if [ "${arn}" != "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${name}" ] \
-    || ! printf '%s' "${name}" | grep -qE "^${EQUALBAGS_PREFIX}[0-9a-f]{12}\$"; then
+    || ! grep -qE "^${EQUALBAGS_PREFIX}[0-9a-f]{12}\$" <<<"${name}"; then
     echo "[verify] FAIL: EqualBags' recorded topic '${arn}' is not the generated ${EQUALBAGS_PREFIX}<12 hex>"
     exit 1
   fi

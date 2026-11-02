@@ -276,7 +276,7 @@ assert_embedded_masked "${STATE_AFTER}"
 # 2d. The WHOLE blob. The three checks above name the routes we know about;
 # this one is what catches a fourth (observedProperties, a nested copy, an
 # events record folded into state) without having to enumerate it.
-if printf '%s' "${STATE_AFTER}" | grep -qF "${EXPECTED_NOECHO}"; then
+if grep -qF "${EXPECTED_NOECHO}" <<<"${STATE_AFTER}"; then
   echo "FAIL: the NoEcho token '${EXPECTED_NOECHO}' appears somewhere in the persisted state blob" >&2
   echo "${STATE_AFTER}" | jq . >&2
   exit 1
@@ -346,7 +346,7 @@ if [ -z "${STATE_ROTATED}" ]; then
 fi
 assert_embedded_masked "${STATE_ROTATED}"
 for token in "${EXPECTED_NOECHO}" "${EXPECTED_NOECHO_ROTATED}"; do
-  if printf '%s' "${STATE_ROTATED}" | grep -qF "${token}"; then
+  if grep -qF "${token}" <<<"${STATE_ROTATED}"; then
     echo "FAIL: the NoEcho token '${token}' appears in the state blob after the rotated deploy" >&2
     exit 1
   fi

@@ -591,7 +591,7 @@ fi
 # The prose half must name BOTH ids -- the survivor to act on, and the old copy
 # state was restored to, so a reader can tell the two apart without the log.
 for want in "${RETAIN_V2}" "${RETAIN_V1}"; do
-  if ! printf '%s' "${EV_RETAIN_REASON}" | grep -qF "${want}"; then
+  if ! grep -qF "${want}" <<<"${EV_RETAIN_REASON}"; then
     echo "FAIL: phase 6: the recorded reason does not name ${want}." >&2
     echo "      reason='${EV_RETAIN_REASON}'" >&2
     exit 1

@@ -152,12 +152,12 @@ if [ -z "${SUMMARY}" ]; then
   exit 1
 fi
 echo "[verify] import ${SUMMARY}"
-if ! printf '%s' "${SUMMARY}" | grep -q ' 0 not found' || ! printf '%s' "${SUMMARY}" | grep -q ' 0 failed'; then
+if ! grep -q ' 0 not found' <<<"${SUMMARY}" || ! grep -q ' 0 failed' <<<"${SUMMARY}"; then
   printf '%s\n' "${PLAIN_IMPORT}" | grep -E 'no matching AWS resource|failed' || true
   echo "[verify] FAIL: the import did not adopt every resource (issue #3661)"
   exit 1
 fi
-if printf '%s' "${PLAIN_IMPORT}" | grep -q 'Failed to resolve intrinsics'; then
+if grep -q 'Failed to resolve intrinsics' <<<"${PLAIN_IMPORT}"; then
   echo "[verify] FAIL: the import left an unresolved intrinsic"
   exit 1
 fi

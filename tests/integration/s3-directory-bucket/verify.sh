@@ -282,7 +282,7 @@ read_lifecycle_rules() { # usage: read_lifecycle_rules [bucket] (default: the ta
       Filter: ((.Filter // {}) | if . == {"Prefix": ""} then {} else . end),
       Expiration: (if .Expiration.Days then {Days: .Expiration.Days} else null end),
       AbortIncompleteMultipartUpload} | with_entries(select(.value != null))]'
-  elif printf '%s' "${out}" | grep -q 'NoSuchLifecycleConfiguration'; then
+  elif grep -q 'NoSuchLifecycleConfiguration' <<<"${out}"; then
     printf '[]'
   else
     echo "FAIL: get-bucket-lifecycle-configuration: ${out}" >&2
@@ -439,7 +439,7 @@ if [ "${DESTROY1_RC}" -eq 0 ]; then
   echo "FAIL: destroy SUCCEEDED — the directory-bucket data guard did not fire" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY1_LOG}" | grep -q "is not empty"; then
+if ! grep -q "is not empty" <<<"${DESTROY1_LOG}"; then
   echo "FAIL: destroy output lacks the 'is not empty' guard error" >&2
   exit 1
 fi
@@ -451,11 +451,11 @@ echo "    OK: destroy failed with the guard error (CFn DELETE_FAILED parity)"
 # refuses to create, so they are unit-pinned). The sentinel is the remedy's
 # lead-in, a different substring from the parsed command, so a reworded or
 # suppressed command fails HERE instead of reading as "no command expected".
-if ! printf '%s' "${DESTROY1_LOG}" | grep -qF "Delete all objects first"; then
+if ! grep -qF "Delete all objects first" <<<"${DESTROY1_LOG}"; then
   echo "FAIL: guard error lacks its 'Delete all objects first' remedy" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY1_LOG}" | grep -qF "aws s3 rm s3://${BUCKET} --recursive"; then
+if ! grep -qF "aws s3 rm s3://${BUCKET} --recursive" <<<"${DESTROY1_LOG}"; then
   echo "FAIL: guard remedy does not carry the bare 'aws s3 rm s3://${BUCKET} --recursive' command" >&2
   exit 1
 fi

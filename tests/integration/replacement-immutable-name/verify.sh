@@ -78,7 +78,7 @@ stream_live() {
   local s
   if ! s="$(aws kinesis describe-stream-summary --stream-name "$1" --region "${REGION}" \
     --query 'StreamDescriptionSummary.StreamStatus' --output text 2>&1)"; then
-    if printf '%s' "${s}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${s}"; then
       return 1
     fi
     echo "FAIL: stream_live probe undetermined ($1): ${s}" >&2; exit 1
@@ -104,7 +104,7 @@ sm_live() {
   if ! st="$(aws stepfunctions describe-state-machine --state-machine-arn "${arn}" --region "${REGION}" \
     --query 'status' --output text 2>&1)"; then
     # Deleted between the list and the describe -> gone.
-    if printf '%s' "${st}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${st}"; then
       return 1
     fi
     echo "FAIL: sm_live describe probe undetermined (${arn}): ${st}" >&2; exit 1

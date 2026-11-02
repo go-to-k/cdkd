@@ -69,7 +69,7 @@ deny_statements() {
   local out
   if ! out=$(aws s3api get-bucket-policy --bucket "${BUCKET}" --region "${REGION}" \
       --query Policy --output text 2>&1); then
-    if printf '%s' "${out}" | grep -q 'NoSuchBucketPolicy'; then
+    if grep -q 'NoSuchBucketPolicy' <<<"${out}"; then
       echo 0
       return 0
     fi

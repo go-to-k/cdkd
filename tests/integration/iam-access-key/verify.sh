@@ -166,7 +166,7 @@ if [ -z "${KEY_ID_1}" ]; then
 fi
 
 KEYS=$(list_keys)
-if ! printf '%s' "${KEYS}" | grep -q "${KEY_ID_1}[[:space:]]*Active"; then
+if ! grep -q "${KEY_ID_1}[[:space:]]*Active" <<<"${KEYS}"; then
   echo "FAIL: access key ${KEY_ID_1} is not Active on AWS after create (got: ${KEYS})" >&2
   exit 1
 fi
@@ -177,11 +177,11 @@ echo "    OK: access key ${KEY_ID_1} exists and is Active"
 # never returns the secret again after CreateAccessKey).
 SECRET_VALUE_1=$(aws secretsmanager get-secret-value --secret-id "${SECRET_NAME}" \
   --region "${REGION}" --query 'SecretString' --output text)
-if ! printf '%s' "${SECRET_VALUE_1}" | grep -qE '^[A-Za-z0-9/+=]{40}$'; then
+if ! grep -qE '^[A-Za-z0-9/+=]{40}$' <<<"${SECRET_VALUE_1}"; then
   echo "FAIL: secret value is not a 40-char IAM secret access key (got length: ${#SECRET_VALUE_1})" >&2
   exit 1
 fi
-if printf '%s' "${SECRET_VALUE_1}" | grep -q 'Fn::GetAtt\|Token'; then
+if grep -q 'Fn::GetAtt\|Token' <<<"${SECRET_VALUE_1}"; then
   echo "FAIL: secret value carries an unresolved intrinsic: ${SECRET_VALUE_1}" >&2
   exit 1
 fi
@@ -195,7 +195,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes
 
 KEYS=$(list_keys)
-if ! printf '%s' "${KEYS}" | grep -q "${KEY_ID_1}[[:space:]]*Inactive"; then
+if ! grep -q "${KEY_ID_1}[[:space:]]*Inactive" <<<"${KEYS}"; then
   echo "FAIL: access key ${KEY_ID_1} is not Inactive after the Status update (got: ${KEYS})" >&2
   exit 1
 fi

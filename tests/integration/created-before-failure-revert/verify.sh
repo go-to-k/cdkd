@@ -364,7 +364,7 @@ fi
 # PREMISE: CreateRepository returned. Without it the failure came before the
 # create and nothing below tests #4583.
 if ! E1_DESCRIBE="$(aws ecr describe-repositories --repository-names "${REPO_NAME}" --region "${REGION}" 2>&1)"; then
-  if printf '%s' "${E1_DESCRIBE}" | grep -qF 'RepositoryNotFoundException'; then
+  if grep -qF 'RepositoryNotFoundException' <<<"${E1_DESCRIBE}"; then
     echo "[verify] FAIL: phase E1: ${REPO_NAME} does not exist after the failed deploy — the CREATE failed before CreateRepository, so this phase tests nothing" >&2
   else
     echo "[verify] FAIL: phase E1: describe-repositories for ${REPO_NAME} failed for another reason, so the premise is undetermined: ${E1_DESCRIBE}" >&2

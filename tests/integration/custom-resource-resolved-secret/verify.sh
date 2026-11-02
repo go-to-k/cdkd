@@ -169,7 +169,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
     break
   fi
   # A force-deleted secret's name is released asynchronously.
-  if ! printf '%s' "${seed_err}" | grep -q 'scheduled for deletion'; then
+  if ! grep -q 'scheduled for deletion' <<<"${seed_err}"; then
     echo "FAIL: could not create ${NESTED_SECRET}: ${seed_err}" >&2
     exit 1
   fi
@@ -212,15 +212,15 @@ assert_logs_clean() {
   local since="$1" marker="$2" value="$3" what="$4" logs="" attempt
   for attempt in $(seq 1 36); do
     logs=$(stack_log_text "${since}") || logs=""
-    if printf '%s' "${logs}" | grep -qF "${marker}"; then break; fi
+    if grep -qF "${marker}" <<<"${logs}"; then break; fi
     sleep 5
   done
-  if ! printf '%s' "${logs}" | grep -qF "${marker}"; then
+  if ! grep -qF "${marker}" <<<"${logs}"; then
     echo "FAIL: ${what}: the benign reader's '${marker}' event never appeared in the handler" >&2
     echo "    logs -- the absence check below would prove nothing" >&2
     exit 1
   fi
-  if printf '%s' "${logs}" | grep -qF "${value}"; then
+  if grep -qF "${value}" <<<"${logs}"; then
     echo "FAIL: ${what}: the secret value reached the handler's logged event (pre-#4009 behaviour)" >&2
     exit 1
   fi
@@ -254,8 +254,8 @@ assert_versions_clean() {
 # assert_refusal_text <output> <reader-and-path> <what>
 assert_refusal_text() {
   local txt="$1" line="$2" what="$3" head_seen=0 line_seen=0
-  if printf '%s' "${txt}" | grep -q 'resolved to the value of a secret'; then head_seen=1; fi
-  if printf '%s' "${txt}" | grep -qF "Custom resource ${line}"; then line_seen=1; fi
+  if grep -q 'resolved to the value of a secret' <<<"${txt}"; then head_seen=1; fi
+  if grep -qF "Custom resource ${line}" <<<"${txt}"; then line_seen=1; fi
   if [ "${line_seen}" -eq 1 ] && [ "${head_seen}" -eq 0 ]; then
     echo "FAIL: ${what}: the refusal names ${line} but its wording drifted — fix verify.sh" >&2
     exit 1
@@ -264,7 +264,7 @@ assert_refusal_text() {
     echo "FAIL: ${what}: no #4009 refusal naming '${line}'" >&2
     exit 1
   fi
-  if printf '%s' "${txt}" | grep -qF -e "${SECURE_VALUE}" -e "${NESTED_VALUE}"; then
+  if grep -qF -e <<<"${txt}" "${SECURE_VALUE}" -e "${NESTED_VALUE}"; then
     echo "FAIL: ${what}: a secret value appeared in cdkd's own output" >&2
     exit 1
   fi
@@ -420,7 +420,7 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "FAIL: the clean destroy exited ${DESTROY_RC}, expected 0" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY_TXT}"; then
   echo "FAIL: the clean destroy skipped something" >&2
   exit 1
 fi

@@ -91,7 +91,7 @@ state_etag() { # usage: state_etag <key>
     printf '%s' "${out}"
     return 0
   fi
-  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     printf 'absent'
     return 0
   fi
@@ -128,7 +128,7 @@ assert_table_deleted() { # usage: assert_table_deleted <table-name> <context>
   elif ! status="$(aws dynamodb describe-table --table-name "${table}" --region "${REGION}" \
       --query 'Table.TableStatus' --output text 2>&1)"; then
     # TOCTOU: the table can vanish between gone_probe and this requery.
-    printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${status}" \
       && status="GONE" \
       || { echo "FAIL: describe-table requery undetermined (${ctx}): ${status}" >&2; exit 1; }
   fi
@@ -227,9 +227,9 @@ for id in "${TABLE_ID}" "${QUEUE_ID}"; do
   # Sentinel: the removal row must be there before its hint is judged.
   row="$(printf '%s\n' "${OUT_DIFF}" | grep -F "[-] ${id} (" || true)"
   [ -n "${row}" ] || { echo "FAIL: diff shows no removal row for ${id}" >&2; exit 1; }
-  printf '%s' "${row}" | grep -qF "(moved to ${DST}." \
+  grep -qF "(moved to ${DST}." <<<"${row}" \
     || { echo "FAIL: the removal of ${id} does not name ${DST} (go-to-k/cdkd#5203)" >&2; exit 1; }
-  printf '%s' "${row}" | grep -qF "run 'cdkd refactor' to keep it)" \
+  grep -qF "run 'cdkd refactor' to keep it)" <<<"${row}" \
     || { echo "FAIL: the hint for ${id} does not name cdkd refactor" >&2; exit 1; }
 done
 echo "    both removals name ${DST}"
@@ -246,7 +246,7 @@ if printf '%s\n' "${OUT_2A}" | grep -qE '^  (Not moved|Not refactored|Refused|Am
   echo "FAIL: the move plan carries a warning or refusal" >&2
   exit 1
 fi
-printf '%s' "${OUT_2A}" | grep -q 'state was NOT written' \
+grep -q 'state was NOT written' <<<"${OUT_2A}" \
   || { echo "FAIL: dry run did not say it wrote nothing" >&2; exit 1; }
 [ "$(state_etag "${SRC_KEY}")" = "${SRC_ETAG}" ] || { echo "FAIL: source state changed during a dry run" >&2; exit 1; }
 [ "$(state_etag "${DST_KEY}")" = "${DST_ETAG}" ] || { echo "FAIL: destination state changed during a dry run" >&2; exit 1; }
@@ -312,13 +312,13 @@ set -e
 [ "${rc_diff_dst}" -eq 3 ] || { echo "FAIL: diff of the destination exited ${rc_diff_dst}, not 3" >&2; exit 1; }
 # The destination must refuse BEFORE creating anything: no create was tried.
 for out in "${OUT_DEPLOY}" "${OUT_DEPLOY_DST}"; do
-  if printf '%s' "${out}" | grep -qiE 'Failed to create|ResourceInUseException|already exists'; then
+  if grep -qiE 'Failed to create|ResourceInUseException|already exists' <<<"${out}"; then
     echo "FAIL: a deploy tried to create a moved resource: ${out}" >&2
     exit 1
   fi
 done
 for out in "${OUT_DEPLOY}" "${OUT_DESTROY}" "${OUT_DEPLOY_DST}"; do
-  printf '%s' "${out}" | grep -q "did not finish" \
+  grep -q "did not finish" <<<"${out}" \
     || { echo "FAIL: a refusal does not name the unfinished move: ${out}" >&2; exit 1; }
 done
 # Nothing was deleted: the table still answers, with its item.
@@ -331,7 +331,7 @@ echo "==> Phase 2d: refactor finishes both interrupted moves"
 OUT_2D="$(cdkd refactor --all "${STATE_FLAGS[@]}" --yes 2>&1)"
 printf '%s\n' "${OUT_2D}"
 for pair in "${SRC}.${TABLE_ID} -> ${DST}.${DST_TABLE_ID}" "${SRC}.${QUEUE_ID} -> ${DST}.${DST_QUEUE_ID}"; do
-  printf '%s' "${OUT_2D}" | grep -qF "Finished an interrupted move: ${pair}" \
+  grep -qF "Finished an interrupted move: ${pair}" <<<"${OUT_2D}" \
     || { echo "FAIL: refactor did not finish ${pair}" >&2; exit 1; }
 done
 if node -e '

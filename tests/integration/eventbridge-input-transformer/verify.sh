@@ -76,7 +76,7 @@ queue_url() {
   if ! out="$(aws sqs get-queue-url --queue-name "${QUEUE_NAME}" --region "${REGION}" \
       --query 'QueueUrl' --output text 2>&1)"; then
     # TOCTOU: the queue can vanish between gone_probe and this requery.
-    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" \
       && { echo ""; return 0; } \
       || { echo "FAIL: get-queue-url requery undetermined: ${out}" >&2; exit 1; }
   fi
@@ -172,7 +172,7 @@ put_and_read() {
       aws sqs delete-message --queue-url "${url}" --receipt-handle "${rh}" --region "${REGION}" >/dev/null 2>&1 || true
       # Accept once the required marker (if any) is present; otherwise this is a
       # stale pre-propagation delivery -- drop it and re-put on the next loop.
-      if [ -z "${want}" ] || printf '%s' "${body}" | grep -qF "${want}"; then
+      if [ -z "${want}" ] || grep -qF "${want}" <<<"${body}"; then
         printf '%s' "${body}"
         return 0
       fi

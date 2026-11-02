@@ -273,7 +273,7 @@ if gone_probe aws dsql get-cluster --identifier "${CLUSTER_ID}" --region "${REGI
 elif ! status="$(aws dsql get-cluster --identifier "${CLUSTER_ID}" --region "${REGION}" \
     --query 'status' --output text 2>&1)"; then
   # TOCTOU: the cluster can vanish between gone_probe and this requery.
-  printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${status}" \
     && status="GONE" \
     || { echo "FAIL: get-cluster requery undetermined: ${status}" >&2; exit 1; }
 fi

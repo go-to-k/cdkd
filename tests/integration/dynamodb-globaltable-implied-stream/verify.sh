@@ -183,7 +183,7 @@ cleanup() {
       # waiting, so a throttle cannot silently skip the delete below.
       if ! out="$(aws dynamodb describe-table --table-name "${TABLE}" --region "${REGION}" \
         --query "[Table.TableStatus, join(' ', Table.Replicas[].RegionName || \`[]\`)]" --output text 2>&1)"; then
-        if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then gone=1; break; fi
+        if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then gone=1; break; fi
         sleep 10
         continue
       fi
@@ -210,7 +210,7 @@ cleanup() {
   # A run that died with only the second-region copy left: best effort, and
   # loud when a copy is there and will not go.
   if ! out="$(aws dynamodb delete-table --table-name "${TABLE}" --region "${SECOND_REGION}" 2>&1)"; then
-    if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
       echo "WARN: cleanup could not delete ${TABLE} in ${SECOND_REGION}; delete it by hand" >&2
     fi
   fi

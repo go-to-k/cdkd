@@ -187,7 +187,7 @@ poll_lock() {
       printf '%s %s\n' "$(date -u +%s)" \
         "$(node -e 'const fs=require("fs");try{process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).expiresAt))}catch{process.stdout.write("unparsable")}' "${LOCK_BODY}")" \
         >> "${SAMPLES}"
-    elif printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    elif grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
       printf '%s absent\n' "$(date -u +%s)" >> "${SAMPLES}"
     else
       printf '%s unknown\n' "$(date -u +%s)" >> "${SAMPLES}"

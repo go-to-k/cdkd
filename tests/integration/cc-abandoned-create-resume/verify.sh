@@ -238,7 +238,7 @@ for key in "${STATE_KEY}" "${JOURNAL_KEY}"; do
   if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${key}" 2>&1)"; then
     echo "[verify] FAIL: s3://${STATE_BUCKET}/${key} already exists (left by an earlier run); destroy ${STACK} first" >&2
     exit 1
-  elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
     echo "[verify] FAIL: pre-probe of s3://${STATE_BUCKET}/${key} undetermined: ${HEAD_PRE}" >&2
     exit 1
   fi
@@ -333,12 +333,12 @@ for _ in $(seq 1 24); do
     --request-token 00000000-0000-0000-0000-000000000000 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} READ a request status (its policy must refuse GetResourceRequestStatus)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on GetResourceRequestStatus never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -348,7 +348,7 @@ ALLOW_PROBE=""
 for _ in $(seq 1 24); do
   if ALLOW_PROBE="$(as_deny_role aws ec2 describe-managed-prefix-lists --region "${REGION}" \
     --filters "Name=prefix-list-name,Values=${PL_NAME}" --query 'length(PrefixLists)' --output text 2>&1)" \
-    && printf '%s' "${ALLOW_PROBE}" | grep -qE '^[0-9]+$'; then
+    && grep -qE '^[0-9]+$' <<<"${ALLOW_PROBE}"; then
     break
   fi
   ALLOW_PROBE=""

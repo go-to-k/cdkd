@@ -147,12 +147,12 @@ fi
 
 wait_403_origin "*"
 BODY="$(curl -s "https://${API_ID_P1}.execute-api.${REGION}.amazonaws.com/prod/nonexistent")"
-if ! printf '%s' "${BODY}" | grep -q 'MISSING_AUTHENTICATION_TOKEN'; then
+if ! grep -q 'MISSING_AUTHENTICATION_TOKEN' <<<"${BODY}"; then
   echo "FAIL: 403 body does not carry the custom gateway response template: ${BODY}" >&2
   exit 1
 fi
 OK_BODY="$(curl -s "https://${API_ID_P1}.execute-api.${REGION}.amazonaws.com/prod/")"
-if ! printf '%s' "${OK_BODY}" | grep -q '"ok":true'; then
+if ! grep -q '"ok":true' <<<"${OK_BODY}"; then
   echo "FAIL: GET / did not return the mock integration body: ${OK_BODY}" >&2
   exit 1
 fi

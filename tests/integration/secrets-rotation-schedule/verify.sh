@@ -157,7 +157,7 @@ if gone_probe aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --
 elif ! DELETED_DATE="$(aws secretsmanager describe-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
     --query 'DeletedDate' --output text 2>&1)"; then
   # TOCTOU: the secret can vanish between gone_probe and this requery.
-  printf '%s' "${DELETED_DATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${DELETED_DATE}" \
     && DELETED_DATE="GONE" \
     || { echo "FAIL: describe-secret requery undetermined: ${DELETED_DATE}" >&2; exit 1; }
 fi

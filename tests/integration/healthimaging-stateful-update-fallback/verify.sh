@@ -144,7 +144,7 @@ assert_denied_identity() {
     echo "FAIL: DescribeType SUCCEEDED under the denied identity (${dt_out}) — the phase would take the property-driven arm" >&2
     exit 1
   fi
-  if ! printf '%s' "${dt_out}" | grep -q 'AccessDenied'; then
+  if ! grep -q 'AccessDenied' <<<"${dt_out}"; then
     echo "FAIL: DescribeType failed under the denied identity, but not as AccessDenied: ${dt_out}" >&2
     exit 1
   fi

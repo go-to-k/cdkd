@@ -443,7 +443,7 @@ if [ "${UPDATE_RC}" -ne 0 ]; then
   # updates on CloudFormation; pre-fix cdkd refused both.
   UPDATE_PLAIN="$(printf '%s' "${UPDATE_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
   for refusal in "GraphqlApi.Name is immutable" "DataSource.Type is immutable"; do
-    if printf '%s' "${UPDATE_PLAIN}" | grep -qF "${refusal}"; then
+    if grep -qF "${refusal}" <<<"${UPDATE_PLAIN}"; then
       echo "FAIL [issue #5359]: the update was refused with '${refusal}'; CloudFormation updates it in place" >&2
     fi
   done
@@ -533,13 +533,13 @@ if [ "${PHASE2B_RC}" -eq 0 ]; then
   exit 1
 fi
 # Two independent markers: the per-key sentence and the pre-flight's suffix.
-if ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' ||
-   ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'fix the template value'; then
+if ! grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' <<<"${PHASE2B_PLAIN}" ||
+   ! grep -q 'fix the template value' <<<"${PHASE2B_PLAIN}"; then
   echo "FAIL [phase 2b]: the deploy failed, but not with the #3781 template-path refusal" >&2
   exit 1
 fi
 # The value itself never reaches the output (a variable can hold a secret).
-if printf '%s' "${PHASE2B_PLAIN}" | grep -q 'cdkd-integ-not-a-string'; then
+if grep -q 'cdkd-integ-not-a-string' <<<"${PHASE2B_PLAIN}"; then
   echo "FAIL [phase 2b]: the refusal quoted the environment-variable VALUE" >&2
   exit 1
 fi
@@ -567,7 +567,7 @@ if [ "${PHASE2D_RC}" -eq 0 ]; then
   echo "FAIL [phase 2d]: the ApiId move deployed (exit 0); issue #5359 refuses it rather than leaving the schema on the old API" >&2
   exit 1
 fi
-if ! printf '%s' "${PHASE2D_PLAIN}" | grep -qF 'GraphQLSchema.ApiId cannot move a schema to another API in place'; then
+if ! grep -qF 'GraphQLSchema.ApiId cannot move a schema to another API in place' <<<"${PHASE2D_PLAIN}"; then
   echo "FAIL [phase 2d]: the deploy failed, but not with the #5359 refusal" >&2
   exit 1
 fi
@@ -627,12 +627,12 @@ if [ "${PHASE2C_ROLLBACK_RC}" -ne 0 ]; then
 fi
 PHASE2C_PLAIN="$(printf '%s' "${PHASE2C_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
 # Two independent markers: the per-key sentence and the keep decision.
-if ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' ||
-   ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'leaving the live environment variables untouched'; then
+if ! grep -q 'EnvironmentVariables.CdkdExtra must be a string, got object' <<<"${PHASE2C_PLAIN}" ||
+   ! grep -q 'leaving the live environment variables untouched' <<<"${PHASE2C_PLAIN}"; then
   echo "FAIL [phase 2c]: the revert did not warn and keep the live environment variables" >&2
   exit 1
 fi
-if printf '%s' "${PHASE2C_PLAIN}" | grep -q 'cdkd-integ-not-a-string'; then
+if grep -q 'cdkd-integ-not-a-string' <<<"${PHASE2C_PLAIN}"; then
   echo "FAIL [phase 2c]: the replay warning quoted the environment-variable VALUE" >&2
   exit 1
 fi

@@ -274,19 +274,19 @@ fi
 # A non-zero rc is NOT the discriminator: before the fix this refused too, via
 # normalizeAwsError's generic 301 rendering. Only the fixed path names the two
 # regions, so that is what is asserted.
-if ! printf '%s' "${XREGION_OUT}" | grep -q "resolves to a bucket in ${XREGION_REGION}"; then
+if ! grep -q "resolves to a bucket in ${XREGION_REGION}" <<<"${XREGION_OUT}"; then
   echo "FAIL: refusal does not name the bucket's region (${XREGION_REGION}); output:" >&2
   printf '%s\n' "${XREGION_OUT}" >&2
   exit 1
 fi
-if ! printf '%s' "${XREGION_OUT}" | grep -q "targets ${REGION}"; then
+if ! grep -q "targets ${REGION}" <<<"${XREGION_OUT}"; then
   echo "FAIL: refusal does not name the target region (${REGION}); output:" >&2
   printf '%s\n' "${XREGION_OUT}" >&2
   exit 1
 fi
 # The PRE-fix wording, which told the user to file a bug for their own naming
 # collision. Its absence is what says the new arm ran rather than the old one.
-if printf '%s' "${XREGION_OUT}" | grep -q 'please report it'; then
+if grep -q 'please report it' <<<"${XREGION_OUT}"; then
   echo "FAIL: still emitting the pre-fix 301 wording; output:" >&2
   printf '%s\n' "${XREGION_OUT}" >&2
   exit 1
@@ -311,7 +311,7 @@ XREGION_POLICY_OUT=$(aws s3api get-bucket-policy --bucket "${XREGION_BUCKET}" \
   printf '%s\n' "${XREGION_POLICY_OUT}" >&2
   exit 1
 }
-if ! printf '%s' "${XREGION_POLICY_OUT}" | grep -q 'NoSuchBucketPolicy'; then
+if ! grep -q 'NoSuchBucketPolicy' <<<"${XREGION_POLICY_OUT}"; then
   echo "FAIL: undetermined bucket-policy probe on ${XREGION_BUCKET}: ${XREGION_POLICY_OUT}" >&2
   exit 1
 fi

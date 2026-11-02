@@ -232,7 +232,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -331,12 +331,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws iam delete-role --role-name "${BASE_ROLE}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${BASE_ROLE} (its policy must refuse DeleteRole)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeleteRole never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -412,7 +412,7 @@ fi
 # The deploy's own account: each CREATE's cleanup was refused.
 INJECT_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ' | tr -s ' ')"
 for lid in OrphanA OrphanC; do
-  if ! printf '%s' "${INJECT_FLAT}" | grep -qF "Failed to clean up partially-created IAM role ${lid}"; then
+  if ! grep -qF "Failed to clean up partially-created IAM role ${lid}" <<<"${INJECT_FLAT}"; then
     echo "[verify] FAIL: the step-2 deploy did not report ${lid}'s refused cleanup (output above)" >&2
     exit 1
   fi
@@ -433,11 +433,11 @@ assert_cleanup_line_redacted() { # usage: assert_cleanup_line_redacted <cleanup 
     echo "[verify] FAIL: no refused cleanup line '$1 (...): ...' in the step-2 output (#2319)" >&2
     exit 1
   fi
-  if ! printf '%s' "${rest}" | grep -qE "^[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  if ! grep -qE "^[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${rest}"; then
     echo "[verify] FAIL: the refused cleanup line '$1' does not name the AWS failure by its class (#2319); head: ${head} (${#line} chars)" >&2
     exit 1
   fi
-  if printf '%s' "${line}" | grep -qiF "not authorized" || printf '%s' "${line}" | grep -qF "${DENY_ROLE}"; then
+  if grep -qiF "not authorized" <<<"${line}" || grep -qF "${DENY_ROLE}" <<<"${line}"; then
     echo "[verify] FAIL: the refused cleanup line '$1' quotes AWS's text (deny role or 'not authorized') (#2319); head: ${head} (${#line} chars)" >&2
     exit 1
   fi
@@ -531,7 +531,7 @@ if [ -z "${A_GONE}" ]; then
   # A keep warning naming OrphanA, with no "another one" verdict for it, is
   # the shape of an `unknown` verdict: the settle's GetRole of the record's
   # just-created role (${ROLE_A_B}) may have missed it while IAM propagated.
-  if printf '%s' "${FF_FLAT}" | grep -qF "OrphanA (AWS::IAM::Role), which a failed deploy"; then
+  if grep -qF "OrphanA (AWS::IAM::Role), which a failed deploy" <<<"${FF_FLAT}"; then
     echo "[verify] WARN: OrphanA was kept with a keep warning (output above). If its line is not the 'another one' warning, isSameResource answered unknown, most likely because IAM's eventual consistency hid the just-created ${ROLE_A_B} from the settle's GetRole; re-run before reading this as a regression" >&2
   fi
   echo "FAIL: the earlier attempt's role ${ROLE_A} still exists after the fix-forward deploy (go-to-k/cdkd#4606) (still present after 30 probes over ~150s)" >&2
@@ -596,25 +596,25 @@ assert_record BaseRole "${BASE_ROLE}"
 # 4's plain `delete-role` of it, which fails the run if the role is gone.
 # The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
-if ! printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created OrphanA"; then
+if ! grep -qF "deleting partially-created OrphanA" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF "OrphanA (AWS::IAM::Role), which a failed deploy"; then
+if grep -qF "OrphanA (AWS::IAM::Role), which a failed deploy" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2
   exit 1
 fi
 # Sentinel for the wording above: OrphanC's keep warning uses the same head,
 # so a reword that would blind the OrphanA check fails here first.
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'OrphanC (AWS::IAM::Role), which a failed deploy'; then
+if ! grep -qF 'OrphanC (AWS::IAM::Role), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::IAM::Role), which a failed deploy' in the output): update the OrphanA check above" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanC'; then
+if grep -qF 'deleting partially-created OrphanC' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy tried to delete OrphanC's re-used name (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'is not deleted: the resource now under its physical id is another one'; then
+if ! grep -qF 'is not deleted: the resource now under its physical id is another one' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not warn that OrphanC's name now holds another role (output above)" >&2
   exit 1
 fi

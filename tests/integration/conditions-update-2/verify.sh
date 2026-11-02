@@ -107,7 +107,7 @@ queue_url() {
   if ! out="$(aws sqs get-queue-url --queue-name "${name}" --region "${REGION}" \
       --query 'QueueUrl' --output text 2>&1)"; then
     # TOCTOU: the queue can vanish between gone_probe and this requery.
-    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" \
       && { echo ""; return 0; } \
       || { echo "FAIL: get-queue-url requery undetermined (${name}): ${out}" >&2; exit 1; }
   fi
@@ -183,7 +183,7 @@ ssm_value() {
   if ! out="$(aws ssm get-parameter --name "$1" --region "${REGION}" \
       --query 'Parameter.Value' --output text 2>&1)"; then
     # TOCTOU: the parameter can vanish between gone_probe and this requery.
-    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" \
       && { echo ""; return 0; } \
       || { echo "FAIL: get-parameter requery undetermined ($1): ${out}" >&2; exit 1; }
   fi

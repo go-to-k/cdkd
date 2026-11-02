@@ -139,7 +139,7 @@ wait_fs_gone() { # usage: wait_fs_gone <fs-id> [max-seconds, default 1800]
       --region "${REGION}" 2>&1)"; then
       # Strict gone-check (#1097 pattern 2): only a not-found error means the
       # file system is gone; on any other failure (throttle) keep waiting.
-      if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
         return 0
       fi
     fi

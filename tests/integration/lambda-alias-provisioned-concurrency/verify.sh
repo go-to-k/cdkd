@@ -83,7 +83,7 @@ for _ in $(seq 1 24); do
       --query 'RequestedProvisionedConcurrentExecutions' --output text 2>&1); then
     # TOCTOU: the config can 404 again between gone_probe and this requery --
     # a canonical not-found is still "not yet" (retry); anything else fails.
-    printf '%s' "${REQ}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${REQ}" \
       && REQ="" \
       || { echo "FAIL: get-provisioned-concurrency-config requery undetermined: ${REQ}" >&2; exit 1; }
   fi

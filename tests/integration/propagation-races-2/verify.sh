@@ -444,7 +444,7 @@ if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --regio
 elif ! ST=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
   # TOCTOU: the record can be swept between gone_probe and this requery.
-  printf '%s' "${ST}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${ST}" \
     && ST="gone" \
     || { echo "FAIL: describe-instances requery undetermined: ${ST}" >&2; exit 1; }
 fi
@@ -482,7 +482,7 @@ if gone_probe aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}"; th
 elif ! KEY_STATE_AFTER=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
     --query 'KeyMetadata.KeyState' --output text 2>&1); then
   # TOCTOU: the key can vanish between gone_probe and this requery.
-  printf '%s' "${KEY_STATE_AFTER}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${KEY_STATE_AFTER}" \
     && KEY_STATE_AFTER="gone" \
     || { echo "FAIL: describe-key requery undetermined: ${KEY_STATE_AFTER}" >&2; exit 1; }
 fi

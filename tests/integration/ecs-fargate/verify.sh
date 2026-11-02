@@ -156,7 +156,7 @@ if [ "${REJECT_RC}" -eq 0 ]; then
   echo "FAIL: deploy accepted --no-wait --full-wait; the pair must be rejected" >&2
   exit 1
 fi
-if ! printf '%s' "${REJECT_OUT}" | grep -q -- '--no-wait and --full-wait cannot be combined'; then
+if ! grep -q -- <<<"${REJECT_OUT}" '--no-wait and --full-wait cannot be combined'; then
   echo "FAIL: deploy failed for the wrong reason (expected the mutual-exclusion error):" >&2
   printf '%s\n' "${REJECT_OUT}" >&2
   exit 1
@@ -647,7 +647,7 @@ DEAD_SVC_ERR="$(mktemp)"
 if DEAD_SVC_OUT=$(aws ecs describe-services --cluster "${DEAD_CLUSTER_ID}" --services "${DEAD_SVC_ID}" \
   --region "${REGION}" --output json 2>"${DEAD_SVC_ERR}"); then
   DEAD_SVC_STATUS=$(printf '%s' "${DEAD_SVC_OUT}" | jq -r '.services[0].status // "not-listed"')
-elif DEAD_SVC_OUT="$(cat "${DEAD_SVC_ERR}")" && printf '%s' "${DEAD_SVC_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif DEAD_SVC_OUT="$(cat "${DEAD_SVC_ERR}")" && grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${DEAD_SVC_OUT}"; then
   DEAD_SVC_STATUS="not-listed"
 else
   echo "FAIL: describe-services for the deleted service did not answer: ${DEAD_SVC_OUT}" >&2

@@ -218,7 +218,7 @@ await_settings() { # usage: await_settings <region> <regex> <failure message>
   local i got
   for i in $(seq 1 60); do
     got="$(table_settings "$1")"
-    if printf '%s' "${got}" | grep -qE "$2"; then
+    if grep -qE "$2" <<<"${got}"; then
       echo "    $1: ${got}"
       return 0
     fi
@@ -269,7 +269,7 @@ await_replica() { # usage: await_replica <region> <regex> <failure message>
   local i got
   for i in $(seq 1 60); do
     got="$(replica_settings "$1")" || got="(read failed)"
-    if printf '%s' "${got}" | grep -qE "$2"; then
+    if grep -qE "$2" <<<"${got}"; then
       echo "    $1: ${got}"
       return 0
     fi
@@ -299,7 +299,7 @@ await_index() { # usage: await_index <region> <regex> <failure message>
   local i got
   for i in $(seq 1 60); do
     got="$(index_settings "$1")" || got="(read failed)"
-    if printf '%s' "${got}" | grep -qE "$2"; then
+    if grep -qE "$2" <<<"${got}"; then
       echo "    $1: ${got}"
       return 0
     fi
@@ -365,7 +365,7 @@ await_table_idle() { # usage: await_table_idle <table name> <region> [deadline e
   while [ "$(date +%s)" -lt "${deadline}" ]; do
     if ! out="$(aws dynamodb describe-table --table-name "$1" --region "$2" \
       --query '[Table.TableStatus, Table.SSEDescription.Status]' --output text 2>&1)"; then
-      printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' && return 0
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" && return 0
     else
       case "${out}" in ACTIVE*UPDATING*) ;; ACTIVE*) return 0 ;; esac
     fi
@@ -390,10 +390,10 @@ delete_table_logged() { # usage: delete_table_logged <table name> <region>
     if out="$(aws dynamodb delete-table --table-name "$1" --region "$2" 2>&1)"; then
       return 0
     fi
-    if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
       return 0
     fi
-    if printf '%s' "${out}" | grep -qiE 'deletion protection'; then
+    if grep -qiE 'deletion protection' <<<"${out}"; then
       echo "    ${1} (${2}): deletion protection is on; turning it off before the delete"
       local flip
       flip="$(aws dynamodb update-table --table-name "$1" --region "$2" \
@@ -403,7 +403,7 @@ delete_table_logged() { # usage: delete_table_logged <table name> <region>
       sleep 10
       continue
     fi
-    if printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
+    if grep -qiE 'ResourceInUseException|LimitExceededException' <<<"${out}"; then
       echo "    ${1} (${2}): delete refused while it is changing; waiting: $(printf '%s' "${out}" | tr '\n' ' ')"
       await_table_idle "$1" "$2" "${deadline}"
       sleep 10
@@ -440,7 +440,7 @@ teardown_table() { # usage: teardown_table <table name>
     for _ in $(seq 1 90); do
       if ! out="$(aws dynamodb describe-table --table-name "${tbl}" --region "${REGION}" \
         --query "[Table.TableStatus, join(' ', Table.Replicas[].RegionName || \`[]\`), Table.SSEDescription.Status]" --output text 2>&1)"; then
-        if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then gone=1; break; fi
+        if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then gone=1; break; fi
         sleep 10
         continue
       fi
@@ -465,7 +465,7 @@ teardown_table() { # usage: teardown_table <table name>
             fi
             if ! out="$(aws dynamodb update-table --table-name "${tbl}" --region "${REGION}" \
               --replica-updates "Delete={RegionName=${SECOND_REGION}}" 2>&1)" &&
-              ! printf '%s' "${out}" | grep -qiE 'ResourceInUseException|LimitExceededException'; then
+              ! grep -qiE 'ResourceInUseException|LimitExceededException' <<<"${out}"; then
               echo "    ${tbl}: dropping the ${SECOND_REGION} replica was refused: $(printf '%s' "${out}" | tr '\n' ' ')" >&2
             fi
           fi
@@ -493,7 +493,7 @@ await_table_gone() { # usage: await_table_gone <table name>
     gone=0
     for _ in $(seq 1 90); do
       if ! out="$(aws dynamodb describe-table --table-name "$1" --region "${r}" 2>&1)" &&
-        printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
         gone=1
         break
       fi

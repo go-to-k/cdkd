@@ -89,7 +89,7 @@ queue_state() { # usage: queue_state <url> <exists|gone>
   for i in $(seq 1 15); do
     if out="$(aws sqs get-queue-attributes --queue-url "${url}" --attribute-names QueueArn 2>&1)"; then
       [ "${want}" = exists ] && return 0
-    elif printf '%s' "${out}" | grep -qiE 'NonExistentQueue|does not exist'; then
+    elif grep -qiE 'NonExistentQueue|does not exist' <<<"${out}"; then
       [ "${want}" = gone ] && return 0
       return 1
     fi
@@ -294,7 +294,7 @@ echo "    logicalId=${ROLE_LOGICAL_ID} role=${ROLE_NAME}"
 ROLE_BASE="${STACK}-${ROLE_LOGICAL_ID}"
 ROLE_BASE="${ROLE_BASE:0:51}"
 ROLE_BASE="${ROLE_BASE%%-}"
-if ! printf '%s' "${ROLE_NAME}" | grep -qE "^${ROLE_BASE}-[0-9a-f]{12}\$"; then
+if ! grep -qE "^${ROLE_BASE}-[0-9a-f]{12}\$" <<<"${ROLE_NAME}"; then
   echo "FAIL: '${ROLE_NAME}' is not the cdkd derivation ${ROLE_BASE}-<12 hex> of ${STACK}/${ROLE_LOGICAL_ID} —" >&2
   echo "      the collision diagnosis under test would not fire for it" >&2
   exit 1
@@ -748,7 +748,7 @@ aws sns get-topic-attributes --topic-arn "${KEPT_TOPIC_ARN}" >/dev/null || {
   exit 1
 }
 for n in "${ADOPT_ROLE_NAME}" "${ADOPT_ROLE_NAME_2}"; do
-  if ! printf '%s' "${n}" | grep -qE "^${ADOPT_BASE}-[0-9a-f]{12}\$"; then
+  if ! grep -qE "^${ADOPT_BASE}-[0-9a-f]{12}\$" <<<"${n}"; then
     echo "FAIL: '${n}' is not a generated ${ADOPT_BASE}-<12 hex> name"
     exit 1
   fi

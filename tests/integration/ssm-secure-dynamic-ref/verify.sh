@@ -197,7 +197,7 @@ DEPLOY_LOG="$(mktemp "${TMPDIR:-/tmp}/cdkd-2482-deploy.XXXXXX")"
 # Never print a marker: withhold any output that carries one. A diagnostic
 # that leaks the value it is guarding is itself the bug.
 leaks_marker() { # leaks_marker <text> -> 0 when either marker is in it
-  printf '%s' "$1" | grep -qF -e "${MARKER}" -e "${MARKER_VERSIONED}"
+  grep -qF -e <<<"$1" "${MARKER}" -e "${MARKER_VERSIONED}"
 }
 diag_output() { # diag_output <text>
   if leaks_marker "$1"; then
@@ -435,7 +435,7 @@ if leaks_marker "${SCRUB_OUT}"; then
   echo "FAIL: 'cdkd scrub' output leaked a SecureString value" >&2
   exit 1
 fi
-if printf '%s' "${SCRUB_OUT}" | grep -qiE 'no plaintext secrets|nothing to scrub'; then
+if grep -qiE 'no plaintext secrets|nothing to scrub' <<<"${SCRUB_OUT}"; then
   echo "    OK: scrub --dry-run reports the deployed state is already clean"
 else
   echo "FAIL: scrub --dry-run should report nothing to scrub on a freshly-deployed stack" >&2
@@ -462,7 +462,7 @@ if [ "${DRIFT_RC}" -ne 0 ]; then
   diag_output "${DRIFT_OUT}"
   exit 1
 fi
-if printf '%s' "${DRIFT_OUT}" | grep -q 'unresolvedToken'; then
+if grep -q 'unresolvedToken' <<<"${DRIFT_OUT}"; then
   echo "FAIL (issue #2482): drift still reports the ssm-secure reference as an unresolvable token" >&2
   diag_output "${DRIFT_OUT}"
   exit 1

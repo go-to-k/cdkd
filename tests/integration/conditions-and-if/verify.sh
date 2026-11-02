@@ -135,7 +135,7 @@ ssm_value() {
   if ! out="$(aws ssm get-parameter --name "${name}" --region "${REGION}" \
       --query 'Parameter.Value' --output text 2>&1)"; then
     # TOCTOU: the parameter can vanish between gone_probe and this requery.
-    printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}" \
       && { echo ""; return 0; } \
       || { echo "FAIL: get-parameter requery undetermined (${name}): ${out}" >&2; exit 1; }
   fi
@@ -314,7 +314,7 @@ REDEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BU
   exit 1
 }
 # Needle copied from deploy-flow.ts's no-change log line.
-if ! printf '%s' "${REDEPLOY_OUT}" | grep -qF 'No changes detected. Stack is up to date.'; then
+if ! grep -qF 'No changes detected. Stack is up to date.' <<<"${REDEPLOY_OUT}"; then
   printf '%s\n' "${REDEPLOY_OUT}" >&2
   echo "FAIL: the unchanged basic redeploy planned a change (expected 'No changes detected. Stack is up to date.'); an UPDATE of the topic is go-to-k/cdkd#4471 on the deploy path" >&2
   exit 1

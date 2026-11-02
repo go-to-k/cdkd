@@ -888,7 +888,7 @@ stranger_rule_present() {
     [ "$(printf '%s' "${out}" | jq '.SecurityGroupRules | length')" -eq 1 ]
     return
   fi
-  if printf '%s' "${out}" | grep -qiE 'NotFound|does not exist'; then
+  if grep -qiE 'NotFound|does not exist' <<<"${out}"; then
     return 1
   fi
   echo "FAIL: describe-security-group-rules on ${STRANGER_RULE_ID} undetermined: ${out}" >&2
@@ -1069,7 +1069,7 @@ fi
 # journals no failed op: the journal is absent, or holds no StrangerIngress
 # failed op. Any other read failure is a FAIL.
 if ! ADOPT_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  if printf '%s' "${ADOPT_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+  if grep -qE '\(404\)|NoSuchKey|Not Found' <<<"${ADOPT_JOURNAL}"; then
     ADOPT_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
       '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
   else
@@ -1275,7 +1275,7 @@ fi
 # The refusal journals no failed op (go-to-k/cdkd#4356): the journal is absent
 # or holds no StrangerIngress failed op, so the attempt is appended by hand.
 if ! POP_JOURNAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STRANGER_PREFIX}/rollback-journal.json" - 2>&1); then
-  if printf '%s' "${POP_JOURNAL}" | grep -qE '\(404\)|NoSuchKey|Not Found'; then
+  if grep -qE '\(404\)|NoSuchKey|Not Found' <<<"${POP_JOURNAL}"; then
     POP_JOURNAL=$(jq -n --arg s "${STRANGER_STACK}" --arg r "${REGION}" \
       '{journalVersion: 1, stackName: $s, region: $r, segments: []}')
   else

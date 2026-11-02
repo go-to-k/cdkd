@@ -368,21 +368,21 @@ for _ in 1 2 3 4 5; do
   if TAGS_RAW="$(aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" \
       --region "${REGION}" --output json 2>&1)"; then
     TAGS_AFTER="${TAGS_RAW}"
-  elif printf '%s' "${TAGS_RAW}" | grep -q 'NoSuchTagSet'; then
+  elif grep -q 'NoSuchTagSet' <<<"${TAGS_RAW}"; then
     TAGS_AFTER='{"TagSet":[]}'
   else
     echo "[verify] FAIL step 6d: get-bucket-tagging failed for ${BUCKET_NAME}:"
     printf '%s\n' "${TAGS_RAW}"
     exit 1
   fi
-  printf '%s' "${TAGS_AFTER}" | grep -q 'IntegInjected' && break
+  grep -q 'IntegInjected' <<<"${TAGS_AFTER}" && break
   sleep 3
 done
 echo "[verify] step 6d: tags after revert = ${TAGS_AFTER}"
 OWNER_AFTER="$(printf '%s' "${TAGS_AFTER}" \
   | node -e 'let b="";process.stdin.on("data",c=>b+=c).on("end",()=>{const e=(JSON.parse(b).TagSet||[]).find(x=>x.Key==="Owner");process.stdout.write(e?e.Value:"(absent)");})')"
 
-if ! printf '%s' "${TAGS_AFTER}" | grep -q 'IntegInjected'; then
+if ! grep -q 'IntegInjected' <<<"${TAGS_AFTER}"; then
   echo "[verify] FAIL step 6d: the untemplated 'IntegInjected' tag was RESET by --revert"
   echo "[verify]   on a template-only baseline it must be preserved (issue #1626)."
   exit 1

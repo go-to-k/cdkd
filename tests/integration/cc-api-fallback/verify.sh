@@ -502,12 +502,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws apigatewayv2 update-api --api-id "${API_ID}" --name "${API_TITLE}" \
     --region "${REGION}" 2>&1)"; then
     DENY_PROBE=""
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "FAIL: precondition -- ${DENY_ROLE}'s explicit deny on apigateway:PATCH never bound within 2 minutes" >&2
   exit 1
 fi

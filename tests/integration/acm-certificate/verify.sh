@@ -285,12 +285,12 @@ phase0_state=$(aws s3 cp "s3://${BUCKET}/cdkd/${STACK}/${REGION}/state.json" - -
 # Anchored: a bare `404` matches any account id containing those digits in a
 # URI the error echoes back, and a bare `does not exist` also matches
 # NoSuchBucket -- both would turn a broken probe into a PASS.
-if [[ "${phase0_state_rc}" -ne 0 ]] && ! printf '%s' "${phase0_state}" | grep -qE 'NoSuchKey|\(404\)|Not Found'; then
+if [[ "${phase0_state_rc}" -ne 0 ]] && ! grep -qE 'NoSuchKey|\(404\)|Not Found' <<<"${phase0_state}"; then
   echo "FAIL: could not read state to check it, and the error is not a missing key:"
   printf '%s\n' "${phase0_state}"
   exit 1
 fi
-if [[ "${phase0_state_rc}" -eq 0 ]] && printf '%s' "${phase0_state}" | grep -q 'AWS::CertificateManager::Certificate'; then
+if [[ "${phase0_state_rc}" -eq 0 ]] && grep -q 'AWS::CertificateManager::Certificate' <<<"${phase0_state}"; then
   echo "FAIL: state records a certificate the failed create deleted:"
   printf '%s\n' "${phase0_state}"
   exit 1

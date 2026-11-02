@@ -247,8 +247,8 @@ DEPLOY_OUT="$(CDKD_TEST_UPDATE=true CDKD_TEST_FOREIGN_PROBE=true node "${LOCAL_D
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1)" || deploy_rc=$?
 echo "${DEPLOY_OUT}" | tail -20
 [ "${deploy_rc}" -ne 0 ] || { echo "FAIL: deploy over a foreign repository under the recorded name succeeded" >&2; exit 1; }
-printf '%s' "${DEPLOY_OUT}" | grep -qF "is not this resource's" || { echo "FAIL: the deploy did not fail on the recorded-id refusal" >&2; exit 1; }
-printf '%s' "${DEPLOY_OUT}" | grep -qF "cdkd orphan" || { echo "FAIL: the refusal names no cdkd orphan remedy" >&2; exit 1; }
+grep -qF "is not this resource's" <<<"${DEPLOY_OUT}" || { echo "FAIL: the deploy did not fail on the recorded-id refusal" >&2; exit 1; }
+grep -qF "cdkd orphan" <<<"${DEPLOY_OUT}" || { echo "FAIL: the refusal names no cdkd orphan remedy" >&2; exit 1; }
 DESC_FOREIGN="$(repo_field "${REPO_RENAMED}" repositoryDescription)"
 [ "${DESC_FOREIGN}" = "foreign repository" ] || { echo "FAIL: the foreign repository was written to (description '${DESC_FOREIGN}')" >&2; exit 1; }
 echo "    update refused; the foreign repository was not written to"
@@ -258,7 +258,7 @@ destroy_rc=0
 DESTROY_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --force 2>&1)" || destroy_rc=$?
 echo "${DESTROY_OUT}" | tail -20
 [ "${destroy_rc}" -ne 0 ] || { echo "FAIL: destroy over a foreign repository under the recorded name exited 0" >&2; exit 1; }
-printf '%s' "${DESTROY_OUT}" | grep -qF "cdkd did not delete it" || { echo "FAIL: the destroy did not fail on the recorded-id refusal" >&2; exit 1; }
+grep -qF "cdkd did not delete it" <<<"${DESTROY_OUT}" || { echo "FAIL: the destroy did not fail on the recorded-id refusal" >&2; exit 1; }
 [ "$(repo_field "${REPO_RENAMED}" repositoryId)" = "${FOREIGN_ID}" ] || { echo "FAIL: destroy deleted the foreign repository" >&2; exit 1; }
 aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" >/dev/null || { echo "FAIL: destroy dropped the state holding the refused record" >&2; exit 1; }
 echo "    destroy refused; the foreign repository survived and the record was kept"

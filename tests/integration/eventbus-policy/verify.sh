@@ -117,15 +117,15 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
 
 POLICY_P1="$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
-if ! printf '%s' "${POLICY_P1}" | grep -q '"Sid":"cdkd-integ-buspolicy-stmt"'; then
+if ! grep -q '"Sid":"cdkd-integ-buspolicy-stmt"' <<<"${POLICY_P1}"; then
   echo "FAIL: bus policy statement missing after Phase 1: ${POLICY_P1}" >&2
   exit 1
 fi
-if ! printf '%s' "${POLICY_P1}" | grep -q '"Action":"events:PutEvents"'; then
+if ! grep -q '"Action":"events:PutEvents"' <<<"${POLICY_P1}"; then
   echo "FAIL: bus policy Action missing after Phase 1: ${POLICY_P1}" >&2
   exit 1
 fi
-if printf '%s' "${POLICY_P1}" | grep -q '"Condition"'; then
+if grep -q '"Condition"' <<<"${POLICY_P1}"; then
   echo "FAIL: bus policy unexpectedly has a Condition after Phase 1: ${POLICY_P1}" >&2
   exit 1
 fi
@@ -134,7 +134,7 @@ echo "    bus policy statement live (no Condition yet)"
 # Issue #5044: the EventBus `Policy` property reaches AWS on create.
 PROP_POLICY_P1="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
-if ! printf '%s' "${PROP_POLICY_P1}" | grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v1"'; then
+if ! grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v1"' <<<"${PROP_POLICY_P1}"; then
   echo "FAIL: EventBus Policy property not applied on create (issue 5044): ${PROP_POLICY_P1}" >&2
   exit 1
 fi
@@ -145,15 +145,15 @@ echo "==> Phase 2: cdkd diff for the pure key addition (#1608 shape)"
 DIFF_OUT="$(CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" diff "${STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}")"
 printf '%s\n' "${DIFF_OUT}"
-if ! printf '%s' "${DIFF_OUT}" | grep -qF 'old: {}'; then
+if ! grep -qF 'old: {}' <<<"${DIFF_OUT}"; then
   echo "FAIL: diff old side is not '{}' for a pure key addition (issue 1608 regression)" >&2
   exit 1
 fi
-if ! printf '%s' "${DIFF_OUT}" | grep -q '"Condition"'; then
+if ! grep -q '"Condition"' <<<"${DIFF_OUT}"; then
   echo "FAIL: diff new side does not show the added Condition" >&2
   exit 1
 fi
-if printf '%s' "${DIFF_OUT}" | grep -q '"Principal"'; then
+if grep -q '"Principal"' <<<"${DIFF_OUT}"; then
   echo "FAIL: diff echoes unchanged statement keys (issue 1608 regression: reads as removal)" >&2
   exit 1
 fi
@@ -167,7 +167,7 @@ CDKD_TEST_UPDATE=true node "${LOCAL_DIST}" deploy "${STACK}" \
 POLICY_P3="$(aws events describe-event-bus --name "${BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
 for token in '"Sid":"cdkd-integ-buspolicy-stmt"' '"Action":"events:PutEvents"' '"Principal"' '"Resource"' '"Condition"' 'cdkd.integ'; do
-  if ! printf '%s' "${POLICY_P3}" | grep -qF "${token}"; then
+  if ! grep -qF "${token}" <<<"${POLICY_P3}"; then
     echo "FAIL: bus policy statement lost ${token} after the Condition update: ${POLICY_P3}" >&2
     exit 1
   fi
@@ -181,11 +181,11 @@ CDKD_TEST_UPDATE=true CDKD_TEST_BUS_POLICY_UPDATE=true node "${LOCAL_DIST}" depl
 
 PROP_POLICY_P3B="$(aws events describe-event-bus --name "${POLICY_BUS_NAME}" --region "${REGION}" \
   --query 'Policy' --output text)"
-if ! printf '%s' "${PROP_POLICY_P3B}" | grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v2"'; then
+if ! grep -qF '"Sid":"cdkd-integ-buspolicy-prop-v2"' <<<"${PROP_POLICY_P3B}"; then
   echo "FAIL: changed EventBus Policy property not applied on update (issue 5044): ${PROP_POLICY_P3B}" >&2
   exit 1
 fi
-if printf '%s' "${PROP_POLICY_P3B}" | grep -qF 'cdkd-integ-buspolicy-prop-v1'; then
+if grep -qF 'cdkd-integ-buspolicy-prop-v1' <<<"${PROP_POLICY_P3B}"; then
   echo "FAIL: old EventBus Policy statement survived the whole-document update (issue 5044): ${PROP_POLICY_P3B}" >&2
   exit 1
 fi

@@ -159,7 +159,7 @@ code_signing_arn() { # -> attached CodeSigningConfigArn, or GONE when detached
   # Kept for the shape AWS uses when the FUNCTION itself is gone; a canonical
   # not-found is still "no config attached". Anything else is undetermined and
   # must hard-fail rather than read as "detached".
-  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     printf 'GONE'
     return 0
   fi

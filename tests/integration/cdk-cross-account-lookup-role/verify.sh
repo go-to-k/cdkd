@@ -259,7 +259,7 @@ case "${SECRET_RECORDED}" in
   *"{{resolve:ssm-secure:${PARAM_PREFIX}/seed}}"*) : ;;
   *) fail "producer state records SecretValue as '${SECRET_RECORDED}', not its redacted dynamic reference" ;;
 esac
-if printf '%s' "${PRODUCER_STATE}" | grep -qF "not-a-secret-${RUN_TOKEN}"; then
+if grep -qF "not-a-secret-${RUN_TOKEN}" <<<"${PRODUCER_STATE}"; then
   fail "producer state holds the SecureString's plaintext"
 fi
 

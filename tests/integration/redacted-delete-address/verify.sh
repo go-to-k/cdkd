@@ -218,11 +218,11 @@ fi
 # Two INDEPENDENT markers: the summary from destroy.ts, the row from the skip
 # reason via destroy-runner.ts.
 SUMMARY_SEEN=0
-if printf '%s' "${DESTROY_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY_TXT}"; then
   SUMMARY_SEEN=1
 fi
 ROW_SEEN=0
-if printf '%s' "${DESTROY_TXT}" | grep -q 'skipped (redacted address property in state'; then
+if grep -q 'skipped (redacted address property in state' <<<"${DESTROY_TXT}"; then
   ROW_SEEN=1
 fi
 if [ "${SUMMARY_SEEN}" -eq 1 ] && [ "${ROW_SEEN}" -eq 0 ]; then
@@ -234,11 +234,11 @@ if [ "${ROW_SEEN}" -eq 0 ]; then
   echo "FAIL: destroy output carried no 'skipped (redacted address property in state' row" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_TXT}" | grep -q 'Destroy skipped 1 entr'; then
+if ! grep -q 'Destroy skipped 1 entr' <<<"${DESTROY_TXT}"; then
   echo "FAIL: expected EXACTLY ONE skipped entry (the stage)" >&2
   exit 1
 fi
-if ! printf '%s' "${DESTROY_TXT}" | grep -q 'recorded in state with ApiId redacted'; then
+if ! grep -q 'recorded in state with ApiId redacted' <<<"${DESTROY_TXT}"; then
   echo "FAIL: the skip warning did not name the redacted ApiId" >&2
   exit 1
 fi
@@ -309,7 +309,7 @@ if [ "${DESTROY2_RC}" -ne 0 ]; then
   echo "FAIL: the clean destroy exited ${DESTROY2_RC}, expected 0" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY2_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY2_TXT}"; then
   echo "FAIL: the clean destroy still skipped something" >&2
   exit 1
 fi

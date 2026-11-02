@@ -364,7 +364,7 @@ invoke_secret() {
   local i=1 out=""
   while [ $i -le 3 ]; do
     if out=$(${CLI} local invoke "${STACK}/EchoSecretHandler" "$@" 2>"${SECRET_ERR}" | tail -1) && \
-       printf '%s' "${out}" | grep -q '"importedSecret":'; then
+       grep -q '"importedSecret":' <<<"${out}"; then
       printf '%s' "${out}"
       return 0
     fi
@@ -386,15 +386,15 @@ RESULT_SECRET=$(invoke_secret --from-state --verbose --no-pull --state-bucket "$
 # The payload is the container's own echo, so it is where the plaintext is
 # EXPECTED; print it with the value masked.
 echo "[verify]   response: ${RESULT_SECRET//${SECRET_PLAINTEXT}/<plaintext>}"
-printf '%s' "${RESULT_SECRET}" | grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET}" || {
   echo "[verify] FAIL: IMPORTED_SECRET (Fn::ImportValue of a redacted output) did not reach the container resolved"
   exit 1
 }
-printf '%s' "${RESULT_SECRET}" | grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET}" || {
   echo "[verify] FAIL: SAME_STACK_SECRET (a same-stack dynamic reference) did not reach the container resolved"
   exit 1
 }
-printf '%s' "${RESULT_SECRET}" | grep -qF '{{resolve:' && {
+grep -qF '{{resolve:' <<<"${RESULT_SECRET}" && {
   echo "[verify] FAIL: a {{resolve:...}} token reached the container"
   exit 1
 }
@@ -424,11 +424,11 @@ RESULT_SECRET_NOSTATE=$(invoke_secret --no-pull --state-bucket "${STATE_BUCKET}"
   echo "[verify] FAIL: local invoke of EchoSecretHandler (no --from-state) failed"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_NOSTATE}" | grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_NOSTATE}" || {
   echo "[verify] FAIL: SAME_STACK_SECRET must resolve without any state flag"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_NOSTATE}" | grep -q '"importedSecret":"unset"' || {
+grep -q '"importedSecret":"unset"' <<<"${RESULT_SECRET_NOSTATE}" || {
   echo "[verify] FAIL: IMPORTED_SECRET must be dropped without --from-state"
   exit 1
 }
@@ -441,7 +441,7 @@ RESULT_SECRET_OVR=$(invoke_secret --from-state --env-vars "${OVERRIDE_FILE}" --n
   echo "[verify] FAIL: local invoke of EchoSecretHandler with --env-vars failed"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_OVR}" | grep -q '"importedSecret":"local-override-2056"' || {
+grep -q '"importedSecret":"local-override-2056"' <<<"${RESULT_SECRET_OVR}" || {
   echo "[verify] FAIL: the --env-vars override of IMPORTED_SECRET did not reach the container"
   exit 1
 }
@@ -464,7 +464,7 @@ if control_err="$(
   echo "[verify] FAIL: the 4i role CAN describe ${SECRET_NAME}, so 4i would not tell the caller from the role"
   exit 1
 fi
-printf '%s' "${control_err}" | grep -q 'AccessDenied' || {
+grep -q 'AccessDenied' <<<"${control_err}" || {
   echo "[verify] FAIL: the 4i control failed for a reason other than AccessDenied: ${control_err}"
   exit 1
 }
@@ -480,11 +480,11 @@ RESULT_SECRET_ROLE=$(invoke_secret --from-state --role-arn "${READ_ROLE_ARN}" --
   echo "[verify] FAIL: local invoke of EchoSecretHandler under --role-arn failed (did a lookup run as the role?)"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_ROLE}" | grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_ROLE}" || {
   echo "[verify] FAIL: SAME_STACK_SECRET did not resolve under --role-arn"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_ROLE}" | grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_ROLE}" || {
   echo "[verify] FAIL: IMPORTED_SECRET did not resolve under --role-arn"
   exit 1
 }

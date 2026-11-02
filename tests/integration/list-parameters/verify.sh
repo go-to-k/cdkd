@@ -190,15 +190,15 @@ if [ "${rc}" -eq 0 ]; then
 fi
 # Sentinel: an `Fn::Split:` error whose wording drifted must fail loudly here,
 # not read as "the refusal did not happen".
-if ! printf '%s' "${probe_out}" | grep -qF 'is ALREADY a list'; then
-  if printf '%s' "${probe_out}" | grep -qF 'Fn::Split:'; then
+if ! grep -qF 'is ALREADY a list' <<<"${probe_out}"; then
+  if grep -qF 'Fn::Split:' <<<"${probe_out}"; then
     echo "FAIL: an Fn::Split error other than the list refusal was printed (refusal branch gone, or its wording drifted)" >&2
   else
     echo "FAIL: the deploy failed (rc=${rc}) for a reason other than the Fn::Split refusal" >&2
   fi
   exit 1
 fi
-if ! printf '%s' "${probe_out}" | grep -qF '(from Ref SubnetIds)'; then
+if ! grep -qF '(from Ref SubnetIds)' <<<"${probe_out}"; then
   echo "FAIL: the refusal does not name the parameter it refused (from Ref SubnetIds)" >&2
   exit 1
 fi

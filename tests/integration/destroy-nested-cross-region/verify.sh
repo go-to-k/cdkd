@@ -95,7 +95,7 @@ assert_exists() { # usage: assert_exists "<missing description>" aws <service> <
   if out="$("$@" 2>&1)"; then
     return 0
   fi
-  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: ${desc}" >&2
     exit 1
   fi

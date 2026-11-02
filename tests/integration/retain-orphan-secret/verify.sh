@@ -218,7 +218,7 @@ plaintext_survives_in_s3() {
       exit 1
     fi
     rm -f "${err}"
-    if printf '%s' "${body}" | grep -qF "${PLAINTEXT}"; then
+    if grep -qF "${PLAINTEXT}" <<<"${body}"; then
       echo "    LEAKED in ${key} (version ${version})" >&2
       found=0
     fi

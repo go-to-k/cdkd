@@ -222,7 +222,7 @@ echo "[verify] phase A: deploy ${STACK} with no repository name"
 deploy "${LOG_DIR}/a.log" '' '' \
   || { sed 's/^/  /' "${LOG_DIR}/a.log"; echo "[verify] FAIL: phase A deploy failed" >&2; exit 1; }
 A_ID="$(state_repo_id)"
-if ! printf '%s' "${A_ID}" | grep -qE "^${GENERATED_PREFIX}[0-9a-f]{12}\$"; then
+if ! grep -qE "^${GENERATED_PREFIX}[0-9a-f]{12}\$" <<<"${A_ID}"; then
   echo "[verify] FAIL: state records Repo as '${A_ID}', expected a generated '${GENERATED_PREFIX}<12 hex>'" >&2
   exit 1
 fi

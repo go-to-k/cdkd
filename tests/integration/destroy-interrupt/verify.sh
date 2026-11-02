@@ -256,11 +256,11 @@ if [ "${WILDCARD_RC}" -ne 1 ]; then
   echo "FAIL: destroy '${STACK}*' with an unsynthesizable app exited ${WILDCARD_RC}, expected 1" >&2
   exit 1
 fi
-if ! printf '%s' "${WILDCARD_OUT}" | grep -qF "${STACK}* selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state"; then
+if ! grep -qF "${STACK}* selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state" <<<"${WILDCARD_OUT}"; then
   echo "FAIL: the wildcard refusal did not name the pattern and the failed synth" >&2
   exit 1
 fi
-if ! printf '%s' "${WILDCARD_OUT}" | grep -qF "Caused by: CDK app exited with code 3"; then
+if ! grep -qF "Caused by: CDK app exited with code 3" <<<"${WILDCARD_OUT}"; then
   echo "FAIL: the wildcard refusal did not surface the synth error" >&2
   exit 1
 fi
@@ -291,11 +291,11 @@ if [ "${ALL_RC}" -ne 1 ]; then
   echo "FAIL: destroy --all with an unsynthesizable app exited ${ALL_RC}, expected 1" >&2
   exit 1
 fi
-if ! printf '%s' "${ALL_OUT}" | grep -qF -- "--all selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state"; then
+if ! grep -qF -- <<<"${ALL_OUT}" "--all selects among the stacks this app synthesizes, and the app could not be synthesized; refusing to fall back to every stack in state"; then
   echo "FAIL: the --all refusal did not name --all and the failed synth" >&2
   exit 1
 fi
-if ! printf '%s' "${ALL_OUT}" | grep -qF "Caused by: CDK app exited with code 3"; then
+if ! grep -qF "Caused by: CDK app exited with code 3" <<<"${ALL_OUT}"; then
   echo "FAIL: the --all refusal did not surface the synth error" >&2
   exit 1
 fi
@@ -313,11 +313,11 @@ if [ "${EXACT_RC}" -ne 0 ]; then
   echo "FAIL: destroy of an exact name with an unsynthesizable app exited ${EXACT_RC}, expected 0" >&2
   exit 1
 fi
-if ! printf '%s' "${EXACT_OUT}" | grep -qF "No matching stacks found in state"; then
+if ! grep -qF "No matching stacks found in state" <<<"${EXACT_OUT}"; then
   echo "FAIL: the exact-name control did not reach the state fallback" >&2
   exit 1
 fi
-if printf '%s' "${EXACT_OUT}" | grep -qF "selects among the stacks this app synthesizes"; then
+if grep -qF "selects among the stacks this app synthesizes" <<<"${EXACT_OUT}"; then
   echo "FAIL: an exact name was refused like a wildcard" >&2
   exit 1
 fi
@@ -348,11 +348,11 @@ for STATE_ALL_ARGS in "--all" "${STACK} --all"; do
     echo "FAIL: state destroy ${STATE_ALL_ARGS} --yes exited ${STATE_ALL_RC}, expected 1" >&2
     exit 1
   fi
-  if ! printf '%s' "${STATE_ALL_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
+  if ! grep -qF -- <<<"${STATE_ALL_OUT}" "${STATE_ALL_REFUSAL}"; then
     echo "FAIL: state destroy ${STATE_ALL_ARGS} did not print the --all removal refusal" >&2
     exit 1
   fi
-  if printf '%s' "${STATE_ALL_OUT}" | grep -qiF "unknown option"; then
+  if grep -qiF "unknown option" <<<"${STATE_ALL_OUT}"; then
     echo "FAIL: state destroy ${STATE_ALL_ARGS} hit commander's unknown-option error instead of the refusal" >&2
     exit 1
   fi
@@ -367,11 +367,11 @@ STATE_EXACT_OUT=$(node "${LOCAL_DIST}" state destroy "${STACK}" --yes \
 STATE_EXACT_RC=$?
 set -e
 printf '%s\n' "${STATE_EXACT_OUT}"
-if [ "${STATE_EXACT_RC}" -ne 1 ] || ! printf '%s' "${STATE_EXACT_OUT}" | grep -qF "No state found for stack(s): ${STACK}"; then
+if [ "${STATE_EXACT_RC}" -ne 1 ] || ! grep -qF "No state found for stack(s): ${STACK}" <<<"${STATE_EXACT_OUT}"; then
   echo "FAIL: state destroy of an exact name did not reach the state listing (rc=${STATE_EXACT_RC})" >&2
   exit 1
 fi
-if printf '%s' "${STATE_EXACT_OUT}" | grep -qF -- "${STATE_ALL_REFUSAL}"; then
+if grep -qF -- <<<"${STATE_EXACT_OUT}" "${STATE_ALL_REFUSAL}"; then
   echo "FAIL: an exact state destroy name was refused like --all" >&2
   exit 1
 fi

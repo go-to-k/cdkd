@@ -1120,7 +1120,7 @@ if gone_probe aws dynamodb describe-table --table-name "${CRAWLER_TABLE_NAME}" -
 elif ! ddb_status="$(aws dynamodb describe-table --table-name "${CRAWLER_TABLE_NAME}" --region "${REGION}" \
     --query 'Table.TableStatus' --output text 2>&1)"; then
   # TOCTOU: the table can vanish between gone_probe and this requery.
-  printf '%s' "${ddb_status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${ddb_status}" \
     && ddb_status="GONE" \
     || { echo "FAIL: describe-table requery undetermined: ${ddb_status}" >&2; exit 1; }
 fi

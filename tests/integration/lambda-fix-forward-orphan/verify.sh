@@ -232,7 +232,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -319,7 +319,7 @@ if CONC_OUT="$(aws lambda put-function-concurrency --function-name "${BASE_FN}" 
     exit 1
   fi
   echo "[verify]   PutFunctionConcurrency: LastModified unchanged"
-elif printf '%s' "${CONC_OUT}" | grep -qi 'UnreservedConcurrentExecution'; then
+elif grep -qi 'UnreservedConcurrentExecution' <<<"${CONC_OUT}"; then
   echo "[verify] NOTE: PutFunctionConcurrency probe skipped -- the account's unreserved concurrency floor refuses a reservation (${CONC_OUT})"
 else
   echo "[verify] FAIL: premise -- PutFunctionConcurrency on ${BASE_FN} failed: ${CONC_OUT}" >&2
@@ -412,12 +412,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws lambda delete-function --function-name "${BASE_FN}" --region "${REGION}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${BASE_FN} (its policy must refuse DeleteFunction)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeleteFunction never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -467,18 +467,18 @@ done
 # failed on the recursion-config call, after the function was made.
 INJECT_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ' | tr -s ' ')"
 for lid in OrphanA OrphanC; do
-  if ! printf '%s' "${INJECT_FLAT}" | grep -qF "PutFunctionRecursionConfig failed for ${lid}"; then
+  if ! grep -qF "PutFunctionRecursionConfig failed for ${lid}" <<<"${INJECT_FLAT}"; then
     echo "[verify] FAIL: the step-2 deploy did not fail ${lid} on PutFunctionRecursionConfig (output above)" >&2
     exit 1
   fi
 done
-if ! printf '%s' "${INJECT_FLAT}" | grep -qF "PutFunctionConcurrency failed for OrphanD"; then
+if ! grep -qF "PutFunctionConcurrency failed for OrphanD" <<<"${INJECT_FLAT}"; then
   echo "[verify] FAIL: the step-2 deploy did not fail OrphanD on PutFunctionConcurrency (output above)" >&2
   exit 1
 fi
 # OrphanD's first Put went through: the journaled token below is then measured
 # after a SUCCESSFUL post-create call on a function that was still Pending.
-if printf '%s' "${INJECT_FLAT}" | grep -qF "PutFunctionRecursionConfig failed for OrphanD"; then
+if grep -qF "PutFunctionRecursionConfig failed for OrphanD" <<<"${INJECT_FLAT}"; then
   echo "[verify] FAIL: the step-2 deploy failed OrphanD on PutFunctionRecursionConfig (expected it allowed, so the CREATE fails on the later PutFunctionConcurrency -- output above)" >&2
   exit 1
 fi
@@ -552,14 +552,14 @@ for pair in OrphanA:RecursiveLoop OrphanC:RecursiveLoop OrphanD:ReservedConcurre
     rm -f "${FAILED_2}"
     exit 1
   fi
-  if ! printf '%s' "${msg}" | grep -qE "Failed to create Lambda function ${lid}: Failed to set ${prop} on Lambda function ${lid} \(function was deleted to maintain atomicity\): [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\."; then
+  if ! grep -qE "Failed to create Lambda function ${lid}: Failed to set ${prop} on Lambda function ${lid} \(function was deleted to maintain atomicity\): [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\." <<<"${msg}"; then
     echo "[verify] FAIL: ${lid}'s RESOURCE_FAILED message is not the post-create refusal naming '<ErrorClass>' plus the verbose-mode pointer (#2319); observed prefix '${msg%%:*}', ${#msg} chars" >&2
     rm -f "${FAILED_2}"
     exit 1
   fi
-  if printf '%s' "${msg}" | grep -qF "${ACCOUNT_ID}" \
-    || printf '%s' "${msg}" | grep -qiF "not authorized" \
-    || printf '%s' "${msg}" | grep -qF "${DENY_ROLE}"; then
+  if grep -qF "${ACCOUNT_ID}" <<<"${msg}" \
+    || grep -qiF "not authorized" <<<"${msg}" \
+    || grep -qF "${DENY_ROLE}" <<<"${msg}"; then
     echo "[verify] FAIL: ${lid}'s RESOURCE_FAILED message quotes AWS's text (account id, deny role or 'not authorized') (#2319); ${#msg} chars" >&2
     rm -f "${FAILED_2}"
     exit 1
@@ -660,26 +660,26 @@ FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' 
 # The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
 for lid in OrphanA OrphanD; do
-  if ! printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created ${lid}"; then
+  if ! grep -qF "deleting partially-created ${lid}" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's ${lid} (output above)" >&2
     exit 1
   fi
-  if printf '%s' "${FF_FLAT}" | grep -qF "${lid} (AWS::Lambda::Function), which a failed deploy"; then
+  if grep -qF "${lid} (AWS::Lambda::Function), which a failed deploy" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy still warned about the earlier ${lid} instead of deleting it (output above)" >&2
     exit 1
   fi
 done
 # Sentinel for the wording above: OrphanC's keep warning uses the same head,
 # so a reword that would blind the OrphanA / OrphanD check fails here first.
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'OrphanC (AWS::Lambda::Function), which a failed deploy'; then
+if ! grep -qF 'OrphanC (AWS::Lambda::Function), which a failed deploy' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the settle's keep-warning head changed (no 'OrphanC (AWS::Lambda::Function), which a failed deploy' in the output): update the OrphanA / OrphanD check above" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF 'deleting partially-created OrphanC'; then
+if grep -qF 'deleting partially-created OrphanC' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy tried to delete OrphanC's re-used name (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${FF_FLAT}" | grep -qF 'is not deleted: the resource now under its physical id is another one'; then
+if ! grep -qF 'is not deleted: the resource now under its physical id is another one' <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not warn that OrphanC's name now holds another function (output above)" >&2
   exit 1
 fi

@@ -242,17 +242,17 @@ for mode in default dry-run; do
     echo "FAIL: [${mode}] deploy over a null resource row exited ${refuse_rc}, expected 1 (a refusal)" >&2
     exit 1
   fi
-  if ! printf '%s' "${refuse_txt}" | grep -q "cannot be read as resources"; then
+  if ! grep -q "cannot be read as resources" <<<"${refuse_txt}"; then
     echo "${refuse_txt}"
     echo "FAIL: [${mode}] the deploy failed without the unreadable-row refusal (issue #3314)" >&2
     exit 1
   fi
-  if ! printf '%s' "${refuse_txt}" | grep -q "planned as a CREATE"; then
+  if ! grep -q "planned as a CREATE" <<<"${refuse_txt}"; then
     echo "${refuse_txt}"
     echo "FAIL: [${mode}] the refusal does not state the CREATE it prevented (issue #3314)" >&2
     exit 1
   fi
-  if ! printf '%s' "${refuse_txt}" | grep -qF "${DLQ_ID}"; then
+  if ! grep -qF "${DLQ_ID}" <<<"${refuse_txt}"; then
     echo "${refuse_txt}"
     echo "FAIL: [${mode}] the refusal does not name the damaged row ${DLQ_ID}" >&2
     exit 1

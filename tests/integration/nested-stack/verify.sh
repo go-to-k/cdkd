@@ -99,7 +99,7 @@ assert_exists() { # usage: assert_exists "<missing description>" aws <service> <
   if out="$("$@" 2>&1)"; then
     return 0
   fi
-  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: ${desc}" >&2
     exit 1
   fi
@@ -230,7 +230,7 @@ if [ "${drift_rc}" -ne 0 ]; then
   exit 1
 fi
 
-if ! printf '%s' "${drift_out}" | grep -qF "${STACK} (${REGION}): no drift detected (1 resource checked, 0 unsupported)"; then
+if ! grep -qF "${STACK} (${REGION}): no drift detected (1 resource checked, 0 unsupported)" <<<"${drift_out}"; then
   echo "FAIL: the parent's drift summary did not read '1 resource checked, 0 unsupported'" >&2
   echo "      the pre-#2141 arithmetic renders '2 resources checked', the pre-#4533 row '1 unsupported'" >&2
   exit 1
@@ -239,14 +239,14 @@ echo "PASS: the parent's summary counts only its SSM parameter as checked"
 
 # go-to-k/cdkd#4533: the child's own block, from a run that named only the
 # parent. Pre-fix the run never read `${CHILD_STACK}`, so no line names it.
-if ! printf '%s' "${drift_out}" | grep -qF "${CHILD_STACK} (${REGION}): no drift detected"; then
+if ! grep -qF "${CHILD_STACK} (${REGION}): no drift detected" <<<"${drift_out}"; then
   echo "FAIL: drift over the parent did not check the nested stack ${CHILD_STACK} (go-to-k/cdkd#4533)" >&2
   exit 1
 fi
 echo "PASS: drift over the parent checked ${CHILD_STACK} in its own block"
 
 # The nested row is covered by that block, so it is no longer `drift unknown`.
-if printf '%s' "${drift_out}" | grep -qF '? Child (AWS::CloudFormation::Stack)'; then
+if grep -qF '? Child (AWS::CloudFormation::Stack)' <<<"${drift_out}"; then
   echo "FAIL: the nested-stack row still reads as drift unknown though its child was checked" >&2
   exit 1
 fi
@@ -255,7 +255,7 @@ echo "PASS: the nested-stack row is skipped, not drift unknown"
 # NEGATIVE CONTROL: the SSM parameter must NOT be unsupported. A change that
 # made EVERY resource unsupported would still exit 0, so the arm has to pin
 # which side each resource landed on.
-if printf '%s' "${drift_out}" | grep -qF '? ParentReferenceToChildBucket'; then
+if grep -qF '? ParentReferenceToChildBucket' <<<"${drift_out}"; then
   echo "FAIL: the parent SSM parameter reported as unsupported -- it has readCurrentState" >&2
   exit 1
 fi
@@ -301,16 +301,16 @@ if [ "${drift_del_rc}" -ne 1 ]; then
   echo "FAIL: drift over the parent exited ${drift_del_rc}, expected 1 for a resource deleted in its nested stack" >&2
   exit 1
 fi
-if ! printf '%s' "${drift_del_out}" | grep -qF "${CHILD_STACK} (${REGION}): drift detected on 1 resource"; then
+if ! grep -qF "${CHILD_STACK} (${REGION}): drift detected on 1 resource" <<<"${drift_del_out}"; then
   echo "FAIL: the child's block did not report drift on 1 resource" >&2
   exit 1
 fi
-if ! printf '%s' "${drift_del_out}" | grep -qF -- "- ${CHILD_PARAM_ID} (AWS::SSM::Parameter) — DELETED outside cdkd"; then
+if ! grep -qF -- <<<"${drift_del_out}" "- ${CHILD_PARAM_ID} (AWS::SSM::Parameter) — DELETED outside cdkd"; then
   echo "FAIL: the deleted child parameter ${CHILD_PARAM_ID} was not reported DELETED" >&2
   exit 1
 fi
 # The parent's own resources are untouched: its block stays clean.
-if ! printf '%s' "${drift_del_out}" | grep -qF "${STACK} (${REGION}): no drift detected (1 resource checked, 0 unsupported)"; then
+if ! grep -qF "${STACK} (${REGION}): no drift detected (1 resource checked, 0 unsupported)" <<<"${drift_del_out}"; then
   echo "FAIL: the parent's block changed although nothing in it was touched" >&2
   exit 1
 fi

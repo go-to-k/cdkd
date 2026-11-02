@@ -75,7 +75,7 @@ sns_statements() {
   local out
   if ! out=$(aws lambda get-policy --function-name "${FN_NAME}" --region "${REGION}" \
       --query Policy --output text 2>&1); then
-    if printf '%s' "${out}" | grep -q 'ResourceNotFoundException'; then
+    if grep -q 'ResourceNotFoundException' <<<"${out}"; then
       echo 0
       return 0
     fi

@@ -263,7 +263,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -272,7 +272,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a rollback journal for ${STACK} already exists at ${JOURNAL_KEY} (left by an earlier run); delete what it records, then the journal (aws s3 rm s3://${STATE_BUCKET}/${JOURNAL_KEY}), first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the rollback journal undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -302,7 +302,7 @@ fi
 # The id form ServiceDiscoveryProvider.isSameResource accepts for a namespace
 # (`NAMESPACE_ID_PATTERN`): no namespace orphan is reachable here, so this
 # read is the arm's only real-AWS evidence for it.
-if ! printf '%s' "${NS_ID}" | grep -qE '^ns-[a-z0-9]{16}$'; then
+if ! grep -qE '^ns-[a-z0-9]{16}$' <<<"${NS_ID}"; then
   echo "[verify] FAIL: Cloud Map names ${NAMESPACE} '${NS_ID}', which is not the ns- plus 16 lowercase alphanumerics form isSameResource accepts" >&2
   exit 1
 fi
@@ -407,7 +407,7 @@ deny_binds() { # usage: deny_binds <desc> aws ...  (exits on an allowed call or 
     if out="$(as_deny_role "$@" 2>&1)"; then
       echo "[verify] FAIL: precondition -- ${DENY_ROLE} was ALLOWED to ${desc} (its policy must refuse it)" >&2
       exit 1
-    elif printf '%s' "${out}" | grep -qi 'explicit deny'; then
+    elif grep -qi 'explicit deny' <<<"${out}"; then
       return 0
     fi
     sleep 5
@@ -457,11 +457,11 @@ if [ "${INJECT_RC}" -eq 0 ]; then
 fi
 # The deploy's own account: each CREATE's cleanup was refused.
 INJECT_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${INJECT_FLAT}" | grep -qF "Failed to clean up partially-created IAM access key KeyA"; then
+if ! grep -qF "Failed to clean up partially-created IAM access key KeyA" <<<"${INJECT_FLAT}"; then
   echo "[verify] FAIL: the step-2 deploy did not report KeyA's refused cleanup (output above)" >&2
   exit 1
 fi
-if ! printf '%s' "${INJECT_FLAT}" | grep -qF "Failed to clean up partially-created ServiceDiscovery Service ServiceA"; then
+if ! grep -qF "Failed to clean up partially-created ServiceDiscovery Service ServiceA" <<<"${INJECT_FLAT}"; then
   echo "[verify] FAIL: the step-2 deploy did not report ServiceA's refused cleanup (output above)" >&2
   exit 1
 fi
@@ -544,13 +544,13 @@ if [ -z "${SRV_FAILED_MSG}" ]; then
   exit 1
 fi
 rm -f "${FAILED_2}"
-if ! printf '%s' "${SRV_FAILED_MSG}" | grep -qE "Failed to create service discovery service ServiceA: [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\."; then
+if ! grep -qE "Failed to create service discovery service ServiceA: [A-Za-z0-9]+\. Re-run with [-][-]verbose for AWS's own message\." <<<"${SRV_FAILED_MSG}"; then
   echo "[verify] FAIL: ServiceA's RESOURCE_FAILED message is not 'Failed to create service discovery service ServiceA: <ErrorClass> plus the verbose-mode pointer' (#2319); observed: ${SRV_FAILED_SHOWN}" >&2
   exit 1
 fi
-if printf '%s' "${SRV_FAILED_MSG}" | grep -qF "${ACCOUNT_ID}" \
-  || printf '%s' "${SRV_FAILED_MSG}" | grep -qiF "not authorized" \
-  || printf '%s' "${SRV_FAILED_MSG}" | grep -qF "${DENY_ROLE}"; then
+if grep -qF "${ACCOUNT_ID}" <<<"${SRV_FAILED_MSG}" \
+  || grep -qiF "not authorized" <<<"${SRV_FAILED_MSG}" \
+  || grep -qF "${DENY_ROLE}" <<<"${SRV_FAILED_MSG}"; then
   echo "[verify] FAIL: ServiceA's RESOURCE_FAILED message quotes AWS's text (account id, deny role or 'not authorized') (#2319); observed: ${SRV_FAILED_SHOWN}" >&2
   exit 1
 fi
@@ -592,7 +592,7 @@ FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' 
 # provider had `isSameResource`); after it, the settle's read of the record's
 # just-created key may have missed it while IAM propagated.
 kept_hint() { # usage: kept_hint <logicalId> <type>
-  if printf '%s' "${FF_FLAT}" | grep -qF "$1 ($2), which a failed deploy"; then
+  if grep -qF "$1 ($2), which a failed deploy" <<<"${FF_FLAT}"; then
     echo "[verify] WARN: $1 was kept with a keep warning (output above): isSameResource answered unknown. If the provider has isSameResource, IAM's or Cloud Map's eventual consistency most likely hid the just-created record resource from the settle's read; re-run before reading this as a regression" >&2
   fi
 }
@@ -652,11 +652,11 @@ fi
 # `applySuccessRule`) open with the logical id and type: none may name either.
 for pair in "KeyA AWS::IAM::AccessKey" "ServiceA AWS::ServiceDiscovery::Service"; do
   set -- ${pair}
-  if ! printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created $1 ($2)"; then
+  if ! grep -qF "deleting partially-created $1 ($2)" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's $1 (no 'deleting partially-created $1 ($2)' in the output above)" >&2
     exit 1
   fi
-  if printf '%s' "${FF_FLAT}" | grep -qF "$1 ($2), which a failed deploy"; then
+  if grep -qF "$1 ($2), which a failed deploy" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy still warned about the earlier $1 instead of deleting it (output above)" >&2
     exit 1
   fi

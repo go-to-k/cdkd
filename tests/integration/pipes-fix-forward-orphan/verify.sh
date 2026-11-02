@@ -209,7 +209,7 @@ delete_pipe_by_name() { ( # usage: delete_pipe_by_name <name>  (best-effort; ret
   set +eu
   for _ in $(seq 1 24); do
     out="$(aws pipes delete-pipe --name "$1" 2>&1)" && break
-    printf '%s' "${out}" | grep -q 'NotFoundException' && break
+    grep -q 'NotFoundException' <<<"${out}" && break
     sleep 5
   done
   true
@@ -310,7 +310,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -319,7 +319,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a rollback journal for ${STACK} already exists at ${JOURNAL_KEY} (left by an earlier run); delete what it records, then the journal (aws s3 rm s3://${STATE_BUCKET}/${JOURNAL_KEY}), first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the rollback journal undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -487,7 +487,7 @@ done
 # pasteable delete command names the pipe; retireFailedCreate's `orphaned`).
 INJECT_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ' | tr -s ' ')"
 for p in "${P_A}" "${P_C}"; do
-  if ! printf '%s' "${INJECT_FLAT}" | grep -qF "Otherwise delete it yourself with: aws pipes delete-pipe --name ${p} --region ${REGION}"; then
+  if ! grep -qF "Otherwise delete it yourself with: aws pipes delete-pipe --name ${p} --region ${REGION}" <<<"${INJECT_FLAT}"; then
     echo "[verify] FAIL: the step-2 deploy did not report ${p}'s refused cleanup (output above)" >&2
     exit 1
   fi
@@ -651,21 +651,21 @@ assert_record OrphanC "${P_C_B}"
 assert_record BasePipe "${P_BASE}"
 # The settle's keep warnings (journaled-orphans.ts, `applySuccessRule`) open
 # with the logical id and type: none may name OrphanA.
-if ! printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created OrphanA"; then
+if ! grep -qF "deleting partially-created OrphanA" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's OrphanA (output above)" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF "OrphanA (AWS::Pipes::Pipe), which a failed deploy"; then
+if grep -qF "OrphanA (AWS::Pipes::Pipe), which a failed deploy" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy still warned about the earlier OrphanA instead of deleting it (output above)" >&2
   exit 1
 fi
 # Sentinel for the wording above: OrphanC's keep warning uses the same head,
 # so a reword that would blind the OrphanA checks fails here first.
-if ! printf '%s' "${FF_FLAT}" | grep -qF "OrphanC (AWS::Pipes::Pipe), which a failed deploy of stack ${STACK} created, is not deleted: the resource now under its physical id is another one"; then
+if ! grep -qF "OrphanC (AWS::Pipes::Pipe), which a failed deploy of stack ${STACK} created, is not deleted: the resource now under its physical id is another one" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy did not warn that OrphanC's physical id now holds another pipe (no 'OrphanC (AWS::Pipes::Pipe), which a failed deploy ... is another one' in the output): if the settle's keep-warning head changed, update the OrphanA checks above" >&2
   exit 1
 fi
-if printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created OrphanC"; then
+if grep -qF "deleting partially-created OrphanC" <<<"${FF_FLAT}"; then
   echo "[verify] FAIL: the fix-forward deploy tried to delete OrphanC's re-used name (output above)" >&2
   exit 1
 fi

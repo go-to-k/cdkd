@@ -280,7 +280,7 @@ for name in "${GENERATED_NAME}" "${LITERAL_NAME}" "${TYPED_NAME}"; do
   elif ! DELETED_DATE="$(aws secretsmanager describe-secret --secret-id "${name}" --region "${REGION}" \
       --query 'DeletedDate' --output text 2>&1)"; then
     # TOCTOU: the secret can vanish between gone_probe and this requery.
-    printf '%s' "${DELETED_DATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${DELETED_DATE}" \
       && DELETED_DATE="GONE" \
       || { echo "FAIL: describe-secret requery undetermined for ${name}: ${DELETED_DATE}" >&2; exit 1; }
   fi

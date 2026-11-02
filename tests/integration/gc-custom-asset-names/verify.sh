@@ -467,7 +467,7 @@ for ref in "${GC_INTEG_UPPER_DIGEST_REF}" "${GC_INTEG_DUALSTACK_FIPS_TAG_REF}" \
   "${GC_INTEG_S3_PATH_UPPER_REF}" "${GC_INTEG_S3_PATH_MIXED_REF}" \
   "${GC_INTEG_S3_URI_UPPER_REF}" "${GC_INTEG_S3_VIRTUAL_BUCKETCASE_REF}" \
   "${GC_INTEG_S3_PATH_BUCKETCASE_REF}" "${GC_INTEG_S3_URI_BUCKETCASE_REF}"; do
-  if ! printf '%s' "${STATE}" | grep -qF "${ref}"; then
+  if ! grep -qF "${ref}" <<<"${STATE}"; then
     echo "FAIL: widened reference is not in the deployed state: ${ref}" >&2
     printf '%s' "${STATE}" | jq '.resources' >&2
     exit 1

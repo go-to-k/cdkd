@@ -275,7 +275,7 @@ if gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KE
   echo "    state file absent (nothing left to record)"
 else
   STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
-  if printf '%s' "${STATE_JSON}" | grep -q '"VolumeSnap"'; then
+  if grep -q '"VolumeSnap"' <<<"${STATE_JSON}"; then
     echo "FAIL: VolumeSnap is still recorded in cdkd state after the rollback" >&2
     exit 1
   fi

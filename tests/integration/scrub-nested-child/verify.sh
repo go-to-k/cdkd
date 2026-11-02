@@ -434,7 +434,7 @@ if [ "${DRY_RC}" -ne 1 ]; then
 fi
 # Sentinel: exit 1 with no per-stack line naming the child means the wording
 # drifted, not that the child was found -- fail loudly rather than pass.
-if [ -z "${DRY_LINE}" ] || ! printf '%s' "${DRY_LINE}" | grep -qF 'Would scrub'; then
+if [ -z "${DRY_LINE}" ] || ! grep -qF 'Would scrub' <<<"${DRY_LINE}"; then
   echo "FAIL: --dry-run --fail exited 1 but printed no 'Would scrub ... in ${CHILD_STACK}' line (wording drift?)" >&2
   printf '%s\n' "${DRY_OUT}" | tail -20 >&2
   exit 1

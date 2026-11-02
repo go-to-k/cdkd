@@ -338,7 +338,7 @@ RULE_NAME="$(generated_name Rule 64)"
 LB_NAME="$(generated_name Lb 32)"
 TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 for name in "${TG_NAME}" "${TOPIC_NAME}" "${RULE_NAME}" "${LB_NAME}"; do
-  if ! printf '%s' "${name}" | grep -qE "^${STACK}-(Tg|Topic|Rule|Lb)-[0-9a-f]{12}\$"; then
+  if ! grep -qE "^${STACK}-(Tg|Topic|Rule|Lb)-[0-9a-f]{12}\$" <<<"${name}"; then
     echo "[verify] FAIL: computed generated name '${name}' is not ${STACK}-<logicalId>-<12 hex>" >&2
     exit 1
   fi

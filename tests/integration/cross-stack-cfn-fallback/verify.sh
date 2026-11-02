@@ -224,12 +224,12 @@ if [ "${NO_FALLBACK_RC}" -eq 0 ]; then
 fi
 # Either intrinsic may fail first (DAG order is not deterministic across the
 # two independent SSM parameters) — accept both cdkd-state-only messages.
-if ! printf '%s' "${NO_FALLBACK_OUT}" | grep -qE "not found in any stack|not found in region"; then
+if ! grep -qE "not found in any stack|not found in region" <<<"${NO_FALLBACK_OUT}"; then
   echo "FAIL: --no-cfn-fallback deploy failed with an UNEXPECTED error (wanted a cross-stack not-found error):" >&2
   printf '%s\n' "${NO_FALLBACK_OUT}" | tail -20 >&2
   exit 1
 fi
-if printf '%s' "${NO_FALLBACK_OUT}" | grep -qE "and CloudFormation exports|Searched cdkd state and CloudFormation stacks"; then
+if grep -qE "and CloudFormation exports|Searched cdkd state and CloudFormation stacks" <<<"${NO_FALLBACK_OUT}"; then
   echo "FAIL: --no-cfn-fallback error message claims CloudFormation was searched — the flag did not reach the resolver" >&2
   exit 1
 fi

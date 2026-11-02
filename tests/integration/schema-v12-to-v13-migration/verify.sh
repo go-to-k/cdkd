@@ -396,7 +396,7 @@ run_cdkd ok "first deploy" "${LOCAL_DIST}" deploy "${STACK}" \
 fetch_state "first deploy"
 assert_version "first deploy" "${LOCAL_SCHEMA_VERSION}"
 FIRST_ID="$(state_field '.stackInstanceId // ""')"
-if ! printf '%s' "${FIRST_ID}" | grep -qE "${UUID_V4}"; then
+if ! grep -qE "${UUID_V4}" <<<"${FIRST_ID}"; then
   fail "first deploy: the record carries no well-formed stackInstanceId (id absent = pre-fix)"
 fi
 pass "first deploy: the record carries a v4 UUID stackInstanceId"

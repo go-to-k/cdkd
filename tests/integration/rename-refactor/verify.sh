@@ -83,7 +83,7 @@ assert_table_deleted() { # usage: assert_table_deleted <table-name> <context>
   elif ! status="$(aws dynamodb describe-table --table-name "${table}" --region "${REGION}" \
       --query 'Table.TableStatus' --output text 2>&1)"; then
     # TOCTOU: the table can vanish between gone_probe and this requery.
-    printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${status}" \
       && status="GONE" \
       || { echo "FAIL: describe-table requery undetermined (${ctx}): ${status}" >&2; exit 1; }
   fi

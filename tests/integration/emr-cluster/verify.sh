@@ -187,7 +187,7 @@ strict_active_tagged_cluster_ids() {
     tags="$(aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
       --query "Cluster.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']" \
       --output text)" || return 1
-    if printf '%s' "${tags}" | grep -q .; then
+    if grep -q . <<<"${tags}"; then
       echo "${id}"
     fi
   done
@@ -1409,7 +1409,7 @@ if [ "${HEAD_RC}" -eq 0 ]; then
   echo "FAIL: state file ${STATE_KEY} still exists after destroy" >&2
   exit 1
 fi
-if ! printf '%s' "${HEAD_ERR}" | grep -qiE '404|Not Found'; then
+if ! grep -qiE '404|Not Found' <<<"${HEAD_ERR}"; then
   echo "FAIL: could not determine whether ${STATE_KEY} still exists — head-object failed with:" >&2
   echo "      ${HEAD_ERR}" >&2
   echo "      refusing to report PASS on an unverified leak check" >&2

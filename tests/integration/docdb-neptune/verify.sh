@@ -327,7 +327,7 @@ echo "[verify] step 1b: a UseLatestRestorableTime property is refused pre-flight
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it before running this fixture" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: step 1b pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -359,7 +359,7 @@ done
 if HEAD_OUT="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: step 1b left a state record at ${STATE_KEY}; the refusal must precede provisioning" >&2
   exit 1
-elif ! printf '%s' "${HEAD_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_OUT}"; then
   echo "[verify] FAIL: step 1b state probe undetermined: ${HEAD_OUT}" >&2
   exit 1
 fi
@@ -1276,7 +1276,7 @@ assert_failed_event_class_only_3G() { # usage: <logicalId> <wrap prefix>
     echo "[verify] FAIL: step 3g: the destroy persisted no RESOURCE_FAILED event with an error message for $1 (the #2319 checks below would pass for free)" >&2
     exit 1
   fi
-  if ! printf '%s' "${msg}" | grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  if ! grep -qE "$2: [A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${msg}"; then
     echo "[verify] FAIL: step 3g: $1's RESOURCE_FAILED message is not '$2: <ErrorClass>. Re-run with --verbose for AWS's own message.' (#2319); observed prefix: '$(msg_prefix "${msg}")', ${#msg} chars" >&2
     exit 1
   fi

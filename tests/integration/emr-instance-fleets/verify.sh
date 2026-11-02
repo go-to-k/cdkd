@@ -158,7 +158,7 @@ strict_active_tagged_cluster_ids() {
     tags="$(aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
       --query "Cluster.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']" \
       --output text)" || return 1
-    if printf '%s' "${tags}" | grep -q .; then
+    if grep -q . <<<"${tags}"; then
       echo "${id}"
     fi
   done
