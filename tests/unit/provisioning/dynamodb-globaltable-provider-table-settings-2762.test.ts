@@ -1017,17 +1017,24 @@ describe('update', () => {
         expect(replicaUpdates()).toEqual([]);
       });
 
-      it('waits for the other region to settle after the send', async () => {
+      it('waits for the other region to settle before the put-back', async () => {
         const statuses = ['UPDATING', 'ACTIVE'];
-        mockSend.mockImplementation((command: { constructor: { name: string } }) => {
-          if (command.constructor.name !== 'DescribeTableCommand') return Promise.resolve({});
-          const sentOne = updates().some((u) => u['ReplicaUpdates']);
-          const ReplicaStatus = sentOne ? (statuses.shift() ?? 'ACTIVE') : 'ACTIVE';
-          const Replicas = (live['Replicas'] as Rec[]).map((r) => ({ ...r, ReplicaStatus }));
-          return Promise.resolve({ Table: { ...live, Replicas } });
-        });
-        await update(replicated(8, scaling(3)), replicated(7, scaling(3)));
-        expect(statuses).toEqual([]);
+        let leftAtPutBack: number | undefined;
+        mockSend.mockImplementation(
+          (command: { constructor: { name: string }; input: Rec }) => {
+            if (command.input['ReplicaUpdates']) leftAtPutBack ??= statuses.length;
+            if (command.constructor.name !== 'DescribeTableCommand') return Promise.resolve({});
+            const sent = updates().some((u) => u['ProvisionedThroughput']);
+            const ReplicaStatus = sent ? (statuses.shift() ?? 'ACTIVE') : 'ACTIVE';
+            const Replicas = (live['Replicas'] as Rec[]).map((r) => ({ ...r, ReplicaStatus }));
+            return Promise.resolve({ Table: { ...live, Replicas } });
+          }
+        );
+        await update(
+          replicated(8, { WriteCapacityUnits: 4 }),
+          replicated(7, { WriteCapacityUnits: 3 })
+        );
+        expect(leftAtPutBack).toBe(0);
       });
 
       it('puts back the override AWS held after a write change, read change included', async () => {
