@@ -112,8 +112,11 @@ describe('RDSProvider DBInstance DBParameterGroupName (go-to-k/cdkd#2762)', () =
     delete process.env['CDKD_NO_WAIT'];
     provider = new RDSProvider();
     sleeps = 0;
+    // A wait that never settles fails the case instead of spinning for the
+    // real 30-minute budget.
     (provider as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async () => {
       sleeps += 1;
+      if (sleeps > 50) throw new Error('test sleep budget exceeded: a wait never settled');
     };
   });
 
@@ -294,6 +297,37 @@ describe('RDSProvider DBInstance DBParameterGroupName (go-to-k/cdkd#2762)', () =
       // The post-modify read and the settle read; none after the reboot.
       expect(sent('DescribeDBInstancesCommand')).toHaveLength(2);
       expect(order().at(-1)).toBe('RebootDBInstanceCommand');
+    });
+
+    it('the settle wait waits out a group `applying` on an `available` instance', async () => {
+      arm([
+        read('pg-b', 'applying'),
+        read('pg-b', 'applying'),
+        read('pg-b', 'pending-reboot'),
+        read('pg-b', 'in-sync'),
+      ]);
+      await update(
+        { ...BASE, DBParameterGroupName: 'pg-b' },
+        { ...BASE, DBParameterGroupName: 'pg-a' }
+      );
+      expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
+      expect(sleeps).toBe(1);
+    });
+
+    it('the reboot wait holds while the group still reads `pending-reboot` on an `available` instance', async () => {
+      arm([
+        read('pg-b', 'pending-reboot'),
+        read('pg-b', 'pending-reboot'),
+        read('pg-b', 'pending-reboot'),
+        read('pg-b', 'in-sync'),
+      ]);
+      await update(
+        { ...BASE, DBParameterGroupName: 'pg-b' },
+        { ...BASE, DBParameterGroupName: 'pg-a' }
+      );
+      expect(sent('RebootDBInstanceCommand')).toHaveLength(1);
+      expect(sent('DescribeDBInstancesCommand')).toHaveLength(4);
+      expect(sleeps).toBe(1);
     });
 
     it('the reboot waits for every option group to be in-sync too', async () => {
