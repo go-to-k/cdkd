@@ -985,6 +985,7 @@
       "integs": [
         "ci-cd",
         "codebuild-project",
+        "codebuild-webhook",
         "secrets-array-nested"
       ],
       "signals": {
@@ -994,6 +995,10 @@
           "literal"
         ],
         "codebuild-project": [
+          "l2",
+          "literal"
+        ],
+        "codebuild-webhook": [
           "l2",
           "literal"
         ],
@@ -4889,6 +4894,7 @@
       "integs": [
         "asset-migration",
         "cdk-cross-account-lookup-role",
+        "codebuild-webhook",
         "export",
         "generated-name-lifecycle",
         "getstackoutput-crossregion",
@@ -4907,6 +4913,9 @@
         "cdk-cross-account-lookup-role": [
           "l1",
           "literal"
+        ],
+        "codebuild-webhook": [
+          "l2"
         ],
         "export": [
           "l2",

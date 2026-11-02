@@ -74,11 +74,10 @@ describe('CodeBuildProvider Visibility / ResourceAccessRole (go-to-k/cdkd#2762)'
     provider = new CodeBuildProvider();
   });
 
-  it('declares both handled and leaves Triggers unhandled', () => {
+  it('declares both handled', () => {
     const handled = provider.handledProperties.get(TYPE);
     expect(handled?.has('Visibility')).toBe(true);
     expect(handled?.has('ResourceAccessRole')).toBe(true);
-    expect(handled?.has('Triggers')).toBe(false);
   });
 
   it('sends the pair through UpdateProjectVisibility after CreateProject', async () => {

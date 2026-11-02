@@ -1,8 +1,10 @@
 /**
  * `cdkd diff` on a type with no Cloud Control route (issue
- * [#5600](https://github.com/go-to-k/cdkd/issues/5600)): `AWS::CodeBuild::Project`
- * with `Triggers` printed `[via CC API: Triggers]`, and `--json` carried the
- * same claim in `ccApi`, while the deploy refuses the resource pre-flight.
+ * [#5600](https://github.com/go-to-k/cdkd/issues/5600)): a type like
+ * `AWS::DocDB::DBCluster` with a silent-drop property printed `[via CC API: ...]`,
+ * and `--json` carried the same claim in `ccApi`, while the deploy refuses the
+ * resource pre-flight. (`AWS::CodeBuild::Project` `Triggers` was the report; #5627
+ * wired it.)
  *
  * Runs through the REAL registration and predicate, because what is pinned is
  * that the preview agrees with `ProviderRegistry.validateResourceProperties`.
@@ -47,7 +49,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 
-const TYPE = 'AWS::CodeBuild::Project';
+const TYPE = 'AWS::DocDB::DBCluster';
 const STACK = 'S';
 const CHILD = `${STACK}~Child`;
 
@@ -56,7 +58,7 @@ registerAllProviders(registry, await loadProviderClasses());
 const reasonOf = (resourceType: string): string | undefined =>
   registry.ccRouteUnavailableReason(resourceType);
 
-const template = (type = TYPE, properties: Record<string, unknown> = { Triggers: {} }) =>
+const template = (type = TYPE, properties: Record<string, unknown> = { UseLatestRestorableTime: true }) =>
   ({ Resources: { R: { Type: type, Properties: properties } } }) as unknown as CloudFormationTemplate;
 
 function stateOf(resources: StackState['resources'] = {}, stackName = STACK): StackState {
@@ -116,7 +118,7 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
     expect(reasonOf(TYPE)).toBeDefined();
     expect(() =>
       registry.validateResourceProperties([
-        { logicalId: 'R', resourceType: TYPE, properties: { Triggers: {} } },
+        { logicalId: 'R', resourceType: TYPE, properties: { UseLatestRestorableTime: true } },
       ])
     ).toThrow(/cannot fall back to Cloud Control API/);
   });
@@ -161,14 +163,14 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
     const [reason, ...rest] = findUnroutableDropRefusals(template(), {}, reasonOf);
     expect(rest).toEqual([]);
     expect(reason).toContain(`R (${TYPE})`);
-    expect(reason).toContain('refuses Triggers');
+    expect(reason).toContain('refuses UseLatestRestorableTime');
     expect(reason).toContain(reasonOf(TYPE));
-    expect(reason).toContain(`--prefer-sdk-route ${TYPE}:Triggers`);
+    expect(reason).toContain(`--prefer-sdk-route ${TYPE}:UseLatestRestorableTime`);
   });
 
   it('words the refusal conditionally over a condition it could not settle', () => {
     const conditional = {
-      Resources: { R: { Type: TYPE, Condition: 'C', Properties: { Triggers: {} } } },
+      Resources: { R: { Type: TYPE, Condition: 'C', Properties: { UseLatestRestorableTime: true } } },
     } as unknown as CloudFormationTemplate;
     const [unsettled] = findUnroutableDropRefusals(conditional, {}, reasonOf, () => false);
     expect(unsettled).toContain('if condition C holds, a deploy of this stack');
@@ -187,7 +189,7 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
   });
 
   describe('a create-only key this SDK provider now writes', () => {
-    const CODEBUILD = 'AWS::CodeBuild::Project';
+    const DOCDB = 'AWS::DocDB::DBCluster';
     const nowWrittenRow = (desiredProperties: Record<string, unknown>) =>
       new Map([
         [
@@ -195,10 +197,10 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
           {
             logicalId: 'R',
             changeType: 'UPDATE',
-            resourceType: CODEBUILD,
+            resourceType: DOCDB,
             desiredProperties,
             propertyChanges: [
-              { path: 'Name', oldValue: undefined, newValue: 'same', requiresReplacement: true },
+              { path: 'DBClusterIdentifier', oldValue: undefined, newValue: 'same', requiresReplacement: true },
             ],
           },
         ],
@@ -206,15 +208,15 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
     const nowWrittenState = {
       R: {
         physicalId: 'p',
-        resourceType: CODEBUILD,
-        properties: { Name: 'same' },
-        acceptedCreateOnlyDrops: ['Name'],
+        resourceType: DOCDB,
+        properties: { DBClusterIdentifier: 'same' },
+        acceptedCreateOnlyDrops: ['DBClusterIdentifier'],
       },
     } as unknown as StackState['resources'];
 
     it('keeps the routable wording with no predicate', () => {
       const [text] = findUnwrittenCreateOnlyRefusals(
-        nowWrittenRow({ Name: 'same' }),
+        nowWrittenRow({ DBClusterIdentifier: 'same' }),
         nowWrittenState
       );
       expect(text).toContain(
@@ -224,25 +226,25 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
 
     it('names only --replace when no other key drives the route', () => {
       const [text, ...rest] = findUnwrittenCreateOnlyRefusals(
-        nowWrittenRow({ Name: 'same' }),
+        nowWrittenRow({ DBClusterIdentifier: 'same' }),
         nowWrittenState,
         reasonOf
       );
       expect(rest).toEqual([]);
-      expect(text).toContain('unless --replace opts in; a deploy with Name removed');
+      expect(text).toContain('unless --replace opts in; a deploy with DBClusterIdentifier removed');
       expect(text).not.toContain('--recreate-via-cc-api');
       expect(text).not.toContain('whatever --prefer-sdk-route names');
     });
 
     it('names the flag the pre-flight check needs beside a sibling drop', () => {
       const [text, ...rest] = findUnwrittenCreateOnlyRefusals(
-        nowWrittenRow({ Name: 'same', Triggers: {} }),
+        nowWrittenRow({ DBClusterIdentifier: 'same', UseLatestRestorableTime: true }),
         nowWrittenState,
         reasonOf
       );
       expect(rest).toEqual([]);
       expect(text).toContain(
-        `unless --prefer-sdk-route ${CODEBUILD}:Triggers with the --replace flag opts in; `
+        `unless --prefer-sdk-route ${DOCDB}:UseLatestRestorableTime with the --replace flag opts in; `
       );
       expect(text).not.toContain('--recreate-via-cc-api');
       expect(text).not.toContain('whatever --prefer-sdk-route names');
@@ -276,7 +278,7 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
       expect(node.changes.get('R')?.changeType).toBe('CREATE');
       expect(node.ccApiRoutes.has('R')).toBe(false);
       expect(countBlocking(node)).toBe(0);
-      expect(warnings().filter((m) => m.includes('refuses Triggers'))).toHaveLength(1);
+      expect(warnings().filter((m) => m.includes('refuses UseLatestRestorableTime'))).toHaveLength(1);
     });
 
     it('reads the passed predicate, not the type alone', async () => {
@@ -302,7 +304,7 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
       await diff({
         Parameters: { P: { Type: 'String' } },
         Conditions: { C: { 'Fn::Equals': [{ Ref: 'P' }, 'x'] } },
-        Resources: { R: { Type: TYPE, Condition: 'C', Properties: { Triggers: {} } } },
+        Resources: { R: { Type: TYPE, Condition: 'C', Properties: { UseLatestRestorableTime: true } } },
       } as unknown as CloudFormationTemplate);
       expect(warnings().filter((m) => m.includes('if condition C holds'))).toHaveLength(1);
     });
@@ -363,6 +365,6 @@ describe('cdkd diff on a type with no Cloud Control route (#5600)', () => {
       backend({ [STACK]: stateOf() }),
       new DiffCalculator()
     );
-    expect(warnings().filter((m) => m.includes('refuses Triggers'))).toEqual([]);
+    expect(warnings().filter((m) => m.includes('refuses UseLatestRestorableTime'))).toEqual([]);
   });
 });

@@ -7,6 +7,7 @@ import {
   setOutputOverrides,
   type Bag,
   type TypeCase,
+  type Throw,
 } from './sdk-wire-harness.js';
 import { KinesisStreamProvider } from '../../../src/provisioning/providers/kinesis-provider.js';
 import { CodeBuildProvider } from '../../../src/provisioning/providers/codebuild-provider.js';
@@ -139,7 +140,11 @@ const ROLE = `arn:aws:iam::${ACCOUNT}:role/cb`;
 /** CreateProject / UpdateProject answer the project's name and ARN, which create() returns. */
 function armProject(): void {
   const project = () => ({ project: { name: PROJECT, arn: PROJECT_ARN } });
-  setOutputOverrides({ CreateProjectCommand: project, UpdateProjectCommand: project });
+  setOutputOverrides({
+    CreateProjectCommand: project,
+    // A live webhook, so an update reaches `UpdateWebhook`.
+    UpdateProjectCommand: () => ({ project: { name: PROJECT, arn: PROJECT_ARN, webhook: { url: 'u' } } }),
+  });
 }
 
 const SOURCE = (id: string, location: string): Record<string, unknown> => ({
@@ -224,6 +229,25 @@ const PROJECT_BAG: Bag = {
   AutoRetryLimit: 2,
   Visibility: 'PUBLIC_READ',
   ResourceAccessRole: ROLE,
+  Triggers: {
+    Webhook: true,
+    BuildType: 'BUILD_BATCH',
+    FilterGroups: [
+      [
+        { Type: 'EVENT', Pattern: 'PUSH' },
+        { Type: 'HEAD_REF', Pattern: 'main', ExcludeMatchedPattern: true },
+      ],
+    ],
+    PullRequestBuildPolicy: { RequiresCommentApproval: 'DISABLED', ApproverRoles: ['GITHUB_ADMIN'] },
+  },
+};
+
+const WEBHOOK_SELECTS =
+  'Triggers.Webhook is sent nowhere: it selects which webhook call runs, so no member carries the varied value';
+/** A bag with `FilterGroups` and no `Webhook`, which CloudFormation refuses too (go-to-k/cdkd#5627). */
+const FILTERS_WITH_NO_WEBHOOK: Throw = {
+  why: 'CloudFormation refuses filter groups with the webhook off',
+  says: /cannot specify filter groups when webhook is disabled/,
 };
 
 const PROJECT_CASE: TypeCase = {
@@ -233,6 +257,12 @@ const PROJECT_CASE: TypeCase = {
   createOnly: createOnlyOf('AWS::CodeBuild::Project'),
   arm: armProject,
   exempt: {},
+  nestedExempt: Object.fromEntries(
+    ['', '.Domain', '.Name', '.Scope'].map((k) => [
+      `Triggers.ScopeConfiguration${k}`,
+      `a scope needs the source location CODEBUILD_DEFAULT_WEBHOOK_SOURCE_LOCATION and reaches only CreateWebhook, so a bag for it would carry an exemption per other path; codebuild-provider-triggers-5627.test.ts pins its wire shape`,
+    ])
+  ),
   targets: [],
   bags: [
     {
@@ -243,10 +273,23 @@ const PROJECT_CASE: TypeCase = {
         // readConfigString default), the type the declared value names.
         'create:Environment.Type': DECLARED_DEFAULT,
         'update-add:Environment.Type': DECLARED_DEFAULT,
-        ...beneath(
-          PROJECT_BAG,
-          Object.keys(PROJECT_BAG).filter((k) => k !== 'Name'),
-          `UpdateProject carries every block whole from the desired bag (${CODEBUILD_SRC}, mapProperties), so a member removed under a still-present block is absent from next alone; its update-add probe observes the delivery`
+        ...Object.fromEntries(
+          Object.entries(
+            beneath(
+              PROJECT_BAG,
+              Object.keys(PROJECT_BAG).filter((k) => k !== 'Name' && k !== 'Triggers'),
+              `UpdateProject carries every block whole from the desired bag (${CODEBUILD_SRC}, mapProperties), so a member removed under a still-present block is absent from next alone; its update-add probe observes the delivery`
+            )
+          )
+        ),
+        ...Object.fromEntries(
+          Object.entries(
+            beneath(
+              PROJECT_BAG,
+              ['Triggers'],
+              `UpdateWebhook is built whole from the desired bag (${CODEBUILD_SRC}, reconcileWebhook), so a member removed under a still-present Triggers is absent from next alone; its update-add probe observes the delivery`
+            )
+          ).filter(([label]) => label !== 'update-remove:Triggers.Webhook')
         ),
         ...Object.fromEntries(
           ['Source', 'Environment', 'Artifacts', 'ServiceRole'].map((k) => [
@@ -266,9 +309,12 @@ const PROJECT_CASE: TypeCase = {
             'SourceVersion',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#1160, ${CODEBUILD_SRC}:672-683, 710-720)`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#1160, ${CODEBUILD_SRC}:941-952, 978-988)`,
           ])
         ),
+        'create-vary:Triggers.Webhook': WEBHOOK_SELECTS,
+        'update-vary:Triggers.Webhook': WEBHOOK_SELECTS,
+        'update-remove:Triggers': `a removed Triggers calls nothing, so the live webhook stays: what CloudFormation does (CFn A/B plus CloudTrail on go-to-k/cdkd#5627)`,
         ...Object.fromEntries(
           [
             'VpcConfig',
@@ -279,11 +325,15 @@ const PROJECT_CASE: TypeCase = {
             'BadgeEnabled',
           ].map((k) => [
             `update-remove:${k}`,
-            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, ${CODEBUILD_SRC}:732-739)`,
+            `a removed ${k} sends nothing and UpdateProject merges, so the live value stays: what CloudFormation does (CFn A/B on go-to-k/cdkd#5492, alone and beside a Description change: CFn's UpdateProject omitted it and the value was kept, ${CODEBUILD_SRC}:1000-1007)`,
           ])
         ),
       },
-      expectedRemovalThrows: {},
+      expectedRemovalThrows: {
+        'create:Triggers.Webhook': FILTERS_WITH_NO_WEBHOOK,
+        'update-add:Triggers.Webhook': FILTERS_WITH_NO_WEBHOOK,
+        'update-remove:Triggers.Webhook': FILTERS_WITH_NO_WEBHOOK,
+      },
     },
   ],
 };
