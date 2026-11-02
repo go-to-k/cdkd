@@ -37,7 +37,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -170,7 +170,7 @@ if gone_probe aws dynamodb describe-table --table-name "${TABLE_NAME}" --region 
 elif ! TBL_STATUS="$(aws dynamodb describe-table --table-name "${TABLE_NAME}" --region "${REGION}" \
     --query 'Table.TableStatus' --output text 2>&1)"; then
   # TOCTOU: the table can vanish between gone_probe and this requery.
-  printf '%s' "${TBL_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${TBL_STATUS}" \
     && TBL_STATUS="GONE" \
     || { echo "FAIL: describe-table requery undetermined: ${TBL_STATUS}" >&2; exit 1; }
 fi

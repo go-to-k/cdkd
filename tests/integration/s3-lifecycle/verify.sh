@@ -85,7 +85,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -130,7 +130,7 @@ plant_bucket() { # usage: plant_bucket <bucket> <region>
     if out="$(aws s3api create-bucket --bucket "${bucket}" --region "${region}" ${cbc} 2>&1)"; then
       return 0
     fi
-    if ! printf '%s' "${out}" | grep -qF 'OperationAborted'; then
+    if ! grep -qF 'OperationAborted' <<<"${out}"; then
       echo "FAIL: plant_bucket ${bucket} in ${region}: ${out}" >&2
       return 1
     fi
@@ -390,7 +390,7 @@ SR_FLAT="$(printf '%s' "${SR_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'XrArmBucket (AWS::S3::Bucket) is created with BucketName' \
   "(${SR_ARM_BUCKET}) already holds that name" \
   'Nothing was created.' 'Choose a name no other resource holds'; do
-  if ! printf '%s' "${SR_FLAT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${SR_FLAT}"; then
     echo "FAIL phase 0b: refusal output lacks message fragment: ${needle}" >&2
     exit 1
   fi
@@ -398,7 +398,7 @@ done
 # The other arms of the same refusal must not be what fired: a 301 or 403 here
 # would mean the lookup did not see the same-region bucket at all.
 for needle in 'S3 answered 301' 'S3 answered 403'; do
-  if printf '%s' "${SR_FLAT}" | grep -qF -- "${needle}"; then
+  if grep -qF -- "${needle}" <<<"${SR_FLAT}"; then
     echo "FAIL phase 0b: the refusal took the '${needle}' arm for a bucket in this region" >&2
     exit 1
   fi
@@ -531,12 +531,12 @@ XR_FLAT="$(printf '%s' "${XR_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'XrArmBucket (AWS::S3::Bucket) is created with BucketName' \
   "BucketName ${XR_ARM_BUCKET}, and S3 answered 301 for that bucket" \
   'already exists in another region' 'Nothing was created.'; do
-  if ! printf '%s' "${XR_FLAT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${XR_FLAT}"; then
     echo "FAIL phase 0: refusal output lacks message fragment: ${needle}" >&2
     exit 1
   fi
 done
-if printf '%s' "${XR_FLAT}" | grep -qF -- 'Refusing to adopt existing S3 bucket'; then
+if grep -qF -- 'Refusing to adopt existing S3 bucket' <<<"${XR_FLAT}"; then
   echo "FAIL phase 0: the issue #2227 CreateBucket-side guard fired, so the pre-create lookup let the name through as free" >&2
   exit 1
 fi
@@ -776,7 +776,7 @@ fi
 # destroy failed", which any unrelated breakage would also satisfy.
 CC_XR_FLAT="$(printf '%s' "${CC_XR_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'Refusing to delete S3 bucket' "lives in ${XR_REGION}" "destroy targets ${REGION}"; do
-  if ! printf '%s' "${CC_XR_FLAT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${CC_XR_FLAT}"; then
     echo "FAIL phase 0c-XR: refusal output lacks message fragment: ${needle}" >&2
     exit 1
   fi
@@ -878,7 +878,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   CC_ID_LOC_OUT="$(aws s3api get-bucket-location --bucket "${CC_ARM_ID_BUCKET}" --region "${REGION}" 2>&1)"
   CC_ID_LOC_RC=$?
   set -e
-  if [ "${CC_ID_LOC_RC}" -ne 0 ] && printf '%s' "${CC_ID_LOC_OUT}" | grep -qF 'AccessDenied'; then
+  if [ "${CC_ID_LOC_RC}" -ne 0 ] && grep -qF 'AccessDenied' <<<"${CC_ID_LOC_OUT}"; then
     CC_ID_DENIED=1
     break
   fi
@@ -947,7 +947,7 @@ assert_gone_eventually "phase 0c-ID: ${CC_ARM_ID_CLEAN_BUCKET} (the in-run contr
 CC_ID_FLAT="$(printf '%s' "${CC_ID_OUT}" | tr '\n' ' ' | tr -s ' ')"
 for needle in 'Could not confirm which region S3 bucket' 'Grant s3:GetBucketLocation' \
   'unverified, 0 errors)' '1 pre-flight safety check(s) could NOT be completed'; do
-  if ! printf '%s' "${CC_ID_FLAT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${CC_ID_FLAT}"; then
     echo "FAIL phase 0c-ID: destroy output lacks fragment: ${needle}" >&2
     exit 1
   fi
@@ -1048,7 +1048,7 @@ esac
 # membership assertion below: that one proves no row was emitted for the clean
 # bucket, this one proves the guard was actually exercised on it, and only the
 # two together distinguish "the guard answered" from "the guard never ran".
-if ! printf '%s' "${CC_ID_FLAT}" | grep -qF -- "Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}"; then
+if ! grep -qF -- "Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}" <<<"${CC_ID_FLAT}"; then
   echo "FAIL phase 0c-ID control: no 'Confirmed S3 bucket ${CC_ARM_ID_CLEAN_BUCKET}' line -- the control bucket's identity probe never ran, so its lack of a guard row proves nothing." >&2
   exit 1
 fi
@@ -1472,7 +1472,7 @@ POLICY
     out="$(aws s3api get-bucket-location --bucket "${bucket}" --region "${REGION}" 2>&1)"
     rc=$?
     set -e
-    if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -qF 'AccessDenied'; then
+    if [ "${rc}" -ne 0 ] && grep -qF 'AccessDenied' <<<"${out}"; then
       echo "    premise: s3:GetBucketLocation on ${bucket} is DENIED"
       return 0
     fi
@@ -1544,7 +1544,7 @@ if [ "${DEP_ID_STATE_LEFT}" != "DepArmReplaceBucket=${DEP_ARM_NEW_BUCKET}" ]; th
 fi
 
 DEP_ID_FLAT="$(printf '%s' "${DEP_ID_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
-if ! printf '%s' "${DEP_ID_FLAT}" | grep -qF -- "Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}"; then
+if ! grep -qF -- "Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}" <<<"${DEP_ID_FLAT}"; then
   echo "FAIL phase 1c control: no 'Confirmed S3 bucket ${DEP_ARM_ID_CLEAN_BUCKET}' line -- the control's identity probe never ran, so its lack of a guard row proves nothing" >&2
   exit 1
 fi
@@ -1699,8 +1699,8 @@ if [ "${PHASE2B_RC}" -eq 0 ]; then
 fi
 # Two independent markers on the refusal: the guard's own sentence and the
 # pre-flight's suffix. A wording drift in either fails loudly here.
-if ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'EventBridgeEnabled must be a boolean' ||
-   ! printf '%s' "${PHASE2B_PLAIN}" | grep -q 'fix the template value'; then
+if ! grep -q 'EventBridgeEnabled must be a boolean' <<<"${PHASE2B_PLAIN}" ||
+   ! grep -q 'fix the template value' <<<"${PHASE2B_PLAIN}"; then
   echo "FAIL [phase 2b]: the deploy failed, but not with the #3740 template-path refusal" >&2
   exit 1
 fi
@@ -1804,8 +1804,8 @@ if [ "${PHASE2C_ROLLBACK_RC}" -ne 0 ]; then
 fi
 PHASE2C_PLAIN="$(printf '%s' "${PHASE2C_OUT}" | sed 's/\x1b\[[0-9;]*m//g')"
 # Two independent markers: the guard's sentence and the skip decision.
-if ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'EventBridgeEnabled must be a boolean' ||
-   ! printf '%s' "${PHASE2C_PLAIN}" | grep -q 'Leaving the whole notification configuration unapplied'; then
+if ! grep -q 'EventBridgeEnabled must be a boolean' <<<"${PHASE2C_PLAIN}" ||
+   ! grep -q 'Leaving the whole notification configuration unapplied' <<<"${PHASE2C_PLAIN}"; then
   echo "FAIL [phase 2c]: the revert did not warn-and-skip the malformed EventBridgeEnabled (#1759)" >&2
   exit 1
 fi
@@ -1940,7 +1940,7 @@ set -e
 printf '%s\n' "${RN_OUT}"
 RN_FLAT="$(printf '%s' "${RN_OUT}" | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tr -s ' ')"
 # The pre-fix outcome first, so a regression names itself.
-if printf '%s' "${RN_FLAT}" | grep -qF -- 'was ADOPTED, not created'; then
+if grep -qF -- 'was ADOPTED, not created' <<<"${RN_FLAT}"; then
   echo "FAIL [phase 2d]: the re-create ADOPTED ${RN_OLD_BUCKET}, a bucket this stack never made" >&2
   exit 1
 fi
@@ -1953,7 +1953,7 @@ fi
 for needle in 'Cannot reverse the replacement of RenameArmBucket (AWS::S3::Bucket)' \
   'Nothing was deleted.' "Refusing to adopt S3 bucket ${RN_OLD_BUCKET} for RenameArmBucket" \
   'its BucketName is set explicitly'; do
-  if ! printf '%s' "${RN_FLAT}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${RN_FLAT}"; then
     echo "FAIL [phase 2d]: rollback output lacks message fragment: ${needle}" >&2
     exit 1
   fi

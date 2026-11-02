@@ -100,15 +100,15 @@ RESULT_BASELINE=$(${CLI} local invoke-agentcore "${TARGET}" --no-pull 2>"${CLI_E
   exit 1
 }
 echo "    response: ${RESULT_BASELINE}"
-echo "${RESULT_BASELINE}" | grep -q '"BUCKET_NAME":"unset"' || {
+grep -q '"BUCKET_NAME":"unset"' <<<"${RESULT_BASELINE}" || {
   echo "FAIL: baseline (no --from-state) — expected BUCKET_NAME=\"unset\" (Ref intrinsic dropped); got: ${RESULT_BASELINE}"
   exit 1
 }
-echo "${RESULT_BASELINE}" | grep -q '"BUCKET_ARN":"unset"' || {
+grep -q '"BUCKET_ARN":"unset"' <<<"${RESULT_BASELINE}" || {
   echo "FAIL: baseline (no --from-state) — expected BUCKET_ARN=\"unset\" (Fn::GetAtt intrinsic dropped); got: ${RESULT_BASELINE}"
   exit 1
 }
-echo "${RESULT_BASELINE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
+grep -q '"STATIC_VALUE":"cdkd-static"' <<<"${RESULT_BASELINE}" || {
   echo "FAIL: baseline — expected STATIC_VALUE=\"cdkd-static\" pass-through; got: ${RESULT_BASELINE}"
   exit 1
 }
@@ -121,15 +121,15 @@ RESULT_FROMSTATE=$(${CLI} local invoke-agentcore "${TARGET}" --from-state \
   exit 1
 }
 echo "    response: ${RESULT_FROMSTATE}"
-echo "${RESULT_FROMSTATE}" | grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" || {
+grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" <<<"${RESULT_FROMSTATE}" || {
   echo "FAIL: --from-state — expected BUCKET_NAME=\"${BUCKET}\" (Ref resolved from state); got: ${RESULT_FROMSTATE}"
   exit 1
 }
-echo "${RESULT_FROMSTATE}" | grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" || {
+grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" <<<"${RESULT_FROMSTATE}" || {
   echo "FAIL: --from-state — expected BUCKET_ARN=\"${BUCKET_ARN}\" (Fn::GetAtt Arn resolved from state); got: ${RESULT_FROMSTATE}"
   exit 1
 }
-echo "${RESULT_FROMSTATE}" | grep -q '"STATIC_VALUE":"cdkd-static"' || {
+grep -q '"STATIC_VALUE":"cdkd-static"' <<<"${RESULT_FROMSTATE}" || {
   echo "FAIL: --from-state — STATIC_VALUE pass-through broken; got: ${RESULT_FROMSTATE}"
   exit 1
 }
@@ -149,12 +149,12 @@ RESULT_ENV_UPPER=$(AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGI
   exit 1
 }
 echo "    response: ${RESULT_ENV_UPPER}"
-echo "${RESULT_ENV_UPPER}" | grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" || {
+grep -q "\"BUCKET_NAME\":\"${BUCKET}\"" <<<"${RESULT_ENV_UPPER}" || {
   echo "FAIL: AWS_REGION=${UPPER_REGION} must still read the ${REGION} state record — expected BUCKET_NAME=\"${BUCKET}\"; got: ${RESULT_ENV_UPPER}"
   tail -20 "${CLI_ERR}"
   exit 1
 }
-echo "${RESULT_ENV_UPPER}" | grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" || {
+grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" <<<"${RESULT_ENV_UPPER}" || {
   echo "FAIL: AWS_REGION=${UPPER_REGION} — expected BUCKET_ARN=\"${BUCKET_ARN}\"; got: ${RESULT_ENV_UPPER}"
   exit 1
 }

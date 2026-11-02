@@ -65,7 +65,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -414,7 +414,7 @@ assert_nat_gone() { # usage: assert_nat_gone <nat-gateway-id> <label>
   # means gone; anything else is undetermined and hard-fails.
   if ! state="$(aws ec2 describe-nat-gateways --nat-gateway-ids "${id}" \
     --region "${REGION}" --query 'NatGateways[0].State' --output text 2>&1)"; then
-    if printf '%s' "${state}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+    if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${state}"; then
       echo "    OK: ${label} NAT gateway ${id} is gone (not found on re-read)"
       return 0
     fi

@@ -69,7 +69,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -271,7 +271,7 @@ if ! LIVE_NAME_SERVERS=$(aws route53 get-hosted-zone --id "${ZONE_ID}" --region 
   # scripts/check-integ-probe-not-found.ts as a drifted partial duplicate of
   # the canonical signature, which is a rule worth keeping.)
   ROUTE53_ZONE_NOT_FOUND_RE='NoSuchHostedZone|no hosted zone found'
-  if printf '%s' "${LIVE_NS_ERR}" | grep -qiE "${ROUTE53_ZONE_NOT_FOUND_RE}"; then
+  if grep -qiE "${ROUTE53_ZONE_NOT_FOUND_RE}" <<<"${LIVE_NS_ERR}"; then
     echo "FAIL: hosted zone ${ZONE_ID} does not exist while asserting its NameServers" >&2
   else
     echo "FAIL: get-hosted-zone probe undetermined for ${ZONE_ID}" >&2
@@ -421,7 +421,7 @@ PIPE_ID_RE='^[^|]+\|sep\|pipe\.cdkd-test-'"${ACCOUNT_ID}"'\.internal\|A$'
 assert_pipe_record() { # usage: assert_pipe_record <state json> <expected TTL> <phase label>
   local pipe_id pipe_ref pipe_records pipe_count pipe_ttl
   pipe_id=$(printf '%s' "$1" | jq -r '.resources.PipeRecord.physicalId // empty')
-  if ! printf '%s' "${pipe_id}" | grep -qE "${PIPE_ID_RE}"; then
+  if ! grep -qE "${PIPE_ID_RE}" <<<"${pipe_id}"; then
     echo "FAIL ($3): PipeRecord's recorded id is not <zoneId>|${PIPE_NAME}|A (issue #3890)" >&2
     echo "  got: ${pipe_id:-<absent>}" >&2
     exit 1
@@ -795,7 +795,7 @@ fi
 # And the printed plan -- what a user reads -- must report the zone with that
 # id too, not only the mapping file.
 ZONE_PLAN_LINE=$(grep -F "${ZONE_LOGICAL_ID} (AWS::Route53::HostedZone)" "${IMPORT_STDOUT}" || true)
-if ! printf '%s' "${ZONE_PLAN_LINE}" | grep -qF "(${ZONE_ID})"; then
+if ! grep -qF "(${ZONE_ID})" <<<"${ZONE_PLAN_LINE}"; then
   echo "FAIL: the import plan does not report ${ZONE_LOGICAL_ID} imported as ${ZONE_ID}; it said:" >&2
   echo "  ${ZONE_PLAN_LINE:-<no row>}" >&2
   rm -f "${IMPORT_MAP}" "${IMPORT_STDOUT}"

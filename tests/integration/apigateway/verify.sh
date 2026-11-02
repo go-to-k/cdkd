@@ -58,7 +58,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -124,7 +124,7 @@ set_account_role() { # usage: set_account_role <arn-or-empty>
       --patch-operations "${ops}" 2>&1 >/dev/null); then
       return 0
     fi
-    printf '%s' "${out}" | grep -q 'TooManyRequests' || { echo "${out}" >&2; return 1; }
+    grep -q 'TooManyRequests' <<<"${out}" || { echo "${out}" >&2; return 1; }
     sleep 15
   done
   echo "${out}" >&2
@@ -152,7 +152,7 @@ restore_account_role() {
       # Not gone_probe: it exits on an undetermined probe, and this also runs
       # from the EXIT trap, where the rest of cleanup must still run.
       if ! probe=$(aws iam get-role --role-name "${want##*/}" 2>&1 >/dev/null); then
-        if printf '%s' "${probe}" | grep -q 'NoSuchEntity'; then
+        if grep -q 'NoSuchEntity' <<<"${probe}"; then
           echo "WARN: the pre-run account CloudWatch role ${want} no longer exists; leaving the account role unset" >&2
           want=""
           [ "${now}" = "${want}" ] && return 0
@@ -389,7 +389,7 @@ echo "    OK: TOKEN authorizer ${POOL_AUTHORIZER_ID} and GET /scoped scopes 'cdk
 # deployed (a missed DAG edge would leave the proxy route out of the snapshot).
 API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com/${STAGE_NAME}"
 PROXY_BODY="$(curl -fsS "${API_URL}/some/arbitrary/proxy/path" || echo "")"
-if ! echo "${PROXY_BODY}" | grep -q "Hello from cdkd!"; then
+if ! grep -q "Hello from cdkd!" <<<"${PROXY_BODY}"; then
   echo "FAIL: {proxy+} ANY route did not return the Lambda body; got: ${PROXY_BODY}" >&2
   exit 1
 fi

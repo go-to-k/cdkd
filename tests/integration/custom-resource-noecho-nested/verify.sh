@@ -137,7 +137,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -715,7 +715,7 @@ assert_no_tokens_in_response_objects() { # <label>
       # the listing and this read. Gone is not a finding; anything else is.
       # The canonical signature (gone_probe's): `NoSuchVersion` / `NoSuchKey`
       # match its `no ?such` arm.
-      if printf '%s' "${body}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${body}"; then
         continue
       fi
       fail "$1: could not read s3://${STATE_BUCKET}/${key} version ${vid} (${body})"

@@ -28,7 +28,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -188,7 +188,7 @@ if [ -z "${NAMELESS_NAME}" ]; then
   echo "${STATE}" | jq '.outputs'
   exit 1
 fi
-if ! printf '%s' "${NAMELESS_NAME}" | grep -qE '^s3vectorsstack-namelessvectorbucket-[0-9a-f]{12}$'; then
+if ! grep -qE '^s3vectorsstack-namelessvectorbucket-[0-9a-f]{12}$' <<<"${NAMELESS_NAME}"; then
   echo "FAIL: nameless VectorBucket is named '${NAMELESS_NAME}', expected the generated s3vectorsstack-namelessvectorbucket-<12 hex> (issue #5309)" >&2
   exit 1
 fi

@@ -205,12 +205,12 @@ echo "    stdout: ids only ($(wc -l <"${LIST_OUT}" | tr -d ' ') lines); stderr: 
 echo "==> [1/7] Invoking EchoHandler with default empty event"
 RESULT_1=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_1}"
-echo "${RESULT_1}" | grep -q '"greeting":"hello"' || {
+grep -q '"greeting":"hello"' <<<"${RESULT_1}" || {
   echo "FAIL: expected greeting=hello in response, got: ${RESULT_1}"
   exit 1
 }
 # Control for tests 3 / 4: with no --env-vars, no `__proto__` var exists.
-echo "${RESULT_1}" | grep -q '"protoEnv":"unset"' || {
+grep -q '"protoEnv":"unset"' <<<"${RESULT_1}" || {
   echo "FAIL: expected protoEnv=unset without --env-vars, got: ${RESULT_1}"
   exit 1
 }
@@ -222,7 +222,7 @@ trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_F
 echo '{"key":"value","n":42}' > "${EVENT_FILE}"
 RESULT_2=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --event "${EVENT_FILE}" --no-pull)
 echo "    response: ${RESULT_2}"
-echo "${RESULT_2}" | grep -q '"key":"value"' || {
+grep -q '"key":"value"' <<<"${RESULT_2}" || {
   echo "FAIL: expected echoed key=value, got: ${RESULT_2}"
   exit 1
 }
@@ -239,11 +239,11 @@ trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_F
 echo '{"Parameters":{"GREETING":"overridden","__proto__":"proto-parameters"}}' > "${ENV_FILE}"
 RESULT_3=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_3}"
-echo "${RESULT_3}" | grep -q '"greeting":"overridden"' || {
+grep -q '"greeting":"overridden"' <<<"${RESULT_3}" || {
   echo "FAIL: expected greeting=overridden, got: ${RESULT_3}"
   exit 1
 }
-echo "${RESULT_3}" | grep -q '"protoEnv":"proto-parameters"' || {
+grep -q '"protoEnv":"proto-parameters"' <<<"${RESULT_3}" || {
   echo "FAIL: expected the --env-vars __proto__ key delivered (issue #3515), got: ${RESULT_3}"
   exit 1
 }
@@ -257,11 +257,11 @@ trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_F
 echo '{"CdkdLocalInvokeFixture/EchoHandler":{"GREETING":"path-key-overridden","__proto__":"proto-path-key"}}' > "${DP_ENV_FILE}"
 RESULT_4=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --env-vars "${DP_ENV_FILE}" --no-pull)
 echo "    response: ${RESULT_4}"
-echo "${RESULT_4}" | grep -q '"greeting":"path-key-overridden"' || {
+grep -q '"greeting":"path-key-overridden"' <<<"${RESULT_4}" || {
   echo "FAIL: expected greeting=path-key-overridden, got: ${RESULT_4}"
   exit 1
 }
-echo "${RESULT_4}" | grep -q '"protoEnv":"proto-path-key"' || {
+grep -q '"protoEnv":"proto-path-key"' <<<"${RESULT_4}" || {
   echo "FAIL: expected the function-specific __proto__ key delivered (issue #3515), got: ${RESULT_4}"
   exit 1
 }
@@ -273,7 +273,7 @@ trap 'rm -f "${SYNTH_OUT}" "${SYNTH_ERR}" "${LIST_OUT}" "${LIST_ERR}" "${EVENT_F
 echo '{"hi":"there"}' > "${INLINE_EVENT}"
 RESULT_5=$(capture ${CDKD} local invoke CdkdLocalInvokeFixture/InlineHandler --event "${INLINE_EVENT}" --no-pull)
 echo "    response: ${RESULT_5}"
-echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
+grep -q '"inlineEcho":{"hi":"there"}' <<<"${RESULT_5}" || {
   echo "FAIL: expected inlineEcho={hi:there}, got: ${RESULT_5}"
   exit 1
 }
@@ -293,13 +293,13 @@ echo "${RESULT_5}" | grep -q '"inlineEcho":{"hi":"there"}' || {
 echo "==> [6/7] Invoking EchoHandler with an UPPER-CASED AWS_REGION (region-case fold)"
 RESULT_6=$(AWS_REGION=US-EAST-1 AWS_DEFAULT_REGION=US-EAST-1 capture ${CDKD} local invoke CdkdLocalInvokeFixture/EchoHandler --no-pull)
 echo "    response: ${RESULT_6}"
-echo "${RESULT_6}" | grep -q '"awsRegion":"us-east-1"' || {
+grep -q '"awsRegion":"us-east-1"' <<<"${RESULT_6}" || {
   echo "FAIL: expected the container AWS_REGION to arrive canonical (us-east-1), got: ${RESULT_6}"
   exit 1
 }
 # The shape the regression emits: the raw spelling forwarded verbatim, which the
 # handler's SDK clients then resolve against the WRONG partition's endpoint.
-echo "${RESULT_6}" | grep -q '"awsRegion":"US-EAST-1"' && {
+grep -q '"awsRegion":"US-EAST-1"' <<<"${RESULT_6}" && {
   echo "FAIL: container AWS_REGION carried the raw upper-cased spelling: ${RESULT_6}"
   exit 1
 }

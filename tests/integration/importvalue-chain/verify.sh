@@ -58,7 +58,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -295,7 +295,7 @@ fi
 # Best-effort: when cdkd's message names the export (current behavior), make
 # sure it is the RIGHT one. Skipped automatically if a future cdkd reword
 # drops the name from the message.
-if echo "${ERR_OUTPUT}" | grep -q "ChainTopicArn" && ! echo "${ERR_OUTPUT}" | grep -q "ChainDerivedValue"; then
+if grep -q "ChainTopicArn" <<<"${ERR_OUTPUT}" && ! grep -q "ChainDerivedValue" <<<"${ERR_OUTPUT}"; then
   echo "FAIL: error names the wrong export (ChainTopicArn, not ChainDerivedValue)"
   echo "${ERR_OUTPUT}"
   exit 1
@@ -331,17 +331,17 @@ if [[ "${DESTROY_B_RC}" -eq 0 ]]; then
   echo "${DESTROY_B}"
   exit 1
 fi
-if ! echo "${DESTROY_B}" | grep -q "Cannot destroy stack"; then
+if ! grep -q "Cannot destroy stack" <<<"${DESTROY_B}"; then
   echo "FAIL: B destroy refusal does not match StackHasActiveImportsError shape"
   echo "${DESTROY_B}"
   exit 1
 fi
-if ! echo "${DESTROY_B}" | grep -q "${STACK_C}"; then
+if ! grep -q "${STACK_C}" <<<"${DESTROY_B}"; then
   echo "FAIL: B destroy refusal does not name consumer ${STACK_C}"
   echo "${DESTROY_B}"
   exit 1
 fi
-if ! echo "${DESTROY_B}" | grep -q "ChainDerivedValue"; then
+if ! grep -q "ChainDerivedValue" <<<"${DESTROY_B}"; then
   echo "FAIL: B destroy refusal does not name export ChainDerivedValue"
   echo "${DESTROY_B}"
   exit 1
@@ -359,17 +359,17 @@ if [[ "${DESTROY_A_RC}" -eq 0 ]]; then
   echo "${DESTROY_A}"
   exit 1
 fi
-if ! echo "${DESTROY_A}" | grep -q "Cannot destroy stack"; then
+if ! grep -q "Cannot destroy stack" <<<"${DESTROY_A}"; then
   echo "FAIL: A destroy refusal does not match StackHasActiveImportsError shape"
   echo "${DESTROY_A}"
   exit 1
 fi
-if ! echo "${DESTROY_A}" | grep -q "${STACK_B}"; then
+if ! grep -q "${STACK_B}" <<<"${DESTROY_A}"; then
   echo "FAIL: A destroy refusal does not name consumer ${STACK_B}"
   echo "${DESTROY_A}"
   exit 1
 fi
-if ! echo "${DESTROY_A}" | grep -q "ChainTopicArn"; then
+if ! grep -q "ChainTopicArn" <<<"${DESTROY_A}"; then
   echo "FAIL: A destroy refusal does not name export ChainTopicArn"
   echo "${DESTROY_A}"
   exit 1

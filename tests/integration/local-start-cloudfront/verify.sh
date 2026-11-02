@@ -91,7 +91,7 @@ done
 echo "==> GET / (default root object + viewer-response header)"
 ROOT_HEADERS=$(curl -fsS -D - -o "${ROOT_BODY}" "${BASE}/") || fail "GET / failed"
 grep -qi "root page" "${ROOT_BODY}" || fail "GET / did not serve the root index.html"
-echo "${ROOT_HEADERS}" | grep -qi "x-cdkd-fixture: start-cloudfront" \
+grep -qi "x-cdkd-fixture: start-cloudfront" <<<"${ROOT_HEADERS}" \
   || fail "viewer-response function header x-cdkd-fixture not present on GET /"
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ echo "${ROOT_HEADERS}" | grep -qi "x-cdkd-fixture: start-cloudfront" \
 # ---------------------------------------------------------------------------
 echo "==> GET /foo (viewer-request rewrite -> /foo/index.html)"
 FOO_BODY=$(curl -fsS "${BASE}/foo") || fail "GET /foo failed"
-echo "${FOO_BODY}" | grep -qi "foo page" \
+grep -qi "foo page" <<<"${FOO_BODY}" \
   || fail "viewer-request rewrite did not resolve /foo to /foo/index.html"
 
 # ---------------------------------------------------------------------------

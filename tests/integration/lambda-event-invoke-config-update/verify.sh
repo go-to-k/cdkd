@@ -53,7 +53,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -170,7 +170,7 @@ echo "    Phase 1 config reached AWS"
 # stack is out of scope for this fixture).
 echo "==> Phase 1.5: EventInvokeConfig shows no drift"
 DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)"
-if printf '%s' "${DRIFT_OUT}" | grep -q 'AWS::Lambda::EventInvokeConfig'; then
+if grep -q 'AWS::Lambda::EventInvokeConfig' <<<"${DRIFT_OUT}"; then
   echo "FAIL: cdkd drift reported phantom drift on the EventInvokeConfig:" >&2
   printf '%s\n' "${DRIFT_OUT}" | grep -A4 'EventInvokeConfig' >&2
   exit 1

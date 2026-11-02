@@ -222,6 +222,16 @@ fi
     expect(classifyVerifyScript(script).blindLeakAsserts).toHaveLength(1);
   });
 
+  it('canonical helper block matches with a here-string, never a pipe into grep -q (SIGPIPE under pipefail)', () => {
+    // `grep -q` exits on its first matching line; with a multi-line capture
+    // the upstream `printf` can take SIGPIPE (141) and `pipefail` then turns
+    // a genuine not-found into "gone-probe undetermined".
+    expect(CANONICAL_HELPER_BLOCK).not.toMatch(/\|\s*grep\s+-q/);
+    expect(CANONICAL_HELPER_BLOCK).toContain(
+      `grep -qiE ${CANONICAL_NOT_FOUND_REGEX} <<<"\${out}"`,
+    );
+  });
+
   it('flags a drifted copy of the not-found signature', () => {
     const script = `if ! printf '%s' "\${out}" | grep -qiE 'not ?found|404'; then
   exit 1

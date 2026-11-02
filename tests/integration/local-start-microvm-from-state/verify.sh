@@ -46,7 +46,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -279,7 +279,7 @@ echo "==> Arm 1: without a state flag the intrinsic variables are dropped"
 boot_run "${STACK}/Image" --port "${PORT}"
 BODY="$(curl -s --max-time 10 "http://127.0.0.1:${PORT}/")"
 echo "    ${BODY}"
-echo "${BODY}" | grep -q '"env":{"BUCKET_NAME":null,"BUCKET_ARN":null,"PARAM_NAME":null}' \
+grep -q '"env":{"BUCKET_NAME":null,"BUCKET_ARN":null,"PARAM_NAME":null}' <<<"${BODY}" \
   || fail "an intrinsic variable reached the container without a state flag: ${BODY}"
 for key in BUCKET_NAME BUCKET_ARN PARAM_NAME; do
   if ! grep -q "Environment variable ${key} contains a CloudFormation intrinsic and was dropped" "${OUT_FILE}"; then
@@ -298,11 +298,11 @@ echo "==> Arm 2: --from-state fills each from the deployed stack"
 boot_run "${STACK}/Image" --from-state --state-bucket "${STATE_BUCKET}" --region "${REGION}" --port "$((PORT + 1))"
 BODY="$(curl -s --max-time 10 "http://127.0.0.1:$((PORT + 1))/")"
 echo "    ${BODY}"
-echo "${BODY}" | grep -q "\"BUCKET_NAME\":\"${BUCKET_NAME}\"" \
+grep -q "\"BUCKET_NAME\":\"${BUCKET_NAME}\"" <<<"${BODY}" \
   || fail "BUCKET_NAME (Ref) is not the deployed bucket ${BUCKET_NAME}: ${BODY}"
-echo "${BODY}" | grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" \
+grep -q "\"BUCKET_ARN\":\"${BUCKET_ARN}\"" <<<"${BODY}" \
   || fail "BUCKET_ARN (Fn::GetAtt Arn) is not ${BUCKET_ARN}: ${BODY}"
-echo "${BODY}" | grep -q "\"PARAM_NAME\":\"${PARAM_NAME}\"" \
+grep -q "\"PARAM_NAME\":\"${PARAM_NAME}\"" <<<"${BODY}" \
   || fail "PARAM_NAME (Ref) is not the deployed parameter ${PARAM_NAME}: ${BODY}"
 if grep -qE 'contains a CloudFormation intrinsic and was dropped|could not substitute env var' "${OUT_FILE}"; then
   fail "cdkd warned that a variable was not substituted under --from-state"

@@ -31,7 +31,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -69,7 +69,7 @@ deny_statements() {
   local out
   if ! out=$(aws s3api get-bucket-policy --bucket "${BUCKET}" --region "${REGION}" \
       --query Policy --output text 2>&1); then
-    if printf '%s' "${out}" | grep -q 'NoSuchBucketPolicy'; then
+    if grep -q 'NoSuchBucketPolicy' <<<"${out}"; then
       echo 0
       return 0
     fi

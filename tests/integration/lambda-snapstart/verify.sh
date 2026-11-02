@@ -46,7 +46,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -170,7 +170,7 @@ if [ "${OPT_V1}" != "On" ]; then
   exit 1
 fi
 BODY_P1="$(invoke_alias)"
-if ! printf '%s' "${BODY_P1}" | grep -q 'hello-v1'; then
+if ! grep -q 'hello-v1' <<<"${BODY_P1}"; then
   echo "FAIL: alias invoke expected hello-v1, got: ${BODY_P1}" >&2
   exit 1
 fi
@@ -196,7 +196,7 @@ if [ "${OPT_V2}" != "On" ]; then
 fi
 assert_gone "old version ${ALIAS_V_P1} still exists after update (should be deleted)" aws lambda get-function-configuration --function-name "${FN}:${ALIAS_V_P1}" --region "${REGION}"
 BODY_P2="$(invoke_alias)"
-if ! printf '%s' "${BODY_P2}" | grep -q 'hello-v2'; then
+if ! grep -q 'hello-v2' <<<"${BODY_P2}"; then
   echo "FAIL: alias invoke expected hello-v2 after update, got: ${BODY_P2}" >&2
   exit 1
 fi

@@ -38,7 +38,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -502,12 +502,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws apigatewayv2 update-api --api-id "${API_ID}" --name "${API_TITLE}" \
     --region "${REGION}" 2>&1)"; then
     DENY_PROBE=""
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "FAIL: precondition -- ${DENY_ROLE}'s explicit deny on apigateway:PATCH never bound within 2 minutes" >&2
   exit 1
 fi
@@ -596,7 +596,7 @@ done
 unset each_msg
 case "${FAILED_MSG}" in *"<caller-principal>"*) HAS_MASK=1 ;; *) HAS_MASK="" ;; esac
 if [ -z "${HAS_MASK}" ]; then
-  if printf '%s\n' "${FAILED_MSG}" | grep -qiF "not authorized"; then
+  if grep -qiF "not authorized" <<<"${FAILED_MSG}"; then
     echo "FAIL: premise not met: handler text quoted no principal (it does say 'not authorized'; read ${STACK}'s denial wording with --verbose and widen the mask or this arm)" >&2
   else
     echo "FAIL: premise not met: handler text quoted no principal (and says no 'not authorized'; the handler may not have reached the denied write)" >&2

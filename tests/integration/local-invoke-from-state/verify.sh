@@ -101,7 +101,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -186,7 +186,7 @@ invoke_with_retry() {
   err="$(mktemp)"
   while [ $i -le $attempts ]; do
     if out=$(${CLI} local invoke "${args[@]}" 2>"${err}" | tail -1) && \
-       echo "${out}" | grep -q '"bucketName":'; then
+       grep -q '"bucketName":' <<<"${out}"; then
       rm -f "${err}"
       printf '%s' "${out}"
       return 0
@@ -208,15 +208,15 @@ invoke_with_retry() {
 echo "[verify] step 3: cdkd local invoke (no --from-state) — expect BUCKET_NAME=unset"
 RESULT_PR1=$(invoke_with_retry "${STACK}/EchoBucketHandler" --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_PR1}"
-echo "${RESULT_PR1}" | grep -q '"bucketName":"unset"' || {
+grep -q '"bucketName":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected BUCKET_NAME to be dropped (PR 1 warn-and-drop), got: ${RESULT_PR1}"
   exit 1
 }
-echo "${RESULT_PR1}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected STATIC_VALUE=always-the-same in response, got: ${RESULT_PR1}"
   exit 1
 }
-echo "${RESULT_PR1}" | grep -q '"accountTag":"unset"' || {
+grep -q '"accountTag":"unset"' <<<"${RESULT_PR1}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG to be dropped without --from-state, got: ${RESULT_PR1}"
   exit 1
 }
@@ -224,15 +224,15 @@ echo "${RESULT_PR1}" | grep -q '"accountTag":"unset"' || {
 echo "[verify] step 4: cdkd local invoke --from-state — expect BUCKET_NAME=${DEPLOYED_BUCKET}"
 RESULT_PR2=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_PR2}"
-echo "${RESULT_PR2}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_PR2}"
   exit 1
 }
-echo "${RESULT_PR2}" | grep -q '"staticValue":"always-the-same"' || {
+grep -q '"staticValue":"always-the-same"' <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: STATIC_VALUE regressed under --from-state, got: ${RESULT_PR2}"
   exit 1
 }
-echo "${RESULT_PR2}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_PR2}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state, got: ${RESULT_PR2}"
   exit 1
 }
@@ -252,13 +252,13 @@ echo "[verify] step 4b: --from-state --stack-region ${UPPER_REGION} — expect B
 RESULT_UPPER=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state \
   --stack-region "${UPPER_REGION}" --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_UPPER}"
-echo "${RESULT_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_UPPER}" || {
   echo "[verify] FAIL: an upper-cased --stack-region must still read the ${REGION} state record;"
   echo "[verify]       expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_UPPER}"
   exit 1
 }
 # The shape the regression emits: a silent fall-back to no state at all.
-echo "${RESULT_UPPER}" | grep -q '"bucketName":"unset"' && {
+grep -q '"bucketName":"unset"' <<<"${RESULT_UPPER}" && {
   echo "[verify] FAIL: --stack-region ${UPPER_REGION} fell back to no state (BUCKET_NAME unset)"
   exit 1
 }
@@ -280,7 +280,7 @@ echo "[verify] step 4d: AWS_REGION=${UPPER_REGION} --from-state (no --region) �
 RESULT_ENV_UPPER=$(AWS_REGION="${UPPER_REGION}" AWS_DEFAULT_REGION="${UPPER_REGION}" \
   invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_ENV_UPPER}"
-echo "${RESULT_ENV_UPPER}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_ENV_UPPER}" || {
   echo "[verify] FAIL: AWS_REGION=${UPPER_REGION} must still read the ${REGION} state record;"
   echo "[verify]       expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ENV_UPPER}"
   exit 1
@@ -322,11 +322,11 @@ done
 RESULT_ROLE=$(invoke_with_retry "${STACK}/EchoBucketHandler" --from-state --role-arn "${READ_ROLE_ARN}" \
   --no-pull --state-bucket "${STATE_BUCKET}")
 echo "[verify]   response: ${RESULT_ROLE}"
-echo "${RESULT_ROLE}" | grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" || {
+grep -q "\"bucketName\":\"${DEPLOYED_BUCKET}\"" <<<"${RESULT_ROLE}" || {
   echo "[verify] FAIL: --role-arn must still read the state record; expected BUCKET_NAME=${DEPLOYED_BUCKET}, got: ${RESULT_ROLE}"
   exit 1
 }
-echo "${RESULT_ROLE}" | grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" || {
+grep -q "\"accountTag\":\"acct-${ACCOUNT_ID}\"" <<<"${RESULT_ROLE}" || {
   echo "[verify] FAIL: expected ACCOUNT_TAG=acct-${ACCOUNT_ID} under --from-state --role-arn, got: ${RESULT_ROLE}"
   exit 1
 }
@@ -364,7 +364,7 @@ invoke_secret() {
   local i=1 out=""
   while [ $i -le 3 ]; do
     if out=$(${CLI} local invoke "${STACK}/EchoSecretHandler" "$@" 2>"${SECRET_ERR}" | tail -1) && \
-       printf '%s' "${out}" | grep -q '"importedSecret":'; then
+       grep -q '"importedSecret":' <<<"${out}"; then
       printf '%s' "${out}"
       return 0
     fi
@@ -386,15 +386,15 @@ RESULT_SECRET=$(invoke_secret --from-state --verbose --no-pull --state-bucket "$
 # The payload is the container's own echo, so it is where the plaintext is
 # EXPECTED; print it with the value masked.
 echo "[verify]   response: ${RESULT_SECRET//${SECRET_PLAINTEXT}/<plaintext>}"
-printf '%s' "${RESULT_SECRET}" | grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET}" || {
   echo "[verify] FAIL: IMPORTED_SECRET (Fn::ImportValue of a redacted output) did not reach the container resolved"
   exit 1
 }
-printf '%s' "${RESULT_SECRET}" | grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET}" || {
   echo "[verify] FAIL: SAME_STACK_SECRET (a same-stack dynamic reference) did not reach the container resolved"
   exit 1
 }
-printf '%s' "${RESULT_SECRET}" | grep -qF '{{resolve:' && {
+grep -qF '{{resolve:' <<<"${RESULT_SECRET}" && {
   echo "[verify] FAIL: a {{resolve:...}} token reached the container"
   exit 1
 }
@@ -424,11 +424,11 @@ RESULT_SECRET_NOSTATE=$(invoke_secret --no-pull --state-bucket "${STATE_BUCKET}"
   echo "[verify] FAIL: local invoke of EchoSecretHandler (no --from-state) failed"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_NOSTATE}" | grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_NOSTATE}" || {
   echo "[verify] FAIL: SAME_STACK_SECRET must resolve without any state flag"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_NOSTATE}" | grep -q '"importedSecret":"unset"' || {
+grep -q '"importedSecret":"unset"' <<<"${RESULT_SECRET_NOSTATE}" || {
   echo "[verify] FAIL: IMPORTED_SECRET must be dropped without --from-state"
   exit 1
 }
@@ -441,7 +441,7 @@ RESULT_SECRET_OVR=$(invoke_secret --from-state --env-vars "${OVERRIDE_FILE}" --n
   echo "[verify] FAIL: local invoke of EchoSecretHandler with --env-vars failed"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_OVR}" | grep -q '"importedSecret":"local-override-2056"' || {
+grep -q '"importedSecret":"local-override-2056"' <<<"${RESULT_SECRET_OVR}" || {
   echo "[verify] FAIL: the --env-vars override of IMPORTED_SECRET did not reach the container"
   exit 1
 }
@@ -464,7 +464,7 @@ if control_err="$(
   echo "[verify] FAIL: the 4i role CAN describe ${SECRET_NAME}, so 4i would not tell the caller from the role"
   exit 1
 fi
-printf '%s' "${control_err}" | grep -q 'AccessDenied' || {
+grep -q 'AccessDenied' <<<"${control_err}" || {
   echo "[verify] FAIL: the 4i control failed for a reason other than AccessDenied: ${control_err}"
   exit 1
 }
@@ -480,11 +480,11 @@ RESULT_SECRET_ROLE=$(invoke_secret --from-state --role-arn "${READ_ROLE_ARN}" --
   echo "[verify] FAIL: local invoke of EchoSecretHandler under --role-arn failed (did a lookup run as the role?)"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_ROLE}" | grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"sameStackSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_ROLE}" || {
   echo "[verify] FAIL: SAME_STACK_SECRET did not resolve under --role-arn"
   exit 1
 }
-printf '%s' "${RESULT_SECRET_ROLE}" | grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" || {
+grep -qF "\"importedSecret\":\"${SECRET_PLAINTEXT}\"" <<<"${RESULT_SECRET_ROLE}" || {
   echo "[verify] FAIL: IMPORTED_SECRET did not resolve under --role-arn"
   exit 1
 }

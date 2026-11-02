@@ -50,7 +50,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -259,7 +259,7 @@ case "${SECRET_RECORDED}" in
   *"{{resolve:ssm-secure:${PARAM_PREFIX}/seed}}"*) : ;;
   *) fail "producer state records SecretValue as '${SECRET_RECORDED}', not its redacted dynamic reference" ;;
 esac
-if printf '%s' "${PRODUCER_STATE}" | grep -qF "not-a-secret-${RUN_TOKEN}"; then
+if grep -qF "not-a-secret-${RUN_TOKEN}" <<<"${PRODUCER_STATE}"; then
   fail "producer state holds the SecureString's plaintext"
 fi
 

@@ -98,7 +98,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -726,7 +726,7 @@ if [ "${REPLAY_RC}" -eq 0 ]; then
 # spelling is carried in any local artifact this repo can check before the run.
 # Any EC2 error containing "idempotent" comes from the idempotency machinery,
 # which is all this branch needs to establish.
-elif printf '%s' "${REPLAY_OUT}" | grep -qi 'idempotent'; then
+elif grep -qi 'idempotent' <<<"${REPLAY_OUT}"; then
   echo "    OK: EC2 recognised the ClientToken (idempotency error on the minimal replay: ${REPLAY_OUT})"
 else
   echo "FAIL: issue #2039 -- the ClientToken replay never reached the EC2 idempotency check (rc=${REPLAY_RC}): ${REPLAY_OUT}. Without it the count assertion below would pass vacuously." >&2
@@ -977,7 +977,7 @@ for _attempt in 1 2 3 4 5; do
   NEVER_OUT=$(aws ec2 describe-instances --instance-ids "${CANDIDATE_ID}" --region "${REGION}" 2>&1)
   NEVER_RC=$?
   set -e
-  if [ "${NEVER_RC}" -ne 0 ] && printf '%s' "${NEVER_OUT}" | grep -q 'InvalidInstanceID.NotFound'; then
+  if [ "${NEVER_RC}" -ne 0 ] && grep -q 'InvalidInstanceID.NotFound' <<<"${NEVER_OUT}"; then
     NEVER_INSTANCE_ID="${CANDIDATE_ID}"
     break
   fi
@@ -1002,7 +1002,7 @@ PROBE_RC=$?
 set -e
 printf '%s\n' "${PROBE_OUT}" | sed 's/^/    /'
 # The rc AND the receipt line only a complete run prints: 9 cases.
-if [ "${PROBE_RC}" -ne 0 ] || ! printf '%s\n' "${PROBE_OUT}" | grep -qx '\[probe\] ALL 9 PASSED'; then
+if [ "${PROBE_RC}" -ne 0 ] || ! grep -qx '\[probe\] ALL 9 PASSED' <<<"${PROBE_OUT}"; then
   echo "FAIL: issue #4606 -- the isSameResource probe exited ${PROBE_RC} without '[probe] ALL 9 PASSED' (output above)" >&2
   exit 1
 fi
@@ -1102,17 +1102,17 @@ draw_never_id() { # usage: draw_never_id <prefix> <describe-subcommand> <ids-fla
       if [ "${rc}" -eq 0 ]; then
         continue
       fi
-      if printf '%s' "${out}" | grep -qF "${code}"; then
+      if grep -qF "${code}" <<<"${out}"; then
         echo "    never-existed ${prefix} id: ${candidate} (${len} hex, ${code})" >&2
         printf '%s' "${candidate}"
         return 0
       fi
-      if printf '%s' "${out}" | grep -q '\.Malformed'; then
+      if grep -q '\.Malformed' <<<"${out}"; then
         echo "    NOTE: EC2 answers a ${len}-hex ${prefix} id Malformed: $(sanitize_aws_output "${out}")" >&2
         break
       fi
       # Throttling is not an answer: wait and draw again (counts as an attempt).
-      if printf '%s' "${out}" | grep -qE 'RequestLimitExceeded|Throttling'; then
+      if grep -qE 'RequestLimitExceeded|Throttling' <<<"${out}"; then
         sleep 5
         continue
       fi
@@ -1155,7 +1155,7 @@ run_net_probe() {
   rc=$?
   set -e
   printf '%s\n' "${out}" | sed 's/^/    /'
-  if [ "${rc}" -ne 0 ] || ! printf '%s\n' "${out}" | grep -qx "\[probe\] ALL $2 PASSED"; then
+  if [ "${rc}" -ne 0 ] || ! grep -qx "\[probe\] ALL $2 PASSED" <<<"${out}"; then
     echo "FAIL: issue #4606 -- the network probe's '$1' phase exited ${rc} without '[probe] ALL $2 PASSED' (output above)" >&2
     exit 1
   fi
@@ -1170,11 +1170,11 @@ assert_net_gone() { # usage: assert_net_gone <describe-subcommand> <ids-flag> <i
     out=$(aws ec2 "$1" "$2" "$3" --region "${REGION}" 2>&1)
     rc=$?
     set -e
-    if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -qF "$4"; then
+    if [ "${rc}" -ne 0 ] && grep -qF "$4" <<<"${out}"; then
       return 0
     fi
     # Throttling is not an answer: wait and ask again.
-    if [ "${rc}" -ne 0 ] && ! printf '%s' "${out}" | grep -qE 'RequestLimitExceeded|Throttling'; then
+    if [ "${rc}" -ne 0 ] && ! grep -qE 'RequestLimitExceeded|Throttling' <<<"${out}"; then
       echo "FAIL: issue #4606 premise not reached -- $1 $3 (rc=${rc}) did not answer $4: $(sanitize_aws_output "${out}")" >&2
       exit 1
     fi
@@ -1468,7 +1468,7 @@ elif ! INSTANCE_STATE=$(aws ec2 describe-instances \
     --region "${REGION}" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
   # TOCTOU: the record can be swept between gone_probe and this requery.
-  printf '%s' "${INSTANCE_STATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${INSTANCE_STATE}" \
     && INSTANCE_STATE="gone" \
     || { echo "FAIL: describe-instances requery undetermined: ${INSTANCE_STATE}" >&2; exit 1; }
 fi
@@ -1488,7 +1488,7 @@ elif ! PUB_STATE=$(aws ec2 describe-instances \
     --instance-ids "${PUBLIC_INSTANCE_ID}" \
     --region "${REGION}" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
-  printf '%s' "${PUB_STATE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${PUB_STATE}" \
     && PUB_STATE="gone" \
     || { echo "FAIL: describe-instances requery undetermined: ${PUB_STATE}" >&2; exit 1; }
 fi

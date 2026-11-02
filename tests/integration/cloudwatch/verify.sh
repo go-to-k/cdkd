@@ -40,7 +40,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -225,7 +225,7 @@ assert_member EvaluationWindow '.WallClockWindow.Timezone == "UTC"'
 WIN_RC=0
 WIN_DRIFT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || WIN_RC=$?
 [ "${WIN_RC}" != 0 ] || { echo "FAIL: cdkd drift did not report the out-of-band EvaluationWindow (rc=0); a console-set window on a default-window alarm is invisible (go-to-k/cdkd#5524). Report: ${WIN_DRIFT}" >&2; exit 1; }
-printf '%s' "${WIN_DRIFT}" | grep -qF EvaluationWindow || {
+grep -qF EvaluationWindow <<<"${WIN_DRIFT}" || {
   echo "FAIL: cdkd drift exited ${WIN_RC} but does not name EvaluationWindow. Report: ${WIN_DRIFT}" >&2; exit 1; }
 echo "    OK: drift reports the out-of-band EvaluationWindow"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
@@ -266,7 +266,7 @@ assert_member EvaluationInterval '. == 180' "${PROMQL_ALARM_NAME}"
 DRIFT_RC=0
 DRIFT_BEFORE="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || DRIFT_RC=$?
 [ "${DRIFT_RC}" != 0 ] || { echo "FAIL: cdkd drift did not report the out-of-band EvaluationInterval change (rc=0); the revert below would test nothing. Report: ${DRIFT_BEFORE}" >&2; exit 1; }
-printf '%s' "${DRIFT_BEFORE}" | grep -qF EvaluationInterval || {
+grep -qF EvaluationInterval <<<"${DRIFT_BEFORE}" || {
   echo "FAIL: cdkd drift exited ${DRIFT_RC} but does not name EvaluationInterval. Report: ${DRIFT_BEFORE}" >&2; exit 1; }
 echo "    OK: drift reports the EvaluationInterval change"
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes

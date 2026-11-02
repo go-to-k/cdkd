@@ -35,7 +35,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -191,12 +191,12 @@ echo "    OK: identity witness attached (1 unmanaged subscription)"
 echo "==> Phase 3: the plan ANNOUNCES the return (issue 2719 sub-question 4)"
 DIFF_OUT=$(env CDKD_TEST_PHASE=flip \
   node "${LOCAL_DIST}" diff "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1 || true)
-printf '%s' "${DIFF_OUT}" | grep -q 'returning to SDK provider' || {
+grep -q 'returning to SDK provider' <<<"${DIFF_OUT}" || {
   echo "FAIL: cdkd diff did not announce the routing change. A flip that moves a live resource between provisioning layers must be visible at plan time, not only in a debug log." >&2
   printf '%s\n' "${DIFF_OUT}" >&2
   exit 1
 }
-printf '%s' "${DIFF_OUT}" | grep -q 'via CC API: sticky' && {
+grep -q 'via CC API: sticky' <<<"${DIFF_OUT}" && {
   echo "FAIL: cdkd diff still renders the sticky tag for a resource that is about to leave Cloud Control" >&2
   exit 1
 }
@@ -277,7 +277,7 @@ set -e
   printf '%s\n' "${DRIFT_OUT}" | tail -20 | sed 's/^/  /' >&2
   exit 1
 }
-printf '%s' "${DRIFT_OUT}" | grep -q 'MaximumMessageSize' && {
+grep -q 'MaximumMessageSize' <<<"${DRIFT_OUT}" && {
   echo "FAIL: cdkd drift reports MaximumMessageSize after the template removal — the reset-to-default is being read as drift:" >&2
   printf '%s\n' "${DRIFT_OUT}" | grep 'MaximumMessageSize' | sed 's/^/  /' >&2
   exit 1
@@ -330,7 +330,7 @@ for _ in $(seq 1 18); do
   sleep 5
 done
 [ "${SUBS_RECREATED}" = "0" ] || { echo "FAIL: the unmanaged subscription survived (subscriptions=${SUBS_RECREATED}, expected 0), so the topic was not destroyed and recreated although the record says cc-api" >&2; exit 1; }
-printf '%s' "${RECREATE_OUT}" | grep -q 'No changes detected' && {
+grep -q 'No changes detected' <<<"${RECREATE_OUT}" && {
   echo "FAIL: the deploy recreated the topic but still reported 'No changes detected'" >&2
   exit 1
 }

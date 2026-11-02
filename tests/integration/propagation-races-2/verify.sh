@@ -42,7 +42,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -283,7 +283,7 @@ if [ "${INVOKE_OUT}" != "200" ]; then
 fi
 POLICY_JSON=$(aws lambda get-policy --function-name "${FUNCTION_NAME}" \
   --region "${REGION}" --query 'Policy' --output text)
-if ! echo "${POLICY_JSON}" | grep -qF "s3.amazonaws.com"; then
+if ! grep -qF "s3.amazonaws.com" <<<"${POLICY_JSON}"; then
   echo "FAIL: Lambda resource policy does not grant s3.amazonaws.com — the permission PUT did not land" >&2
   echo "${POLICY_JSON}" >&2
   exit 1
@@ -298,7 +298,7 @@ if [ -z "${BUCKET_POLICY}" ]; then
   echo "FAIL: no bucket policy on ${POLICED_BUCKET} — PutBucketPolicy did not land" >&2
   exit 1
 fi
-if ! echo "${BUCKET_POLICY}" | grep -qF "AllowFreshRoleRead"; then
+if ! grep -qF "AllowFreshRoleRead" <<<"${BUCKET_POLICY}"; then
   echo "FAIL: bucket policy missing the AllowFreshRoleRead statement" >&2
   echo "${BUCKET_POLICY}" >&2
   exit 1
@@ -322,7 +322,7 @@ if [ -z "${ENC}" ]; then
 fi
 KEY_POLICY=$(aws kms get-key-policy --key-id "${KEY_ID}" --policy-name default \
   --region "${REGION}" --query 'Policy' --output text)
-if ! echo "${KEY_POLICY}" | grep -qF "AllowFreshRoleUse"; then
+if ! grep -qF "AllowFreshRoleUse" <<<"${KEY_POLICY}"; then
   echo "FAIL: KMS key policy missing the AllowFreshRoleUse statement" >&2
   echo "${KEY_POLICY}" >&2
   exit 1
@@ -444,7 +444,7 @@ if gone_probe aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --regio
 elif ! ST=$(aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
     --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
   # TOCTOU: the record can be swept between gone_probe and this requery.
-  printf '%s' "${ST}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${ST}" \
     && ST="gone" \
     || { echo "FAIL: describe-instances requery undetermined: ${ST}" >&2; exit 1; }
 fi
@@ -482,7 +482,7 @@ if gone_probe aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}"; th
 elif ! KEY_STATE_AFTER=$(aws kms describe-key --key-id "${KEY_ID}" --region "${REGION}" \
     --query 'KeyMetadata.KeyState' --output text 2>&1); then
   # TOCTOU: the key can vanish between gone_probe and this requery.
-  printf '%s' "${KEY_STATE_AFTER}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${KEY_STATE_AFTER}" \
     && KEY_STATE_AFTER="gone" \
     || { echo "FAIL: describe-key requery undetermined: ${KEY_STATE_AFTER}" >&2; exit 1; }
 fi

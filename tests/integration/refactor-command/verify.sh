@@ -46,7 +46,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -87,7 +87,7 @@ state_etag() {
     printf '%s' "${out}"
     return 0
   fi
-  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     printf 'absent'
     return 0
   fi
@@ -220,13 +220,13 @@ echo "    diff --fail-on=destructive rc=${rc}"
 # removal row itself must be there before its hint is judged.
 TABLE_ROW="$(printf '%s\n' "${OUT_2A}" | grep -F "[-] ${OLD_TABLE_ID} (" || true)"
 [ -n "${TABLE_ROW}" ] || { echo "FAIL: diff shows no removal row for ${OLD_TABLE_ID}" >&2; exit 1; }
-printf '%s' "${TABLE_ROW}" | grep -qF "(moved to ${STACK}.StorageData" \
+grep -qF "(moved to ${STACK}.StorageData" <<<"${TABLE_ROW}" \
   || { echo "FAIL: the table's removal row carries no refactor hint" >&2; exit 1; }
-printf '%s' "${TABLE_ROW}" | grep -qF "run 'cdkd refactor' to keep it)" \
+grep -qF "run 'cdkd refactor' to keep it)" <<<"${TABLE_ROW}" \
   || { echo "FAIL: the table's hint does not name cdkd refactor" >&2; exit 1; }
 TOPIC_ROWS="$(printf '%s\n' "${OUT_2A}" | grep -F '(AWS::SNS::Topic)' | grep -F '[-] ' || true)"
 [ -n "${TOPIC_ROWS}" ] || { echo "FAIL: diff shows no topic removal rows" >&2; exit 1; }
-if printf '%s\n' "${TOPIC_ROWS}" | grep -qF 'moved to'; then
+if grep -qF 'moved to' <<<"${TOPIC_ROWS}"; then
   echo "FAIL: an ambiguous topic removal carries a refactor hint" >&2
   exit 1
 fi
@@ -240,9 +240,9 @@ rc=$?
 set -e
 printf '%s\n' "${OUT_2B}"
 [ "${rc}" -ne 0 ] || { echo "FAIL: refactor with ambiguous topics exited 0" >&2; exit 1; }
-printf '%s' "${OUT_2B}" | grep -q 'Ambiguous (AWS::SNS::Topic)' \
+grep -q 'Ambiguous (AWS::SNS::Topic)' <<<"${OUT_2B}" \
   || { echo "FAIL: refactor did not report the ambiguous topics" >&2; exit 1; }
-printf '%s' "${OUT_2B}" | grep -q "${OLD_TABLE_ID} -> StorageData" \
+grep -q "${OLD_TABLE_ID} -> StorageData" <<<"${OUT_2B}" \
   || { echo "FAIL: refactor did not plan the table rename" >&2; exit 1; }
 [ "$(state_etag)" = "${ETAG_BEFORE}" ] || { echo "FAIL: state changed during a refused dry run" >&2; exit 1; }
 
@@ -281,26 +281,26 @@ OUT_2C="$(cdkd refactor "${STACK}" "${STATE_FLAGS[@]}" --dry-run --override-file
 printf '%s\n' "${OUT_2C}"
 for pair in "${OLD_TABLE_ID} -> ${NEW_TABLE_ID}" "${OLD_QUEUE_ID} -> ${NEW_QUEUE_ID}" \
     "${OLD_TOPIC_X_ID} -> ${NEW_TOPIC_X_ID}" "${OLD_TOPIC_Y_ID} -> ${NEW_TOPIC_Y_ID}"; do
-  printf '%s' "${OUT_2C}" | grep -qF "${pair}" || { echo "FAIL: plan lacks ${pair}" >&2; exit 1; }
+  grep -qF "${pair}" <<<"${OUT_2C}" || { echo "FAIL: plan lacks ${pair}" >&2; exit 1; }
 done
 # Plan lines are indented two spaces; cdkd's own notices (the --region
 # deprecation warning) are not, and must not trip this. The positive anchor
 # proves the plan lines still carry that indent, so a drift in it fails here
 # instead of making the negative grep pass vacuously.
-printf '%s\n' "${OUT_2C}" | grep -qE "^  ${OLD_TABLE_ID} -> ${NEW_TABLE_ID}  " \
+grep -qE "^  ${OLD_TABLE_ID} -> ${NEW_TABLE_ID}  " <<<"${OUT_2C}" \
   || { echo "FAIL: plan lines are no longer two-space indented; the check below would be vacuous" >&2; exit 1; }
-if printf '%s\n' "${OUT_2C}" | grep -qE '^  (Warning:|Not refactored|Refused|Ambiguous)'; then
+if grep -qE '^  (Warning:|Not refactored|Refused|Ambiguous)' <<<"${OUT_2C}"; then
   echo "FAIL: the mapped plan carries a warning or refusal" >&2
   exit 1
 fi
-printf '%s' "${OUT_2C}" | grep -q 'state was NOT written' \
+grep -q 'state was NOT written' <<<"${OUT_2C}" \
   || { echo "FAIL: dry run did not say it wrote nothing" >&2; exit 1; }
 [ "$(state_etag)" = "${ETAG_BEFORE}" ] || { echo "FAIL: state changed during a dry run" >&2; exit 1; }
 
 echo "==> Phase 2d: refactor"
 OUT_2D="$(cdkd refactor "${STACK}" "${STATE_FLAGS[@]}" --yes --override-file "${MAP_FILE}" 2>&1)"
 printf '%s\n' "${OUT_2D}"
-printf '%s' "${OUT_2D}" | grep -q "Refactored 4 resource(s) in stack ${STACK}" \
+grep -q "Refactored 4 resource(s) in stack ${STACK}" <<<"${OUT_2D}" \
   || { echo "FAIL: refactor did not report 4 renames" >&2; exit 1; }
 [ "$(state_etag)" != "${ETAG_BEFORE}" ] || { echo "FAIL: refactor did not write state" >&2; exit 1; }
 if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${DEFAULT_STATE_KEY}"; then
@@ -353,7 +353,7 @@ assert_table_deleted() { # usage: assert_table_deleted <table-name> <context>
   elif ! status="$(aws dynamodb describe-table --table-name "${table}" --region "${REGION}" \
       --query 'Table.TableStatus' --output text 2>&1)"; then
     # TOCTOU: the table can vanish between gone_probe and this requery.
-    printf '%s' "${status}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${status}" \
       && status="GONE" \
       || { echo "FAIL: describe-table requery undetermined (${ctx}): ${status}" >&2; exit 1; }
   fi

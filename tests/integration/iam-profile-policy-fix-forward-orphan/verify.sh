@@ -65,7 +65,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -300,7 +300,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -309,7 +309,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${JOURNAL_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a rollback journal for ${STACK} already exists at ${JOURNAL_KEY} (left by an earlier run); delete what it records, then the journal (aws s3 rm s3://${STATE_BUCKET}/${JOURNAL_KEY}), first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the rollback journal undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -425,12 +425,12 @@ for _ in $(seq 1 24); do
   if DENY_PROBE="$(as_deny_role aws iam delete-group --group-name "${BASE_GROUP}" 2>&1)"; then
     echo "[verify] FAIL: precondition -- ${DENY_ROLE} DELETED ${BASE_GROUP} (its policy must refuse DeleteGroup)" >&2
     exit 1
-  elif printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+  elif grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
     break
   fi
   sleep 5
 done
-if ! printf '%s' "${DENY_PROBE}" | grep -qi 'explicit deny'; then
+if ! grep -qi 'explicit deny' <<<"${DENY_PROBE}"; then
   echo "[verify] FAIL: precondition -- ${DENY_ROLE}'s explicit deny on DeleteGroup never bound within 2 minutes (last answer: ${DENY_PROBE:-<allowed>})" >&2
   exit 1
 fi
@@ -508,13 +508,13 @@ fi
 # The deploy's own account: each CREATE's cleanup was refused.
 INJECT_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/inject.log" | tr '\n' ' ' | tr -s ' ')"
 for lid in ProfileA ProfileC; do
-  if ! printf '%s' "${INJECT_FLAT}" | grep -qF "Failed to clean up partially-created IAM instance profile ${lid}"; then
+  if ! grep -qF "Failed to clean up partially-created IAM instance profile ${lid}" <<<"${INJECT_FLAT}"; then
     echo "[verify] FAIL: the step-2 deploy did not report ${lid}'s refused cleanup (output above)" >&2
     exit 1
   fi
 done
 for lid in PolicyA PolicyC; do
-  if ! printf '%s' "${INJECT_FLAT}" | grep -qF "Failed to clean up partially-created managed policy ${lid}"; then
+  if ! grep -qF "Failed to clean up partially-created managed policy ${lid}" <<<"${INJECT_FLAT}"; then
     echo "[verify] FAIL: the step-2 deploy did not report ${lid}'s refused cleanup (output above)" >&2
     exit 1
   fi
@@ -535,11 +535,11 @@ assert_cleanup_line_redacted() { # usage: assert_cleanup_line_redacted <cleanup 
     echo "[verify] FAIL: no refused cleanup line '$1 (...): ...' in the step-2 output (#2319)" >&2
     exit 1
   fi
-  if ! printf '%s' "${rest}" | grep -qE "^[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\."; then
+  if ! grep -qE "^[A-Za-z0-9]+\. Re-run with --verbose for AWS's own message\." <<<"${rest}"; then
     echo "[verify] FAIL: the refused cleanup line '$1' does not name the AWS failure by its class (#2319); head: ${head} (${#line} chars)" >&2
     exit 1
   fi
-  if printf '%s' "${line}" | grep -qiF "not authorized" || printf '%s' "${line}" | grep -qF "${DENY_ROLE}"; then
+  if grep -qiF "not authorized" <<<"${line}" || grep -qF "${DENY_ROLE}" <<<"${line}"; then
     echo "[verify] FAIL: the refused cleanup line '$1' quotes AWS's text (deny role or 'not authorized') (#2319); head: ${head} (${#line} chars)" >&2
     exit 1
   fi
@@ -659,7 +659,7 @@ FF_FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/fix-forward.log" | tr '\n' ' ' 
 # shape of an `unknown` verdict: the settle's read of the record's
 # just-created `-b` resource may have missed it while IAM propagated.
 kept_hint() { # usage: kept_hint <logicalId> <type> <-b id>
-  if printf '%s' "${FF_FLAT}" | grep -qF "$1 ($2), which a failed deploy"; then
+  if grep -qF "$1 ($2), which a failed deploy" <<<"${FF_FLAT}"; then
     echo "[verify] WARN: $1 was kept with a keep warning (output above). If its line is not the 'another one' warning, isSameResource answered unknown, most likely because IAM's eventual consistency hid the just-created $3 from the settle's read; re-run before reading this as a regression" >&2
   fi
 }
@@ -760,11 +760,11 @@ assert_record BaseGroup "${BASE_GROUP}"
 # with the logical id and type: none may name an A.
 for pair in "ProfileA AWS::IAM::InstanceProfile" "PolicyA AWS::IAM::ManagedPolicy"; do
   set -- ${pair}
-  if ! printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created $1"; then
+  if ! grep -qF "deleting partially-created $1" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy did not delete the earlier attempt's $1 (output above)" >&2
     exit 1
   fi
-  if printf '%s' "${FF_FLAT}" | grep -qF "$1 ($2), which a failed deploy"; then
+  if grep -qF "$1 ($2), which a failed deploy" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy still warned about the earlier $1 instead of deleting it (output above)" >&2
     exit 1
   fi
@@ -773,14 +773,14 @@ for pair in "ProfileC AWS::IAM::InstanceProfile ${PROFILE_C_B}" "PolicyC AWS::IA
   set -- ${pair}
   # Sentinel for the wording above: the C's keep warnings use the same head,
   # so a reword that would blind the A checks fails here first.
-  if ! printf '%s' "${FF_FLAT}" | grep -qF "$1 ($2), which a failed deploy of stack ${STACK} created, is not deleted: the resource now under its physical id is another one"; then
+  if ! grep -qF "$1 ($2), which a failed deploy of stack ${STACK} created, is not deleted: the resource now under its physical id is another one" <<<"${FF_FLAT}"; then
     # Kept with another keep warning is the eventual-consistency shape the A
     # side's hint names: the settle's read missed the just-created -b one.
     kept_hint "$1" "$2" "$3"
     echo "[verify] FAIL: the fix-forward deploy did not warn that $1's physical id now holds another $2 (no '$1 ($2), which a failed deploy ... is another one' in the output): if the settle's keep-warning head changed, update the A checks above" >&2
     exit 1
   fi
-  if printf '%s' "${FF_FLAT}" | grep -qF "deleting partially-created $1"; then
+  if grep -qF "deleting partially-created $1" <<<"${FF_FLAT}"; then
     echo "[verify] FAIL: the fix-forward deploy tried to delete $1's re-used name (output above)" >&2
     exit 1
   fi

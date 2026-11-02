@@ -52,7 +52,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -286,7 +286,7 @@ for needle in \
   'resource(s) of types Cloud Control API cannot create:' \
   "  - ${PROJECT_LID} (AWS::CodeBuild::Project) — ProvisioningType: NON_PROVISIONABLE" \
   'None of these resources was touched.'; do
-  if ! printf '%s\n' "${RECREATE_PLAIN}" | grep -qF -- "${needle}"; then
+  if ! grep -qF -- "${needle}" <<<"${RECREATE_PLAIN}"; then
     echo "FAIL: Phase 1b output lacks the recreate refusal wording: '${needle}'" >&2
     exit 1
   fi

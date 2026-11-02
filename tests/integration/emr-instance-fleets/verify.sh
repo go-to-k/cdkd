@@ -62,7 +62,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -158,7 +158,7 @@ strict_active_tagged_cluster_ids() {
     tags="$(aws emr describe-cluster --cluster-id "${id}" --region "${REGION}" \
       --query "Cluster.Tags[?Key=='${CLEANUP_TAG_KEY}' && Value=='${CLEANUP_TAG_VALUE}']" \
       --output text)" || return 1
-    if printf '%s' "${tags}" | grep -q .; then
+    if grep -q . <<<"${tags}"; then
       echo "${id}"
     fi
   done

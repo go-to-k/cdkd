@@ -93,7 +93,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -248,7 +248,7 @@ cleanup() {
       LOG_GROUP="/aws/rds/instance/${LOG_INSTANCE_LOWER}/${log_type}"
       if LOG_DELETE_OUT=$(aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region "${REGION}" 2>&1); then
         echo "    cleanup: deleted log group ${LOG_GROUP}"
-      elif ! printf '%s' "${LOG_DELETE_OUT}" | grep -q 'ResourceNotFoundException'; then
+      elif ! grep -q 'ResourceNotFoundException' <<<"${LOG_DELETE_OUT}"; then
         echo "    WARN: cleanup could not delete log group ${LOG_GROUP}; delete it by hand: ${LOG_DELETE_OUT}" >&2
       fi
     done
@@ -750,7 +750,7 @@ elif ! INSTANCE_STATUS=$(aws rds describe-db-instances \
     --region "${REGION}" \
     --query 'DBInstances[0].DBInstanceStatus' --output text 2>&1); then
   # TOCTOU: the instance can vanish between gone_probe and this requery.
-  printf '%s' "${INSTANCE_STATUS}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${INSTANCE_STATUS}" \
     && INSTANCE_STATUS="gone" \
     || { echo "FAIL: describe-db-instances requery undetermined: ${INSTANCE_STATUS}" >&2; exit 1; }
 fi

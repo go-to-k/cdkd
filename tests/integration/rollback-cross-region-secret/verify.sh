@@ -126,7 +126,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -535,7 +535,7 @@ if [ "${PRODUCER_OUTPUT}" != "${SHARED_EXPRESSION}" ]; then
   echo "FAIL: producer output '${PRODUCER_OUTPUT_NAME}' is '${PRODUCER_OUTPUT}', expected the redacted expression '${SHARED_EXPRESSION}'" >&2
   exit 1
 fi
-if printf '%s' "${PRODUCER_STATE}" | grep -q "${PRODUCER_SECRET}"; then
+if grep -q "${PRODUCER_SECRET}" <<<"${PRODUCER_STATE}"; then
   echo "FAIL: producer state.json holds the resolved SecureString plaintext (it must stay redacted)" >&2
   exit 1
 fi
@@ -569,7 +569,7 @@ if [ "${RECORDED_VALUE}" != "${SHARED_EXPRESSION}" ]; then
   exit 1
 fi
 for secret in "${PRODUCER_SECRET}" "${CONSUMER_SECRET}"; do
-  if printf '%s' "${CONSUMER_STATE}" | grep -q "${secret}"; then
+  if grep -q "${secret}" <<<"${CONSUMER_STATE}"; then
     echo "FAIL: consumer state.json holds a resolved SecureString plaintext (it must stay redacted)" >&2
     exit 1
   fi

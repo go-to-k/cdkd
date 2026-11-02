@@ -37,7 +37,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -224,7 +224,7 @@ echo "${RENAME_OUT}"
 # itself rather than as an issue #2553 regression. Synth errors, expired
 # credentials and a missing state bucket all die before the deploy names the
 # stack, and every assertion below would otherwise blame the guard for them.
-if ! printf '%s\n' "${RENAME_OUT}" | grep -q 'Deploying stack:'; then
+if ! grep -q 'Deploying stack:' <<<"${RENAME_OUT}"; then
   echo "FAIL: the renamed deploy never reached the stack -- this is NOT a guard result." >&2
   echo "      (synth / credentials / state-bucket failure; see the output above)" >&2
   exit 1
@@ -251,12 +251,12 @@ if [ -z "${GUARD_LINE}" ]; then
   # appears for a guard refusal AND for any other failure on the vault --
   # including one on the replacement's create or delete, which is why all three
   # verbs are matched rather than `update` alone.
-  if printf '%s\n' "${RENAME_OUT}" | grep -q 'but it is a stateful resource'; then
+  if grep -q 'but it is a stateful resource' <<<"${RENAME_OUT}"; then
     echo "FAIL: a stateful refusal fired but not the PROPERTY-DRIVEN one this fixture parses." >&2
     echo "      Either the pre-flight guard's wording drifted (update the needle in this" >&2
     echo "      file and in tests/unit/provisioning/stateful-guard-message-sync.test.ts) or" >&2
     echo "      the refusal came from the update-failure fallback instead." >&2
-  elif printf '%s\n' "${RENAME_OUT}" | grep -qE 'Failed to (update|create|delete) Vault'; then
+  elif grep -qE 'Failed to (update|create|delete) Vault' <<<"${RENAME_OUT}"; then
     echo "FAIL: the vault operation failed for a reason OTHER than the stateful guard." >&2
     echo "      This is NOT an issue #2553 regression -- read the output above." >&2
   else

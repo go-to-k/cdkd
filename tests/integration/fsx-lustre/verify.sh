@@ -70,7 +70,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -152,7 +152,7 @@ delete_fs_until_gone() {
       --region "${REGION}" --query 'FileSystems[0].Lifecycle' --output text 2>&1)"; then
       # Strict gone-check (#1097 pattern 2): only a not-found error means the
       # file system is gone; on any other failure (throttle) keep waiting.
-      if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+      if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
         return 0
       fi
     else

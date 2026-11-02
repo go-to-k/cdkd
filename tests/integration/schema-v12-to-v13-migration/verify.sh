@@ -63,7 +63,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -396,7 +396,7 @@ run_cdkd ok "first deploy" "${LOCAL_DIST}" deploy "${STACK}" \
 fetch_state "first deploy"
 assert_version "first deploy" "${LOCAL_SCHEMA_VERSION}"
 FIRST_ID="$(state_field '.stackInstanceId // ""')"
-if ! printf '%s' "${FIRST_ID}" | grep -qE "${UUID_V4}"; then
+if ! grep -qE "${UUID_V4}" <<<"${FIRST_ID}"; then
   fail "first deploy: the record carries no well-formed stackInstanceId (id absent = pre-fix)"
 fi
 pass "first deploy: the record carries a v4 UUID stackInstanceId"

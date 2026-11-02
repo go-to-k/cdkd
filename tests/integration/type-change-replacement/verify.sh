@@ -56,7 +56,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -299,7 +299,7 @@ resolve_equalbags_names() {
   arn="$(state_field EqualBags physicalId)" || return 1
   name="${arn##*:}"
   if [ "${arn}" != "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${name}" ] \
-    || ! printf '%s' "${name}" | grep -qE "^${EQUALBAGS_PREFIX}[0-9a-f]{12}\$"; then
+    || ! grep -qE "^${EQUALBAGS_PREFIX}[0-9a-f]{12}\$" <<<"${name}"; then
     echo "[verify] FAIL: EqualBags' recorded topic '${arn}' is not the generated ${EQUALBAGS_PREFIX}<12 hex>"
     exit 1
   fi

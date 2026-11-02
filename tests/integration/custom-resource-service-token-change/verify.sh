@@ -50,7 +50,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -271,7 +271,7 @@ if [ "${DIFF_RC}" -ne 3 ]; then
   echo "FAIL: cdkd diff exited ${DIFF_RC}, expected 3 (the deploy would refuse)" >&2
   exit 1
 fi
-if ! printf '%s' "${DIFF_TXT}" | grep -qF "${CR_ID}: ServiceToken changes to arn:"; then
+if ! grep -qF "${CR_ID}: ServiceToken changes to arn:" <<<"${DIFF_TXT}"; then
   echo "FAIL: cdkd diff did not name '${CR_ID}: ServiceToken changes to arn:...'" >&2
   exit 1
 fi
@@ -293,11 +293,11 @@ if [ "${SWITCH_RC}" -eq 0 ]; then
   echo "FAIL: the deploy switching Cr's ServiceToken succeeded (pre-#4749 behaviour)" >&2
   exit 1
 fi
-if ! printf '%s' "${SWITCH_TXT}" | grep -qF 'Modifying service token is not allowed'; then
+if ! grep -qF 'Modifying service token is not allowed' <<<"${SWITCH_TXT}"; then
   echo "FAIL: deploy failed (rc=${SWITCH_RC}) without the #4749 refusal" >&2
   exit 1
 fi
-if ! printf '%s' "${SWITCH_TXT}" | grep -qF "${CR_ID}: ServiceToken changes to arn:"; then
+if ! grep -qF "${CR_ID}: ServiceToken changes to arn:" <<<"${SWITCH_TXT}"; then
   echo "FAIL: the refusal does not name '${CR_ID}: ServiceToken changes to arn:...'" >&2
   exit 1
 fi
@@ -325,7 +325,7 @@ if [ "${RENAME_RC}" -eq 0 ]; then
   echo "FAIL: the deploy moving Cr to the renamed HandlerA succeeded (pre-#4749 behaviour)" >&2
   exit 1
 fi
-if ! printf '%s' "${RENAME_TXT}" | grep -qF "${CR_ID}: ServiceToken changes to arn:"; then
+if ! grep -qF "${CR_ID}: ServiceToken changes to arn:" <<<"${RENAME_TXT}"; then
   echo "FAIL: deploy failed (rc=${RENAME_RC}) without the #4749 refusal naming ${CR_ID}" >&2
   exit 1
 fi
@@ -390,7 +390,7 @@ if [ "${DESTROY_RC}" -ne 0 ]; then
   echo "FAIL: the clean destroy exited ${DESTROY_RC}, expected 0" >&2
   exit 1
 fi
-if printf '%s' "${DESTROY_TXT}" | grep -q 'Destroy skipped '; then
+if grep -q 'Destroy skipped ' <<<"${DESTROY_TXT}"; then
   echo "FAIL: the clean destroy still skipped something" >&2
   exit 1
 fi

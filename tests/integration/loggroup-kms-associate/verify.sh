@@ -42,7 +42,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -190,7 +190,7 @@ echo "    log group deleted"
 # as a hard failure rather than masquerading as a deleted key.
 KEY_STATE="$(aws kms describe-key --key-id "${KEY_ARN}" --region "${REGION}" \
   --query 'KeyMetadata.KeyState' --output text 2>&1)" || {
-  if echo "${KEY_STATE}" | grep -q "NotFoundException"; then
+  if grep -q "NotFoundException" <<<"${KEY_STATE}"; then
     KEY_STATE="GONE"
   else
     echo "FAIL: describe-key failed unexpectedly: ${KEY_STATE}" >&2

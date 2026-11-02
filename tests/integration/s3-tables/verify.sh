@@ -58,7 +58,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -453,7 +453,7 @@ set +e
 DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
 DRIFT_RC=$?
 set -e
-if [ "${DRIFT_RC}" -ne 1 ] || ! printf '%s' "${DRIFT_OUT}" | grep -q "Compaction"; then
+if [ "${DRIFT_RC}" -ne 1 ] || ! grep -q "Compaction" <<<"${DRIFT_OUT}"; then
   echo "FAIL: cdkd drift exited ${DRIFT_RC} after an out-of-band compaction change, expected 1 naming Compaction (issue #2762: the readback does not see the change):" >&2
   printf '%s\n' "${DRIFT_OUT}" >&2
   exit 1

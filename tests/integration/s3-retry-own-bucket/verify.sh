@@ -57,7 +57,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -197,7 +197,7 @@ fi
 if HEAD_PRE="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1)"; then
   echo "[verify] FAIL: a state record for ${STACK} already exists at ${STATE_KEY} (left by an earlier run); destroy it first" >&2
   exit 1
-elif ! printf '%s' "${HEAD_PRE}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${HEAD_PRE}"; then
   echo "[verify] FAIL: pre-probe of the state record undetermined: ${HEAD_PRE}" >&2
   exit 1
 fi
@@ -284,7 +284,7 @@ probe_explicit_deny() { # usage: probe_explicit_deny <aws s3api args...>
     if out="$(as_role aws s3api "$@" --bucket "${PROBE_BUCKET}" --region "${REGION}" 2>&1)"; then
       echo "[verify] FAIL: precondition -- ${ROLE} was ALLOWED: $* (its policy must deny it)" >&2
       return 1
-    elif printf '%s' "${out}" | grep -qi 'explicit deny'; then
+    elif grep -qi 'explicit deny' <<<"${out}"; then
       return 0
     fi
     sleep 5
@@ -297,7 +297,7 @@ if TAG_PROBE="$(as_role aws s3api put-bucket-tagging --tagging 'TagSet=[{Key=pro
   --bucket "${PROBE_BUCKET}" --region "${REGION}" 2>&1)"; then
   echo "[verify] FAIL: precondition -- ${ROLE} was ALLOWED: put-bucket-tagging (its policy must not grant it)" >&2
   exit 1
-elif ! printf '%s' "${TAG_PROBE}" | grep -qF 'not authorized to perform: s3:PutBucketTagging'; then
+elif ! grep -qF 'not authorized to perform: s3:PutBucketTagging' <<<"${TAG_PROBE}"; then
   echo "[verify] FAIL: precondition -- put-bucket-tagging as ${ROLE} failed for another reason: ${TAG_PROBE}" >&2
   exit 1
 fi
@@ -358,11 +358,11 @@ FLAT="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy.log" | tr '\n' ' ' | tr -s 
 # The regression (go-to-k/cdkd#4758): the retry refused the bucket its own
 # first attempt made. Sentinel: the refusal's second clause, independent of
 # the parsed needle, without the needle means its wording drifted.
-if printf '%s' "${FLAT}" | grep -qF "Refusing to adopt S3 bucket ${BUCKET}"; then
+if grep -qF "Refusing to adopt S3 bucket ${BUCKET}" <<<"${FLAT}"; then
   echo "[verify] FAIL: the retry refused the bucket its own first attempt made (go-to-k/cdkd#4758 -- output above)" >&2
   exit 1
 fi
-if printf '%s' "${FLAT}" | grep -qF 'its BucketName is set explicitly'; then
+if grep -qF 'its BucketName is set explicitly' <<<"${FLAT}"; then
   echo "[verify] FAIL: the explicit-name refusal fired but its wording no longer matches 'Refusing to adopt S3 bucket <name>' -- update this fixture (output above)" >&2
   exit 1
 fi
@@ -374,7 +374,7 @@ if [ "${DEPLOY_RC}" -ne 0 ]; then
   LAST_DENIED="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_DIR}/deploy.log" |
     grep -F '[S3BucketProvider] Failed to create S3 bucket Bucket' | tail -1 |
     grep -oE 'not authorized to perform: [A-Za-z0-9:]+' || true)"
-  if printf '%s' "${FLAT}" | grep -qF 'IAM-propagation retr' &&
+  if grep -qF 'IAM-propagation retr' <<<"${FLAT}" &&
     [ "${LAST_DENIED}" = "not authorized to perform: s3:PutBucketTagging" ]; then
     echo "[verify] INCONCLUSIVE: tagging allow did not propagate within the retry budget (exit ${DEPLOY_RC}, no refusal -- output above)" >&2
     exit 1
@@ -386,13 +386,13 @@ fi
 # missing s3:TagResource refused it, and the provider re-sent it untagged
 # (the --verbose debug line). Without that re-send the CREATE never makes the
 # bucket and the premise below fails instead.
-if ! printf '%s' "${FLAT}" | grep -qF 'CreateBucket with tags was denied s3:TagResource for Bucket'; then
+if ! grep -qF 'CreateBucket with tags was denied s3:TagResource for Bucket' <<<"${FLAT}"; then
   echo "[verify] FAIL: the tagged CreateBucket was not re-sent untagged after its s3:TagResource denial (go-to-k/cdkd#4969 -- output above)" >&2
   exit 1
 fi
 # The premise: the first attempt made the bucket and could not delete it, so
 # a retry met it.
-if ! printf '%s' "${FLAT}" | grep -qF "Failed to clean up partially-created S3 bucket Bucket (${BUCKET})"; then
+if ! grep -qF "Failed to clean up partially-created S3 bucket Bucket (${BUCKET})" <<<"${FLAT}"; then
   echo "[verify] FAIL: premise -- the first attempt's cleanup did not fail, so no retry met its bucket (output above)" >&2
   exit 1
 fi

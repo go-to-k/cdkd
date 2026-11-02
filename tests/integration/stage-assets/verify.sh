@@ -73,7 +73,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -352,7 +352,7 @@ for verb in scrub import export destroy; do
   HIDDEN_RC=$?
   set -e
   printf '%s\n' "${HIDDEN_OUT}"
-  if [ "${HIDDEN_RC}" -eq 0 ] || ! printf '%s' "${HIDDEN_OUT}" | grep -qF "Stage CdkdStageAssets failed to load: ENOENT reading " \
+  if [ "${HIDDEN_RC}" -eq 0 ] || ! grep -qF "Stage CdkdStageAssets failed to load: ENOENT reading " <<<"${HIDDEN_OUT}" \
     || { [ "${verb}" = "scrub" ] && [ "${HIDDEN_RC}" -ne 2 ]; }; then
     mv "${STAGE_DIR}/manifest.json.hidden" "${STAGE_DIR}/manifest.json"
     echo "FAIL: ${verb} with the Stage hidden exited ${HIDDEN_RC} or did not name the Stage" >&2
@@ -394,7 +394,7 @@ if [ "${ORPHAN_RC}" -ne 0 ]; then
   echo "FAIL: orphan --dry-run by a Stage construct path exited ${ORPHAN_RC}, expected 0" >&2
   exit 1
 fi
-if ! printf '%s' "${ORPHAN_OUT}" | grep -qF "Target: ${STACK} (${REGION}); orphaning 2 resource(s)"; then
+if ! grep -qF "Target: ${STACK} (${REGION}); orphaning 2 resource(s)" <<<"${ORPHAN_OUT}"; then
   echo "FAIL: orphan did not resolve ${STACK_PATH}/ZipFn to ${STACK}'s two ZipFn resources" >&2
   exit 1
 fi
@@ -482,7 +482,7 @@ for run in \
   GHOST_RC=$?
   set -e
   printf '%s\n' "${GHOST_OUT}"
-  if [ "${GHOST_RC}" -eq 0 ] || ! printf '%s' "${GHOST_OUT}" | grep -qF -- "${GHOST_NEEDLE}"; then
+  if [ "${GHOST_RC}" -eq 0 ] || ! grep -qF -- "${GHOST_NEEDLE}" <<<"${GHOST_OUT}"; then
     mv cdk.out/manifest.json.orig cdk.out/manifest.json
     echo "FAIL: ${verb} (${sel}) with a ghost Stage exited ${GHOST_RC} or did not name it" >&2
     exit 1
@@ -546,7 +546,7 @@ for pat in "*" "CdkdStageAssets-*" "CdkdStageAssets*"; do
   SEL_RC=$?
   set -e
   printf '%s\n' "${SEL_OUT}"
-  if [ "${SEL_RC}" -eq 0 ] || ! printf '%s' "${SEL_OUT}" | grep -qF -- "No stacks matching ${pat} found in assembly"; then
+  if [ "${SEL_RC}" -eq 0 ] || ! grep -qF -- "No stacks matching ${pat} found in assembly" <<<"${SEL_OUT}"; then
     echo "FAIL: diff '${pat}' exited ${SEL_RC} or did not report no match" >&2
     exit 1
   fi
@@ -564,7 +564,7 @@ for verb in diff destroy; do
   ALL_RC=$?
   set -e
   printf '%s\n' "${ALL_OUT}"
-  if [ "${ALL_RC}" -eq 0 ] || ! printf '%s' "${ALL_OUT}" | grep -qF -- "--all selects top-level stacks only, and this app has none: every stack is inside a CDK Stage (${STACK} (${STACK_PATH}))"; then
+  if [ "${ALL_RC}" -eq 0 ] || ! grep -qF -- "--all selects top-level stacks only, and this app has none: every stack is inside a CDK Stage (${STACK} (${STACK_PATH}))" <<<"${ALL_OUT}"; then
     echo "FAIL: ${verb} --all over a stage-only app exited ${ALL_RC} or did not refuse" >&2
     exit 1
   fi

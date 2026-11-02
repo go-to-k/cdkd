@@ -34,7 +34,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -584,7 +584,7 @@ if SNAP_OUT=$(aws elasticache describe-snapshots --cache-cluster-id "${CACHE_ID}
     echo "FAIL: ${SNAP_OUT} ElastiCache snapshot(s) of ${CACHE_ID} remain after destroy" >&2
     exit 1
   fi
-elif ! printf '%s' "${SNAP_OUT}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+elif ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${SNAP_OUT}"; then
   echo "FAIL: snapshot probe undetermined: ${SNAP_OUT}" >&2
   exit 1
 fi

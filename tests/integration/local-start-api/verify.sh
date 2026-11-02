@@ -235,7 +235,7 @@ curl_assert() {
   local response=""
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if response=$(curl -sf "$@" "${url}" 2>&1); then
-      if echo "${response}" | grep -q "${needle}"; then
+      if grep -q "${needle}" <<<"${response}"; then
         echo "    [${label}] OK"
         return 0
       fi
@@ -268,7 +268,7 @@ if [[ -z "${REGION_RESPONSE}" ]]; then
   cat "${LOG_FILE}"
   exit 1
 fi
-if echo "${REGION_RESPONSE}" | grep -qF "${UPPER_REGION}"; then
+if grep -qF "${UPPER_REGION}" <<<"${REGION_RESPONSE}"; then
   echo "FAIL: the container still carries the raw '${UPPER_REGION}' spelling. Response: ${REGION_RESPONSE}"
   cat "${LOG_FILE}"
   exit 1
@@ -310,23 +310,23 @@ STREAM_URL="http://127.0.0.1:${PORT_FNURL_STREAM}/anything"
 STREAM_RESPONSE=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if STREAM_RESPONSE=$(curl -sf -i --no-buffer "${STREAM_URL}" 2>&1); then
-    if echo "${STREAM_RESPONSE}" | grep -q 'hello-0'; then break; fi
+    if grep -q 'hello-0' <<<"${STREAM_RESPONSE}"; then break; fi
   fi
   sleep 1
 done
-if ! echo "${STREAM_RESPONSE}" | grep -qi '^HTTP/1.1 200'; then
+if ! grep -qi '^HTTP/1.1 200' <<<"${STREAM_RESPONSE}"; then
   echo "FAIL: streaming Function URL did not return 200. Response:"
   echo "${STREAM_RESPONSE}"
   cat "${LOG_FILE}"
   exit 1
 fi
-if ! echo "${STREAM_RESPONSE}" | grep -qi '^transfer-encoding: chunked'; then
+if ! grep -qi '^transfer-encoding: chunked' <<<"${STREAM_RESPONSE}"; then
   echo "FAIL: streaming response missing Transfer-Encoding: chunked. Response:"
   echo "${STREAM_RESPONSE}"
   cat "${LOG_FILE}"
   exit 1
 fi
-if ! echo "${STREAM_RESPONSE}" | grep -qi '^x-stream-test: on'; then
+if ! grep -qi '^x-stream-test: on' <<<"${STREAM_RESPONSE}"; then
   echo "FAIL: streaming response missing X-Stream-Test header from the prelude. Response:"
   echo "${STREAM_RESPONSE}"
   cat "${LOG_FILE}"
@@ -335,7 +335,7 @@ fi
 # All 5 chunks present in the body (order-preserved). RIE buffers the
 # writes, so we get all 5 in one shot — that's expected.
 for i in 0 1 2 3 4; do
-  if ! echo "${STREAM_RESPONSE}" | grep -q "hello-${i}"; then
+  if ! grep -q "hello-${i}" <<<"${STREAM_RESPONSE}"; then
     echo "FAIL: streaming response missing chunk 'hello-${i}'. Response:"
     echo "${STREAM_RESPONSE}"
     cat "${LOG_FILE}"
@@ -349,7 +349,7 @@ done
 # terminals and may mask NULs; the indirect signal is that the body
 # starts with `hello-0` (the handler's first write after the
 # `HttpResponseStream.from` wrapper installed the prelude).
-if echo "${STREAM_RESPONSE}" | grep -q '"statusCode":200,"headers"'; then
+if grep -q '"statusCode":200,"headers"' <<<"${STREAM_RESPONSE}"; then
   echo "FAIL: streaming response body leaked the JSON prelude (parser bug). Response:"
   echo "${STREAM_RESPONSE}"
   cat "${LOG_FILE}"
@@ -373,23 +373,23 @@ STREAM_URL_SCT="http://127.0.0.1:${PORT_FNURL_STREAM_SCT}/anything"
 STREAM_SCT_RESPONSE=""
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if STREAM_SCT_RESPONSE=$(curl -sf -i --no-buffer "${STREAM_URL_SCT}" 2>&1); then
-    if echo "${STREAM_SCT_RESPONSE}" | grep -q '"hello":"world"'; then break; fi
+    if grep -q '"hello":"world"' <<<"${STREAM_SCT_RESPONSE}"; then break; fi
   fi
   sleep 1
 done
-if ! echo "${STREAM_SCT_RESPONSE}" | grep -qi '^HTTP/1.1 200'; then
+if ! grep -qi '^HTTP/1.1 200' <<<"${STREAM_SCT_RESPONSE}"; then
   echo "FAIL: setContentType-only streaming Function URL did not return 200. Response:"
   echo "${STREAM_SCT_RESPONSE}"
   cat "${LOG_FILE}"
   exit 1
 fi
-if ! echo "${STREAM_SCT_RESPONSE}" | grep -q '"hello":"world"'; then
+if ! grep -q '"hello":"world"' <<<"${STREAM_SCT_RESPONSE}"; then
   echo "FAIL: setContentType-only streaming response missing first chunk body. Response:"
   echo "${STREAM_SCT_RESPONSE}"
   cat "${LOG_FILE}"
   exit 1
 fi
-if ! echo "${STREAM_SCT_RESPONSE}" | grep -q '"count":2'; then
+if ! grep -q '"count":2' <<<"${STREAM_SCT_RESPONSE}"; then
   echo "FAIL: setContentType-only streaming response missing second chunk body. Response:"
   echo "${STREAM_SCT_RESPONSE}"
   cat "${LOG_FILE}"
@@ -405,17 +405,17 @@ PREFLIGHT_HEADERS=$(curl -s -i -o - -X OPTIONS \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: Content-Type' \
   "http://127.0.0.1:${PORT_HTTP}/items" 2>&1)
-if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^HTTP/1.1 204'; then
+if ! grep -qi '^HTTP/1.1 204' <<<"${PREFLIGHT_HEADERS}"; then
   echo "FAIL: CORS preflight did not return 204. Response:"
   echo "${PREFLIGHT_HEADERS}"
   exit 1
 fi
-if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-origin: \*'; then
+if ! grep -qi '^access-control-allow-origin: \*' <<<"${PREFLIGHT_HEADERS}"; then
   echo "FAIL: CORS preflight missing access-control-allow-origin header. Response:"
   echo "${PREFLIGHT_HEADERS}"
   exit 1
 fi
-if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-methods: POST'; then
+if ! grep -qi '^access-control-allow-methods: POST' <<<"${PREFLIGHT_HEADERS}"; then
   echo "FAIL: CORS preflight missing access-control-allow-methods header. Response:"
   echo "${PREFLIGHT_HEADERS}"
   exit 1
@@ -424,7 +424,7 @@ fi
 # `Vary: Origin` so downstream caches don't share responses across
 # origins. Pre-fix the header was missing on the wildcard / literal-
 # origin / AllowCredentials echo paths.
-if ! echo "${PREFLIGHT_HEADERS}" | grep -qi '^vary: Origin'; then
+if ! grep -qi '^vary: Origin' <<<"${PREFLIGHT_HEADERS}"; then
   echo "FAIL: CORS preflight missing 'Vary: Origin' header. Response:"
   echo "${PREFLIGHT_HEADERS}"
   exit 1
@@ -459,12 +459,12 @@ REST_PREFLIGHT_HEADERS=$(curl -s -i -o - -X OPTIONS \
   -H 'Origin: https://example.com' \
   -H 'Access-Control-Request-Method: GET' \
   "http://127.0.0.1:${PORT_REST}/v1/anything" 2>&1)
-if ! echo "${REST_PREFLIGHT_HEADERS}" | grep -qiE '^HTTP/1.1 (200|204)'; then
+if ! grep -qiE '^HTTP/1.1 (200|204)' <<<"${REST_PREFLIGHT_HEADERS}"; then
   echo "FAIL: REST v1 MOCK CORS preflight did not return a 2xx. Response:"
   echo "${REST_PREFLIGHT_HEADERS}"
   exit 1
 fi
-if ! echo "${REST_PREFLIGHT_HEADERS}" | grep -qi '^access-control-allow-origin: \*'; then
+if ! grep -qi '^access-control-allow-origin: \*' <<<"${REST_PREFLIGHT_HEADERS}"; then
   echo "FAIL: REST v1 MOCK CORS preflight missing access-control-allow-origin header. Response:"
   echo "${REST_PREFLIGHT_HEADERS}"
   exit 1
@@ -484,11 +484,11 @@ if [[ "${UNSUPPORTED_STATUS}" != "501" ]]; then
   cat "${LOG_FILE}"
   exit 1
 fi
-if ! echo "${UNSUPPORTED_BODY}" | grep -q '"message":"Not Implemented"'; then
+if ! grep -q '"message":"Not Implemented"' <<<"${UNSUPPORTED_BODY}"; then
   echo "FAIL: expected 501 body to include {\"message\":\"Not Implemented\"}. Body: ${UNSUPPORTED_BODY}"
   exit 1
 fi
-if ! echo "${UNSUPPORTED_BODY}" | grep -q '"reason"'; then
+if ! grep -q '"reason"' <<<"${UNSUPPORTED_BODY}"; then
   echo "FAIL: expected 501 body to include a 'reason' field. Body: ${UNSUPPORTED_BODY}"
   exit 1
 fi
@@ -511,11 +511,11 @@ if [[ "${AUTH_STATUS}" != "501" ]]; then
   cat "${LOG_FILE}"
   exit 1
 fi
-if ! echo "${AUTH_BODY}" | grep -q '"message":"Not Implemented"'; then
+if ! grep -q '"message":"Not Implemented"' <<<"${AUTH_BODY}"; then
   echo "FAIL: expected 501 body to include {\"message\":\"Not Implemented\"}. Body: ${AUTH_BODY}"
   exit 1
 fi
-if ! echo "${AUTH_BODY}" | grep -q 'authorizer Lambda Arn unresolvable'; then
+if ! grep -q 'authorizer Lambda Arn unresolvable' <<<"${AUTH_BODY}"; then
   echo "FAIL: expected 501 reason to mention 'authorizer Lambda Arn unresolvable'. Body: ${AUTH_BODY}"
   exit 1
 fi
@@ -557,7 +557,7 @@ if [[ "${SQS_STATUS}" == "501" ]]; then
   cat "${LOG_FILE}"
   exit 1
 fi
-if echo "${SQS_BODY}" | grep -q '"message":"Not Implemented"'; then
+if grep -q '"message":"Not Implemented"' <<<"${SQS_BODY}"; then
   echo "FAIL: POST /sqs body looks like the deferred-501 envelope. Body: ${SQS_BODY}"
   exit 1
 fi
@@ -575,7 +575,7 @@ if [[ "${EVENTS_STATUS}" == "501" ]]; then
   cat "${LOG_FILE}"
   exit 1
 fi
-if echo "${EVENTS_BODY}" | grep -q '"message":"Not Implemented"'; then
+if grep -q '"message":"Not Implemented"' <<<"${EVENTS_BODY}"; then
   echo "FAIL: POST /events body looks like the deferred-501 envelope. Body: ${EVENTS_BODY}"
   exit 1
 fi
@@ -592,7 +592,7 @@ if [[ "${UNK_STATUS}" != "501" ]]; then
   echo "FAIL: POST /unknown-subtype should 501 (unrecognized subtype). Got ${UNK_STATUS}. Body: ${UNK_BODY}"
   exit 1
 fi
-if ! echo "${UNK_BODY}" | grep -q 'BogusService-NotASubtype'; then
+if ! grep -q 'BogusService-NotASubtype' <<<"${UNK_BODY}"; then
   echo "FAIL: 501 reason should name the offending subtype. Body: ${UNK_BODY}"
   exit 1
 fi
@@ -820,7 +820,7 @@ NOT_ASSUMABLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${NOT_ASSUMABLE_ROLE}"
 # The premise is NoSuchEntity specifically: a missing iam:GetRole grant would
 # also fail the probe while saying nothing about whether the role exists.
 GET_ROLE_ERR="$(aws iam get-role --role-name "${NOT_ASSUMABLE_ROLE}" 2>&1 >/dev/null || true)"
-if ! echo "${GET_ROLE_ERR}" | grep -qF "NoSuchEntity"; then
+if ! grep -qF "NoSuchEntity" <<<"${GET_ROLE_ERR}"; then
   echo "FAIL: premise broken - role ${NOT_ASSUMABLE_ROLE} is not known to be absent: ${GET_ROLE_ERR:-it exists}"
   exit 1
 fi

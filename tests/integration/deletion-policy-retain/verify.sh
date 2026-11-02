@@ -32,7 +32,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -147,7 +147,7 @@ if [[ "${DELETED_RC}" -eq 0 ]]; then
   echo "${DELETED_OUT}"
   exit 1
 fi
-if ! echo "${DELETED_OUT}" | grep -q -E "ParameterNotFound|not.*found"; then
+if ! grep -q -E "ParameterNotFound|not.*found" <<<"${DELETED_OUT}"; then
   echo "FAIL: get-parameter failed but with unexpected error shape:"
   echo "${DELETED_OUT}"
   exit 1

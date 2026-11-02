@@ -192,7 +192,7 @@ probe() {
   local body=""
   for _ in $(seq 1 45); do
     if body=$(curl --silent --show-error --max-time 5 "${url}" 2>&1); then
-      if echo "${body}" | grep -qF "service=${expected_svc} alb=${ALB_DNS}"; then
+      if grep -qF "service=${expected_svc} alb=${ALB_DNS}" <<<"${body}"; then
         echo "    OK: ${url} -> '${body%$'\n'}'"
         return 0
       fi

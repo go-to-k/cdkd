@@ -113,7 +113,7 @@ assert_marker() { # usage: assert_marker <step> <target> <expected marker>
   echo "==> [$1] Invoking $2"
   result=$(capture ${CDKD} local invoke "$2" --no-pull)
   echo "    response: ${result}"
-  echo "${result}" | grep -qF "\"marker\":\"$3\"" || {
+  grep -qF "\"marker\":\"$3\"" <<<"${result}" || {
     echo "FAIL: $2 did not resolve to the '$3' stack (response: ${result})"
     exit 1
   }
@@ -159,11 +159,11 @@ URL_PORT=$(grep -E 'Server listening on http://[^[:space:]]+' "${LOG_FILE}" | se
 BODY=""
 for i in $(seq 1 10); do
   BODY=$(curl -sf --max-time 60 "http://127.0.0.1:${URL_PORT}/") || BODY=""
-  echo "${BODY}" | grep -qF '"marker":"api"' && break
+  grep -qF '"marker":"api"' <<<"${BODY}" && break
   sleep 1
 done
 echo "    response: ${BODY}"
-echo "${BODY}" | grep -qF '"marker":"api"' || {
+grep -qF '"marker":"api"' <<<"${BODY}" || {
   echo "FAIL: start-api did not serve the Api stack's handler (response: ${BODY}). Log:"
   cat "${LOG_FILE}"
   exit 1
@@ -298,7 +298,7 @@ for P in ${API_PORTS}; do
     BODY=$(curl -sf --max-time 60 -H "Authorization: Bearer ${TOKEN}" "http://127.0.0.1:${P}/" || true)
     echo "    port ${P} (token ${TOKEN}): ${BODY}"
     # An allowed token must be the answering stack's own.
-    echo "${BODY}" | grep -qF "\"marker\":\"${TOKEN}\"" || {
+    grep -qF "\"marker\":\"${TOKEN}\"" <<<"${BODY}" || {
       echo "FAIL: the HTTP API on port ${P} let token ${TOKEN} through but answered ${BODY} --"
       echo "  another stack's cached authorizer verdict was reused. Log:"
       cat "${LOG_FILE}"
@@ -313,7 +313,7 @@ for P in ${API_PORTS}; do
     exit 1
   fi
   # The Stage variable is the route's own stack's.
-  echo "${BODY}" | grep -qF "\"stageVar\":\"${MARKER}\"" || {
+  grep -qF "\"stageVar\":\"${MARKER}\"" <<<"${BODY}" || {
     echo "FAIL: the ${MARKER} API on port ${P} was served another stack's Stage (response: ${BODY})"
     exit 1
   }
@@ -336,10 +336,10 @@ for P in ${API_PORTS}; do
     -H "Authorization: Bearer ${MARKER}" "http://127.0.0.1:${P}/" || true)
   OTHER_HDRS=$(curl -sf -o /dev/null -D - --max-time 60 -H "Origin: https://${OTHER}.example" \
     -H "Authorization: Bearer ${MARKER}" "http://127.0.0.1:${P}/" || true)
-  if ! echo "${OWN_HDRS}" | grep -qE '^HTTP/[0-9.]+ 200' \
-    || ! echo "${OTHER_HDRS}" | grep -qE '^HTTP/[0-9.]+ 200' \
-    || ! echo "${OWN_HDRS}" | grep -qiF "access-control-allow-origin: https://${MARKER}.example" \
-    || echo "${OTHER_HDRS}" | grep -qiF "access-control-allow-origin: https://${OTHER}.example"; then
+  if ! grep -qE '^HTTP/[0-9.]+ 200' <<<"${OWN_HDRS}" \
+    || ! grep -qE '^HTTP/[0-9.]+ 200' <<<"${OTHER_HDRS}" \
+    || ! grep -qiF "access-control-allow-origin: https://${MARKER}.example" <<<"${OWN_HDRS}" \
+    || grep -qiF "access-control-allow-origin: https://${OTHER}.example" <<<"${OTHER_HDRS}"; then
     echo "FAIL: the ${MARKER} API on port ${P} was not served its own stack's CORS."
     echo "  own-origin headers: ${OWN_HDRS}"
     echo "  other-origin headers: ${OTHER_HDRS}"

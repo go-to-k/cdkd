@@ -51,7 +51,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -645,7 +645,7 @@ for iid in ${ASG_INSTANCE_IDS}; do
   elif ! state="$(aws ec2 describe-instances --region "${REGION}" --instance-ids "${iid}" \
       --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1)"; then
     # TOCTOU: the record can be swept between gone_probe and this requery.
-    printf '%s' "${state}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' \
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${state}" \
       && state="terminated" \
       || { echo "[verify] FAIL: describe-instances requery undetermined: ${state}"; exit 1; }
   fi

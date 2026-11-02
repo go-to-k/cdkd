@@ -59,7 +59,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -222,7 +222,7 @@ if ! DEPLOY_OUT=$(node "${LOCAL_DIST}" deploy "${STACK}" \
 fi
 echo "${DEPLOY_OUT}" | tail -3
 
-if echo "${DEPLOY_OUT}" | grep -qF "${GC_NOTICE}"; then
+if grep -qF "${GC_NOTICE}" <<<"${DEPLOY_OUT}"; then
   echo "FAIL: cdkd-assets-mode deploy printed the legacy 'cdk gc' notice" >&2
   exit 1
 fi

@@ -90,7 +90,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -162,7 +162,7 @@ clear_deletion_protection() { # usage: clear_deletion_protection <logGroupName>
     printf 'cleared\n'
     return 0
   fi
-  if printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     printf 'absent\n'
     return 0
   fi
@@ -236,7 +236,7 @@ sweep_log_groups() { # best-effort teardown; never aborts the sweep
           echo "    teardown: deleted ${name}"
           break
         fi
-        if printf '%s' "${del_out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+        if grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${del_out}"; then
           echo "    teardown: ${name} already gone"
           break
         fi

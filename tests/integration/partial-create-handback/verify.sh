@@ -66,7 +66,7 @@ gone_probe() { # usage: gone_probe aws <service> <read-verb> [args...]
   if out="$("$@" 2>&1)"; then
     return 1
   fi
-  if ! printf '%s' "${out}" | grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404'; then
+  if ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${out}"; then
     echo "FAIL: gone-probe undetermined ($*): ${out}" >&2
     exit 1
   fi
@@ -338,7 +338,7 @@ RULE_NAME="$(generated_name Rule 64)"
 LB_NAME="$(generated_name Lb 32)"
 TOPIC_ARN="arn:${PARTITION}:sns:${REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 for name in "${TG_NAME}" "${TOPIC_NAME}" "${RULE_NAME}" "${LB_NAME}"; do
-  if ! printf '%s' "${name}" | grep -qE "^${STACK}-(Tg|Topic|Rule|Lb)-[0-9a-f]{12}\$"; then
+  if ! grep -qE "^${STACK}-(Tg|Topic|Rule|Lb)-[0-9a-f]{12}\$" <<<"${name}"; then
     echo "[verify] FAIL: computed generated name '${name}' is not ${STACK}-<logicalId>-<12 hex>" >&2
     exit 1
   fi
