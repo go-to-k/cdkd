@@ -805,8 +805,8 @@ function parseRouteEntries(value: string, previous: string[] | undefined, flag: 
     if (token.startsWith('Custom::')) {
       throw new Error(
         `Invalid ${flag} value "${token}": Custom:: ` +
-          `resources are routed through cfn-response and have no write-side ` +
-          `silent drop at cdkd, so the flag would have no effect. Use ` +
+          `resources are routed through cfn-response and have no SDK-unwired ` +
+          `properties at cdkd, so the flag would have no effect. Use ` +
           `--allow-unsupported-types for type-level escape hatches instead.`
       );
     }
@@ -936,8 +936,8 @@ export function parseRecreateViaCcApiToken(
 export const recreateViaCcApiOption = new Option(
   '--recreate-via-cc-api <logicalId>',
   'Destroy + recreate the named resource (by CloudFormation logical id) via ' +
-    'Cloud Control API in this deploy, so a top-level CFn property cdkd would ' +
-    'otherwise silently drop reaches AWS via CC. Repeatable — pass the flag once ' +
+    'Cloud Control API in this deploy, so a top-level CFn property the SDK ' +
+    'provider does not write reaches AWS via CC. Repeatable — pass the flag once ' +
     'per resource. Per-resource opt-in (no bulk / no per-stack shortcut) so the ' +
     'destroy-and-recreate cost is acknowledged for each target. Stateful resource ' +
     'types (RDS, DynamoDB, S3, EFS, ...) refuse unless --force-stateful-recreation ' +

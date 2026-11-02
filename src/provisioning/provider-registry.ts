@@ -721,7 +721,7 @@ export class ProviderRegistry {
       // → auto-route through Cloud Control (which forwards the full property
       // map to AWS, closing the silent-drop bug). Closes issue #614.
       debug(
-        `Auto-routing ${resourceType} via Cloud Control (silent-drop properties: ${actionableDrops
+        `Auto-routing ${resourceType} via Cloud Control (SDK-unwired properties: ${actionableDrops
           .map((d) => d.property)
           .join(', ')})`
       );
@@ -795,7 +795,7 @@ export class ProviderRegistry {
       safeMsg`${resourceType} uses properties cdkd's SDK Provider does not handle, and ` +
       safeMsg`this type cannot fall back to Cloud Control API (${reason}):\n` +
       `${details}\n` +
-      `Remove the properties, or force the SDK provider path and accept the drop via ` +
+      `Remove the properties, or force the SDK provider path and accept leaving them unwritten via ` +
       `--prefer-sdk-route ${overrideHint} ` +
       `(the provider may still reject the resource if the property is required).`
     );
@@ -1334,7 +1334,7 @@ export class ProviderRegistry {
         }
         this.logger.warn(
           `${logicalId} (${resourceType}): ${overridden.join(', ')} will be ` +
-            `silently dropped (--prefer-sdk-route override ` +
+            `left unwritten (--prefer-sdk-route override ` +
             `accepted). ${remedies.join(' ')}`
         );
       }

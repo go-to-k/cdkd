@@ -504,7 +504,7 @@ function renderMarkdown(report: EnrichmentCoverageReport): string {
   lines.push('');
   lines.push(
     'Gap severity depends on the tier. A gap on an **SDK-backed** type ' +
-      '(`sdk-fallback-gap`) is only exposed on the #614 silent-drop CC-fallback path — ' +
+      '(`sdk-fallback-gap`) is only exposed on the #614 CC-fallback path for SDK-unwired properties — ' +
       'the SDK provider populates the attribute on the primary path — so it is ' +
       'informational and does NOT fail CI. A gap on a **pure-CC** type ' +
       '(`unenriched-computed`, no SDK provider) is the real bug class: the CC path is ' +
@@ -556,7 +556,7 @@ function renderMarkdown(report: EnrichmentCoverageReport): string {
     lines.push('## SDK-fallback gaps (informational)');
     lines.push('');
     lines.push('SDK-backed types whose computed attribute is unenriched: only exposed on ' +
-      'the #614 silent-drop CC-fallback path. Tracked so a future #614-hardening pass ' +
+      'the #614 CC-fallback path for SDK-unwired properties. Tracked so a future #614-hardening pass ' +
       'can prioritise; does not block CI.');
     lines.push('');
     lines.push('| Resource type | Unenriched computed attributes (CC-fallback only) |');

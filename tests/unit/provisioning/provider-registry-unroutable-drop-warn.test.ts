@@ -124,7 +124,7 @@ describe('accepted-drop warn on a type with no Cloud Control route (issue #2792)
     it(`says removing the override is refused, and prescribes neither remedy, for ${c.name}`, () => {
       const fx = pickDrop(c.createOnly);
       const msg = warnFor(fx, c.setup(fx));
-      expect(msg).toContain(`${fx.property} will be silently dropped`);
+      expect(msg).toContain(`${fx.property} will be left unwritten`);
       expect(msg).toContain('cannot be routed via Cloud Control API');
       expect(msg).toContain(c.reason);
       expect(msg).toContain('refuse at pre-flight instead of rerouting');
