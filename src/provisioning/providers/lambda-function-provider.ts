@@ -746,6 +746,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
   // (the only deploy-time consumer that breaks against Pending).
   private readonly functionUpdateMaxWaitSeconds: number = 10 * 60;
   private readonly latestPublishedPollMs: number = 3000;
+  private readonly latestPublishedDeadlineMarginMs: number = 15_000;
 
   // delstack-style ENI cleanup tunables.
   // - initial sleep: gives AWS time to publish post-detach ENI state via
@@ -924,6 +925,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             functionName,
             log,
             cleanup: postCreateCleanup,
+            awaitGone: capacityProviderConfig !== undefined,
           }
         );
         const functionScalingConfig = properties['FunctionScalingConfig'] as
@@ -940,6 +942,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
               functionName,
               log,
               cleanup: postCreateCleanup,
+              awaitGone: capacityProviderConfig !== undefined,
             }
           );
         }
@@ -979,6 +982,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             functionName,
             log,
             cleanup: postCreateCleanup,
+            awaitGone: capacityProviderConfig !== undefined,
           }
         );
       }
@@ -1011,6 +1015,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             functionName,
             log,
             cleanup: postCreateCleanup,
+            awaitGone: capacityProviderConfig !== undefined,
           }
         );
       }
@@ -1077,6 +1082,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
             functionName,
             log,
             cleanup: postCreateCleanup,
+            awaitGone: capacityProviderConfig !== undefined,
           }
         );
       }
@@ -1229,6 +1235,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
       log: MaskedLogSinks;
       /** Set `deleted` once the atomicity cleanup's DeleteFunction succeeded (#4583). */
       cleanup: { deleted: boolean };
+      /** A Managed Instances function: the cleanup waits until it is gone. */
+      awaitGone: boolean;
     }
   ): Promise<void> {
     const { log } = ctx;
@@ -1304,7 +1312,12 @@ export class LambdaFunctionProvider implements ResourceProvider {
           }
         }
       }
-      if (cleanupFailure === undefined) ctx.cleanup.deleted = true;
+      if (cleanupFailure === undefined) {
+        ctx.cleanup.deleted = true;
+        // A retried create of this name, or the rollback of a capacity provider
+        // this deploy made, would otherwise meet the `Deleting` function.
+        if (ctx.awaitGone) await this.waitForFunctionGone(ctx.logicalId, ctx.functionName, log);
+      }
       if (cleanupFailure !== undefined) {
         // `error` has no sink of its own: the finished line goes through the
         // same masker. The classifier above read the RAW text. An AWS-authored
@@ -1382,7 +1395,7 @@ export class LambdaFunctionProvider implements ResourceProvider {
     const { logicalId, resourceType, functionName } = target;
     const budgetMs = Math.min(
       this.functionUpdateMaxWaitSeconds * 1000,
-      enclosingDeadlineRemainingMs() - this.eniDeadlineMarginMs
+      enclosingDeadlineRemainingMs() - this.latestPublishedDeadlineMarginMs
     );
     const deadline = Date.now() + budgetMs;
     for (;;) {
@@ -1524,7 +1537,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
     // removal would otherwise report success and change nothing. CloudFormation
     // fails it the same way (go-to-k/cdkd#5637). The opposite direction reaches
     // AWS, which refuses it ("isn't supported for Lambda Default functions").
-    // Unconditional on a replay too: AWS rejects this removal every time.
+    // Unconditional on a replay too: a function cannot lose the block on AWS, so
+    // no state record of a replay asks for this.
     if (
       previousProperties['CapacityProviderConfig'] !== undefined &&
       properties['CapacityProviderConfig'] === undefined
@@ -1852,6 +1866,15 @@ export class LambdaFunctionProvider implements ResourceProvider {
       // to the published version with or without a publish.
       if (properties['CapacityProviderConfig'] !== undefined) {
         const target = { logicalId, resourceType, functionName: physicalId };
+        const newScaling = properties['FunctionScalingConfig'] as FunctionScalingConfig | undefined;
+        const prevScaling = previousProperties['FunctionScalingConfig'] as
+          | FunctionScalingConfig
+          | undefined;
+        // Member by member: a stringify compare is key-ORDER sensitive.
+        const applyScaling =
+          newScaling?.MinExecutionEnvironments !== prevScaling?.MinExecutionEnvironments ||
+          newScaling?.MaxExecutionEnvironments !== prevScaling?.MaxExecutionEnvironments ||
+          context?.unsettledProperties?.has('FunctionScalingConfig') === true;
         if (properties['PublishToLatestPublished'] !== false) {
           await this.waitForLatestPublishedSettled(target, log, 'before');
           await this.lambdaClient.send(
@@ -1861,18 +1884,13 @@ export class LambdaFunctionProvider implements ResourceProvider {
               PublishTo: 'LATEST_PUBLISHED',
             })
           );
-          await this.waitForLatestPublishedSettled(target, log, 'after');
+          // A publish with nothing to capture leaves the version as it was, so
+          // a `Failed` here can be the one a scaling fix below is about to
+          // clear. That call's own wait then has the last word.
+          await this.waitForLatestPublishedSettled(target, log, applyScaling ? 'before' : 'after');
           log.debug(`Published ${LATEST_PUBLISHED} of ${log.value(physicalId)}`);
         }
-        const newScaling = properties['FunctionScalingConfig'] as FunctionScalingConfig | undefined;
-        const prevScaling = previousProperties['FunctionScalingConfig'] as
-          | FunctionScalingConfig
-          | undefined;
-        // Member by member: a stringify compare is key-ORDER sensitive.
-        const scalingChanged =
-          newScaling?.MinExecutionEnvironments !== prevScaling?.MinExecutionEnvironments ||
-          newScaling?.MaxExecutionEnvironments !== prevScaling?.MaxExecutionEnvironments;
-        if (scalingChanged || context?.unsettledProperties?.has('FunctionScalingConfig') === true) {
+        if (applyScaling) {
           markUnsettled('FunctionScalingConfig');
           await this.putFunctionScalingConfig(target, log, newScaling);
           log.debug(`Updated FunctionScalingConfig of ${log.value(physicalId)}`);
@@ -2059,7 +2077,11 @@ export class LambdaFunctionProvider implements ResourceProvider {
     }
 
     if (properties?.['CapacityProviderConfig'] !== undefined) {
-      await this.waitForFunctionGone(physicalId);
+      await this.waitForFunctionGone(
+        logicalId,
+        physicalId,
+        createMaskedLogSinks(this.logger, context?.maskSecrets)
+      );
     }
   }
 
@@ -2069,25 +2091,31 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * refuses while it does. The delete has landed by now, so this never fails
    * it: the capacity provider's own delete retries what is left.
    */
-  private async waitForFunctionGone(physicalId: string): Promise<void> {
+  private async waitForFunctionGone(
+    logicalId: string,
+    physicalId: string,
+    log: MaskedLogSinks
+  ): Promise<void> {
     const deadline =
       Date.now() +
       Math.min(
         this.functionUpdateMaxWaitSeconds * 1000,
-        enclosingDeadlineRemainingMs() - this.eniDeadlineMarginMs
+        enclosingDeadlineRemainingMs() - this.latestPublishedDeadlineMarginMs
       );
     for (;;) {
       try {
         await this.lambdaClient.send(new GetFunctionCommand({ FunctionName: physicalId }));
       } catch (error) {
         if (error instanceof ResourceNotFoundException) return;
+        const failure = describeAwsFailure(error);
+        log.debug(log.mask(`Waiting for Lambda function ${logicalId} to go: ${failure.detail}`));
         this.logger.warn(
-          safeMsg`Waiting for Lambda function ${physicalId} to go failed: ${describeAwsFailure(error).summary}`
+          safeMsg`Waiting for Lambda function ${logicalId} to go failed: ${failure.summary}`
         );
         return;
       }
       if (Date.now() >= deadline) {
-        this.logger.warn(safeMsg`Lambda function ${physicalId} is still being deleted`);
+        this.logger.warn(safeMsg`Lambda function ${logicalId} is still being deleted`);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, this.latestPublishedPollMs));

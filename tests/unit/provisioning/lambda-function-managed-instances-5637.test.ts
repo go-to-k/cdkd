@@ -78,9 +78,14 @@ type Handler = (command: unknown) => unknown;
 
 /** Answers every call as a settled function, unless `override` answers first. */
 function arm(override?: Handler): void {
+  let deleted = false;
   mockSend.mockImplementation(async (command: unknown) => {
     const answer = override?.(command);
     if (answer !== undefined) return answer;
+    if (command instanceof DeleteFunctionCommand) deleted = true;
+    if (command instanceof GetFunctionCommand && deleted) {
+      throw new ResourceNotFoundException({ message: 'gone', $metadata: {} });
+    }
     if (command instanceof CreateFunctionCommand) {
       return { FunctionName: 'fn', FunctionArn: 'arn:fn', LastModified: 't' };
     }
@@ -214,6 +219,19 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       expect(String(error)).toMatch(/--verbose/);
       expect(String(error)).not.toContain('123456789012');
       expect(sent(DeleteFunctionCommand)).toHaveLength(1);
+    });
+
+    it('waits until the cleaned-up function is gone: a retry reuses its name', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof GetFunctionConfigurationCommand) {
+          return { State: 'Failed', StateReason: 'no capacity' };
+        }
+        if (command instanceof GetFunctionCommand && ++reads < 2) return { Configuration: {} };
+        return undefined;
+      });
+      await expect(provider.create('Fn', TYPE, MANAGED)).rejects.toThrow();
+      expect(reads).toBe(2);
     });
 
     it('deletes the function when the scaling call fails', async () => {
@@ -422,6 +440,25 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       expect(sent(PublishVersionCommand)).toHaveLength(1);
     });
 
+    it('reaches the scaling fix past a Failed version a no-op publish left', async () => {
+      let puts = 0;
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) puts++;
+        if (command instanceof GetFunctionConfigurationCommand && puts === 0) {
+          return { State: 'Active', LastUpdateStatus: 'Failed', LastUpdateStatusReason: 'earlier' };
+        }
+        return undefined;
+      });
+      await update(
+        { ...MANAGED, FunctionScalingConfig: SCALING },
+        {
+          ...MANAGED,
+          FunctionScalingConfig: { MinExecutionEnvironments: 1, MaxExecutionEnvironments: 9 },
+        }
+      );
+      expect(puts).toBe(1);
+    });
+
     it('applies a scaling change to a Deactivated version', async () => {
       arm((command) =>
         command instanceof GetFunctionConfigurationCommand
@@ -452,6 +489,28 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
         { ...MANAGED, PublishToLatestPublished: false }
       );
       expect(reads).toBe(3);
+    });
+
+    it('leaves a publish its own margin inside a short resource deadline', async () => {
+      const deadline = await import('../../../src/deployment/resource-deadline.js');
+      const spy = vi.spyOn(deadline, 'enclosingDeadlineRemainingMs').mockReturnValue(180_000);
+      try {
+        Object.assign(provider, { latestPublishedPollMs: 0 });
+        const realNow = Date.now;
+        let nowMs = realNow();
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => (nowMs += 1000));
+        arm((command) =>
+          command instanceof GetFunctionConfigurationCommand
+            ? { State: 'Pending', LastUpdateStatus: 'Successful' }
+            : undefined
+        );
+        await expect(update(MANAGED, { ...MANAGED, Timeout: 3 })).rejects.toThrow(
+          /did not settle within 165s/
+        );
+        clock.mockRestore();
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('stops at the enclosing resource deadline, not the 10 minute budget', async () => {
@@ -485,13 +544,10 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
   });
 
   describe('delete', () => {
-    const gone = (): ResourceNotFoundException =>
-      new ResourceNotFoundException({ message: 'gone', $metadata: {} });
-
     it('waits until the function is gone: its capacity provider is deleted next', async () => {
       let reads = 0;
       arm((command) => {
-        if (command instanceof GetFunctionCommand && ++reads === 3) throw gone();
+        if (command instanceof GetFunctionCommand && ++reads < 3) return { Configuration: {} };
         return undefined;
       });
       await provider.delete('Fn', 'fn', TYPE, MANAGED);
@@ -509,6 +565,7 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
 
     it('warns and returns at the budget', async () => {
       Object.assign(provider, { functionUpdateMaxWaitSeconds: 0 });
+      arm((command) => (command instanceof GetFunctionCommand ? { Configuration: {} } : undefined));
       await provider.delete('Fn', 'fn', TYPE, MANAGED);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/still being deleted/));
     });
