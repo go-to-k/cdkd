@@ -8,7 +8,8 @@
   fix and FILE the structural one — across PRs too (#3979). Ask for it first.
 - **A cascade stops when the artifact CLAIMS LESS** — tally the blockers by
   PART of the diff and offer that part's DELETION; stop reviewing the patch and
-  question its SHAPE.
+  question its SHAPE. Two rounds running that find NEW failure modes in code
+  serving a shape CFn refuses: refuse the shape pre-flight (#5614).
 
 ### 8-b. Integ ordering vs review rounds and rebases
 
@@ -36,7 +37,7 @@ rebase (`mise exec -- markgate status`) — unless main changed code the fixture
 EXERCISES (a code path its run takes, not merely a file it loads; #4683):
 re-run it on the rebased head (#3726).
 
-- **DECLARE the tree final, in words, to whoever is still editing it.** The one
+- **DECLARE the tree final to whoever is still editing it.** The one
   exception to §8-h's "nits
   included": a COMMENT-ONLY nit found after the integ may ride this run's next
   lane on that file, whose integ re-runs anyway, named in that lane's PR body
@@ -48,7 +49,7 @@ re-run it on the rebased head (#3726).
 
 Run `/verify-pr`, which adds a **live-test of the changed behavior** to `/check`.
 Run `/check-docs` ONCE per PR, at the FINAL sha: CI covers only the structural
-checks. Unit tests passing is necessary but NOT sufficient:
+checks.
 
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
   integ's **destroy** step completes cleanly (`integ-destroy`); a CROSS-CUTTING
@@ -66,8 +67,7 @@ checks. Unit tests passing is necessary but NOT sufficient:
   (#4369). A mode behind an env flag `verify.sh` does not set itself
   (`grep -n 'CDKD_INTEG_[A-Z_]*:-' <fixture>/verify.sh`, `RUN_ID` aside) is its
   own run: a PR on its path runs the flag and the ledger NOTE names the mode
-  (`dynamodb-globaltable`'s `CDKD_INTEG_MULTI_REGION=1` sat unrun from
-  2026-09-25 and hid two breakages until #5577 enabled it).
+  (#5577).
 - **A change to what cdkd PRINTS or DECIDES** (a message's text or line split,
   a refuse / adopt outcome) → `grep -rlF --include='*.sh' --include='*.ts'
   --include='*.mjs' --exclude-dir=node_modules '<old text>' tests/integration`
@@ -132,7 +132,9 @@ BEFORE tree, replace `src/` with the changed command's own paths. A file NEW in
 the PR stays, unimported by pre-fix code; one the fix DELETED or moved is
 restored by hand. The pre-fix run can mint resources the fixture's sweep cannot
 name: scan the account by stack prefix and resource family too. Probe each HALF
-of a multi-part fix separately, and add a NEGATIVE CONTROL. Where the fix SKIPS
+of a multi-part fix separately (a pre-fix run stops at its first failing arm:
+remove that phase to prove the next), and add a NEGATIVE CONTROL. Where the fix
+SKIPS
 something, give the fixture a second, ORDINARY difference — a phase redeploying
 a byte-identical template diffs as `NO_CHANGE` and never reads the flag under
 test. Two more vacuity shapes:
@@ -183,7 +185,7 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
 ### 8-h. Reviewer findings are inputs, not verdicts
 
 - **Fix what a reviewer DEMONSTRATES, nits included** — "pre-existing" or "not
-  a regression" is no decline in a file the PR holds (go-to-k/cdkd#3640;
+  a regression" is no decline in a file the PR holds (#3640;
   `filing.md`'s scope tripwire still applies); WITHDRAW an addition whose part
   keeps producing blockers. A right finding can carry a wrong FIX: check the
   PREMISE, and record a decline in the PR body.
@@ -191,7 +193,7 @@ verify registry reach FIRST: `docker pull hello-world` under a 120s cap. A
 ### 8-i. Fresh deploys, and who verifies what
 
 **A fresh deploy is a fresh FIXTURE**: `/new-integ` scaffolds one, `/run-integ`
-deploys and tears it down (§8-c). **UNIQUE stack names only**
+deploys and tears it down. **UNIQUE stack names only**
 (e.g. `Cdkd<Issue>Verify`): the account may hold the maintainer's production
 stacks. After teardown, sweep for orphans it cannot reach (`/aws/lambda/*` log
 groups, RETAIN resources, Secrets in recovery, KMS keys pending deletion), then
@@ -201,7 +203,7 @@ run AGENTS.md's leftover check, which the `deployments/` store survives.
 `main`'s ruleset checks**; `/verify-pr` and `/review-pr` record nothing — run them anyway.
 
 **The independent review round is the ORCHESTRATOR's; a LANE's own reviewers
-never substitute for it** (go-to-k/cdkd#2383) — they are its children and
+never substitute for it** (#2383) — they are its children and
 inherit its premise. The parent runs its round once the lane reports
 merge-ready, ONCE, on the final sha — brief each reviewer with the maintainer's
 design answers and "what does this break that CFn or the CDK CLI accepts?" (a
