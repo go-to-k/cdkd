@@ -35,6 +35,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import {
+  CreateDeliveryStreamCommand,
   DescribeDeliveryStreamCommand,
   ListTagsForDeliveryStreamCommand,
   TagDeliveryStreamCommand,
@@ -1257,7 +1258,8 @@ describe('FirehoseProvider.update — Iceberg destination (#549)', () => {
           DestinationTableConfigurationList: [
             { DestinationTableName: 't-v2', DestinationDatabaseName: 'db' },
           ],
-          S3BackupMode: 'FailedDataOnly',
+          // CloudFormation's spelling for Iceberg, unlike every other destination.
+          s3BackupMode: 'FailedDataOnly',
           AppendOnly: true,
           S3Configuration: {
             BucketARN: 'arn:aws:s3:::iceberg-backup',
@@ -1291,10 +1293,11 @@ describe('FirehoseProvider.update — Iceberg destination (#549)', () => {
       Prefix: 'iceberg-staging/v2/',
     });
     expect(updateShape['RoleARN']).toBe('arn:aws:iam::111:role/firehose-role');
-    expect(updateShape['CatalogConfiguration']).toEqual({
-      CatalogArn: 'arn:aws:glue:us-east-1:111:catalog',
-    });
+    // Create-only in the CloudFormation schema: a change is a replacement, and
+    // UpdateDestination keeps what it omits (go-to-k/cdkd#5636).
+    expect(updateShape).not.toHaveProperty('CatalogConfiguration');
     expect(updateShape['S3BackupMode']).toBe('FailedDataOnly');
+    expect(updateShape).not.toHaveProperty('s3BackupMode');
     expect(updateShape['AppendOnly']).toBe(true);
   });
 
@@ -1688,5 +1691,192 @@ describe('FirehoseProvider.update — explicit-falsy-value pass-through (#549 / 
     const input = (updates[0] as unknown as { input: Record<string, unknown> }).input;
     const updateShape = input['SplunkDestinationUpdate'] as Record<string, unknown>;
     expect(updateShape).toHaveProperty('HECAcknowledgmentTimeoutInSeconds', 0);
+  });
+});
+
+// go-to-k/cdkd#5636: IcebergDestinationConfiguration on the SDK route. Three
+// members are spelled differently by CloudFormation and the SDK:
+// `s3BackupMode` / `S3BackupMode`, `CatalogConfiguration.CatalogArn` /
+// `CatalogARN`, and the read side's `S3DestinationDescription` /
+// `S3Configuration`.
+describe('FirehoseProvider — Iceberg destination on the SDK route (#5636)', () => {
+  const ROLE = 'arn:aws:iam::111:role/firehose-role';
+  const AWS_S3_DEFAULTS = {
+    CompressionFormat: 'UNCOMPRESSED',
+    BufferingHints: { IntervalInSeconds: 300, SizeInMBs: 5 },
+    EncryptionConfiguration: { NoEncryptionConfig: 'NoEncryption' },
+    CloudWatchLoggingOptions: { Enabled: false },
+  };
+  const CATALOG = 'arn:aws:glue:us-east-1:111:catalog';
+  const template = () => ({
+    RoleARN: ROLE,
+    CatalogConfiguration: { CatalogArn: CATALOG, WarehouseLocation: 's3://wh/' },
+    DestinationTableConfigurationList: [
+      {
+        DestinationDatabaseName: 'db',
+        DestinationTableName: 't',
+        UniqueKeys: ['id'],
+        PartitionSpec: { Identity: [{ SourceName: 'day' }] },
+        S3ErrorOutputPrefix: 'table-errors/',
+      },
+    ],
+    SchemaEvolutionConfiguration: { Enabled: true },
+    TableCreationConfiguration: { Enabled: true },
+    BufferingHints: { IntervalInSeconds: 60, SizeInMBs: 5 },
+    CloudWatchLoggingOptions: { Enabled: true, LogGroupName: 'lg', LogStreamName: 'ls' },
+    ProcessingConfiguration: {
+      Enabled: true,
+      Processors: [
+        {
+          Type: 'Lambda',
+          Parameters: [{ ParameterName: 'LambdaArn', ParameterValue: 'arn:aws:lambda:fn' }],
+        },
+      ],
+    },
+    RetryOptions: { DurationInSeconds: 300 },
+    s3BackupMode: 'FailedDataOnly',
+    AppendOnly: false,
+    S3Configuration: {
+      BucketARN: 'arn:aws:s3:::iceberg-errors',
+      RoleARN: ROLE,
+      ErrorOutputPrefix: 'errors/',
+    },
+  });
+
+  let provider: FirehoseProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new FirehoseProvider();
+  });
+
+  it('create() sends the block in the SDK spelling', async () => {
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof CreateDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamARN: `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`,
+        });
+      }
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({ DeliveryStreamDescription: { DeliveryStreamStatus: 'ACTIVE' } });
+      }
+      return Promise.resolve({});
+    });
+
+    await provider.create('L', RESOURCE_TYPE, {
+      DeliveryStreamName: PHYSICAL_ID,
+      IcebergDestinationConfiguration: template(),
+    });
+
+    const creates = mockSend.mock.calls.filter((c) => c[0] instanceof CreateDeliveryStreamCommand);
+    expect(creates).toHaveLength(1);
+    const input = (creates[0]![0] as { input: Record<string, unknown> }).input;
+    const { s3BackupMode, CatalogConfiguration: _catalog, ...same } = template();
+    expect(input['IcebergDestinationConfiguration']).toEqual({
+      ...same,
+      S3BackupMode: s3BackupMode,
+      CatalogConfiguration: { CatalogARN: CATALOG, WarehouseLocation: 's3://wh/' },
+    });
+  });
+
+  it('readCurrentState reads the Iceberg destination even beside a top-level S3DestinationDescription', async () => {
+    const { S3Configuration } = template();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: PHYSICAL_ID,
+            DeliveryStreamType: 'DirectPut',
+            Destinations: [
+              {
+                DestinationId: 'destinationId-000000000001',
+                S3DestinationDescription: { ...S3Configuration, ...AWS_S3_DEFAULTS },
+                IcebergDestinationDescription: {
+                  RoleARN: ROLE,
+                  S3BackupMode: 'FailedDataOnly',
+                  CatalogConfiguration: { CatalogARN: CATALOG },
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (command instanceof ListTagsForDeliveryStreamCommand) {
+        return Promise.resolve({ Tags: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<
+      string,
+      unknown
+    >;
+    expect(observed).not.toHaveProperty('S3DestinationConfiguration');
+    expect(observed['IcebergDestinationConfiguration']).toEqual({
+      RoleARN: ROLE,
+      s3BackupMode: 'FailedDataOnly',
+      CatalogConfiguration: { CatalogArn: CATALOG },
+    });
+  });
+
+  it('readCurrentState restores the CloudFormation spelling, and the read-back sends no update', async () => {
+    const { s3BackupMode, CatalogConfiguration: _catalog, S3Configuration, ...same } = template();
+    mockSend.mockImplementation((command: unknown) => {
+      if (command instanceof DescribeDeliveryStreamCommand) {
+        return Promise.resolve({
+          DeliveryStreamDescription: {
+            DeliveryStreamName: PHYSICAL_ID,
+            DeliveryStreamARN: `arn:aws:firehose:us-east-1:111:deliverystream/${PHYSICAL_ID}`,
+            DeliveryStreamType: 'DirectPut',
+            VersionId: '3',
+            Destinations: [
+              {
+                DestinationId: 'destinationId-000000000001',
+                IcebergDestinationDescription: {
+                  ...same,
+                  S3BackupMode: s3BackupMode,
+                  CatalogConfiguration: { CatalogARN: CATALOG, WarehouseLocation: 's3://wh/' },
+                  // What AWS returns for the nested bucket: the template's
+                  // members plus the defaults it always reports.
+                  S3DestinationDescription: { ...S3Configuration, ...AWS_S3_DEFAULTS },
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (command instanceof ListTagsForDeliveryStreamCommand) {
+        return Promise.resolve({ Tags: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const observed = (await provider.readCurrentState(PHYSICAL_ID, 'L', RESOURCE_TYPE)) as Record<
+      string,
+      unknown
+    >;
+    expect(observed['IcebergDestinationConfiguration']).toEqual({
+      ...template(),
+      S3Configuration: { ...S3Configuration, ...AWS_S3_DEFAULTS },
+    });
+
+    // A drift --revert of the read-back against a state with another mode
+    // sends the mode in the SDK spelling, and never the create-only catalog.
+    mockSend.mockClear();
+    const previous = {
+      ...observed,
+      IcebergDestinationConfiguration: {
+        ...(observed['IcebergDestinationConfiguration'] as Record<string, unknown>),
+        s3BackupMode: 'AllData',
+      },
+    };
+    await provider.update('L', PHYSICAL_ID, RESOURCE_TYPE, observed, previous);
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateDestinationCommand);
+    expect(updates).toHaveLength(1);
+    const sent = (updates[0]![0] as { input: Record<string, unknown> }).input[
+      'IcebergDestinationUpdate'
+    ] as Record<string, unknown>;
+    expect(sent['S3BackupMode']).toBe('FailedDataOnly');
+    expect(sent).not.toHaveProperty('s3BackupMode');
+    expect(sent).not.toHaveProperty('CatalogConfiguration');
   });
 });

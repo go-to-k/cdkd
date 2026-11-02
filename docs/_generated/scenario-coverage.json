@@ -1186,6 +1186,11 @@
       "scenarios": []
     },
     {
+      "name": "firehose-iceberg-destination",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "fsx-lustre",
       "annotated": true,
       "scenarios": []
@@ -3567,6 +3572,7 @@
     "export-nested-stack",
     "fallback-recreate-children",
     "fifo-sqs-event-source",
+    "firehose-iceberg-destination",
     "generated-name-security-group",
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",

@@ -24,6 +24,7 @@ import {
   type AmazonOpenSearchServerlessDestinationUpdate,
   type HttpEndpointDestinationUpdate,
   type ElasticsearchDestinationUpdate,
+  type IcebergDestinationConfiguration,
   type IcebergDestinationUpdate,
   type SnowflakeDestinationUpdate,
   type Tag,
@@ -341,6 +342,7 @@ export class FirehoseProvider implements ResourceProvider {
         'SplunkDestinationConfiguration',
         'AmazonOpenSearchServerlessDestinationConfiguration',
         'DeliveryStreamEncryptionConfigurationInput',
+        'IcebergDestinationConfiguration',
       ]),
     ],
   ]);
@@ -692,6 +694,13 @@ export class FirehoseProvider implements ResourceProvider {
         } as AmazonOpenSearchServerlessDestinationConfiguration;
       }
 
+      // go-to-k/cdkd#5636
+      if (properties['IcebergDestinationConfiguration']) {
+        input.IcebergDestinationConfiguration = this.mapIcebergDestinationConfiguration(
+          properties['IcebergDestinationConfiguration'] as Record<string, unknown>
+        );
+      }
+
       // Map DeliveryStreamEncryptionConfigurationInput
       if (properties['DeliveryStreamEncryptionConfigurationInput']) {
         const encConfig = properties['DeliveryStreamEncryptionConfigurationInput'] as Record<
@@ -849,8 +858,9 @@ export class FirehoseProvider implements ResourceProvider {
    *     `SchemaEvolutionConfiguration`,
    *     `TableCreationConfiguration`, `BufferingHints`,
    *     `CloudWatchLoggingOptions`, `ProcessingConfiguration`,
-   *     `S3BackupMode`, `RetryOptions`, `RoleARN`, `AppendOnly`,
-   *     `CatalogConfiguration`, `S3Configuration`. **Quirk**: the
+   *     `s3BackupMode` (CloudFormation's spelling), `RetryOptions`,
+   *     `RoleARN`, `AppendOnly`, `S3Configuration`; never the create-only
+   *     `CatalogConfiguration`. **Quirk**: the
    *     SDK Update shape's S3 field is named `S3Configuration` (full
    *     `S3DestinationConfiguration` shape), NOT `S3Update` — unlike
    *     every other destination type. The reverse-mapper forwards it
@@ -2535,6 +2545,29 @@ export class FirehoseProvider implements ResourceProvider {
   }
 
   /**
+   * Map CFn `IcebergDestinationConfiguration` to the SDK create shape
+   * (go-to-k/cdkd#5636): the members {@link mapIcebergConfigToUpdate} sends,
+   * plus `CatalogConfiguration`. CloudFormation spells the catalog ARN
+   * `CatalogArn`; the SDK member is `CatalogARN`, so the block is rebuilt,
+   * not forwarded.
+   */
+  private mapIcebergDestinationConfiguration(
+    config: Record<string, unknown>
+  ): IcebergDestinationConfiguration {
+    const result = this.mapIcebergConfigToUpdate(config) as IcebergDestinationConfiguration;
+    const catalog = config['CatalogConfiguration'] as Record<string, unknown> | undefined;
+    if (catalog !== undefined) {
+      result.CatalogConfiguration = {
+        ...(catalog['CatalogArn'] !== undefined && { CatalogARN: catalog['CatalogArn'] as string }),
+        ...(catalog['WarehouseLocation'] !== undefined && {
+          WarehouseLocation: catalog['WarehouseLocation'] as string,
+        }),
+      };
+    }
+    return result;
+  }
+
+  /**
    * Map CFn `IcebergDestinationConfiguration` to the
    * `IcebergDestinationUpdate` shape (#549). Every field
    * `!== undefined` gated. **Quirk vs every other destination**: the
@@ -2542,6 +2575,12 @@ export class FirehoseProvider implements ResourceProvider {
    * `S3DestinationConfiguration`), NOT `S3Update`. Iceberg is a newer
    * destination type and AWS chose to keep the field name aligned with
    * the create shape; this reverse-mapper forwards it verbatim.
+   *
+   * CloudFormation spells the backup mode `s3BackupMode` here, unlike every
+   * other destination; the SDK member is `S3BackupMode`. `CatalogConfiguration`
+   * is never sent: it is create-only in the CloudFormation schema, so a
+   * change plans a replacement, and `UpdateDestination` keeps what it omits
+   * (go-to-k/cdkd#5636).
    */
   private mapIcebergConfigToUpdate(config: Record<string, unknown>): IcebergDestinationUpdate {
     const result: IcebergDestinationUpdate = {};
@@ -2575,8 +2614,8 @@ export class FirehoseProvider implements ResourceProvider {
         'ProcessingConfiguration'
       ] as IcebergDestinationUpdate['ProcessingConfiguration'];
     }
-    if (config['S3BackupMode'] !== undefined) {
-      result.S3BackupMode = config['S3BackupMode'] as IcebergDestinationUpdate['S3BackupMode'];
+    if (config['s3BackupMode'] !== undefined) {
+      result.S3BackupMode = config['s3BackupMode'] as IcebergDestinationUpdate['S3BackupMode'];
     }
     if (config['RetryOptions'] !== undefined) {
       result.RetryOptions = config['RetryOptions'] as IcebergDestinationUpdate['RetryOptions'];
@@ -2585,11 +2624,6 @@ export class FirehoseProvider implements ResourceProvider {
     if (roleArn !== undefined) result.RoleARN = roleArn;
     if (config['AppendOnly'] !== undefined) {
       result.AppendOnly = config['AppendOnly'] as boolean;
-    }
-    if (config['CatalogConfiguration'] !== undefined) {
-      result.CatalogConfiguration = config[
-        'CatalogConfiguration'
-      ] as IcebergDestinationUpdate['CatalogConfiguration'];
     }
     // Iceberg's S3 field is named `S3Configuration` on the Update shape
     // (a full S3DestinationConfiguration), unlike the other destinations
@@ -2825,7 +2859,9 @@ export class FirehoseProvider implements ResourceProvider {
    * SDK reuses field names between Description and Configuration for
    * these destinations, so a `pickDefinedDeep` pass-through produces a
    * CFn-compatible shape. AWS-managed read-only `VpcId` is stripped
-   * from `VpcConfigurationDescription`. Write-only fields AWS strips
+   * from `VpcConfigurationDescription`. `Iceberg` goes through
+   * `mapIcebergDescriptionToCfn`, which restores CloudFormation's spellings
+   * of three renamed members. Write-only fields AWS strips
    * from descriptions (`RedshiftDestinationConfiguration.Password`,
    * `HttpEndpointDestinationConfiguration.EndpointConfiguration.AccessKey`)
    * stay drift-unknown via `getDriftUnknownPaths` — no AWS API recovers them.
@@ -2900,6 +2936,13 @@ export class FirehoseProvider implements ResourceProvider {
     if (dest?.ExtendedS3DestinationDescription) {
       result['ExtendedS3DestinationConfiguration'] = mapExtendedS3DescriptionToCfn(
         dest.ExtendedS3DestinationDescription as unknown as Record<string, unknown>
+      );
+    } else if (dest?.IcebergDestinationDescription) {
+      // Ahead of the legacy S3 branch, as ExtendedS3 is: nothing in the SDK
+      // model rules out a top-level `S3DestinationDescription` beside it, and
+      // Iceberg's own bucket sits inside its description (go-to-k/cdkd#5636).
+      result['IcebergDestinationConfiguration'] = mapIcebergDescriptionToCfn(
+        dest.IcebergDestinationDescription as unknown as Record<string, unknown>
       );
     } else if (dest?.S3DestinationDescription) {
       result['S3DestinationConfiguration'] = mapS3DescriptionToCfn(
@@ -3330,6 +3373,48 @@ function mapRedshiftDescriptionToCfn(desc: Record<string, unknown>): Record<stri
   if (desc['S3BackupDescription']) {
     out['S3BackupConfiguration'] = mapS3DescriptionToCfn(
       desc['S3BackupDescription'] as Record<string, unknown>
+    );
+  }
+  return out;
+}
+
+/**
+ * Map IcebergDestinationDescription → CFn IcebergDestinationConfiguration
+ * (go-to-k/cdkd#5636). Three members are renamed back to CloudFormation's
+ * spelling: `S3BackupMode` → `s3BackupMode`, `CatalogConfiguration.CatalogARN`
+ * → `CatalogArn`, and the nested `S3DestinationDescription` →
+ * `S3Configuration` (through {@link mapS3DescriptionToCfn}). The rest share
+ * their names with the input shape.
+ */
+function mapIcebergDescriptionToCfn(desc: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of [
+    'DestinationTableConfigurationList',
+    'SchemaEvolutionConfiguration',
+    'TableCreationConfiguration',
+    'BufferingHints',
+    'CloudWatchLoggingOptions',
+    'ProcessingConfiguration',
+    'RetryOptions',
+    'RoleARN',
+    'AppendOnly',
+  ]) {
+    const v = pickDefinedDeep(desc[k]);
+    if (v !== undefined) out[k] = v;
+  }
+  if (desc['S3BackupMode'] !== undefined) out['s3BackupMode'] = desc['S3BackupMode'];
+  const catalog = desc['CatalogConfiguration'] as Record<string, unknown> | undefined;
+  if (catalog) {
+    out['CatalogConfiguration'] = {
+      ...(catalog['CatalogARN'] !== undefined && { CatalogArn: catalog['CatalogARN'] }),
+      ...(catalog['WarehouseLocation'] !== undefined && {
+        WarehouseLocation: catalog['WarehouseLocation'],
+      }),
+    };
+  }
+  if (desc['S3DestinationDescription']) {
+    out['S3Configuration'] = mapS3DescriptionToCfn(
+      desc['S3DestinationDescription'] as Record<string, unknown>
     );
   }
   return out;

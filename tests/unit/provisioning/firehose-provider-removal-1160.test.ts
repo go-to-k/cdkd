@@ -299,9 +299,9 @@ describe('FirehoseProvider.update — a removed destination sub-field is kept, a
         CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
         S3Configuration: S3_BARE,
       },
+      // The create-only CatalogConfiguration is never sent (go-to-k/cdkd#5636).
       sent: {
         RoleARN: 'arn:aws:iam::111:role/firehose-role-2',
-        CatalogConfiguration: { CatalogArn: 'arn:aws:glue:us-east-1:111:catalog' },
         S3Configuration: S3_BARE,
       },
     },
