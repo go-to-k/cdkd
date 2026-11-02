@@ -121,7 +121,7 @@ dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph cl
 dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
 ec2-instance	2026-10-28T05:14:33Z	PASS	265	verify.sh	rc ok, orph clean; #5446 in-place update; probes red at t3.small and reader
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
-ec2-route-targets	2026-11-02T20:20:04Z	FAIL	531	verify.sh	rc=1 at Phase 1b ODB rejection grep: SDK path prints only InvalidOdbNetworkArn.NotFound without --verbose; orph clean
+ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
 ec2-vpc	2026-11-02T17:29:26Z	PASS	162	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 ecr	2026-10-20T06:00:42Z	PASS	55	standard	deploy+destroy clean, 0 orphans
