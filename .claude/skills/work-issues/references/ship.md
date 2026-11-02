@@ -39,7 +39,9 @@ turn holding HOURS tells the user its ETA and queue. A subagent running a turn's
 integs, marker and ledger has no interim report: a handback ENDS it until a `SendMessage` resumes
 it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID
-exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN, take each
+exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN under the
+budget the PARENT computed with that block and named per fixture in the brief
+(runners' own picks killed healthy runs twice: 2026-10-30, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
 its own, #5519) and wait on ONE command exiting with that PID (no per-line
 Monitor: each line re-ends it, #5413), bans attribution
