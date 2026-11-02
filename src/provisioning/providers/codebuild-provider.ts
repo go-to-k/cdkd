@@ -1,9 +1,12 @@
 import {
   CodeBuildClient,
   CreateProjectCommand,
+  CreateWebhookCommand,
   DeleteProjectCommand,
+  DeleteWebhookCommand,
   UpdateProjectCommand,
   UpdateProjectVisibilityCommand,
+  UpdateWebhookCommand,
   BatchGetProjectsCommand,
   ResourceNotFoundException,
   type SourceType,
@@ -22,12 +25,20 @@ import {
   type CreateProjectCommandInput,
   type BatchReportModeType,
   type ProjectVisibilityType,
+  type PullRequestBuildApproverRole,
+  type PullRequestBuildCommentApproval,
+  type PullRequestBuildPolicy,
+  type ScopeConfiguration,
+  type WebhookBuildType,
+  type WebhookFilter,
+  type WebhookFilterType,
+  type WebhookScopeType,
 } from '@aws-sdk/client-codebuild';
 import { getLogger } from '../../utils/logger.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { normalizeAwsTagsToCfn, resolveExplicitPhysicalId } from '../import-helpers.js';
-import { readConfigString, requireConfigArray } from '../config-shape.js';
+import { coerceCfnBoolean, readConfigString, requireConfigArray } from '../config-shape.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -44,6 +55,9 @@ import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
+  isAmbiguousOutcomeError,
+  isRetryableTransientError,
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -53,6 +67,7 @@ import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-fai
 import { reportCreatedResource } from '../created-resource-sink.js';
 import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
 import { generatedNameFor } from '../resource-name.js';
+import { startInterruptWatch } from '../interrupt-watch.js';
 
 /**
  * A project's visibility when `UpdateProjectVisibility` has never been called:
@@ -107,6 +122,184 @@ function readVisibility(properties: Record<string, unknown>, mask: MaskerFn): Vi
 }
 
 /**
+ * The build type CloudFormation sends on every `UpdateWebhook` whose template
+ * declares none (go-to-k/cdkd#5627, CloudTrail), so dropping `BuildType` from a
+ * `BUILD_BATCH` webhook resets it. `CreateWebhook` carries it only when declared.
+ */
+const DEFAULT_WEBHOOK_BUILD_TYPE: WebhookBuildType = 'BUILD';
+
+/** Tries of `CreateWebhook` on a new project, see `createWebhookOnNewProject`. */
+const NEW_PROJECT_WEBHOOK_ATTEMPTS = 4;
+const NEW_PROJECT_WEBHOOK_RETRY_BASE_MS = 2000;
+
+/** The source location a global or organization webhook requires. */
+const DEFAULT_WEBHOOK_SOURCE_LOCATION = 'CODEBUILD_DEFAULT_WEBHOOK_SOURCE_LOCATION';
+
+/** The `Scope` the CloudFormation schema documents when a template names none. */
+const DEFAULT_WEBHOOK_SCOPE: WebhookScopeType = 'GITHUB_ORGANIZATION';
+
+/**
+ * `Triggers` as the webhook calls take it (go-to-k/cdkd#5627). None of it rides
+ * `CreateProject` / `UpdateProject`. Measured against CloudFormation on a real
+ * GitHub repository (CFn A/B plus CloudTrail):
+ *
+ * - `unmanaged`: `Triggers` absent, or carrying no `Webhook`. No webhook call,
+ *   so a live webhook is KEPT: removing `Triggers` does not delete it.
+ * - `disabled`: `Webhook: false`. `DeleteWebhook` when one is live, else nothing.
+ * - `enabled`: `Webhook: true`. `UpdateWebhook` when one is live, else
+ *   `CreateWebhook`, so a webhook deleted out of band comes back.
+ * - `unusable`: what CloudFormation refuses, plus a malformed block.
+ */
+type TriggersRead =
+  | { kind: 'unmanaged' | 'disabled' }
+  | {
+      kind: 'enabled';
+      filterGroups?: WebhookFilter[][];
+      buildType?: WebhookBuildType;
+      scopeConfiguration?: ScopeConfiguration;
+      pullRequestBuildPolicy?: PullRequestBuildPolicy;
+    }
+  | { kind: 'unusable'; reason: string };
+
+/**
+ * A `Source.Auth` connection is reached with the project's service role. A
+ * `CreateProject` seconds after that role and its grant were created answered
+ * `OAuthProviderException` with either sentence below before it succeeded
+ * (go-to-k/cdkd#5627, measured on `CreateProject` only). Neither reads as IAM
+ * propagation as AWS spells it: the first needs its `(Service:` trailer, which
+ * keeps cdkd's OWN expired credentials terminal. This exception is CodeBuild
+ * acting on the role, never the caller's credentials, so the wrap restates each
+ * sentence in the form that retries, keeping its meaning: a role that truly
+ * lacks the grant spends the propagation budget and then says so.
+ */
+function relayedConnectionRace(error: unknown, detail: string): string {
+  if (!(error instanceof Error) || error.name !== 'OAuthProviderException') return '';
+  if (detail.includes('security token included in the request is invalid')) {
+    return ' (The security token included in the request is invalid. (Service: CodeBuild))';
+  }
+  if (detail.includes('not authorized to access connection')) {
+    return (
+      ' (The service role is not authorized to perform access to the connection ' +
+      'Source.Auth names)'
+    );
+  }
+  return '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readTriggers(properties: Record<string, unknown>, mask: MaskerFn): TriggersRead {
+  const triggers = properties['Triggers'];
+  if (triggers == null) return { kind: 'unmanaged' };
+  const refuse = (key: string, expected: string, value: unknown): TriggersRead => ({
+    kind: 'unusable',
+    reason:
+      `AWS::CodeBuild::Project ${key} must be ${expected}, got ` +
+      `${JSON.stringify(maskDeep(value, mask))}`,
+  });
+  if (!isRecord(triggers)) return refuse('Triggers', 'an object', triggers);
+
+  const declared = triggers['Webhook'];
+  const webhook = declared == null ? undefined : coerceCfnBoolean(declared);
+  if (declared != null && webhook === undefined) {
+    return refuse('Triggers.Webhook', 'a boolean', declared);
+  }
+  const groups = triggers['FilterGroups'];
+  const buildType = triggers['BuildType'];
+
+  if (webhook !== true) {
+    // CloudFormation's own handler refuses both, an empty `FilterGroups` too,
+    // before any webhook call. `PullRequestBuildPolicy` beside no enabled webhook
+    // is accepted and sent nowhere (measured); so is `ScopeConfiguration`, by the
+    // same reading, unmeasured: it needs a GitHub organization or enterprise.
+    for (const [key, value, noun] of [
+      ['FilterGroups', groups, 'filter groups'],
+      ['BuildType', buildType, 'build type'],
+    ] as const) {
+      if (value != null) {
+        return {
+          kind: 'unusable',
+          reason: `AWS::CodeBuild::Project Triggers.${key}: cannot specify ${noun} when webhook is disabled`,
+        };
+      }
+    }
+    return { kind: webhook === false ? 'disabled' : 'unmanaged' };
+  }
+
+  if (buildType != null && typeof buildType !== 'string') {
+    return refuse('Triggers.BuildType', 'a string', buildType);
+  }
+  let filterGroups: WebhookFilter[][] | undefined;
+  if (groups != null) {
+    if (!Array.isArray(groups) || !groups.every(Array.isArray)) {
+      return refuse('Triggers.FilterGroups', 'a list of filter lists', groups);
+    }
+    const rows = groups as unknown[][];
+    if (!rows.every((group) => group.every(isRecord))) {
+      return refuse('Triggers.FilterGroups', 'a list of filter lists', groups);
+    }
+    filterGroups = (rows as Record<string, unknown>[][]).map((group) =>
+      group.map((filter) => {
+        const excluded = filter['ExcludeMatchedPattern'];
+        return {
+          type: filter['Type'] as WebhookFilterType,
+          pattern: filter['Pattern'] as string,
+          ...(excluded != null && {
+            excludeMatchedPattern: coerceCfnBoolean(excluded) ?? (excluded as boolean),
+          }),
+        };
+      })
+    );
+  }
+
+  const policy = triggers['PullRequestBuildPolicy'];
+  if (policy != null && !isRecord(policy)) {
+    return refuse('Triggers.PullRequestBuildPolicy', 'an object', policy);
+  }
+  const scope = triggers['ScopeConfiguration'];
+  if (scope != null && !isRecord(scope)) {
+    return refuse('Triggers.ScopeConfiguration', 'an object', scope);
+  }
+  // CloudFormation's own refusal.
+  if (scope != null) {
+    const source = properties['Source'];
+    if (!isRecord(source) || source['Location'] !== DEFAULT_WEBHOOK_SOURCE_LOCATION) {
+      return {
+        kind: 'unusable',
+        reason:
+          'AWS::CodeBuild::Project Triggers.ScopeConfiguration: cannot specify ' +
+          `a scope when the project source location is not ${DEFAULT_WEBHOOK_SOURCE_LOCATION}`,
+      };
+    }
+  }
+
+  return {
+    kind: 'enabled',
+    ...(filterGroups !== undefined && { filterGroups }),
+    ...(buildType != null && { buildType: buildType as WebhookBuildType }),
+    ...(scope != null && {
+      scopeConfiguration: {
+        name: scope['Name'] as string,
+        scope: (scope['Scope'] as WebhookScopeType | undefined) ?? DEFAULT_WEBHOOK_SCOPE,
+        ...(scope['Domain'] != null && { domain: scope['Domain'] as string }),
+      },
+    }),
+    ...(policy != null && {
+      pullRequestBuildPolicy: {
+        requiresCommentApproval: policy[
+          'RequiresCommentApproval'
+        ] as PullRequestBuildCommentApproval,
+        ...(policy['ApproverRoles'] != null && {
+          approverRoles: policy['ApproverRoles'] as PullRequestBuildApproverRole[],
+        }),
+      },
+    }),
+  };
+}
+
+/**
  * SDK Provider for AWS CodeBuild resources
  *
  * Supports:
@@ -124,8 +317,7 @@ export class CodeBuildProvider implements ResourceProvider {
   /**
    * `AWS::CodeBuild::Project` is `ProvisioningType: NON_PROVISIONABLE` — Cloud
    * Control has no handlers for it — so the #614 silent-drop auto-route must
-   * not send a template using an unhandled property (`Triggers`, which CDK's
-   * `webhook: true` emits) to CC, where it
+   * not send a template using an unhandled property to CC, where it
    * fails mid-deploy with an opaque UnsupportedActionException. With this
    * opt-out the registry refuses such a template pre-flight (issue #3866).
    */
@@ -158,10 +350,11 @@ export class CodeBuildProvider implements ResourceProvider {
         'SourceVersion',
         'AutoRetryLimit',
         // go-to-k/cdkd#2762: through `UpdateProjectVisibility`, see
-        // `applyVisibility`. `Triggers` (a webhook) stays unhandled, so a
-        // template declaring it is still refused pre-flight.
+        // `applyVisibility`.
         'Visibility',
         'ResourceAccessRole',
+        // go-to-k/cdkd#5627: through the webhook calls, see `readTriggers`.
+        'Triggers',
       ]),
     ],
   ]);
@@ -561,8 +754,23 @@ export class CodeBuildProvider implements ResourceProvider {
       );
     }
 
-    // Set once CreateProject returns: a later failure is the visibility
-    // call's, against a project no state record will hold.
+    // go-to-k/cdkd#5627: the same shape for the webhook, whose call also runs
+    // after `CreateProject`. A replay gets no webhook and a warning.
+    const triggersRead = readTriggers(properties, mask);
+    if (triggersRead.kind === 'unusable') {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(triggersRead.reason, resourceType, logicalId);
+      }
+      this.logger.warn(
+        mask(
+          `${triggersRead.reason}. Replaying a state record, so CodeBuild Project ${logicalId} ` +
+            `gets no webhook rather than refusing the restore`
+        )
+      );
+    }
+
+    // Set once CreateProject returns: a later failure is the webhook or
+    // visibility call's, against a project no state record will hold.
     let createdName: string | undefined;
     try {
       // go-to-k/cdkd#5095: an un-named project gets the generated name a
@@ -580,6 +788,10 @@ export class CodeBuildProvider implements ResourceProvider {
       createdName = projectName;
       // go-to-k/cdkd#5511: report before the visibility call.
       reportCreatedResource(logicalId, resourceType, createdName);
+
+      if (triggersRead.kind === 'enabled') {
+        await this.createWebhookOnNewProject(projectName, triggersRead);
+      }
 
       // Only a declaration other than the default needs the call: a new
       // project is already PRIVATE with no role.
@@ -602,6 +814,8 @@ export class CodeBuildProvider implements ResourceProvider {
     } catch (error) {
       if (createdName !== undefined) markAuxiliaryFailure(error, logicalId);
       const cause = error instanceof Error ? error : undefined;
+      // Past `CreateProject` a retry of `create()` collides with the project it
+      // made, so only that call's connection race may read as retryable.
       const thrown = this.wrapCaughtError(
         mask,
         error,
@@ -612,7 +826,8 @@ export class CodeBuildProvider implements ResourceProvider {
             logicalId,
             undefined,
             cause
-          )
+          ),
+        createdName === undefined
       );
       // The project exists and no state record will hold it, so name it for
       // the failed-CREATE journal — only once CreateProject returned.
@@ -621,6 +836,122 @@ export class CodeBuildProvider implements ResourceProvider {
       }
       throw thrown;
     }
+  }
+
+  /**
+   * `CreateWebhook` (go-to-k/cdkd#5627), on the create client: it carries no
+   * idempotency token, so the SDK's replay of a 5xx whose request had succeeded
+   * answers `ResourceAlreadyExistsException` (the `getCreateClient` hazard).
+   * The answer is discarded unread: it can hold the webhook's secret.
+   */
+  private async createWebhook(
+    projectName: string,
+    read: Extract<TriggersRead, { kind: 'enabled' }>
+  ): Promise<void> {
+    await this.getCreateClient().send(
+      new CreateWebhookCommand({
+        projectName,
+        ...(read.filterGroups !== undefined && { filterGroups: read.filterGroups }),
+        ...(read.buildType !== undefined && { buildType: read.buildType }),
+        ...(read.scopeConfiguration !== undefined && {
+          scopeConfiguration: read.scopeConfiguration,
+        }),
+        ...(read.pullRequestBuildPolicy !== undefined && {
+          pullRequestBuildPolicy: read.pullRequestBuildPolicy,
+        }),
+      })
+    );
+  }
+
+  /**
+   * `CreateWebhook` inside `create()`, retried HERE (go-to-k/cdkd#5627). The
+   * project exists by now, so a retry of `create()` would collide with it and
+   * never reach the webhook: every failure leaves this loop marked terminal.
+   * Four runs on a just-created role never failed this call, because
+   * `CreateProject` had already waited out the role, so the loop covers a 5xx or
+   * a throttle rather than a measured race.
+   *
+   * A new project has no webhook, so `ResourceAlreadyExistsException` after an
+   * AMBIGUOUS attempt means that attempt landed. After a throttle or a denial,
+   * which did nothing, it is a real failure.
+   */
+  private async createWebhookOnNewProject(
+    projectName: string,
+    read: Extract<TriggersRead, { kind: 'enabled' }>
+  ): Promise<void> {
+    const watch = startInterruptWatch(`The webhook of CodeBuild Project ${projectName}`);
+    let mayHaveLanded = false;
+    try {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await this.createWebhook(projectName, read);
+          return;
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          if (mayHaveLanded && error.name === 'ResourceAlreadyExistsException') return;
+          const ambiguous = isAmbiguousOutcomeError(error);
+          mayHaveLanded ||= ambiguous;
+          const retryable = ambiguous || isRetryableTransientError(error, error.message);
+          if (!retryable || attempt === NEW_PROJECT_WEBHOOK_ATTEMPTS) {
+            throw markNonRetryable(error);
+          }
+          // A second apart at most, as `withRetry` probes.
+          let remaining = NEW_PROJECT_WEBHOOK_RETRY_BASE_MS * 2 ** (attempt - 1);
+          while (remaining > 0) {
+            if (watch.isInterrupted()) throw watch.onInterrupted();
+            const chunk = Math.min(1_000, remaining);
+            await this.sleep(chunk);
+            remaining -= chunk;
+          }
+          if (watch.isInterrupted()) throw watch.onInterrupted();
+        }
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Bring the live webhook to what the template declares (go-to-k/cdkd#5627).
+   * `liveWebhook` comes from `UpdateProject`'s answer, so this adds no read.
+   *
+   * CloudFormation's calls, from CloudTrail. `UpdateWebhook` runs on EVERY
+   * project update with `Webhook: true`, an unchanged `Triggers` included, and
+   * always sends `filterGroups` and `buildType`: a removed `FilterGroups` is `[]`
+   * (the filters clear) and a removed `BuildType` is `BUILD`. A removed
+   * `PullRequestBuildPolicy` is omitted and the live policy stays. The
+   * unchanged-`Triggers` call stays, though it could be skipped: only it
+   * restores an edit made out of band, and the update is already running.
+   */
+  private async reconcileWebhook(
+    projectName: string,
+    read: TriggersRead,
+    liveWebhook: boolean
+  ): Promise<void> {
+    if (read.kind === 'disabled' && liveWebhook) {
+      await this.getClient().send(new DeleteWebhookCommand({ projectName }));
+      return;
+    }
+    if (read.kind !== 'enabled') return;
+    if (!liveWebhook) {
+      await this.createWebhook(projectName, read);
+      return;
+    }
+    await this.getClient().send(
+      new UpdateWebhookCommand({
+        projectName,
+        filterGroups: read.filterGroups ?? [],
+        buildType: read.buildType ?? DEFAULT_WEBHOOK_BUILD_TYPE,
+        rotateSecret: false,
+        ...(read.pullRequestBuildPolicy !== undefined && {
+          pullRequestBuildPolicy: read.pullRequestBuildPolicy,
+        }),
+      })
+    );
   }
 
   /**
@@ -666,6 +997,21 @@ export class CodeBuildProvider implements ResourceProvider {
       physicalId,
       'pre-update'
     );
+
+    // go-to-k/cdkd#5627: refused before `UpdateProject`, as CloudFormation
+    // refuses the whole update. A rollback's replay leaves the webhook alone.
+    const triggersRead = readTriggers(properties, mask);
+    if (triggersRead.kind === 'unusable') {
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(triggersRead.reason, resourceType, logicalId, physicalId);
+      }
+      this.logger.warn(
+        mask(
+          `${triggersRead.reason}. Replaying a state record, so the webhook of CodeBuild ` +
+            `Project ${physicalId} is left unchanged`
+        )
+      );
+    }
 
     try {
       // The update addresses the recorded project, never a derived name: a
@@ -742,6 +1088,30 @@ export class CodeBuildProvider implements ResourceProvider {
       // the merge pass-through is parity and none of the six is reset.
       const updated = await this.getClient().send(new UpdateProjectCommand(input));
 
+      const liveWebhook = updated.project?.webhook;
+      await this.reconcileWebhook(physicalId, triggersRead, liveWebhook != null);
+      // `UpdateWebhook` has no scope member and drift does not read `Triggers`,
+      // so name a declared scope the live webhook does not hold. Compared with
+      // the webhook itself, never the record: a scope removed and declared again
+      // never left it. Declared fields only: AWS may fill in others.
+      if (
+        triggersRead.kind === 'enabled' &&
+        triggersRead.scopeConfiguration !== undefined &&
+        liveWebhook != null &&
+        Object.entries(triggersRead.scopeConfiguration).some(
+          ([key, value]) =>
+            liveWebhook.scopeConfiguration?.[key as keyof ScopeConfiguration] !== value
+        )
+      ) {
+        this.logger.warn(
+          mask(
+            `The Triggers.ScopeConfiguration of CodeBuild Project ${physicalId} differs from its ` +
+              `live webhook, which cannot change scope: the webhook keeps its scope. Delete it ` +
+              `with Webhook: false, then deploy Webhook: true to apply the new one`
+          )
+        );
+      }
+
       // go-to-k/cdkd#2762: `Visibility` / `ResourceAccessRole`, sent as a pair
       // whenever either differs from the record. A removal is the default
       // pair (PRIVATE, no role), which CloudFormation also applies (CFn A/B).
@@ -793,7 +1163,8 @@ export class CodeBuildProvider implements ResourceProvider {
             logicalId,
             physicalId,
             cause
-          )
+          ),
+        true
       );
     }
   }
@@ -816,17 +1187,23 @@ export class CodeBuildProvider implements ResourceProvider {
    * tests its typed not-found before it wraps.
    *
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call.
+   * side-effect-free constructor call. `retryConnectionRace` opts in to
+   * {@link relayedConnectionRace}: the paths where running the operation again
+   * is safe and the service role is in play.
    */
   private wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
-    build: (text: string) => ProvisioningError
+    build: (text: string) => ProvisioningError,
+    retryConnectionRace: boolean
   ): ProvisioningError {
     const failure = describeAwsFailure(error);
     if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
     this.logger.debug(mask(build(mask(failure.detail)).message));
-    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
+    const wrapped = build(
+      `${mask(failure.summary)}${relayedNameCollision(failure.detail)}` +
+        (retryConnectionRace ? relayedConnectionRace(error, failure.detail) : '')
+    );
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
@@ -866,7 +1243,8 @@ export class CodeBuildProvider implements ResourceProvider {
             logicalId,
             physicalId,
             cause
-          )
+          ),
+        false
       );
       // The wrap names an AWS failure by its CLASS, and the delete classifiers
       // read `NotFoundException` in a message as "already deleted": only the
@@ -912,7 +1290,7 @@ export class CodeBuildProvider implements ResourceProvider {
    *  - `Cache` (Type / Location / Modes): always-emit placeholder.
    *
    * Not read back: `Triggers`, which is write-only in the CloudFormation
-   * schema and not handled by this provider.
+   * schema (see {@link getDriftUnknownPaths}).
    *
    * Tags are surfaced from the same `BatchGetProjects` response (CodeBuild
    * uses lower-case `key`/`value` shape; `normalizeAwsTagsToCfn` re-shapes
@@ -1266,6 +1644,11 @@ export class CodeBuildProvider implements ResourceProvider {
       // without it, a baseline that falls back to `properties` (an imported
       // project, or a failed observed capture) reports permanent drift on it.
       'Source.Auth',
+      // Write-only in the CloudFormation schema. `project.webhook` is readable
+      // but not in the declared shape: AWS fills in `excludeMatchedPattern`,
+      // `buildType` and a default `pullRequestBuildPolicy`, and a removed
+      // `Triggers` keeps the webhook (go-to-k/cdkd#5627).
+      'Triggers',
     ];
   }
 

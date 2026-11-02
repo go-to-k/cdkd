@@ -1,7 +1,7 @@
 {
   "summary": {
     "targetCount": 28,
-    "nestedKeyCount": 1499,
+    "nestedKeyCount": 1512,
     "wholeDeliveredPathCount": 607,
     "shapeClean": 182,
     "shapeHandled": 50,
@@ -541,7 +541,7 @@
       "providerFile": "codebuild-provider.ts",
       "sdkClientPackage": "@aws-sdk/client-codebuild",
       "keyStyle": "lower-first",
-      "nestedKeyCount": 99,
+      "nestedKeyCount": 112,
       "wholeDeliveredPaths": [],
       "shapeEntries": [],
       "shapeCleanCount": 13,
