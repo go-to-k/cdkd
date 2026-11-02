@@ -495,38 +495,30 @@ function refuseManagedInstancesPropertiesWithoutCapacityProvider(
   warn: (message: string) => void
 ): void {
   if (properties['CapacityProviderConfig'] !== undefined) return;
-  // A record can hold the flag on a plain function: the SDK route used to accept
-  // it and send nothing. The call this guards was never going to carry it, so a
-  // replay warns, as `.claude/rules/provider-replay-and-refusals.md` requires.
-  if (properties['PublishToLatestPublished'] !== undefined) {
-    if (context.replayingState === true) {
-      warn(
-        `Lambda function ${logicalId} records PublishToLatestPublished without ` +
-          `CapacityProviderConfig; ignoring it for this replay.`
-      );
-    } else {
-      throw markNonRetryable(
-        new ProvisioningError(
-          `Lambda function ${logicalId} declares PublishToLatestPublished without ` +
-            `CapacityProviderConfig: AWS applies it to Lambda Managed Instances functions ` +
-            `only. Add a capacity provider, or remove PublishToLatestPublished.`,
-          resourceType,
-          logicalId,
-          context.physicalId
-        )
-      );
-    }
+  // CloudFormation refuses both ("can't be specified unless creating a Lambda
+  // Managed Instance function"), so a template gets the same refusal before any
+  // call (go-to-k/cdkd#5637). A record is different: an import, or a binary
+  // that dropped them, holds them on a plain function that deployed fine, and
+  // neither reaches a call here. So a replay warns, as
+  // `.claude/rules/provider-replay-and-refusals.md` requires.
+  const declared = [
+    properties['PublishToLatestPublished'] !== undefined ? 'PublishToLatestPublished' : undefined,
+    properties['FunctionScalingConfig'] !== undefined ? 'FunctionScalingConfig' : undefined,
+  ].filter((key): key is string => key !== undefined);
+  if (declared.length === 0) return;
+  const named = declared.join(' and ');
+  if (context.replayingState === true) {
+    warn(
+      `Lambda function ${logicalId} records ${named} without CapacityProviderConfig; ` +
+        `ignoring ${declared.length === 1 ? 'it' : 'them'} for this replay.`
+    );
+    return;
   }
-  if (properties['FunctionScalingConfig'] === undefined) return;
-  // Same refusal as CloudFormation's ("can't be specified unless creating a
-  // Lambda Managed Instance function"), before any call (go-to-k/cdkd#5637).
-  // Unconditional, including on a replay (`replayingState`): AWS rejects the
-  // combination every time, so that replay could not have succeeded either.
   throw markNonRetryable(
     new ProvisioningError(
-      `Lambda function ${logicalId} declares FunctionScalingConfig without ` +
-        `CapacityProviderConfig: AWS applies it to Lambda Managed Instances functions only. ` +
-        `Add a capacity provider, or remove FunctionScalingConfig.`,
+      `Lambda function ${logicalId} declares ${named} without CapacityProviderConfig: AWS ` +
+        `applies ${declared.length === 1 ? 'it' : 'them'} to Lambda Managed Instances functions ` +
+        `only. Add a capacity provider, or remove ${named}.`,
       resourceType,
       logicalId,
       context.physicalId
@@ -1412,8 +1404,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
    * 95s after a publish, 30s after a Put, minutes after the first publish).
    *
    * `Failed` fails only the wait that follows cdkd's own call (`after`). Before
-   * a call it is the leftover of an earlier attempt, and a publish of a fixed
-   * configuration is the way out of it. AWS's reason is a status
+   * a call it is the leftover of an earlier attempt, and whether that call is
+   * refused is AWS's to say. AWS's reason is a status
    * reason, so the message carries its code and the `--verbose` pointer
    * (go-to-k/cdkd#2319). The wait is capped by the enclosing resource deadline:
    * past it nobody is listening, and a later call would land unobserved.
@@ -1944,9 +1936,8 @@ export class LambdaFunctionProvider implements ResourceProvider {
               PublishTo: 'LATEST_PUBLISHED',
             })
           );
-          // A version left `Failed` stays so through a publish with nothing to
-          // capture, and refuses the scaling call below, so it stops here with
-          // its reason code (measured, go-to-k/cdkd#5637).
+          // A version left `Failed` refuses the scaling call below (measured,
+          // go-to-k/cdkd#5637), so it stops here, with its reason code.
           await this.waitForLatestPublishedSettled(target, log, 'after');
           log.debug(`Published ${LATEST_PUBLISHED} of ${log.value(physicalId)}`);
         }

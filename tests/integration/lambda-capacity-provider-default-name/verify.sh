@@ -53,7 +53,8 @@
 #      (the published version carries the new description) and apply the new
 #      scaling to that version, still on the SDK route. Timeout proves the
 #      publish ran after the configuration change.
-#   3b. `cdkd drift` is clean (go-to-k/cdkd#5637).
+#   3b. The observed baseline holds the applied scaling, and `cdkd drift` reports
+#      an out-of-band scaling change (go-to-k/cdkd#5637).
 #   4. Destroy. Assert every provider, the function and both per-provider
 #      operator IAM roles are gone, no instance is left in the fixture VPC, the
 #      VPC is gone, and the state file is removed.
@@ -222,15 +223,47 @@ cleanup() {
   fi
   delete_provider "${SPARE_REWIRED}"
   [ -n "${SPARE_GENERATED}" ] && delete_provider "${SPARE_GENERATED}"
-  STATE_DESTROYED=0
-  if [ -f "${LOCAL_DIST}" ] &&
-    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1; then
-    STATE_DESTROYED=1
+  # `state destroy` throws when there is no state, as before any run and after a
+  # PASS, so its failure means something only for a state that exists. Anything
+  # but a clean not-found counts as existing: keeping a record costs nothing.
+  STATE_LEFT=0
+  if [ -n "${STATE_BUCKET:-}" ]; then
+    if STATE_HEAD="$(aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" 2>&1 >/dev/null)"; then
+      STATE_LEFT=1
+    elif ! grep -qiE '404|not ?found' <<< "${STATE_HEAD}"; then
+      STATE_LEFT=1
+    fi
+  fi
+  if [ "${STATE_LEFT}" = "1" ] && [ -f "${LOCAL_DIST}" ] &&
+    node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >/dev/null 2>&1; then
+    STATE_LEFT=0
   fi
   # The function before its provider: deleting it deletes every version, which
   # frees the provider it runs on.
   [ -n "${FUNCTION_NAME}" ] && { aws lambda delete-function --function-name "${FUNCTION_NAME}" --region "${REGION}" >/dev/null 2>&1 || true; }
   [ -n "${PROVIDER_NAME}" ] && delete_provider "${PROVIDER_NAME}"
+  # A deploy that failed before state recorded them leaves names nothing above
+  # knows, so sweep by the stack prefix every generated name starts with.
+  case "${STACK}" in
+    CdkdLmi?*)
+      if SWEPT_FUNCTIONS="$(aws lambda list-functions --region "${REGION}" \
+        --query "Functions[?starts_with(FunctionName, '${STACK}-')].FunctionName" --output text 2>&1)"; then
+        for fn in ${SWEPT_FUNCTIONS}; do
+          [ "${fn}" = "None" ] || aws lambda delete-function --function-name "${fn}" --region "${REGION}" >/dev/null 2>&1 || true
+        done
+      else
+        echo "WARN: could not list functions of ${STACK}: ${SWEPT_FUNCTIONS}" >&2
+      fi
+      if SWEPT_PROVIDERS="$(aws lambda list-capacity-providers --region "${REGION}" \
+        --query "CapacityProviders[?contains(CapacityProviderArn, ':capacity-provider:${STACK}-')].CapacityProviderArn" --output text 2>&1)"; then
+        for arn in ${SWEPT_PROVIDERS}; do
+          [ "${arn}" = "None" ] || delete_provider "${arn##*:}"
+        done
+      else
+        echo "WARN: could not list capacity providers of ${STACK}: ${SWEPT_PROVIDERS}" >&2
+      fi
+      ;;
+  esac
   case "${STACK}" in
     CdkdLmi?*)
       for lg in $(aws logs describe-log-groups --region "${REGION}" \
@@ -243,19 +276,27 @@ cleanup() {
       ;;
   esac
   # The state is the only record of what a failed `state destroy` left behind.
-  if [ "${STATE_DESTROYED}" != "1" ]; then
-    echo "WARN: state destroy failed: s3://${STATE_BUCKET:-<unset>}/${STATE_KEY} is kept, and resources of ${STACK} (VPC, operator roles, security group) may remain" >&2
-  elif [ -n "${STATE_BUCKET:-}" ]; then
-    aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
+  if [ "${STATE_LEFT}" = "1" ]; then
+    echo "WARN: state destroy failed: s3://${STATE_BUCKET}/${STATE_KEY} is kept, and resources of ${STACK} (VPC, operator roles, security group) may remain" >&2
+  fi
+  if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
   fi
-  # A failed run must not leave capacity billing: instances outlive every delete
-  # above when the provider refused them.
-  if [ -n "${VPC_ID:-}" ]; then
-    LEFT_INSTANCES="$(aws ec2 describe-instances --region "${REGION}" \
+  # A failed run must not leave capacity billing, and a failed read must not read
+  # as none left. Phase 1 may have failed before VPC_ID was set: CDK names the VPC.
+  if [ -z "${VPC_ID:-}" ]; then
+    VPC_ID="$(aws ec2 describe-vpcs --region "${REGION}" --filters "Name=tag:Name,Values=${STACK}/Vpc" \
+      --query 'Vpcs[0].VpcId' --output text 2>&1)" || { echo "WARN: could not look up the VPC of ${STACK}: ${VPC_ID}" >&2; VPC_ID=""; }
+    [ "${VPC_ID}" = "None" ] && VPC_ID=""
+  fi
+  if [ -n "${VPC_ID}" ]; then
+    if LEFT_INSTANCES="$(aws ec2 describe-instances --region "${REGION}" \
       --filters "Name=vpc-id,Values=${VPC_ID}" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
-      --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null)"
-    [ -z "${LEFT_INSTANCES}" ] || echo "WARN: instances left in ${VPC_ID}: ${LEFT_INSTANCES}" >&2
+      --query 'Reservations[].Instances[].InstanceId' --output text 2>&1)"; then
+      [ -z "${LEFT_INSTANCES}" ] || echo "WARN: instances left in ${VPC_ID}: ${LEFT_INSTANCES}" >&2
+    else
+      echo "WARN: could not read instances in ${VPC_ID}: ${LEFT_INSTANCES}" >&2
+    fi
   fi
   set -eu
 }
@@ -604,13 +645,38 @@ CDKD_TEST_UPDATE=true assert_clean_diff "after the update"
 echo "    diff under the update mode reports no changes"
 
 # --- Phase 3b: drift --------------------------------------------------------
-# go-to-k/cdkd#5637: both properties read back through the SDK route, and the
-# write-only publish flag must not read as a removal. `drift` exits non-zero on
-# any drift.
+# go-to-k/cdkd#5637. A clean drift alone proves little: its baseline comes from
+# the same read. So first the baseline must hold the value this run applied, then
+# a change made behind cdkd's back must be reported, on the published version.
 echo "==> Phase 3b: drift"
+OBSERVED_SCALING="$(read_state "json.dumps(s['resources']['${FUNCTION_LOGICAL}'].get('observedProperties', {}).get('FunctionScalingConfig'), sort_keys=True)")"
+[ "${OBSERVED_SCALING}" = '{"MaxExecutionEnvironments": 3, "MinExecutionEnvironments": 1}' ] ||
+  { echo "FAIL: observedProperties.FunctionScalingConfig is '${OBSERVED_SCALING}', expected min 1, max 3" >&2; exit 1; }
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" ||
   { echo "FAIL: drift after the update is not clean" >&2; exit 1; }
-echo "    drift reports nothing"
+
+put_scaling() { # usage: put_scaling <max>; min stays 1, returns once the version settles
+  aws lambda put-function-scaling-config --function-name "${FUNCTION_NAME}" --qualifier '$LATEST.PUBLISHED' \
+    --function-scaling-config "MinExecutionEnvironments=1,MaxExecutionEnvironments=$1" \
+    --region "${REGION}" >/dev/null
+  local settled=""
+  for _ in $(seq 1 60); do
+    settled="$(published_field '[State,LastUpdateStatus]' | tr '\t' ' ')"
+    [ "${settled}" = "Active Successful" ] && [ "$(published_scaling)" = "1 $1" ] && return 0
+    sleep 5
+  done
+  echo "FAIL: scaling max $1 did not settle (${settled})" >&2
+  exit 1
+}
+put_scaling 2
+DRIFT_RC=0
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)" || DRIFT_RC=$?
+[ "${DRIFT_RC}" = "1" ] ||
+  { echo "FAIL: drift exited ${DRIFT_RC} after an out-of-band scaling change, expected 1. Output:" >&2; echo "${DRIFT_OUT}" >&2; exit 1; }
+grep -q 'FunctionScalingConfig' <<< "${DRIFT_OUT}" ||
+  { echo "FAIL: drift did not name FunctionScalingConfig. Output:" >&2; echo "${DRIFT_OUT}" >&2; exit 1; }
+put_scaling 3
+echo "    baseline holds the applied scaling; an out-of-band change is reported"
 
 # --- Phase 4: destroy -------------------------------------------------------
 echo "==> Phase 4: destroy"

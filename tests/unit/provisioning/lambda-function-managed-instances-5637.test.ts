@@ -212,15 +212,27 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('warns instead on a replay of a record that holds the flag', async () => {
-      await provider.create(
-        'Fn',
-        TYPE,
-        { ...BASE, PublishToLatestPublished: true },
-        { replayingState: true }
-      );
+    it.each([
+      ['the flag', { PublishToLatestPublished: true }],
+      ['scaling', { FunctionScalingConfig: SCALING }],
+    ])('warns instead on a replay of a record that holds %s', async (_name, extra) => {
+      await provider.create('Fn', TYPE, { ...BASE, ...extra }, { replayingState: true });
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ignoring it for this replay/));
       expect(sent(CreateFunctionCommand)[0]!.input.Publish).toBeUndefined();
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('waits out the cleanup when the scaling call fails', async () => {
+      let reads = 0;
+      arm((command) => {
+        if (command instanceof PutFunctionScalingConfigCommand) throw new Error('refused');
+        if (command instanceof GetFunctionCommand && ++reads < 2) return { Configuration: {} };
+        return undefined;
+      });
+      await expect(
+        provider.create('Fn', TYPE, { ...MANAGED, FunctionScalingConfig: SCALING })
+      ).rejects.toThrow(/Failed to set FunctionScalingConfig/);
+      expect(reads).toBe(2);
     });
 
     it('rejects when the final read after the scaling call is Failed', async () => {
@@ -546,6 +558,41 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('names the function on a refusal of the flag', async () => {
+      const error = (await update(
+        { ...BASE, PublishToLatestPublished: false },
+        BASE
+      ).catch((e: unknown) => e)) as ProvisioningError;
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(error.message).toMatch(/PublishToLatestPublished without CapacityProviderConfig/);
+      expect(error.physicalId).toBe('fn');
+    });
+
+    it.each([
+      ['the flag', { PublishToLatestPublished: true }],
+      ['scaling', { FunctionScalingConfig: SCALING }],
+    ])('warns instead on a replay of a record that holds %s', async (_name, extra) => {
+      await update({ ...BASE, ...extra, Timeout: 9 }, { ...BASE, Timeout: 3 }, {
+        replayingState: true,
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/ignoring it for this replay/));
+      expect(sent(UpdateFunctionConfigurationCommand)).toHaveLength(1);
+      expect(sent(PutFunctionScalingConfigCommand)).toHaveLength(0);
+    });
+
+    it('fails before any change when the live read fails', async () => {
+      arm((command) => {
+        if (command instanceof GetFunctionCommand) throw new Error('throttled');
+        return undefined;
+      });
+      const error = await update({ ...MANAGED, Timeout: 9 }, { ...MANAGED, Timeout: 3 }).catch(
+        (e: unknown) => e
+      );
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect(String(error)).toMatch(/Failed to update Lambda function Fn/);
+      expect(sent(UpdateFunctionConfigurationCommand)).toHaveLength(0);
+    });
+
     it('makes no Managed Instances call for a plain function', async () => {
       await update({ ...BASE, Timeout: 9 }, { ...BASE, Timeout: 3 });
       // No live check before the change: neither side names the block.
@@ -799,23 +846,37 @@ describe('Lambda Managed Instances (go-to-k/cdkd#5637)', () => {
   });
 
   describe('unsettled', () => {
-    it('takes the requested block of an unsettled read, or the applied one', async () => {
+    const readUnsettledWith = async (scaling: object): Promise<Record<string, unknown>> => {
       arm((command) => {
         if (command instanceof GetFunctionCommand) {
           return { Configuration: { FunctionName: 'fn', CapacityProviderConfig: CAPACITY } };
         }
-        if (command instanceof GetFunctionScalingConfigCommand) {
-          return { AppliedFunctionScalingConfig: { MinExecutionEnvironments: 3 } };
-        }
+        if (command instanceof GetFunctionScalingConfigCommand) return scaling;
         return undefined;
       });
-      const live = (await provider.readUnsettled(
+      return (await provider.readUnsettled(
         'fn',
         'Fn',
         TYPE,
         new Set(['FunctionScalingConfig'])
       )) as Record<string, unknown>;
+    };
+
+    it('takes the applied block of an unsettled read when nothing is requested', async () => {
+      const live = await readUnsettledWith({
+        AppliedFunctionScalingConfig: { MinExecutionEnvironments: 3 },
+      });
       expect(live['FunctionScalingConfig']).toEqual({ MinExecutionEnvironments: 3 });
+    });
+
+    it('takes the requested block of an unsettled read over the applied one', async () => {
+      const live = await readUnsettledWith({
+        AppliedFunctionScalingConfig: { MinExecutionEnvironments: 3 },
+        RequestedFunctionScalingConfig: SCALING,
+      });
+      expect(live['FunctionScalingConfig']).toEqual(SCALING);
+      const reads = sent(GetFunctionScalingConfigCommand);
+      expect(reads.at(-1)!.input).toEqual({ FunctionName: 'fn', Qualifier: QUALIFIER });
     });
 
     it('reads an unsettled scaling block strictly', async () => {
