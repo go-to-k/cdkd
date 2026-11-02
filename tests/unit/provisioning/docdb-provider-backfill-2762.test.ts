@@ -1157,6 +1157,7 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
     it('leaves per-call flags and spelled keys out of drift', () => {
       expect(provider.getDriftUnknownPaths(CLUSTER)).toEqual([
         'AvailabilityZones',
+        'GlobalClusterIdentifier',
         'MasterUserSecretKmsKeyId',
         'RotateMasterUserPassword',
       ]);

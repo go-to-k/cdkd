@@ -956,6 +956,7 @@ function docdbArmCluster(_physicalId: string, bag: Bag): void {
   let networkType = bag['NetworkType'];
   let storageType = bag['StorageType'];
   let scaling = bag['ServerlessV2ScalingConfiguration'];
+  let detached = false;
   setOutputOverrides({
     ModifyDBClusterCommand: (input) => {
       networkType = input['NetworkType'] ?? networkType;
@@ -992,8 +993,34 @@ function docdbArmCluster(_physicalId: string, bag: Bag): void {
         },
       ],
     }),
+    // A removal's detach takes it out of the global cluster.
+    RemoveFromGlobalClusterCommand: () => {
+      detached = true;
+      return {};
+    },
+    // The bag's global cluster holds the cluster, as the last deploy left it.
+    DescribeGlobalClustersCommand: () => ({
+      GlobalClusters:
+        typeof bag['GlobalClusterIdentifier'] === 'string' && !detached
+          ? [
+              {
+                GlobalClusterIdentifier: bag['GlobalClusterIdentifier'],
+                GlobalClusterMembers: [{ DBClusterArn: DOCDB_CLUSTER_ARN }],
+              },
+            ]
+          : [],
+    }),
   });
 }
+
+/**
+ * Joining another global cluster is refused, as CloudFormation refuses it (CFn
+ * A/B, go-to-k/cdkd#5628); a removal detaches in place and reaches the wire.
+ */
+const GLOBAL_CLUSTER_REFUSED = {
+  says: /Changing GlobalClusterIdentifier to a different global cluster is not supported/,
+  why: `ModifyDBCluster has no GlobalClusterIdentifier member and CloudFormation refuses an add or change too, so one the live cluster does not show is refused before any write (CFn A/B, go-to-k/cdkd#5628, ${DOCDB_SRC} planGlobalClusterUpdate)`,
+};
 
 const kept = (why: string): string =>
   `left in place on removal: ModifyDBCluster keeps a member it is not sent (merge semantics), ${why}`;
@@ -1054,6 +1081,7 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
         NetworkType: 'DUAL',
         ServerlessV2ScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
         StorageType: 'iopt1',
+        GlobalClusterIdentifier: 'docdb-global',
       },
       expectedSilent: {
         ...Object.fromEntries(
@@ -1078,6 +1106,7 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
           ])
         ),
         'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
+        'update-vary:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED.why,
         'update-remove:MasterUserPassword': kept(
           `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
         ),
@@ -1090,6 +1119,7 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         ...TAG_REFUSALS,
+        'update-add:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED,
         ...Object.fromEntries(
           ['create', 'update-add', 'update-remove'].flatMap((direction) =>
             ['MinCapacity', 'MaxCapacity'].map((member) => [

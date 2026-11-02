@@ -1688,6 +1688,18 @@ Checklist when writing or reviewing an `update()`:
   setting: cdkd sends it when the template turns it to `true`, never again while
   it stays `true`, and never from a rollback or `drift --revert`. To rotate
   again, deploy `false`, then `true`.
+  Real CloudFormation A/B, go-to-k/cdkd#5628 (us-east-1, engine 5.0.0): an
+  `AWS::DocDB::DBCluster` whose `GlobalClusterIdentifier` is removed, or set to
+  `""`, is updated in place: the cluster is detached from its global cluster
+  and stays `available`, standalone. Adding one, or changing it to another
+  global cluster, fails ("Changing GlobalClusterIdentifier to a different
+  global cluster is not supported unless the cluster is already part of the
+  target global cluster"), from a non-member cluster and from a member alike;
+  a member stays in its global cluster after the rollback. A stack delete
+  deletes a member cluster. `update()` detaches on a template removal, refuses
+  an add or change before any write unless the cluster is already part of the
+  target, and leaves a rollback's removal alone: cdkd only ever accepted that
+  membership, never added it.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

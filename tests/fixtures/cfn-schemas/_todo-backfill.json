@@ -27,7 +27,6 @@
       "Triggers"
     ],
     "AWS::DocDB::DBCluster": [
-      "GlobalClusterIdentifier",
       "RestoreToTime",
       "RestoreType",
       "SnapshotIdentifier",
