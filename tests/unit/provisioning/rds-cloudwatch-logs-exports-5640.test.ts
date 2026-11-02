@@ -309,6 +309,21 @@ describe.each(SIDES)('RDSProvider $type EnableCloudwatchLogsExports', (side) => 
       expect(sleeps).toBe(2);
     });
 
+    it('a list already reading the change still waits while RDS lists it pending', async () => {
+      arm([
+        {
+          EnabledCloudwatchLogsExports: ['postgresql', 'upgrade'],
+          PendingModifiedValues: { PendingCloudwatchLogsExports: { LogTypesToEnable: ['upgrade'] } },
+        },
+        { EnabledCloudwatchLogsExports: ['postgresql', 'upgrade'] },
+      ]);
+      await update(
+        { EnableCloudwatchLogsExports: ['postgresql', 'upgrade'] },
+        { EnableCloudwatchLogsExports: ['postgresql'] }
+      );
+      expect(sleeps).toBe(1);
+    });
+
     it('under --no-wait the update does not poll for the change', async () => {
       process.env['CDKD_NO_WAIT'] = 'true';
       arm([{ EnabledCloudwatchLogsExports: ['postgresql'] }]);
