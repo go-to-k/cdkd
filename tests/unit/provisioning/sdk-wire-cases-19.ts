@@ -127,6 +127,27 @@ const SUBNET_GROUP_CASE: TypeCase = {
 
 // --- AWS::RDS::DBCluster -------------------------------------------------------
 
+/** The log types a bag declares, as the live cluster or instance starts out exporting. */
+function liveLogs(bag: Bag): string[] {
+  const declared = bag['EnableCloudwatchLogsExports'];
+  return Array.isArray(declared) ? (declared as string[]).slice() : [];
+}
+
+/**
+ * The live log types after a Modify* applies its `CloudwatchLogsExportConfiguration`
+ * at once, so the provider's wait for it settles on its first poll
+ * (go-to-k/cdkd#5639 / #5640).
+ */
+function applyLogDelta(live: string[], input: Record<string, unknown>): string[] {
+  const config = input['CloudwatchLogsExportConfiguration'] as
+    | { EnableLogTypes?: string[]; DisableLogTypes?: string[] }
+    | undefined;
+  if (config === undefined) return live;
+  const out = live.filter((type) => !(config.DisableLogTypes ?? []).includes(type));
+  for (const type of config.EnableLogTypes ?? []) if (!out.includes(type)) out.push(type);
+  return out;
+}
+
 /**
  * DescribeDBClusters answers the live cluster: `available`, with the port and
  * security groups the last ModifyDBCluster sent (the bag's own before any),
@@ -140,12 +161,14 @@ const SUBNET_GROUP_CASE: TypeCase = {
 function armCluster(_physicalId: string, bag: Bag): void {
   let groups = (bag['VpcSecurityGroupIds'] as string[] | undefined) ?? [];
   let port = bag['Port'] as number | undefined;
+  let logs = liveLogs(bag);
   setOutputOverrides({
     ModifyDBClusterCommand: (input) => {
       const sentGroups = input['VpcSecurityGroupIds'] as string[] | undefined;
       if (sentGroups !== undefined) groups = sentGroups;
       const sentPort = input['Port'] as number | undefined;
       if (sentPort !== undefined) port = sentPort;
+      logs = applyLogDelta(logs, input);
       return {};
     },
     DescribeDBClustersCommand: () => ({
@@ -158,6 +181,7 @@ function armCluster(_physicalId: string, bag: Bag): void {
           DBClusterMembers: [],
           ...(port !== undefined && { Port: port }),
           VpcSecurityGroups: groups.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
+          EnabledCloudwatchLogsExports: logs,
         },
       ],
     }),
@@ -252,6 +276,7 @@ const CLUSTER_CASE: TypeCase = {
         PreferredMaintenanceWindow: 'sun:05:00-sun:05:30',
         CopyTagsToSnapshot: true,
         StorageType: 'aurora-iopt1',
+        EnableCloudwatchLogsExports: ['postgresql', 'iam-db-auth-error'],
         Tags: fresh(TAGS),
       },
       expectedSilent: {
@@ -316,7 +341,12 @@ const CLUSTER_CASE: TypeCase = {
  * (go-to-k/cdkd#2762).
  */
 function armInstance(_physicalId?: string, live: Bag = {}): void {
+  let logs = liveLogs(live);
   setOutputOverrides({
+    ModifyDBInstanceCommand: (input) => {
+      logs = applyLogDelta(logs, input);
+      return {};
+    },
     DescribeDBInstancesCommand: () => ({
       DBInstances: [
         {
@@ -327,6 +357,7 @@ function armInstance(_physicalId?: string, live: Bag = {}): void {
           ...(live['AllocatedStorage'] != null && {
             AllocatedStorage: Number(live['AllocatedStorage']),
           }),
+          EnabledCloudwatchLogsExports: logs,
         },
       ],
     }),
@@ -513,6 +544,7 @@ const INSTANCE_CASE: TypeCase = {
         DedicatedLogVolume: true,
         AllowMajorVersionUpgrade: true,
         DBParameterGroupName: 'pg-1',
+        EnableCloudwatchLogsExports: ['postgresql', 'upgrade'],
       },
       expectedSilent: {
         ...INSTANCE_ENGINE_SILENT,

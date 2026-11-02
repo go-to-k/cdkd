@@ -19,8 +19,10 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  type CloudwatchLogsExportConfiguration,
   type DBCluster,
   type DBInstance,
+  type PendingCloudwatchLogsExports,
   type ModifyDBClusterCommandInput,
   type ModifyDBInstanceCommandInput,
   type CreateDBInstanceCommandInput,
@@ -573,6 +575,116 @@ function instanceRebootApplied(instance: DBInstance): boolean {
   );
 }
 
+/**
+ * go-to-k/cdkd#5639 / #5640: a DBCluster or DBInstance
+ * `EnableCloudwatchLogsExports`, read off a desired or recorded bag:
+ * `undefined` when absent, the log types without repeats, or `'malformed'`
+ * for anything but a list of strings.
+ */
+function logExportsList(value: unknown): string[] | undefined | 'malformed' {
+  if (value == null) return undefined;
+  if (!Array.isArray(value) || !value.every((type) => typeof type === 'string')) {
+    return 'malformed';
+  }
+  return [...new Set(value as string[])];
+}
+
+/**
+ * go-to-k/cdkd#5639 / #5640: the desired `EnableCloudwatchLogsExports`, or a
+ * non-retryable refusal before any call. Read as empty, a malformed list would
+ * DISABLE every log type the record holds. It is refused on a rollback replay
+ * too: RDS rejects anything but a list of log types, so the replay could not
+ * have applied it either.
+ */
+function desiredLogExports(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId?: string
+): string[] | undefined {
+  const desired = logExportsList(properties['EnableCloudwatchLogsExports']);
+  if (desired !== 'malformed') return desired;
+  throw markNonRetryable(
+    new ProvisioningError(
+      `${resourceType} ${logicalId}: EnableCloudwatchLogsExports must be a list of log type names`,
+      resourceType,
+      logicalId,
+      physicalId
+    )
+  );
+}
+
+/**
+ * go-to-k/cdkd#5639 / #5640: the ModifyDBCluster / ModifyDBInstance
+ * `CloudwatchLogsExportConfiguration` for an update, as CloudFormation's
+ * handlers build it (the `aws-cloudformation-resource-providers-rds`
+ * `Translator.cloudwatchLogsExportConfiguration` for a cluster,
+ * `Translator.buildTranslateCloudwatchLogsExportConfiguration` for an
+ * instance): the log types the template now declares and the previous one did
+ * not are enabled, the ones it declared before and no longer does are
+ * disabled. A REMOVED property therefore disables every log type the previous
+ * template declared; one enabled outside the template is left alone. A
+ * reorder is no change (`undefined`, nothing sent), as the instance handler
+ * sends nothing for an empty delta.
+ *
+ * A malformed RECORDED list (never written by this provider) is read as
+ * empty: the update then only enables, missing disables, never disabling a
+ * log type the template still declares.
+ */
+function logExportsDelta(
+  desired: readonly string[] | undefined,
+  previousValue: unknown
+): CloudwatchLogsExportConfiguration | undefined {
+  const previous = logExportsList(previousValue);
+  const had = previous === undefined || previous === 'malformed' ? [] : previous;
+  const want = desired ?? [];
+  const enable = want.filter((type) => !had.includes(type));
+  const disable = had.filter((type) => !want.includes(type));
+  if (enable.length === 0 && disable.length === 0) return undefined;
+  return {
+    ...(enable.length > 0 && { EnableLogTypes: enable }),
+    ...(disable.length > 0 && { DisableLogTypes: disable }),
+  };
+}
+
+/**
+ * go-to-k/cdkd#5639 / #5640: the log types a cluster or instance exports once
+ * its pending change applies. Right after ModifyDB* the change can still be
+ * listed only in `PendingModifiedValues`, and the observed baseline captured
+ * then must not record the old list.
+ */
+function liveLogExports(
+  enabled: readonly string[] | undefined,
+  pending: PendingCloudwatchLogsExports | undefined
+): string[] {
+  const disabled = pending?.LogTypesToDisable ?? [];
+  const out = (enabled ?? []).filter((type) => !disabled.includes(type));
+  for (const type of pending?.LogTypesToEnable ?? []) {
+    if (!out.includes(type)) out.push(type);
+  }
+  return out;
+}
+
+/**
+ * go-to-k/cdkd#5639 / #5640: whether a cluster or instance has applied a
+ * `CloudwatchLogsExportConfiguration`: nothing pending, every enabled type
+ * listed and no disabled one, as CloudFormation's stabilization waits for no
+ * pending change.
+ */
+function logExportsApplied(
+  config: CloudwatchLogsExportConfiguration,
+  enabled: readonly string[] | undefined,
+  pending: PendingCloudwatchLogsExports | undefined
+): boolean {
+  if ((pending?.LogTypesToEnable?.length ?? 0) > 0) return false;
+  if ((pending?.LogTypesToDisable?.length ?? 0) > 0) return false;
+  const live = enabled ?? [];
+  return (
+    (config.EnableLogTypes ?? []).every((type) => live.includes(type)) &&
+    !(config.DisableLogTypes ?? []).some((type) => live.includes(type))
+  );
+}
+
 /** The template's `AWS::RDS::DBCluster` `ServerlessV2ScalingConfiguration`. */
 interface ServerlessV2ScalingProps {
   MinCapacity?: number;
@@ -876,6 +988,10 @@ export class RDSProvider implements ResourceProvider {
         'PreferredMaintenanceWindow',
         'CopyTagsToSnapshot',
         'StorageType',
+        // go-to-k/cdkd#5639: the list on CreateDBCluster, the
+        // `CloudwatchLogsExportConfiguration` delta on ModifyDBCluster
+        // (`logExportsDelta`).
+        'EnableCloudwatchLogsExports',
       ]),
     ],
     [
@@ -957,6 +1073,10 @@ export class RDSProvider implements ResourceProvider {
         // ModifyDBInstance; an update leaving it `pending-reboot` reboots the
         // instance, as CloudFormation does (`rebootForPendingParameterGroup`).
         'DBParameterGroupName',
+        // go-to-k/cdkd#5640: the list on CreateDBInstance, the
+        // `CloudwatchLogsExportConfiguration` delta on ModifyDBInstance
+        // (`logExportsDelta`).
+        'EnableCloudwatchLogsExports',
       ]),
     ],
   ]);
@@ -1378,6 +1498,7 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Creating DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const logExports = desiredLogExports(properties, resourceType, logicalId);
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
@@ -1445,6 +1566,9 @@ export class RDSProvider implements ResourceProvider {
           }),
           // go-to-k/cdkd#2762: parameter group, windows, tag copying, storage type.
           ...clusterCreateBackfillMembers(properties),
+          // go-to-k/cdkd#5639: the declared list, as CloudFormation's create sends it.
+          ...(logExports !== undefined &&
+            logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1619,6 +1743,12 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#5639: refused before any call when malformed; a removal
+    // disables what the previous template declared, as CloudFormation does.
+    const logExportConfig = logExportsDelta(
+      desiredLogExports(properties, resourceType, logicalId, physicalId),
+      previousProperties['EnableCloudwatchLogsExports']
+    );
 
     try {
       // Its own ProvisioningError names the cause; the catch passes it through.
@@ -1746,6 +1876,9 @@ export class RDSProvider implements ResourceProvider {
           }),
           // go-to-k/cdkd#2762: only what changed; a removal keeps the live value.
           ...clusterModifyBackfillMembers(properties, previousProperties, context),
+          ...(logExportConfig !== undefined && {
+            CloudwatchLogsExportConfiguration: logExportConfig,
+          }),
           ApplyImmediately: true,
         })
       );
@@ -1764,6 +1897,12 @@ export class RDSProvider implements ResourceProvider {
         portToSend !== undefined && portToSend !== numberOrUndefined(previousProperties['Port']);
       if (!noWait && portChanged) {
         await this.waitForClusterPortApplied(physicalId, logicalId, portToSend);
+      }
+
+      // go-to-k/cdkd#5639: CloudFormation reports the update once no change is
+      // pending; a later read of the old list would also be a phantom drift.
+      if (!noWait && logExportConfig !== undefined) {
+        await this.waitForClusterLogExportsApplied(physicalId, logicalId, logExportConfig);
       }
 
       // Describe to get updated attributes
@@ -2076,6 +2215,7 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Creating DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const logExports = desiredLogExports(properties, resourceType, logicalId);
 
     const dbInstanceIdentifier =
       (properties['DBInstanceIdentifier'] as string | undefined) ||
@@ -2237,6 +2377,9 @@ export class RDSProvider implements ResourceProvider {
           ...(properties['DBParameterGroupName'] != null && {
             DBParameterGroupName: properties['DBParameterGroupName'] as string,
           }),
+          // go-to-k/cdkd#5640: the declared list, as CloudFormation's create sends it.
+          ...(logExports !== undefined &&
+            logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -2310,6 +2453,12 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#5640: refused before any call when malformed; a removal
+    // disables what the previous template declared, as CloudFormation does.
+    const logExportConfig = logExportsDelta(
+      desiredLogExports(properties, resourceType, logicalId, physicalId),
+      previousProperties['EnableCloudwatchLogsExports']
+    );
     // Outside the try: it throws only its own ProvisioningError, which names
     // the cause and must not be re-wrapped.
     const vpcSgIds = await this.securityGroupsToSend(
@@ -2444,6 +2593,9 @@ export class RDSProvider implements ResourceProvider {
               EnableIAMDatabaseAuthentication: properties['EnableIAMDatabaseAuthentication'] as
                 | boolean
                 | undefined,
+              ...(logExportConfig !== undefined && {
+                CloudwatchLogsExportConfiguration: logExportConfig,
+              }),
             })
           ),
         readStatus: async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus,
@@ -2455,6 +2607,22 @@ export class RDSProvider implements ResourceProvider {
       });
 
       this.logger.debug(`Successfully updated DBInstance ${logicalId}`);
+
+      // go-to-k/cdkd#5640: CloudFormation reports the update once no change is
+      // pending; a later read of the old list would also be a phantom drift.
+      if (process.env['CDKD_NO_WAIT'] !== 'true' && logExportConfig !== undefined) {
+        await this.waitForInstanceState(
+          logicalId,
+          physicalId,
+          (instance) =>
+            logExportsApplied(
+              logExportConfig,
+              instance.EnabledCloudwatchLogsExports,
+              instance.PendingModifiedValues?.PendingCloudwatchLogsExports
+            ),
+          'CloudWatch Logs exports change'
+        );
+      }
 
       // Describe to get updated attributes
       let described = await this.describeDBInstance(physicalId);
@@ -3199,6 +3367,46 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5639: wait until the cluster lists the log types a
+   * ModifyDBCluster enabled and none it disabled, with nothing pending. The
+   * budget is the resource's own deadline, 30 minutes when none is in scope.
+   */
+  private async waitForClusterLogExportsApplied(
+    dbClusterIdentifier: string,
+    logicalId: string,
+    config: CloudwatchLogsExportConfiguration
+  ): Promise<void> {
+    const remaining = enclosingDeadlineRemainingMs();
+    const maxWaitMs = Number.isFinite(remaining) ? remaining : 1_800_000;
+    const startTime = Date.now();
+    let delay = 5_000;
+    while (Date.now() - startTime < maxWaitMs) {
+      const cluster = this.requireClusterWhileWaiting(
+        await this.describeDBCluster(dbClusterIdentifier),
+        logicalId,
+        'CloudWatch Logs exports'
+      );
+      if (
+        logExportsApplied(
+          config,
+          cluster.EnabledCloudwatchLogsExports,
+          cluster.PendingModifiedValues?.PendingCloudwatchLogsExports
+        )
+      ) {
+        return;
+      }
+      this.logger.debug(
+        safeMsg`DBCluster ${logicalId} CloudWatch Logs exports not applied yet (status ${cluster.Status ?? 'unknown'})`
+      );
+      await this.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
+    }
+    throw new Error(
+      `Timed out waiting for DBCluster ${logicalId} to apply its CloudWatch Logs exports`
+    );
+  }
+
+  /**
    * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
    * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
    * and their bounds).
@@ -3490,6 +3698,16 @@ export class RDSProvider implements ResourceProvider {
       default:
         return null;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5639 / #5640: RDS answers the exported log types in its own
+   * order, and the template's order means nothing to it.
+   */
+  getDriftUnorderedPaths(resourceType: string): string[] {
+    return resourceType === 'AWS::RDS::DBCluster' || resourceType === 'AWS::RDS::DBInstance'
+      ? ['EnableCloudwatchLogsExports']
+      : [];
   }
 
   /**
@@ -3803,6 +4021,13 @@ export class RDSProvider implements ResourceProvider {
     // baseline every record this route writes carries.
     const parameterGroupName = inst.DBParameterGroups?.[0]?.DBParameterGroupName;
     if (parameterGroupName !== undefined) result['DBParameterGroupName'] = parameterGroupName;
+    // go-to-k/cdkd#5640: emitted only when non-empty, as an instance exporting
+    // nothing reads; compared order-insensitively (`getDriftUnorderedPaths`).
+    const instanceLogs = liveLogExports(
+      inst.EnabledCloudwatchLogsExports,
+      inst.PendingModifiedValues?.PendingCloudwatchLogsExports
+    );
+    if (instanceLogs.length > 0) result['EnableCloudwatchLogsExports'] = instanceLogs;
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }
@@ -3921,6 +4146,12 @@ export class RDSProvider implements ResourceProvider {
       cluster.StorageType ??
       (cluster.Engine?.toLowerCase().startsWith('aurora') ? 'aurora' : undefined);
     if (storageType !== undefined) result['StorageType'] = storageType;
+    // go-to-k/cdkd#5639: as for a DB instance.
+    const clusterLogs = liveLogExports(
+      cluster.EnabledCloudwatchLogsExports,
+      cluster.PendingModifiedValues?.PendingCloudwatchLogsExports
+    );
+    if (clusterLogs.length > 0) result['EnableCloudwatchLogsExports'] = clusterLogs;
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
   }
