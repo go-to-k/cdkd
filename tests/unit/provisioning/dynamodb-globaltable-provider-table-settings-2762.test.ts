@@ -1218,6 +1218,33 @@ describe('update', () => {
         });
       });
 
+      it('holds a replica Update until the region itself reads ACTIVE', async () => {
+        // The source reads ACTIVE; only the region's own table is still moving.
+        const regional = ['UPDATING', 'ACTIVE'];
+        const reads: string[] = [];
+        let updated = false;
+        const respond = mockSend.getMockImplementation() as (c: unknown) => unknown;
+        mockSend.mockImplementation((command: { input: Rec }) => {
+          if (command.input['ReplicaUpdates']) updated = true;
+          return respond(command);
+        });
+        regionalClient().mockImplementation(() => ({
+          send: (command: { constructor: { name: string } }) => {
+            if (command.constructor.name !== 'DescribeTableCommand') return mockSend(command);
+            if (!updated) return Promise.resolve({ Table: live });
+            const TableStatus = regional.shift() ?? 'ACTIVE';
+            reads.push(TableStatus);
+            return Promise.resolve({ Table: { ...live, TableStatus } });
+          },
+        }));
+        const next = replicated(7, scaling(3));
+        (next['Replicas'] as Rec[])[1]!['ReadProvisionedThroughputSettings'] = {
+          ReadCapacityUnits: 5,
+        };
+        await update(next, replicated(7, scaling(3)));
+        expect(reads.slice(0, 2)).toEqual(['UPDATING', 'ACTIVE']);
+      });
+
       it('waits for the whole group before the next replica step', async () => {
         const statuses = ['UPDATING', 'ACTIVE'];
         let leftAtReplicaStep: number | undefined;
