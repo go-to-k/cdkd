@@ -699,6 +699,25 @@ export interface UpdateContext extends SecretMaskingContext {
   declaredEmptyProperties?: ReadonlySet<string> | undefined;
 
   /**
+   * With {@link desiredFromAwsReadback}: the top-level properties the state
+   * record's TEMPLATE side declares as the boolean `true` (`true` or the
+   * string `'true'`), set by `cdkd drift --revert` only. A readback baseline
+   * records a flag as AWS held it at capture, which can be `true` for a
+   * feature turned on outside the template; the template says whether it
+   * asked for it (go-to-k/cdkd#5707: a DBCluster's Data API, which a revert
+   * turns back on only when the template declares `EnableHttpEndpoint: true`).
+   * Names only, like {@link declaredEmptyProperties}: no recorded value
+   * reaches the provider. Absent on every other caller.
+   *
+   * "Template side" is the record's `properties`. On a record with no
+   * `observedProperties`, `cdkd drift --accept` writes an accepted readback
+   * value there, so a flag the user accepted counts as declared; and the
+   * revert's desired bag is that same `properties`, so the set adds a
+   * constraint only on a record that has an observed baseline.
+   */
+  declaredTrueProperties?: ReadonlySet<string> | undefined;
+
+  /**
    * `true` when the desired properties handed to `update()` come from a cdkd
    * STATE record rather than from the synthesized template — today that is the
    * rollback executor's two REVERT arms (`revert` and `revert-failed-update`),

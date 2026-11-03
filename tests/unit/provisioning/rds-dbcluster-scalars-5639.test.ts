@@ -566,7 +566,7 @@ describe('RDSProvider AWS::RDS::DBCluster scalars (go-to-k/cdkd#5639)', () => {
       expect(sent('EnableHttpEndpointCommand')).toHaveLength(1);
     });
 
-    it('a drift revert never turns the Data API on: it warns and records the live setting', async () => {
+    it('a drift revert with no template side never turns the Data API on: it warns and records the live setting', async () => {
       arm({ httpEndpoint: false });
       const result = await update(
         { EnableHttpEndpoint: true },
@@ -578,6 +578,70 @@ describe('RDSProvider AWS::RDS::DBCluster scalars (go-to-k/cdkd#5639)', () => {
         expect.stringMatching(/does not turn the Data API \(EnableHttpEndpoint\) back on/)
       );
       expect(result.effectiveProperties).toEqual({ ...BASE, EnableHttpEndpoint: false });
+    });
+
+    // go-to-k/cdkd#5707: the template's declaration, not the readback
+    // baseline, decides whether a revert may turn the Data API on.
+    it('a drift revert turns the Data API back on when the template declares it', async () => {
+      arm({ httpEndpoint: false });
+      const result = await update(
+        { EnableHttpEndpoint: true },
+        { EnableHttpEndpoint: false },
+        {
+          desiredFromAwsReadback: true,
+          declaredTrueProperties: new Set(['EnableHttpEndpoint']),
+        }
+      );
+      expect(sent('EnableHttpEndpointCommand')).toEqual([{ ResourceArn: ARN }]);
+      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/Data API/));
+      expect(result.effectiveProperties).toBeUndefined();
+    });
+
+    it.each([
+      ['declares nothing true', new Set<string>()],
+      ['declares only other flags true', new Set(['AutoMinorVersionUpgrade', 'EnableHttpEndpointX'])],
+    ])(
+      'a drift revert keeps it withheld when the template side %s',
+      async (_label, declaredTrueProperties) => {
+        arm({ httpEndpoint: false });
+        const result = await update(
+          { EnableHttpEndpoint: true },
+          { EnableHttpEndpoint: false },
+          { desiredFromAwsReadback: true, declaredTrueProperties }
+        );
+        expect(sent('EnableHttpEndpointCommand')).toHaveLength(0);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringMatching(/does not declare EnableHttpEndpoint: true/)
+        );
+        expect(result.effectiveProperties).toEqual({ ...BASE, EnableHttpEndpoint: false });
+      }
+    );
+
+    it('a template declaring true does not turn it on when the baseline holds false', async () => {
+      arm({ httpEndpoint: false });
+      await update(
+        { EnableHttpEndpoint: false },
+        { EnableHttpEndpoint: false },
+        {
+          desiredFromAwsReadback: true,
+          declaredTrueProperties: new Set(['EnableHttpEndpoint']),
+        }
+      );
+      expect(sent('EnableHttpEndpointCommand')).toHaveLength(0);
+      expect(sent('DisableHttpEndpointCommand')).toHaveLength(0);
+    });
+
+    it('a template declaring true still lets a revert turn it off', async () => {
+      arm({ httpEndpoint: true });
+      await update(
+        { EnableHttpEndpoint: false },
+        { EnableHttpEndpoint: true },
+        {
+          desiredFromAwsReadback: true,
+          declaredTrueProperties: new Set(['EnableHttpEndpoint']),
+        }
+      );
+      expect(sent('DisableHttpEndpointCommand')).toEqual([{ ResourceArn: ARN }]);
     });
 
     it('a drift revert still turns the Data API off', async () => {
