@@ -93,6 +93,7 @@ import {
   extractLocalTableClass,
   readReplicaKmsMasterKeyId,
   readReplicaTableClass,
+  replicaDeleteGoneWait,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 
 const RESOURCE_TYPE = 'AWS::DynamoDB::GlobalTable';
@@ -1339,8 +1340,16 @@ describe('DynamoDB GlobalTable replica settings (go-to-k/cdkd#5355)', () => {
   });
 
   describe('delete', () => {
+    // These doubles keep the regional copy ACTIVE after the drop, so the
+    // #5699 replica gone-wait (covered in the round-trip tests) is capped at
+    // zero here: it warns and returns rather than polling out its ~12 min.
+    const replicaGoneWaitDefault = replicaDeleteGoneWait.maxWaitMs;
+    beforeEach(() => {
+      replicaDeleteGoneWait.maxWaitMs = 0;
+    });
     afterEach(() => {
       vi.useRealTimers();
+      replicaDeleteGoneWait.maxWaitMs = replicaGoneWaitDefault;
     });
 
     /** Source double: the replica goes on its Delete, the table on DeleteTable. */
