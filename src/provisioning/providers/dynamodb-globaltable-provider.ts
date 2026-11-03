@@ -674,20 +674,30 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         // property. Tags live inside `Replicas[].Tags`, which is
         // already covered by the `Replicas` entry above.
         //
-        // go-to-k/cdkd#2762: three properties stay on the Cloud Control route.
-        // `MultiRegionConsistency` and `GlobalTableWitnesses` (MRSC) do not fit
-        // the per-replica serial paths here. Measured us-east-1 / us-east-2 /
-        // us-west-2, 2026-11-01: the replica and witness Creates must go out in
-        // ONE `UpdateTable` with the mode; a lone replica Delete is refused
-        // ("does not include all witnesses"), so the update and delete paths
-        // and the partial-create cleanup would each need a one-call shape;
-        // `DeleteTable` is refused until they are gone; TTL is refused on such
-        // a table; and it carries no stream, which `create()`'s `needsStream`
-        // arm would enable. `GlobalTableSourceArn` creates a multi-account
-        // replica: CDK's `TableV2MultiAccountReplica` renders no `KeySchema`
-        // (which `create()` requires), and DynamoDB asks for a `ResourcePolicy`
-        // on the `CreateTable` (measured, same day), a cross-account path this
-        // provider has no way to exercise.
+        // Three properties stay on the Cloud Control route: see
+        // `unhandledByDesign` below.
+      ]),
+    ],
+  ]);
+
+  // go-to-k/cdkd#2762, #5629: these stay on the Cloud Control route. A
+  // by-design row still auto-routes the resource there, so nothing is dropped.
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::DynamoDB::GlobalTable',
+      new Map<string, string>([
+        [
+          'MultiRegionConsistency',
+          'MRSC does not fit the per-replica serial paths: measured 2026-11-01 (us-east-1 / us-east-2 / us-west-2), the replica and witness Creates must go out in ONE UpdateTable with the mode, a lone replica Delete is refused ("does not include all witnesses"), DeleteTable is refused until they are gone, TTL is refused, and the table carries no stream. Stays on Cloud Control',
+        ],
+        [
+          'GlobalTableWitnesses',
+          'MRSC witness; same one-call UpdateTable shape as MultiRegionConsistency, measured 2026-11-01. Stays on Cloud Control',
+        ],
+        [
+          'GlobalTableSourceArn',
+          "Multi-account replica: CDK's TableV2MultiAccountReplica renders no KeySchema (which create() requires) and DynamoDB asks for a ResourcePolicy on the CreateTable (measured 2026-11-01), a cross-account path this provider cannot exercise. Stays on Cloud Control",
+        ],
       ]),
     ],
   ]);

@@ -1142,8 +1142,11 @@ export interface ResourceProvider {
    * - "tags handled via per-resource Tag API, not the create input"
    * - "covered by separate AWS::Foo::Bar resource type"
    *
-   * Properties listed here do NOT trigger the deploy engine's CC API fallback
-   * (this field is a development-time annotation, not runtime behavior).
+   * A property listed here is still a silent-drop row in the generated
+   * coverage map, with this rationale, so a template declaring it still
+   * auto-routes the resource to Cloud Control. What the entry changes is the
+   * backfill campaign: only rows with the default rationale get a per-type
+   * issue.
    */
   unhandledByDesign?: ReadonlyMap<string, ReadonlyMap<string, string>>;
 

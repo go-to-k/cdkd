@@ -349,6 +349,24 @@ export class FirehoseProvider implements ResourceProvider {
     ],
   ]);
 
+  // go-to-k/cdkd#5636: these stay on the Cloud Control route. A by-design row
+  // still auto-routes the resource there, so nothing is dropped.
+  unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
+    [
+      'AWS::KinesisFirehose::DeliveryStream',
+      new Map<string, string>([
+        [
+          'DatabaseSourceConfiguration',
+          'Database as a source was a public preview AWS removed on 2025-09-24 (Firehose document history); CreateDeliveryStream refused DeliveryStreamType DatabaseAsSource in every region probed, so an SDK path could not be verified. Stays on Cloud Control',
+        ],
+        [
+          'SnowflakeDestinationConfiguration',
+          'Proving the wire shape live needs a real Snowflake account, and the block carries key material (PrivateKey, KeyPassphrase); it deploys through Cloud Control today. Stays on Cloud Control',
+        ],
+      ]),
+    ],
+  ]);
+
   private getClient(): FirehoseClient {
     if (!this.client) {
       this.client = new FirehoseClient({
