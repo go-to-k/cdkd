@@ -1020,9 +1020,18 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'WriteProvisionedThroughputSettings',
       ]),
       silentDrop: new Map<string, string>([
-        ['GlobalTableSourceArn', 'not yet implemented by cdkd'],
-        ['GlobalTableWitnesses', 'not yet implemented by cdkd'],
-        ['MultiRegionConsistency', 'not yet implemented by cdkd'],
+        [
+          'GlobalTableSourceArn',
+          "Multi-account replica: CDK's TableV2MultiAccountReplica renders no KeySchema (which create() requires) and DynamoDB asks for a ResourcePolicy on the CreateTable (measured 2026-11-01), a cross-account path this provider cannot exercise. Stays on Cloud Control",
+        ],
+        [
+          'GlobalTableWitnesses',
+          'MRSC witness; same one-call UpdateTable shape as MultiRegionConsistency, measured 2026-11-01. Stays on Cloud Control',
+        ],
+        [
+          'MultiRegionConsistency',
+          "MRSC does not fit the per-replica serial paths: measured 2026-11-01 (us-east-1 / us-east-2 / us-west-2), the replica and witness Creates must go out in ONE UpdateTable with the mode, a lone replica Delete is refused ('does not include all witnesses'), DeleteTable is refused until they are gone, TTL is refused, and the table carries no stream, which create()'s needsStream arm would enable. Stays on Cloud Control",
+        ],
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'StreamArn', 'TableId']),
@@ -2211,8 +2220,14 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
       ]),
       silentDrop: new Map<string, string>([
-        ['DatabaseSourceConfiguration', 'not yet implemented by cdkd'],
-        ['SnowflakeDestinationConfiguration', 'not yet implemented by cdkd'],
+        [
+          'DatabaseSourceConfiguration',
+          'Database as a source was a public preview AWS removed on 2025-09-24 (Firehose document history); CreateDeliveryStream refused DeliveryStreamType DatabaseAsSource in every region probed, so an SDK path could not be verified. Stays on Cloud Control',
+        ],
+        [
+          'SnowflakeDestinationConfiguration',
+          'Proving the wire shape live needs a real Snowflake account, and the block carries key material (PrivateKey, KeyPassphrase). Stays on Cloud Control',
+        ],
       ]),
       createOnlyDrops: new Set<string>(['DatabaseSourceConfiguration']),
       readOnly: new Set<string>(['Arn']),

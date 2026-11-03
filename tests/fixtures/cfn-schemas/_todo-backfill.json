@@ -23,11 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::DynamoDB::GlobalTable": [
-      "GlobalTableSourceArn",
-      "GlobalTableWitnesses",
-      "MultiRegionConsistency"
-    ],
     "AWS::EC2::Instance": [
       "AdditionalInfo",
       "Affinity",
@@ -70,10 +65,6 @@
       "Ipv4IpamPoolId",
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
-    ],
-    "AWS::KinesisFirehose::DeliveryStream": [
-      "DatabaseSourceConfiguration",
-      "SnowflakeDestinationConfiguration"
     ],
     "AWS::RDS::DBCluster": [
       "AllocatedStorage",

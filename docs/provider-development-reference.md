@@ -23,7 +23,7 @@ and you implement it only when your resource type needs it:
 | Member | Implement it when |
 | --- | --- |
 | `handledProperties` | Always, in practice. It routes resources to you and feeds the coverage test. |
-| `unhandledByDesign` | A schema property is deliberately not sent |
+| `unhandledByDesign` | A schema property is deliberately not sent on the SDK route (it still routes to Cloud Control where the type has a route) |
 | `import` | The type should be adoptable by `cdkd import` without an explicit id |
 | `readCurrentState` | The type should take part in `cdkd drift` |
 | `getAttribute` | An attribute may need a live read because state does not hold it |
