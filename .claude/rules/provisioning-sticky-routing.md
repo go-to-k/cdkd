@@ -9,11 +9,11 @@ paths:
 Rule 2 of `ProviderRegistry.getProviderFor` keeps a resource recorded
 `provisionedBy: 'cc-api'` on Cloud Control, so a coverage backfill cannot
 replace resources auto-routed before it landed.
-`STICKY_CC_MIGRATION_EXEMPT` is the escape, keyed by type. Each entry must
-satisfy: **the SDK provider addresses the resource by the SAME physicalId Cloud
-Control stored.** It is EMPIRICAL and false in
-general, so each entry names an integ fixture that saw it live, and
-`sticky-exempt-registry.test.ts` rejects one whose fixture has no ledger row. Equal ids alone prove nothing (a user-named resource keeps
+`STICKY_CC_MIGRATION_EXEMPT` is the escape, keyed by type. **The SDK provider
+must address the resource by the id Cloud Control stored, or by a declared,
+strict `normalizeCcPhysicalId` of it** (#5654). EMPIRICAL, so each entry names
+an integ fixture that saw it live; `sticky-exempt-registry.test.ts` rejects
+one whose fixture has no ledger row. Equal ids alone prove nothing (a user-named resource keeps
 its id across a replacement): the fixture needs a witness, an unmanaged child
 that survives or an AWS-minted id the flip keeps.
 

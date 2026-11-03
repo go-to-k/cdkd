@@ -28,6 +28,7 @@ import {
   withReferenceProvenance,
 } from './reference-provenance-record.js';
 import { ProvenanceCapture } from './deploy-engine/provenance-capture.js';
+import { isPinnedToCcApi } from './deploy-engine/routing.js';
 import { ReplacementRunState, type ReplacementDeps } from './deploy-engine/replacement.js';
 import {
   isWrittenFromDeployedTemplate,
@@ -776,6 +777,7 @@ export class DeployEngine {
       resolvedSecretsOf: (logicalId) => this.secretsRun.perResourceSecrets.get(logicalId),
       // Read at heal time: bound and captured after this rebaseline.
       namingSecrets: () => stateNamingSecrets(this.secretsRun),
+      pinnedToCcApi: (stackName, logicalId) => isPinnedToCcApi(this.options, stackName, logicalId),
     });
     return this.attributeHealer;
   }
@@ -833,6 +835,7 @@ export class DeployEngine {
       readReaderForFreshNoEchoCeiling: (...args) =>
         readReaderForFreshNoEchoCeiling(this.maskingDeps(), ...args),
       maskForResource: (...args) => maskForResource(this.secretsRun, ...args),
+      pinnedToCcApi: (stackName, logicalId) => isPinnedToCcApi(this.options, stackName, logicalId),
     };
   }
 

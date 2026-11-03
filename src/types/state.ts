@@ -920,9 +920,11 @@ export interface ResourceState {
    *
    * 1. **Automatic, per resource** (issue #2719) — the type carries an
    *    `'sdk-coverage'` entry in `STICKY_CC_MIGRATION_EXEMPT` (measured
-   *    physicalId parity), AND neither the desired nor the recorded property
-   *    bag of THIS resource has an actionable silent drop. The next mutating
-   *    deploy writes `'sdk'` with the physical id unchanged. `--pin-cc-api`
+   *    physicalId parity, or a declared normalizer of the Cloud Control id),
+   *    AND neither the desired nor the recorded property bag of THIS resource
+   *    has an actionable silent drop. The next mutating deploy writes `'sdk'`
+   *    with the physical id unchanged, or in the SDK form a normalizer gives
+   *    (`AWS::ECS::Service`, go-to-k/cdkd#5654). `--pin-cc-api`
    *    declines it for one deploy.
    * 2. **Automatic, per type** — a `'cc-broken'` entry (issue #961), where
    *    Cloud Control cannot manage the type at all, so the escape is

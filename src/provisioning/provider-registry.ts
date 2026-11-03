@@ -24,6 +24,8 @@ import {
 } from './mutually-exclusive-properties.js';
 import { buildNestedRequiredMessage, findNestedRequiredViolations } from './nested-required.js';
 import { validatePropertyShapes } from './property-shape.js';
+import { ecsServiceSdkPhysicalId } from './sticky-exempt-physical-id.js';
+import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import {
   buildSecureReferenceMessage,
   findSecureReferencePaths,
@@ -207,6 +209,16 @@ export interface StickyExemptEntry {
   issue: string;
   /** The integ fixture whose run OBSERVED the parity. Must exist and have run. */
   integFixture: string;
+  /**
+   * Present only for a type whose Cloud Control id DIFFERS from the SDK
+   * provider's (go-to-k/cdkd#5654): maps the recorded Cloud Control id to the
+   * one the SDK provider stores for the same live resource. STRICT -- it
+   * throws on any id that is not the measured Cloud Control form, so a record
+   * it cannot place is refused rather than addressed under a guess. Its output
+   * is evidence like parity is: the entry's fixture must observe it equal to
+   * the SDK form on a live resource. Applied by {@link sdkAddressedPhysicalId}.
+   */
+  normalizeCcPhysicalId?: (ccPhysicalId: string) => string;
 }
 
 /**
@@ -217,10 +229,11 @@ export interface StickyExemptEntry {
  * already managing fine. Both exemption modes are narrow escapes from it; see
  * `StickyExemptMode` for which applies when.
  *
- * Condition 2 -- physicalId parity -- is a hard requirement in BOTH modes and
- * is what makes a flip churn-free. It is also why this is a curated table
- * rather than a predicate: an automatic flip keyed on "the type has coverage"
- * would assert parity for types nobody measured.
+ * Condition 2 -- physicalId parity, or a declared `normalizeCcPhysicalId`
+ * whose output the fixture observed equal to the SDK form -- is a hard
+ * requirement in BOTH modes and is what makes a flip churn-free. It is also
+ * why this is a curated table rather than a predicate: an automatic flip keyed
+ * on "the type has coverage" would assert parity for types nobody measured.
  */
 export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> = new Map([
   [
@@ -410,7 +423,59 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       integFixture: 'cc-to-sdk-reroute-hosted-zone',
     },
   ],
+  [
+    'AWS::ECS::Service',
+    {
+      // Pinned to cc-api: every service first deployed while declaring a
+      // property the provider did not handle yet, GatewayConnectors the last
+      // (go-to-k/cdkd#5634). Cloud Control manages it correctly; this is
+      // admitted for the SDK path's speed. The first entry whose ids DIFFER,
+      // hence the normalizer.
+      mode: 'sdk-coverage' as const,
+      physicalIdForm:
+        'Cloud Control stores `<serviceArn>|<cluster>` (the schema primaryIdentifier is ' +
+        'ServiceArn + Cluster; measured us-east-1, 2026-11-03) while ECSProvider.create ' +
+        'records the bare CreateService serviceArn; normalizeCcPhysicalId keeps the ARN ' +
+        'part, which the fixture observed equal to the live service ARN',
+      issue: 'https://github.com/go-to-k/cdkd/issues/5654',
+      integFixture: 'cc-to-sdk-reroute-ecs-service',
+      normalizeCcPhysicalId: ecsServiceSdkPhysicalId,
+    },
+  ],
 ]);
+
+/**
+ * The physicalId the SDK provider addresses a `provisionedBy: 'cc-api'`
+ * record by, once routing sends that record to it (go-to-k/cdkd#5654): the
+ * recorded id itself for a parity type, else the entry's declared
+ * `normalizeCcPhysicalId` output. Throws, naming the resource, when the
+ * normalizer refuses the recorded id. Every site that hands a cc-api record's
+ * id to an SDK provider calls this: the deploy's in-place update (whose
+ * success write persists the result with `provisionedBy: 'sdk'`) and
+ * `readRecordAttributes` (the attribute heals and the NoEcho read, which
+ * route a record as its own baseline and so take the same flip).
+ */
+export function sdkAddressedPhysicalId(
+  resourceType: string,
+  physicalId: string,
+  logicalId: string
+): string {
+  const entry = STICKY_CC_MIGRATION_EXEMPT.get(resourceType);
+  const normalize = entry?.normalizeCcPhysicalId;
+  if (normalize === undefined) return physicalId;
+  try {
+    return normalize(physicalId);
+  } catch (error) {
+    const reason = describeAwsFailure(error).detail;
+    const remedy =
+      entry?.mode === 'sdk-coverage'
+        ? ` Pass --pin-cc-api ${logicalId} to keep it on Cloud Control.`
+        : '';
+    throw new Error(
+      `${logicalId} (${resourceType}) cannot move from Cloud Control to its SDK provider: ${reason}.${remedy}`
+    );
+  }
+}
 
 /** Why a `'cc-broken'` type cannot be routed to Cloud Control, as users read it. */
 export const CC_BROKEN_REASON = "Cloud Control's handler cannot manage this type correctly";
@@ -697,7 +762,7 @@ export class ProviderRegistry {
           // reached again for the same resource.
           debug(
             `${resourceType} is returning to its SDK provider from a ` +
-              `state-recorded cc-api route; physical id is preserved`
+              `state-recorded cc-api route; the resource is updated in place`
           );
           return { provider: specificProvider, provisionedBy: 'sdk', sdkMigration: true };
         }

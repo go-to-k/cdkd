@@ -1452,6 +1452,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -1538,6 +1539,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -1732,6 +1736,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -1814,6 +1819,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -2027,6 +2035,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2112,6 +2121,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -2305,6 +2317,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -2391,6 +2404,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -2583,6 +2599,7 @@
         "bench-cdk-sample",
         "cache-streaming",
         "cc-final-snapshot-handlers",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "deletion-ordering-complex",
@@ -2644,6 +2661,9 @@
           "l2"
         ],
         "cc-final-snapshot-handlers": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -2826,6 +2846,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "deletion-ordering-complex",
@@ -2919,6 +2940,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -3151,6 +3175,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -3233,6 +3258,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -3415,6 +3443,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "codebuild-project",
         "deletion-ordering-complex",
@@ -3512,6 +3541,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -3757,6 +3789,7 @@
         "cache-streaming",
         "cc-final-snapshot-handlers",
         "cc-protection-flip-eks",
+        "cc-to-sdk-reroute-ecs-service",
         "cc-to-sdk-reroute-mount-target",
         "deletion-ordering-complex",
         "destroy-interrupt",
@@ -3842,6 +3875,9 @@
           "l2"
         ],
         "cc-protection-flip-eks": [
+          "l2"
+        ],
+        "cc-to-sdk-reroute-ecs-service": [
           "l2"
         ],
         "cc-to-sdk-reroute-mount-target": [
@@ -4089,6 +4125,7 @@
     {
       "resourceType": "AWS::ECS::Cluster",
       "integs": [
+        "cc-to-sdk-reroute-ecs-service",
         "drift-revert",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -4107,6 +4144,9 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "cc-to-sdk-reroute-ecs-service": [
+          "l1"
+        ],
         "drift-revert": [
           "l1"
         ],
@@ -4166,6 +4206,7 @@
     {
       "resourceType": "AWS::ECS::Service",
       "integs": [
+        "cc-to-sdk-reroute-ecs-service",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-service-gateway-connectors",
@@ -4180,6 +4221,10 @@
         "secret-derived-immutable-names"
       ],
       "signals": {
+        "cc-to-sdk-reroute-ecs-service": [
+          "l1",
+          "literal"
+        ],
         "ecs-bluegreen": [
           "l2"
         ],
@@ -4232,6 +4277,7 @@
     {
       "resourceType": "AWS::ECS::TaskDefinition",
       "integs": [
+        "cc-to-sdk-reroute-ecs-service",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
@@ -4253,6 +4299,9 @@
         "secrets-array-nested"
       ],
       "signals": {
+        "cc-to-sdk-reroute-ecs-service": [
+          "l1"
+        ],
         "ecs-bluegreen": [
           "l2"
         ],

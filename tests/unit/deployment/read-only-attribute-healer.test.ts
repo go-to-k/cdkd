@@ -29,6 +29,7 @@ import {
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import type { ResourceImportResult, ResourceProvider } from '../../../src/types/resource.js';
 import type { ResourceState } from '../../../src/types/state.js';
+import { CloudControlProvider } from '../../../src/provisioning/cloud-control-provider.js';
 
 const record = (overrides: Partial<ResourceState> = {}): ResourceState => ({
   physicalId: '/app/p',
@@ -133,6 +134,57 @@ describe('readRecordAttributes (go-to-k/cdkd#3456)', () => {
     await expect(read(provider)).rejects.toThrow(
       'the provider answered for a different resource (/other) than the one asked about (/app/p)'
     );
+  });
+});
+
+describe('readRecordAttributes addresses a cc-api record on the route it took (go-to-k/cdkd#5654)', () => {
+  const ARN = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+  const CC_ID = `${ARN}|my-cluster`;
+  const ecsRecord = (physicalId: string, provisionedBy: 'cc-api' | 'sdk' = 'cc-api') =>
+    ({
+      physicalId,
+      resourceType: 'AWS::ECS::Service',
+      properties: { Cluster: 'my-cluster' },
+      attributes: {},
+      dependencies: [],
+      provisionedBy,
+    }) as unknown as ResourceState;
+  const readEcs = (provider: ResourceProvider, resource: ResourceState) =>
+    readRecordAttributes({ provider, logicalId: 'Svc', resource, stackName: 'S', region: 'us-east-1' });
+  const echo = () => providerAnswering((id) => ({ physicalId: id!, attributes: { Name: 'my-service' } }));
+
+  it('an SDK provider is asked by the SDK form of a cc-api record id', async () => {
+    const provider = echo();
+    await expect(readEcs(provider, ecsRecord(CC_ID))).resolves.toEqual({
+      kind: 'read',
+      attributes: { Name: 'my-service' },
+    });
+    expect(provider.import.mock.calls[0]![0].knownPhysicalId).toBe(ARN);
+  });
+
+  it('the Cloud Control provider is asked by the recorded composite', async () => {
+    const provider = Object.assign(Object.create(CloudControlProvider.prototype), {
+      import: vi.fn(async (input: { knownPhysicalId?: string }) => ({
+        physicalId: input.knownPhysicalId!,
+        attributes: {},
+      })),
+    }) as ResourceProvider & { import: ReturnType<typeof vi.fn> };
+    await readEcs(provider, ecsRecord(CC_ID));
+    expect(provider.import.mock.calls[0]![0].knownPhysicalId).toBe(CC_ID);
+  });
+
+  it('an sdk record is never rewritten', async () => {
+    const provider = echo();
+    await readEcs(provider, ecsRecord(ARN, 'sdk'));
+    expect(provider.import.mock.calls[0]![0].knownPhysicalId).toBe(ARN);
+  });
+
+  it('rejects, with no read, a cc-api id the normalizer refuses', async () => {
+    const provider = echo();
+    await expect(
+      readEcs(provider, ecsRecord('arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster|my-service'))
+    ).rejects.toThrow(/Svc \(AWS::ECS::Service\) cannot move from Cloud Control/);
+    expect(provider.import).not.toHaveBeenCalled();
   });
 });
 

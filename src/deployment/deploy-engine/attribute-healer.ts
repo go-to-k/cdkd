@@ -33,6 +33,11 @@ export interface AttributeHealerDeps {
    * values and captures what each record stored after it builds this healer.
    */
   namingSecrets: () => StateNamingSecrets;
+  /**
+   * `--pin-cc-api` for this resource (go-to-k/cdkd#5654): the read then stays
+   * on Cloud Control, as the pinned update does. Absent: never pinned.
+   */
+  pinnedToCcApi?: (stackName: string, logicalId: string) => boolean;
 }
 
 /**
@@ -173,6 +178,7 @@ export class AttributeHealer {
       // carries is by definition unchanged, so the read stays on the layer
       // that wrote the record instead of moving to Cloud Control.
       previousProperties: resource.properties,
+      ...(this.deps.pinnedToCcApi?.(stackName, logicalId) === true && { forceCcApi: true }),
     });
     // The read's logic is shared with `cdkd diff`'s read-only healer, so a
     // guard or masking rule cannot land in only one of them (go-to-k/cdkd#4196).

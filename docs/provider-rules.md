@@ -2881,7 +2881,11 @@ To admit a type:
    `cdkd deploy --allow-unsupported-properties` would flip.
 2. Read the CFn schema's `primaryIdentifier` and the provider's `create()`
    return, and write what BOTH store into `physicalIdForm` — in words a
-   reviewer can check, not "verified".
+   reviewer can check, not "verified". When they differ, the entry may declare
+   a STRICT `normalizeCcPhysicalId` (it throws on anything but the measured
+   Cloud Control form) and the fixture must observe its output equal to the
+   live SDK id (`AWS::ECS::Service`, issue
+   [#5654](https://github.com/go-to-k/cdkd/issues/5654)).
 3. Write or extend an integ fixture that OBSERVES the flip on a live resource:
    deploy, force the resource onto Cloud Control with `--recreate-via-cc-api`,
    redeploy with a real property change, then assert the physical id is

@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-cc-to-sdk-reroute-ecs-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd sticky-CC to SDK re-route parity integ for AWS::ECS::Service (issue 5654)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
