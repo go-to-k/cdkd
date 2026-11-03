@@ -1,7 +1,7 @@
 /**
  * Issue #3866: `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
  * `ProvisioningType: NON_PROVISIONABLE`, so a
- * template using one of their SDK providers' silent-drop properties must be
+ * template using one of their SDK providers' SDK-unwired properties must be
  * REFUSED pre-flight rather than auto-routed to Cloud Control, which has no
  * handlers for them. `AWS::DocDB::DBSubnetGroup` is provisionable and must
  * KEEP its Cloud Control route — the reason it has its own provider class.
@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
 
-// go-to-k/cdkd#5628 wired the last silent drops of `AWS::DocDB::DBCluster`, and
+// go-to-k/cdkd#5628 wired the last SDK-unwired properties of `AWS::DocDB::DBCluster`, and
 // no other type without a Cloud Control route has a drop this case can use. The
 // guard still serves the next drop a schema refresh adds, so the cluster's
 // coverage is held at what it read before #5628: the restore keys as drops.
@@ -33,7 +33,7 @@ vi.mock('../../../src/provisioning/property-coverage.generated.js', async (impor
     handled: new Set(
       [...(cluster['handled'] as Set<string>)].filter((key) => !restoreKeys.includes(key))
     ),
-    silentDrop: new Map(restoreKeys.map((key) => [key, 'not yet implemented by cdkd'])),
+    sdkUnwired: new Map(restoreKeys.map((key) => [key, 'not yet implemented by cdkd'])),
     createOnlyDrops: new Set(['SnapshotIdentifier', 'SourceDBClusterIdentifier']),
   });
   return { ...orig, PROPERTY_COVERAGE_BY_TYPE: coverage };
@@ -67,8 +67,8 @@ const REFUSED: ReadonlyArray<{
 describe('NON_PROVISIONABLE SDK types refuse the Cloud Control auto-route (#3866)', () => {
   for (const { resourceType, property, value, handled } of REFUSED) {
     describe(resourceType, () => {
-      it(`the probed property ${property} is a silent drop, so the case exercises the auto-route`, () => {
-        expect(PROPERTY_COVERAGE_BY_TYPE.get(resourceType)?.silentDrop.has(property)).toBe(true);
+      it(`the probed property ${property} is SDK-unwired, so the case exercises the auto-route`, () => {
+        expect(PROPERTY_COVERAGE_BY_TYPE.get(resourceType)?.sdkUnwired.has(property)).toBe(true);
         expect(PROPERTY_COVERAGE_BY_TYPE.get(resourceType)?.ccRouteUnavailable).toBe(true);
       });
 

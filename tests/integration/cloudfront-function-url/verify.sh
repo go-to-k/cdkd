@@ -7,7 +7,7 @@
 # action `lambda:InvokeFunction`) has the AWS-side condition
 # `Condition.Bool."lambda:InvokedViaFunctionUrl" == "true"` present on
 # the resource-policy statement after `cdkd deploy` — the property was
-# a silent-drop before the #609 backfill. Also asserts the destroy
+# SDK-unwired before the #609 backfill. Also asserts the destroy
 # path cleans up.
 #
 # Required env vars:

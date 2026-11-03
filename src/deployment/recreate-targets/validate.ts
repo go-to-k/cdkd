@@ -5,7 +5,7 @@ import {
   MULTI_REGION_RECREATE_BLOCKED_TYPES,
   type StatefulReason,
 } from '../../provisioning/stateful-types.js';
-import { findActionableSilentDrops } from '../../provisioning/property-coverage.js';
+import { findActionableSdkUnwired } from '../../provisioning/property-coverage.js';
 import { recordedProtectionEvidence } from '../../provisioning/recorded-protection.js';
 import {
   hasNoCloudControlHandlers,
@@ -89,7 +89,7 @@ export interface RecreateTargetsValidation {
   ambiguousIntent: AmbiguousIntentOverlap[];
   /**
    * Inverse ambiguous-intent (#651): `--recreate-via-sdk-provider <id>`
-   * named on a resource whose template uses a silent-drop property
+   * named on a resource whose template uses an SDK-unwired property
    * that is NOT in `--prefer-sdk-route`. The post-recreate
    * routing would re-route the resource back to CC API on the very
    * next deploy (or this deploy, in the no-template-change case),
@@ -398,10 +398,10 @@ export function validateRecreateTargets(input: {
       }
 
       // Ambiguous-intent overlap with --prefer-sdk-route.
-      // The overlap only fires when the template carries a silent-drop
+      // The overlap only fires when the template carries an SDK-unwired
       // property AND that property is in the override allow-set —
       // matching what the routing decision would actually do.
-      const actionableDrops = findActionableSilentDrops(
+      const actionableDrops = findActionableSdkUnwired(
         resourceType,
         templateResource.Properties,
         // For the overlap check we want to surface every drop that the
@@ -451,11 +451,11 @@ export function validateRecreateTargets(input: {
         blockedAlreadyCcApi.push(target);
       }
     } else {
-      // #651 inverse ambiguous-intent: the template uses a silent-drop
+      // #651 inverse ambiguous-intent: the template uses an SDK-unwired
       // property that is NOT in `--prefer-sdk-route`. The
       // default-on auto-route would immediately re-route the resource
       // back to CC after the recreate. Refuse the round-trip.
-      const actionableDrops = findActionableSilentDrops(
+      const actionableDrops = findActionableSdkUnwired(
         resourceType,
         templateResource.Properties,
         input.allowUnsupportedProperties,

@@ -49,7 +49,7 @@ export class CloudWatchStack extends cdk.Stack {
     //   - Tags (via cdk.Tags.of below)
     // ThresholdMetricId is intentionally NOT exercised here (it is an
     // anomaly-detection-only field requiring a metric-math band; left in
-    // silentDrop is out of scope for this fixture).
+    // sdkUnwired is out of scope for this fixture).
     const alarm = new cloudwatch.Alarm(this, 'ErrorAlarm', {
       alarmDescription: 'Alarm when error count exceeds threshold',
       metric: metricFilter.metric({

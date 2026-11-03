@@ -707,7 +707,7 @@ export class DocDBProvider implements ResourceProvider {
   /**
    * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
    * `ProvisioningType: NON_PROVISIONABLE` — Cloud Control has no handlers for
-   * them — so the #614 silent-drop auto-route must not send a template using
+   * them — so the #614 SDK-unwired auto-route must not send a template using
    * an unhandled property to CC, where it fails mid-deploy with an
    * opaque UnsupportedActionException. With this opt-out the registry refuses
    * such a template pre-flight (issue #3866).

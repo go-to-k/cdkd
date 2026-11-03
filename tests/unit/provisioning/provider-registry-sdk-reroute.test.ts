@@ -53,20 +53,20 @@ function ccBrokenType(): string {
 }
 
 /**
- * A property that the sdk-coverage type's provider would SILENTLY DROP.
+ * A property that the sdk-coverage type's provider does NOT WIRE.
  *
  * By construction the type has none -- that is why it was admitted -- so the
  * "dirty bag" cases need a property from the SAME type's schema that is not in
  * its handled set. Deriving one from the coverage map keeps the case honest:
- * if the type ever gains a real silent drop, this picks it up instead of
+ * if the type ever gains a real SDK-unwired property, this picks it up instead of
  * asserting against a name nobody maintains.
  */
 function dirtyBagFor(resourceType: string): Record<string, unknown> {
   const cov = PROPERTY_COVERAGE_BY_TYPE.get(resourceType);
   expect(cov, `${resourceType} has no coverage record`).toBeDefined();
-  const firstDrop = cov!.silentDrop.keys().next();
+  const firstDrop = cov!.sdkUnwired.keys().next();
   if (!firstDrop.done) return { [firstDrop.value]: 'x' };
-  // No real silent drop (the expected state). Fall back to a type whose map
+  // No real SDK-unwired property (the expected state). Fall back to a type whose map
   // DOES have one, and assert through `wouldReturnToSdkProvider` on that type
   // instead -- see the dedicated case below.
   return {};
@@ -275,21 +275,21 @@ describe('wouldReturnToSdkProvider (the one implementation of the flip condition
  *
  * These cases inject a synthetic exemption table. That is deliberate and it is
  * the only way to reach this code: a real `'sdk-coverage'` type has an empty
- * `silentDrop` map by construction -- that is the reason it was admitted -- so
- * `findActionableSilentDrops` returns [] for every bag and the loop cannot
+ * `sdkUnwired` map by construction -- that is the reason it was admitted -- so
+ * `findActionableSdkUnwired` returns [] for every bag and the loop cannot
  * discriminate. Measured against the shipped table alone, mutating the loop to
  * read the desired bag twice, or the recorded bag twice, left the entire suite
  * GREEN. The injection swaps DATA; every gate under test is the shipped code.
  */
 describe('the removal deploy: BOTH bags are read, not just the desired one', () => {
-  /** A type that really does have a silent-drop property, from the coverage map. */
+  /** A type that really does have an SDK-unwired property, from the coverage map. */
   function dirtyType(): { resourceType: string; property: string } {
     for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-      const first = cov.silentDrop.keys().next();
+      const first = cov.sdkUnwired.keys().next();
       if (!first.done) return { resourceType, property: first.value };
     }
     throw new Error(
-      'no type has a silent-drop property, so these cases cannot discriminate — if the ' +
+      'no type has an SDK-unwired property, so these cases cannot discriminate — if the ' +
         'backfill really closed every gap, delete this block rather than leaving it vacuous.',
     );
   }
@@ -321,7 +321,7 @@ describe('the removal deploy: BOTH bags are read, not just the desired one', () 
     ).toBe(true);
   });
 
-  it('refuses when the DESIRED bag carries a silent drop', () => {
+  it('refuses when the DESIRED bag carries an SDK-unwired property', () => {
     const { resourceType, property } = dirtyType();
     expect(
       wouldReturnToSdkProvider({

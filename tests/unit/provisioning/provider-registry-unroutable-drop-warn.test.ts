@@ -2,12 +2,12 @@
  * Issue #2792 — the accepted-drop warn must not tell a type with NO Cloud
  * Control route to "remove the override to route this resource via Cloud
  * Control API": for such a type, removing it makes the drop actionable and the
- * next deploy REFUSES at pre-flight (`buildUnroutableSilentDropMessage`)
+ * next deploy REFUSES at pre-flight (`buildUnroutableSdkUnwiredMessage`)
  * instead of routing. Two conditions make a type unroutable, and each gets a
  * case: a provider declaring `disableCcApiFallback`, and a NON_PROVISIONABLE
- * type. No real type is both NON_PROVISIONABLE and carries a silent drop today
+ * type. No real type is both NON_PROVISIONABLE and carries an SDK-unwired property today
  * (that is the mid-transition window the guard also covers), so that arm
- * marks a real silent-drop type NON_PROVISIONABLE through the module mock.
+ * marks a real SDK-unwired type NON_PROVISIONABLE through the module mock.
  */
 import { describe, it, expect, beforeEach, vi } from 'vite-plus/test';
 import type { ResourceProvider } from '../../../src/types/resource.js';
@@ -35,11 +35,11 @@ function pickDrop(createOnly: boolean): { resourceType: string; property: string
   for (const [resourceType, cov] of [...PROPERTY_COVERAGE_BY_TYPE].sort(([a], [b]) =>
     a.localeCompare(b)
   )) {
-    for (const property of [...cov.silentDrop.keys()].sort((a, b) => a.localeCompare(b))) {
+    for (const property of [...cov.sdkUnwired.keys()].sort((a, b) => a.localeCompare(b))) {
       if (cov.createOnlyDrops.has(property) === createOnly) return { resourceType, property };
     }
   }
-  throw new Error(`no ${createOnly ? '' : 'non-'}create-only silent drop -- use a synthetic fixture`);
+  throw new Error(`no ${createOnly ? '' : 'non-'}create-only SDK-unwired property -- use a synthetic fixture`);
 }
 
 function stubProvider(disableCcApiFallback: boolean): ResourceProvider {
@@ -65,7 +65,7 @@ function warnFor(
   };
   setup(registry);
   registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
-  registry.reportSilentDropDecisions([
+  registry.reportSdkUnwiredDecisions([
     {
       logicalId: 'Res',
       resourceType: fx.resourceType,
@@ -155,13 +155,13 @@ describe('accepted-drop warn on a type with no Cloud Control route (issue #2792)
   it('names the pronoun by count when two drops are accepted', () => {
     let pair: { resourceType: string; propA: string; propB: string } | undefined;
     for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-      if (cov.silentDrop.size >= 2) {
-        const [propA, propB] = [...cov.silentDrop.keys()].sort((a, b) => a.localeCompare(b));
+      if (cov.sdkUnwired.size >= 2) {
+        const [propA, propB] = [...cov.sdkUnwired.keys()].sort((a, b) => a.localeCompare(b));
         pair = { resourceType, propA: propA!, propB: propB! };
         break;
       }
     }
-    if (pair === undefined) throw new Error('no type with two silent drops');
+    if (pair === undefined) throw new Error('no type with two SDK-unwired properties');
     const registry = new ProviderRegistry();
     const warn = vi.fn();
     (registry as unknown as { logger: Record<string, unknown> }).logger = {
@@ -175,7 +175,7 @@ describe('accepted-drop warn on a type with no Cloud Control route (issue #2792)
       `${pair.resourceType}:${pair.propA}`,
       `${pair.resourceType}:${pair.propB}`,
     ]);
-    registry.reportSilentDropDecisions([
+    registry.reportSdkUnwiredDecisions([
       {
         logicalId: 'Res',
         resourceType: pair.resourceType,

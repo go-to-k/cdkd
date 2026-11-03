@@ -512,7 +512,7 @@ if [ "${GSI_STATUS}" != "ACTIVE" ]; then
 fi
 echo "    GSI ${GSI_NAME} is ACTIVE"
 
-# The table must route via the SDK provider (catch a silent-drop routing flip).
+# The table must route via the SDK provider (catch an SDK-unwired routing flip).
 PROVISIONED_BY="$(node "${LOCAL_DIST}" state show "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --json 2>/dev/null \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const r=j.state.resources;const k=Object.keys(r).find(x=>r[x].resourceType==="AWS::DynamoDB::Table");process.stdout.write((r[k]&&r[k].provisionedBy)||"sdk")})')"

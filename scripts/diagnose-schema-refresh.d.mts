@@ -38,7 +38,7 @@ export interface SdkLagRow {
 }
 export declare const NESTED_KEY_FAILURE_RE: RegExp;
 
-/** The `silentDrop` rationale of a row nobody decided on. */
+/** The `sdkUnwired` rationale of a row nobody decided on. */
 export declare const NOT_IMPLEMENTED_RATIONALE: string;
 /** The sdk-wire harness's announcement of nested paths no bag carries. */
 export declare const WIRE_MISSING_NESTED: string;
@@ -273,8 +273,8 @@ export declare function collectFixtureDeltas(input: {
 }): {
   removed: RemovedEntry[];
   writableAdded: AddedEntry[];
-  /** Types that LOST silent-drop properties — the COMPLEMENT of `removed`. */
-  silentDropRemoved: RemovedDropEntry[];
+  /** Types that LOST SDK-unwired properties — the COMPLEMENT of `removed`. */
+  sdkUnwiredRemoved: RemovedDropEntry[];
   readOnlyAddedCount: number;
   unreadable: string[];
   /**
@@ -326,15 +326,15 @@ export declare function assertFixtureFloor(fixtureCount: number, declaredCount: 
 export declare const UMBRELLA_EMPTY_SENTINEL: string;
 /** The rows, or `UMBRELLA_EMPTY_SENTINEL` when there are none. */
 export declare function renderUmbrellaDocument(generatedSource: string): string;
-/** One `- [ ] \`Type\`: \`Prop\`` row per remaining silent-drop property. */
+/** One `- [ ] \`Type\`: \`Prop\`` row per remaining SDK-unwired property. */
 export declare function renderUmbrellaChecklist(generatedSource: string): string[];
-/** A resource type and the silent-drop properties still owned by it. */
-export interface SilentDropGroup {
+/** A resource type and the SDK-unwired properties still owned by it. */
+export interface SdkUnwiredGroup {
   type: string;
   properties: string[];
 }
-/** The remaining silent-drop properties, grouped by owning resource type. */
-export declare function parseSilentDropByType(generatedSource: string): SilentDropGroup[];
+/** The remaining SDK-unwired properties, grouped by owning resource type. */
+export declare function parseSdkUnwiredByType(generatedSource: string): SdkUnwiredGroup[];
 /** The opening half of the `backfill-type` marker a sub-issue is keyed by. */
 export declare const SUBISSUE_TYPE_MARKER_PREFIX: string;
 /** The closing half of the `backfill-type` marker. */
@@ -344,7 +344,7 @@ export declare function subIssueTypeMarker(type: string): string;
 /** The `Effort` band a type's remaining property count implies. */
 export declare function subIssueEffort(count: number): 'small (S)' | 'medium (M)' | 'large (L)';
 /** One per-type sub-issue's generated body. */
-export declare function renderSubIssueBody(group: SilentDropGroup): string;
+export declare function renderSubIssueBody(group: SdkUnwiredGroup): string;
 /** The JSON reconciliation plan `--backfill-issues` emits. */
 export declare function renderSubIssuePlan(generatedSource: string): string;
 /** Modes that render one committed file, exit, and must fail non-zero. */
@@ -476,10 +476,10 @@ export declare function renderChangelogFragment(input: {
   unroutableTypes?: ReadonlySet<string>;
   /** Types whose routing could not be ESTABLISHED — neither story may be told about them. */
   unknownRoutingTypes?: ReadonlySet<string>;
-  /** What each provider declares handled — such a property never becomes a silent drop. */
+  /** What each provider declares handled — such a property never becomes SDK-unwired. */
   declared?: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Types that LOST silent-drop properties this cycle. */
-  silentDropRemoved?: readonly RemovedDropEntry[];
+  /** Types that LOST SDK-unwired properties this cycle. */
+  sdkUnwiredRemoved?: readonly RemovedDropEntry[];
 }): string | null;
 
 /** Stands in for the cycle date inside a fragment rendered before the PR exists. */
@@ -515,7 +515,7 @@ export declare function parseSdkNonProvisionableTypes(unsupportedTypesSource: st
 export declare function loadNoCloudControlHandlerTypes(repoRoot?: string): Set<string>;
 
 /**
- * A type that LOST silent-drop properties in this refresh — the changelog's
+ * A type that LOST SDK-unwired properties in this refresh — the changelog's
  * removal population, and the complement of `RemovedEntry`: a removed property
  * the provider declares was never a drop.
  */

@@ -47,7 +47,7 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
 /**
  * go-to-k/cdkd#2790 — the ENGINE half.
  *
- * A create-only silent drop an earlier deploy accepted with
+ * A create-only SDK-unwired property an earlier deploy accepted with
  * `--prefer-sdk-route` was never written, and the record keeps
  * it. Once the flag is gone the diff reports it as an addition — a
  * REPLACEMENT — and the only thing that moved is the flag. The engine refuses
@@ -98,7 +98,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
     expect(cov.createOnlyDrops.has(PLAIN)).toBe(false);
-    expect(cov.silentDrop.has(PLAIN)).toBe(true);
+    expect(cov.sdkUnwired.has(PLAIN)).toBe(true);
   });
 
   function makeEngine(options: Record<string, unknown> = {}): InstanceType<typeof DeployEngine> {

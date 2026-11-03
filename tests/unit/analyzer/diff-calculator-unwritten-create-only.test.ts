@@ -30,7 +30,7 @@ import type { StackState } from '../../../src/types/state.js';
 /**
  * go-to-k/cdkd#2790 — the DIFF half.
  *
- * A create-only silent drop an earlier deploy accepted
+ * A create-only SDK-unwired property an earlier deploy accepted
  * (`--allow-unsupported-properties`) stays in the state record, because the
  * record must keep a flag-ful redeploy quiet. Compared as-is, a flag-less
  * deploy then saw the same value on both sides, called it NO_CHANGE, and the
@@ -51,7 +51,7 @@ describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
     const cov = getPropertyCoverage(TYPE);
     if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
-    expect(cov.silentDrop.has(PLAIN)).toBe(true);
+    expect(cov.sdkUnwired.has(PLAIN)).toBe(true);
     expect(cov.createOnlyDrops.has(PLAIN)).toBe(false);
   });
 

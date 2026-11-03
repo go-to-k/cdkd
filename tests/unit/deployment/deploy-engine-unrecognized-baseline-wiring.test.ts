@@ -11,7 +11,7 @@
  *
  *   - the pre-flight `validateResourceProperties` rows;
  *   - the no-change skip's desired-side narrowing (an OUTCOME: the provider is
- *     not called, because `withoutAcceptedSilentDropProperties` runs for real);
+ *     not called, because `withoutAcceptedSdkUnwiredProperties` runs for real);
  *   - `replaceDecision` (property-driven replacement), and the progress label
  *     that mirrors it;
  *   - `replDecision` (the UPDATE-not-supported replacement).
@@ -65,7 +65,7 @@ vi.mock('p-limit', () => ({
 
 const STACK_NAME = 'MyStack';
 const LOGICAL_ID = 'MyLogGroup';
-/** Routable, with a REMOVABLE silent drop — `diff-calculator-silent-drop.test.ts`'s pair. */
+/** Routable, with a REMOVABLE SDK-unwired property — `diff-calculator-sdk-unwired.test.ts`'s pair. */
 const TYPE = 'AWS::Logs::LogGroup';
 const DROPPED = 'ResourcePolicyDocument';
 const ALLOW_KEY = `${TYPE}:${DROPPED}`;
@@ -232,7 +232,7 @@ describe('DeployEngine threads the record as the unrecognized-property baseline 
     const coverage = getPropertyCoverage(TYPE);
     if (!coverage) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(coverage.ccRouteUnavailable).toBe(false);
-    expect(coverage.silentDrop.has(DROPPED)).toBe(true);
+    expect(coverage.sdkUnwired.has(DROPPED)).toBe(true);
     expect(coverage.createOnlyDrops.has(DROPPED)).toBe(false);
     const desired = { ...RECORDED, [DROPPED]: POLICY };
     expect(findRoutableUnrecognizedProperties(TYPE, desired, new Set())).toEqual([UNKNOWN]);

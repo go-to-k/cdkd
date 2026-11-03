@@ -109,7 +109,7 @@ export async function provisionResource(
   // longer than its sibling (CC API is async-polling). CREATE / UPDATE
   // consult `getProviderFor` with the template-side properties +
   // recorded `provisionedBy` (the latter so sticky-CC resources keep
-  // the tag even when the update payload has no silent-drop property
+  // the tag even when the update payload has no SDK-unwired property
   // of its own — design §8). DELETE short-circuits on recorded
   // `provisionedBy` since delete routing is fully driven by state, not
   // by the template. Routing is based on top-level property NAMES

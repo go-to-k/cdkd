@@ -20,7 +20,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *
  * CRITICAL — this Service MUST stay on cdkd's SDK provider path (NOT Cloud
  * Control): no ServiceConnectConfiguration / VolumeConfigurations (the #614
- * silent-drop routing flips). LoadBalancers + DeploymentConfiguration are
+ * SDK-unwired routing flips). LoadBalancers + DeploymentConfiguration are
  * handledProperties, so the service stays SDK-routed.
  *
  * Wiring the blue/green shape needs real ALB plumbing:

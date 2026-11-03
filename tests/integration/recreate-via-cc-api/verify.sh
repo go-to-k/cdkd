@@ -135,7 +135,7 @@ cleanup
 
 # --- Phase 1: deploy WITHOUT RuntimeManagementConfig (lands SDK) -----------------
 echo "==> Phase 1: deploy ${STACK} WITHOUT RuntimeManagementConfig (baseline → SDK route)"
-unset CDKD_INTEG_USE_SILENT_DROP
+unset CDKD_INTEG_USE_SDK_UNWIRED
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -170,13 +170,13 @@ echo "    OK: baseline Lambda has no RuntimeManagementConfig.UpdateRuntimeOn=Fun
 
 # --- Phase 2: re-deploy WITH RuntimeManagementConfig + --recreate-via-cc-api -----
 echo "==> Phase 2: re-deploy ${STACK} WITH RuntimeManagementConfig + --recreate-via-cc-api (destroy+recreate via CC)"
-export CDKD_INTEG_USE_SILENT_DROP=true
+export CDKD_INTEG_USE_SDK_UNWIRED=true
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --recreate-via-cc-api RecreateProbe \
   --yes
-unset CDKD_INTEG_USE_SILENT_DROP
+unset CDKD_INTEG_USE_SDK_UNWIRED
 
 STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_2=$(echo "${STATE_2}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::Function") | .value.provisionedBy // ""] | first')
@@ -284,12 +284,12 @@ echo "        OK: bucket emptied"
 #
 # The failed destroy throws before any create, so the old bucket and its state
 # record are untouched and Phase 4 destroys the stack as before. The deploy
-# runs under the Phase 2 template (`CDKD_INTEG_USE_SILENT_DROP`) so the
+# runs under the Phase 2 template (`CDKD_INTEG_USE_SDK_UNWIRED`) so the
 # Lambda diffs NO_CHANGE and the bucket is the only operation.
 echo "    Sub-3e: recreate destroy denied by AWS -> RESOURCE_FAILED carries the AWS code (#1889)"
 DENY_POLICY=$(jq -cn --arg b "${BUCKET_NAME}" '{Version: "2012-10-17", Statement: [{Sid: "Cdkd1889DenyDeleteBucket", Effect: "Deny", Principal: "*", Action: "s3:DeleteBucket", Resource: ("arn:aws:s3:::" + $b)}]}')
 aws s3api put-bucket-policy --bucket "${BUCKET_NAME}" --region "${REGION}" --policy "${DENY_POLICY}"
-export CDKD_INTEG_USE_SILENT_DROP=true
+export CDKD_INTEG_USE_SDK_UNWIRED=true
 set +e
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
@@ -298,7 +298,7 @@ node "${LOCAL_DIST}" deploy "${STACK}" \
   --yes > /tmp/cdkd-1889-deny.log 2>&1
 RC=$?
 set -e
-unset CDKD_INTEG_USE_SILENT_DROP
+unset CDKD_INTEG_USE_SDK_UNWIRED
 if [ ${RC} -eq 0 ]; then
   echo "FAIL: recreate with DeleteBucket denied unexpectedly succeeded" >&2
   cat /tmp/cdkd-1889-deny.log >&2

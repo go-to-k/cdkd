@@ -103,7 +103,7 @@ export class AlbStack extends cdk.Stack {
       },
     });
 
-    // #609 LoadBalancer + TargetGroup silent-drop batch coverage. Raw
+    // #609 LoadBalancer + TargetGroup SDK-unwired batch coverage. Raw
     // property overrides (not L2 props) so the fixture does not depend on the
     // pinned aws-cdk-lib having codegen'd the newest CFn properties.
     const cfnTargetGroup = targetGroup.node.defaultChild as elbv2.CfnTargetGroup;

@@ -365,7 +365,7 @@ export class AppSyncProvider implements ResourceProvider {
         'DynamoDBConfig',
         'LambdaConfig',
         'HttpConfig',
-        // Issue #609 backfill: the 5 remaining DataSource silent-drop
+        // Issue #609 backfill: the 5 remaining DataSource SDK-unwired
         // properties. `ElasticsearchConfig` is the legacy alias for the
         // AMAZON_ELASTICSEARCH data-source type — deprecated by AWS in favor
         // of OpenSearch, but still a live SDK member templates can carry, so
@@ -390,7 +390,7 @@ export class AppSyncProvider implements ResourceProvider {
         'PipelineConfig',
         'Runtime',
         'Code',
-        // Issue #609 backfill: the 7 remaining Resolver silent-drop
+        // Issue #609 backfill: the 7 remaining Resolver SDK-unwired
         // properties. The three *S3Location members have NO SDK member —
         // cdkd fetches the S3 object body and inlines it, mirroring
         // CloudFormation (see resolveInlineOrS3Template).

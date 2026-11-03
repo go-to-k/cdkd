@@ -37,9 +37,9 @@
  *       the `NestedStackProvider` that consumes the fields lands in a
  *       follow-up.
  * - 7 — adds `ResourceState.provisionedBy: 'sdk' | 'cc-api'` to support
- *       per-resource Cloud Control API routing for silent-drop properties
+ *       per-resource Cloud Control API routing for SDK-unwired properties
  *       (issue [#614](https://github.com/go-to-k/cdkd/issues/614)). When
- *       a fresh deploy detects a silent-drop top-level CFn property on a
+ *       a fresh deploy detects an SDK-unwired top-level CFn property on a
  *       Tier 1 type, the resource is routed through Cloud Control API
  *       (which forwards the full property map to AWS) instead of the SDK
  *       Provider (which would drop the field). The state record's
@@ -903,7 +903,7 @@ export interface ResourceState {
    * - `'cc-api'` — Cloud Control API (the fallback path: async polling
    *   create/update/delete via the unified CloudControlClient). Routed
    *   automatically when the resource's template uses a top-level CFn
-   *   property the SDK Provider would silently drop. CC API forwards
+   *   property the SDK Provider does not wire. CC API forwards
    *   the full property map to AWS, closing the silent-drop bug.
    *
    * Absent / `undefined` means SDK Provider (legacy v6-and-earlier
@@ -922,7 +922,7 @@ export interface ResourceState {
    *    `'sdk-coverage'` entry in `STICKY_CC_MIGRATION_EXEMPT` (measured
    *    physicalId parity, or a declared normalizer of the Cloud Control id),
    *    AND neither the desired nor the recorded property bag of THIS resource
-   *    has an actionable silent drop. The next mutating deploy writes `'sdk'`
+   *    has an actionable SDK-unwired property. The next mutating deploy writes `'sdk'`
    *    with the physical id unchanged, or in the SDK form a normalizer gives
    *    (`AWS::ECS::Service`, go-to-k/cdkd#5654). `--pin-cc-api`
    *    declines it for one deploy.
@@ -1176,7 +1176,7 @@ export interface ResourceState {
   referenceProvenance?: Record<string, ReferenceProvenance> | undefined;
 
   /**
-   * The CREATE-ONLY silent drops in `properties` that the SDK route was told to
+   * The CREATE-ONLY SDK-unwired properties in `properties` that the SDK route was told to
    * drop (`--prefer-sdk-route`) when this record was written, and so never sent
    * to AWS (issue [#2790](https://github.com/go-to-k/cdkd/issues/2790)).
    * Optional, no schema bump.

@@ -7,7 +7,7 @@
  * Control from `property-coverage.generated.ts`, built offline from
  * `tests/fixtures/cfn-schemas/*.json`, with no runtime `DescribeType` on that
  * path. So a property AWS publishes AFTER the snapshot produces no
- * `silentDrop` entry. Issue #3713 routes such a key through Cloud Control;
+ * `sdkUnwired` entry. Issue #3713 routes such a key through Cloud Control;
  * the warn covers what stays on the SDK route (read-only keys, unroutable
  * types, keys unchanged since an SDK-route deploy).
  *
@@ -30,7 +30,7 @@ import {
   STICKY_CC_MIGRATION_EXEMPT,
 } from '../../../src/provisioning/provider-registry.js';
 import {
-  findActionableSilentDrops,
+  findActionableSdkUnwired,
   findRoutableUnrecognizedProperties,
   findUnrecognizedProperties,
   PROPERTY_COVERAGE_BY_TYPE,
@@ -42,29 +42,29 @@ import { SDK_PROVIDER_NON_PROVISIONABLE_TYPES } from '../../../src/provisioning/
 const UNKNOWN_PROP = 'CdkdTotallyNewPropertyFromTheFuture';
 
 /**
- * A Tier 1 type with at least one silent-drop entry AND at least one handled
+ * A Tier 1 type with at least one SDK-unwired entry AND at least one handled
  * property, so one type can serve every control in this file.
  */
 function pickRoutableFixture(): {
   resourceType: string;
   handledProperty: string;
-  silentDropProperty: string;
+  sdkUnwiredProperty: string;
 } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
     // Routable only: an unrecognized key must be able to move the resource.
     if (cov.ccRouteUnavailable) continue;
-    const drop = cov.silentDrop.entries().next();
+    const drop = cov.sdkUnwired.entries().next();
     const handled = cov.handled.values().next();
     if (!drop.done && !handled.done) {
       return {
         resourceType,
         handledProperty: handled.value,
-        silentDropProperty: drop.value[0],
+        sdkUnwiredProperty: drop.value[0],
       };
     }
   }
   throw new Error(
-    'No Tier 1 type carries both a handled and a silent-drop property — the ' +
+    'No Tier 1 type carries both a handled and an SDK-unwired property — the ' +
       'generated coverage table changed shape; update this fixture picker.'
   );
 }
@@ -106,8 +106,8 @@ describe('findUnrecognizedProperties (issue #2718)', () => {
     expect(findUnrecognizedProperties(fx.resourceType, { [fx.handledProperty]: 1 })).toEqual([]);
   });
 
-  it('does NOT report a silent-drop property (the #614 auto-route owns that case)', () => {
-    expect(findUnrecognizedProperties(fx.resourceType, { [fx.silentDropProperty]: 1 })).toEqual([]);
+  it('does NOT report an SDK-unwired property (the #614 auto-route owns that case)', () => {
+    expect(findUnrecognizedProperties(fx.resourceType, { [fx.sdkUnwiredProperty]: 1 })).toEqual([]);
   });
 
   it('returns [] for a type with no coverage record — Cloud Control forwards everything', () => {
@@ -169,7 +169,7 @@ describe('findUnrecognizedProperties (issue #2718)', () => {
 function pickReadOnlyFixture(): { resourceType: string; readOnlyProperty: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
     if (cov.ccRouteUnavailable) continue;
-    const ro = [...cov.readOnly].find((p) => !cov.handled.has(p) && !cov.silentDrop.has(p));
+    const ro = [...cov.readOnly].find((p) => !cov.handled.has(p) && !cov.sdkUnwired.has(p));
     if (ro !== undefined) return { resourceType, readOnlyProperty: ro };
   }
   throw new Error('No routable Tier 1 type declares a read-only property — update this picker.');
@@ -266,16 +266,16 @@ describe('findRoutableUnrecognizedProperties (issue #3713)', () => {
     ).toEqual([]);
   });
 
-  it('joins findActionableSilentDrops with its own rationale, sorted with the drops', () => {
+  it('joins findActionableSdkUnwired with its own rationale, sorted with the drops', () => {
     expect(
-      findActionableSilentDrops(
+      findActionableSdkUnwired(
         fx.resourceType,
-        { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+        { [fx.sdkUnwiredProperty]: 1, [UNKNOWN_PROP]: 1 },
         none
       ).map((d) => d.property)
-    ).toEqual([fx.silentDropProperty, UNKNOWN_PROP].sort((a, b) => a.localeCompare(b)));
+    ).toEqual([fx.sdkUnwiredProperty, UNKNOWN_PROP].sort((a, b) => a.localeCompare(b)));
     expect(
-      findActionableSilentDrops(fx.resourceType, { [UNKNOWN_PROP]: 1 }, none)[0]?.rationale
+      findActionableSdkUnwired(fx.resourceType, { [UNKNOWN_PROP]: 1 }, none)[0]?.rationale
     ).toBe(UNRECOGNIZED_PROPERTY_RATIONALE);
   });
 });
@@ -477,7 +477,7 @@ describe('ProviderRegistry warns about unrecognized properties left on the SDK r
    * binds them). A stub declaring `disableCcApiFallback` on a type the coverage
    * table calls routable makes it reachable. The key must be UNCHANGED against
    * the record: a changed one still qualifies to route (the predicate reads the
-   * coverage flag only), and `reportSilentDropDecisions` then refuses the
+   * coverage flag only), and `reportSdkUnwiredDecisions` then refuses the
    * resource before any warn. Unchanged, nothing routes, and the registry's
    * reason turns the "unchanged" sentence into the "no route" one.
    */
@@ -520,13 +520,13 @@ describe('ProviderRegistry warns about unrecognized properties left on the SDK r
     expect(unknownWarns(warn)).toEqual([]);
   });
 
-  it('stays silent when a silent drop auto-routes the resource to Cloud Control', () => {
+  it('stays silent when an SDK-unwired property auto-routes the resource to Cloud Control', () => {
     const { registry, warn } = makeRegistry();
     registry.validateResourceProperties([
       {
         logicalId: 'MyResource',
         resourceType: fx.resourceType,
-        properties: { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+        properties: { [fx.sdkUnwiredProperty]: 1, [UNKNOWN_PROP]: 1 },
         provisionedBy: 'sdk',
         previousProperties: { [UNKNOWN_PROP]: 1 },
       },
@@ -579,14 +579,14 @@ describe('ProviderRegistry warns about unrecognized properties left on the SDK r
     expect(lines[0]).not.toContain('never reached AWS');
   });
 
-  it('still warns when the only silent drop is allow-listed and the key is unchanged', () => {
+  it('still warns when the only SDK-unwired property is allow-listed and the key is unchanged', () => {
     const { registry, warn } = makeRegistry();
-    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.silentDropProperty}`]);
+    registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.sdkUnwiredProperty}`]);
     registry.validateResourceProperties([
       {
         logicalId: 'MyResource',
         resourceType: fx.resourceType,
-        properties: { [fx.silentDropProperty]: 1, [UNKNOWN_PROP]: 1 },
+        properties: { [fx.sdkUnwiredProperty]: 1, [UNKNOWN_PROP]: 1 },
         provisionedBy: 'sdk',
         previousProperties: { [UNKNOWN_PROP]: 1 },
       },

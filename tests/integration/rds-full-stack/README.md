@@ -30,9 +30,9 @@ computed attribute** (the DB endpoint address consumed via `Fn::GetAtt`).
 ## What it stresses (vs the other RDS fixtures)
 
 - `rds-aurora` covers an Aurora **cluster** (+ writer + DBProxy) and a
-  standalone L1 `CfnDBCluster` for #609 security-prop silent-drop closure.
+  standalone L1 `CfnDBCluster` for #609 security-prop SDK-unwired backfill.
 - `rds-dbinstance-backfill` covers a standalone L1 `CfnDBInstance` for #609
-  DBInstance security-prop silent-drop closure + the `provisionedBy=sdk`
+  DBInstance security-prop SDK-unwired backfill + the `provisionedBy=sdk`
   routing guard.
 
 Neither uses an explicit **DBSubnetGroup + DBParameterGroup** pair on an L2

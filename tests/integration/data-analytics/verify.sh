@@ -5,7 +5,7 @@
 # Asserts that a Glue Table whose template sets `OpenTableFormatInput`
 # (Apache Iceberg, `{ IcebergInput: { MetadataOperation: 'CREATE', Version } }`)
 # is actually created as an Iceberg table after `cdkd deploy` — the property
-# was a silent-drop before the #609 backfill. OpenTableFormatInput is a
+# was SDK-unwired before the #609 backfill. OpenTableFormatInput is a
 # create-time directive that GetTable does NOT echo back as an
 # OpenTableFormatInput field; an Iceberg table surfaces via
 # `Table.Parameters.table_type == 'ICEBERG'`, which is what we assert.

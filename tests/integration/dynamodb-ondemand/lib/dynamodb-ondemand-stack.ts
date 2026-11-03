@@ -27,10 +27,10 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  *    UpdateContributorInsights control-plane call; read back via
  *    DescribeContributorInsights.
  *
- * Each of these was a silent-drop in cdkd's `DynamoDBTableProvider` before
+ * Each of these was SDK-unwired in cdkd's `DynamoDBTableProvider` before
  * the #609 backfill (the value never reached AWS). Every property the table
  * sets is in the provider's `handledProperties`, so the resource routes via
- * the SDK path (not the CC-API #614 silent-drop fallback) — verify.sh asserts
+ * the SDK path (not the CC-API #614 SDK-unwired fallback) — verify.sh asserts
  * `provisionedBy=sdk` as a routing guard.
  *
  * (`ImportSourceSpecification`, the other #609 property, is unhandledByDesign

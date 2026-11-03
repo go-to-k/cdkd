@@ -3,8 +3,8 @@
 # test (issue #609).
 #
 # Asserts that an EC2 Instance whose template sets the five security-focused
-# silent-drop properties has each one reach AWS after `cdkd deploy` — each was
-# a silent-drop before #609:
+# SDK-unwired properties has each one reach AWS after `cdkd deploy` — each was
+# SDK-unwired before #609:
 #   - DisableApiTermination  (DescribeInstanceAttribute)
 #   - MetadataOptions        (DescribeInstances .MetadataOptions; IMDSv2)
 #   - Monitoring             (DescribeInstances .Monitoring.State)
@@ -18,7 +18,7 @@
 # Also asserts the issue #1276 AvailabilityZone -> RunInstances
 # `Placement.AvailabilityZone` mapping: the template emits AvailabilityZone (as
 # CDK's L2 `ec2.Instance` always does), the instance must STILL take the SDK
-# provider path (before #1276 that property was a silent-drop and the #614 rule
+# provider path (before #1276 that property was SDK-unwired and the #614 rule
 # flipped the whole resource onto Cloud Control), and the AZ must reach AWS.
 #
 # Also the issue #3077 arm: a `--no-wait` deploy first (Phase 0), asserting the
@@ -359,7 +359,7 @@ assert_default_vpc_sg() {
   # record Cloud Control's readback instead and prove nothing about #3097.
   sg_route=$(echo "${state}" | jq -r --arg id "${sg_logical}" '.resources[$id].provisionedBy // "sdk"')
   if [ "${sg_route}" != "sdk" ]; then
-    echo "FAIL: issue #3097 (${phase}) -- ${sg_logical} was provisioned via ${sg_route}, not the SDK provider; a silent-drop property crept into the DefaultVpcSg declaration" >&2
+    echo "FAIL: issue #3097 (${phase}) -- ${sg_logical} was provisioned via ${sg_route}, not the SDK provider; an SDK-unwired property crept into the DefaultVpcSg declaration" >&2
     exit 1
   fi
   # (1) The record carries attributes.VpcId, a real vpc- id, equal to the
@@ -602,13 +602,13 @@ echo "    OK: .skippedOutputs no longer records PublicIp after the healing deplo
 assert_default_vpc_sg "${STATE}" "Phase 1"
 
 # Confirm the instance took the SDK provider path (NOT Cloud Control). If a
-# silent-drop prop ever sneaks into the template, provisionedBy flips to
+# SDK-unwired prop ever sneaks into the template, provisionedBy flips to
 # 'cc-api' and this fixture would no longer verify the SDK backfill.
 # Both instances (the #609 backfill one AND the #1281 NetworkInterfaces one)
-# must be on the SDK path; a cc-api entry means a silent-drop prop crept in.
+# must be on the SDK path; a cc-api entry means an SDK-unwired prop crept in.
 CC_API_COUNT=$(echo "${STATE}" | jq '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | select((.value.provisionedBy // "sdk") == "cc-api")] | length')
 if [ "${CC_API_COUNT}" != "0" ]; then
-  echo "FAIL: ${CC_API_COUNT} instance(s) provisioned via Cloud Control (cc-api), not the SDK provider — a silent-drop prop must have crept into the template (#609 / #1281)" >&2
+  echo "FAIL: ${CC_API_COUNT} instance(s) provisioned via Cloud Control (cc-api), not the SDK provider — an SDK-unwired prop must have crept into the template (#609 / #1281)" >&2
   exit 1
 fi
 echo "    OK: all instances provisioned via the SDK provider path"

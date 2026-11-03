@@ -10,7 +10,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  * Single Lambda Function with a conditionally-emitted `RuntimeManagementConfig`
  * top-level property. The verify.sh deploys twice:
  *
- *   Phase 1 (env `CDKD_INTEG_USE_SILENT_DROP` unset): template
+ *   Phase 1 (env `CDKD_INTEG_USE_SDK_UNWIRED` unset): template
  *   omits `RuntimeManagementConfig` → fresh deploy → `provisionedBy: 'sdk'`,
  *   AWS has the default RuntimeManagementConfig.UpdateRuntimeOn=Auto.
  *
@@ -24,7 +24,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *   via Cloud Control API and stamps `provisionedBy: 'cc-api'`. AWS
  *   now has RuntimeManagementConfig.UpdateRuntimeOn=FunctionUpdate.
  *
- * `RuntimeManagementConfig` is NOT a silent drop — the SDK provider has
+ * `RuntimeManagementConfig` is NOT SDK-unwired — the SDK provider has
  * handled it since #1621. Here it is only the ordinary template difference
  * the flag needs (a `NO_CHANGE` diff no-ops it); the route to Cloud Control
  * comes from `--recreate-via-cc-api` alone. The function name is stable
@@ -45,8 +45,8 @@ export class RecreateViaCcApiStack extends cdk.Stack {
       ],
     });
 
-    const includeSilentDrop =
-      process.env['CDKD_INTEG_USE_SILENT_DROP'] === 'true';
+    const includeSdkUnwired =
+      process.env['CDKD_INTEG_USE_SDK_UNWIRED'] === 'true';
 
     const fn = new lambda.CfnFunction(this, 'RecreateProbe', {
       functionName: 'cdkd-recreate-via-cc-api-probe',
@@ -62,7 +62,7 @@ export class RecreateViaCcApiStack extends cdk.Stack {
       // Phase 1: no RuntimeManagementConfig → SDK route, `provisionedBy: 'sdk'`.
       // Phase 2: RuntimeManagementConfig added → with --recreate-via-cc-api the
       // resource is destroy+recreated via CC API.
-      ...(includeSilentDrop
+      ...(includeSdkUnwired
         ? { runtimeManagementConfig: { updateRuntimeOn: 'FunctionUpdate' } }
         : {}),
     });

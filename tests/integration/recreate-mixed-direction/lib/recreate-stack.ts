@@ -22,13 +22,13 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  *     `'cc-api'`, Back `'cc-api'` -> `'sdk'`.
  *
  * HOW BackProbe's CC BASELINE IS SEEDED. With `--recreate-via-cc-api`, never
- * with the silent-drop auto-route. The auto-route needs a property the SDK
+ * with the SDK-unwired auto-route. The auto-route needs a property the SDK
  * provider does NOT handle, and that is a moving premise: this fixture seeded
  * through `LoggingConfig`, then `RecursiveLoop`, then
  * `RuntimeManagementConfig`, and each was later wired into
  * `lambda-function-provider.ts`, after which BackProbe silently landed on
  * `'sdk'` and the run failed before reaching anything it tests, and
- * go-to-k/cdkd#5637 wired the type's last silent drops.
+ * go-to-k/cdkd#5637 wired the type's last SDK-unwired properties.
  * The explicit flag depends on no coverage table, so a backfill cannot rot it.
  *
  * `RuntimeManagementConfig` (default `UpdateRuntimeOn: 'Auto'`; set

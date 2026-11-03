@@ -6,7 +6,7 @@ import * as rds from 'aws-cdk-lib/aws-rds';
 
 /**
  * Standalone (non-Aurora) RDS DBInstance integ fixture for the issue
- * #609 silent-drop backfill of DBInstance siblings of DBCluster.
+ * #609 SDK-unwired backfill of DBInstance siblings of DBCluster.
  *
  * Original (#738) properties:
  *   AllocatedStorage / DeletionProtection / EngineVersion /
@@ -33,7 +33,7 @@ import * as rds from 'aws-cdk-lib/aws-rds';
  * Implementation note: the fixture uses CfnDBInstance L1 directly (NOT
  * `rds.DatabaseInstance` L2). The L2 emits CDK defaults like
  * `BackupRetentionPeriod` / `CopyTagsToSnapshot` / `StorageType` that
- * are still in the #609 silent-drop list for DBInstance, and per cdkd's
+ * are still in the #609 SDK-unwired list for DBInstance, and per cdkd's
  * routing rule (any unhandled top-level prop → auto-route via Cloud
  * Control), even a single one of those defaults flips the entire
  * resource off the SDK provider — defeating the integ's whole purpose
@@ -137,7 +137,7 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     const logExports = isUpdate ? ['postgresql', 'upgrade'] : ['postgresql'];
 
     // CfnDBInstance L1 — emits EXACTLY the properties listed below, with
-    // no L2-injected defaults that would trip the silent-drop routing.
+    // no L2-injected defaults that would trip the SDK-unwired routing.
     // Each prop the #609 backfill closes is set explicitly so verify.sh
     // can prove it reached AWS:
     //   * AllocatedStorage: '400' (CFn string-typed) — AWS-required for

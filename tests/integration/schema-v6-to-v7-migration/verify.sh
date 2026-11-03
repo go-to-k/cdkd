@@ -11,7 +11,7 @@
 #      `provisionedBy` field, the next write must persist `version: 7`
 #      silently, and every resource without a state-recorded layer must
 #      land at `provisionedBy: 'sdk'` (legacy default — the SSM Parameter
-#      has no silent-drop properties, so the auto-route does not fire).
+#      has no SDK-unwired properties, so the auto-route does not fire).
 #   4. Destroy with the v7 binary. State + AWS resource both gone.
 #
 # Required env vars:
@@ -202,7 +202,7 @@ if [ "${V7_VERSION}" != "${EXPECTED_VERSION}" ]; then
 fi
 echo "    OK: state.version == ${EXPECTED_VERSION} after re-deploy (v6 -> current transparent upgrade)"
 
-# The SSM Parameter has no silent-drop properties, so the v7 writer must
+# The SSM Parameter has no SDK-unwired properties, so the v7 writer must
 # land it on the SDK Provider path. After the Phase 3 update the resource
 # record MUST carry provisionedBy: 'sdk'. This is the load-bearing
 # assertion of #614 — the new binary explicitly stamps the routing layer

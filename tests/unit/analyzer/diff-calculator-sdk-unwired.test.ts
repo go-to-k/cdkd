@@ -30,7 +30,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
  *
  * The write-side fix (record only what the SDK route sent) is not shippable on
  * its own: state then holds one bag while the template holds a wider one, so
- * the comparison reads the silent-dropped key as a user-made ADD on every later
+ * the comparison reads the unwritten key as a user-made ADD on every later
  * flag-ful deploy — and for a create-only property that classifies as a
  * REPLACEMENT of a resource nobody touched. That is the failure
  * `CanonicalizePropertiesFn`'s contract in `src/types/resource.ts` spells out
@@ -39,7 +39,7 @@ vi.mock('../../../src/utils/logger.js', () => ({
  * So both sides are narrowed, by DIFFERENT rules, and the asymmetry is the
  * whole fix:
  *
- * - the RECORD side loses every silent drop for the type. An `sdk` record
+ * - the RECORD side loses every SDK-unwired property for the type. An `sdk` record
  *   cannot have had one written, so its presence is junk — and removing it is
  *   what lets a record poisoned by a pre-fix binary HEAL: the key reads as an
  *   addition, the deploy stops being NO_CHANGE, and the auto-route fires.
@@ -51,12 +51,12 @@ vi.mock('../../../src/utils/logger.js', () => ({
  * `tests/integration/sdk-to-cc-autoroute/` measures against real AWS (issue
  * #5524 moved it off the alarm once `EvaluationWindow` was wired).
  */
-describe('DiffCalculator silent-drop narrowing (#2750)', () => {
+describe('DiffCalculator SDK-unwired narrowing (#2750)', () => {
   const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
   const DROPPED = 'ResourcePolicyDocument';
   const ALLOW_KEY = `${RESOURCE_TYPE}:${DROPPED}`;
 
-  // The mixed-bag case needs a type with TWO silent drops (LogGroup has one),
+  // The mixed-bag case needs a type with TWO SDK-unwired properties (LogGroup has one),
   // so it runs on an AutoScalingGroup: `NotificationConfiguration` is the
   // allow-listed drop and `LaunchConfigurationName` the un-allowed sibling.
   const ASG_TYPE = 'AWS::AutoScaling::AutoScalingGroup';
@@ -81,17 +81,17 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     ],
   };
 
-  it('PREMISE: the fixture key is a silent drop for this type', () => {
+  it('PREMISE: the fixture key is SDK-unwired for this type', () => {
     const coverage = getPropertyCoverage(RESOURCE_TYPE);
     if (!coverage) throw new Error(`${RESOURCE_TYPE} lost its property-coverage record`);
-    expect(coverage.silentDrop.has(DROPPED)).toBe(true);
+    expect(coverage.sdkUnwired.has(DROPPED)).toBe(true);
   });
 
-  it('PREMISE: the mixed-bag type has both keys as non-create-only silent drops', () => {
+  it('PREMISE: the mixed-bag type has both keys as non-create-only SDK-unwired properties', () => {
     const coverage = getPropertyCoverage(ASG_TYPE);
     if (!coverage) throw new Error(`${ASG_TYPE} lost its property-coverage record`);
-    expect(coverage.silentDrop.has(ASG_DROPPED)).toBe(true);
-    expect(coverage.silentDrop.has(ASG_SIBLING)).toBe(true);
+    expect(coverage.sdkUnwired.has(ASG_DROPPED)).toBe(true);
+    expect(coverage.sdkUnwired.has(ASG_SIBLING)).toBe(true);
     expect(coverage.createOnlyDrops.has(ASG_DROPPED)).toBe(false);
     expect(coverage.createOnlyDrops.has(ASG_SIBLING)).toBe(false);
   });
@@ -195,7 +195,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
 
   /**
    * The NEGATIVE CONTROL for the record side. A `cc-api` record's bag WAS
-   * written from the full map, so its silent-drop key is a real AWS value —
+   * written from the full map, so its SDK-unwired key is a real AWS value —
    * stripping it would manufacture an ADD on every deploy and re-send it
    * forever.
    */
@@ -273,7 +273,7 @@ describe('DiffCalculator silent-drop narrowing (#2750)', () => {
     it('does not fire for an opted-into drop', async () => {
       // That warning tells the user to "fix the template to declare only what
       // the resource supports", which is the wrong remedy for a drop they asked
-      // for — and `ProviderRegistry.reportSilentDropDecisions` already warns
+      // for — and `ProviderRegistry.reportSdkUnwiredDecisions` already warns
       // about those, with accurate wording. A canonicalizer is passed because
       // the warning is computed only when one exists; without it this case
       // could not fire the warning under ANY implementation.

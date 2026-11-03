@@ -309,7 +309,7 @@ echo "    OK: Stage variables {appVersion, featureFlag} reached AWS (Variables b
 # `deployOptions.throttling*` synthesizes a Stage MethodSettings wildcard
 # entry. The SDK provider must (a) apply it via the post-create UpdateStage
 # patch AND (b) keep the Stage on the SDK path (pre-#966 the property
-# CC-routed the whole Stage via the #614 silent-drop routing).
+# CC-routed the whole Stage via the #614 SDK-unwired routing).
 THROTTLE_RATE=$(echo "${STAGE}" | jq -r '.methodSettings."*/*".throttlingRateLimit // empty')
 if [ "${THROTTLE_RATE}" != "100" ] && [ "${THROTTLE_RATE}" != "100.0" ]; then
   echo "FAIL: Stage methodSettings */* throttlingRateLimit is '${THROTTLE_RATE}', expected 100" >&2

@@ -4,8 +4,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   PROPERTY_COVERAGE_BY_TYPE,
-  withoutAcceptedSilentDropProperties,
-  withoutSilentDropProperties,
+  withoutAcceptedSdkUnwiredProperties,
+  withoutSdkUnwiredProperties,
 } from '../../../src/provisioning/property-coverage.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -16,18 +16,18 @@ const SCHEMA_DIR = join(REPO_ROOT, 'tests', 'fixtures', 'cfn-schemas');
  * Two disjointness invariants the issue
  * [#2750](https://github.com/go-to-k/cdkd/issues/2750) narrowing depends on.
  *
- * That change removes a type's SILENT-DROP keys from the state record and from
+ * That change removes a type's SDK-UNWIRED keys from the state record and from
  * the record side of the diff, on the ground that the SDK route cannot have
  * written one. Both cases below bound what that removal may touch: the first
  * says no data-loss guard reads such a key, the second that the narrowing
  * leaves a CREATE-ONLY one alone.
  *
- * Neither holds by construction — `silentDrop` is regenerated from AWS's
+ * Neither holds by construction — `sdkUnwired` is regenerated from AWS's
  * published schemas by `vp run gen:property-coverage`, so a provider losing a
  * `handledProperties` entry, or AWS publishing a property cdkd does not wire,
  * moves a key INTO the set with no code change at all.
  */
-describe('silent-drop keys are disjoint from what other layers read (#2750)', () => {
+describe('SDK-unwired keys are disjoint from what other layers read (#2750)', () => {
   /**
    * A key the DATA-LOSS guards read out of a recorded property bag.
    *
@@ -59,7 +59,7 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
     const violations: string[] = [];
     for (const [type, property] of GUARD_KEYS) {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(type);
-      if (coverage?.silentDrop.has(property)) {
+      if (coverage?.sdkUnwired.has(property)) {
         violations.push(`${type}.${property}`);
       }
     }
@@ -69,7 +69,7 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
         'state record (#2750), so the guard would see nothing and could fail ' +
         'OPEN — a destroy-and-recreate with no --force-stateful-recreation ' +
         'prompt. Either wire the property in its provider (moving it out of ' +
-        'silentDrop) or make the guard read `observedProperties` instead.'
+        'sdkUnwired) or make the guard read `observedProperties` instead.'
     ).toEqual([]);
   });
 
@@ -77,7 +77,7 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
    * The other direction, found by the go-to-k/cdkd#2788 review: the record-side
    * narrowing turns a dropped key into an ADDITION against the template, and
    * `createOnlyChangeRequiresReplacement` classifies an added create-only path
-   * as a REPLACEMENT. A silent drop that is also create-only would therefore
+   * as a REPLACEMENT. An SDK-unwired property that is also create-only would therefore
    * DELETE + CREATE a resource on a plain upgrade deploy over an unchanged
    * template, and `promoteReplacementDependents` would cascade it.
    *
@@ -132,12 +132,12 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
         if (!createOnly.has(emitted)) {
           violations.push(`${type}.${emitted} (createOnlyDrops entry is not create-only in the schema)`);
         }
-        if (!coverage.silentDrop.has(emitted)) {
-          violations.push(`${type}.${emitted} (createOnlyDrops entry is not a silent drop)`);
+        if (!coverage.sdkUnwired.has(emitted)) {
+          violations.push(`${type}.${emitted} (createOnlyDrops entry is not SDK-unwired)`);
         }
       }
 
-      for (const property of coverage.silentDrop.keys()) {
+      for (const property of coverage.sdkUnwired.keys()) {
         dropsChecked++;
         if (!createOnly.has(property)) continue;
         perTypeCreateOnlyDrops.push(property);
@@ -150,17 +150,17 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
           continue;
         }
         // The load-bearing assertion: the narrowing LEAVES it.
-        const narrowed = withoutSilentDropProperties(type, { [property]: 'x' });
+        const narrowed = withoutSdkUnwiredProperties(type, { [property]: 'x' });
         if (!(property in narrowed)) {
-          violations.push(`${type}.${property} (removed by withoutSilentDropProperties)`);
+          violations.push(`${type}.${property} (removed by withoutSdkUnwiredProperties)`);
         }
-        const desiredNarrowed = withoutAcceptedSilentDropProperties(
+        const desiredNarrowed = withoutAcceptedSdkUnwiredProperties(
           type,
           { [property]: 'x' },
           new Set([`${type}:${property}`])
         );
         if (!(property in desiredNarrowed)) {
-          violations.push(`${type}.${property} (removed by withoutAcceptedSilentDropProperties)`);
+          violations.push(`${type}.${property} (removed by withoutAcceptedSdkUnwiredProperties)`);
         }
       }
       if (perTypeCreateOnlyDrops.length > 0) typesWithCreateOnlyDrops++;
@@ -172,10 +172,10 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
     // re-derivation, so a count computed from the same walk cannot satisfy the
     // fence it guards.
     expect(typesRead, 'read too few schema fixtures — is the walk still finding them?').toBeGreaterThan(100);
-    expect(dropsChecked, 'checked too few silent drops — is the coverage map still populated?').toBeGreaterThan(100);
+    expect(dropsChecked, 'checked too few SDK-unwired properties — is the coverage map still populated?').toBeGreaterThan(100);
     expect(
       typesWithCreateOnlyDrops,
-      'no type has a create-only silent drop — the comparand collapsed, so this ' +
+      'no type has a create-only SDK-unwired property — the comparand collapsed, so this ' +
         'case is asserting nothing. Check how `createOnlyProperties` is spelled ' +
         'in tests/fixtures/cfn-schemas/*.json before believing it.'
     ).toBeGreaterThan(15);
@@ -185,15 +185,15 @@ describe('silent-drop keys are disjoint from what other layers read (#2750)', ()
       violations,
       'The #2750 create-only exclusion and the schema it is derived from ' +
         'disagree. Either an emitted `createOnlyDrops` member is not ' +
-        'create-only (or not a silent drop) in the schema, which makes the ' +
+        'create-only (or not SDK-unwired) in the schema, which makes the ' +
         'narrowing KEEP a key it should remove and reverts #2750 for that ' +
         'pair; or the narrowing REMOVED a create-only one, which is the ' +
         'destructive direction — such a key then reads as an ADDITION on the ' +
         'next deploy, which the create-only fallback classifies as a ' +
         'REPLACEMENT, so an upgrade deploy over an unchanged template would ' +
         'destroy and re-create the resource and cascade to its dependents. ' +
-        'The exclusion lives in `removableSilentDrops`; the comparison side ' +
-        'decides per deploy in `withoutUnwrittenSilentDropProperties` ' +
+        'The exclusion lives in `removableSdkUnwired`; the comparison side ' +
+        'decides per deploy in `withoutUnwrittenSdkUnwiredProperties` ' +
         '(go-to-k/cdkd#2790).'
     ).toEqual([]);
   });

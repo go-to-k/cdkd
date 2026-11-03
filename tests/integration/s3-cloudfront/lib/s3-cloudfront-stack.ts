@@ -143,7 +143,7 @@ export class S3CloudFrontStack extends cdk.Stack {
     });
 
     // Tag the distribution end-to-end so the cdkd `Tags` backfill (#609)
-    // is exercised against real AWS — the property was a silent-drop
+    // is exercised against real AWS — the property was SDK-unwired
     // until the dedicated SDK Provider wired `CreateDistributionWithTagsCommand`.
     cdk.Tags.of(distribution).add('cdkd-test-owner', 'integ');
     cdk.Tags.of(distribution).add('cdkd-test-env', 'integ-env');

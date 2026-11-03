@@ -58,7 +58,7 @@ from. Two capture SOURCES, one fixture shape.
   misses, every type takes the legitimate skip path, and the run reports a
   confident ZERO drift. A type genuinely absent is SKIPPED with its fixture left
   byte-identical, **never blanked** — an emptied `properties` would turn every
-  provider declaration bogus and destroy silent-drop routing for that type.
+  provider declaration bogus and destroy SDK-unwired routing for that type.
 
 ## The daily refresh workflow
 
@@ -108,7 +108,7 @@ open, not only on drift.
 The refresh job does NOT write the backfill campaign's issue;
 `.github/workflows/backfill-issues-sync.yml` reconciles it on every `push` to
 `main` touching `src/provisioning/property-coverage.generated.ts` — the exact
-path filter, since `parseSilentDropByType` reads that file and nothing else.
+path filter, since `parseSdkUnwiredByType` reads that file and nothing else.
 Driving it from `main` rather than from the refresh RUN is what keeps it
 describing a state that exists; that also took `issues: write` off the repo's
 only unattended `contents: write` job

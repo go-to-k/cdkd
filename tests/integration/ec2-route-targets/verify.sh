@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — AWS::EC2::Route extra target types integ (issue #609 backfill).
 #
-# Live coverage for the two formerly silent-drop Route properties that are
+# Live coverage for the two formerly SDK-unwired Route properties that are
 # testable without Wavelength / Outposts / Cloud WAN hardware:
 #
 #   - DestinationPrefixListId: a route whose DESTINATION is a customer-managed

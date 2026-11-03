@@ -142,9 +142,9 @@ describe('DocDBProvider restore (go-to-k/cdkd#5628)', () => {
   const create = (properties: Bag, context?: Bag) =>
     provider.create('L', CLUSTER, properties, context as never);
 
-  it('leaves the real coverage map no silent drop on the cluster', () => {
+  it('leaves the real coverage map no SDK-unwired property on the cluster', () => {
     expect(PROPERTY_COVERAGE_BY_TYPE.get(CLUSTER)).toBeDefined();
-    expect([...(PROPERTY_COVERAGE_BY_TYPE.get(CLUSTER)?.silentDrop.keys() ?? [])]).toEqual([]);
+    expect([...(PROPERTY_COVERAGE_BY_TYPE.get(CLUSTER)?.sdkUnwired.keys() ?? [])]).toEqual([]);
   });
 
   describe('which call the keys select', () => {

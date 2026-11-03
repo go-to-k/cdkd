@@ -139,7 +139,7 @@ import { NeptuneProvider } from '../../../src/provisioning/providers/neptune-pro
 import { ElastiCacheProvider } from '../../../src/provisioning/providers/elasticache-provider.js';
 import { S3TablesProvider } from '../../../src/provisioning/providers/s3-tables-provider.js';
 
-describe('B-bucket silent-drop alias fixes (issue #613)', () => {
+describe('B-bucket SDK-unwired alias fixes (issue #613)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStsSend.mockResolvedValue({ Account: '123456789012' });

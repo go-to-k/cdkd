@@ -69,10 +69,10 @@ export class S3TablesStack extends cdk.Stack {
     namespace2.addDependency(tableBucket);
 
     // CfnTable L1 emits only the props set here (no L2 defaults that
-    // might still be silent-drop and flip routing to CC-API per memory
+    // might still be SDK-unwired and flip routing to CC-API per memory
     // rule feedback_l1_over_l2_for_backfill_integ_fixture). The
     // `openTableFormat` prop is the CFn-canonical name (per AWS docs /
-    // CDK schema); this PR also closes its silent-drop and adds it to
+    // CDK schema); this PR also wires it and adds it to
     // handledProperties as an alias for the legacy `Format` name.
     const table = new s3tables.CfnTable(this, 'Table', {
       tableBucketArn: tableBucket.attrTableBucketArn,
@@ -96,7 +96,7 @@ export class S3TablesStack extends cdk.Stack {
     tableRefReader.addDependency(table);
 
     // Two tags via CDK's `Tags.of(...)` aspect — emits Tags: [{Key, Value}]
-    // on the synthesized template, matching the cdkd silent-drop entry
+    // on the synthesized template, matching the cdkd SDK-unwired entry
     // shape. The provider's create() forwards these to CreateTableCommand's
     // `tags: Record<string, string>` field in a single atomic call.
     cdk.Tags.of(table).add('env', 'cdkd-integ');
@@ -105,7 +105,7 @@ export class S3TablesStack extends cdk.Stack {
     // --- Schema-bearing Table + Ref-to-TableARN assertion (#974 / #5316 / #2762)
     // A schema-bearing Table (IcebergMetadata set). Until issue #2762 its
     // IcebergMetadata / Compaction / SnapshotManagement / StorageClass were
-    // silent drops that routed it to Cloud Control; the SDK provider now sends
+    // SDK-unwired properties that routed it to Cloud Control; the SDK provider now sends
     // them, so it is SDK-routed like the plain Table and verify.sh reads each
     // value back from AWS. CloudFormation's `Ref` for a Table returns its
     // TableARN (measured with a CloudFormation stack, issue #5316); issue

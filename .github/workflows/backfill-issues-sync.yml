@@ -46,7 +46,7 @@
 # backfill, a revert. There is nothing to keep in step, because there is no
 # second source.
 #
-# The path filter is exact rather than approximate. `parseSilentDropByType` —
+# The path filter is exact rather than approximate. `parseSdkUnwiredByType` —
 # the single parser behind both render modes — reads
 # `src/provisioning/property-coverage.generated.ts` and nothing else, so that
 # one path neither under-triggers (no other input can change the answer) nor

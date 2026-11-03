@@ -614,7 +614,7 @@ Pre-v7 every resource was implicitly SDK-managed, so a v7 reader treats the
 absent field on a
 v6-and-earlier record as the legacy SDK default. Precisely, an absent field
 means the record is not PINNED: routing re-decides from scratch, so such a
-resource can still be auto-routed to Cloud Control by the silent-drop
+resource can still be auto-routed to Cloud Control by the SDK-unwired
 check — the same decision it got before v7 existed. Only a recorded
 `'cc-api'` pins. v7+ writers (`cdkd deploy` and `cdkd import` alike) emit the
 field explicitly so the decision is durable across deploys.

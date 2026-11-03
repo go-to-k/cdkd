@@ -310,8 +310,8 @@ describe('planReconciliation', () => {
   describe('refusals — each guards a MUTATION, so none of them warns', () => {
     it('refuses an empty plan while sub-issues are open', () => {
       // "The campaign is finished" and "the parser stopped recognising
-      // silentDrop" render identically as `types: []`, and
-      // `parseSilentDropByType` throws only on zero type BOUNDARIES — a drifted
+      // sdkUnwired" render identically as `types: []`, and
+      // `parseSdkUnwiredByType` throws only on zero type BOUNDARIES — a drifted
       // inner regex parses 44 types into 0 groups without erroring. Reading that
       // as finished mass-closes the whole campaign on a green run.
       expect(() => planReconciliation(planOf(), [existing(10, 'AWS::S3::Bucket', ['A'])])).toThrow(
@@ -580,9 +580,9 @@ describe('the rendered sub-issue body', () => {
     // prose claim about another module's mechanism is exactly where it bites.
     const registry = new ProviderRegistry();
     const [resourceType, coverage] = [...PROPERTY_COVERAGE_BY_TYPE].find(
-      ([, c]) => c.silentDrop.size > 0
+      ([, c]) => c.sdkUnwired.size > 0
     )!;
-    const property = [...coverage.silentDrop.keys()][0]!;
+    const property = [...coverage.sdkUnwired.keys()][0]!;
     registry.register(resourceType, {
       create: async () => ({ physicalId: 'x' }),
       update: async () => ({ physicalId: 'x', wasReplaced: false }),
@@ -597,7 +597,7 @@ describe('the rendered sub-issue body', () => {
     });
     expect(
       decision.provisionedBy,
-      'the registry no longer auto-routes on a silent drop — the generated bodies now misdescribe it'
+      'the registry no longer auto-routes on an SDK-unwired property — the generated bodies now misdescribe it'
     ).toBe('cc-api');
     // The reason list, not merely the layer: the body tells a reader the whole
     // RESOURCE moves because of this property, and an empty list would leave
@@ -666,11 +666,11 @@ describe('renderSubIssuePlan', () => {
 export const PROPERTY_COVERAGE = new Map([
   ['AWS::S3::Bucket', {
     handled: new Set(['BucketName']),
-    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'not yet implemented by cdkd'], ['Tags', 'not yet implemented by cdkd']]),
+    sdkUnwired: new Map<string, string>([['ObjectLockConfiguration', 'not yet implemented by cdkd'], ['Tags', 'not yet implemented by cdkd']]),
   }],
   ['AWS::SNS::Topic', {
     handled: new Set(['TopicName']),
-    silentDrop: new Map<string, string>([]),
+    sdkUnwired: new Map<string, string>([]),
   }],
 ]);
 `;
@@ -689,7 +689,7 @@ export const PROPERTY_COVERAGE = new Map([
     // the checklist side.
     const finished = renderSubIssuePlan(`
 export const PROPERTY_COVERAGE = new Map([
-  ['AWS::S3::Bucket', { handled: new Set([]), silentDrop: new Map<string, string>([]) }],
+  ['AWS::S3::Bucket', { handled: new Set([]), sdkUnwired: new Map<string, string>([]) }],
 ]);
 `);
     expect(JSON.parse(finished)).toEqual({ types: [] });

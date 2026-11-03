@@ -25,11 +25,11 @@ name: CFn schema fixture refresh
 # story (the fetch uses `redirect: 'error'` and a size cap for that reason).
 # The poisoning that would survive the mechanical chain is subtle: moving a
 # WRITABLE property into `readOnlyProperties` makes `gen-property-coverage.ts`
-# omit it from `silentDrop`, so the resource stays on the SDK route and the
-# property is dropped for every user of the next release — and no human reading
+# omit it from `sdkUnwired`, so the resource stays on the SDK route and the
+# property is left unwritten for every user of the next release — and no human reading
 # a 132-file machine-generated JSON diff would catch one moved array element.
 # Two things bound it: compromising AWS's CDN or TLS is the price of entry, and
-# a property in neither `handled` nor `silentDrop` is exactly what
+# a property in neither `handled` nor `sdkUnwired` is exactly what
 # `reportUnrecognizedProperties` warns about at deploy time, so that specific
 # shape is the one this PR's other half already surfaces to the user.
 #
@@ -378,7 +378,7 @@ jobs:
           # audit task, so a schema change reddens CI with nothing in the
           # diagnosis to explain it.
           # Every member of the zero-headroom FAMILY, named. These suites assert
-          # `silentDrop` is empty against the real coverage, so one writable
+          # `sdkUnwired` is empty against the real coverage, so one writable
           # property AWS adds to any of their types reds CI while
           # `property-coverage` absorbs the same addition and stays green —
           # naming one of them covered 1 of the 5.

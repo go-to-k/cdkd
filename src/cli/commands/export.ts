@@ -427,7 +427,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // bare id, reading the parent `RestApiId` from the recorded properties. The
   // The Cloud Control path produces `restApiId|resourceId` (CC joins a
   // multi-part primaryIdentifier with `|`). That path is LIVE, not
-  // historical: the #614 silent-drop rule still auto-routes these types
+  // historical: the #614 SDK-unwired rule still auto-routes these types
   // through Cloud Control, so both shapes exist in state in the wild and BOTH
   // are accepted here. Requiring the composite made
   // `cdkd export` throw on every SDK-created Resource — on a value cdkd
@@ -475,7 +475,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   },
   // cdkd's SDK provider stores `<gatewayId>|<vpcId>` (ec2-provider.ts's
   // `createVpcGatewayAttachment`); the Cloud Control path — reached whenever
-  // the template trips the #614 silent-drop rule, e.g. by declaring
+  // the template trips the #614 SDK-unwired rule, e.g. by declaring
   // `VpnGatewayId`, which the SDK provider does not handle — stores the CFn
   // primaryIdentifier joined, i.e. `<AttachmentType>|<vpcId>`. Both shapes
   // exist in state in the wild, so both are accepted.
@@ -593,7 +593,7 @@ const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
   // `createRoute`), where `destination` is whichever of `DestinationCidrBlock` /
   // `DestinationIpv6CidrBlock` / `DestinationPrefixListId` the route declares —
   // `narrowRouteDestinations` resolves them in that precedence order. The Cloud
-  // Control path (reached when the template trips the #614 silent-drop rule)
+  // Control path (reached when the template trips the #614 SDK-unwired rule)
   // stores the CFn primaryIdentifier joined, which is the SAME
   // `<RouteTableId>|<CidrBlock>` string, so both shapes coincide here and no
   // second form has to be accepted.
@@ -1282,7 +1282,7 @@ function routeDestinationNormalizationIsModelled(value: string): boolean {
  * Two stored shapes are accepted, because both exist in state in the wild:
  * the SDK providers store the BARE child value and read the parent from the
  * recorded properties, while a type routed through Cloud Control by the #614
- * silent-drop rule stores CC's `|`-joined composite — in CFn
+ * SDK-unwired rule stores CC's `|`-joined composite — in CFn
  * primaryIdentifier order, which is why `childFirstInCompositeId` exists
  * (`AWS::ApiGateway::Deployment` declares `[DeploymentId, RestApiId]`, every
  * other member of the family declares `RestApiId` first).

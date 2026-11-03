@@ -17,7 +17,7 @@ import {
   type NestedStackProviderContext,
 } from '../../../src/provisioning/nested-stack-context.js';
 import type { StackState } from '../../../src/types/state.js';
-import { withoutSilentDropProperties } from '../../../src/provisioning/property-coverage.js';
+import { withoutSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 import {
   isMarkedNonRetryable,
   isRetryableTransientError,
@@ -2156,8 +2156,8 @@ describe('NestedStackProvider', () => {
       expect(updated.effectiveProperties).toEqual({ ...PROPS, [PENDING_CHILD_DELETES_KEY]: 1 });
     });
 
-    it("drops the SDK route's silent drops BEFORE marking, so the engine's own narrowing keeps the mark", async () => {
-      // `Tags` is a silent drop on this type. The engine narrows every
+    it("drops the SDK route's unwired properties BEFORE marking, so the engine's own narrowing keeps the mark", async () => {
+      // `Tags` is SDK-unwired on this type. The engine narrows every
       // `effectiveProperties` bag again; a narrowing that drops a key returns
       // a NEW, unmarked object, which would persist a short secret in the
       // row's `Parameters` as plaintext.
@@ -2174,7 +2174,7 @@ describe('NestedStackProvider', () => {
 
       const recorded = created.effectiveProperties!;
       expect(recorded).toEqual({ ...PROPS, [PENDING_CHILD_DELETES_KEY]: 1 });
-      expect(withoutSilentDropProperties('AWS::CloudFormation::Stack', recorded)).toBe(recorded);
+      expect(withoutSdkUnwiredProperties('AWS::CloudFormation::Stack', recorded)).toBe(recorded);
       expect(isSameGenerationBag(recorded)).toBe(true);
     });
 

@@ -50,6 +50,7 @@ import {
   findDeclarationCandidates,
   mapTypesToProviderFiles,
   parseDeclaredProperties,
+  parseSdkUnwiredByType,
   pairRenames,
   NESTED_KEY_FAILURE_RE,
   parseNestedKeyDivergences,
@@ -148,7 +149,7 @@ describe('comparePropertySets', () => {
 
   it('marks which writable additions the refreshed schema calls create-only', () => {
     // The changelog fragment states whether `createOnlyDrops` changes, and a
-    // create-only silent drop is the one the record narrowing must KEEP. Read
+    // create-only SDK-unwired property is the one the record narrowing must KEEP. Read
     // from the REFRESHED side: a property AWS newly marks create-only is
     // create-only for the deploy this refresh enables, whatever the committed
     // copy said.
@@ -174,7 +175,7 @@ describe('comparePropertySets', () => {
   });
 
   it('does not report a create-only addition that is read-only', () => {
-    // A read-only property is never sent, so it can never be a silent drop --
+    // A read-only property is never sent, so it can never be SDK-unwired --
     // and a `createOnlyAdded` entry that is not in `writableAdded` would put a
     // property in the fragment's create-only sentence that the entry never
     // introduces as a drop.
@@ -354,6 +355,15 @@ describe('parseDeclaredProperties', () => {
     // Still overwhelmingly parseable — this is not a collapse.
     expect(parseDeclaredProperties(real).size).toBeGreaterThan(100);
     expect(() => parseDeclaredProperties(mutated)).toThrow(/recognised the declaration shape/);
+  });
+
+  it('reads the `sdkUnwired` rows of the REAL generated module (parseSdkUnwiredByType)', () => {
+    // The parser matches the generated key by NAME, and a key it no longer
+    // recognises yields an empty list rather than a throw. Pin that the real
+    // module still parses to at least one group, so renaming the key in the
+    // generator without the parser (or the reverse) reds here.
+    const groups = parseSdkUnwiredByType(readFileSync(REAL_GENERATED, 'utf8'));
+    expect(groups.length, 'no sdkUnwired group parsed from the real module').toBeGreaterThan(0);
   });
 
   it('accepts a type declaring NOTHING, which is not the same as an unread one', () => {
@@ -1396,8 +1406,8 @@ describe('collectFixtureDeltas collects identifier changes (issue 3327 wiring)',
     // `currentOf` again. Measured at that commit, this shape returned 2.
     //
     // `B` is writable, declared by nobody, and present in the committed side
-    // only: that makes it a REMOVED silent drop, which is what takes the loop
-    // into the `silentDropGone` branch.
+    // only: that makes it a REMOVED SDK-unwired property, which is what takes the loop
+    // into the `sdkUnwiredGone` branch.
     let calls = 0;
     const committed = JSON.stringify({
       resourceType: 'AWS::Sdk::Thing',
@@ -1419,7 +1429,7 @@ describe('collectFixtureDeltas collects identifier changes (issue 3327 wiring)',
     });
     // The branch really was entered — otherwise this case is the old vacuous
     // one wearing a better title.
-    expect(result.silentDropRemoved.length).toBeGreaterThan(0);
+    expect(result.sdkUnwiredRemoved.length).toBeGreaterThan(0);
     expect(calls).toBe(1);
   });
 
@@ -2459,7 +2469,7 @@ describe('collectFixtureDeltas', () => {
   it('hands the changelog the COMPLEMENT of the declared removals', () => {
     // The two populations are disjoint and both matter, differently. A removed
     // property the provider DECLARES makes that declaration bogus -- a decision
-    // the report escalates. One nobody declares was a `silentDrop` row, and
+    // the report escalates. One nobody declares was an `sdkUnwired` row, and
     // losing it is what stops the resource auto-routing, which is the
     // changelog's subject.
     const out = collectFixtureDeltas({
@@ -2469,7 +2479,7 @@ describe('collectFixtureDeltas', () => {
       currentOf: () => fixture(['Leftover']),
     });
     expect(out.removed.map((e) => e.properties)).toEqual([['OldProp']]);
-    expect(out.silentDropRemoved).toEqual([
+    expect(out.sdkUnwiredRemoved).toEqual([
       {
         resourceType: 'AWS::Glue::Connection',
         properties: ['NobodyDeclaredThis'],
@@ -2488,7 +2498,7 @@ describe('collectFixtureDeltas', () => {
       committedOf: () => fixture(['NobodyDeclaredThis', 'OldProp']),
       currentOf: () => fixture(['OldProp']),
     });
-    expect(out.silentDropRemoved).toEqual([
+    expect(out.sdkUnwiredRemoved).toEqual([
       {
         resourceType: 'AWS::Glue::Connection',
         properties: ['NobodyDeclaredThis'],
@@ -2816,7 +2826,7 @@ describe('the generated-module renderers', () => {
     // module is executed by the refresh workflow, by the bot PR's own CI, and
     // shipped to npm — so a name closing the literal is code execution, not a
     // broken file.
-    const { renderHandled, renderSilentDrop } = await import(
+    const { renderHandled, renderSdkUnwired } = await import(
       '../../../scripts/gen-property-coverage.ts'
     );
     const hostile = "zzz', (globalThis.OWNED = 1)] // ";
@@ -2825,7 +2835,7 @@ describe('the generated-module renderers', () => {
     expect(handled, 'the name closed its own literal').not.toContain("'zzz',");
     expect(handled).toContain(JSON.stringify(hostile));
 
-    const drops = renderSilentDrop([[hostile, 'because']]);
+    const drops = renderSdkUnwired([[hostile, 'because']]);
     expect(drops).not.toContain("['zzz',");
     expect(drops).toContain(JSON.stringify(hostile));
 
@@ -3270,7 +3280,7 @@ describe('the finished-campaign sentinel', () => {
 
   it('is what makes "no rows left" distinguishable from a broken parse', () => {
     // `renderUmbrellaChecklist` throws only on zero type BOUNDARIES, so a
-    // coverage map whose every `silentDrop` is empty is a legitimate empty
+    // coverage map whose every `sdkUnwired` map is empty is a legitimate empty
     // list. Emitting a bare newline for it made the sync workflow's
     // rows-or-nothing guard kill the step under `set -e` with no annotation,
     // and the umbrella kept its last stale rows permanently.
@@ -3487,14 +3497,14 @@ describe('renderChangelogFragment', () => {
   const exemptTypes = new Set(['AWS::Scheduler::Schedule']);
 
   it('records a REMOVAL-only cycle, which ships a delta of its own', () => {
-    // A withdrawn property loses its `silentDrop` row, so the issue-614
+    // A withdrawn property loses its `sdkUnwired` row, so the issue-614
     // auto-route stops applying to it and a template still carrying the key is
     // dropped with a warn. Before this the job rendered nothing for such a
     // cycle (go-to-k/cdkd#3175).
     const fragment = renderChangelogFragment({
       writableAdded: [],
       exemptTypes,
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::DynamoDB::Table', properties: ['OldThing'], retainsOtherDrops: true },
       ],
     })!;
@@ -3514,7 +3524,7 @@ describe('renderChangelogFragment', () => {
     const keeps = renderChangelogFragment({
       writableAdded: [],
       exemptTypes,
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::DynamoDB::Table', properties: ['OldThing'], retainsOtherDrops: true },
       ],
     })!;
@@ -3527,7 +3537,7 @@ describe('renderChangelogFragment', () => {
     const returns = renderChangelogFragment({
       writableAdded: [],
       exemptTypes,
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::SQS::Queue', properties: ['OldThing'], retainsOtherDrops: false },
       ],
     })!;
@@ -3547,7 +3557,7 @@ describe('renderChangelogFragment', () => {
     const fragment = renderChangelogFragment({
       writableAdded: [],
       exemptTypes: new Set(['AWS::SNS::Topic']),
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::SNS::Topic', properties: ['OldThing'], retainsOtherDrops: false },
       ],
     })!;
@@ -3563,7 +3573,7 @@ describe('renderChangelogFragment', () => {
       writableAdded: [],
       exemptTypes,
       unroutableTypes: new Set(['AWS::FSx::FileSystem']),
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::FSx::FileSystem', properties: ['OldThing'], retainsOtherDrops: true },
       ],
     })!;
@@ -3577,7 +3587,7 @@ describe('renderChangelogFragment', () => {
       writableAdded: [],
       exemptTypes,
       unknownRoutingTypes: new Set(['AWS::Mystery::Thing']),
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::Mystery::Thing', properties: ['OldThing'], retainsOtherDrops: true },
       ],
     })!;
@@ -3589,13 +3599,13 @@ describe('renderChangelogFragment', () => {
   it('says the pre-flight REFUSAL goes away when a refused type loses its last drop', () => {
     // The largest delta the removal half can report, and it was collapsed into
     // the keeps-a-drop wording: `AWS::Logs::LogGroup` carries exactly one
-    // silentDrop row on a provider that declines the CC fallback, so AWS
+    // sdkUnwired row on a provider that declines the CC fallback, so AWS
     // withdrawing it flips a HARD pre-flight refusal into an SDK deploy.
     const fragment = renderChangelogFragment({
       writableAdded: [],
       exemptTypes,
       unroutableTypes: new Set(['AWS::Logs::LogGroup']),
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         {
           resourceType: 'AWS::Logs::LogGroup',
           properties: ['ResourcePolicyDocument'],
@@ -3631,7 +3641,7 @@ describe('renderChangelogFragment', () => {
         'AWS::F::UnroutableClear',
       ]),
       unknownRoutingTypes: new Set(['AWS::C::Unknown', 'AWS::I::UnknownRm']),
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         gone('AWS::D::Still', true),
         gone('AWS::G::Exempt', false),
         gone('AWS::H::Sticky', false),
@@ -3674,7 +3684,7 @@ describe('renderChangelogFragment', () => {
         createOnly: [`SomeReasonablyLongPropertyName${i}`],
       })),
       exemptTypes,
-      silentDropRemoved: Array.from({ length: 30 }, (_, i) => ({
+      sdkUnwiredRemoved: Array.from({ length: 30 }, (_, i) => ({
         resourceType: `AWS::Other${i}::LongishResourceTypeName`,
         properties: [`WithdrawnLongPropertyName${i}`],
         retainsOtherDrops: i % 2 === 0,
@@ -3691,7 +3701,7 @@ describe('renderChangelogFragment', () => {
         { resourceType: 'AWS::DynamoDB::Table', properties: ['NewThing'], createOnly: [] },
       ],
       exemptTypes,
-      silentDropRemoved: [
+      sdkUnwiredRemoved: [
         { resourceType: 'AWS::SQS::Queue', properties: ['OldThing'], retainsOtherDrops: false },
       ],
     })!;
@@ -3715,7 +3725,7 @@ describe('renderChangelogFragment', () => {
         createOnly: [`SomeReasonablyLongPropertyName${i}`],
       })),
       exemptTypes,
-      silentDropRemoved: Array.from({ length: 30 }, (_, i) => ({
+      sdkUnwiredRemoved: Array.from({ length: 30 }, (_, i) => ({
         resourceType: `AWS::Other${i}::LongishResourceTypeName`,
         properties: [`WithdrawnLongPropertyName${i}`],
         retainsOtherDrops: i % 2 === 0,
@@ -3958,7 +3968,7 @@ describe('renderChangelogFragment', () => {
   });
 
   it('tells a REFUSED type from a routed one', () => {
-    // `provider-registry.ts` THROWS `buildUnroutableSilentDropMessage` for a
+    // `provider-registry.ts` THROWS `buildUnroutableSdkUnwiredMessage` for a
     // provider that declines the CC fallback or a NON_PROVISIONABLE type, so
     // the auto-route sentence would say the opposite of what a deploy does.
     // Seven providers decline it today and their fixtures are all captured.
@@ -3995,7 +4005,7 @@ describe('renderChangelogFragment', () => {
 
   it('writes NO sentence about a property the provider already declares handled', () => {
     // `gen-property-coverage.ts` skips a handled property outright, so it never
-    // becomes a silentDrop and every claim in the fragment would be false for
+    // becomes an `sdkUnwired` row and every claim in the fragment would be false for
     // it. Reachable: twelve properties across ten types are declared handled
     // while absent from the snapshot, and AWS republishing one is the event
     // this renderer runs on.
@@ -4112,7 +4122,7 @@ describe('renderUmbrellaDocument', () => {
 export const PROPERTY_COVERAGE = new Map([
   ['AWS::S3::Bucket', {
     handled: new Set(['BucketName']),
-    silentDrop: new Map<string, string>([]),
+    sdkUnwired: new Map<string, string>([]),
   }],
 ]);
 `;
@@ -4120,7 +4130,7 @@ export const PROPERTY_COVERAGE = new Map([
 export const PROPERTY_COVERAGE = new Map([
   ['AWS::S3::Bucket', {
     handled: new Set(['BucketName']),
-    silentDrop: new Map<string, string>([['ObjectLockConfiguration', 'not yet implemented by cdkd']]),
+    sdkUnwired: new Map<string, string>([['ObjectLockConfiguration', 'not yet implemented by cdkd']]),
   }],
 ]);
 `;

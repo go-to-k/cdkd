@@ -351,7 +351,7 @@ describe('DiffCalculator - createOnly replacement fallback', () => {
   // destroys its whole child stack, so the type must be on the stateful guard.
   // The createOnly set is read from the checked-in registry schema rather than
   // typed here, and the drop is ACCEPTED (the only way such a template deploys:
-  // `StackName` is a silent drop and the type refuses the Cloud Control route),
+  // `StackName` is SDK-unwired and the type refuses the Cloud Control route),
   // so the case goes through the #2750 narrowing that keeps createOnly drops.
   describe('AWS::CloudFormation::Stack StackName (issue #2548)', () => {
     const schema = JSON.parse(

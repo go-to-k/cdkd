@@ -20,10 +20,10 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *
  * CRITICAL — this Service MUST stay on cdkd's SDK provider path (NOT Cloud
  * Control). Since the #609 Service-property backfill the `AWS::ECS::Service`
- * silent-drop set is EMPTY, so every Service (including the sibling
+ * SDK-unwired set is EMPTY, so every Service (including the sibling
  * `ecs-fargate` fixture's, which sets ServiceConnectConfiguration +
  * VolumeConfigurations) is SDK-routed; verify.sh still guards
- * `provisionedBy != cc-api` so a future silent-drop regression can't flip the
+ * `provisionedBy != cc-api` so a future SDK-unwired regression can't flip the
  * route back and make the test pass for the wrong reason.
  *
  * The #609 additions exercised live here (cheap, control-plane only):
@@ -87,7 +87,7 @@ export class EcsServiceUpdatePropsStack extends cdk.Stack {
     });
 
     // Plain ECS Cluster — NO defaultCloudMapNamespace / Service Connect, so
-    // the Service below does not gain a silent-drop property that would flip
+    // the Service below does not gain an SDK-unwired property that would flip
     // it to the Cloud Control routing.
     const cluster = new ecs.Cluster(this, 'Cluster', {
       vpc,

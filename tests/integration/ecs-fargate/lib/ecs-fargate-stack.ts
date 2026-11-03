@@ -178,7 +178,7 @@ export class EcsFargateStack extends cdk.Stack {
     // Since the #609 Service-property backfill, ServiceConnectConfiguration
     // and VolumeConfigurations are handled by ECSProvider, so this Service is
     // SDK-routed (it used to flip to the #614 Cloud Control fallback because
-    // both properties were silent-drops) — verify.sh pins provisionedBy=sdk
+    // both properties were SDK-unwired) — verify.sh pins provisionedBy=sdk
     // and asserts both blobs reach AWS via the deployment read-back.
     const service = new ecs.FargateService(this, 'Service', {
       cluster,

@@ -188,7 +188,7 @@ describe('ElastiCacheProvider CacheCluster SnapshotArns (#5635)', () => {
     expect(provider.handledProperties.get(TYPE)?.has('SnapshotArns')).toBe(true);
     const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
     expect(coverage?.handled.has('SnapshotArns')).toBe(true);
-    expect(coverage?.silentDrop.has('SnapshotArns')).toBe(false);
+    expect(coverage?.sdkUnwired.has('SnapshotArns')).toBe(false);
     expect(coverage?.createOnlyDrops.has('SnapshotArns')).toBe(false);
   });
 });

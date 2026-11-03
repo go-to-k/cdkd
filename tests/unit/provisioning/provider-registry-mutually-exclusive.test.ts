@@ -6,7 +6,7 @@
  *
  * - `validateResourceProperties` — the method the deploy engine's pre-flight
  *   calls — actually reaches the check.
- * - The refusal happens BEFORE the silent-drop routing chatter.
+ * - The refusal happens BEFORE the SDK-unwired routing chatter.
  * - The argument is an `Iterable`, and both passes see the same items.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
@@ -80,36 +80,36 @@ describe('ProviderRegistry mutually-exclusive pre-flight', () => {
     ).not.toThrow();
   });
 
-  describe('ordering vs the silent-drop routing report', () => {
-    // `AWS::EC2::Route` has an EMPTY silentDrop map, so a bad-Route-only
+  describe('ordering vs the SDK-unwired routing report', () => {
+    // `AWS::EC2::Route` has an EMPTY sdkUnwired map, so a bad-Route-only
     // fixture logs nothing either way and would pass under the swapped-order
     // mutant (report first, then validate). The batch therefore carries a
     // resource that genuinely triggers a routing line, and the control below
     // proves that line really fires — without it, a codegen change that
     // emptied the fixture would silently make this vacuous again.
-    function silentDropResource(): { logicalId: string; resourceType: string; properties: Record<string, unknown> } {
+    function sdkUnwiredResource(): { logicalId: string; resourceType: string; properties: Record<string, unknown> } {
       for (const [resourceType, coverage] of PROPERTY_COVERAGE_BY_TYPE) {
-        const first = coverage.silentDrop.entries().next();
+        const first = coverage.sdkUnwired.entries().next();
         if (!first.done) {
           return { logicalId: 'DropCarrier', resourceType, properties: { [first.value[0]]: 'x' } };
         }
       }
       throw new Error(
-        'PROPERTY_COVERAGE_BY_TYPE has no silent-drop entries — this ordering test needs one. ' +
+        'PROPERTY_COVERAGE_BY_TYPE has no SDK-unwired entries — this ordering test needs one. ' +
           'Replace with a synthetic fixture.'
       );
     }
 
-    it('CONTROL: the silent-drop resource does emit a routing line on its own', () => {
+    it('CONTROL: the SDK-unwired resource does emit a routing line on its own', () => {
       const { registry, logger } = makeRegistry();
-      registry.validateResourceProperties([silentDropResource()]);
+      registry.validateResourceProperties([sdkUnwiredResource()]);
       expect(logger.info.mock.calls.length + logger.warn.mock.calls.length).toBeGreaterThan(0);
     });
 
-    it('refuses BEFORE emitting any silent-drop routing line', () => {
+    it('refuses BEFORE emitting any SDK-unwired routing line', () => {
       const { registry, logger } = makeRegistry();
       expect(() =>
-        registry.validateResourceProperties([silentDropResource(), badRoute('BadRoute')])
+        registry.validateResourceProperties([sdkUnwiredResource(), badRoute('BadRoute')])
       ).toThrow(/mutually exclusive/);
       expect(logger.info).not.toHaveBeenCalled();
       expect(logger.warn).not.toHaveBeenCalled();
@@ -132,7 +132,7 @@ describe('ProviderRegistry mutually-exclusive pre-flight', () => {
 
   it('walks a generator argument correctly on both passes', () => {
     // `validateResourceProperties` iterates twice (the new check, then the
-    // silent-drop report). A one-shot iterable must not go empty in between —
+    // SDK-unwired report). A one-shot iterable must not go empty in between —
     // without the internal materialization the second pass sees nothing.
     const { registry } = makeRegistry();
     function* resources() {
@@ -142,7 +142,7 @@ describe('ProviderRegistry mutually-exclusive pre-flight', () => {
         properties: { RouteTableId: 'rtb-1', DestinationCidrBlock: '10.0.0.0/8' },
       };
     }
-    const spy = vi.spyOn(registry, 'reportSilentDropDecisions');
+    const spy = vi.spyOn(registry, 'reportSdkUnwiredDecisions');
     registry.validateResourceProperties(resources());
     expect(spy).toHaveBeenCalledTimes(1);
     expect([...(spy.mock.calls[0]![0] as Iterable<{ logicalId: string }>)]).toHaveLength(1);

@@ -8,8 +8,8 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  *
  *   - {@link OverrideStack} (#634 item 3): the user passes
  *     `--allow-unsupported-properties AWS::ApiGatewayV2::Api:Body` at deploy
- *     time → cdkd's routing decision keeps the resource on SDK and accepts
- *     the silent drop (warn-logged). State stamps `provisionedBy: 'sdk'`;
+ *     time → cdkd's routing decision keeps the resource on SDK and leaves
+ *     it unwritten (warn-logged). State stamps `provisionedBy: 'sdk'`;
  *     AWS does NOT receive `Body`, so the route declared only inside it does
  *     not exist on the live API.
  *
@@ -17,7 +17,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  *     `Body` lands the HTTP API on the SDK path (state stamps
  *     `provisionedBy: 'sdk'`). A subsequent deploy where the template is
  *     defined by `Body` instead (toggled via the
- *     `CDKD_INTEG_USE_SILENT_DROP=true` env var) re-routes through CC API
+ *     `CDKD_INTEG_USE_SDK_UNWIRED=true` env var) re-routes through CC API
  *     mid-life — state flips to `provisionedBy: 'cc-api'` and the spec's route
  *     exists on AWS. The re-route is a REPLACEMENT (the SDK-minted API is
  *     deleted by the SDK provider, the new one created by Cloud Control), not
@@ -25,12 +25,12 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
  *     mid-life flip is `sdk-to-cc-autoroute`'s arm.
  *
  * WHY `AWS::ApiGatewayV2::Api.Body` (issue #2648). Both arms are ABOUT the
- * silent-drop auto-route, so they have to key on a silent drop — the one
+ * SDK-unwired auto-route, so they have to key on an SDK-unwired property — the one
  * case `docs/integ-fixture-conventions.md` ("Never seed a Cloud Control
  * route from an unhandled property") allows. This fixture keyed on Lambda's
  * `RuntimeManagementConfig` until #1621 wired it; the item-3 assertion then
- * failed on correct behaviour (live, 2026-09-17), and Lambda has no silent
- * drop left (go-to-k/cdkd#5637). `Body`'s rationale is architectural rather than backlog
+ * failed on correct behaviour (live, 2026-09-17), and Lambda has no SDK-unwired
+ * property left (go-to-k/cdkd#5637). `Body`'s rationale is architectural rather than backlog
  * position — cdkd models routes as explicit resources instead of adopting
  * the ImportApi path — and it is the trigger `cc-api-fallback` settled on for
  * the same reason (its stack file carries the selection rule). verify.sh's
@@ -91,7 +91,7 @@ function openApiBody(title: string): Record<string, unknown> {
  *
  * Template ALWAYS emits `Body`. The override is supplied at the cdkd CLI
  * level (verify.sh adds the flag to deploy), so the routing keeps SDK and
- * silent-drops the property — same code path as the
+ * leaves the property unwritten — same code path as the
  * `provider-registry-cc-routing.test.ts` unit test but verified end-to-end
  * against real AWS. `Name` and `ProtocolType` are set explicitly because the
  * SDK provider's CreateApi needs them; with `Body` dropped, nothing else
@@ -105,19 +105,19 @@ export class OverrideStack extends cdk.Stack {
     new apigwv2.CfnApi(this, 'OverrideProbe', {
       name,
       protocolType: 'HTTP',
-      // Silent-drop on cdkd's SDK Provider — the verify.sh deploys with
+      // SDK-unwired on cdkd's SDK Provider — the verify.sh deploys with
       // `--allow-unsupported-properties AWS::ApiGatewayV2::Api:Body` so the
-      // override path fires (SDK route + accept silent drop, warn log).
+      // override path fires (SDK route + property left unwritten, warn log).
       body: openApiBody(name),
     });
   }
 }
 
 /**
- * #634 item 4 — mid-life SDK→CC re-route when a silent-drop property arrives
+ * #634 item 4 — mid-life SDK→CC re-route when an SDK-unwired property arrives
  * after the first deploy.
  *
- * `CDKD_INTEG_USE_SILENT_DROP=true` at synth time switches the API from a
+ * `CDKD_INTEG_USE_SDK_UNWIRED=true` at synth time switches the API from a
  * field-by-field definition to a `Body`-only one. The verify.sh deploys twice:
  *   1. env var unset → `Name` + `ProtocolType` → SDK route, no route on AWS
  *   2. env var set → `Body` alone (see "WHY A REPLACEMENT") → the diff
@@ -128,7 +128,7 @@ export class UpdateTransitionStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const includeSilentDrop = process.env['CDKD_INTEG_USE_SILENT_DROP'] === 'true';
+    const includeSdkUnwired = process.env['CDKD_INTEG_USE_SDK_UNWIRED'] === 'true';
 
     const name = 'cdkd-cc-api-transition-probe';
     new apigwv2.CfnApi(
@@ -136,7 +136,7 @@ export class UpdateTransitionStack extends cdk.Stack {
       'TransitionProbe',
       // Toggle: stage 1 of the verify.sh synth is field-by-field; stage 2 is
       // the spec alone.
-      includeSilentDrop ? { body: openApiBody(name) } : { name, protocolType: 'HTTP' }
+      includeSdkUnwired ? { body: openApiBody(name) } : { name, protocolType: 'HTTP' }
     );
   }
 }

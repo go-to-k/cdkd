@@ -1266,15 +1266,15 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       }
     });
 
-    it('covers every suite asserting silentDrop is empty, and every filter matches something', () => {
+    it('covers every suite asserting sdkUnwired is empty, and every filter matches something', () => {
       // BOUND, stated because an over-claimed fence is what this PR keeps
       // producing: the derivation keys on ONE assertion spelling
-      // (`silentDrop.keys() ... toEqual([])`). The two named non-family filters
+      // (`sdkUnwired.keys() ... toEqual([])`). The two named non-family filters
       // are hand-listed and unfenced, and `gen-sdk-attr-coverage.test.ts`'s
       // `findGaps(report)).toEqual([])` is zero-headroom in a different shape —
       // substantively covered, since `audit:sdk-attr-coverage:check` runs the
       // same predicate and is its own `run_check`, but invisible here.
-      // These suites assert `silentDrop` is empty against the REAL coverage, so
+      // These suites assert `sdkUnwired` is empty against the REAL coverage, so
       // one writable property AWS adds to any of their types reds CI — while
       // `property-coverage` under `CDKD_GENERATE_BACKFILL` absorbs the same
       // addition and stays green. Naming one of them once left the rest
@@ -1294,7 +1294,7 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
           // This file CONTAINS the pattern, as the literal doing the matching —
           // widening the walk to all of `tests/**` made the fence derive itself.
           f !== fileURLToPath(import.meta.url) &&
-          /silentDrop\.keys\(\)[\s\S]{0,80}?toEqual\(\[\]\)/.test(readFileSync(f, 'utf8'))
+          /sdkUnwired\.keys\(\)[\s\S]{0,80}?toEqual\(\[\]\)/.test(readFileSync(f, 'utf8'))
       );
       expect(
         zeroHeadroom.length,

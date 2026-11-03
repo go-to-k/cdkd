@@ -3,8 +3,8 @@
 # (issues #609 and #1386).
 #
 # Asserts that a CodeBuild Project whose template sets AutoRetryLimit has
-# that value reach AWS after `cdkd deploy` — the property was a
-# silent-drop before the #609 backfill. AutoRetryLimit rides
+# that value reach AWS after `cdkd deploy` — the property was
+# SDK-unwired before the #609 backfill. AutoRetryLimit rides
 # CreateProject / UpdateProject directly (no separate control-plane API).
 #
 # Also asserts the issue #1386 NESTED sub-keys reach AWS

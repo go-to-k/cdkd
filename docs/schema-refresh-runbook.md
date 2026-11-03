@@ -69,7 +69,7 @@ Daily, on `bot/cfn-schema-refresh/<YYYY-MM-DD>`:
 6. Commits a changelog fragment under `changelog.d/entries/` when the cycle
    added a writable property, because that changes what the shipped binary
    does. The text is DERIVED — which type gained which property, that it is
-   now a silent drop routed through Cloud Control, whether the type pins
+   now an SDK-unwired property routed through Cloud Control, whether the type pins
    `provisionedBy: 'cc-api'` one way, and whether the snapshot marks it
    create-only — and nothing that needs a reading of WHY is in it. Edit it if
    the delta deserves more; the job never overwrites a fragment it already
@@ -460,7 +460,7 @@ What it reconciles is a SET of issues, one per resource type, labelled
 procedure, and the label groups them. Every line of those bodies is generated:
 hand edits are overwritten on the next sync, and COMMENTS are never touched, so
 a claim, a measurement or a question goes in a comment on the type it concerns.
-They close when their type runs out of silently-dropped properties. If it regains
+They close when their type runs out of SDK-unwired properties. If it regains
 one, a NEW issue is filed ending `Previous issue: #N`: a closed issue is not
 reopened, so each round starts a short thread.
 
@@ -484,7 +484,7 @@ Every one of these **fails the run** and writes nothing. They guard mutations ac
 green run that changed nothing would be no notification at all.
 
 - `the plan carries no resource types while N sub-issue(s) are open` — a finished
-  campaign and a coverage-map parse that stopped recognising `silentDrop` produce
+  campaign and a coverage-map parse that stopped recognising `sdkUnwired` produce
   the same empty plan, and the second would mass-close everything. If the
   campaign really is complete, confirm it once:
   `REPO=<owner/repo> node scripts/sync-backfill-issues.ts plan.json --allow-empty-plan`.
@@ -519,9 +519,9 @@ REPO=<owner/repo> \
 
 ## Campaign background
 
-The backfill campaign moves each silently-dropped property from `silentDrop` into
+The backfill campaign moves each SDK-unwired property from `sdkUnwired` into
 a provider's `handledProperties`. Its audit is go-to-k/cdkd#613, run on
-2026-05-27 against v0.156.0, when the generated map carried 469 silent-drop
+2026-05-27 against v0.156.0, when the generated map carried 469 SDK-unwired
 properties across 69 of 113 Tier 1 types. Of those, 422 were category A (truly
 unimplemented); the rest were 9 aliases or dual forms, 20 design-intentional
 non-support, and 18 already in `unhandledByDesign`. The audit named three

@@ -14,7 +14,7 @@ the code or chasing an unusual result.
 
 ## When the auto-route needs a recreate
 
-Adding a silent-drop property to an already-deployed `provisionedBy: 'sdk'`
+Adding an SDK-unwired property to an already-deployed `provisionedBy: 'sdk'`
 resource does not by itself require `--recreate-via-cc-api`: the routing
 decision is re-made every deploy, so the next one auto-routes that resource
 through Cloud Control. Where the type's SDK-stored physical id is also a valid

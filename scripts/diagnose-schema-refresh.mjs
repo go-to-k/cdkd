@@ -92,7 +92,7 @@
  *
  * `--umbrella-checklist` and `--backfill-issues` are SEPARATE MODES, taking
  * no other flag. Both read the coverage module and nothing else, through one
- * parser (`parseSilentDropByType`), and differ only in shape:
+ * parser (`parseSdkUnwiredByType`), and differ only in shape:
  *
  *   - `--umbrella-checklist` renders every remaining property as a flat Markdown
  *     checklist. NO workflow consumes it: go-to-k/cdkd#2949 moved the sync onto
@@ -289,7 +289,7 @@ const PROVIDERS_DIR = join(REPO_ROOT, 'src/provisioning/providers');
  *
  * `createOnlyAdded` is the subset of `writableAdded` the REFRESHED schema
  * marks create-only. It exists for the changelog fragment, which states
- * whether the addition changes `createOnlyDrops` — a create-only silent drop
+ * whether the addition changes `createOnlyDrops` — a create-only SDK-unwired property
  * is kept in the record by the narrowing, and saying so wrongly is a claim
  * about replacement behaviour. The capture is top-level-only by construction
  * (`scripts/refresh-cfn-schemas.mjs` drops every path containing a slash), so
@@ -319,7 +319,7 @@ export function comparePropertySets(committedJson, refreshedJson) {
   );
   const removed = beforeProps.filter((/** @type {string} */ p) => !afterProps.includes(p));
   const added = afterProps.filter((/** @type {string} */ p) => !beforeProps.includes(p));
-  // Read-only additions can never become a silent drop — the coverage
+  // Read-only additions can never become SDK-unwired — the coverage
   // generator skips them — so they are separated out rather than reported as
   // work.
   const writableAdded = added.filter((/** @type {string} */ p) => !afterReadOnly.has(p));
@@ -923,7 +923,7 @@ export const CHECK_GUIDANCE = {
   ],
   'fixture-consumer-tests': [
     'A unit test that reads the schema fixtures directly and asserts something',
-    'about their contents. Most assert that a type has NO silently dropped',
+    'about their contents. Most assert that a type has no SDK-unwired',
     'property — zero headroom, so one writable property AWS adds to that type',
     'reds CI while the coverage check absorbs the same addition. The rest assert',
     'a specific rule or subfield list still matches the capture.',
@@ -2536,7 +2536,7 @@ export function partitionPendingSdkBump({
  *   declarationCandidates?: typeof findDeclarationCandidates,
  *   sdkEvidence?: typeof sdkModelsMember,
  * }} input
- * @returns {{removed: RemovedEntry[], writableAdded: AddedEntry[], silentDropRemoved: RemovedDropEntry[], readOnlyAddedCount: number, unreadable: string[], identifierChanges: IdentifierChange[]}}
+ * @returns {{removed: RemovedEntry[], writableAdded: AddedEntry[], sdkUnwiredRemoved: RemovedDropEntry[], readOnlyAddedCount: number, unreadable: string[], identifierChanges: IdentifierChange[]}}
  */
 export function collectFixtureDeltas({
   files,
@@ -2552,7 +2552,7 @@ export function collectFixtureDeltas({
   /** @type {AddedEntry[]} */
   const writableAdded = [];
   /** @type {RemovedDropEntry[]} */
-  const silentDropRemoved = [];
+  const sdkUnwiredRemoved = [];
   /** @type {string[]} */
   const unreadable = [];
   /** @type {{resourceType: string, before: string[], after: string[]}[]} */
@@ -2650,24 +2650,24 @@ export function collectFixtureDeltas({
 
     // The CHANGELOG's removal population, and it is the COMPLEMENT of
     // `actionable` above rather than a subset of it. A removed property the
-    // provider DECLARES was never a silent drop — its removal makes the
+    // provider DECLARES was never SDK-unwired — its removal makes the
     // declaration bogus, which is a decision the report already escalates, and
     // AWS having dropped the property from the schema is not a cdkd behaviour
-    // delta. A removed property NOBODY declared was a `silentDrop` row, and
+    // delta. A removed property NOBODY declared was an `sdkUnwired` row, and
     // losing that row is what stops the resource auto-routing.
     // BOUND, stated rather than assumed: a fixture type with no row in
     // `property-coverage.generated.ts` has an EMPTY `declaredHere`, so every
-    // writable removal reads as a lost `silentDrop` row though the type has no
+    // writable removal reads as a lost `sdkUnwired` row though the type has no
     // coverage record at all. Zero today — 134 fixtures, 134 covered types —
     // and a type gaining a fixture before its coverage row is the shape that
     // would reach it.
-    const silentDropGone = delta.writableRemoved.filter(
+    const sdkUnwiredGone = delta.writableRemoved.filter(
       (/** @type {string} */ p) => !declaredHere.has(p)
     );
-    if (silentDropGone.length > 0) {
+    if (sdkUnwiredGone.length > 0) {
       // Does the type keep auto-routing on some OTHER property? Read off the
       // REFRESHED fixture, since that is the state the merge ships: a writable
-      // property nobody declares is a silent drop, and one of those left means
+      // property nobody declares is SDK-unwired, and one of those left means
       // the resource still takes the Cloud Control route.
       let retainsOtherDrops = false;
       try {
@@ -2697,9 +2697,9 @@ export function collectFixtureDeltas({
         unreadable.push(file);
         continue;
       }
-      silentDropRemoved.push({
+      sdkUnwiredRemoved.push({
         resourceType,
-        properties: silentDropGone,
+        properties: sdkUnwiredGone,
         retainsOtherDrops,
       });
     }
@@ -2718,7 +2718,7 @@ export function collectFixtureDeltas({
   return {
     removed,
     writableAdded,
-    silentDropRemoved,
+    sdkUnwiredRemoved,
     readOnlyAddedCount,
     unreadable,
     identifierChanges,
@@ -2854,7 +2854,7 @@ export const UMBRELLA_EMPTY_SENTINEL =
   '_No remaining SDK-unwired properties — every declared type is fully covered._';
 
 /**
- * The remaining silent-drop properties, as a checklist the umbrella issue owns.
+ * The remaining SDK-unwired properties, as a checklist the umbrella issue owns.
  *
  * REGENERATED each cycle rather than appended to, and that is the whole point.
  * An append-only list cannot express a type that was ticked off and later
@@ -2875,15 +2875,15 @@ export const UMBRELLA_EMPTY_SENTINEL =
  * @returns {string[]} one `- [ ] \`Type\`: \`Prop\`` row per remaining property
  */
 export function renderUmbrellaChecklist(generatedSource) {
-  return parseSilentDropByType(generatedSource).flatMap(({ type, properties }) =>
+  return parseSdkUnwiredByType(generatedSource).flatMap(({ type, properties }) =>
     properties.map((property) => `- [ ] ${renderName(type)}: ${renderName(property)}`)
   );
 }
 
 /**
- * @typedef {object} SilentDropGroup
+ * @typedef {object} SdkUnwiredGroup
  * @property {string} type       the CloudFormation resource type
- * @property {string[]} properties  its remaining silent-drop property names
+ * @property {string[]} properties  its remaining SDK-unwired property names
  */
 
 /**
@@ -2895,7 +2895,7 @@ export function renderUmbrellaChecklist(generatedSource) {
 export const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
 
 /**
- * The remaining silent-drop properties, GROUPED by the resource type that owns
+ * The remaining SDK-unwired properties, GROUPED by the resource type that owns
  * them, in the coverage map's own order.
  *
  * The single parse behind BOTH umbrella renderers. It is factored out rather
@@ -2906,7 +2906,7 @@ export const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
  * would make "44 types" and "288 rows" independently derivable, which is how
  * they come to disagree by one.
  *
- * A type whose `silentDrop` map is present but EMPTY contributes no group, the
+ * A type whose `sdkUnwired` map is present but EMPTY contributes no group, the
  * same as a type with no map at all — `new Map<string, string>()` is a finished
  * type. That matters more here than it did for the flat rows: a group with zero
  * properties would mint a sub-issue for a type with nothing left to do, and the
@@ -2919,15 +2919,15 @@ export const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
  * early. Property names are NOT so constrained (`[^']+`), which is why every one
  * of them reaches the page through {@link renderName} instead.
  *
- * Only rows carrying {@link NOT_IMPLEMENTED_RATIONALE} count. `silentDrop` also
+ * Only rows carrying {@link NOT_IMPLEMENTED_RATIONALE} count. `sdkUnwired` also
  * holds every `unhandledByDesign` row, with its own rationale: a decision not to
  * wire the property, not remaining work. Counting those filed an issue for types
  * with nothing to do, 16 of 30 when measured, and no merge could ever close one.
  *
  * @param {string} generatedSource
- * @returns {SilentDropGroup[]}
+ * @returns {SdkUnwiredGroup[]}
  */
-export function parseSilentDropByType(generatedSource) {
+export function parseSdkUnwiredByType(generatedSource) {
   const boundaries = [...generatedSource.matchAll(/\[\s*'([A-Z][\w:]+)'\s*,\s*\{/g)];
   if (boundaries.length === 0) {
     throw new Error(
@@ -2935,7 +2935,7 @@ export function parseSilentDropByType(generatedSource) {
         'checklist over a module the parser could not read.'
     );
   }
-  /** @type {SilentDropGroup[]} */
+  /** @type {SdkUnwiredGroup[]} */
   const groups = [];
   for (let i = 0; i < boundaries.length; i++) {
     const slice = generatedSource.slice(
@@ -2945,7 +2945,7 @@ export function parseSilentDropByType(generatedSource) {
     const type = boundaries[i][1];
     // Only the populated shape carries rows; `new Map<string, string>()` is a
     // finished type and contributes nothing.
-    const drop = /silentDrop:\s*new Map<[^>]*>\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
+    const drop = /sdkUnwired:\s*new Map<[^>]*>\(\s*\[([\s\S]*?)\]\s*\)/.exec(slice);
     if (!drop) continue;
     const properties = [...drop[1].matchAll(/\[\s*'([^']+)'\s*,\s*'([^']*)'/g)]
       .filter((m) => m[2] === NOT_IMPLEMENTED_RATIONALE)
@@ -2986,7 +2986,7 @@ export const CHANGELOG_ENTRY_LIMIT = 2000;
  * false for an exempt type, so a parser that silently returned an empty set
  * would put a false claim in every future entry. It therefore REFUSES a source
  * it cannot read rather than reporting "nothing is exempt" — the same posture
- * as {@link parseSilentDropByType}, and for the same reason: the caller cannot
+ * as {@link parseSdkUnwiredByType}, and for the same reason: the caller cannot
  * tell an empty answer from a broken one.
  *
  * @param {string} registrySource
@@ -3035,7 +3035,7 @@ export function parseStickyCcMigrationExempt(registrySource) {
  * The resource types whose SDK provider OPTS OUT of the Cloud Control fallback
  * (`disableCcApiFallback = true`), read out of the provider sources.
  *
- * `ProviderRegistry.getProviderFor` THROWS `buildUnroutableSilentDropMessage`
+ * `ProviderRegistry.getProviderFor` THROWS `buildUnroutableSdkUnwiredMessage`
  * for such a type instead of auto-routing it, so a fragment that told the
  * issue-614 story about one would describe the opposite of what the deploy
  * does — a pre-flight refusal, not a value reaching AWS. Several providers opt
@@ -3182,13 +3182,13 @@ export function loadNoCloudControlHandlerTypes(repoRoot = REPO_ROOT) {
  * would collide and red that fence.
  *
  * `handledProperties` is subtracted because `gen-property-coverage.ts` skips a
- * handled property outright — it never becomes a `silentDrop`, so every
+ * handled property outright — it never becomes an `sdkUnwired` row, so every
  * sentence below would be false for it. The condition is reachable: measured
  * 2026-09-15, twelve properties across ten types are declared handled while
  * absent from the snapshot, and AWS republishing any of them is exactly the
  * event this renderer runs on.
  *
- * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>, unroutableTypes?: ReadonlySet<string>, unknownRoutingTypes?: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>, silentDropRemoved?: readonly RemovedDropEntry[]}} input
+ * @param {{writableAdded: readonly AddedEntry[], exemptTypes: ReadonlySet<string>, unroutableTypes?: ReadonlySet<string>, unknownRoutingTypes?: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>, sdkUnwiredRemoved?: readonly RemovedDropEntry[]}} input
  * @returns {string | null}
  */
 export function renderChangelogFragment({
@@ -3197,9 +3197,9 @@ export function renderChangelogFragment({
   unroutableTypes = new Set(),
   unknownRoutingTypes = new Set(),
   declared = new Map(),
-  silentDropRemoved = [],
+  sdkUnwiredRemoved = [],
 }) {
-  // A property the provider already DECLARES is not a silent drop and gets no
+  // A property the provider already DECLARES is not SDK-unwired and gets no
   // sentence; a type left with nothing gets no entry at all.
   const considered = writableAdded
     .map((e) => {
@@ -3214,13 +3214,13 @@ export function renderChangelogFragment({
   // The removal half needs no such filter: `collectFixtureDeltas` already
   // hands over the complement of the declared set, which is the only
   // population whose disappearance changes routing.
-  const removedDrops = silentDropRemoved.filter((e) => e.properties.length > 0);
+  const removedDrops = sdkUnwiredRemoved.filter((e) => e.properties.length > 0);
   if (considered.length === 0 && removedDrops.length === 0) return null;
 
   // Split BEFORE any sentence is written, into THREE buckets rather than two.
   // A type whose provider opts out of the Cloud Control fallback, or that AWS
   // reports NON_PROVISIONABLE, is REFUSED at pre-flight rather than auto-routed
-  // (`provider-registry.ts` throws `buildUnroutableSilentDropMessage`), so the
+  // (`provider-registry.ts` throws `buildUnroutableSdkUnwiredMessage`), so the
   // routed story is not merely incomplete for it — it says the opposite of what
   // a deploy does. And a type whose routing could not be ESTABLISHED at all
   // gets neither story: writing the refusal for it would assert a mechanism
@@ -3264,9 +3264,9 @@ export function renderChangelogFragment({
     (e) => !e.retainsOtherDrops && !exemptTypes.has(e.resourceType)
   );
   // BOUND: unreachable against the SHIPPED tables — both exempt types carry
-  // zero `silentDrop` rows (`AWS::SNS::Topic` by its admission requirement,
+  // zero `sdkUnwired` rows (`AWS::SNS::Topic` by its admission requirement,
   // `AWS::Scheduler::Schedule` as measured), so neither can appear in
-  // `silentDropRemoved`. Kept because the exemption table is a curated list
+  // `sdkUnwiredRemoved`. Kept because the exemption table is a curated list
   // that grows, and the arm it replaces asserted the opposite.
   const backToSdkExempt = removedRoutable.filter(
     (e) => !e.retainsOtherDrops && exemptTypes.has(e.resourceType)
@@ -3274,7 +3274,7 @@ export function renderChangelogFragment({
 
   // ONE headline covering whichever halves the cycle has. A refresh that only
   // withdraws properties ships a delta too -- the withdrawn key loses the
-  // `silentDrop` row the issue-614 auto-route reads -- so it may not render an
+  // `sdkUnwired` row the issue-614 auto-route reads -- so it may not render an
   // addition-shaped headline over an empty addition list.
   const added = `${count} writable propert${count === 1 ? 'y' : 'ies'}`;
   const withdrawn = `${removedCount} writable propert${removedCount === 1 ? 'y' : 'ies'}`;
@@ -3395,7 +3395,7 @@ export function renderChangelogFragment({
 
   if (removedDrops.length > 0) {
     push(
-      `The withdrawn ${removedCount === 1 ? 'key loses' : 'keys lose'} the \`silentDrop\` row that ` +
+      `The withdrawn ${removedCount === 1 ? 'key loses' : 'keys lose'} the \`sdkUnwired\` row that ` +
         `made the issue [#614](https://github.com/go-to-k/cdkd/issues/614) auto-route apply to ` +
         `${removedCount === 1 ? 'it' : 'them'}, so a template still carrying ` +
         `${removedCount === 1 ? 'it' : 'one'} is an UNRECOGNIZED property from this merge on: ` +
@@ -3406,7 +3406,7 @@ export function renderChangelogFragment({
   // Split on the same axis as the routable half, because the two states carry
   // OPPOSITE news. With a drop left the type stays refusable; with none left
   // the refusal itself goes away — and that is the largest delta this half can
-  // report. `AWS::Logs::LogGroup` is the live shape: one silentDrop row
+  // report. `AWS::Logs::LogGroup` is the live shape: one sdkUnwired row
   // (`ResourcePolicyDocument`) on a provider that declines the CC fallback, so
   // AWS withdrawing it flips a HARD pre-flight refusal into an ordinary SDK
   // deploy that warns.
@@ -3669,7 +3669,7 @@ export function subIssueEffort(count) {
  *
  * That is also why the checkboxes are always rendered unchecked. A tick would be
  * overwritten on the next sync, so the box is a progress ILLUSION; what actually
- * closes a row is the property leaving `silentDrop`, at which point the row
+ * closes a row is the property leaving `sdkUnwired`, at which point the row
  * disappears on its own.
  *
  * The classification block is not decoration. `.github/workflows/issue-conventions.yml`
@@ -3679,7 +3679,7 @@ export function subIssueEffort(count) {
  * written: the reconciler looks for an existing issue for this exact type, by
  * marker, before creating one.
  *
- * @param {SilentDropGroup} group
+ * @param {SdkUnwiredGroup} group
  * @returns {string}
  */
 export function renderSubIssueBody({ type, properties }) {
@@ -3695,7 +3695,7 @@ export function renderSubIssueBody({ type, properties }) {
     '> empties; if the type regains a property, a new issue links back here.',
     '',
     `${count} writable ${count === 1 ? 'property' : 'properties'} of ${renderName(type)} ` +
-      `${count === 1 ? 'is' : 'are'} in the coverage map's \`silentDrop\` set: the SDK provider ` +
+      `${count === 1 ? 'is' : 'are'} in the coverage map's \`sdkUnwired\` set: the SDK provider ` +
       `does not wire ${count === 1 ? 'it' : 'them'}.`,
     '',
     '**A template using one does not lose it.** `ProviderRegistry.getProviderFor` sees the',
@@ -3781,7 +3781,7 @@ export function renderSubIssueBody({ type, properties }) {
 
 /**
  * The reconciliation PLAN `--backfill-issues` emits: one entry per resource
- * type that still has silent-drop properties, each carrying the title and body
+ * type that still has SDK-unwired properties, each carrying the title and body
  * its sub-issue should hold.
  *
  * Rendered HERE rather than in the workflow because a body is multi-line
@@ -3801,7 +3801,7 @@ export function renderSubIssueBody({ type, properties }) {
  * @returns {string}
  */
 export function renderSubIssuePlan(generatedSource) {
-  const groups = parseSilentDropByType(generatedSource);
+  const groups = parseSdkUnwiredByType(generatedSource);
   return JSON.stringify(
     {
       types: groups.map(({ type, properties }) => ({
@@ -4071,7 +4071,7 @@ function main() {
   const {
     removed,
     writableAdded,
-    silentDropRemoved,
+    sdkUnwiredRemoved,
     readOnlyAddedCount,
     unreadable,
     identifierChanges,
@@ -4389,19 +4389,19 @@ function main() {
         unknownRoutingTypes: new Set(
           [
             ...optOuts.unreadable,
-            ...[...writableAdded, ...silentDropRemoved]
+            ...[...writableAdded, ...sdkUnwiredRemoved]
             .map((e) => e.resourceType)
             .filter((t) => !providerFiles.has(t)),
           ].filter((t) => !nonProvisionable.has(t))
         ),
         // What each provider already DECLARES. A declared property never
-        // becomes a `silentDrop` (`gen-property-coverage.ts` skips it), so
+        // becomes an `sdkUnwired` row (`gen-property-coverage.ts` skips it), so
         // every sentence the fragment writes would be false for one.
         declared,
         // The removal half. Its population is the COMPLEMENT of `removed`:
         // a withdrawn property the provider declares was never a drop, and
         // the report escalates that as a bogus declaration instead.
-        silentDropRemoved,
+        sdkUnwiredRemoved,
       });
       // An empty file, not a missing one: the publishing step distinguishes
       // "this cycle ships no behaviour delta" from "the diagnosis died before

@@ -392,7 +392,7 @@ CDKD_TEST_REMOVAL=true node "${LOCAL_DIST}" drift "${STACK}" \
 echo "    ok: drift clean after --revert"
 
 # --- Phase 2c: AdvancedEventSelectors + AggregationConfigurations ------
-# Issue #2762. Both used to be silent drops on the SDK provider, which routed
+# Issue #2762. Both used to be SDK-unwired on the SDK provider, which routed
 # the whole trail through Cloud Control; the routing assertion is what tells
 # the fix from that fallback, which configures the same live trail.
 echo "==> Phase 2c: redeploy with CDKD_TEST_ADVANCED=true (advanced selectors + aggregation)"

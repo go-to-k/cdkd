@@ -30,14 +30,14 @@ applies, and the provider now resets those two to their AWS defaults
 below.
 
 The #609 Service-property backfill emptied the `AWS::ECS::Service`
-silent-drop set (AvailabilityZoneRebalancing / DeploymentController /
+SDK-unwired set (AvailabilityZoneRebalancing / DeploymentController /
 ForceNewDeployment / Monitoring / Role / ServiceConnectConfiguration /
 VolumeConfigurations / VpcLatticeConfigurations are now handled by
 `ECSProvider`), so every Service is SDK-routed. This fixture live-covers the
 cheap members (see Phases below); the sibling `ecs-fargate` fixture covers
 the SDK-routed delivery of `ServiceConnectConfiguration` +
 `VolumeConfigurations`. The `provisionedBy != cc-api` guard remains so a
-future silent-drop regression can't flip the route back and make the test
+future SDK-unwired regression can't flip the route back and make the test
 pass for the wrong reason.
 
 ### Not exercised live (#609) — unit-pinned instead

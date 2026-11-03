@@ -14,7 +14,7 @@ Regression integ for these bugs:
   `EnableMetricsCollection` / `PutNotificationConfiguration`, so CDK
   `groupMetrics` / `notifications` were missing after the FIRST deploy.
 - **Issue #2762** (SDK-route backfill): `PlacementGroup`,
-  `InstanceLifecyclePolicy` and `AvailabilityZoneIds` were silent drops, which
+  `InstanceLifecyclePolicy` and `AvailabilityZoneIds` were SDK-unwired, which
   routed the whole group through Cloud Control. The fixture adds a spread
   `AWS::EC2::PlacementGroup`; phases 1-2 set `PlacementGroup` and
   `InstanceLifecyclePolicy` (`TerminateHookAbandon: retain`), and the removal

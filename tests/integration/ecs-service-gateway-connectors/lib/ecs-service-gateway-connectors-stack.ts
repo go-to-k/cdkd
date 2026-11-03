@@ -11,7 +11,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * covers: AWS::ECS::Gateway
  * covers: AWS::ECS::GatewayClusterAssociations
  *
- * Before #5634 the property sat in the coverage map's silent-drop set, so a
+ * Before #5634 the property sat in the coverage map's SDK-unwired set, so a
  * Service declaring it routed WHOLE through Cloud Control (sticky
  * `provisionedBy: cc-api`). verify.sh guards `provisionedBy != cc-api` and
  * reads the value back from the service REVISION (DescribeServices has no

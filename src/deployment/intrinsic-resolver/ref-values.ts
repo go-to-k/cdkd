@@ -24,7 +24,7 @@ export const AWS_NO_VALUE = Symbol('AWS::NoValue');
  * carries BOTH kinds:
  *
  *  - **Cloud-Control-provisioned** (the original and still the majority) —
- *    either the type has no SDK provider, or the #614 silent-drop routing sent
+ *    either the type has no SDK provider, or the #614 SDK-unwired routing sent
  *    an SDK-backed type through CC (e.g. an ApiGateway Stage carrying
  *    `MethodSettings`, which the SDK provider does not wire — issue #963). CC's
  *    primaryIdentifier is compound (`<parentId>|<ref>`, or `<a>|<b>|<ref>` for

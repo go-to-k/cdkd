@@ -20,7 +20,7 @@
  *     instrumentation records the order).
  *   - The CREATE-side `getProviderFor` receives the synthetic
  *     `provisionedBy: 'cc-api'` hint so the sticky rule routes via CC
- *     even when the template carries no silent-drop property.
+ *     even when the template carries no SDK-unwired property.
  *   - The DESTROY-side `getProviderFor` receives the RECORDED
  *     `provisionedBy` from existing state (SDK for the legacy case),
  *     so the destroy hits the right provider.

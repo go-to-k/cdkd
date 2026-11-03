@@ -20,11 +20,11 @@ import {
   extractTemplateAttributes,
 } from './record-shape.js';
 import {
-  findActionableSilentDrops,
+  findActionableSdkUnwired,
   findHandledUnwrittenCreateOnly,
   unwrittenCreateOnlyReplacement,
-  withoutAcceptedSilentDropProperties,
-  withoutUnwrittenSilentDropProperties,
+  withoutAcceptedSdkUnwiredProperties,
+  withoutUnwrittenSdkUnwiredProperties,
 } from '../../provisioning/property-coverage.js';
 import {
   STATE_RESOURCES_MALFORMED,
@@ -189,7 +189,7 @@ export async function provisionUpdate(
   // Existing state record (UPDATE / DELETE) — load-bearing for the
   // sticky `provisionedBy` routing introduced in #614: a resource
   // first created via Cloud Control (because its template had
-  // silent-drop properties at the time) stays on Cloud Control for
+  // SDK-unwired properties at the time) stays on Cloud Control for
   // every subsequent update / delete, even if the SDK provider has
   // since gained property coverage.
   const existingState = stateResources[logicalId];
@@ -211,7 +211,7 @@ export async function provisionUpdate(
   const desiredProps = change.desiredProperties || {};
   const currentProps = change.currentProperties || {};
   // Issue #2750: the same bag with the keys the SDK route cannot have
-  // WRITTEN removed. For a resource recorded on that route a silent-drop
+  // WRITTEN removed. For a resource recorded on that route an SDK-unwired
   // key is junk by construction, and left in it makes the Cloud Control
   // auto-route inert on a record written before this fix:
   // `CloudControlProvider.update` builds its JSON Patch from the previous
@@ -229,7 +229,7 @@ export async function provisionUpdate(
   // replacement path's `delete()` (whose providers read the recorded tags
   // to decide whether emptying is consented to). Narrowing those is inert
   // today — every key either reads is `handled` for its own type, fenced
-  // by `tests/unit/provisioning/silent-drop-guard-key-disjointness.test.ts`
+  // by `tests/unit/provisioning/sdk-unwired-guard-key-disjointness.test.ts`
   // — but "inert today" is not a reason to widen a guard's input.
   //
   // Bound BELOW, once the resolved bag exists: a create-only drop stays in
@@ -724,13 +724,13 @@ export async function provisionUpdate(
       if (repaired !== attributes[key]) attributes[key] = repaired;
     }
   }
-  const allowedSilentDrops = engine.providerRegistry.getAllowedUnsupportedProperties?.();
+  const allowedSdkUnwired = engine.providerRegistry.getAllowedUnsupportedProperties?.();
   const desiredForSkipCheckAsWritten =
-    currentResource.provisionedBy !== 'cc-api' && allowedSilentDrops
-      ? withoutAcceptedSilentDropProperties(
+    currentResource.provisionedBy !== 'cc-api' && allowedSdkUnwired
+      ? withoutAcceptedSdkUnwiredProperties(
           resourceType,
           desiredForSkipCheck,
-          allowedSilentDrops,
+          allowedSdkUnwired,
           currentResource.properties
         )
       : desiredForSkipCheck;
@@ -741,14 +741,14 @@ export async function provisionUpdate(
   // here, and then the diff carries no replacement row for the #2790 refusal
   // below to see. That needs a schema-unknown key behind an intrinsic on a
   // type with a create-only drop.
-  const allowedForRecord = allowedSilentDrops ?? new Set<string>();
+  const allowedForRecord = allowedSdkUnwired ?? new Set<string>();
   // The create-only drops this record PROVES were never sent (#2790); the
   // diff reads the same field, so both decide on the same evidence.
   const createOnlyEvidence = acceptedCreateOnlyDropsOf(currentResource);
   const recordedAsWritten =
     currentResource.provisionedBy === 'cc-api'
       ? currentProps
-      : withoutUnwrittenSilentDropProperties(
+      : withoutUnwrittenSdkUnwiredProperties(
           resourceType,
           currentProps,
           desiredForSkipCheck,
@@ -1697,7 +1697,7 @@ export async function provisionUpdate(
               logicalId,
               resourceType,
               unwritten,
-              routeDriving: findActionableSilentDrops(
+              routeDriving: findActionableSdkUnwired(
                 resourceType,
                 desiredForSkipCheck,
                 allowedForRecord,

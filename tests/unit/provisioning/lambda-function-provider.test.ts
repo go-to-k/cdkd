@@ -279,11 +279,11 @@ describe('LambdaFunctionProvider', () => {
   });
 
   // Issue #609: backfill of native CreateFunction /
-  // UpdateFunctionConfiguration config fields cdkd previously silent-dropped.
+  // UpdateFunctionConfiguration config fields cdkd previously left unwired.
   // Trigger lineage for the CC-API-fallback integ fixtures + coverage-derived
   // tests: LoggingConfig (backfilled) → RecursiveLoop (backfilled next) →
   // RuntimeManagementConfig (backfilled next) → FunctionScalingConfig
-  // (backfilled by go-to-k/cdkd#5637), which leaves Lambda with no silent drop:
+  // (backfilled by go-to-k/cdkd#5637), which leaves Lambda with no SDK-unwired property:
   // those fixtures now use ApiGatewayV2 `Body`.
   describe('native config properties (issue #609)', () => {
     it('passes all six native config fields to CreateFunction (KmsKeyArn -> KMSKeyArn)', async () => {

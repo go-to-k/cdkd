@@ -183,7 +183,7 @@ the same property, so drop that entry in the same run.
 
 When the SDK provider now writes the property, the last remedy changes: the
 error says to remove the property from the template to keep the resource as it
-is, and names `--prefer-sdk-route` only for properties that are still dropped.
+is, and names `--prefer-sdk-route` only for properties that are still left unwritten.
 
 The record can also be wrong about AWS, for example when the value is AWS's
 default or was set outside cdkd. Once [`cdkd drift`](cli-drift.md) shows AWS

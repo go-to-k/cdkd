@@ -110,7 +110,7 @@ import { STICKY_CC_MIGRATION_EXEMPT } from '../../../src/provisioning/provider-r
  * measured the cost: deleting `previousProperties: currentResource.properties`
  * from the update dispatch left all 1,442 `provisionedBy`-touching unit tests
  * green, and the real-AWS fixture cannot see it either, because the one
- * admitted `'sdk-coverage'` type has an empty `silentDrop` map by construction
+ * admitted `'sdk-coverage'` type has an empty `sdkUnwired` map by construction
  * so both bags are always clean there.
  *
  * That line IS the removal-deploy safety property. Without it a resource whose

@@ -39,7 +39,7 @@
 #                  phase 2; the only difference is the recorded bag, which is
 #                  what makes the pair a clean A/B.
 #   7 subnet   -- go-to-k/cdkd#2790: a VPC + subnet join the stack, the subnet
-#                  carrying AvailabilityZoneId -- a CREATE-ONLY silent drop --
+#                  carrying AvailabilityZoneId -- a CREATE-ONLY SDK-unwired property --
 #                  deployed WITH --prefer-sdk-route. The record keeps it.
 #   8 subnettag -- an ordinary in-place change (the Name tag), same flag. The
 #                  NEGATIVE CONTROL: a flag-ful redeploy over that record must
@@ -248,7 +248,7 @@ trap '(exit 143); cleanup; exit 143' TERM
 command -v jq >/dev/null || { echo "FAIL: jq required" >&2; exit 1; }
 
 # Step 0: self-diagnosing trigger guard (issue 2648). The whole fixture rests
-# on ResourcePolicyDocument being a NON-create-only silent drop for
+# on ResourcePolicyDocument being a NON-create-only SDK-unwired property for
 # AWS::Logs::LogGroup. It is an `unhandledByDesign` entry, not backlog, but a
 # provider change can still end it (go-to-k/cdkd#5524 is the day the previous
 # premise, Alarm EvaluationWindow, ended). Without this, that day reads as
@@ -258,30 +258,30 @@ if ! (cd "${REPO_ROOT}" && node --input-type=module -e "
 const mod = await import('./src/provisioning/property-coverage.generated.ts');
 const table = Object.values(mod).find((v) => v instanceof Map);
 const cov = table && table.get('AWS::Logs::LogGroup');
-if (!cov || !cov.silentDrop || !cov.silentDrop.has('ResourcePolicyDocument')) process.exit(1);
+if (!cov || !cov.sdkUnwired || !cov.sdkUnwired.has('ResourcePolicyDocument')) process.exit(1);
 if (!cov.createOnlyDrops || cov.createOnlyDrops.has('ResourcePolicyDocument')) process.exit(1);
 "); then
   echo "FAIL: AWS::Logs::LogGroup.ResourcePolicyDocument is no longer a non-create-only" >&2
-  echo "      silent drop -- the provider wired it (or the schema made it create-only)" >&2
+  echo "      SDK-unwired property -- the provider wired it (or the schema made it create-only)" >&2
   echo "      and this fixture's premise is dead. Do NOT debug the deploy: move the" >&2
-  echo "      fixture to a still-silent-drop property that meets the conditions in" >&2
+  echo "      fixture to a still-SDK-unwired property that meets the conditions in" >&2
   echo "      lib/sdk-to-cc-autoroute-stack.ts." >&2
   exit 1
 fi
-echo "    OK: ResourcePolicyDocument is still a silent-drop (premise holds)"
+echo "    OK: ResourcePolicyDocument is still SDK-unwired (premise holds)"
 # go-to-k/cdkd#2790's phases rest on AvailabilityZoneId being a CREATE-ONLY
-# silent drop for AWS::EC2::Subnet. A provider wiring it ends that premise.
+# SDK-unwired property for AWS::EC2::Subnet. A provider wiring it ends that premise.
 if ! (cd "${REPO_ROOT}" && node --input-type=module -e "
 const mod = await import('./src/provisioning/property-coverage.generated.ts');
 const table = Object.values(mod).find((v) => v instanceof Map);
 const cov = table && table.get('AWS::EC2::Subnet');
 if (!cov || !cov.createOnlyDrops || !cov.createOnlyDrops.has('AvailabilityZoneId')) process.exit(1);
 "); then
-  echo "FAIL: AWS::EC2::Subnet.AvailabilityZoneId is no longer a create-only silent drop --" >&2
+  echo "FAIL: AWS::EC2::Subnet.AvailabilityZoneId is no longer a create-only SDK-unwired property --" >&2
   echo "      phases 7-10 would test nothing. Move them to another type's create-only drop." >&2
   exit 1
 fi
-echo "    OK: AvailabilityZoneId is still a create-only silent drop (premise holds)"
+echo "    OK: AvailabilityZoneId is still a create-only SDK-unwired property (premise holds)"
 
 # Any available AZ of the region: the SDK route drops the id and lets EC2 pick,
 # so phase 10's readback is the only place the value is checked against AWS.
@@ -323,7 +323,7 @@ if ! SYNTH_OUT=$(env CDKD_TEST_PHASE=drop node "${LOCAL_DIST}" synth --region "$
 fi
 jq -e --arg k "${LOGICAL_ID}" --arg sid "${POLICY_SID}" '[.Resources[$k].Properties.ResourcePolicyDocument.Statement[]? | select(.Sid == $sid)] | length == 1' "${TEMPLATE}" >/dev/null 2>&1 || {
   echo "FAIL: the DROP phase template does not carry the ${POLICY_SID} ResourcePolicyDocument; addPropertyOverride did not land and the arm would test nothing" >&2; exit 1; }
-echo "    OK: the two phases really do differ by the silent-drop property"
+echo "    OK: the two phases really do differ by the SDK-unwired property"
 
 # Phase 4b's premise: `allowmeta` differs from `allowdrop` by the policy
 # attribute ALONE. A property difference would give the diff a real change to
@@ -446,7 +446,7 @@ grep -q 'via CC API: ResourcePolicyDocument' <<<"${DIFF_OUT}" || {
 }
 echo "    OK: plan says 'via CC API: ResourcePolicyDocument'"
 
-echo "==> Phase 2b: THE ARM -- deploy the silent-drop property with NO flag"
+echo "==> Phase 2b: THE ARM -- deploy the SDK-unwired property with NO flag"
 # Output captured so the per-resource VERB can be read. NOT piped through
 # `tee`: /run-integ redirects this script to a regular file, and on Linux
 # /dev/stderr resolves to that path, so tee would reopen it O_TRUNC and zero
@@ -532,7 +532,7 @@ echo "==> Phase 3: CONTROL -- a genuine recreate MUST kill the witness"
 # the witness is inert and phase 2b's in-place conclusion is unsupported.
 #
 # The template drops back to handled properties only: the flag refuses while
-# the template still carries a silent-drop property, since the auto-route would
+# the template still carries an SDK-unwired property, since the auto-route would
 # send the recreated resource straight back to Cloud Control.
 # `--force-stateful-recreation`: cdkd treats every log group as stateful on a
 # recreate (RetentionInDays > 0 here); this one holds no events.
@@ -570,7 +570,7 @@ R_ALLOW=$(log_group_retention)
 [ "${R_ALLOW}" = "7" ] || { echo "FAIL: the control deploy did not reach AWS (RetentionInDays=${R_ALLOW}, expected 7); it proves nothing about the drop" >&2; exit 1; }
 ARN_ALLOW=$(log_group_arn) || { echo "FAIL: could not read the log group ARN after phase 4" >&2; exit 1; }
 P_ALLOW=$(policy_statement_count "${ARN_ALLOW}") || { echo "FAIL: could not read the log group's resource policies after phase 4" >&2; exit 1; }
-[ "${P_ALLOW}" = "0" ] || { echo "FAIL: ResourcePolicyDocument reached AWS on the SDK route (${POLICY_SID} statements=${P_ALLOW}); it is not a silent drop for this type, so phase 2b measured nothing" >&2; exit 1; }
+[ "${P_ALLOW}" = "0" ] || { echo "FAIL: ResourcePolicyDocument reached AWS on the SDK route (${POLICY_SID} statements=${P_ALLOW}); it is not SDK-unwired for this type, so phase 2b measured nothing" >&2; exit 1; }
 # go-to-k/cdkd#2750, the WRITE half -- the record must describe what was SENT,
 # not what the template asked for. This is the assertion that fails against the
 # pre-fix binary, and the property whose presence used to make the flag-less
@@ -581,7 +581,7 @@ RECORDED_ALLOW=$(record '.properties.ResourcePolicyDocument // "ABSENT"')
 # line above while destroying every value the SDK route DID write, and the patch
 # in phase 5 would then re-send the whole bag.
 RECORDED_RETENTION=$(record '.properties.RetentionInDays')
-awk -v t="${RECORDED_RETENTION}" 'BEGIN { exit !(t + 0 == 7) }' || { echo "FAIL: the record lost a property the SDK route DID write (RetentionInDays=${RECORDED_RETENTION}, expected 7); the #2750 narrowing must drop only the silent-drop keys" >&2; exit 1; }
+awk -v t="${RECORDED_RETENTION}" 'BEGIN { exit !(t + 0 == 7) }' || { echo "FAIL: the record lost a property the SDK route DID write (RetentionInDays=${RECORDED_RETENTION}, expected 7); the #2750 narrowing must drop only the SDK-unwired keys" >&2; exit 1; }
 echo "    OK: stayed on SDK, other properties applied, ResourcePolicyDocument dropped and NOT recorded"
 
 # Asserts one policy-attribute deploy took the STATE-ONLY branch. $1 = phase
@@ -649,7 +649,7 @@ URP_BACK=$(record '.updateReplacePolicy // "ABSENT"')
 echo "    OK: flipped back through the attribute refresh; the record is phase 4's again"
 
 echo "==> Phase 5: go-to-k/cdkd#2750 -- the re-route applies the property the opt-out dropped"
-# Before go-to-k/cdkd#2750 the opt-out deploy persisted the silent-drop property
+# Before go-to-k/cdkd#2750 the opt-out deploy persisted the SDK-unwired property
 # into the state record even though it was never written to AWS, and
 # `CloudControlProvider.update` builds a JSON Patch from the RECORDED bag to the
 # desired one -- so the property was identical on both sides, the patch omitted

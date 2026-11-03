@@ -73,7 +73,7 @@ describe('sticky-CC exemption table', () => {
     }
   });
 
-  it("every 'sdk-coverage' entry's type has an EMPTY silentDrop map (the admission premise, issue #3413)", () => {
+  it("every 'sdk-coverage' entry's type has an EMPTY sdkUnwired map (the admission premise, issue #3413)", () => {
     // The premise docs/provider-rules.md step 1 states is a MOVING one: the
     // daily schema refresh regenerates `property-coverage.generated.ts`, and
     // a property AWS publishes that the provider does not write lands as a
@@ -89,8 +89,8 @@ describe('sticky-CC exemption table', () => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(type);
       expect(coverage, `${type} has no property-coverage row`).toBeDefined();
       expect(
-        [...coverage!.silentDrop.keys()],
-        `${type} is admitted as 'sdk-coverage' on the premise that it has NO silent drops, but ` +
+        [...coverage!.sdkUnwired.keys()],
+        `${type} is admitted as 'sdk-coverage' on the premise that it has NO SDK-unwired properties, but ` +
           `property-coverage.generated.ts now lists some. Wire them into the provider (or ` +
           `declare them unhandledByDesign with a reason) in the same change that landed them.`
       ).toEqual([]);

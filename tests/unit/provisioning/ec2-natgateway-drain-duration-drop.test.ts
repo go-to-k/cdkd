@@ -55,7 +55,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { findSilentDropProperties } from '../../../src/provisioning/property-coverage.js';
+import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 
 const RESOURCE_TYPE = 'AWS::EC2::NatGateway';
 const PROPERTY = 'MaxDrainDurationSeconds';
@@ -94,10 +94,10 @@ describe('AWS::EC2::NatGateway MaxDrainDurationSeconds (issue #1411)', () => {
     expect(rationale).toMatch(/CreateNatGateway/);
   });
 
-  it('is reported as a silent drop at pre-flight, so the resource auto-routes via CC API', () => {
+  it('is reported as SDK-unwired at pre-flight, so the resource auto-routes via CC API', () => {
     // The runtime consequence of the declaration move, read off the generated
     // coverage map. Pre-fix this returned [] and nothing ever surfaced.
-    const drops = findSilentDropProperties(RESOURCE_TYPE, {
+    const drops = findSdkUnwiredProperties(RESOURCE_TYPE, {
       SubnetId: 'subnet-1',
       MaxDrainDurationSeconds: 350,
     });

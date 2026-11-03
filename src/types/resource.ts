@@ -1142,7 +1142,7 @@ export interface ResourceProvider {
    * - "tags handled via per-resource Tag API, not the create input"
    * - "covered by separate AWS::Foo::Bar resource type"
    *
-   * A property listed here is still a silent-drop row in the generated
+   * A property listed here is still an `sdkUnwired` row in the generated
    * coverage map, with this rationale, so a template declaring it still
    * auto-routes the resource to Cloud Control on a type that has a CC route
    * (a type with none, e.g. `disableCcApiFallback`, refuses it pre-flight;

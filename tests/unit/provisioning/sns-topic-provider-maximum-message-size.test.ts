@@ -46,9 +46,9 @@ const TOPIC_ARN = 'arn:aws:sns:us-east-1:123456789012:my-topic';
 
 /**
  * Issue #3413 — `MaximumMessageSize`, published by AWS in the 2026-09-18
- * schema refresh (PR #3402), was a silent drop on the type that carries the
+ * schema refresh (PR #3402), was SDK-unwired on the type that carries the
  * only `'sdk-coverage'` sticky exemption, which is admitted on the premise
- * that its silentDrop map is EMPTY. Wiring the member restores the premise.
+ * that its sdkUnwired map is EMPTY. Wiring the member restores the premise.
  *
  * Every wire fact below is measured (us-east-1, 2026-09-18): `CreateTopic`
  * accepts the attribute inline; `SetTopicAttributes` accepts 1024..1048576 and

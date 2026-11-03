@@ -32,7 +32,7 @@
  * Plus one cross-flag invariant: `--recreate-via-cc-api MyApi`
  * combined with `--prefer-sdk-route AWS::ApiGatewayV2::Api:Body`
  * on a resource whose template carries `Body` is **ambiguous
- * intent** — does the user want SDK + silent drop, or CC migration?
+ * intent** — does the user want SDK + an unwritten property, or CC migration?
  * Fail fast and let the user pick one strategy per resource.
  *
  * This module is a barrel: the implementation lives in `recreate-targets/*.ts`

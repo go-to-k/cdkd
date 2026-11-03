@@ -127,7 +127,7 @@ describe('DeployEngine refuses an unreadable resource ENTRY (go-to-k/cdkd#3314)'
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
-      reportSilentDropDecisions: vi.fn(),
+      reportSdkUnwiredDecisions: vi.fn(),
       getEffectivePropertiesFn: vi.fn().mockReturnValue(undefined),
     };
   }

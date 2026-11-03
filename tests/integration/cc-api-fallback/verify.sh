@@ -2,7 +2,7 @@
 # verify.sh — cdkd Cloud Control API greenfield fallback integ test
 # (issue #614).
 #
-# Asserts that an HTTP API whose template uses a silent-drop property
+# Asserts that an HTTP API whose template uses an SDK-unwired property
 # (`Body`, an inline OpenAPI spec — an ARCHITECTURAL exclusion, see
 # issue #2473 and the rationale in lib/cc-api-fallback-stack.ts) is
 # auto-routed via Cloud Control API and that the spec's route reaches
@@ -145,7 +145,7 @@ if [ ! -f "${LOCAL_DIST}" ]; then
 fi
 
 # --- Step 0: self-diagnosing trigger guard (issue #2473) --------------------
-# This fixture's premise is that `Body` is a silent-drop for
+# This fixture's premise is that `Body` is SDK-unwired for
 # AWS::ApiGatewayV2::Api. Every previous trigger died when the backfill
 # campaign wired it (LoggingConfig -> RecursiveLoop -> RuntimeManagementConfig),
 # each time as a mysterious permanent deploy-time red that cost a root-cause
@@ -155,15 +155,15 @@ if ! (cd "${PWD}/../../.." && node --input-type=module -e "
 const mod = await import('./src/provisioning/property-coverage.generated.ts');
 const table = Object.values(mod).find((v) => v instanceof Map);
 const cov = table && table.get('AWS::ApiGatewayV2::Api');
-if (!cov || !cov.silentDrop || !cov.silentDrop.has('Body')) process.exit(1);
+if (!cov || !cov.sdkUnwired || !cov.sdkUnwired.has('Body')) process.exit(1);
 "); then
-  echo "FAIL: AWS::ApiGatewayV2::Api.Body is no longer a silent-drop — the trigger" >&2
+  echo "FAIL: AWS::ApiGatewayV2::Api.Body is no longer SDK-unwired — the trigger" >&2
   echo "      was backfilled and this fixture's premise is dead. Do NOT debug the" >&2
-  echo "      deploy: pick the next durable silent-drop trigger per the selection" >&2
+  echo "      deploy: pick the next durable SDK-unwired trigger per the selection" >&2
   echo "      rule in lib/cc-api-fallback-stack.ts (issue 2473)." >&2
   exit 1
 fi
-echo "    OK: Body is still a silent-drop (premise holds)"
+echo "    OK: Body is still SDK-unwired (premise holds)"
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
@@ -227,8 +227,8 @@ fi
 
 # --- Assertion 1: state.provisionedBy on the HTTP API is 'cc-api' -----
 # Lookup by resourceType (CDK appends a hash to the logical id; the
-# bare `SilentDropApi` key does not exist — it's e.g.
-# `SilentDropApiXXXXXXXX`).
+# bare `SdkUnwiredApi` key does not exist — it's e.g.
+# `SdkUnwiredApiXXXXXXXX`).
 PROVISIONED=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGatewayV2::Api") | .value.provisionedBy // ""] | first')
 API_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ApiGatewayV2::Api") | .value.physicalId // ""] | first')
 if [ "${PROVISIONED}" != "cc-api" ]; then

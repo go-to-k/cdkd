@@ -10,10 +10,10 @@ import {
 } from './unsupported-types.js';
 import {
   containsIntrinsic,
-  findAcceptedSilentDrops,
-  findActionableSilentDrops,
+  findAcceptedSdkUnwired,
+  findActionableSdkUnwired,
   findRoutableUnrecognizedProperties,
-  findSilentDropProperties,
+  findSdkUnwiredProperties,
   findUnrecognizedProperties,
   getPropertyCoverage,
   unsupportedPropertyIssueUrl,
@@ -45,7 +45,7 @@ export type ProvisionedBy = 'sdk' | 'cc-api';
  * The routing decision returned by {@link ProviderRegistry.getProviderFor}.
  * Carries the chosen provider, the layer label to persist on the resource's
  * state record, and (when an SDK Provider was bypassed in favor of Cloud
- * Control because of silent-drop properties) the list of property names
+ * Control because of SDK-unwired properties) the list of property names
  * that drove the decision — surfaced by deploy / diff plan rendering and
  * used by {@link ProviderRegistry.findAutoRouteHits} so the user sees WHY
  * a particular resource is taking the CC route.
@@ -75,7 +75,7 @@ export interface ProviderRoutingDecision {
 
 /**
  * Input shape for {@link ProviderRegistry.getProviderFor}. `properties`
- * drives the silent-drop check (only consulted on a fresh deploy);
+ * drives the SDK-unwired check (only consulted on a fresh deploy);
  * `provisionedBy` is the **sticky** state-recorded layer for an existing
  * resource (load-bearing — once a resource is `'cc-api'`, mid-life updates
  * MUST stay on CC even if the property-coverage backfill closes the gap).
@@ -90,7 +90,7 @@ export interface GetProviderForInput {
    * so it carries no CC-only keys.
    *
    * Load-bearing for the `'sdk-coverage'` exemption (issue #2719) and for one
-   * case only: the REMOVAL deploy. A resource carries silent-drop property `P`
+   * case only: the REMOVAL deploy. A resource carries SDK-unwired property `P`
    * applied under CC; the user deletes `P` from the template. The desired bag
    * is now clean, so a desired-only condition would route THAT deploy to the
    * SDK provider -- which cannot unset `P` -- silently skipping the removal,
@@ -126,7 +126,7 @@ export interface GetProviderForInput {
 
 /**
  * One auto-route hit returned by {@link ProviderRegistry.findAutoRouteHits}.
- * Used by `reportSilentDropDecisions` (info-log surface) and by the plan
+ * Used by `reportSdkUnwiredDecisions` (info-log surface) and by the plan
  * renderer's `[via CC API: <reason>]` audit tag.
  */
 export interface AutoRouteHit {
@@ -142,20 +142,20 @@ export interface AutoRouteHit {
  * 1. Custom Resource (`Custom::*` / `AWS::CloudFormation::CustomResource`)
  *    → Custom Resource provider (recorded as `provisionedBy: 'sdk'`).
  * 2. Existing-state `provisionedBy: 'cc-api'` → Cloud Control (sticky).
- * 3. SDK Provider registered, no silent-drop properties (after the
+ * 3. SDK Provider registered, no SDK-unwired properties (after the
  *    `--allow-unsupported-properties` override filter) → SDK Provider. A
- *    property absent from the schema snapshot counts as a silent drop unless
+ *    property absent from the schema snapshot counts as SDK-unwired unless
  *    it is read-only, allow-listed, on a type Cloud Control cannot take, or
  *    unchanged from the state record (issue #3713).
- * 4. SDK Provider registered, silent-drop properties present, NOT all
+ * 4. SDK Provider registered, SDK-unwired properties present, NOT all
  *    in the allow set → Cloud Control (auto-route, info-logged). When the
  *    CC route is NOT viable — the type is `NON_PROVISIONABLE` (no CC
  *    handlers, e.g. AWS::FSx::FileSystem) or the provider sets
  *    `disableCcApiFallback` (e.g. NestedStackProvider) — throw the clear
  *    pre-flight error instead of failing opaquely at provisioning time.
- * 5. SDK Provider registered, silent-drop properties present, ALL in
+ * 5. SDK Provider registered, SDK-unwired properties present, ALL in
  *    the allow set → SDK Provider (the user explicitly accepted the
- *    silent drop, warn-logged).
+ *    unwritten property, warn-logged).
  * 6. No SDK Provider, Cloud Control supports the type → Cloud Control.
  * 7. `--allow-unsupported-types` escape hatch → Cloud Control optimistically.
  * 8. Otherwise → throw (no provider available).
@@ -274,8 +274,8 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
       // `DestinationConfig.OnSuccess` / `OnFailure` objects the model then
       // rejects (issue #4091, re-measured). A record pinned to cc-api could
       // never be updated. Cloud Control CREATE works, so the mode costs the
-      // unrecognized-key route; and a schema refresh that lands a silent drop
-      // here must wire it in the provider, since the drop would auto-route to
+      // unrecognized-key route; and a schema refresh that lands an SDK-unwired property
+      // here must wire it in the provider, since the unwired property would auto-route to
       // that broken UPDATE.
       mode: 'cc-broken' as const,
       physicalIdForm:
@@ -307,17 +307,17 @@ export const STICKY_CC_MIGRATION_EXEMPT: ReadonlyMap<string, StickyExemptEntry> 
     {
       // The first 'sdk-coverage' member (issue #2719). CC manages topics
       // correctly -- it is only slower -- so this is the mode that had no
-      // members before: the type's silentDrop map is empty (issue #609
+      // members before: the type's sdkUnwired map is empty (issue #609
       // backfill), so a resource using it takes the SDK path on a fresh
       // deploy, and there was no way for one already pinned to cc-api to
       // follow it there short of a destroy + recreate.
       //
       // "Empty" is a MOVING premise, not a fact about the type: the daily
-      // schema refresh re-adds a drop whenever AWS publishes a property the
+      // schema refresh re-adds an unwired property whenever AWS publishes a property the
       // provider does not write (issue #3413: `MaximumMessageSize`, 2026-09-18,
       // made the both-bags gate below live and `cdkd diff`'s sticky annotation
       // reachable under --allow-unsupported-properties). A refresh that lands
-      // a drop on an admitted type owes the wiring in the same cycle, or the
+      // an unwired property on an admitted type owes the wiring in the same cycle, or the
       // admission stops meaning what docs/provider-rules.md step 1 says.
       mode: 'sdk-coverage' as const,
       physicalIdForm:
@@ -483,7 +483,7 @@ export const CC_BROKEN_REASON = "Cloud Control's handler cannot manage this type
 /**
  * {@link CC_BROKEN_REASON} for a `'cc-broken'` sticky-exempt type, else
  * `undefined`. Deliberately NOT part of `ProviderRegistry.ccRouteUnavailableReason`:
- * that one also gates the auto-route of SCHEMA-KNOWN silent drops, which a
+ * that one also gates the auto-route of SCHEMA-KNOWN SDK-unwired properties, which a
  * `'cc-broken'` type keeps (see `getProviderFor`); its UNRECOGNIZED keys are
  * kept off Cloud Control separately, through the generated
  * `ccRouteUnavailable`. The two predicates are not interchangeable.
@@ -533,7 +533,7 @@ export function ccBrokenReason(resourceType: string): string | undefined {
  *    caller holding a state record but not passing its bag is indistinguishable
  *    here from one with no record, and guessing "clean" would reopen the
  *    removal-deploy hole through the one door this exists to close.
- * 6. BOTH bags clean of actionable silent drops. See
+ * 6. BOTH bags clean of actionable SDK-unwired properties. See
  *    `GetProviderForInput.previousProperties` for why the desired bag alone is
  *    not enough. An unrecognized key counts on PRESENCE here, never against a
  *    baseline, so it always keeps the resource on Cloud Control (issue #3713).
@@ -551,8 +551,8 @@ export interface ReturnToSdkInput {
    * This is injecting DATA, not swapping the logic under test -- every gate
    * below runs unchanged, and the shipped table stays covered by the cases
    * that omit this. It exists because the both-bags condition is otherwise
-   * unreachable: an admitted `'sdk-coverage'` type has an EMPTY silentDrop map
-   * by construction (that is why it was admitted), so `findActionableSilentDrops`
+   * unreachable: an admitted `'sdk-coverage'` type has an EMPTY sdkUnwired map
+   * by construction (that is why it was admitted), so `findActionableSdkUnwired`
    * returns [] for every bag and the loop cannot discriminate. Measured -- with
    * the shipped table only, mutating the loop to read the desired bag twice, or
    * the recorded bag twice, left the whole suite green. The removal-deploy
@@ -578,7 +578,7 @@ export function wouldReturnToSdkProvider(input: ReturnToSdkInput): boolean {
   if (desiredProperties === undefined) return false;
   if (previousProperties === undefined) return false;
   return [desiredProperties, previousProperties].every(
-    (bag) => findActionableSilentDrops(resourceType, bag, allowedUnsupportedProperties).length === 0
+    (bag) => findActionableSdkUnwired(resourceType, bag, allowedUnsupportedProperties).length === 0
   );
 }
 
@@ -615,10 +615,10 @@ export class ProviderRegistry {
    * is a `<ResourceType>:<PropertyName>` token (e.g.
    * `AWS::ApiGatewayV2::Api:Body`). As of issue
    * [#614](https://github.com/go-to-k/cdkd/issues/614), the flag now means
-   * "force the SDK Provider path and accept the silent drop" — the default
-   * for an un-flagged silent-drop property is to auto-route the resource
+   * "force the SDK Provider path and leave the property unwritten" — the default
+   * for an un-flagged SDK-unwired property is to auto-route the resource
    * through Cloud Control instead. Per-type-property (not blanket) so the
-   * user explicitly acknowledges each silent drop they accept.
+   * user explicitly acknowledges each unwritten property they accept.
    */
   allowUnsupportedProperties(entries: Iterable<string>): void {
     for (const entry of entries) {
@@ -694,7 +694,7 @@ export class ProviderRegistry {
    * matrix (see class docstring). The returned object carries the chosen
    * provider, the `provisionedBy` layer label to persist on the resource's
    * state record, and (for the CC auto-route case) the names of the
-   * silent-drop properties that drove the decision so callers can render
+   * SDK-unwired properties that drove the decision so callers can render
    * `[via CC API: <reason>]` plan annotations.
    *
    * @throws Error if no provider can be found for the type.
@@ -725,7 +725,7 @@ export class ProviderRegistry {
     //    so the re-route is decided by the same matrix as a fresh resource:
     //    a type whose provider was unregistered between releases degrades to
     //    the CC route (rule 6) instead of throwing, and a 'cc-broken' type
-    //    whose bag has silent drops still auto-routes (rule 5).
+    //    whose bag has SDK-unwired properties still auto-routes (rule 5).
     let returningToSdk = false;
     if (provisionedBy === 'cc-api') {
       const canReturn = wouldReturnToSdkProvider({
@@ -742,18 +742,18 @@ export class ProviderRegistry {
       returningToSdk = true;
     }
 
-    // 3-5. SDK Provider registered: silent-drop check decides between SDK
+    // 3-5. SDK Provider registered: SDK-unwired check decides between SDK
     //      Provider and the CC API auto-route.
     const specificProvider = this.providers.get(resourceType);
     if (specificProvider) {
-      const actionableDrops = findActionableSilentDrops(
+      const actionableDrops = findActionableSdkUnwired(
         resourceType,
         properties,
         this.allowedUnsupportedProperties,
         input.previousProperties
       );
       if (actionableDrops.length === 0) {
-        // No silent drops, or every drop is in the allow set → SDK Provider.
+        // No SDK-unwired properties, or every unwired property is in the allow set → SDK Provider.
         debug(`Using specific SDK provider for ${resourceType}`);
         if (returningToSdk) {
           // The only place `sdkMigration` is set. It marks a TRANSITION, so it
@@ -779,10 +779,10 @@ export class ProviderRegistry {
       const unroutable = this.ccRouteUnavailableReason(resourceType);
       if (unroutable !== undefined) {
         throw new Error(
-          this.buildUnroutableSilentDropMessage(resourceType, actionableDrops, unroutable)
+          this.buildUnroutableSdkUnwiredMessage(resourceType, actionableDrops, unroutable)
         );
       }
-      // Silent drops exist that the user has NOT opted into via the override
+      // SDK-unwired properties exist that the user has NOT opted into via the override
       // → auto-route through Cloud Control (which forwards the full property
       // map to AWS, closing the silent-drop bug). Closes issue #614.
       debug(
@@ -820,7 +820,7 @@ export class ProviderRegistry {
   /**
    * Why the Cloud Control auto-route cannot serve `resourceType`, or
    * `undefined` when it can. The ONE predicate both refusal sites
-   * (`getProviderFor` and `reportSilentDropDecisions`) and the accepted-drop
+   * (`getProviderFor` and `reportSdkUnwiredDecisions`) and the accepted-drop
    * warn read, so the warn that predicts what a flag-less deploy does cannot
    * disagree with the refusal that deploy then hits (issue #2792). Public for
    * `validateRecreateTargets`, which refuses `--recreate-via-cc-api` on such a
@@ -844,10 +844,10 @@ export class ProviderRegistry {
    * {@link ccRouteUnavailableReason}'s answer. Includes each property's
    * `unhandledByDesign` rationale so the user sees WHY it is unhandled, plus
    * the `--allow-unsupported-properties` escape hatch (which forces the SDK
-   * path and accepts the drop — the provider may still reject the resource
+   * path and leaves the property unwritten — the provider may still reject the resource
    * if the property is load-bearing, e.g. a non-Lustre FSx variant config).
    */
-  private buildUnroutableSilentDropMessage(
+  private buildUnroutableSdkUnwiredMessage(
     resourceType: string,
     drops: ReadonlyArray<{ property: string; rationale: string }>,
     reason: string
@@ -869,7 +869,7 @@ export class ProviderRegistry {
   /**
    * Legacy entry point that returns just the provider. Delegates to
    * {@link getProviderFor} with no properties / no state-recorded layer —
-   * which means silent-drop auto-routing CANNOT fire (no template to
+   * which means SDK-unwired auto-routing CANNOT fire (no template to
    * inspect) and `provisionedBy === undefined` is treated as SDK semantics
    * (legacy default). Use {@link getProviderFor} when the caller has
    * properties / state — otherwise a CC-managed existing resource will get
@@ -987,12 +987,12 @@ export class ProviderRegistry {
 
   /**
    * Walk every resource in the template and identify top-level CFn
-   * properties cdkd's SDK provider would silently drop on write. As of
-   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), silent drops
+   * properties cdkd's SDK provider does not wire (SDK-unwired). As of
+   * issue [#614](https://github.com/go-to-k/cdkd/issues/614), SDK-unwired properties
    * auto-route the resource through Cloud Control API by default (see
    * {@link getProviderFor}) — the method emits info-level routing decisions
-   * for each silent-drop resource, plus warn-level lines for resources
-   * where the user explicitly opted into the silent drop via
+   * for each SDK-unwired resource, plus warn-level lines for resources
+   * where the user explicitly opted into leaving it unwritten via
    * `--allow-unsupported-properties`. The ONE remaining throw path is the
    * CC-route viability guard: when the auto-route target cannot manage the
    * type (`NON_PROVISIONABLE` or a provider-level `disableCcApiFallback`
@@ -1002,7 +1002,7 @@ export class ProviderRegistry {
    *
    * Must be called AFTER {@link validateResourceTypes} — type-level errors
    * are still hard rejects. For a type allowed via `--allow-unsupported-types`,
-   * the property check is a no-op (`findSilentDropProperties` returns `[]`
+   * the property check is a no-op (`findSdkUnwiredProperties` returns `[]`
    * for non-Tier-1 / unknown types).
    *
    * Since issue [#1634](https://github.com/go-to-k/cdkd/issues/1634) this
@@ -1038,7 +1038,7 @@ export class ProviderRegistry {
     this.validateMutuallyExclusiveProperties(materialized);
     this.validateNestedRequiredProperties(materialized);
     this.validateCustomResourceSecureReferences(materialized);
-    this.reportSilentDropDecisions(materialized);
+    this.reportSdkUnwiredDecisions(materialized);
   }
 
   /**
@@ -1151,15 +1151,15 @@ export class ProviderRegistry {
   }
 
   /**
-   * Info-log every silent-drop routing decision (auto-route via CC API) and
-   * warn-log every silent drop the user explicitly opted into via
+   * Info-log every SDK-unwired routing decision (auto-route via CC API) and
+   * warn-log every unwritten property the user explicitly opted into via
    * `--allow-unsupported-properties` (forced SDK path, the property will
    * be dropped). Does not mutate state; throws ONLY for the CC-route
-   * viability guard (un-allowed silent drops on a type Cloud Control cannot
-   * manage — see {@link buildUnroutableSilentDropMessage}).
+   * viability guard (un-allowed SDK-unwired properties on a type Cloud Control cannot
+   * manage — see {@link buildUnroutableSdkUnwiredMessage}).
    *
    * Issue [#614](https://github.com/go-to-k/cdkd/issues/614). Replaces the
-   * pre-v0.16x throw path: silent drops are now a routing signal, not an
+   * pre-v0.16x throw path: SDK-unwired properties are now a routing signal, not an
    * error (except the viability guard above).
    *
    * When the optional `provisionedBy` (from existing state) is `'cc-api'`,
@@ -1171,7 +1171,7 @@ export class ProviderRegistry {
    * that override is an active user choice for THIS deploy and should
    * surface every time.
    */
-  reportSilentDropDecisions(
+  reportSdkUnwiredDecisions(
     resources: Iterable<{
       logicalId: string;
       resourceType: string;
@@ -1188,10 +1188,10 @@ export class ProviderRegistry {
       provisionedBy,
       previousProperties,
     } of resources) {
-      const drops = findSilentDropProperties(resourceType, properties);
+      const drops = findSdkUnwiredProperties(resourceType, properties);
       // Route-driving keys the schema snapshot does not know (issue #3713).
-      // They join `autoRouted` below: they move the resource exactly as a
-      // silent drop does, and `ccRouteUnavailableReason` cannot fire for them
+      // They join `autoRouted` below: they move the resource exactly as an
+      // SDK-unwired property does, and `ccRouteUnavailableReason` cannot fire for them
       // because the predicate already excludes those types.
       const unrecognizedRoute = findRoutableUnrecognizedProperties(
         resourceType,
@@ -1204,16 +1204,16 @@ export class ProviderRegistry {
       // was a false warn (issue #2750). The allow set is per `<Type>:<Prop>`
       // while the ROUTE is per resource, and TWO things send a resource to
       // Cloud Control — which forwards the full property map, so the
-      // allow-listed keys on it reach AWS after all and no drop happens:
+      // allow-listed keys on it reach AWS after all and nothing is left unwritten:
       //
-      //   - one UN-ALLOWED drop auto-routes it. `findAcceptedSilentDrops`
+      //   - one UN-ALLOWED unwired property auto-routes it. `findAcceptedSdkUnwired`
       //     answers that and is empty in exactly that case — the same
       //     predicate the record write and the diff read.
       //   - a `provisionedBy: 'cc-api'` record keeps it there (rule 2), for
       //     any bag. That is `stickyCc`, and it is the SAME test
       //     `reportUnrecognizedProperties` already makes below; the exemption
       //     lookup is what keeps a type that will flip BACK to the SDK route
-      //     from suppressing a warn about a drop that will then happen.
+      //     from suppressing a warn about a property that will then be left unwritten.
       //
       // Without the second, this warn told a user with a sticky `cc-api`
       // log group that `ResourcePolicyDocument` "will be silently dropped" while Cloud
@@ -1222,7 +1222,7 @@ export class ProviderRegistry {
       const stickyCc = provisionedBy === 'cc-api' && !STICKY_CC_MIGRATION_EXEMPT.has(resourceType);
       const overridden = stickyCc
         ? []
-        : findAcceptedSilentDrops(
+        : findAcceptedSdkUnwired(
             resourceType,
             properties,
             this.allowedUnsupportedProperties,
@@ -1246,7 +1246,7 @@ export class ProviderRegistry {
         if (unroutable !== undefined) {
           throw new Error(
             safeMsg`${logicalId}: ` +
-              this.buildUnroutableSilentDropMessage(
+              this.buildUnroutableSdkUnwiredMessage(
                 resourceType,
                 drops.filter((d) => autoRouted.includes(d.property)),
                 unroutable
@@ -1286,13 +1286,13 @@ export class ProviderRegistry {
       // assumed, because there are TWO ways to be inert and they have opposite
       // remedies. A first cut lived inside that block and named the sibling
       // unconditionally: on a sticky resource it then printed a cause that is
-      // false (rule 2 returns Cloud Control before any drop is consulted) and a
+      // false (rule 2 returns Cloud Control before any unwired property is consulted) and a
       // remedy that is a no-op (widening the set cannot beat a sticky record) —
       // the same shape issue [#2750](https://github.com/go-to-k/cdkd/issues/2750)
       // retired, prescribing a route the resource is already on.
       //
       // It also stayed silent in the case most likely to be reported: sticky
-      // with EVERY drop covered, where `autoRouted` is empty, `overridden` is
+      // with EVERY unwired property covered, where `autoRouted` is empty, `overridden` is
       // emptied by `stickyCc`, and Cloud Control writes the values anyway.
       const named = drops
         .map(({ property }) => property)
@@ -1310,10 +1310,10 @@ export class ProviderRegistry {
               // sentence below makes, for the same reason and against the
               // MIRROR flag. `--recreate-via-sdk-provider <LogicalId>` looks
               // like the answer and is refused in most of this branch's own
-              // population: `ambiguousIntentSdk` refuses it while any drop
+              // population: `ambiguousIntentSdk` refuses it while any unwired property
               // outside the preference is still actionable (which is exactly
               // the `stickyCc && autoRouted.length > 0` half), 17 of the types
-              // carrying silentDrop entries are STATEFUL and need
+              // carrying sdkUnwired entries are STATEFUL and need
               // `--force-stateful-recreation` on top, and neither flag can
               // address a resource inside a nested-stack child. It is also
               // DESTRUCTIVE, which a one-line remedy must not omit. A sentence
@@ -1361,9 +1361,9 @@ export class ProviderRegistry {
         // And BOTH sentences are false for a type with no Cloud Control route
         // (NON_PROVISIONABLE, or a provider declaring `disableCcApiFallback`;
         // issue [#2792](https://github.com/go-to-k/cdkd/issues/2792)): with the
-        // override gone the drop is actionable, so the next deploy REFUSES at
+        // override gone the unwired property is actionable, so the next deploy REFUSES at
         // pre-flight rather than routing, and a recreate lands on the same SDK
-        // provider that drops it. That type gets one sentence saying what
+        // provider that does not wire it. That type gets one sentence saying what
         // removing the override does, and no remedy: none applies the property.
         const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops;
         const unroutable = this.ccRouteUnavailableReason(resourceType);
@@ -1450,7 +1450,7 @@ export class ProviderRegistry {
    * either outcome. `getProviderFor` remains the authority.
    *
    * Suppressed per `<Type>:<Prop>` by `--prefer-sdk-route`, whose meaning
-   * ("accept the silent drop, stay on the SDK path") is exactly this case.
+   * ("leave the property unwritten, stay on the SDK path") is exactly this case.
    */
   private reportUnrecognizedProperties(
     logicalId: string,
@@ -1549,13 +1549,13 @@ export class ProviderRegistry {
 
   /**
    * Pure-functional discovery of every resource whose template uses one or
-   * more silent-drop properties that are NOT in the
+   * more SDK-unwired properties that are NOT in the
    * `--allow-unsupported-properties` allow set — i.e. every resource that
    * {@link getProviderFor} would auto-route via Cloud Control. Returned
-   * entries carry the silent-drop property names so plan / diff renderers
+   * entries carry the SDK-unwired property names so plan / diff renderers
    * can show `[via CC API: Body]`.
    *
-   * Does NOT log or throw. Use {@link reportSilentDropDecisions} for the
+   * Does NOT log or throw. Use {@link reportSdkUnwiredDecisions} for the
    * side-effecting info / warn surface.
    */
   findAutoRouteHits(
@@ -1569,7 +1569,7 @@ export class ProviderRegistry {
   ): AutoRouteHit[] {
     const hits: AutoRouteHit[] = [];
     for (const { logicalId, resourceType, properties, previousProperties } of resources) {
-      const actionable = findActionableSilentDrops(
+      const actionable = findActionableSdkUnwired(
         resourceType,
         properties,
         this.allowedUnsupportedProperties,

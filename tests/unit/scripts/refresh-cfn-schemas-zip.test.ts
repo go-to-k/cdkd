@@ -13,8 +13,8 @@
  *   reads on the cycle that matters.
  * - **A type absent from the bundle is SKIPPED, never blanked.** Treating
  *   absence as "this type now has no properties" would empty `properties`, turn
- *   every `handledProperties` declaration bogus, and destroy silent-drop
- *   routing for the type — a missing input becoming a silent behavior change on
+ *   every `handledProperties` declaration bogus, and destroy SDK-unwired
+ *   auto-routing for the type — a missing input becoming a silent behavior change on
  *   the deploy path. Two real types are in this state
  *   (`AWS::BedrockAgentCore::Browser` / `CodeInterpreter`).
  * - **Two collapse floors.** A truncated-but-parseable bundle, or an entry

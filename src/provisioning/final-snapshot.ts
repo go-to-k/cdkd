@@ -471,7 +471,7 @@ export function isFinalSnapshotError(error: unknown): boolean {
 
 /**
  * Refusal for an atomic-final-snapshot type whose state records
- * `provisionedBy: 'cc-api'` (#614 silent-drop routing / `--recreate-via-cc-api`).
+ * `provisionedBy: 'cc-api'` (#614 SDK-unwired routing / `--recreate-via-cc-api`).
  * Cloud Control `DeleteResource` has no final-snapshot parameter and
  * `CloudControlProvider` cannot honor `finalSnapshotIdentifier`, so deleting
  * via that route would silently drop the promised snapshot — refuse instead.

@@ -1,5 +1,5 @@
 /**
- * Issue #609 backfill: the four `AWS::Lambda::Function` silent-drop properties
+ * Issue #609 backfill: the four `AWS::Lambda::Function` SDK-unwired properties
  * wired in this slice — `CodeSigningConfigArn`, `RuntimeManagementConfig`,
  * `DurableConfig`, `TenancyConfig`.
  *

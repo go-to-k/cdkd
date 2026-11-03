@@ -3,7 +3,7 @@
 # --force-stateful-recreation.
 #
 # A nested stack's `StackName` is createOnly in the registry schema, and the
-# silent-drop narrowing keeps createOnly drops, so adding one (accepted with
+# SDK-unwired narrowing keeps createOnly drops, so adding one (accepted with
 # `--prefer-sdk-route AWS::CloudFormation::Stack:StackName`) diffs as a
 # REPLACEMENT of the `AWS::CloudFormation::Stack` row. `NestedStackProvider`
 # answers a create with the same physical id, and under `--replace` the

@@ -4,15 +4,15 @@
 #
 # Asserts that an ECS Fargate TaskDefinition whose template sets
 # `EnableFaultInjection: true` has the flag reach AWS after `cdkd deploy`
-# — the property was a silent-drop before the #609 backfill. Also
+# — the property was SDK-unwired before the #609 backfill. Also
 # asserts `Volumes[].ConfiguredAtLaunch` reaches the registered task
 # definition and that the paired Service carries the managed EBS volume
 # configuration (issue #806), and that the destroy path cleans up.
 #
 # ROUTE FLIP (#609 Service property backfill): this Service sets
 # ServiceConnectConfiguration + VolumeConfigurations, which used to be
-# silent-drops that flipped it to the #614 Cloud Control fallback route.
-# With the backfill the AWS::ECS::Service silent-drop set is EMPTY, so the
+# SDK-unwired properties that flipped it to the #614 Cloud Control fallback route.
+# With the backfill the AWS::ECS::Service SDK-unwired set is EMPTY, so the
 # Service is SDK-routed — ECSProvider.createService() now delivers both
 # blobs itself. The provisionedBy assertion below pins the SDK route, and
 # the deployment-level serviceConnectConfiguration / volumeConfigurations
@@ -185,13 +185,13 @@ fi
 # --- Assertion: the Service is SDK-routed (#609 route flip) ---------------
 # Before the #609 Service-property backfill this Service routed via Cloud
 # Control (ServiceConnectConfiguration + VolumeConfigurations were
-# silent-drops -> #614 CC fallback). With the backfill it must be SDK-routed,
+# SDK-unwired -> #614 CC fallback). With the backfill it must be SDK-routed,
 # so this fixture actually exercises ECSProvider.createService() delivering
 # those blobs. `provisionedBy` absent means the SDK legacy default.
 SVC_ROUTING=$(echo "${STATE}" | jq -r '
   [.resources[] | select(.resourceType == "AWS::ECS::Service") | (.provisionedBy // "sdk")] | first // "missing"')
 if [ "${SVC_ROUTING}" != "sdk" ]; then
-  echo "FAIL: ECS Service provisionedBy is '${SVC_ROUTING}', expected 'sdk' — the #609 backfill should have flipped the Service off the Cloud Control route (a silent-drop property is back, or the routing regressed)" >&2
+  echo "FAIL: ECS Service provisionedBy is '${SVC_ROUTING}', expected 'sdk' — the #609 backfill should have flipped the Service off the Cloud Control route (an SDK-unwired property is back, or the routing regressed)" >&2
   echo "${STATE}" | jq '[.resources[] | select(.resourceType == "AWS::ECS::Service") | {physicalId, provisionedBy}]'
   exit 1
 fi

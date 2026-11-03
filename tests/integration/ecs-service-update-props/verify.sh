@@ -50,7 +50,7 @@
 #         into observedProperties in CFn PascalCase.
 #   #609  (Service property backfill): AvailabilityZoneRebalancing /
 #         DeploymentController / Monitoring / ForceNewDeployment were
-#         silent-drops that flipped the Service to the CC-API route. Phase 1g
+#         SDK-unwired properties that flipped the Service to the CC-API route. Phase 1g
 #         asserts AvailabilityZoneRebalancing=DISABLED on AWS + the
 #         observedProperties read-back (incl. the DeploymentController
 #         {Type: ECS} fallback for the documented DescribeServices omission).
@@ -370,7 +370,7 @@ echo "    OK: base #1861 circuit-breaker optional members on AWS are resetOnHeal
 # Base assertion for issue #609: AvailabilityZoneRebalancing=DISABLED (set via
 # the L1 escape hatch; non-default, so the #1160 phase-2 keep assertion is not
 # vacuous) must have reached AWS — before the backfill the property was a
-# silent-drop that flipped the Service to the CC-API route.
+# SDK-unwired property that flipped the Service to the CC-API route.
 BASE_AZ_REBALANCING=$(aws ecs describe-services \
   --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" --region "${REGION}" \
   --query 'services[0].availabilityZoneRebalancing' --output text 2>/dev/null)

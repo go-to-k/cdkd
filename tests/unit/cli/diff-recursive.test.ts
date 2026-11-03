@@ -1914,10 +1914,10 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     });
   });
 
-  it('populates ccApiRoutes for resources whose template uses #614 silent-drop properties (e.g. ApiGatewayV2 Body)', async () => {
+  it('populates ccApiRoutes for resources whose template uses #614 SDK-unwired properties (e.g. ApiGatewayV2 Body)', async () => {
     const template: CloudFormationTemplate = {
       Resources: {
-        SilentDropApi: {
+        SdkUnwiredApi: {
           Type: 'AWS::ApiGatewayV2::Api',
           Properties: {
             Name: 'foo',
@@ -1925,7 +1925,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
             Body: { openapi: '3.0.1' },
           },
         },
-        // A sibling Api whose template uses NO silent-drop property —
+        // A sibling Api whose template uses NO SDK-unwired property —
         // the route should NOT pick it up, so the rendered diff stays clean.
         OkayApi: {
           Type: 'AWS::ApiGatewayV2::Api',
@@ -1949,20 +1949,20 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       isNestedChild: false,
     });
 
-    expect(root.ccApiRoutes.get('SilentDropApi')).toEqual(['Body']);
+    expect(root.ccApiRoutes.get('SdkUnwiredApi')).toEqual(['Body']);
     expect(root.ccApiRoutes.has('OkayApi')).toBe(false);
 
     // The annotation makes it into the human renderer + the JSON projection.
     const lines: string[] = [];
     renderDiffTree(root, true, (m) => lines.push(m));
     expect(lines.join('\n')).toContain(
-      '[+] SilentDropApi (AWS::ApiGatewayV2::Api) [via CC API: Body]'
+      '[+] SdkUnwiredApi (AWS::ApiGatewayV2::Api) [via CC API: Body]'
     );
 
     const json = diffTreeToJson(root);
-    const silentDropChange = json.changes.find((c) => c.logicalId === 'SilentDropApi');
+    const sdkUnwiredChange = json.changes.find((c) => c.logicalId === 'SdkUnwiredApi');
     const okayChange = json.changes.find((c) => c.logicalId === 'OkayApi');
-    expect(silentDropChange?.ccApi).toEqual(['Body']);
+    expect(sdkUnwiredChange?.ccApi).toEqual(['Body']);
     expect(okayChange?.ccApi).toBeUndefined();
   });
 
@@ -1970,7 +1970,7 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
     const template: CloudFormationTemplate = {
       Conditions: { Off: { 'Fn::Equals': ['a', 'b'] } },
       Resources: {
-        SilentDropApi: {
+        SdkUnwiredApi: {
           Type: 'AWS::ApiGatewayV2::Api',
           Condition: 'Off',
           Properties: {
@@ -1987,19 +1987,19 @@ describe('buildDiffTree (recursive nested-stack diff)', () => {
       nestedTemplates: {},
       recursive: true,
       stateBackend: fakeBackend({
-        Leaf: st('Leaf', { SilentDropApi: res('AWS::ApiGatewayV2::Api', {}) }),
+        Leaf: st('Leaf', { SdkUnwiredApi: res('AWS::ApiGatewayV2::Api', {}) }),
       }),
       diffCalculator: new DiffCalculator(),
       isNestedChild: false,
     });
 
-    expect(root.changes.get('SilentDropApi')!.changeType).toBe('DELETE');
-    expect(root.ccApiRoutes.has('SilentDropApi')).toBe(false);
+    expect(root.changes.get('SdkUnwiredApi')!.changeType).toBe('DELETE');
+    expect(root.ccApiRoutes.has('SdkUnwiredApi')).toBe(false);
     expect(diffTreeToJson(root).changes[0]!.ccApi).toBeUndefined();
   });
 
-  it('annotates sticky-CC resources (provisionedBy: cc-api in state, no silent-drop in template) with [via CC API: sticky] — matches live-progress label + design §8', async () => {
-    // The Lambda's template has NO silent-drop property — the SDK provider's
+  it('annotates sticky-CC resources (provisionedBy: cc-api in state, no SDK-unwired property in template) with [via CC API: sticky] — matches live-progress label + design §8', async () => {
+    // The Lambda's template has NO SDK-unwired property — the SDK provider's
     // coverage caught up between deploys. But cdkd state still pins routing
     // to CC API (sticky semantics), so `getProviderFor` rule 2 will route
     // the next UPDATE via CC API. Without sticky-state visibility, the diff

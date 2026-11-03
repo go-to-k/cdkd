@@ -9,7 +9,7 @@
 #   Stack CdkdCcApiOverride (item 3): deploy with
 #     `--allow-unsupported-properties AWS::ApiGatewayV2::Api:Body`
 #     → state stamps `provisionedBy: 'sdk'`, AWS does NOT receive `Body`
-#     (silent drop accepted, warn-logged — the route declared only inside the
+#     (left unwritten as accepted, warn-logged — the route declared only inside the
 #     spec does not exist on the live API).
 #
 #   Stack CdkdCcApiTransition (item 4): two-phase deploy that exercises
@@ -22,7 +22,7 @@
 #         SDK-minted API is gone, and the spec's route exists on AWS. Why a
 #         replacement and not an in-place update: lib/transitions-stack.ts.
 #
-# The trigger is `AWS::ApiGatewayV2::Api.Body`, an ARCHITECTURAL silent drop
+# The trigger is `AWS::ApiGatewayV2::Api.Body`, an ARCHITECTURAL SDK-unwired property
 # (issue #2648 — the rationale is in lib/transitions-stack.ts). Step 0 reds
 # self-diagnosingly if it is ever backfilled.
 #
@@ -147,7 +147,7 @@ if [ ! -f "${LOCAL_DIST}" ]; then
 fi
 
 # --- Step 0: self-diagnosing trigger guard (issues #2473, #2648) -------------
-# Both arms rest on `Body` being a silent-drop for AWS::ApiGatewayV2::Api. This
+# Both arms rest on `Body` being SDK-unwired for AWS::ApiGatewayV2::Api. This
 # fixture's previous trigger (Lambda RuntimeManagementConfig) died when #1621
 # wired it, and surfaced as an item-3 assertion failure months later. This
 # guard turns the next such death into a one-line red naming its own fix.
@@ -156,16 +156,16 @@ if ! (cd "${PWD}/../../.." && node --input-type=module -e "
 const mod = await import('./src/provisioning/property-coverage.generated.ts');
 const table = Object.values(mod).find((v) => v instanceof Map);
 const cov = table && table.get('AWS::ApiGatewayV2::Api');
-if (!cov || !cov.silentDrop || !cov.silentDrop.has('Body')) process.exit(1);
+if (!cov || !cov.sdkUnwired || !cov.sdkUnwired.has('Body')) process.exit(1);
 "); then
-  echo "FAIL: AWS::ApiGatewayV2::Api.Body is no longer a silent-drop — the trigger" >&2
+  echo "FAIL: AWS::ApiGatewayV2::Api.Body is no longer SDK-unwired — the trigger" >&2
   echo "      was backfilled and this fixture's premise is dead. Do NOT debug the" >&2
-  echo "      deploy: pick the next durable silent-drop trigger per the selection" >&2
+  echo "      deploy: pick the next durable SDK-unwired trigger per the selection" >&2
   echo "      rule in ../cc-api-fallback/lib/cc-api-fallback-stack.ts (issue 2473)," >&2
   echo "      and move this fixture with it (issue 2648)." >&2
   exit 1
 fi
-echo "    OK: Body is still a silent-drop (premise holds)"
+echo "    OK: Body is still SDK-unwired (premise holds)"
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
@@ -210,25 +210,25 @@ if [ "${OVERRIDE_PROVISIONED}" != "sdk" ]; then
 fi
 echo "    OK: OverrideStack HTTP API provisionedBy == 'sdk' (override forced SDK path)"
 
-# Item 3 assertion 2: the probe route is ABSENT — the silent drop actually
-# dropped. The SDK provider's CreateApi carries no spec, so the API exists with
+# Item 3 assertion 2: the probe route is ABSENT — Body really was left
+# unwritten. The SDK provider's CreateApi carries no spec, so the API exists with
 # no routes. Phase 2 below is the positive control: the same spec (bar its
 # title), forwarded, does create the route, so absence here is the drop and not a malformed spec.
 OVERRIDE_API_ID=$(api_record "${OVERRIDE_STATE}" physicalId)
 require_api_id OverrideStack "${OVERRIDE_API_ID}"
 OVERRIDE_ROUTES=$(probe_route_ids "${OVERRIDE_API_ID}")
 if [ -n "${OVERRIDE_ROUTES}" ]; then
-  echo "FAIL: OverrideStack HTTP API ${OVERRIDE_API_ID} has route '${PROBE_ROUTE}' (${OVERRIDE_ROUTES}) — the override should have silent-dropped Body, so no route should exist" >&2
+  echo "FAIL: OverrideStack HTTP API ${OVERRIDE_API_ID} has route '${PROBE_ROUTE}' (${OVERRIDE_ROUTES}) — the override should have left Body unwritten, so no route should exist" >&2
   exit 1
 fi
-echo "    OK: OverrideStack HTTP API ${OVERRIDE_API_ID} has no '${PROBE_ROUTE}' route (Body silent drop honored)"
+echo "    OK: OverrideStack HTTP API ${OVERRIDE_API_ID} has no '${PROBE_ROUTE}' route (Body left unwritten, as overridden)"
 
 # --- Phase 1B: deploy TransitionStack baseline (NO Body) -----------------
 #
 # Item 4 stage 1: template has no Body → SDK route → state stamps
 # `provisionedBy: 'sdk'`.
 echo "==> Phase 1B: deploy ${TRANSITION_STACK} WITHOUT Body (item 4 baseline → SDK route)"
-unset CDKD_INTEG_USE_SILENT_DROP
+unset CDKD_INTEG_USE_SDK_UNWIRED
 node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
@@ -237,11 +237,11 @@ node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
 TRANSITION_STATE_1=$(aws s3 cp "s3://${STATE_BUCKET}/${TRANSITION_KEY}" - 2>/dev/null)
 TRANSITION_PROVISIONED_1=$(api_record "${TRANSITION_STATE_1}" provisionedBy)
 if [ "${TRANSITION_PROVISIONED_1}" != "sdk" ]; then
-  echo "FAIL: TransitionStack HTTP API has provisionedBy='${TRANSITION_PROVISIONED_1}' after baseline deploy, expected 'sdk' (no silent-drop in template → SDK route)" >&2
+  echo "FAIL: TransitionStack HTTP API has provisionedBy='${TRANSITION_PROVISIONED_1}' after baseline deploy, expected 'sdk' (no SDK-unwired property in template → SDK route)" >&2
   echo "${TRANSITION_STATE_1}" | jq .
   exit 1
 fi
-echo "    OK: TransitionStack HTTP API provisionedBy == 'sdk' (baseline, no silent-drop property in template)"
+echo "    OK: TransitionStack HTTP API provisionedBy == 'sdk' (baseline, no SDK-unwired property in template)"
 
 TRANSITION_API_ID_1=$(api_record "${TRANSITION_STATE_1}" physicalId)
 require_api_id "TransitionStack baseline" "${TRANSITION_API_ID_1}"
@@ -259,12 +259,12 @@ echo "    OK: TransitionStack HTTP API ${TRANSITION_API_ID_1} has no '${PROBE_RO
 # on Body, the delete half runs on the old 'sdk' record → state flips from
 # 'sdk' to 'cc-api' → the spec's route exists on the new API.
 echo "==> Phase 2: re-deploy ${TRANSITION_STACK} defined by Body (item 4 mid-life SDK→CC flip)"
-export CDKD_INTEG_USE_SILENT_DROP=true
+export CDKD_INTEG_USE_SDK_UNWIRED=true
 node "${LOCAL_DIST}" deploy "${TRANSITION_STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
-unset CDKD_INTEG_USE_SILENT_DROP
+unset CDKD_INTEG_USE_SDK_UNWIRED
 
 TRANSITION_STATE_2=$(aws s3 cp "s3://${STATE_BUCKET}/${TRANSITION_KEY}" - 2>/dev/null)
 TRANSITION_PROVISIONED_2=$(api_record "${TRANSITION_STATE_2}" provisionedBy)

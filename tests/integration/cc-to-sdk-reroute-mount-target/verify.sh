@@ -115,7 +115,7 @@ LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::EFS:
 [ -n "${LOGICAL_ID}" ] || { echo "FAIL: no AWS::EFS::MountTarget in ${TEMPLATE}" >&2; exit 1; }
 echo "==> Resource under test: ${LOGICAL_ID}"
 
-echo "==> Phase 1: Deploy (SDK route by default -- MountTarget has no silent drops)"
+echo "==> Phase 1: Deploy (SDK route by default -- MountTarget has no SDK-unwired properties)"
 env CDKD_TEST_PHASE=base \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 P0=$(record '.physicalId')

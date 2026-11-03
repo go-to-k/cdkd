@@ -12,7 +12,7 @@ import type { Construct } from 'constructs';
  * covers: AWS::EC2::VPNGateway
  * covers: AWS::EC2::VPCGatewayAttachment
  *
- * Exercises the two formerly silent-drop Route properties that are
+ * Exercises the two formerly SDK-unwired Route properties that are
  * live-testable without Wavelength / Outposts / Cloud WAN:
  *
  * - `DestinationPrefixListId` — a route whose DESTINATION is a

@@ -4,7 +4,7 @@
 #
 # Asserts that a geoproximity-routing AWS::Route53::RecordSet whose template
 # sets `GeoProximityLocation` (here `AWSRegion` + `Bias`) has that field reach
-# AWS after `cdkd deploy` — the property was a silent-drop before the #609
+# AWS after `cdkd deploy` — the property was SDK-unwired before the #609
 # backfill. GeoProximityLocation rides directly on ChangeResourceRecordSets
 # (no separate control-plane API), so closing the silent-drop is purely a
 # matter of forwarding the field.
@@ -507,7 +507,7 @@ echo "    OK: GeoProximityLocation.AWSRegion == ${EXPECTED_GEO_REGION} on AWS (s
 # Find the CIDR-routing record by Name prefix `cidr.` AND SetIdentifier, then
 # assert its CidrRoutingConfig.CollectionId is non-empty AND LocationName ==
 # the templated value. Seeing both proves the silent-drop is closed (this is
-# the LAST silent-dropped prop on AWS::Route53::RecordSet — type now complete).
+# the LAST SDK-unwired prop on AWS::Route53::RecordSet — type now complete).
 CIDR_RECORD=$(echo "${RECORDS}" | jq -c \
   --arg sid "${CIDR_SET_IDENTIFIER}" \
   '.ResourceRecordSets[]

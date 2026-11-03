@@ -17,7 +17,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  * difference: one of them costs downtime.
  *
  * `ProviderRegistry.getProviderFor` enters the sticky rule only for a record
- * already at `'cc-api'`, so a `'sdk'` record falls through to the silent-drop
+ * already at `'cc-api'`, so a `'sdk'` record falls through to the SDK-unwired
  * check every deploy -- which reads like the first passage. But reading the
  * routing code does not settle whether the resulting Cloud Control UPDATE
  * SUCCEEDS against a physical id the SDK provider minted, nor whether the
@@ -28,7 +28,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *
  *  - the type has an SDK provider, so a fresh deploy records
  *    `provisionedBy: 'sdk'` -- the state this question is about;
- *  - `ResourcePolicyDocument` sits in its `silentDrop` map as an
+ *  - `ResourcePolicyDocument` sits in its `sdkUnwired` map as an
  *    `unhandledByDesign` entry (`logs-loggroup-provider.ts`, issue #1412), not
  *    as backlog: the go-to-k/cdkd#2762 backfill burns down every `not yet
  *    implemented by cdkd` entry, and it ended the fixture's first premise
@@ -81,7 +81,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *   subnet / subnettag -- go-to-k/cdkd#2790: the log group stays at
  *                `dropagain` (already on Cloud Control, so it no longer
  *                moves), and a VPC + `AWS::EC2::Subnet` join the stack carrying
- *                `AvailabilityZoneId`, which is a CREATE-ONLY silent drop for
+ *                `AvailabilityZoneId`, which is a CREATE-ONLY SDK-unwired property for
  *                that type (the log group has none). `subnettag` differs from
  *                `subnet` by the subnet's Name tag alone, an ordinary in-place
  *                change. verify.sh deploys them with and without
@@ -149,7 +149,7 @@ export class SdkToCcAutorouteStack extends cdk.Stack {
 
     if (PHASES_WITH_DROP.has(phase)) {
       // The whole point of the fixture: a top-level CFn property that IS in
-      // the committed schema and IS in this type's silentDrop map.
+      // the committed schema and IS in this type's sdkUnwired map.
       logGroup.addPropertyOverride('ResourcePolicyDocument', {
         Version: '2012-10-17',
         Statement: [

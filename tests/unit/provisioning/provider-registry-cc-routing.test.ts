@@ -5,9 +5,9 @@
  *
  * Each test pins one row of the decision tree documented on the class
  * docstring. The tests use `PROPERTY_COVERAGE_BY_TYPE` to discover a
- * real Tier 1 type with one or more silent-drop entries so they stay
+ * real Tier 1 type with one or more SDK-unwired entries so they stay
  * declarative against the generated map; if the project ever closes
- * every silent-drop gap, the helper throws so the test fails loudly
+ * every SDK-unwired gap, the helper throws so the test fails loudly
  * instead of silently no-opping.
  */
 import { describe, it, expect } from 'vite-plus/test';
@@ -16,35 +16,35 @@ import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-co
 import type { ResourceProvider } from '../../../src/types/resource.js';
 
 /**
- * Find a (type, property) tuple where the type has at least one silent-drop
+ * Find a (type, property) tuple where the type has at least one SDK-unwired
  * entry. Throws when the generated map has none left.
  */
-function pickSilentDropFixture(): { resourceType: string; property: string } {
+function pickSdkUnwiredFixture(): { resourceType: string; property: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-    const first = cov.silentDrop.entries().next();
+    const first = cov.sdkUnwired.entries().next();
     if (!first.done) {
       return { resourceType, property: first.value[0] };
     }
   }
   throw new Error(
-    'PROPERTY_COVERAGE_BY_TYPE has no silent-drop entries — every Tier 1 ' +
+    'PROPERTY_COVERAGE_BY_TYPE has no SDK-unwired entries — every Tier 1 ' +
       'type is fully handled. Update these tests to use a synthetic fixture.'
   );
 }
 
 /**
- * Find a (type, propA, propB) triple where the type has ≥ 2 silent-drop
+ * Find a (type, propA, propB) triple where the type has ≥ 2 SDK-unwired
  * entries. Used by tests that need per-property granularity.
  */
-function pickSilentDropPair(): { resourceType: string; propA: string; propB: string } {
+function pickSdkUnwiredPair(): { resourceType: string; propA: string; propB: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-    if (cov.silentDrop.size >= 2) {
-      const sorted = Array.from(cov.silentDrop.keys()).sort((x, y) => x.localeCompare(y));
+    if (cov.sdkUnwired.size >= 2) {
+      const sorted = Array.from(cov.sdkUnwired.keys()).sort((x, y) => x.localeCompare(y));
       return { resourceType, propA: sorted[0]!, propB: sorted[1]! };
     }
   }
   throw new Error(
-    'PROPERTY_COVERAGE_BY_TYPE has no type with ≥2 silent-drop entries — ' +
+    'PROPERTY_COVERAGE_BY_TYPE has no type with ≥2 SDK-unwired entries — ' +
       'the partial-override test needs at least one such type.'
   );
 }
@@ -88,11 +88,11 @@ describe('ProviderRegistry.getProviderFor', () => {
     expect(decision.provider).not.toBe(registry.getCloudControlProvider());
   });
 
-  it('AUTO-ROUTES an existing provisionedBy: sdk resource whose template gained a silent drop', () => {
+  it('AUTO-ROUTES an existing provisionedBy: sdk resource whose template gained an SDK-unwired property', () => {
     // The claim docs/cli-deploy-safety.md now makes, and the one it got
     // BACKWARDS until go-to-k/cdkd#2744: the sticky rule applies only to a
     // record already at 'cc-api', so an 'sdk' record falls through to the
-    // silent-drop check on EVERY deploy. Adding such a property to an
+    // SDK-unwired check on EVERY deploy. Adding such a property to an
     // already-deployed resource therefore re-routes it with no flag, and the
     // user does not need `--recreate-via-cc-api` to get the property to AWS.
     //
@@ -102,7 +102,7 @@ describe('ProviderRegistry.getProviderFor', () => {
     // AWS on a 14-day marker, so without this case a regression in the routing
     // rule would sit on main until someone happened to run it.
     const registry = new ProviderRegistry();
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     registry.register(fx.resourceType, stubSdkProvider());
 
     const decision = registry.getProviderFor({
@@ -129,7 +129,7 @@ describe('ProviderRegistry.getProviderFor', () => {
     // as dropped. Without it, a regression that ignored the allow set once a
     // record exists would be invisible.
     const registry = new ProviderRegistry();
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     registry.register(fx.resourceType, stubSdkProvider());
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
 
@@ -152,13 +152,13 @@ describe('ProviderRegistry.getProviderFor', () => {
     // Register an SDK provider for a Tier 1 type so the un-sticky path
     // would normally hit the SDK provider. We then assert that the
     // state-recorded layer overrides that.
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const sdk = stubSdkProvider();
     registry.register(fx.resourceType, sdk);
 
     const decision = registry.getProviderFor({
       resourceType: fx.resourceType,
-      properties: {}, // no silent drops in the template
+      properties: {}, // no SDK-unwired properties in the template
       provisionedBy: 'cc-api',
     });
     expect(decision.provisionedBy).toBe('cc-api');
@@ -184,13 +184,13 @@ describe('ProviderRegistry.getProviderFor', () => {
     expect(decision.provider).toBe(sdk);
   });
 
-  it('routes a Tier 1 type with no silent-drop properties to the SDK provider', () => {
+  it('routes a Tier 1 type with no SDK-unwired properties to the SDK provider', () => {
     const registry = new ProviderRegistry();
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const sdk = stubSdkProvider();
     registry.register(fx.resourceType, sdk);
 
-    // Pass an empty property bag — no silent drops to trigger CC.
+    // Pass an empty property bag — no SDK-unwired properties to trigger CC.
     const decision = registry.getProviderFor({
       resourceType: fx.resourceType,
       properties: {},
@@ -200,9 +200,9 @@ describe('ProviderRegistry.getProviderFor', () => {
     expect(decision.ccRouteReason).toBeUndefined();
   });
 
-  it('auto-routes via Cloud Control when an SDK type would silent-drop a property (#614)', () => {
+  it('auto-routes via Cloud Control when an SDK type would leave a property unwired (#614)', () => {
     const registry = new ProviderRegistry();
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const sdk = stubSdkProvider();
     registry.register(fx.resourceType, sdk);
 
@@ -216,7 +216,7 @@ describe('ProviderRegistry.getProviderFor', () => {
   });
 
   it('partial --allow-unsupported-properties override still triggers CC for the non-overridden drops', () => {
-    const pair = pickSilentDropPair();
+    const pair = pickSdkUnwiredPair();
     const registry = new ProviderRegistry();
     const sdk = stubSdkProvider();
     registry.register(pair.resourceType, sdk);
@@ -235,7 +235,7 @@ describe('ProviderRegistry.getProviderFor', () => {
   });
 
   it('full --allow-unsupported-properties override keeps the resource on the SDK provider', () => {
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const registry = new ProviderRegistry();
     const sdk = stubSdkProvider();
     registry.register(fx.resourceType, sdk);
@@ -245,8 +245,8 @@ describe('ProviderRegistry.getProviderFor', () => {
       resourceType: fx.resourceType,
       properties: { [fx.property]: 'allowed' },
     });
-    // Every silent-drop property is in the allow set → SDK Provider
-    // path, the user has explicitly opted into the silent drop.
+    // Every SDK-unwired property is in the allow set → SDK Provider
+    // path, the user has explicitly opted into leaving it unwritten.
     expect(decision.provisionedBy).toBe('sdk');
     expect(decision.provider).toBe(sdk);
   });
@@ -282,7 +282,7 @@ describe('ProviderRegistry.getProviderFor', () => {
 });
 
 describe('ProviderRegistry.findAutoRouteHits', () => {
-  it('returns [] when no resource has actionable silent drops', () => {
+  it('returns [] when no resource has actionable SDK-unwired properties', () => {
     const registry = new ProviderRegistry();
     expect(registry.findAutoRouteHits([])).toEqual([]);
     expect(
@@ -292,8 +292,8 @@ describe('ProviderRegistry.findAutoRouteHits', () => {
     ).toEqual([]);
   });
 
-  it('returns one hit per resource with un-allowed silent-drop properties', () => {
-    const fx = pickSilentDropFixture();
+  it('returns one hit per resource with un-allowed SDK-unwired properties', () => {
+    const fx = pickSdkUnwiredFixture();
     const registry = new ProviderRegistry();
     const hits = registry.findAutoRouteHits([
       {
@@ -311,8 +311,8 @@ describe('ProviderRegistry.findAutoRouteHits', () => {
     ]);
   });
 
-  it('excludes a resource whose silent drops are entirely in the allow set', () => {
-    const fx = pickSilentDropFixture();
+  it('excludes a resource whose SDK-unwired properties are entirely in the allow set', () => {
+    const fx = pickSdkUnwiredFixture();
     const registry = new ProviderRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
     const hits = registry.findAutoRouteHits([
@@ -330,11 +330,11 @@ describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallbac
   // AWS::FSx::FileSystem sets `disableCcApiFallback = true` (Cloud Control has
   // NO handlers for the type — NON_PROVISIONABLE in the CFn registry) but, as
   // of issue #1068, its SDK provider handles ALL four variant config blocks
-  // (Lustre / Windows / ONTAP / OpenZFS), so there are no silent-drop entries
+  // (Lustre / Windows / ONTAP / OpenZFS), so there are no SDK-unwired entries
   // left to trip the guard — every variant template SDK-routes cleanly. The
   // guard itself (a `disableCcApiFallback` provider whose template DOES carry
-  // a silent-drop property must fail pre-flight rather than CC-route) is
-  // exercised generically below via `pickSilentDropFixture()`.
+  // an SDK-unwired property must fail pre-flight rather than CC-route) is
+  // exercised generically below via `pickSdkUnwiredFixture()`.
   const FSX = 'AWS::FSx::FileSystem';
 
   const fsxStub = (): ResourceProvider =>
@@ -358,7 +358,7 @@ describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallbac
     }
   });
 
-  it('does not reject any FSx variant template pre-flight (no silent drops)', () => {
+  it('does not reject any FSx variant template pre-flight (no SDK-unwired properties)', () => {
     const registry = new ProviderRegistry();
     registry.register(FSX, fsxStub());
     expect(() =>
@@ -387,7 +387,7 @@ describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallbac
     ).not.toThrow();
   });
 
-  it('does not throw for a Lustre-only FSx template (no silent drops)', () => {
+  it('does not throw for a Lustre-only FSx template (no SDK-unwired properties)', () => {
     const registry = new ProviderRegistry();
     const provider = fsxStub();
     registry.register(FSX, provider);
@@ -414,7 +414,7 @@ describe('CC auto-route viability guard (NON_PROVISIONABLE / disableCcApiFallbac
   });
 
   it('a provider-level disableCcApiFallback opt-out also blocks the auto-route (CC-provisionable type)', () => {
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const registry = new ProviderRegistry();
     const provider = { ...stubSdkProvider(), disableCcApiFallback: true } as ResourceProvider;
     registry.register(fx.resourceType, provider);

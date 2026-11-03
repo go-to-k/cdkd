@@ -2,7 +2,7 @@ import { TemplateParser } from '../../analyzer/template-parser.js';
 import { findUnrewrittenAssetReferences } from '../../assets/asset-redirect.js';
 import {
   acceptedCreateOnlyDropsEvidence,
-  withoutSilentDropProperties,
+  withoutSdkUnwiredProperties,
 } from '../../provisioning/property-coverage.js';
 import { acceptedCreateOnlyDropsOf, type ResourceState } from '../../types/state.js';
 import type { CloudFormationTemplate, EffectivePropertiesResult } from '../../types/resource.js';
@@ -120,10 +120,10 @@ export function withPropertiesMarksOf<T extends object>(original: unknown, rebui
  * and the engine records that instead.
  *
  * The SECOND narrowing (issue #2750) is the ROUTE's, not a provider's, and
- * the provider cannot report it: a silent-drop property is one the SDK
+ * the provider cannot report it: an SDK-unwired property is one the SDK
  * Provider has no wiring for at all, so it never sees the key to say it
  * dropped it. `provisionedBy === 'sdk'` is the whole condition — on that
- * route `getProviderFor` has already established that every silent drop in
+ * route `getProviderFor` has already established that every SDK-unwired property in
  * this bag is allow-listed (an un-allowed one would have auto-routed the
  * resource to Cloud Control, which forwards the full map), so "what the SDK
  * route writes" and "what this deploy's flags permit dropping" are the same
@@ -157,7 +157,7 @@ export function propertiesToRecord(
   // (`NestedStackProvider`, issue #4453); the narrowing below keeps that mark
   // only when it removes nothing, so such a provider narrows first.
   //
-  // The mark goes on AFTER the route's silent-drop narrowing (issue #2750),
+  // The mark goes on AFTER the route's SDK-unwired narrowing (issue #2750),
   // never before: that helper returns a NEW object whenever it drops a key,
   // so a mark taken first would sit on an object the record never holds.
   // Narrowing a bag this pass resolved leaves it this pass's own, so the
@@ -177,14 +177,14 @@ export function propertiesToRecord(
     return markWrittenFromDeployedTemplate(
       markLeafCertifiedBag(
         provisionedBy === 'sdk'
-          ? withoutSilentDropProperties(resourceType, result.effectiveProperties)
+          ? withoutSdkUnwiredProperties(resourceType, result.effectiveProperties)
           : result.effectiveProperties
       )
     );
   }
   const written =
     provisionedBy === 'sdk'
-      ? withoutSilentDropProperties(resourceType, desiredProperties)
+      ? withoutSdkUnwiredProperties(resourceType, desiredProperties)
       : desiredProperties;
   return markWrittenFromDeployedTemplate(markSameGenerationBag(written));
 }
@@ -218,7 +218,7 @@ export function extractTemplateAttributes(
  * the EVIDENCE that a create-only key in the record never reached AWS.
  *
  * - `'new-resource'` (an SDK-route CREATE or REPLACEMENT): every create-only
- *   silent drop `recordedProperties` holds. On the SDK route each one was
+ *   SDK-unwired property `recordedProperties` holds. On the SDK route each one was
  *   allow-listed (an un-allowed drop routes to Cloud Control) and the resource
  *   was built without it.
  * - `'in-place'` (an SDK-route UPDATE of the same physical resource): only the

@@ -3,7 +3,7 @@
 #
 # Asserts that a single PAY_PER_REQUEST DynamoDB table whose template sets
 # every #609 backfill property has all of them reach AWS after `cdkd deploy`
-# (each was a silent-drop before the #609 backfill):
+# (each was SDK-unwired before the #609 backfill):
 #
 #   - OnDemandThroughput.MaxReadRequestUnits / MaxWriteRequestUnits
 #     (via describe-table Table.OnDemandThroughput)
@@ -12,7 +12,7 @@
 #   - ContributorInsightsSpecification (via describe-contributor-insights)
 #
 # Also asserts the table routes via the SDK provider (provisionedBy=sdk) so a
-# silent-drop routing flip is caught, and that the destroy path cleans up the
+# SDK-unwired routing flip is caught, and that the destroy path cleans up the
 # table, the Kinesis stream, and the cdkd state file.
 #
 # Phase 1.56 exercises the REMOVAL direction of the same property (issue
@@ -217,12 +217,12 @@ fi
 # --- Routing guard: table routed via the SDK provider -----------------
 # Every top-level Table property the fixture sets is in the provider's
 # handledProperties, so the resource MUST route via the SDK path (not the
-# CC-API #614 silent-drop fallback). If provisionedBy flipped (e.g. an
-# unhandled silent-drop sneaked in), the backfill closure being tested IS
+# CC-API #614 SDK-unwired fallback). If provisionedBy flipped (e.g. an
+# SDK-unwired property sneaked in), the backfill closure being tested IS
 # on the wrong code path.
 PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::DynamoDB::Table") | .value.provisionedBy] | first // "sdk"')
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: AWS::DynamoDB::Table routed via '${PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip — backfill is on the wrong path)" >&2
+  echo "FAIL: AWS::DynamoDB::Table routed via '${PROVISIONED_BY}', expected 'sdk' (SDK-unwired routing flip — backfill is on the wrong path)" >&2
   exit 1
 fi
 echo "    OK: AWS::DynamoDB::Table routed via SDK provider (provisionedBy=sdk)"

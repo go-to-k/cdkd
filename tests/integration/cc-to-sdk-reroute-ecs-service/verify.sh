@@ -159,7 +159,7 @@ echo "==> Resource under test: ${LOGICAL_ID}"
 
 ARN_RE='^arn:aws[-a-z]*:ecs:[a-z0-9-]+:[0-9]{12}:service/[^|/]+/[^|/]+$'
 
-echo "==> Phase 1: Deploy (SDK route by default -- Service has no silent drops)"
+echo "==> Phase 1: Deploy (SDK route by default -- Service has no SDK-unwired properties)"
 env CDKD_TEST_PHASE=base \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 P0=$(record '.physicalId')

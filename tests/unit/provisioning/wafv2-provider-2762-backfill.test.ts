@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 
 // Issue #2762: `AWS::WAFv2::WebACL` `DataProtectionConfig`,
 // `OnSourceDDoSProtectionConfig`, `ApplicationConfig` and `MonetizationConfig`
-// used to be silent drops, which routed the whole web ACL through Cloud
+// used to be SDK-unwired, which routed the whole web ACL through Cloud
 // Control. Each now rides `CreateWebACL` / `UpdateWebACL` and reads back from
 // `GetWebACL`; `ApplicationConfig` is sent on an update only when it changed.
 

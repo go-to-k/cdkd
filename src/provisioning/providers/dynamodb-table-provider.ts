@@ -3070,7 +3070,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       //    stays PROVISIONED) actually reaches AWS instead of being silently
       //    dropped (state would otherwise record the new value as applied and
       //    the next deploy would see no diff — the throw-not-swallow / no-
-      //    silent-drop rule);
+      //    SDK-unwired rule);
       //  - a pure BillingMode switch (PROVISIONED <-> PAY_PER_REQUEST) reaches
       //    AWS;
       //  - a combined switch-to-PROVISIONED-with-caps sends both in ONE call,
@@ -4134,7 +4134,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
       // StreamViewType, or removing a stream were ALL silently dropped: the
       // deploy reported success while AWS kept the old stream config, and the
       // next diff saw no change (state recorded the new spec), so it could
-      // never self-heal (the throw-not-swallow / no-silent-drop rule).
+      // never self-heal (the throw-not-swallow / no-SDK-unwired rule).
       //
       // Three transitions, keyed off whether the spec is present on each side:
       //  - enable  (new present, previous absent): StreamEnabled: true + the
@@ -6754,7 +6754,7 @@ export class DynamoDBTableProvider implements ResourceProvider {
         // diff keys GSIs by name, so it would NOT emit a remove-then-add pair
         // for an in-place key/projection edit; applying only a throughput Update
         // (or nothing) would silently drop the change and record state as if it
-        // applied. Fail loud instead (the no-silent-drop rule) so the user
+        // applied. Fail loud instead (the no-SDK-unwired rule) so the user
         // renames the index (forcing remove + add) or accepts a table replace.
         if (
           !sameJsonValue(before.KeySchema, gsi.KeySchema) ||

@@ -9,7 +9,7 @@
 #
 #   DataProtectionConfig, OnSourceDDoSProtectionConfig
 #
-# Before #2762 each was a silent drop that routed the WHOLE web ACL through
+# Before #2762 each was an SDK-unwired property that routed the WHOLE web ACL through
 # Cloud Control, which configures the same live web ACL -- so the
 # `provisionedBy=sdk` assertion, the first check after the deploy, is what
 # tells the fix from that fallback.

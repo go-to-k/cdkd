@@ -47,7 +47,7 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import { getLogger } from '../../utils/logger.js';
-import { withoutSilentDropProperties } from '../property-coverage.js';
+import { withoutSdkUnwiredProperties } from '../property-coverage.js';
 // Leaf module by design — see the note in nested-stack-messages.ts: importing
 // this builder from anywhere on the provider/destroy-runner ring re-creates the
 // cycle it was extracted to break.
@@ -133,7 +133,7 @@ const NESTED_STACK_TYPE = 'AWS::CloudFormation::Stack';
  * skipped DELETEs, or `undefined` (record the desired bag) when there are none.
  *
  * Shaped exactly like the bag the engine records itself, plus the key: the
- * SDK route's silent drops (`Tags`, `TimeoutInMinutes`, ...) are removed
+ * SDK route's SDK-unwired properties (`Tags`, `TimeoutInMinutes`, ...) are removed
  * FIRST, and the result is then marked same-generation. `properties` is this
  * pass's own resolution of the template, which is the one fact the persist
  * choke point needs to tokenize a short secret in the row's `Parameters` (the
@@ -150,7 +150,7 @@ function recordWithPendingChildDeletes(
 ): Record<string, unknown> | undefined {
   if (pendingChildDeletes <= 0) return undefined;
   return markSameGenerationBag({
-    ...withoutSilentDropProperties(NESTED_STACK_TYPE, properties),
+    ...withoutSdkUnwiredProperties(NESTED_STACK_TYPE, properties),
     [PENDING_CHILD_DELETES_KEY]: pendingChildDeletes,
   });
 }

@@ -429,7 +429,7 @@ export function emrClusterProtectionSite(
 export class EMRClusterProvider implements ResourceProvider {
   /**
    * Cloud Control has NO handlers for this type (`ProvisioningType:
-   * NON_PROVISIONABLE`), so the deploy engine's #614 silent-drop auto-route
+   * NON_PROVISIONABLE`), so the deploy engine's #614 SDK-unwired auto-route
    * MUST NOT send an unhandled-property EMR template to CC — it would fail at
    * provisioning time with an opaque UnsupportedActionException. With this
    * opt-out the ProviderRegistry rejects such templates pre-flight with a

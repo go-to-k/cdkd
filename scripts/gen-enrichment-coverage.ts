@@ -20,7 +20,7 @@
  * Two ways a type reaches the CC-API path (and thus `enrichResourceAttributes`):
  *   1. It has NO SDK provider — every operation routes through Cloud Control
  *      (pure Tier 2, e.g. `AWS::ElastiCache::ReplicationGroup`).
- *   2. It HAS an SDK provider but its template sets a silent-drop top-level
+ *   2. It HAS an SDK provider but its template sets an SDK-unwired top-level
  *      property — the #614 routing rule then sends the ENTIRE resource through
  *      Cloud Control, bypassing the SDK provider's `create()` and the typed
  *      attribute writes it would have done (e.g. `AWS::RDS::DBInstance`,
@@ -65,9 +65,9 @@
  * The cached fixtures cover only types that have an SDK provider (the refresh
  * script fetches the registered Tier 1 set). For those, the SDK provider's
  * `create()` populates the typed attributes on the PRIMARY path; enrichment is
- * only the #614 silent-drop FALLBACK. So a gap on an SDK-backed type is
+ * only the #614 SDK-unwired FALLBACK. So a gap on an SDK-backed type is
  * `sdk-fallback-gap` (informational — only the rare CC-fallback path is
- * exposed, and only when the template trips silent-drop routing). A gap on a
+ * exposed, and only when the template trips SDK-unwired routing). A gap on a
  * type with NO SDK provider (pure Tier 2) is `unenriched-computed` — the REAL
  * bug class (#844 / #864 / #865 / #866), because the CC-API path is the ONLY
  * path and the computed attribute would always fall through to the physicalId.

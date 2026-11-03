@@ -12,7 +12,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
  * each routed through Cloud Control and each declaring `DeletionPolicy: Delete`:
  *
  *   - An Aurora PostgreSQL `AWS::RDS::DBCluster` that is a member of an
- *     `AWS::RDS::GlobalCluster` (`GlobalClusterIdentifier` is a silent drop for
+ *     `AWS::RDS::GlobalCluster` (`GlobalClusterIdentifier` is SDK-unwired for
  *     cdkd's SDK provider, so the cluster is Cloud Control-routed). cdkd must
  *     detach it from the global cluster and delete it without a snapshot.
  *   - An `AWS::Neptune::DBCluster` (moved onto Cloud Control by verify.sh's

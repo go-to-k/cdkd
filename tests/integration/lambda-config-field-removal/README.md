@@ -68,7 +68,7 @@ deleted synchronously and would leak between runs.
 
 Each phase carries the matching #609 assertions: phase 1 also checks all four
 properties reached AWS and that both functions were routed through the SDK
-provider (`provisionedBy=sdk`, so a silent-drop re-route to Cloud Control would
+provider (`provisionedBy=sdk`, so an SDK-unwired re-route to Cloud Control would
 fail the run); phase 2 also checks the two removal spellings above.
 
 `Layers` removal is covered by unit tests only: an integ layer would need an

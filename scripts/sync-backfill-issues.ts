@@ -46,8 +46,8 @@
  * script may swallow its status.
  *
  *   1. **A plan with no types, while open sub-issues exist.** "The campaign is
- *      finished" and "the parser stopped recognising `silentDrop`" render
- *      identically as an empty `types` array, and `parseSilentDropByType` throws
+ *      finished" and "the parser stopped recognising `sdkUnwired`" render
+ *      identically as an empty `types` array, and `parseSdkUnwiredByType` throws
  *      only on zero type BOUNDARIES — a drifted inner regex parses 44 types into
  *      0 groups without erroring. Reading that as finished mass-closes the whole
  *      campaign on a green run. Genuine completion happens once, ever, and
@@ -272,7 +272,7 @@ export function planReconciliation(
     throw new ReconcileRefusal(
       `the plan carries no resource types while ${openCount} sub-issue(s) are open. That is ` +
         'either a finished campaign or a coverage-map parse that stopped recognising ' +
-        'silentDrop, and the two are indistinguishable from here. Re-run with ' +
+        'sdkUnwired, and the two are indistinguishable from here. Re-run with ' +
         '--allow-empty-plan to confirm the campaign is genuinely complete.'
     );
   }

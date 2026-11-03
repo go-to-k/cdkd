@@ -418,7 +418,7 @@ describe('DeployEngine - auto-refresh observed-properties on v2 state load', () 
     // Found by the sibling-site sweep on issue #2608 (whose subject is the
     // post-UPDATE capture). This site used the legacy `getProvider` entry
     // point, which passes NO recorded layer — so a record stamped
-    // `provisionedBy: 'cc-api'` (silent-drop auto-route, issue #614) had its
+    // `provisionedBy: 'cc-api'` (SDK-unwired auto-route, issue #614) had its
     // drift BASELINE read back through the SDK provider. The bag then
     // describes a layer state does not name, and since this bag IS the
     // baseline, the very next `cdkd drift` reports the shape difference as

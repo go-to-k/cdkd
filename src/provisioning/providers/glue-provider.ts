@@ -4102,7 +4102,7 @@ function findIcebergTableInputKey(properties: Record<string, unknown>): string |
  * routes it to `CloudControlProvider`, which forwards the property to
  * CloudFormation and gets AWS's rollback instead of this message. That route is
  * opt-in only (`--recreate-via-cc-api`, or a legacy state record) —
- * `AWS::Glue::Table` has an empty `silentDrop` map, so no ordinary deploy takes
+ * `AWS::Glue::Table` has an empty `sdkUnwired` map, so no ordinary deploy takes
  * it. The outcome there is still a failure, just a later and less helpful one,
  * which is why this is documented rather than duplicated into the CC provider.
  *

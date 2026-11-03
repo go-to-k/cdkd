@@ -1,7 +1,7 @@
 /**
  * `cdkd diff` on a type with no Cloud Control route (issue
  * [#5600](https://github.com/go-to-k/cdkd/issues/5600)): a type like
- * `AWS::DocDB::DBCluster` with a silent-drop property printed `[via CC API: ...]`,
+ * `AWS::DocDB::DBCluster` with an SDK-unwired property printed `[via CC API: ...]`,
  * and `--json` carried the same claim in `ccApi`, while the deploy refuses the
  * resource pre-flight. (`AWS::CodeBuild::Project` `Triggers` was the report; #5627
  * wired it.)
@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-// go-to-k/cdkd#5628 wired the last silent drops of `AWS::DocDB::DBCluster`, and
+// go-to-k/cdkd#5628 wired the last SDK-unwired properties of `AWS::DocDB::DBCluster`, and
 // no other type without a Cloud Control route has a drop this case can use. The
 // guard still serves the next drop a schema refresh adds, so the cluster's
 // coverage is held at what it read before #5628: the restore keys as drops.
@@ -33,7 +33,7 @@ vi.mock('../../../src/provisioning/property-coverage.generated.js', async (impor
     handled: new Set(
       [...(cluster['handled'] as Set<string>)].filter((key) => !restoreKeys.includes(key))
     ),
-    silentDrop: new Map(restoreKeys.map((key) => [key, 'not yet implemented by cdkd'])),
+    sdkUnwired: new Map(restoreKeys.map((key) => [key, 'not yet implemented by cdkd'])),
     createOnlyDrops: new Set(['SnapshotIdentifier', 'SourceDBClusterIdentifier']),
   });
   return { ...orig, PROPERTY_COVERAGE_BY_TYPE: coverage };

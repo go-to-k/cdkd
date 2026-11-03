@@ -211,8 +211,8 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
       // Read at ONE place the engine reaches on these paths -- the input to
-      // the mocked `calculateDiff` -- and NOT by `withoutSilentDropProperties`,
-      // which takes no allow set. So the override in the SDK silent-drop case
+      // the mocked `calculateDiff` -- and NOT by `withoutSdkUnwiredProperties`,
+      // which takes no allow set. So the override in the SDK-unwired case
       // below is inert for what that case asserts; it is set because a real
       // `--allow-unsupported-properties` run is the population the case
       // describes, not because the record-side narrowing consults it
@@ -793,9 +793,9 @@ describe('DeployEngine - an embedded 1-3 character secret persists as its token 
     expect(JSON.stringify(savedState())).not.toContain(PORT_LITERAL_PLAINTEXT);
   });
 
-  it('the record\'s bag is marked AFTER the route drops a silent-drop key, so the narrowed object is the marked one', async () => {
+  it('the record\'s bag is marked AFTER the route drops an SDK-unwired key, so the narrowed object is the marked one', async () => {
     // The merge of issue #2750's route narrowing with this fix (PR 2753,
-    // maintainer-checklist round 4). `withoutSilentDropProperties` returns a
+    // maintainer-checklist round 4). `withoutSdkUnwiredProperties` returns a
     // NEW object whenever it removes a key, so marking before it would leave
     // the mark on an object the record never holds and the embedded leaf back
     // in plaintext. Every other case in this file drops nothing, which is why
