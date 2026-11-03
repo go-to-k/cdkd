@@ -3,7 +3,10 @@ import { safeMsg } from '../utils/display-safe.js';
 import { ProvisioningError } from '../utils/error-handler.js';
 
 /** The types whose create restores from `SourceDBClusterIdentifier`. */
-const RESTORING_TYPES: ReadonlySet<string> = new Set(['AWS::Neptune::DBCluster']);
+const RESTORING_TYPES: ReadonlySet<string> = new Set([
+  'AWS::DocDB::DBCluster',
+  'AWS::Neptune::DBCluster',
+]);
 
 /** Where a call runs, as far as the caller knows. */
 export interface RestoreSourceScope {
@@ -30,8 +33,22 @@ function elsewhere(identifier: string, scope: RestoreSourceScope): boolean {
 }
 
 /**
+ * Whether `snapshot` is one of the automated snapshots of cluster `name`
+ * (`rds:<cluster>-YYYY-MM-DD-HH-MM`, or its ARN): AWS deletes those with the
+ * cluster, where a manual snapshot survives it (go-to-k/cdkd#5628).
+ */
+function automatedSnapshotOf(snapshot: string, name: string): boolean {
+  const id = snapshot.startsWith('arn:')
+    ? (snapshot.split(':cluster-snapshot:')[1] ?? '')
+    : snapshot;
+  const match = /^rds:(.+)-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}$/i.exec(id);
+  return match !== null && match[1]!.toLowerCase() === name;
+}
+
+/**
  * Refuses a restore whose source is the very cluster `physicalId` names
- * (#5638). Every delete-first replacement calls this BEFORE its delete: the
+ * (#5638), or one of that cluster's automated snapshots, which its delete
+ * removes too (go-to-k/cdkd#5628). Every delete-first replacement calls this BEFORE its delete: the
  * restore after it would read a source that no longer exists. A final snapshot
  * under `UpdateReplacePolicy: Snapshot` keeps the data, but this restore never
  * reads it. The provider's create calls it too, where a replacement's name may
@@ -46,6 +63,21 @@ export function refuseRestoreFromItself(
   scope: RestoreSourceScope
 ): void {
   if (!RESTORING_TYPES.has(resourceType)) return;
+  const snapshot = properties['SnapshotIdentifier'];
+  if (
+    typeof snapshot === 'string' &&
+    automatedSnapshotOf(snapshot, clusterName(physicalId)) &&
+    !elsewhere(snapshot, scope)
+  ) {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`${resourceType} ${logicalId}: SnapshotIdentifier names an automated snapshot of the cluster this creates or replaces, which its delete removes; restore from a manual snapshot instead. Nothing was changed.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
   const source = properties['SourceDBClusterIdentifier'];
   if (typeof source !== 'string' || clusterName(source) !== clusterName(physicalId)) return;
   if (elsewhere(source, scope)) return;

@@ -14,7 +14,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **provider-registry.ts** - The ROUTING decision, in order: Custom Resource -> CR provider; a `provisionedBy: 'cc-api'` record -> Cloud Control, STICKY unless `wouldReturnToSdkProvider` says otherwise (one spelling, shared with `cdkd diff`; per-type escapes in `STICKY_CC_MIGRATION_EXEMPT` — #2719); an SDK provider with no silent-drop property -> that one; a silent drop -> Cloud Control, unless `NON_PROVISIONABLE` or `disableCcApiFallback` refuse it pre-flight. **DELETE logic as much as create logic**, hence in the `integ-destroy` gate scope.
 
-- **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it, not its own pool.
+- **name-lookup.ts** - helpers for `lookupNames` (#4705). `withApiLimit` is PROCESS-wide per API key, so `deploy --all` shares one limit; a new lookup must go through it.
 
 - **import-helpers.ts** - `resolveExplicitPhysicalId` + `normalizeAwsTagsToCfn` for `import()`. The normalizer strips `aws:`-prefixed tags (false drift).
 
@@ -32,11 +32,11 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **delete-started.ts** - `markDeleteStarted`: a `delete()` that changed the resource (a detach, a disable) before a refused terminal call marks its error, so a replacement's `replacedDeleteFailureVerdict` reads `'unconfirmed'` and a rollback never re-adopts the stripped survivor (#4946). Mark after a strip whose failure propagates, before one whose failure is swallowed. A LEAF.
 
-- **restore-source-guard.ts** - Refuses a self-restore before any delete (#5638). A LEAF.
+- **restore-source-guard.ts** - Refuses a restore from the cluster or its automated snapshot before any delete, rollback's too (#5628). A LEAF.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
 
-- **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: only `pending` and NO state are unsettled. Shared by the provider and the resolver's live arm. A LEAF.
+- **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: only `pending` and NO state are unsettled. A LEAF.
 
 - **changed-properties-consumers.ts** - `changedProperties` readers (#5112) whose readback returns the keys read get its NoEcho readback. A LEAF.
 

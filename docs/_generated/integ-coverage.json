@@ -1111,6 +1111,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "lambda-esm-documentdb"
       ],
       "signals": {
@@ -1123,6 +1124,10 @@
         ],
         "docdb-neptune": [
           "l1"
+        ],
+        "docdb-restore": [
+          "l1",
+          "literal"
         ],
         "lambda-esm-documentdb": [
           "l1",
@@ -1156,6 +1161,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "lambda-esm-documentdb"
       ],
       "signals": {
@@ -1166,6 +1172,9 @@
           "l1"
         ],
         "docdb-neptune": [
+          "l1"
+        ],
+        "docdb-restore": [
           "l1"
         ],
         "lambda-esm-documentdb": [
@@ -1449,6 +1458,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -1546,6 +1556,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -1725,6 +1738,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -1818,6 +1832,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -2016,6 +2033,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -2112,6 +2130,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -2290,6 +2311,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -2387,6 +2409,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -2808,6 +2833,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -2914,6 +2940,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -3128,6 +3157,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -3221,6 +3251,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -3389,6 +3422,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -3499,6 +3533,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -3726,6 +3763,7 @@
         "docdb-fix-forward-orphan",
         "docdb-global-cluster",
         "docdb-neptune",
+        "docdb-restore",
         "drift-revert-arrays",
         "drift-revert-vpc",
         "ec2-instance",
@@ -3822,6 +3860,9 @@
           "l2"
         ],
         "docdb-neptune": [
+          "l2"
+        ],
+        "docdb-restore": [
           "l2"
         ],
         "drift-revert-arrays": [
@@ -8985,6 +9026,7 @@
     "AWS::Cognito::UserPoolUser",
     "AWS::Cognito::UserPoolUserToGroupAttachment",
     "AWS::DSQL::Cluster",
+    "AWS::DocDB::DBClusterParameterGroup",
     "AWS::DocDB::GlobalCluster",
     "AWS::EC2::LaunchTemplate",
     "AWS::EC2::PlacementGroup",

@@ -933,6 +933,11 @@
       "scenarios": []
     },
     {
+      "name": "docdb-restore",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "docker-image-asset",
       "annotated": true,
       "scenarios": [
@@ -3601,6 +3606,7 @@
     "diff-fail-on-destructive",
     "docdb-fix-forward-orphan",
     "docdb-global-cluster",
+    "docdb-restore",
     "dynamodb-autoscaling",
     "dynamodb-fix-forward-orphan",
     "dynamodb-globaltable-implied-stream",
