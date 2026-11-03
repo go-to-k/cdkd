@@ -151,11 +151,13 @@ import {
   beginDeleteWait,
   compensateRemovedDeletionProtection,
   DYNAMODB_DELETE_DEADLINE_MARGIN_MS,
+  DYNAMODB_DELETE_POLL_COST_MS,
   deleteBudgetKey,
   isTerminalDeleteFailure,
   resolveDynamoDbDeleteBudgetClock,
   resolveDynamoDbDeleteBudgetMs,
 } from './dynamodb-delete-budget.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import { ElapsedBudget, ElapsedBudgetRegistry } from '../../utils/elapsed-budget.js';
 import {
   createMaskedLogSinks,
@@ -646,6 +648,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * reason too — one provider instance serves a whole level's tables at once.
    */
   private readonly protectionFlips = new ProtectionFlipRegistry();
+
+  /**
+   * go-to-k/cdkd#5699: the replica regions each in-flight delete has dropped,
+   * keyed as the allowance above and for the same reason: a re-entered
+   * `delete()` reads a source table that no longer lists them, so a per-call
+   * list would forget the copies the first attempt left `DELETING`, and the
+   * destroy would return over them. Released where the allowance is.
+   */
+  private readonly droppedReplicaRegions = new Map<string, Set<string>>();
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -8558,6 +8569,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     // go-to-k/cdkd#2762: the index-busy lines name a vector index only on a
     // table that has one, so every other table's text stays as it was.
     let indexNoun: string | undefined;
+    // go-to-k/cdkd#5699: the regions whose replica this delete dropped, so the
+    // destroy waits for each regional copy to be gone, not only for the
+    // source table to stop listing it. Carried across a re-entry.
+    const droppedKey = deleteBudgetKey(physicalId, context?.expectedRegion);
+    const droppedReplicaRegions = this.droppedReplicaRegions.get(droppedKey) ?? new Set<string>();
+    this.droppedReplicaRegions.set(droppedKey, droppedReplicaRegions);
     try {
       const describe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -8628,6 +8645,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             budget,
             context?.maskSecrets
           );
+          droppedReplicaRegions.add(region);
           // go-to-k/cdkd#5581: the read teardown above names only the read
           // dimension; DynamoDB also registered the replica's WRITE target
           // there, which survives the replica and the table.
@@ -8883,6 +8901,41 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
         budget,
         context?.maskSecrets
       );
+      // go-to-k/cdkd#5699: each dropped replica's regional copy stays DELETING
+      // for minutes after the source table stops listing it. Wait for it to be
+      // gone, as `AWS::DynamoDB::Table` does (#5514): a dependent (a
+      // replica-region KMS key, a role) must not be deleted under a live copy,
+      // and a gone-probe right after the destroy must not see it. The copies
+      // were deleting while the source table was, so this costs only what is
+      // left. Regions in parallel; the delete is ACCEPTED, so a cap, a Ctrl-C
+      // or an unreadable status warns and returns (`delete-gone-wait.ts`).
+      // Only a delete: an update's replica removal keeps not waiting (#5581).
+      await Promise.all(
+        [...droppedReplicaRegions].map((region) =>
+          waitForGoneAfterDelete({
+            what: deleteMask(`DynamoDB GlobalTable ${physicalId} replica in ${region}`),
+            resourceType,
+            consequence:
+              `AWS finishes the delete on its side; until it does, the table still exists in ` +
+              `${region}, and a dependent deleted in the meantime (such as its KMS key) goes ` +
+              `while it is still in use.`,
+            describe: async () => {
+              try {
+                const out = await this.getRegionalClient(region).send(
+                  new DescribeTableCommand({ TableName: physicalId })
+                );
+                return out.Table?.TableStatus ?? 'UNKNOWN';
+              } catch (describeError) {
+                if (describeError instanceof ResourceNotFoundException) return undefined;
+                throw describeError;
+              }
+            },
+            logger: loopLogger,
+            pollIntervalMs: replicaDeleteGoneWait.pollIntervalMs,
+            maxWaitMs: Math.min(replicaDeleteGoneWait.maxWaitMs, budget.remainingMs()),
+          })
+        )
+      );
       this.logger.debug(`Successfully deleted DynamoDB GlobalTable ${logicalId}`);
       // TERMINAL success — the allowance has no second pass to fund, and the
       // flip record has nothing left to undo. Released together and keyed
@@ -8890,6 +8943,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the same name inherit this run's flip.
       this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
       this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+      this.droppedReplicaRegions.delete(droppedKey);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.dynamoDBClient.config.region();
@@ -8910,6 +8964,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           this.logger.debug(`DynamoDB GlobalTable ${physicalId} does not exist, skipping`);
         }
         this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+        this.droppedReplicaRegions.delete(droppedKey);
         // The table is GONE, so there is no guard to restore, and reaching this
         // line means `delete()` RETURNS rather than throwing — so the
         // compensation never runs on it. Released for the same hygiene as the
@@ -12167,6 +12222,17 @@ const VECTOR_INDEX_SETTLE_ATTEMPTS = 1800;
  * `GLOBAL_TABLE_DELETE_INDEX_BUSY_MAX_RETRIES`).
  */
 export const TABLE_GONE_WAIT_ATTEMPTS = 600;
+
+/**
+ * go-to-k/cdkd#5699: the post-delete gone-wait for each dropped replica's
+ * regional copy -- the same cap as {@link TABLE_GONE_WAIT_ATTEMPTS} at its
+ * measured poll cost (~12 min) and interval. The shared delete budget clamps
+ * it further. Mutable for tests only.
+ */
+export const replicaDeleteGoneWait = {
+  maxWaitMs: TABLE_GONE_WAIT_ATTEMPTS * DYNAMODB_DELETE_POLL_COST_MS,
+  pollIntervalMs: INDEX_SETTLE_POLL_INTERVAL_MS,
+};
 
 /**
  * Test seam for the index-busy `DeleteTable` retry's backoff (issue #1830),

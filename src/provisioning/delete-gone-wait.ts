@@ -57,6 +57,11 @@ export async function waitForGoneAfterDelete(opts: {
   resourceType: string;
   /** Resolves the still-present status, or `undefined` once the resource is gone. */
   describe: () => Promise<string | undefined>;
+  /**
+   * What a warning says the early stop leaves behind. Defaults to the
+   * name-holding services' same-name `already exists` refusal.
+   */
+  consequence?: string;
   /** The error for a TERMINAL failed status, or `undefined` to keep waiting. */
   failedStatus?: (status: string) => Error | undefined;
   logger: WaitLogger;
@@ -73,8 +78,9 @@ export async function waitForGoneAfterDelete(opts: {
   const startedAt = now();
   const stopped = `${opts.what}: the delete was ACCEPTED by AWS, but cdkd stopped waiting for it to disappear`;
   const consequence =
+    opts.consequence ??
     'AWS finishes the delete on its side; until it does, a create of the same name is refused ' +
-    'with "already exists".';
+      'with "already exists".';
 
   // Per-WAIT, never on the provider: providers are singletons serving
   // concurrent resources (interrupt-watch.ts, property 1).

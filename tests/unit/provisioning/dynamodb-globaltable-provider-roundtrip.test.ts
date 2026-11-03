@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import {
   CreateTableCommand,
@@ -122,6 +122,7 @@ import {
   DynamoDBGlobalTableProvider,
   diffReplicas,
   diffGlobalSecondaryIndexes,
+  replicaDeleteGoneWait,
 } from '../../../src/provisioning/providers/dynamodb-globaltable-provider.js';
 import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
@@ -2067,6 +2068,8 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
       mockSend.mockResolvedValueOnce({});
       // 7. waitForTableGone → RNF.
       mockSend.mockRejectedValueOnce(newRnf());
+      // 8. #5699: the eu-west-1 copy's gone-wait → RNF.
+      mockSend.mockRejectedValueOnce(newRnf());
 
       await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
         expectedRegion: 'us-east-1',
@@ -2074,7 +2077,7 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
 
       const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
       // Pre-delete describe + UpdateTable + 3 DescribeTable polls + the
-      // regional read + DeleteTable + final RNF poll.
+      // regional read + DeleteTable + final RNF poll + the regional gone-wait.
       expect(names).toEqual([
         'DescribeTableCommand', // pre-delete scan
         'UpdateTableCommand', // Delete eu-west-1
@@ -2084,7 +2087,114 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
         'DescribeTableCommand', // #5581: the replica's own table in eu-west-1 (RNF)
         'DeleteTableCommand',
         'DescribeTableCommand', // waitForTableGone -> RNF
+        'DescribeTableCommand', // #5699: the eu-west-1 copy's gone-wait -> RNF
       ]);
+    });
+
+    describe('go-to-k/cdkd#5699: the dropped replica copy gone-wait', () => {
+      const defaults = { ...replicaDeleteGoneWait };
+      beforeEach(() => {
+        replicaDeleteGoneWait.pollIntervalMs = 0;
+      });
+      afterEach(() => {
+        Object.assign(replicaDeleteGoneWait, defaults);
+      });
+
+      /** Source drops eu-west-1 at once; the local table is gone at once. */
+      const primeUpToLocalGone = (): void => {
+        mockSend.mockResolvedValueOnce({
+          Table: {
+            TableName: TABLE_NAME,
+            Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
+          },
+        }); // pre-delete scan
+        mockSend.mockResolvedValueOnce({}); // UpdateTable Delete eu-west-1
+        mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'us-east-1' }] } }); // waitForReplicaGone
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // #5581 regional read
+        mockSend.mockResolvedValueOnce({}); // DeleteTable
+        mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone
+      };
+
+      it('waits until the eu-west-1 copy reads ResourceNotFound, not only DELETING', async () => {
+        primeUpToLocalGone();
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } });
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } });
+        mockSend.mockRejectedValueOnce(newRnf());
+
+        await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+          expectedRegion: 'us-east-1',
+        });
+
+        const tail = mockSend.mock.calls.slice(-5).map((c) => c[0].constructor.name);
+        expect(tail).toEqual([
+          'DeleteTableCommand',
+          'DescribeTableCommand', // waitForTableGone -> RNF
+          'DescribeTableCommand', // eu-west-1 copy DELETING
+          'DescribeTableCommand', // eu-west-1 copy DELETING
+          'DescribeTableCommand', // eu-west-1 copy -> RNF ends the wait
+        ]);
+        expect(mockSend).toHaveBeenCalledTimes(9);
+        // The wait reads the eu-west-1 client, not the source's: the source
+        // table is already gone, so reading it would end the wait at once.
+        const regions = await Promise.all(
+          mockSend.mock.contexts
+            .slice(-3)
+            .map((client) => (client as { config: { region: () => Promise<string> } }).config.region())
+        );
+        expect(regions).toEqual(['eu-west-1', 'eu-west-1', 'eu-west-1']);
+        expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      it('still waits for a copy an earlier attempt dropped when delete() is re-entered', async () => {
+        // Attempt 1 drops eu-west-1, then DeleteTable fails.
+        mockSend.mockResolvedValueOnce({
+          Table: {
+            TableName: TABLE_NAME,
+            Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
+          },
+        });
+        mockSend.mockResolvedValueOnce({}); // UpdateTable Delete eu-west-1
+        mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'us-east-1' }] } });
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // #5581 read
+        mockSend.mockRejectedValueOnce(new Error('boom')); // DeleteTable
+        await expect(
+          provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, { expectedRegion: 'us-east-1' })
+        ).rejects.toThrow();
+
+        // Attempt 2: the source no longer lists eu-west-1.
+        mockSend.mockClear();
+        mockSend.mockResolvedValueOnce({
+          Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
+        });
+        mockSend.mockResolvedValueOnce({}); // DeleteTable
+        mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // eu-west-1 copy
+        mockSend.mockRejectedValueOnce(newRnf()); // eu-west-1 copy gone
+
+        await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+          expectedRegion: 'us-east-1',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(5);
+        const last = mockSend.mock.contexts.at(-1) as { config: { region: () => Promise<string> } };
+        expect(await last.config.region()).toBe('eu-west-1');
+      });
+
+      it('warns and returns, never throws, when the copy outlives the cap', async () => {
+        replicaDeleteGoneWait.maxWaitMs = 0;
+        primeUpToLocalGone();
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } });
+
+        await expect(
+          provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+            expectedRegion: 'us-east-1',
+          })
+        ).resolves.toBeUndefined();
+
+        const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+        expect(warned).toContain(`DynamoDB GlobalTable ${TABLE_NAME} replica in eu-west-1`);
+        expect(warned).toContain('stopped waiting');
+      });
     });
 
     it('rejects with ProvisioningError when pre-delete DescribeTable hits a non-RNF error (Item B follow-up)', async () => {

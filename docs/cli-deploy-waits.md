@@ -255,6 +255,7 @@ prints the manual wait command, and continues.
 | Kinesis stream, Firehose delivery stream | Until the stream is gone |
 | Lambda network connector | Until the connector is gone |
 | ECS service | Until `INACTIVE` |
+| DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
 
 Each wait is there for a reason:
 
@@ -274,6 +275,12 @@ Each wait is there for a reason:
   for `INACTIVE` (or for the service to be gone), as CloudFormation does, for
   up to 600 seconds or the `--resource-timeout` set for `AWS::ECS::Service`
   if longer. A wait that runs out fails the delete.
+- A DynamoDB table stays `DELETING` after `DeleteTable` returns, and a global
+  table's copy in each replica region stays `DELETING` for minutes after the
+  source table stops listing it. Until they are gone, a dependent such as a KMS
+  key would be deleted under a live table. cdkd waits for every copy, the
+  replica regions in parallel, for up to about 12 minutes. If this wait runs
+  out, cdkd warns and moves on.
 
 RDS and ElastiCache deletes do not wait, because nothing in a destroy depends
 on them.
