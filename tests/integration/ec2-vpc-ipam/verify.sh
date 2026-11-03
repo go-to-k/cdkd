@@ -117,8 +117,10 @@ fi
 
 # --- Phase 0: the region must hold no IPAM ------------------------------
 echo "==> Phase 0: pre-flight (no IPAM in ${REGION})"
+# A deleted IPAM can stay described as `delete-complete` for a while; it
+# holds no slot, so it is not counted.
 EXISTING_IPAMS=$(aws ec2 describe-ipams --region "${REGION}" \
-  --query 'Ipams[].[IpamId, State, Tags[?Key==`cdkd-integ`].Value | [0]]' --output text 2>&1) || {
+  --query 'Ipams[?State!=`delete-complete`].[IpamId, State, Tags[?Key==`cdkd-integ`].Value | [0]]' --output text 2>&1) || {
   echo "FAIL: describe-ipams failed in ${REGION}: ${EXISTING_IPAMS}" >&2
   exit 1
 }
@@ -137,6 +139,20 @@ fi
 
 echo "==> Pre-run cleanup"
 cleanup
+
+# Gone: not found, or still described in its terminal `delete-complete` state
+# (IPAM, scope and pool all have one). Any other probe failure FAILs the run
+# through gone_probe.
+ipam_resource_gone() { # usage: ipam_resource_gone <state-query> aws ec2 describe-ipam* [args...]
+  local query="$1"
+  shift
+  if gone_probe "$@"; then
+    return 0
+  fi
+  local state
+  state=$("$@" --query "${query}" --output text 2>&1) || return 1
+  [ "${state}" = "delete-complete" ]
+}
 
 read_state() {
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -
@@ -238,17 +254,20 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" destroy "${STACK}" \
 assert_gone "VPC '${VPC_ID}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${VPC_ID}" --region "${REGION}"
 # IPAM, scope and pool deletes finish asynchronously: wait for each to stop
 # being described (up to 10 minutes), then assert it is gone.
+IPAM_FAMILY_GONE=false
 for _ in $(seq 1 60); do
-  if gone_probe aws ec2 describe-ipams --ipam-ids "${IPAM_ID}" --region "${REGION}" \
-    && gone_probe aws ec2 describe-ipam-scopes --ipam-scope-ids "${SCOPE_ID}" --region "${REGION}" \
-    && gone_probe aws ec2 describe-ipam-pools --ipam-pool-ids "${POOL_ID}" --region "${REGION}"; then
+  if ipam_resource_gone 'IpamPools[0].State' aws ec2 describe-ipam-pools --ipam-pool-ids "${POOL_ID}" --region "${REGION}" \
+    && ipam_resource_gone 'IpamScopes[0].State' aws ec2 describe-ipam-scopes --ipam-scope-ids "${SCOPE_ID}" --region "${REGION}" \
+    && ipam_resource_gone 'Ipams[0].State' aws ec2 describe-ipams --ipam-ids "${IPAM_ID}" --region "${REGION}"; then
+    IPAM_FAMILY_GONE=true
     break
   fi
   sleep 10
 done
-assert_gone "IPAM pool '${POOL_ID}' still exists after destroy" aws ec2 describe-ipam-pools --ipam-pool-ids "${POOL_ID}" --region "${REGION}"
-assert_gone "IPAM scope '${SCOPE_ID}' still exists after destroy" aws ec2 describe-ipam-scopes --ipam-scope-ids "${SCOPE_ID}" --region "${REGION}"
-assert_gone "IPAM '${IPAM_ID}' still exists after destroy" aws ec2 describe-ipams --ipam-ids "${IPAM_ID}" --region "${REGION}"
+if [ "${IPAM_FAMILY_GONE}" != "true" ]; then
+  echo "FAIL: after destroy, the IPAM '${IPAM_ID}', scope '${SCOPE_ID}' or pool '${POOL_ID}' is still described in a state other than delete-complete after 10 minutes" >&2
+  exit 1
+fi
 echo "    OK: the VPC, the pool, the private scope and the IPAM are gone"
 
 assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after destroy" aws s3api head-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}"

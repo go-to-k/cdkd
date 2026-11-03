@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import {
   CreateVpcCommand,
+  GetIpamPoolAllocationsCommand,
+  ModifyVpcAttributeCommand,
   DescribeInstanceAttributeCommand,
   DescribeInstancesCommand,
   DescribeSecurityGroupsCommand,
@@ -348,5 +350,184 @@ describe('AWS::EC2::Instance backfill (#5630)', () => {
     });
     expect(declared).toMatchObject({ InstanceInitiatedShutdownBehavior: 'terminate' });
     expect(shutdownReads()).toBe(1);
+  });
+});
+
+describe('AWS::EC2::VPC backfill (#5633): review round 1', () => {
+  it('import() records the CIDR an IPAM-allocated VPC does not declare', async () => {
+    const provider = new EC2Provider();
+    const result = await provider.import({
+      logicalId: 'Vpc',
+      resourceType: 'AWS::EC2::VPC',
+      stackName: 'S',
+      region: 'us-east-1',
+      properties: { Ipv4IpamPoolId: 'ipam-pool-1' },
+      knownPhysicalId: 'vpc-new',
+    });
+    expect(result).toStrictEqual({
+      physicalId: 'vpc-new',
+      attributes: { VpcId: 'vpc-new', CidrBlock: '10.240.0.0/28' },
+    });
+  });
+
+  it('reads an IPAM VPC CIDR before the first change it sends', async () => {
+    const provider = new EC2Provider();
+    const props = { Ipv4IpamPoolId: 'ipam-pool-1', EnableDnsHostnames: true };
+    await provider.update('Vpc', 'vpc-new', 'AWS::EC2::VPC', props, {
+      ...props,
+      EnableDnsHostnames: false,
+    });
+    const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+    expect(names.indexOf('DescribeVpcsCommand')).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf('DescribeVpcsCommand')).toBeLessThan(
+      names.indexOf(ModifyVpcAttributeCommand.name)
+    );
+  });
+
+  it('reports only the pool\'s own untagged VPCs as orphans of an IPAM CreateVpc', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetIpamPoolAllocationsCommand) {
+        return Promise.resolve({
+          IpamPoolAllocations: [
+            { ResourceType: 'vpc', ResourceId: 'vpc-inpool' },
+            { ResourceType: 'vpc', ResourceId: 'vpc-inpool-tagged' },
+            { ResourceType: 'custom', ResourceId: 'vpc-notavpc' },
+          ],
+        });
+      }
+      if (cmd instanceof DescribeVpcsCommand) {
+        return Promise.resolve({
+          Vpcs: [
+            { VpcId: 'vpc-inpool', CidrBlock: '10.240.0.0/28', IsDefault: false },
+            { VpcId: 'vpc-inpool-tagged', CidrBlock: '10.240.0.16/28', IsDefault: false, Tags: [{ Key: 'x', Value: 'y' }] },
+            { VpcId: 'vpc-elsewhere', CidrBlock: '10.240.0.32/28', IsDefault: false },
+            { VpcId: 'vpc-notavpc', CidrBlock: '10.240.0.48/28', IsDefault: false },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const provider = new EC2Provider() as unknown as {
+      reportPossibleOrphanVpcs: (
+        logicalId: string,
+        match: { ipamPoolId: string },
+        sent: unknown[],
+        window: { floorMs: number; ceilingMs: number },
+        context: undefined
+      ) => Promise<void>;
+    };
+    await provider.reportPossibleOrphanVpcs(
+      'Vpc',
+      { ipamPoolId: 'ipam-pool-1' },
+      [],
+      { floorMs: 0, ceilingMs: 1 },
+      undefined
+    );
+    expect(sent(GetIpamPoolAllocationsCommand)).toEqual([
+      { IpamPoolId: 'ipam-pool-1', NextToken: undefined },
+    ]);
+    const line = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(line).toContain('a VPC allocated from IPAM pool ipam-pool-1');
+    expect(line).toContain('vpc-inpool');
+    expect(line).not.toContain('vpc-inpool-tagged');
+    expect(line).not.toContain('vpc-elsewhere');
+    expect(line).not.toContain('vpc-notavpc');
+  });
+
+  it('treats a null VpcEncryptionControl as absent and refuses a blank Mode', async () => {
+    const provider = new EC2Provider();
+    await provider.create('Vpc', 'AWS::EC2::VPC', {
+      CidrBlock: '10.0.0.0/16',
+      VpcEncryptionControl: null,
+    });
+    expect(sent(CreateVpcCommand)[0]).not.toHaveProperty('VpcEncryptionControl');
+    mockSend.mockClear();
+    await expect(
+      provider.create('Vpc', 'AWS::EC2::VPC', {
+        CidrBlock: '10.0.0.0/16',
+        VpcEncryptionControl: { Mode: '' },
+      })
+    ).rejects.toThrow(/VpcEncryptionControl.Mode must not be blank/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('names the state record in a replayed refusal, and not in a template one', async () => {
+    const provider = new EC2Provider();
+    const bad = { Ipv4IpamPoolId: 'ipam-pool-1', Ipv4NetmaskLength: 'x' };
+    const template = await provider.create('Vpc', 'AWS::EC2::VPC', bad).catch((e: unknown) => e);
+    const replay = await provider
+      .create('Vpc', 'AWS::EC2::VPC', bad, { replayingState: true })
+      .catch((e: unknown) => e);
+    expect(String(template)).not.toContain('state record being restored');
+    expect(String(replay)).toContain('The value comes from the state record being restored');
+  });
+
+  it('folds a transitional exclusion state onto the value it is moving to', async () => {
+    mockSend.mockImplementation((cmd: unknown) =>
+      Promise.resolve(
+        cmd instanceof DescribeVpcsCommand
+          ? {
+              Vpcs: [
+                {
+                  VpcId: 'vpc-1',
+                  CidrBlock: '10.0.0.0/16',
+                  EncryptionControl: {
+                    Mode: 'enforce',
+                    ResourceExclusions: {
+                      NatGateway: { State: 'enabling' },
+                      VpcPeering: { State: 'disabling' },
+                    },
+                  },
+                },
+              ],
+            }
+          : {}
+      )
+    );
+    const read = await new EC2Provider().readCurrentState('vpc-1', 'Vpc', 'AWS::EC2::VPC');
+    expect((read as Record<string, unknown>)['VpcEncryptionControl']).toEqual({
+      Mode: 'enforce',
+      NatGatewayExclusion: 'enable',
+      VpcPeeringExclusion: 'disable',
+    });
+  });
+
+  it('declares exclusions unreadable on a monitor control only', () => {
+    const provider = new EC2Provider();
+    expect(
+      provider.getDriftUnknownPaths('AWS::EC2::VPC', {
+        VpcEncryptionControl: { Mode: 'monitor', LambdaExclusion: 'enable' },
+      })
+    ).toContain('VpcEncryptionControl.LambdaExclusion');
+    expect(
+      provider.getDriftUnknownPaths('AWS::EC2::VPC', {
+        VpcEncryptionControl: { Mode: 'enforce', LambdaExclusion: 'enable' },
+      })
+    ).toEqual(['Ipv4IpamPoolId']);
+  });
+});
+
+describe('AWS::EC2::Instance backfill (#5630): review round 1', () => {
+  it('omits InstanceInitiatedShutdownBehavior when its DescribeInstanceAttribute read fails', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof DescribeInstancesCommand) {
+        return Promise.resolve({
+          Reservations: [{ Instances: [{ InstanceId: 'i-1', State: { Name: 'running' } }] }],
+        });
+      }
+      if (
+        cmd instanceof DescribeInstanceAttributeCommand &&
+        cmd.input.Attribute === 'instanceInitiatedShutdownBehavior'
+      ) {
+        return Promise.reject(Object.assign(new Error('denied'), { name: 'UnauthorizedOperation' }));
+      }
+      return Promise.resolve({});
+    });
+    const read = await new EC2Provider().readCurrentState('i-1', 'Inst', 'AWS::EC2::Instance', {
+      ImageId: 'ami-1',
+      InstanceInitiatedShutdownBehavior: 'terminate',
+    });
+    expect(read).not.toHaveProperty('InstanceInitiatedShutdownBehavior');
+    expect(read).toHaveProperty('Tags');
   });
 });

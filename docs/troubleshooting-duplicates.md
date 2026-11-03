@@ -157,6 +157,7 @@ with no tags or exactly the template's tags that this deploy did not record:
 | Call | Candidate cdkd reports | Read command | Lookup permission |
 | --- | --- | --- | --- |
 | `CreateVpc` | A VPC with the same CIDR that is not a default VPC | `describe-vpcs` | `ec2:DescribeVpcs` |
+| `CreateVpc` from an IPAM pool (`Ipv4IpamPoolId`) | A VPC the same pool allocates to, not a default VPC | `describe-vpcs` | `ec2:GetIpamPoolAllocations`, `ec2:DescribeVpcs` |
 | `CreateSubnet` | A subnet with the same CIDR in the same VPC | `describe-subnets` | `ec2:DescribeSubnets` |
 | `CreateInternetGateway` | An internet gateway attached to no VPC | `describe-internet-gateways` | `ec2:DescribeInternetGateways` |
 | `AllocateAddress` | An Elastic IP of the same domain, associated with nothing | `describe-addresses` | `ec2:DescribeAddresses` |

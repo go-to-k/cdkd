@@ -5,6 +5,7 @@ import {
   DeleteVpcCommand,
   ModifyVpcAttributeCommand,
   ModifyVpcTenancyCommand,
+  GetIpamPoolAllocationsCommand,
   DescribeVpcAttributeCommand,
   DescribeVpcsCommand,
   DescribeInternetGatewaysCommand,
@@ -1057,7 +1058,7 @@ const ec2IdsCreatedByThisProcess = new RecentIdSet();
  * What an ambiguous-create orphan report matches a VPC on: the declared
  * primary CIDR, or (go-to-k/cdkd#5633) the IPAM pool it was allocated from.
  */
-type VpcOrphanMatch = { cidrBlock: string } | { ipamPoolId: string; netmaskLength?: number };
+type VpcOrphanMatch = { cidrBlock: string } | { ipamPoolId: string };
 
 /**
  * The writable members of CloudFormation's `VpcEncryptionControl`, each the
@@ -1533,7 +1534,10 @@ export class EC2Provider implements ResourceProvider {
    * VPCs with the same primary CIDR (compared host-bit-cleared, as EC2 may
    * store it), untagged or carrying exactly the tags the create sent
    * (`sent`), not a default VPC. A VPC CIDR can repeat across VPCs, so a
-   * replayed `CreateVpc` is a second VPC.
+   * replayed `CreateVpc` is a second VPC. An IPAM-allocated VPC
+   * (go-to-k/cdkd#5633) declares no CIDR: its candidates are the VPCs the
+   * pool itself allocates to (`GetIpamPoolAllocations`), under the same tag
+   * and default-VPC filters.
    */
   private async reportPossibleOrphanVpcs(
     logicalId: string,
@@ -1543,43 +1547,55 @@ export class EC2Provider implements ResourceProvider {
     context: CreateContext | undefined
   ): Promise<void> {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    // go-to-k/cdkd#5633: an IPAM-allocated VPC has no declared CIDR, and
-    // DescribeVpcs names no pool, so its candidates are matched on the prefix
-    // length the create asked for (any length when the pool's default applies).
-    const cidrMatches = (cidr: string): boolean => {
-      if ('cidrBlock' in match) {
-        const wanted = canonicalizeIpv4Cidr(match.cidrBlock) ?? match.cidrBlock;
-        return (canonicalizeIpv4Cidr(cidr) ?? cidr) === wanted;
-      }
-      return match.netmaskLength === undefined || cidr.endsWith(`/${match.netmaskLength}`);
-    };
-    const subject =
-      'cidrBlock' in match
-        ? `a VPC with CIDR ${log.value(match.cidrBlock)}`
-        : `a VPC allocated from IPAM pool ${log.value(match.ipamPoolId)}${match.netmaskLength === undefined ? '' : ` with a /${match.netmaskLength} CIDR`}`;
+    const wanted =
+      'cidrBlock' in match ? (canonicalizeIpv4Cidr(match.cidrBlock) ?? match.cidrBlock) : undefined;
+    // The VPCs one page of DescribeVpcs may name, never more than the pool's
+    // own allocations for an IPAM VPC.
+    const listVpcs = async (inPool: ReadonlySet<string> | undefined): Promise<OrphanIds> =>
+      collectOrphanIds(
+        async (token) => {
+          const page = await this.ec2Client.send(
+            new DescribeVpcsCommand({ MaxResults: ORPHAN_LIST_PAGE_SIZE, NextToken: token })
+          );
+          return { items: page.Vpcs ?? [], next: page.NextToken };
+        },
+        (vpc) =>
+          vpc.VpcId !== undefined &&
+          vpc.IsDefault !== true &&
+          mayBeLostCreate(vpc.Tags, sent) &&
+          vpc.CidrBlock !== undefined &&
+          (inPool !== undefined
+            ? inPool.has(vpc.VpcId)
+            : (canonicalizeIpv4Cidr(vpc.CidrBlock) ?? vpc.CidrBlock) === wanted) &&
+          !ec2IdsCreatedByThisProcess.has(vpc.VpcId)
+            ? vpc.VpcId
+            : undefined
+      );
     await this.reportPossibleEc2Orphans(logicalId, window, log, {
       action: 'CreateVpc',
-      listAction: 'DescribeVpcs',
-      subject,
+      listAction: 'cidrBlock' in match ? 'DescribeVpcs' : 'GetIpamPoolAllocations',
+      subject:
+        'cidrBlock' in match
+          ? `a VPC with CIDR ${log.value(match.cidrBlock)}`
+          : `a VPC allocated from IPAM pool ${log.value(match.ipamPoolId)}`,
       noun: lostCreateNoun('VPC(s)', sent),
-      list: () =>
-        collectOrphanIds(
+      list: async () => {
+        if ('cidrBlock' in match) return listVpcs(undefined);
+        const allocated = await collectOrphanIds(
           async (token) => {
             const page = await this.ec2Client.send(
-              new DescribeVpcsCommand({ MaxResults: ORPHAN_LIST_PAGE_SIZE, NextToken: token })
+              new GetIpamPoolAllocationsCommand({ IpamPoolId: match.ipamPoolId, NextToken: token })
             );
-            return { items: page.Vpcs ?? [], next: page.NextToken };
+            return { items: page.IpamPoolAllocations ?? [], next: page.NextToken };
           },
-          (vpc) =>
-            vpc.VpcId !== undefined &&
-            vpc.IsDefault !== true &&
-            mayBeLostCreate(vpc.Tags, sent) &&
-            vpc.CidrBlock !== undefined &&
-            cidrMatches(vpc.CidrBlock) &&
-            !ec2IdsCreatedByThisProcess.has(vpc.VpcId)
-              ? vpc.VpcId
+          (allocation) =>
+            allocation.ResourceType === 'vpc' && allocation.ResourceId !== undefined
+              ? allocation.ResourceId
               : undefined
-        ),
+        );
+        const vpcs = await listVpcs(new Set(allocated.ids));
+        return { ids: vpcs.ids, truncated: allocated.truncated || vpcs.truncated };
+      },
       inspect: (aws, id, regionArg) =>
         aws`aws ec2 describe-vpcs --vpc-ids ${id}${regionArg}`.render(),
     });
@@ -1632,7 +1648,7 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     logicalId: string
   ): VpcEncryptionControlConfiguration | undefined {
-    if (value === undefined) return undefined;
+    if (value === undefined || value === null) return undefined;
     const path = `${resourceType} VpcEncryptionControl`;
     const refuse = (reason: string): never => {
       throw markNonRetryable(
@@ -1647,11 +1663,13 @@ export class EC2Provider implements ResourceProvider {
     if (containerRefusal !== undefined) return refuse(containerRefusal);
     const block = value as Record<string, unknown>;
     // An absent `Mode` is sent absent: whether CreateVpc then refuses it is
-    // AWS's answer to give, as it is for CloudFormation's handler.
+    // AWS's answer to give, as it is for CloudFormation's handler. A BLANK one
+    // is refused here: it reads as a value, and sending none would hand AWS a
+    // different request than the template wrote.
     const mode = block['Mode'];
+    if (mode === '') return refuse(`${path}.Mode must not be blank`);
     const config: VpcEncryptionControlConfiguration = {
-      Mode:
-        typeof mode === 'string' && mode !== '' ? (mode as VpcEncryptionControlMode) : undefined,
+      Mode: typeof mode === 'string' ? (mode as VpcEncryptionControlMode) : undefined,
     };
     for (const key of VPC_ENCRYPTION_CONTROL_EXCLUSIONS) {
       const memberRefusal = configStringRefusal(block, key, '', path);
@@ -2425,12 +2443,7 @@ export class EC2Provider implements ResourceProvider {
     );
     const orphanMatch: VpcOrphanMatch = cidrBlock
       ? { cidrBlock }
-      : {
-          ipamPoolId: ipamAllocation.poolId!,
-          ...(ipamAllocation.netmaskLength !== undefined && {
-            netmaskLength: ipamAllocation.netmaskLength,
-          }),
-        };
+      : { ipamPoolId: ipamAllocation.poolId! };
 
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // delete the VPC this call created.
@@ -2662,6 +2675,20 @@ export class EC2Provider implements ResourceProvider {
         return v === true || v === 'true';
       };
 
+      // go-to-k/cdkd#5633: an IPAM-allocated VPC declares no CidrBlock; its
+      // CIDR (create-only, so unchanged by this update) is read back instead,
+      // before any change, so a failed read reports an update that applied nothing.
+      // The map REPLACES the record's, so a CidrBlock left out here would be
+      // lost to every later `Fn::GetAtt`.
+      const declaredCidr = properties['CidrBlock'];
+      const cidrBlock =
+        typeof declaredCidr === 'string' && declaredCidr !== ''
+          ? declaredCidr
+          : properties['Ipv4IpamPoolId'] !== undefined
+            ? (await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] })))
+                ?.Vpcs?.[0]?.CidrBlock
+            : undefined;
+
       // Update DNS settings — diff-based so a no-op round-trip
       // (`update(state, state)` from `cdkd drift --revert`) produces zero
       // ModifyVpcAttribute calls. AWS treats ModifyVpcAttribute as
@@ -2710,19 +2737,6 @@ export class EC2Provider implements ResourceProvider {
       );
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
-
-      // go-to-k/cdkd#5633: an IPAM-allocated VPC declares no CidrBlock; its
-      // CIDR (create-only, so unchanged by this update) is read back instead.
-      // The map REPLACES the record's, so a CidrBlock left out here would be
-      // lost to every later `Fn::GetAtt`.
-      const declaredCidr = properties['CidrBlock'];
-      const cidrBlock =
-        typeof declaredCidr === 'string' && declaredCidr !== ''
-          ? declaredCidr
-          : properties['Ipv4IpamPoolId'] !== undefined
-            ? (await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] })))
-                ?.Vpcs?.[0]?.CidrBlock
-            : undefined;
 
       return {
         physicalId,
@@ -10993,7 +11007,7 @@ export class EC2Provider implements ResourceProvider {
    * v1 drift scope — `AWS::EC2::Subnet`'s `updateableProperties:
    * Tags` entry serves only the template-update path today.
    */
-  getDriftUnknownPaths(resourceType: string): string[] {
+  getDriftUnknownPaths(resourceType: string, properties?: Record<string, unknown>): string[] {
     switch (resourceType) {
       // NetworkInterfaces cannot be read back faithfully: the drift
       // comparator compares arrays WHOLESALE (deepEqual), and
@@ -11006,9 +11020,22 @@ export class EC2Provider implements ResourceProvider {
       case 'AWS::EC2::Instance':
         return ['NetworkInterfaces'];
       // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
-      // read back from the CIDR instead.
-      case 'AWS::EC2::VPC':
-        return ['Ipv4IpamPoolId'];
+      // read back from the CIDR instead. A `monitor` encryption control
+      // reports no exclusions at all (measured, us-east-1), so a declared
+      // exclusion on one cannot be read back.
+      case 'AWS::EC2::VPC': {
+        const control = properties?.['VpcEncryptionControl'];
+        const monitor =
+          control !== null &&
+          typeof control === 'object' &&
+          (control as Record<string, unknown>)['Mode'] === 'monitor';
+        return [
+          'Ipv4IpamPoolId',
+          ...(monitor
+            ? VPC_ENCRYPTION_CONTROL_EXCLUSIONS.map((key) => `VpcEncryptionControl.${key}`)
+            : []),
+        ];
+      }
       case 'AWS::EC2::Route':
       case 'AWS::EC2::VPCGatewayAttachment':
       case 'AWS::EC2::SubnetRouteTableAssociation':
@@ -12165,7 +12192,16 @@ export class EC2Provider implements ResourceProvider {
       switch (resourceType) {
         case 'AWS::EC2::VPC': {
           const resp = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
-          return resp.Vpcs?.[0] ? { physicalId, attributes: {} } : null;
+          const vpc = resp.Vpcs?.[0];
+          // go-to-k/cdkd#5633: the CIDR the record carries for
+          // `Fn::GetAtt Vpc.CidrBlock`, which an IPAM-allocated VPC's template
+          // does not declare.
+          return vpc
+            ? {
+                physicalId,
+                attributes: definedAttributes({ VpcId: physicalId, CidrBlock: vpc.CidrBlock }),
+              }
+            : null;
         }
         case 'AWS::EC2::Subnet': {
           const resp = await this.ec2Client.send(
