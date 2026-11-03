@@ -163,7 +163,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   `--match-head-commit <the sha you verified>`, take a head you did not author
   by the MERGE ARM, never a force-push, and approve its runs —
   `gh run list --branch <b> --status action_required`, then
-  `gh api -X POST repos/<R>/actions/runs/<id>/approve`; until then `gh pr checks` says `no checks reported`.
+  `gh api -X POST repos/<R>/actions/runs/<id>/approve`; until then
+  `gh pr checks` says `no checks reported`.
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it or a quick
