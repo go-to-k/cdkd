@@ -314,16 +314,18 @@ jobs:
   # test in its file by one response.
   #
   # A separate job rather than a step in check-build-test: it is a full second
-  # suite run (~3 min) and it must not delay the signal contributors actually
-  # wait on. It is also why the detector is env-gated OFF by default — the
-  # normal `vp run test` is byte-for-byte unaffected by this landing.
+  # suite run, as long as the unit-test step there (both 15-25 min), so it runs
+  # in parallel instead of doubling that job. It is also why the detector is
+  # env-gated OFF by default — the normal `vp run test` is byte-for-byte
+  # unaffected by the `vi.fn` patch, so a detector that breaks (e.g. on an
+  # `@vitest/spy` upgrade) fails HERE and is never mistaken for a test failure.
   #
   # The files in tests/once-leak-allowlist.json are grandfathered. Fixing one
   # and dropping it from the list is the intended ratchet direction; adding a
   # new entry is not, and a new test file that leaks fails this job.
   once-leak-detect:
     runs-on: ubuntu-latest
-    # observed at least 745 s. Same cap as
+    # observed at least 1538 s. Same cap as
     # check-build-test: it runs the same unit suite, so the two grow together.
     timeout-minutes: 45
     permissions:
