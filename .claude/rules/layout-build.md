@@ -30,8 +30,3 @@ paths:
 
   `deployment-events-store.ts` RE-EXPORTS `getCdkdVersion` rather than
   re-deriving it.
-
-  `getCdkdPackageName()` reads package.json's `name` through the same kind of
-  define. `index.ts` prints `movedPackageNotice()` to stderr on every run of a
-  build named `@go-to-k/cdkd`, the name cdkd used before `@cdkd/cli`; a build
-  under any other name prints nothing.
