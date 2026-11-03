@@ -616,9 +616,17 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       // ModifyDBCluster takes the delta, not the list (go-to-k/cdkd#5639).
       EnableCloudwatchLogsExports: ['CloudwatchLogsExportConfiguration.EnableLogTypes'],
       'MasterUserSecret.KmsKeyId': ['MasterUserSecretKmsKeyId'],
+      // go-to-k/cdkd#5639: the SDK names the flag the other way round.
+      PerformanceInsightsEnabled: ['EnablePerformanceInsights'],
     },
     containers: {
       MasterUserSecret: ['CreateDBClusterCommand', 'ModifyDBClusterCommand'],
+    },
+    transformed: {
+      // go-to-k/cdkd#5639: CreateDBCluster carries it as a member, but an
+      // update sends no value: it picks the call on the cluster ARN.
+      EnableHttpEndpoint:
+        'an update calls EnableHttpEndpoint (true) or DisableHttpEndpoint (otherwise) on the cluster ARN, as CloudFormation does',
     },
   },
   'AWS::RDS::DBInstance': {

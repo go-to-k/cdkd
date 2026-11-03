@@ -103,6 +103,15 @@
 # and disables in one call (asserted live). Cleanup deletes the CloudWatch log
 # groups RDS created for the exports.
 #
+# go-to-k/cdkd#5639 (DBCluster scalars): phase 1 declares
+# AutoMinorVersionUpgrade false, Performance Insights on with 7-day retention,
+# NetworkType IPV4 and EnableHttpEndpoint true (each asserted live; before
+# #5639 the provisionedBy=sdk guard fails). Phase 2 flips
+# AutoMinorVersionUpgrade to true, raises the retention to 31 days and DROPS
+# EnableHttpEndpoint, which turns the Data API off as CloudFormation does
+# (each asserted live). NetworkType IPV4 is AWS's default: only the routing
+# guard discriminates it.
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -696,6 +705,18 @@ if [ "${BASE_LOGS}" != "postgresql pending=null" ]; then
 fi
 echo "    OK: phase 1: SecurityCluster exports postgresql (#5639)"
 
+# go-to-k/cdkd#5639: the scalars, in one line so a mismatch prints them all.
+# usage: sec_scalars <DescribeDBClusters JSON>
+sec_scalars() {
+  echo "${1}" | jq -r '[(.AutoMinorVersionUpgrade | tostring), (.PerformanceInsightsEnabled | tostring), (.PerformanceInsightsRetentionPeriod | tostring), (.NetworkType // "absent"), (.HttpEndpointEnabled // false | tostring)] | join(" ")'
+}
+BASE_SCALARS=$(sec_scalars "${CLUSTER}")
+if [ "${BASE_SCALARS}" != "false true 7 IPV4 true" ]; then
+  echo "FAIL: #5639: phase 1: SecurityCluster [AutoMinorVersionUpgrade, PerformanceInsightsEnabled, PerformanceInsightsRetentionPeriod, NetworkType, HttpEndpointEnabled] is '${BASE_SCALARS}', want 'false true 7 IPV4 true' (CreateDBCluster did not send them)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: SecurityCluster carries AutoMinorVersionUpgrade false, Performance Insights on (7 days), NetworkType IPV4 and the Data API on (#5639)"
+
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)
 TG_LOGICAL=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg t "${TG_TYPE}" '[.resources | to_entries[] | select(.value.resourceType == $t) | .key] | first // ""')
@@ -1073,6 +1094,16 @@ if [ "${AFTER_LOGS}" != "iam-db-auth-error pending=null" ]; then
   exit 1
 fi
 echo "    OK: phase 2: SecurityCluster exports iam-db-auth-error only; postgresql was disabled (#5639)"
+
+# go-to-k/cdkd#5639: phase 2 flipped AutoMinorVersionUpgrade, raised the
+# Performance Insights retention and dropped EnableHttpEndpoint. cdkd returns
+# once the Data API reports off, so the same read decides.
+AFTER_SCALARS=$(sec_scalars "${AFTER_LOGS_JSON}")
+if [ "${AFTER_SCALARS}" != "true true 31 IPV4 false" ]; then
+  echo "FAIL: #5639: phase 2: SecurityCluster [AutoMinorVersionUpgrade, PerformanceInsightsEnabled, PerformanceInsightsRetentionPeriod, NetworkType, HttpEndpointEnabled] is '${AFTER_SCALARS}', want 'true true 31 IPV4 false' (ModifyDBCluster must send the changed flag and retention; the removed EnableHttpEndpoint must turn the Data API off)" >&2
+  exit 1
+fi
+echo "    OK: phase 2: AutoMinorVersionUpgrade true, retention 31 days, Data API off after its removal (#5639)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")
