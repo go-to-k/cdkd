@@ -59,9 +59,8 @@
   LANE, §10 for the RUN; low context is no NOT-CLOSEABLE excuse.
 - **Wrap with Remaining-work + State + Session-close** (`AGENTS.md`; its scope
   rule excludes triaged-but-not-picked issues).
-- **Classify every deferral `now` / `next` the moment you defer it** — four
-  fields in the issue body, one per line; the report repeats them and adds
-  `Notes` (§5-f owns the deciding test).
+- **Classify every deferral `now` / `next` the moment you defer it**, in the
+  issue body (fields: `AGENTS.md`; test: §5-f).
 - **This flow parks a LOT, so the State line carries its weight**: lane
   subagents, `gh pr checks --watch` and `/run-integ` are all **WAITING**, one
   line each naming its signal; STOPPED only when every lane is merged.
@@ -69,8 +68,9 @@
   `AskUserQuestion`, never prose**, which ends the turn as STOPPED. It is CHAT,
   so in the USER's language, and it states the problem and each option's fix in
   plain words plus what CloudFormation / the AWS CDK CLI does for the same
-  shape, where one applies, and which option you recommend as the ideal tool
-  behavior and why; without those the maintainer asks back instead of choosing (#2868).
+  shape, where one applies, what sibling providers do, SURVEYED not recalled
+  (#5699), and which option you recommend as the ideal tool behavior and why;
+  without those the maintainer asks back instead of choosing (#2868).
   Until it is answered, its answer stays out of every public text, and a reply
   that asks back is no answer (a post published one, the #5637 run).
   Everything else you decide.

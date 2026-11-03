@@ -23,13 +23,16 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 ```
 
 **The `backfill-type` exclusion is load-bearing** (#2949): a
-slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
+slice's `created_at` moves with the coverage map, so §3-0 misreads it.
 
 To WORK the campaign, take a type's own issue (`gh issue list --label
 backfill-type`) and read its comments, which hold the claims and measurements —
 REQUIRED before returning an empty pick, since this query hides them
 (2026-11-02: a "0 picks" left four unclaimed type issues unread);
 §4's claim comment goes there, and `filing.md` §5-f says when to write `Closes`.
+A row no live run can prove (AWS-removed preview, third-party account)
+CLOSES via `unhandledByDesign` plus the measured reason: still a silent-drop
+row, so it CC-routes where a CC route exists (#5636).
 
 ## 2. Map the collision landscape
 
@@ -86,8 +89,7 @@ its target file first.
 The LAUNCH MODE decides how many lanes and the parent settles it before stage 0
 (`MODE` / `LANE_TREE` / `MAIN_CHECKOUT` ride the dispatch — if they did not, STOP
 and ask). In `IN-PLACE`, lanes in the launch tree run SERIALLY; a concurrent lane
-takes a SIBLING worktree under `<MAIN_CHECKOUT>/.claude/worktrees/`, never a
-nested one, which dies with the outer workspace (launch-mode.md row 1). Queued
+takes a SIBLING worktree (launch-mode.md row 1). Queued
 lanes are claimed up front (§4), every one after the first `QUEUED`, and
 unreached ones stood down with a four-field comment.
 
@@ -162,16 +164,16 @@ only to break a tie:
 1. **Security first** — SECURITY.md's in-scope list is the canonical list (its
    out-of-scope class never ranks here); split a security umbrella into
    its sites rather than deferring it.
-2. **Umbrellas last** (except under rule 1): `umbrella` / `audit:` / `Backfill` /
+2. **Umbrellas last**: `umbrella` / `audit:` / `Backfill` /
    a TABLE of sites — the test is whether ONE lane can close it completely.
 3. **Higher `Severity`** (`high` > `medium` > `low`), only when BOTH candidates
    carry it — an unclassified `fix:` must not lose to a `chore:` claiming `high`.
 4. **`fix:` outranks `feat:` / `test:` / `docs:` / `audit:` / `chore:`.**
 5. **Area** (the title's scope, else the files the body names): `deploy`, then
    `diff` = `destroy`, then the rest, `local` next-to-last, AGENT-TOOLING
-   (`.claude/**`, `AGENTS.md`) last. Demotes among 1–4 ties only.
+   (`.claude/**`, `AGENTS.md`) last.
 6. **Prefer an issue landing in ONE isolated file**; spend contested files last.
-7. **Older first** (lower number / earlier `created_at`).
+7. **Older first** (lower number).
 
 `Effort` / `Estimate` rank nothing; they gate what this run can AFFORD. A
 user-reported breakage outranks the whole table except rule 1.
@@ -186,7 +188,7 @@ gh issue list --state open --limit 200 --json number,title,labels \
                ([.labels[].name | select(startswith("effort:"))]   | first // "effort:?"),
                .title] | @tsv'
 
-# `severity:?` = UNLABELLED, which is NOT `low`; rule 3 does not fire.
+# `severity:?` = UNLABELLED, which is NOT `low`.
 # For the other fields, or to confirm a surprising label against its body:
 gh issue view <n> --json body -q .body | grep -iE 'Session-fit:|Severity:|Effort:|Estimate:'
 ```
