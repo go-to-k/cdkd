@@ -6,14 +6,14 @@
     </picture>
   </p>
   <h1>cdkd (CDK Direct)</h1>
-  <a href="https://www.npmjs.com/package/@go-to-k/cdkd">
-    <img src="https://img.shields.io/npm/v/@go-to-k/cdkd.svg" alt="npm version" />
+  <a href="https://www.npmjs.com/package/@cdkd/cli">
+    <img src="https://img.shields.io/npm/v/@cdkd/cli.svg" alt="npm version" />
   </a>
-  <a href="https://www.npmjs.com/package/@go-to-k/cdkd">
-    <img src="https://img.shields.io/npm/dw/@go-to-k/cdkd.svg" alt="Downloads" />
+  <a href="https://www.npmjs.com/package/@cdkd/cli">
+    <img src="https://img.shields.io/npm/dw/@cdkd/cli.svg" alt="Downloads" />
   </a>
   <a href="./LICENSE">
-    <img src="https://img.shields.io/npm/l/@go-to-k/cdkd.svg" alt="License: Apache-2.0" />
+    <img src="https://img.shields.io/npm/l/@cdkd/cli.svg" alt="License: Apache-2.0" />
   </a>
   <h3>The fastest way to deploy AWS CDK.</h3>
   <p>Drop-in CDK CLI for existing CDK apps — up to 15x faster deploys via direct AWS SDK calls instead of CloudFormation.</p>
@@ -41,11 +41,19 @@
 ## Installation
 
 ```bash
-npm i -g @go-to-k/cdkd          # latest release
-npm i -g @go-to-k/cdkd@0.0.2    # pin to a specific version
+npm i -g @cdkd/cli            # latest release
+npm i -g @cdkd/cli@<version>  # pin to a specific version
 ```
 
 The installed binary is `cdkd`. It requires Node.js 22.12 or later.
+
+cdkd was formerly published as `@go-to-k/cdkd`; that package is deprecated
+and receives no further releases. Both packages install the same
+`cdkd` binary, so remove the old one before installing the new one:
+
+```bash
+npm rm -g @go-to-k/cdkd && npm i -g @cdkd/cli
+```
 
 ## Quick Start
 

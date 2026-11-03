@@ -37,11 +37,11 @@ works too.
 ## Install
 
 <pm>
-npm i -g @go-to-k/cdkd
+npm i -g @cdkd/cli
 </pm>
 
 The command is `cdkd`. To install a specific release, name it:
-`@go-to-k/cdkd@<version>`.
+`@cdkd/cli@<version>`.
 
 ## Your first deploy
 

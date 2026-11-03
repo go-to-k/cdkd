@@ -22,13 +22,13 @@ Use cdkd for rapid iteration in development and test environments. It complement
 Before installing or upgrading, verify the current release and runtime requirement from the npm registry:
 
 ```bash
-npm view @go-to-k/cdkd version engines --json
+npm view @cdkd/cli version engines --json
 ```
 
 cdkd requires Node.js 22.12 or later. If the user asks to install it, prefer an explicit version so the action is reproducible:
 
 ```bash
-npm install --global @go-to-k/cdkd@'<version>'
+npm install --global @cdkd/cli@'<version>'
 cdkd --version
 ```
 

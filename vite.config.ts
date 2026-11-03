@@ -188,7 +188,6 @@ export default defineConfig({
     },
     define: {
       __CDKD_VERSION__: JSON.stringify(pkg.version),
-      __CDKD_PACKAGE_NAME__: JSON.stringify(pkg.name),
     },
     deps: {
       neverBundle: [/^@aws-sdk\//, 'archiver', 'commander', 'graphlib', 'p-limit'],

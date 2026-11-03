@@ -158,7 +158,7 @@ Pick one:
   other run of that group can then hold the lock legitimately:
 
   ```yaml
-  - run: npm i -g @go-to-k/cdkd
+  - run: npm i -g @cdkd/cli
   # only safe when runs are serialized per stack
   - run: cdkd force-unlock MyStack || true
   - run: cdkd deploy MyStack --yes

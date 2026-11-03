@@ -630,7 +630,7 @@ local-emulation engine cdkd depends on at runtime. It depends on
 `@aws-cdk/toolkit-lib` and `@aws-cdk/cloud-assembly-api` directly, reaches
 `@aws-cdk/cdk-assets-lib` through the former, and declares `aws-cdk-lib` /
 `constructs` as optional peers, which npm and pnpm do not install. So a tree
-inspected after `npm install @go-to-k/cdkd` contains those three `@aws-cdk/*`
+inspected after `npm install @cdkd/cli` contains those three `@aws-cdk/*`
 packages (and their own `@aws-cdk/*` dependencies) but no `aws-cdk-lib`, and
 `npm explain <package>` names `cdk-local` at the root of every chain.
 

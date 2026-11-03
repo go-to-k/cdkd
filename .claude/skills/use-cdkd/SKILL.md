@@ -51,6 +51,6 @@ pnpm link --global
 cdkd --version
 ```
 
-Run `pnpm setup` only when needed; it updates shell configuration. Rebuilding with `vp run build` updates the linked binary without re-linking. To remove the link, run `pnpm unlink --global @go-to-k/cdkd` or `pnpm rm --global @go-to-k/cdkd`.
+Run `pnpm setup` only when needed; it updates shell configuration. Rebuilding with `vp run build` updates the linked binary without re-linking. To remove the link, run `pnpm unlink --global @cdkd/cli` or `pnpm rm --global @cdkd/cli`.
 
 When giving commands for another CDK project, make them copy-pasteable and use either `cdkd` or the real absolute `node .../dist/cli.js` path consistently. If the user wants a published release instead of this checkout, follow the install section of the distributed skill linked above.

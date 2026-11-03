@@ -106,7 +106,7 @@ jobs:
           role-to-assume: arn:aws:iam::123456789012:role/github-actions-base
           aws-region: us-east-1
       - run: |
-          npx @go-to-k/cdkd state destroy \
+          npx @cdkd/cli state destroy \
             WebApp-pr-${{ github.event.pull_request.number }} \
             --yes
 ```
@@ -115,7 +115,7 @@ The destroy job has no checkout and no `npm ci`, and that is deliberate.
 `cdkd state destroy` reads only the stack's state and does not synthesize the
 app, so the job still works after the branch has been deleted. Because the
 job has no local install for `npx` to find, it invokes cdkd by its full
-package name, `@go-to-k/cdkd`.
+package name, `@cdkd/cli`.
 
 ## Make the teardown complete
 
