@@ -377,7 +377,7 @@ jobs:
           # contents. They run under ci.yml's whole-suite job, not under any
           # audit task, so a schema change reddens CI with nothing in the
           # diagnosis to explain it.
-          # Every member of the zero-headroom FAMILY, named. Five suites assert
+          # Every member of the zero-headroom FAMILY, named. These suites assert
           # `silentDrop` is empty against the real coverage, so one writable
           # property AWS adds to any of their types reds CI while
           # `property-coverage` absorbs the same addition and stays green —
@@ -387,7 +387,7 @@ jobs:
           # unrelated suites and would attribute their red to a schema decision
           # that does not exist. Naming is only safe because the fence in
           # tests/unit/scripts/cfn-schema-refresh-workflow.test.ts DERIVES the
-          # family and fails when a sixth appears. Not `-props` either: vitest
+          # family and fails when a new member appears. Not `-props` either: vitest
           # parses a leading dash as a FLAG and the step dies with
           # `Unknown option \`-p\``.
           run_check fixture-consumer-tests \
@@ -398,7 +398,8 @@ jobs:
               apigatewayv2-stage-route-props \
               appsync-graphqlapi-config-props \
               appsync-resolver-datasource-props \
-              ecs-service-config-props
+              ecs-service-config-props \
+              docdb-provider-restore-5628
           # The differential wire suites (go-to-k/cdkd#3723) read each type's
           # nested and create-only paths from the fixtures, so a nested key AWS
           # adds under a handled top-level reds them — the class the nested-key

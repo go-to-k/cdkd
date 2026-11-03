@@ -1121,6 +1121,65 @@ const DOCDB_UNMEASURED = (key: string): string =>
 
 const ROTATE_MODIFY_ONLY = `CreateDBCluster has no such member: it only reaches ModifyDBCluster (${DOCDB_SRC} rotateMasterUserPassword)`;
 
+/** What a restore bag's update removals keep, as the full bag's do (go-to-k/cdkd#5628). */
+const DOCDB_RESTORE_KEPT = (keys: string[]): Record<string, string> =>
+  Object.fromEntries(
+    keys.map((key) => [
+      `update-remove:${key}`,
+      kept(
+        `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543 / #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+      ),
+    ])
+  );
+
+/** A restore bag's whole-list security groups, sent whole from next. */
+const DOCDB_GROUPS_WHOLE = (count: number): Record<string, string> =>
+  Object.fromEntries(
+    Array.from({ length: count }, (_, i) => [
+      `update-remove:VpcSecurityGroupIds.${i}`,
+      `the desired group list is sent whole from next (${DOCDB_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
+    ])
+  );
+
+/** A point-in-time key after the create: CloudFormation's update sends nothing for it (measured). */
+const DOCDB_CREATE_ONLY_REQUEST = (key: string): Record<string, string> =>
+  Object.fromEntries(
+    ['update-add', 'update-vary', 'update-remove'].map((direction) => [
+      `${direction}:${key}`,
+      `read by the create alone: no ModifyDBCluster member, and CloudFormation's update of it sends nothing either (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} removalHandledInUpdate)`,
+    ])
+  );
+
+/** A source with no time is refused before any call, as CloudFormation refuses it. */
+const DOCDB_POINT_IN_TIME_REFUSED = {
+  says: /restore needs RestoreToTime or UseLatestRestorableTime: true/,
+  why: `a SourceDBClusterIdentifier with no time is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} readDocDBClusterRestore)`,
+};
+
+const DOCDB_SCALING_THROWS: Record<string, Throw> = Object.fromEntries(
+  ALL_DIRECTIONS.flatMap((direction) =>
+    ['MinCapacity', 'MaxCapacity'].map((member) => [
+      `${direction}:ServerlessV2ScalingConfiguration.${member}`,
+      {
+        says: /ServerlessV2ScalingConfiguration must be/,
+        why: 'a block missing a capacity is refused before any call, not sent one-sided',
+      },
+    ])
+  )
+);
+
+const DOCDB_KEPT_KEYS = [
+  'DeletionProtection',
+  'BackupRetentionPeriod',
+  'VpcSecurityGroupIds',
+  'PreferredBackupWindow',
+  'PreferredMaintenanceWindow',
+  'DBClusterParameterGroupName',
+  'CopyTagsToSnapshot',
+  'EnableCloudwatchLogsExports',
+  'StorageType',
+];
+
 const DOCDB_CLUSTER_CASE: TypeCase = {
   resourceType: 'AWS::DocDB::DBCluster',
   provider: () => new DocDBProvider(),
@@ -1244,6 +1303,96 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
           `and CloudFormation keeps the key too, warned about by update() (CFn A/B, #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
         ),
       },
+    },
+    {
+      name: 'a snapshot restore',
+      bag: {
+        DBClusterIdentifier: DOCDB_CLUSTER_ID,
+        SnapshotIdentifier: 'docdb-snapshot',
+        EngineVersion: '5.0.0',
+        MasterUsername: 'docdbadmin',
+        // Obviously fake: never a real credential.
+        MasterUserPassword: 'FAKE-not-a-real-password',
+        Port: 27018,
+        VpcSecurityGroupIds: ['sg-1', 'sg-2'],
+        DBSubnetGroupName: 'docdb-subnets',
+        KmsKeyId: `arn:aws:kms:us-east-1:${ACCOUNT}:key/k`,
+        BackupRetentionPeriod: 7,
+        PreferredBackupWindow: '03:00-04:00',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        DBClusterParameterGroupName: 'docdb-params',
+        DeletionProtection: true,
+        Tags: fresh(DOCDB_TAGS),
+        AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+        CopyTagsToSnapshot: true,
+        EnableCloudwatchLogsExports: ['audit', 'profiler'],
+        NetworkType: 'DUAL',
+        ServerlessV2ScalingConfiguration: { MinCapacity: 1, MaxCapacity: 8 },
+        StorageType: 'iopt1',
+      },
+      expectedSilent: {
+        ...DOCDB_RESTORE_KEPT([...DOCDB_KEPT_KEYS, 'EngineVersion', 'ServerlessV2ScalingConfiguration']),
+        ...DOCDB_GROUPS_WHOLE(2),
+        'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
+        'update-remove:MasterUserPassword': kept(
+          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
+        ),
+        ...Object.fromEntries(
+          ['create', 'create-vary'].map((direction) => [
+            `${direction}:MasterUsername`,
+            `a restore keeps its source's user name, as CloudFormation's does: neither restore call has the member, and a differing one is warned about (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} warnRestoredDifferences)`,
+          ])
+        ),
+      },
+      expectedRemovalThrows: { ...TAG_REFUSALS, ...DOCDB_SCALING_THROWS },
+    },
+    {
+      name: 'a point-in-time restore to the latest time',
+      bag: {
+        DBClusterIdentifier: DOCDB_CLUSTER_ID,
+        SourceDBClusterIdentifier: 'docdb-source',
+        RestoreType: 'copy-on-write',
+        UseLatestRestorableTime: true,
+        Port: 27018,
+        VpcSecurityGroupIds: ['sg-1'],
+        DBSubnetGroupName: 'docdb-subnets',
+        KmsKeyId: `arn:aws:kms:us-east-1:${ACCOUNT}:key/k`,
+        BackupRetentionPeriod: 7,
+        PreferredBackupWindow: '03:00-04:00',
+        PreferredMaintenanceWindow: 'sun:05:00-sun:06:00',
+        DBClusterParameterGroupName: 'docdb-params',
+        DeletionProtection: true,
+        Tags: [{ Key: 'k1', Value: 'v1' }],
+        CopyTagsToSnapshot: true,
+        EnableCloudwatchLogsExports: ['audit'],
+        NetworkType: 'DUAL',
+        StorageType: 'iopt1',
+      },
+      expectedSilent: {
+        ...DOCDB_RESTORE_KEPT(DOCDB_KEPT_KEYS),
+        ...DOCDB_GROUPS_WHOLE(1),
+        'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
+        ...DOCDB_CREATE_ONLY_REQUEST('RestoreType'),
+        ...DOCDB_CREATE_ONLY_REQUEST('UseLatestRestorableTime'),
+        'create-vary:UseLatestRestorableTime': `the harness's varied false leaves the source with no time, which is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} readDocDBClusterRestore)`,
+      },
+      expectedRemovalThrows: {
+        ...TAG_THROWS(ALL_DIRECTIONS, 1),
+        'create:UseLatestRestorableTime': DOCDB_POINT_IN_TIME_REFUSED,
+      },
+    },
+    {
+      name: 'a point-in-time restore to a time',
+      bag: {
+        DBClusterIdentifier: DOCDB_CLUSTER_ID,
+        SourceDBClusterIdentifier: 'docdb-source',
+        RestoreToTime: '2026-11-02T15:45:00Z',
+      },
+      expectedSilent: {
+        ...DOCDB_CREATE_ONLY_REQUEST('RestoreToTime'),
+        'create-vary:RestoreToTime': `the harness's varied value is no timestamp with a zone, so it is refused before any call; docdb-provider-restore-5628.test.ts pins the refusal and the Date a real one sends (${DOCDB_SRC} readDocDBClusterRestore)`,
+      },
+      expectedRemovalThrows: { 'create:RestoreToTime': DOCDB_POINT_IN_TIME_REFUSED },
     },
   ],
 };
