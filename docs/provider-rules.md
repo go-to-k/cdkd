@@ -2705,7 +2705,7 @@ For each schema property the test classifies it into one of four buckets (in pri
 | Bucket | Where declared | When to use |
 | --- | --- | --- |
 | `handled` | `provider.handledProperties.get(type)` | The provider's `create()` / `update()` actually wires the property to the SDK call. |
-| `by-design` | `provider.unhandledByDesign.get(type)` (with rationale string) | The provider INTENTIONALLY does not wire it — separate code path, deprecated, immutable post-create, AWS API doesn't accept it, etc. A template declaring it still routes to Cloud Control; it just gets no backfill issue. |
+| `by-design` | `provider.unhandledByDesign.get(type)` (with rationale string) | The provider INTENTIONALLY does not wire it — separate code path, deprecated, immutable post-create, AWS API doesn't accept it, etc. On a type with a Cloud Control route, a template declaring it still routes there (no route: refused pre-flight); it just gets no backfill issue. |
 | `backfill` | [tests/fixtures/cfn-schemas/_todo-backfill.json](https://github.com/go-to-k/cdkd/blob/main/tests/fixtures/cfn-schemas/_todo-backfill.json) under `types[<type>]` | Auto-generated catch-all for incremental rollout. Each entry MUST be migrated to `handled` or `by-design` eventually. |
 | `read-only` | `readOnlyProperties` in the schema fixture | AWS computes the value; cdkd cannot wire it on Create/Update by definition (e.g. `Arn`). Automatically excluded. |
 

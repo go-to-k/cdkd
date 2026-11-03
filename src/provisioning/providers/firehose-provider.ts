@@ -361,7 +361,7 @@ export class FirehoseProvider implements ResourceProvider {
         ],
         [
           'SnowflakeDestinationConfiguration',
-          'Proving the wire shape live needs a real Snowflake account, and the block carries key material (PrivateKey, KeyPassphrase); it deploys through Cloud Control today. Stays on Cloud Control',
+          'Proving the wire shape live needs a real Snowflake account, and the block carries key material (PrivateKey, KeyPassphrase). Stays on Cloud Control',
         ],
       ]),
     ],

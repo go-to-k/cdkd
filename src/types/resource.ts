@@ -1144,7 +1144,9 @@ export interface ResourceProvider {
    *
    * A property listed here is still a silent-drop row in the generated
    * coverage map, with this rationale, so a template declaring it still
-   * auto-routes the resource to Cloud Control. What the entry changes is the
+   * auto-routes the resource to Cloud Control on a type that has a CC route
+   * (a type with none, e.g. `disableCcApiFallback`, refuses it pre-flight;
+   * `--prefer-sdk-route` keeps it on the SDK route). What the entry changes is the
    * backfill campaign: only rows with the default rationale get a per-type
    * issue.
    */
