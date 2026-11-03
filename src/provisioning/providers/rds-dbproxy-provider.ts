@@ -803,13 +803,21 @@ export class RDSDBProxyProvider implements ResourceProvider {
       RequireTLS: p.RequireTLS ?? false,
       IdleClientTimeout: p.IdleClientTimeout,
       DebugLogging: p.DebugLogging ?? false,
+      // Each member AWS does not report is OMITTED, never set to `undefined`
+      // (go-to-k/cdkd#5723). The baseline is persisted as JSON, which drops an
+      // `undefined` member, while the drift comparator's array-element walk
+      // counts own keys: a secrets-auth proxy (no `Description` / `UserName`)
+      // reported phantom `Auth` drift on a fresh deploy, and `--accept` could
+      // not converge it.
       Auth: (p.Auth ?? []).map((a) => ({
-        Description: a.Description,
-        UserName: a.UserName,
-        AuthScheme: a.AuthScheme,
-        SecretArn: a.SecretArn,
-        IAMAuth: a.IAMAuth,
-        ClientPasswordAuthType: a.ClientPasswordAuthType,
+        ...(a.Description !== undefined && { Description: a.Description }),
+        ...(a.UserName !== undefined && { UserName: a.UserName }),
+        ...(a.AuthScheme !== undefined && { AuthScheme: a.AuthScheme }),
+        ...(a.SecretArn !== undefined && { SecretArn: a.SecretArn }),
+        ...(a.IAMAuth !== undefined && { IAMAuth: a.IAMAuth }),
+        ...(a.ClientPasswordAuthType !== undefined && {
+          ClientPasswordAuthType: a.ClientPasswordAuthType,
+        }),
       })),
       // Omitted when AWS reports none: the drift comparator ignores a key
       // state does not hold, and a proxy created without the property records
