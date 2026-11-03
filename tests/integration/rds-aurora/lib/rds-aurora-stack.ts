@@ -291,6 +291,22 @@ export class RdsAuroraStack extends cdk.Stack {
       // Before #5639 the declared list routed the SecurityCluster to Cloud
       // Control (the provisionedBy=sdk guard in verify.sh catches it).
       enableCloudwatchLogsExports: isUpdate ? ['iam-db-auth-error'] : ['postgresql'],
+      // go-to-k/cdkd#5639: before #5639 each routed the SecurityCluster to
+      // Cloud Control (the provisionedBy=sdk guard in verify.sh catches it).
+      //   * AutoMinorVersionUpgrade: false in phase 1 (AWS default true),
+      //     true in phase 2, so ModifyDBCluster must send the change.
+      //   * PerformanceInsightsEnabled true in both phases; the retention is
+      //     7 days in phase 1 and 31 in phase 2, which sends the trio.
+      //   * NetworkType IPV4 in both phases (DUAL needs IPv6 subnets): only
+      //     the routing guard discriminates it.
+      //   * EnableHttpEndpoint true in phase 1 (rides CreateDBCluster) and
+      //     DROPPED in phase 2, which turns the Data API off
+      //     (DisableHttpEndpoint), as CloudFormation's handler does.
+      autoMinorVersionUpgrade: isUpdate,
+      performanceInsightsEnabled: true,
+      performanceInsightsRetentionPeriod: isUpdate ? 31 : 7,
+      networkType: 'IPV4',
+      ...(isUpdate ? {} : { enableHttpEndpoint: true }),
     });
     // Issue #1160: once phase 2 drops the Ref, this keeps the security group
     // deleted AFTER the cluster that may still hold it.

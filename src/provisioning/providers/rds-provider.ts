@@ -5,6 +5,8 @@ import {
   DeleteDBClusterCommand,
   ModifyDBClusterCommand,
   DescribeDBClustersCommand,
+  EnableHttpEndpointCommand,
+  DisableHttpEndpointCommand,
   DescribeGlobalClustersCommand,
   RemoveFromGlobalClusterCommand,
   CreateDBInstanceCommand,
@@ -822,6 +824,213 @@ function clusterModifyBackfillMembers(
 }
 
 /**
+ * go-to-k/cdkd#5639: the `AWS::RDS::DBCluster` scalars that ride
+ * CreateDBCluster and ModifyDBCluster, as the SDK names them. Two are renamed:
+ * CFn `PerformanceInsightsEnabled` is `EnablePerformanceInsights` and CFn
+ * `PerformanceInsightsKmsKeyId` is `PerformanceInsightsKMSKeyId`.
+ */
+type ClusterScalarMembers = Pick<
+  ModifyDBClusterCommandInput,
+  | 'AutoMinorVersionUpgrade'
+  | 'NetworkType'
+  | 'EnablePerformanceInsights'
+  | 'PerformanceInsightsKMSKeyId'
+  | 'PerformanceInsightsRetentionPeriod'
+>;
+
+/** go-to-k/cdkd#5639: the CFn name of each Performance Insights member, with its SDK name. */
+const CLUSTER_PERFORMANCE_INSIGHTS_MEMBERS = [
+  ['PerformanceInsightsEnabled', 'EnablePerformanceInsights'],
+  ['PerformanceInsightsKmsKeyId', 'PerformanceInsightsKMSKeyId'],
+  ['PerformanceInsightsRetentionPeriod', 'PerformanceInsightsRetentionPeriod'],
+] as const;
+
+/** The declared Performance Insights members, under their SDK names. */
+function clusterPerformanceInsightsMembers(
+  properties: Record<string, unknown>
+): ClusterScalarMembers {
+  const members: ClusterScalarMembers = {};
+  if (properties['PerformanceInsightsEnabled'] != null) {
+    members.EnablePerformanceInsights = properties['PerformanceInsightsEnabled'] as boolean;
+  }
+  if (properties['PerformanceInsightsKmsKeyId'] != null) {
+    members.PerformanceInsightsKMSKeyId = properties['PerformanceInsightsKmsKeyId'] as string;
+  }
+  // A malformed one is refused or skipped before any call (`retentionPeriodValue`).
+  const retention = retentionPeriodValue(properties['PerformanceInsightsRetentionPeriod']);
+  if (typeof retention === 'number') members.PerformanceInsightsRetentionPeriod = retention;
+  return members;
+}
+
+/**
+ * go-to-k/cdkd#5639: the scalars CreateDBCluster sends, each one the template
+ * declares, as CloudFormation's create translation (`Translator.
+ * createDbClusterRequest`) sends each declared value. `EnableHttpEndpoint`
+ * rides CreateDBCluster under its own name beside these.
+ */
+function clusterCreateScalarMembers(properties: Record<string, unknown>): ClusterScalarMembers {
+  return {
+    ...(properties['AutoMinorVersionUpgrade'] != null && {
+      AutoMinorVersionUpgrade: properties['AutoMinorVersionUpgrade'] as boolean,
+    }),
+    ...(properties['NetworkType'] != null && {
+      NetworkType: properties['NetworkType'] as string,
+    }),
+    ...clusterPerformanceInsightsMembers(properties),
+  };
+}
+
+/**
+ * go-to-k/cdkd#5639: the ModifyDBCluster scalars for an update.
+ * `AutoMinorVersionUpgrade` and `NetworkType` go out only when changed
+ * (`instanceValueChanged`). The three Performance Insights members are
+ * coupled: a change to any one sends every declared one, as CloudFormation's
+ * update translation (`Translator.modifyDbClusterRequest`) sends all three
+ * desired values on every update, and RDS reads the retention period and key
+ * against the flag beside them.
+ *
+ * A removal sends nothing and RDS keeps the live value: the handler sends the
+ * desired value, `null` (unsent) for a removed key, and
+ * `ModelAdapter.setDefaults` fills none of these.
+ */
+function clusterModifyScalarMembers(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): ClusterScalarMembers {
+  const changed = (key: string): boolean =>
+    instanceValueChanged(properties, previousProperties, key, context);
+  const members: ClusterScalarMembers = {};
+  if (changed('AutoMinorVersionUpgrade')) {
+    members.AutoMinorVersionUpgrade = properties['AutoMinorVersionUpgrade'] as boolean;
+  }
+  if (changed('NetworkType')) members.NetworkType = properties['NetworkType'] as string;
+  if (CLUSTER_PERFORMANCE_INSIGHTS_MEMBERS.some(([key]) => changed(key))) {
+    Object.assign(members, clusterPerformanceInsightsMembers(properties));
+  }
+  return members;
+}
+
+/**
+ * go-to-k/cdkd#5639: a DBCluster `EnableHttpEndpoint` read off a bag:
+ * `undefined` when absent, the flag, or `'malformed'` for anything but a
+ * boolean or its CFn string spelling.
+ */
+function httpEndpointFlag(value: unknown): boolean | undefined | 'malformed' {
+  if (value == null) return undefined;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return 'malformed';
+}
+
+/** go-to-k/cdkd#5639: the DBCluster booleans of the #5639 slice, as CFn names them. */
+const CLUSTER_BOOLEAN_SCALARS = [
+  'AutoMinorVersionUpgrade',
+  'PerformanceInsightsEnabled',
+  'EnableHttpEndpoint',
+] as const;
+
+/**
+ * go-to-k/cdkd#5639: a DBCluster `PerformanceInsightsRetentionPeriod` read off
+ * a bag: `undefined` when absent, the whole number of days (a number or its
+ * numeric-string spelling), or `'malformed'`.
+ */
+function retentionPeriodValue(value: unknown): number | undefined | 'malformed' {
+  if (value == null) return undefined;
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value.trim())
+        ? Number(value)
+        : NaN;
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 'malformed';
+}
+
+/**
+ * go-to-k/cdkd#5639: the RDS Data API call an update makes for
+ * `EnableHttpEndpoint`, as CloudFormation's update handler decides it
+ * (`BaseHandlerStd.shouldUpdateHttpEndpointV2`): only on an `aurora-mysql` or
+ * `aurora-postgresql` cluster, only when the declared value differs from the
+ * previous one (an absent side differs from `false`), and then
+ * `EnableHttpEndpoint` when the template now declares `true`, otherwise
+ * `DisableHttpEndpoint`. A REMOVED `true` therefore turns the Data API off.
+ * ModifyDBCluster's own `EnableHttpEndpoint` member applies only to an
+ * Aurora Serverless v1 cluster (`EngineMode: serverless`), which the SDK route
+ * never creates (`EngineMode` is not handled, so such a template is
+ * provisioned through Cloud Control).
+ *
+ * A malformed desired value is refused before any call on a template update,
+ * on every engine as create refuses it:
+ * read as "not true" it would turn the Data API off. On a rollback replay or a
+ * drift revert it is skipped with a warning instead (`'skip'`). A malformed
+ * PREVIOUS value is read as absent.
+ *
+ * A drift revert never turns the Data API ON (`'withheld'`): its desired bag
+ * is the recorded `observedProperties` baseline, which records the readback,
+ * so it can hold `true` for a template that never declared it. The revert
+ * warns and leaves the setting as it is; turning it off still goes through.
+ */
+function clusterHttpEndpointAction(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string,
+  physicalId: string,
+  context: UpdateContext | undefined
+): 'enable' | 'disable' | 'skip' | 'withheld' | undefined {
+  const desired = httpEndpointFlag(properties['EnableHttpEndpoint']);
+  if (desired === 'malformed') {
+    if (context?.replayingState === true || context?.desiredFromAwsReadback === true) {
+      return 'skip';
+    }
+    throw markNonRetryable(
+      new ProvisioningError(
+        `${resourceType} ${logicalId}: EnableHttpEndpoint must be true or false`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  // Checked on every engine, as create checks it.
+  const engine = properties['Engine'];
+  if (typeof engine !== 'string') return undefined;
+  if (!['aurora-mysql', 'aurora-postgresql'].includes(engine.toLowerCase())) return undefined;
+  const recorded = httpEndpointFlag(previousProperties['EnableHttpEndpoint']);
+  const previous = recorded === 'malformed' ? undefined : recorded;
+  if (desired === previous) return undefined;
+  if (desired !== true) return 'disable';
+  // A drift revert's desired bag is a recorded readback, not the template: a
+  // baseline captured while the Data API was on outside the template would
+  // otherwise turn it back ON. A revert only ever narrows it ('withheld').
+  return context?.desiredFromAwsReadback === true ? 'withheld' : 'enable';
+}
+
+/**
+ * go-to-k/cdkd#5639: the desired bag with each SKIPPED key the cluster KEPT,
+ * when an update skipped a malformed value: the previous side's value when
+ * `usable` accepts it, or no key. A copy.
+ */
+function withPreviousValues(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  skipped: ReadonlyArray<readonly [key: string, usable: (value: unknown) => boolean]>
+): Record<string, unknown> {
+  const out = { ...properties };
+  for (const [key, usable] of skipped) {
+    delete out[key];
+    const previous = previousProperties[key];
+    if (previous != null && usable(previous)) out[key] = previous;
+  }
+  return out;
+}
+
+const usableHttpEndpoint = (value: unknown): boolean =>
+  typeof httpEndpointFlag(value) === 'boolean';
+const usableRetentionPeriod = (value: unknown): boolean =>
+  typeof retentionPeriodValue(value) === 'number';
+
+/**
  * go-to-k/cdkd#2762: whether this cluster update changes `EngineVersion`, the
  * condition CloudFormation's handler sends `EngineVersion` and
  * `AllowMajorVersionUpgrade: true` under (`Translator.modifyDbClusterRequest`:
@@ -896,6 +1105,18 @@ function recordedGlobalClusterIdentifier(
   const value = properties?.['GlobalClusterIdentifier'];
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
+
+/**
+ * go-to-k/cdkd#5639: the faults a Data API call is refused with while the
+ * cluster is busy (`InvalidResourceStateFault` is the one the
+ * EnableHttpEndpoint / DisableHttpEndpoint models declare), retried by
+ * `sendHttpEndpointChange` up to `HTTP_ENDPOINT_MAX_ATTEMPTS` sends.
+ */
+const HTTP_ENDPOINT_BUSY_FAULTS: ReadonlySet<string> = new Set([
+  'InvalidResourceStateFault',
+  'InvalidDBClusterStateFault',
+]);
+const HTTP_ENDPOINT_MAX_ATTEMPTS = 8;
 
 /**
  * Faults a detach waits through rather than failing on: the cluster or the
@@ -1030,6 +1251,17 @@ export class RDSProvider implements ResourceProvider {
         // `CloudwatchLogsExportConfiguration` delta on ModifyDBCluster
         // (`logExportsDelta`).
         'EnableCloudwatchLogsExports',
+        // go-to-k/cdkd#5639: ride CreateDBCluster and, when changed,
+        // ModifyDBCluster (`clusterModifyScalarMembers`; the Performance
+        // Insights trio is renamed on the wire). `EnableHttpEndpoint` rides
+        // CreateDBCluster, and an update turns the Data API on or off with
+        // EnableHttpEndpoint / DisableHttpEndpoint (`clusterHttpEndpointAction`).
+        'AutoMinorVersionUpgrade',
+        'NetworkType',
+        'PerformanceInsightsEnabled',
+        'PerformanceInsightsKmsKeyId',
+        'PerformanceInsightsRetentionPeriod',
+        'EnableHttpEndpoint',
       ]),
     ],
     [
@@ -1224,7 +1456,13 @@ export class RDSProvider implements ResourceProvider {
       case 'AWS::RDS::DBSubnetGroup':
         return this.createDBSubnetGroup(logicalId, resourceType, properties, mask);
       case 'AWS::RDS::DBCluster':
-        return this.createDBCluster(logicalId, resourceType, properties, mask);
+        return this.createDBCluster(
+          logicalId,
+          resourceType,
+          properties,
+          mask,
+          context?.replayingState === true
+        );
       case 'AWS::RDS::DBInstance':
         return this.createDBInstance(logicalId, resourceType, properties, mask);
       default:
@@ -1537,11 +1775,63 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replaying = false
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBCluster ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    // go-to-k/cdkd#5639: the Data API flag, refused before any call when it is
+    // not a boolean, as an update refuses it. A rollback re-create from a state
+    // record warns and leaves it out (AWS's default: off) instead.
+    let httpEndpoint = httpEndpointFlag(properties['EnableHttpEndpoint']);
+    if (httpEndpoint === 'malformed') {
+      if (!replaying) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${resourceType} ${logicalId}: EnableHttpEndpoint must be true or false`,
+            resourceType,
+            logicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed EnableHttpEndpoint is not true or false; the cluster is created with the Data API off`
+      );
+      httpEndpoint = undefined;
+    }
+    // go-to-k/cdkd#5639: likewise the retention period, which would go out as
+    // NaN; a rollback re-create sends none (AWS's default, 7 days).
+    const retentionSkipped =
+      retentionPeriodValue(properties['PerformanceInsightsRetentionPeriod']) === 'malformed';
+    if (retentionSkipped) {
+      if (!replaying) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${resourceType} ${logicalId}: PerformanceInsightsRetentionPeriod must be a whole number of days`,
+            resourceType,
+            logicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed PerformanceInsightsRetentionPeriod is not a whole number of days; the cluster is created with AWS's default retention`
+      );
+    }
+    // What the call sent: a record without a skipped key
+    // (provider-property-fidelity: a replay-create that skipped drops the key).
+    const skippedKeys = [
+      ...(properties['EnableHttpEndpoint'] != null && httpEndpoint === undefined
+        ? ['EnableHttpEndpoint']
+        : []),
+      ...(retentionSkipped ? ['PerformanceInsightsRetentionPeriod'] : []),
+    ];
+    const effectiveProperties =
+      skippedKeys.length > 0
+        ? Object.fromEntries(
+            Object.entries(properties).filter(([key]) => !skippedKeys.includes(key))
+          )
+        : undefined;
     const logExports = desiredLogExports(properties, resourceType, logicalId);
 
     const dbClusterIdentifier =
@@ -1613,6 +1903,11 @@ export class RDSProvider implements ResourceProvider {
           // go-to-k/cdkd#5639: the declared list, as CloudFormation's create sends it.
           ...(logExports !== undefined &&
             logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),
+          // go-to-k/cdkd#5639: each declared scalar, as CloudFormation's create
+          // sends it (the Data API flag included: CreateDBCluster takes it for
+          // provisioned and Serverless v2 clusters).
+          ...clusterCreateScalarMembers(properties),
+          ...(httpEndpoint !== undefined && { EnableHttpEndpoint: httpEndpoint }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -1665,6 +1960,7 @@ export class RDSProvider implements ResourceProvider {
             Arn: described?.DBClusterArn,
             DBClusterResourceId: described?.DbClusterResourceId,
           }),
+          ...(effectiveProperties !== undefined && { effectiveProperties }),
         };
       } catch (innerError) {
         try {
@@ -1793,6 +2089,46 @@ export class RDSProvider implements ResourceProvider {
       desiredLogExports(properties, resourceType, logicalId, physicalId),
       previousProperties['EnableCloudwatchLogsExports']
     );
+    // go-to-k/cdkd#5639: a malformed template flag is refused before any call.
+    const httpEndpointAction = clusterHttpEndpointAction(
+      properties,
+      previousProperties,
+      resourceType,
+      logicalId,
+      physicalId,
+      context
+    );
+    if (httpEndpointAction === 'skip') {
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed EnableHttpEndpoint is not true or false; the Data API setting is left as it is`
+      );
+    }
+    if (httpEndpointAction === 'withheld') {
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: drift --revert does not turn the Data API (EnableHttpEndpoint) back on; if the template declares it, turn it on with aws rds enable-http-endpoint`
+      );
+    }
+    // go-to-k/cdkd#5639: likewise a retention period that would go out as NaN.
+    const skippedKeys: Array<readonly [string, (value: unknown) => boolean]> =
+      httpEndpointAction === 'skip' || httpEndpointAction === 'withheld'
+        ? [['EnableHttpEndpoint', usableHttpEndpoint]]
+        : [];
+    if (retentionPeriodValue(properties['PerformanceInsightsRetentionPeriod']) === 'malformed') {
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${resourceType} ${logicalId}: PerformanceInsightsRetentionPeriod must be a whole number of days`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed PerformanceInsightsRetentionPeriod is not a whole number of days; the retention period is left as it is`
+      );
+      skippedKeys.push(['PerformanceInsightsRetentionPeriod', usableRetentionPeriod]);
+    }
 
     try {
       // Its own ProvisioningError names the cause; the catch passes it through.
@@ -1840,8 +2176,11 @@ export class RDSProvider implements ResourceProvider {
       //     VPC's default security group, `securityGroupsToSend`).
       //   * KEPT (omitted = unchanged): DeletionProtection,
       //     EnableIAMDatabaseAuthentication, EngineVersion, MonitoringInterval,
-      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration, and the
-      //     #2762 backfill members (`clusterModifyBackfillMembers`).
+      //     MonitoringRoleArn, ServerlessV2ScalingConfiguration, the
+      //     #2762 backfill members (`clusterModifyBackfillMembers`) and the
+      //     #5639 scalars (`clusterModifyScalarMembers`).
+      //   * TURNED OFF: a removed `EnableHttpEndpoint: true` disables the Data
+      //     API, as CloudFormation's handler does (`clusterHttpEndpointAction`).
       // MasterUserSecret removed while the managed password stays on: the
       // credential gate re-sends ManageMasterUserPassword=true with no key, as
       // CloudFormation does, and the secret stays on its customer key
@@ -1920,6 +2259,8 @@ export class RDSProvider implements ResourceProvider {
           }),
           // go-to-k/cdkd#2762: only what changed; a removal keeps the live value.
           ...clusterModifyBackfillMembers(properties, previousProperties, context),
+          // go-to-k/cdkd#5639: only what changed; a removal keeps the live value.
+          ...clusterModifyScalarMembers(properties, previousProperties, context),
           ...(logExportConfig !== undefined && {
             CloudwatchLogsExportConfiguration: logExportConfig,
           }),
@@ -1961,6 +2302,32 @@ export class RDSProvider implements ResourceProvider {
 
       // Describe to get updated attributes
       const described = await this.describeDBCluster(physicalId);
+
+      // go-to-k/cdkd#5639: the Data API is turned on or off by its own call on
+      // the cluster ARN, after the ModifyDBCluster, as CloudFormation's update
+      // handler does; it then waits for the cluster to report the new setting.
+      // The handler makes the call only once the ModifyDBCluster stabilized
+      // (`isDBClusterStabilized`: the cluster `available`), and RDS refuses it
+      // while another change is in progress, so the call waits for `available`
+      // first, under `--no-wait` too.
+      if (httpEndpointAction === 'enable' || httpEndpointAction === 'disable') {
+        const arn = described?.DBClusterArn;
+        if (!arn) {
+          throw new Error(
+            `DescribeDBClusters did not report the cluster ARN, which ${httpEndpointAction === 'enable' ? 'EnableHttpEndpoint' : 'DisableHttpEndpoint'} needs`
+          );
+        }
+        const enable = httpEndpointAction === 'enable';
+        await this.sendHttpEndpointChange(logicalId, physicalId, arn, enable);
+        if (!noWait) {
+          await this.waitForClusterState(
+            logicalId,
+            physicalId,
+            (cluster) => (cluster.HttpEndpointEnabled ?? false) === enable,
+            'HTTP endpoint (Data API) setting'
+          );
+        }
+      }
 
       if (!noWait && portChanged) {
         for (const member of described?.DBClusterMembers ?? []) {
@@ -2024,6 +2391,11 @@ export class RDSProvider implements ResourceProvider {
           'ReadEndpoint.Address': described?.ReaderEndpoint,
           Arn: described?.DBClusterArn,
           DBClusterResourceId: described?.DbClusterResourceId,
+        }),
+        // go-to-k/cdkd#5639: a skipped key keeps the previous record's value
+        // (none when it held none or an unusable one).
+        ...(skippedKeys.length > 0 && {
+          effectiveProperties: withPreviousValues(properties, previousProperties, skippedKeys),
         }),
       };
     } catch (error) {
@@ -3572,6 +3944,50 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5639: `EnableHttpEndpoint` / `DisableHttpEndpoint` once the
+   * cluster is `available`. Right after a ModifyDBCluster the describe can
+   * still read `available` before the change starts, and the call is then
+   * refused as busy (`HTTP_ENDPOINT_BUSY_FAULTS`), so a refusal of that kind
+   * waits for `available` again and resends, at most
+   * `HTTP_ENDPOINT_MAX_ATTEMPTS` times. Any other failure, or the last busy
+   * one, propagates.
+   */
+  private async sendHttpEndpointChange(
+    logicalId: string,
+    physicalId: string,
+    arn: string,
+    enable: boolean
+  ): Promise<void> {
+    let delay = 5_000;
+    for (let attempt = 1; ; attempt += 1) {
+      await this.waitForClusterState(
+        logicalId,
+        physicalId,
+        (cluster) => cluster.Status === 'available',
+        'pending changes to settle before the Data API call'
+      );
+      try {
+        await this.getClient().send(
+          enable
+            ? new EnableHttpEndpointCommand({ ResourceArn: arn })
+            : new DisableHttpEndpointCommand({ ResourceArn: arn })
+        );
+        return;
+      } catch (error) {
+        const name = awsErrorName(error);
+        if (!HTTP_ENDPOINT_BUSY_FAULTS.has(name) || attempt >= HTTP_ENDPOINT_MAX_ATTEMPTS) {
+          throw error;
+        }
+        this.logger.debug(
+          safeMsg`DBCluster ${logicalId}: the Data API call was refused as busy (${name}); retrying`
+        );
+        await this.sleep(delay);
+        delay = Math.min(delay * 2, 10_000);
+      }
+    }
+  }
+
+  /**
    * Issues #5155 / #5184: the final-snapshot delete after a `--remove-protection`
    * flip (deleteAfterProtectionFlipWithFinalSnapshot owns the wait, the retry
    * and their bounds).
@@ -3900,6 +4316,36 @@ export class RDSProvider implements ResourceProvider {
     return scaling?.SecondsUntilAutoPause === undefined
       ? ['ServerlessV2ScalingConfiguration.SecondsUntilAutoPause']
       : [];
+  }
+
+  /**
+   * go-to-k/cdkd#5639: a raw CFn template may spell the DBCluster booleans as
+   * `'true'` / `'false'` and the retention period as a numeric string, while
+   * `readCurrentState` answers a boolean and a number. On a baseline taken
+   * from the recorded `properties` (no `observedProperties`) the two would
+   * read as drift; both sides fold to the readback's type. Anything else is
+   * left as it is.
+   */
+  canonicalizeDriftProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::RDS::DBCluster') return properties;
+    let out: Record<string, unknown> | undefined;
+    const set = (key: string, value: unknown): void => {
+      out ??= { ...properties };
+      out[key] = value;
+    };
+    for (const key of CLUSTER_BOOLEAN_SCALARS) {
+      const value = properties[key];
+      if (value === 'true' || value === 'false') set(key, value === 'true');
+    }
+    const retention = properties['PerformanceInsightsRetentionPeriod'];
+    if (typeof retention === 'string') {
+      const parsed = retentionPeriodValue(retention);
+      if (typeof parsed === 'number') set('PerformanceInsightsRetentionPeriod', parsed);
+    }
+    return out ?? properties;
   }
 
   /**
@@ -4329,6 +4775,24 @@ export class RDSProvider implements ResourceProvider {
       cluster.PendingModifiedValues?.PendingCloudwatchLogsExports
     );
     if (clusterLogs.length > 0) result['EnableCloudwatchLogsExports'] = clusterLogs;
+    // go-to-k/cdkd#5639: the Describe names, read back under the CFn ones,
+    // as CloudFormation's read handler maps them.
+    if (cluster.AutoMinorVersionUpgrade !== undefined) {
+      result['AutoMinorVersionUpgrade'] = cluster.AutoMinorVersionUpgrade;
+    }
+    if (cluster.NetworkType !== undefined) result['NetworkType'] = cluster.NetworkType;
+    if (cluster.PerformanceInsightsEnabled !== undefined) {
+      result['PerformanceInsightsEnabled'] = cluster.PerformanceInsightsEnabled;
+    }
+    if (cluster.PerformanceInsightsKMSKeyId !== undefined) {
+      result['PerformanceInsightsKmsKeyId'] = cluster.PerformanceInsightsKMSKeyId;
+    }
+    if (cluster.PerformanceInsightsRetentionPeriod !== undefined) {
+      result['PerformanceInsightsRetentionPeriod'] = cluster.PerformanceInsightsRetentionPeriod;
+    }
+    if (cluster.HttpEndpointEnabled !== undefined) {
+      result['EnableHttpEndpoint'] = cluster.HttpEndpointEnabled;
+    }
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
   }
