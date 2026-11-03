@@ -23,13 +23,6 @@
     "regenerations of the `types` block."
   ],
   "types": {
-    "AWS::DocDB::DBCluster": [
-      "RestoreToTime",
-      "RestoreType",
-      "SnapshotIdentifier",
-      "SourceDBClusterIdentifier",
-      "UseLatestRestorableTime"
-    ],
     "AWS::DynamoDB::GlobalTable": [
       "GlobalTableSourceArn",
       "GlobalTableWitnesses",

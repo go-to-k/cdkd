@@ -76,6 +76,12 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
         'one call per update step (an index create, a replica update, a settings change), each carrying its own update member, which the chain names',
     },
   },
+  'AWS::DocDB::DBCluster': {
+    repeated: {
+      ModifyDBClusterCommand:
+        "a restore sends CloudFormation's own follow-up and the declared values it drops in separate calls, so a refusal of the second only warns",
+    },
+  },
   'AWS::Neptune::DBCluster': {
     repeated: {
       AddRoleToDBClusterCommand: PER_ITEM('AssociatedRoles', 'RoleArn'),

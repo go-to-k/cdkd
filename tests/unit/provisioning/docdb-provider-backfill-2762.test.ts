@@ -1159,7 +1159,12 @@ describe('DocDBProvider backfilled properties (go-to-k/cdkd#2762)', () => {
         'AvailabilityZones',
         'GlobalClusterIdentifier',
         'MasterUserSecretKmsKeyId',
+        'RestoreToTime',
+        'RestoreType',
         'RotateMasterUserPassword',
+        'SnapshotIdentifier',
+        'SourceDBClusterIdentifier',
+        'UseLatestRestorableTime',
       ]);
       expect(provider.getDriftUnknownPaths(INSTANCE)).toEqual(['CertificateRotationRestart']);
     });

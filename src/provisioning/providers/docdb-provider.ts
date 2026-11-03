@@ -11,6 +11,10 @@ import {
   DescribeDBInstancesCommand,
   DescribeGlobalClustersCommand,
   RemoveFromGlobalClusterCommand,
+  DescribeDBClusterSnapshotsCommand,
+  RestoreDBClusterFromSnapshotCommand,
+  RestoreDBClusterToPointInTimeCommand,
+  type ModifyDBClusterCommandInput,
   type DBCluster,
   type DBInstance,
   type GlobalClusterMember,
@@ -29,6 +33,7 @@ import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
+import { refuseRestoreFromItself } from '../restore-source-guard.js';
 import { resolveExplicitPhysicalId } from '../import-helpers.js';
 import type {
   ResourceProvider,
@@ -469,6 +474,200 @@ function isDbIdentifier(id: string): boolean {
   return id.length <= 63 && /^[A-Za-z](?:-?[A-Za-z0-9])*$/.test(id);
 }
 
+/** Which of the two restore calls a template's keys select (go-to-k/cdkd#5628). */
+type DocDBClusterRestore =
+  | { kind: 'snapshot'; snapshotIdentifier: string }
+  | {
+      kind: 'point-in-time';
+      sourceDBClusterIdentifier: string;
+      restoreToTime: Date | undefined;
+    };
+
+/**
+ * A `RestoreToTime` as an ISO 8601 timestamp carrying its zone: `Z` or a
+ * `+hh:mm` / `-hhmm` offset, `T` or a space between date and time. The whole
+ * shape, since `Date` reads many others; a space is not refused unmeasured.
+ */
+const ZONED_TIMESTAMP =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:z|[+-]\d{2}:?\d{2})$/i;
+
+/**
+ * The restore a template declares, `undefined` for a plain create. Measured
+ * against CloudFormation (go-to-k/cdkd#5628, us-east-1, engine 5.0.0, the
+ * handler's calls read from CloudTrail): `SnapshotIdentifier` selects
+ * `RestoreDBClusterFromSnapshot`, `SourceDBClusterIdentifier`
+ * `RestoreDBClusterToPointInTime`, and neither `CreateDBCluster`, whatever
+ * `RestoreType`, `RestoreToTime` or `UseLatestRestorableTime` say. An empty
+ * identifier or `RestoreToTime` counts as none. Each refusal below is one CloudFormation fails the
+ * create with too: both identifiers; a point-in-time restore with neither a
+ * `RestoreToTime` nor `UseLatestRestorableTime: true`, or with both; and a
+ * `RestoreToTime` with no zone ("Internal Failure"). They hold on a state
+ * replay too: CloudFormation refuses each, so no record of one was written by
+ * a deploy it would accept, and falling through would make an EMPTY cluster.
+ */
+function readDocDBClusterRestore(
+  properties: Record<string, unknown>,
+  resourceType: string,
+  logicalId: string
+): DocDBClusterRestore | undefined {
+  const refuse = (reason: string): never => {
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`DocDB DBCluster ${logicalId}: ${reason}, as CloudFormation requires; nothing was changed.`,
+        resourceType,
+        logicalId
+      )
+    );
+  };
+  const identifier = (key: string): string | undefined => {
+    const value = properties[key];
+    if (value == null) return undefined;
+    return typeof value === 'string' ? value || undefined : refuse(`${key} must be a string`);
+  };
+  const snapshotIdentifier = identifier('SnapshotIdentifier');
+  const sourceDBClusterIdentifier = identifier('SourceDBClusterIdentifier');
+  if (snapshotIdentifier !== undefined && sourceDBClusterIdentifier !== undefined) {
+    return refuse('SnapshotIdentifier and SourceDBClusterIdentifier cannot both be set');
+  }
+  if (sourceDBClusterIdentifier === undefined) {
+    return snapshotIdentifier === undefined ? undefined : { kind: 'snapshot', snapshotIdentifier };
+  }
+  const declaredTime = properties['RestoreToTime'];
+  let restoreToTime: Date | undefined;
+  if (declaredTime != null && declaredTime !== '') {
+    restoreToTime =
+      typeof declaredTime === 'string' && ZONED_TIMESTAMP.test(declaredTime)
+        ? new Date(declaredTime)
+        : undefined;
+    if (restoreToTime === undefined || Number.isNaN(restoreToTime.getTime())) {
+      return refuse(
+        'RestoreToTime must be a timestamp with a time zone, such as 2026-01-01T00:00:00Z'
+      );
+    }
+  }
+  const declaredLatest = properties['UseLatestRestorableTime'];
+  const latest = declaredLatest == null ? false : coerceCfnBoolean(declaredLatest);
+  if (latest === undefined) return refuse('UseLatestRestorableTime must be a boolean');
+  if (restoreToTime !== undefined && latest) {
+    return refuse('RestoreToTime and UseLatestRestorableTime: true cannot both be set');
+  }
+  if (restoreToTime === undefined && !latest) {
+    return refuse(
+      'a SourceDBClusterIdentifier restore needs RestoreToTime or UseLatestRestorableTime: true'
+    );
+  }
+  const restoreType = properties['RestoreType'];
+  if (restoreType != null && typeof restoreType !== 'string') {
+    return refuse('RestoreType must be a string');
+  }
+  return { kind: 'point-in-time', sourceDBClusterIdentifier, restoreToTime };
+}
+
+/**
+ * The template keys a create of this kind does not use, as CloudFormation does
+ * not (measured, go-to-k/cdkd#5628): the point-in-time keys beside no source,
+ * `GlobalClusterIdentifier` on either restore (neither call has a member, and
+ * a cluster cannot join one later), and `AvailabilityZones` on a point-in-time
+ * one. A false `UseLatestRestorableTime` asks for nothing, so it stays unnamed.
+ */
+function unusedRestoreKeys(
+  properties: Record<string, unknown>,
+  restore: DocDBClusterRestore | undefined
+): string[] {
+  const keys =
+    restore?.kind === 'point-in-time'
+      ? ['GlobalClusterIdentifier', 'AvailabilityZones']
+      : [
+          'RestoreType',
+          'RestoreToTime',
+          'UseLatestRestorableTime',
+          ...(restore === undefined ? [] : ['GlobalClusterIdentifier']),
+        ];
+  return keys.filter(
+    (key) => properties[key] != null && properties[key] !== '' && properties[key] !== false
+  );
+}
+
+/** The longest a create waits for the cluster to read `available`. */
+const CLUSTER_AVAILABLE_MAX_WAIT_MS = 1_800_000;
+
+/**
+ * How long a restore waits for `available`: as a create, or to the resource
+ * deadline when `--resource-timeout` allows more, since it copies the source.
+ */
+function restoreWaitMs(): number {
+  const remaining = enclosingDeadlineRemainingMs() - DEADLINE_MARGIN_MS;
+  return Number.isFinite(remaining)
+    ? Math.max(CLUSTER_AVAILABLE_MAX_WAIT_MS, remaining)
+    : CLUSTER_AVAILABLE_MAX_WAIT_MS;
+}
+
+/** What `ModifyDBCluster` answers for a value it refuses. */
+const RESTORE_VALUE_REFUSALS: ReadonlySet<string> = new Set([
+  'InvalidParameterValue',
+  'InvalidParameterCombination',
+]);
+
+/** The `ModifyDBCluster` members of one follow-up call, the identifier aside. */
+type ClusterModifyMembers = Omit<ModifyDBClusterCommandInput, 'DBClusterIdentifier'>;
+
+/** The `ModifyDBCluster` calls sent once a restored cluster is `available`. */
+interface DocDBRestoreFollowUp {
+  /** What CloudFormation sets too: a refusal fails the create, as it fails there. */
+  parity: ClusterModifyMembers | undefined;
+  /**
+   * What CloudFormation drops, grouped by what AWS accepts or refuses together:
+   * a refusal is a warning naming the keys (`sendRestoreFollowUp`).
+   */
+  declared: ClusterModifyMembers[];
+}
+
+/**
+ * The `ModifyDBCluster` members a restore leaves to a follow-up call
+ * (go-to-k/cdkd#5628). Measured: after a snapshot restore CloudFormation sends
+ * `DBClusterParameterGroupName`, `BackupRetentionPeriod` and both windows in a
+ * `ModifyDBCluster`; a point-in-time restore carries the parameter group on
+ * the restore call, which this SDK's request has no member for, so it goes in
+ * the follow-up instead. Neither restore applies the master password,
+ * `ManageMasterUserPassword`, or, on a point-in-time one, the retention and
+ * windows: CloudFormation drops them (its next update sends the retention and
+ * windows). cdkd sends those declared values here rather than record what AWS
+ * does not hold, so parity gives way there, and only there; AWS refusing one
+ * is a warning naming the keys, not a failed create.
+ */
+function docdbRestoreFollowUp(
+  properties: Record<string, unknown>,
+  restore: DocDBClusterRestore,
+  password: string | undefined,
+  managedPassword: boolean | undefined
+): DocDBRestoreFollowUp {
+  const nonEmpty = (members: ClusterModifyMembers): ClusterModifyMembers | undefined =>
+    Object.values(members).some((value) => value !== undefined) ? members : undefined;
+  const retention = numberOrUndefined(properties['BackupRetentionPeriod']);
+  const windows: ClusterModifyMembers = {
+    PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
+    PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as string | undefined,
+  };
+  const snapshot = restore.kind === 'snapshot';
+  return {
+    parity: nonEmpty({
+      DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as string | undefined,
+      ...(snapshot && { BackupRetentionPeriod: retention, ...windows }),
+    }),
+    declared: [
+      ...(snapshot ? [] : [nonEmpty({ BackupRetentionPeriod: retention }), nonEmpty(windows)]),
+      nonEmpty({ MasterUserPassword: password }),
+      nonEmpty({
+        ManageMasterUserPassword: managedPassword === true ? true : undefined,
+        MasterUserSecretKmsKeyId:
+          managedPassword === true
+            ? (properties['MasterUserSecretKmsKeyId'] as string | undefined)
+            : undefined,
+      }),
+    ].filter((group): group is ClusterModifyMembers => group !== undefined),
+  };
+}
+
 /**
  * AWS DocumentDB Provider
  *
@@ -509,7 +708,7 @@ export class DocDBProvider implements ResourceProvider {
    * `AWS::DocDB::DBCluster` and `AWS::DocDB::DBInstance` are
    * `ProvisioningType: NON_PROVISIONABLE` — Cloud Control has no handlers for
    * them — so the #614 silent-drop auto-route must not send a template using
-   * an unhandled property (`RestoreType`, `SnapshotIdentifier`, ...) to CC, where it fails mid-deploy with an
+   * an unhandled property to CC, where it fails mid-deploy with an
    * opaque UnsupportedActionException. With this opt-out the registry refuses
    * such a template pre-flight (issue #3866).
    *
@@ -561,6 +760,15 @@ export class DocDBProvider implements ResourceProvider {
         'RotateMasterUserPassword',
         // go-to-k/cdkd#5628: a removal detaches in place (CFn A/B).
         'GlobalClusterIdentifier',
+        // go-to-k/cdkd#5628: what the cluster was made from. The identifiers
+        // are create-only (a removal replaces); the point-in-time keys are read
+        // by the create alone, and CloudFormation's update of one sends nothing
+        // for it (measured), so there is nothing to reset.
+        'SnapshotIdentifier',
+        'SourceDBClusterIdentifier',
+        'RestoreToTime',
+        'RestoreType',
+        'UseLatestRestorableTime',
         // Left in place, as CloudFormation leaves them (CFn A/B), and named in
         // update()'s own warning.
         ...DOCDB_CLUSTER_KEPT_ON_REMOVAL,
@@ -618,6 +826,12 @@ export class DocDBProvider implements ResourceProvider {
         'RotateMasterUserPassword',
         'ServerlessV2ScalingConfiguration',
         'StorageType',
+        // go-to-k/cdkd#5628: a restore (`readDocDBClusterRestore`).
+        'RestoreToTime',
+        'RestoreType',
+        'SnapshotIdentifier',
+        'SourceDBClusterIdentifier',
+        'UseLatestRestorableTime',
       ]),
     ],
     [
@@ -856,10 +1070,56 @@ export class DocDBProvider implements ResourceProvider {
       );
     }
     const globalClusterId = docdbGlobalClusterId(properties['GlobalClusterIdentifier']);
+    // go-to-k/cdkd#5628: a restore, refused before any call where CloudFormation
+    // refuses its keys.
+    const restore = readDocDBClusterRestore(properties, resourceType, logicalId);
+    const unused = unusedRestoreKeys(properties, restore);
+    if (unused.length > 0) {
+      const call =
+        restore === undefined
+          ? 'create'
+          : restore.kind === 'snapshot'
+            ? 'snapshot restore'
+            : 'point-in-time restore';
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): this ${call} does not use ${unused.join(', ')}, as in CloudFormation.`
+      );
+    }
 
     const dbClusterIdentifier =
       (properties['DBClusterIdentifier'] as string | undefined) ||
       generatedNameFor('AWS::DocDB::DBCluster', logicalId);
+    // go-to-k/cdkd#5628: a replacement's generated name may be the source's.
+    // Names only: no account is known here, and an ARN naming this very cluster
+    // deletes nothing at create, AWS answers it with AlreadyExists.
+    if (!String(properties['SourceDBClusterIdentifier']).startsWith('arn:')) {
+      refuseRestoreFromItself(resourceType, properties, dbClusterIdentifier, logicalId, {
+        region: this.providerRegion,
+      });
+    }
+    const port = properties['Port'] != null ? Number(properties['Port']) : undefined;
+    const kmsKeyId = properties['KmsKeyId'] as string | undefined;
+    // What a create and both restores take alike.
+    const sharedInput = {
+      DBClusterIdentifier: dbClusterIdentifier,
+      VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
+      DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
+      KmsKeyId: kmsKeyId,
+      DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
+      CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
+      NetworkType: properties['NetworkType'] as string | undefined,
+      StorageType: properties['StorageType'] as string | undefined,
+      ...(logTypes !== undefined &&
+        logTypes.length > 0 && { EnableCloudwatchLogsExports: logTypes }),
+      ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
+      ...(tags.length > 0 && { Tags: tags }),
+    };
+    // Measured (#5628): a restore takes the type's port, not the source's,
+    // which is what AWS defaults a restore to.
+    const restorePort = port ?? DOCDB_DEFAULT_PORT;
+    if (restore !== undefined) {
+      await this.refuseUnencryptedRestoreSource(properties, restore, resourceType, logicalId, mask);
+    }
 
     // go-to-k/cdkd#4583: set once CreateDBCluster returned (no self-cleanup).
     let clusterCreated = false;
@@ -867,44 +1127,55 @@ export class DocDBProvider implements ResourceProvider {
     // carried on the failure's mark as the orphan's identity.
     let createdResourceId: string | undefined;
     try {
-      const response = await this.getCreateClient().send(
-        new CreateDBClusterCommand({
-          DBClusterIdentifier: dbClusterIdentifier,
-          // DocDB engine value is fixed: only `docdb` is accepted.
-          Engine: 'docdb',
-          EngineVersion: properties['EngineVersion'] as string | undefined,
-          MasterUsername: properties['MasterUsername'] as string | undefined,
-          MasterUserPassword: password,
-          Port: properties['Port'] != null ? Number(properties['Port']) : undefined,
-          VpcSecurityGroupIds: properties['VpcSecurityGroupIds'] as string[] | undefined,
-          DBSubnetGroupName: properties['DBSubnetGroupName'] as string | undefined,
-          StorageEncrypted: properties['StorageEncrypted'] as boolean | undefined,
-          KmsKeyId: properties['KmsKeyId'] as string | undefined,
-          BackupRetentionPeriod:
-            properties['BackupRetentionPeriod'] != null
-              ? Number(properties['BackupRetentionPeriod'])
-              : undefined,
-          PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
-          PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
-            | string
-            | undefined,
-          DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as
-            | string
-            | undefined,
-          DeletionProtection: properties['DeletionProtection'] as boolean | undefined,
-          AvailabilityZones: properties['AvailabilityZones'] as string[] | undefined,
-          CopyTagsToSnapshot: properties['CopyTagsToSnapshot'] as boolean | undefined,
-          ManageMasterUserPassword: managedPassword,
-          MasterUserSecretKmsKeyId: properties['MasterUserSecretKmsKeyId'] as string | undefined,
-          NetworkType: properties['NetworkType'] as string | undefined,
-          StorageType: properties['StorageType'] as string | undefined,
-          ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
-          ...(logTypes !== undefined &&
-            logTypes.length > 0 && { EnableCloudwatchLogsExports: logTypes }),
-          ...(scaling != null && { ServerlessV2ScalingConfiguration: scaling }),
-          ...(tags.length > 0 && { Tags: tags }),
-        })
-      );
+      const response = await (restore === undefined
+        ? this.getCreateClient().send(
+            new CreateDBClusterCommand({
+              ...sharedInput,
+              // DocDB engine value is fixed: only `docdb` is accepted.
+              Engine: 'docdb',
+              EngineVersion: properties['EngineVersion'] as string | undefined,
+              MasterUsername: properties['MasterUsername'] as string | undefined,
+              MasterUserPassword: password,
+              Port: port,
+              StorageEncrypted: properties['StorageEncrypted'] as boolean | undefined,
+              BackupRetentionPeriod: numberOrUndefined(properties['BackupRetentionPeriod']),
+              PreferredBackupWindow: properties['PreferredBackupWindow'] as string | undefined,
+              PreferredMaintenanceWindow: properties['PreferredMaintenanceWindow'] as
+                | string
+                | undefined,
+              DBClusterParameterGroupName: properties['DBClusterParameterGroupName'] as
+                | string
+                | undefined,
+              AvailabilityZones: properties['AvailabilityZones'] as string[] | undefined,
+              ManageMasterUserPassword: managedPassword,
+              MasterUserSecretKmsKeyId: properties['MasterUserSecretKmsKeyId'] as
+                | string
+                | undefined,
+              ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
+            })
+          )
+        : restore.kind === 'snapshot'
+          ? this.getCreateClient().send(
+              new RestoreDBClusterFromSnapshotCommand({
+                ...sharedInput,
+                SnapshotIdentifier: restore.snapshotIdentifier,
+                Engine: 'docdb',
+                EngineVersion: properties['EngineVersion'] as string | undefined,
+                Port: restorePort,
+                AvailabilityZones: properties['AvailabilityZones'] as string[] | undefined,
+              })
+            )
+          : this.getCreateClient().send(
+              new RestoreDBClusterToPointInTimeCommand({
+                ...sharedInput,
+                SourceDBClusterIdentifier: restore.sourceDBClusterIdentifier,
+                RestoreType: properties['RestoreType'] as string | undefined,
+                ...(restore.restoreToTime !== undefined
+                  ? { RestoreToTime: restore.restoreToTime }
+                  : { UseLatestRestorableTime: true }),
+                Port: restorePort,
+              })
+            ));
       clusterCreated = true;
       createdResourceId = response.DBCluster?.DbClusterResourceId;
       // go-to-k/cdkd#5511: report before the availability wait.
@@ -912,16 +1183,39 @@ export class DocDBProvider implements ResourceProvider {
 
       const cluster = response.DBCluster;
       if (!cluster) {
-        throw new Error('CreateDBCluster did not return DBCluster');
+        throw new Error('The create call did not return DBCluster');
       }
 
       this.logger.debug(
         `Successfully created DocDB DBCluster ${logicalId}: ${dbClusterIdentifier}`
       );
 
-      // Wait for cluster to become available (skip with --no-wait)
-      if (process.env['CDKD_NO_WAIT'] !== 'true') {
-        await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
+      const followUp =
+        restore === undefined
+          ? undefined
+          : docdbRestoreFollowUp(properties, restore, password, managedPassword);
+      const followingUp =
+        followUp !== undefined && (followUp.parity !== undefined || followUp.declared.length > 0);
+      // A restore copies the source's data, so its wait follows the resource
+      // timeout. Skipped with --no-wait, unless a follow-up needs `available`.
+      if (followingUp || process.env['CDKD_NO_WAIT'] !== 'true') {
+        await this.waitForClusterAvailable(
+          logicalId,
+          dbClusterIdentifier,
+          restore === undefined ? undefined : restoreWaitMs()
+        );
+      }
+      if (followUp !== undefined && followingUp) {
+        await this.sendRestoreFollowUp(
+          logicalId,
+          resourceType,
+          dbClusterIdentifier,
+          followUp,
+          mask
+        );
+      }
+      if (restore !== undefined) {
+        this.warnRestoredDifferences(logicalId, resourceType, properties, restore, cluster);
       }
 
       // Describe to get final attributes
@@ -960,6 +1254,173 @@ export class DocDBProvider implements ResourceProvider {
       }
       throw thrown;
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5628: CloudFormation refuses `StorageEncrypted: true` with no
+   * `KmsKeyId` when the snapshot or source cluster is not encrypted (measured
+   * on both restores: "You can't create an encrypted DB cluster from an
+   * unencrypted source DB cluster or DB cluster snapshot without an AWS KMS
+   * key"), where AWS would restore it unencrypted: neither restore call has a
+   * `StorageEncrypted` member. The source is read only for that combination,
+   * so no other create pays the call. A source AWS does not find is left to the
+   * restore's own not-found; one it finds is restored only when it reads
+   * encrypted. `IncludePublic`: a public snapshot is never encrypted.
+   */
+  private async refuseUnencryptedRestoreSource(
+    properties: Record<string, unknown>,
+    restore: DocDBClusterRestore,
+    resourceType: string,
+    logicalId: string,
+    mask: ((text: string) => string) | undefined
+  ): Promise<void> {
+    if (coerceCfnBoolean(properties['StorageEncrypted']) !== true) return;
+    if (properties['KmsKeyId'] != null && properties['KmsKeyId'] !== '') return;
+    let encrypted: boolean | undefined;
+    try {
+      if (restore.kind === 'snapshot') {
+        const response = await this.getClient().send(
+          new DescribeDBClusterSnapshotsCommand({
+            DBClusterSnapshotIdentifier: restore.snapshotIdentifier,
+            IncludeShared: true,
+            IncludePublic: true,
+          })
+        );
+        const snapshot = response.DBClusterSnapshots?.[0];
+        if (snapshot === undefined) return;
+        encrypted = snapshot.StorageEncrypted;
+      } else {
+        const source = await this.describeDBCluster(restore.sourceDBClusterIdentifier);
+        if (source === undefined) return;
+        encrypted = source.StorageEncrypted;
+      }
+    } catch (error) {
+      const fault =
+        restore.kind === 'snapshot' ? 'DBClusterSnapshotNotFoundFault' : 'DBClusterNotFoundFault';
+      if (isDocDBNotFoundError(error, fault)) return;
+      throw this.wrapCaughtError(
+        mask,
+        error,
+        (text) =>
+          new ProvisioningError(
+            `Failed to create DocDB DBCluster ${logicalId}: reading whether the restore source is encrypted failed, so nothing was changed: ${text}`,
+            resourceType,
+            logicalId,
+            undefined,
+            error instanceof Error ? error : undefined
+          )
+      );
+    }
+    if (encrypted === true) return;
+    throw markNonRetryable(
+      new ProvisioningError(
+        safeMsg`DocDB DBCluster ${logicalId}: StorageEncrypted is true, but the restore source does not read as encrypted and no KmsKeyId is set. Set KmsKeyId (alias/aws/rds is the default key), as CloudFormation requires; nothing was changed.`,
+        resourceType,
+        logicalId
+      )
+    );
+  }
+
+  /**
+   * The `ModifyDBCluster` calls after a restore ({@link docdbRestoreFollowUp}),
+   * sent once the cluster is `available`, then waited out. A refusal as not
+   * available is waited out and resent (#5194's rule). A refused `declared`
+   * group names its keys only, its masked reason behind debug: AWS's text can
+   * echo a value, and one group may hold the master password.
+   */
+  private async sendRestoreFollowUp(
+    logicalId: string,
+    resourceType: string,
+    physicalId: string,
+    followUp: DocDBRestoreFollowUp,
+    mask: ((text: string) => string) | undefined
+  ): Promise<void> {
+    const send = (members: ClusterModifyMembers): Promise<void> =>
+      modifyDbInstanceWhenAvailable({
+        send: () =>
+          this.getClient().send(
+            new ModifyDBClusterCommand({
+              DBClusterIdentifier: physicalId,
+              ...members,
+              ApplyImmediately: true,
+            })
+          ),
+        readStatus: async () => (await this.describeDBCluster(physicalId))?.Status,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label: 'DocDB DBCluster',
+        subject: 'cluster',
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
+    if (followUp.parity !== undefined) await send(followUp.parity);
+    // Whether AWS refused the value: anything else still fails the create.
+    const refused = async (members: ClusterModifyMembers): Promise<boolean> => {
+      try {
+        await send(members);
+        return false;
+      } catch (error) {
+        if (error instanceof Error && RESTORE_VALUE_REFUSALS.has(error.name)) {
+          this.logger.debug(
+            safeMsg`${error.name} after restoring ${logicalId}: ${maskerOrIdentity(mask)(error.message)}`
+          );
+          return true;
+        }
+        throw error;
+      }
+    };
+    const { declared } = followUp;
+    if (declared.length > 0 && (await refused(Object.assign({}, ...declared) as object))) {
+      // AWS refuses a call whole: one group at a time finds what it refused.
+      const keys: string[] = [];
+      for (const group of declared) {
+        if (declared.length === 1 || (await refused(group))) {
+          keys.push(
+            ...Object.keys(group).filter(
+              (key) => group[key as keyof ClusterModifyMembers] !== undefined
+            )
+          );
+        }
+      }
+      if (keys.length > 0) {
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): AWS refused ${keys.join(', ')} after the restore, so the cluster keeps its restored values. The record holds the declared ones, so drift does not report the difference. An update sends a declared BackupRetentionPeriod or window again; the password settings only once the template changes them.`
+        );
+      }
+    }
+    if (process.env['CDKD_NO_WAIT'] !== 'true') {
+      await this.waitForClusterAvailable(logicalId, physicalId, restoreWaitMs());
+    }
+  }
+
+  /**
+   * What a restore keeps from its source although the template declares
+   * otherwise, as CloudFormation's restore does (measured, go-to-k/cdkd#5628):
+   * the master user name, and on a point-in-time restore the engine version,
+   * which neither call can set. Drift does not show it, its baseline being the
+   * deploy-time readback of the live value, so this warning is the one place it
+   * is named. Read off the restore call's own
+   * answer, so it costs no call. Names keys only.
+   */
+  private warnRestoredDifferences(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    restore: DocDBClusterRestore,
+    cluster: DBCluster
+  ): void {
+    const differs = (key: string, live: string | undefined): boolean =>
+      properties[key] != null && live !== undefined && String(properties[key]) !== live;
+    const keys = [
+      ...(differs('MasterUsername', cluster.MasterUsername) ? ['MasterUsername'] : []),
+      ...(restore.kind === 'point-in-time' && differs('EngineVersion', cluster.EngineVersion)
+        ? ['EngineVersion']
+        : []),
+    ];
+    if (keys.length === 0) return;
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the restored cluster keeps its source's ${keys.join(', ')}, not the template's, as in CloudFormation: a restore does not set ${keys.length === 1 ? 'it' : 'them'}. cdkd drift does not report the difference: its baseline is the readback taken at deploy.`
+    );
   }
 
   private async updateDBCluster(
@@ -2807,7 +3268,7 @@ export class DocDBProvider implements ResourceProvider {
   private async waitForClusterAvailable(
     logicalId: string,
     dbClusterIdentifier: string,
-    maxWaitMs = 1_800_000
+    maxWaitMs = CLUSTER_AVAILABLE_MAX_WAIT_MS
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 5_000;
@@ -2943,7 +3404,8 @@ export class DocDBProvider implements ResourceProvider {
    * `CertificateRotationRestart` are per-call requests. `AvailabilityZones` is
    * create-only, and DescribeDBClusters reports the zones AWS placed the cluster
    * in. `MasterUserSecretKmsKeyId` may be declared as an alias or key id, where
-   * the read answers one spelling.
+   * the read answers one spelling. The restore keys are write-only: nothing
+   * reports what a cluster was made from (go-to-k/cdkd#5628).
    */
   getDriftUnknownPaths(resourceType: string): string[] {
     if (resourceType === 'AWS::DocDB::DBCluster') {
@@ -2951,7 +3413,12 @@ export class DocDBProvider implements ResourceProvider {
         'AvailabilityZones',
         'GlobalClusterIdentifier',
         'MasterUserSecretKmsKeyId',
+        'RestoreToTime',
+        'RestoreType',
         'RotateMasterUserPassword',
+        'SnapshotIdentifier',
+        'SourceDBClusterIdentifier',
+        'UseLatestRestorableTime',
       ];
     }
     if (resourceType === 'AWS::DocDB::DBInstance') return ['CertificateRotationRestart'];

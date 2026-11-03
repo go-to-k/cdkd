@@ -83,6 +83,7 @@ import { replayReadopt } from './replay-revert.js';
 import { hasAddressablePhysicalId } from '../../state/malformed-resources-bag.js';
 import { probeReplacedSurvivor } from './replaced-survivor.js';
 import { noteRetainedResource } from '../../provisioning/providers/create-token-ledger.js';
+import { refuseRestoreFromItself } from '../../provisioning/restore-source-guard.js';
 
 /**
  * go-to-k/cdkd#5096: reversing a same-id re-create deletes the resource again,
@@ -602,6 +603,11 @@ export async function replayReverseReplacement(s: ReplayOpScope): Promise<void> 
   // is dropped, so state still points at the live new resource and the
   // journal is kept for a re-run.
   const deleteNewResourceFirst = async (purpose: string): Promise<void> => {
+    // go-to-k/cdkd#5628: before the delete, which is what would lose the source
+    // the old record restores from.
+    refuseRestoreFromItself(oldType, prev.properties ?? {}, current.physicalId, op.logicalId, {
+      region: ctx.region,
+    });
     const finalSnapshotIdentifier = rollbackFinalSnapshotId(
       op.resourceType,
       current,

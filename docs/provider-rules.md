@@ -1741,6 +1741,34 @@ Checklist when writing or reviewing an `update()`:
   an add or change before any write unless the cluster is already part of the
   target, and leaves a rollback's removal alone: cdkd only ever accepted that
   membership, never added it.
+  Real CloudFormation measurement, go-to-k/cdkd#5628 (us-east-1, engine 5.0.0,
+  CloudTrail's request parameters of each handler call): an
+  `AWS::DocDB::DBCluster` with `SnapshotIdentifier` calls
+  `RestoreDBClusterFromSnapshot`, one with `SourceDBClusterIdentifier`
+  `RestoreDBClusterToPointInTime`, and neither `CreateDBCluster`, a lone
+  `RestoreType`, `RestoreToTime` or `UseLatestRestorableTime` having no effect;
+  an empty identifier counts as none. Unlike Neptune (where the source wins over
+  a snapshot beside it, and `StorageEncrypted: true` sends the default key),
+  CloudFormation fails the create for both identifiers and for
+  `StorageEncrypted: true` with no `KmsKeyId` from an unencrypted source; it also
+  fails one for a source with no time or with both times, and a `RestoreToTime`
+  with no zone. cdkd refuses each before any call. Both restores
+  take port 27017 when none is declared. A snapshot restore's follow-up
+  `ModifyDBCluster` sets the parameter group, retention and windows; a
+  point-in-time restore carries the parameter group on the call (cdkd sends it
+  in the follow-up: this SDK's request has no member) and DROPS the retention,
+  windows, `EngineVersion` and `AvailabilityZones`. Neither applies the master
+  user name, password or `ManageMasterUserPassword`. cdkd sends the dropped
+  password, `ManageMasterUserPassword` and point-in-time retention and windows
+  in a second `ModifyDBCluster` whose refusal warns, as for Neptune, never
+  `EngineVersion` (AWS refuses an engine change on a cluster with no healthy
+  primary instance). Removing `SnapshotIdentifier` is a replacement; changing
+  `RestoreType` or `UseLatestRestorableTime` updates in place and sends nothing
+  for them. A `SourceDBClusterIdentifier` naming the cluster itself is refused
+  as for Neptune (`refuseRestoreFromItself`), and so, on both types, is a
+  `SnapshotIdentifier` naming one of the cluster's own automated snapshots
+  (`rds:<cluster>-...`), which its delete removes; the rollback's reverse of a
+  delete-first replacement refuses both before deleting the new cluster.
   Real CloudFormation A/B, go-to-k/cdkd#2762: a removed `AWS::Kinesis::Stream`
   `RecordDistributionStrategy` RESETS to `USER_PARTITION_KEY` (ON_DEMAND
   stream), and on an `AWS::CodeBuild::Project` removing `Visibility` and

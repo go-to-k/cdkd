@@ -10,6 +10,34 @@
  * defect lived in which provider instance serves which type.
  */
 import { describe, it, expect, vi } from 'vite-plus/test';
+
+// go-to-k/cdkd#5628 wired the last silent drops of `AWS::DocDB::DBCluster`, and
+// no other type without a Cloud Control route has a drop this case can use. The
+// guard still serves the next drop a schema refresh adds, so the cluster's
+// coverage is held at what it read before #5628: the restore keys as drops.
+vi.mock('../../../src/provisioning/property-coverage.generated.js', async (importOriginal) => {
+  const orig = (await importOriginal()) as {
+    PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, Record<string, unknown>>;
+  };
+  const restoreKeys = [
+    'RestoreToTime',
+    'RestoreType',
+    'SnapshotIdentifier',
+    'SourceDBClusterIdentifier',
+    'UseLatestRestorableTime',
+  ];
+  const cluster = orig.PROPERTY_COVERAGE_BY_TYPE.get('AWS::DocDB::DBCluster')!;
+  const coverage = new Map(orig.PROPERTY_COVERAGE_BY_TYPE);
+  coverage.set('AWS::DocDB::DBCluster', {
+    ...cluster,
+    handled: new Set(
+      [...(cluster['handled'] as Set<string>)].filter((key) => !restoreKeys.includes(key))
+    ),
+    silentDrop: new Map(restoreKeys.map((key) => [key, 'not yet implemented by cdkd'])),
+    createOnlyDrops: new Set(['SnapshotIdentifier', 'SourceDBClusterIdentifier']),
+  });
+  return { ...orig, PROPERTY_COVERAGE_BY_TYPE: coverage };
+});
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';

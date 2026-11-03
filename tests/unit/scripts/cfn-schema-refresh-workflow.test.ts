@@ -1274,11 +1274,11 @@ describe('cfn-schema-refresh workflow (issue #2718)', () => {
       // `findGaps(report)).toEqual([])` is zero-headroom in a different shape —
       // substantively covered, since `audit:sdk-attr-coverage:check` runs the
       // same predicate and is its own `run_check`, but invisible here.
-      // Five suites assert `silentDrop` is empty against the REAL coverage, so
+      // These suites assert `silentDrop` is empty against the REAL coverage, so
       // one writable property AWS adds to any of their types reds CI — while
       // `property-coverage` under `CDKD_GENERATE_BACKFILL` absorbs the same
-      // addition and stays green. Naming one of them covered three files of the
-      // five. The family is DERIVED here so a sixth cannot be added silently.
+      // addition and stays green. Naming one of them once left the rest
+      // uncovered. The family is DERIVED here so a new member cannot be added silently.
       const walk = (dir: string): string[] =>
         readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
           e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]

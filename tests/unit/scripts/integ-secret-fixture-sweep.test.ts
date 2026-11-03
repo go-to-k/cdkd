@@ -374,6 +374,9 @@ describe('a secret-seeding integ fixture must sweep S3 object versions', () => {
       // the state records carry; the fixture sweeps the prefix.
       'docdb-global-cluster',
       'docdb-neptune',
+      // go-to-k/cdkd#5628: literal master passwords on L1 clusters, which the
+      // state records carry; the fixture sweeps the prefix.
+      'docdb-restore',
       'eventbridge-api-destination',
       'iam-access-key',
       // Issue #5364: an AppSync API key, whose id is the credential and the
