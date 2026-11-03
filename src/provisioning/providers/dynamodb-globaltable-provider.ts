@@ -649,6 +649,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    */
   private readonly protectionFlips = new ProtectionFlipRegistry();
 
+  /**
+   * go-to-k/cdkd#5699: the replica regions each in-flight delete has dropped,
+   * keyed as the allowance above and for the same reason: a re-entered
+   * `delete()` reads a source table that no longer lists them, so a per-call
+   * list would forget the copies the first attempt left `DELETING`, and the
+   * destroy would return over them. Released where the allowance is.
+   */
+  private readonly droppedReplicaRegions = new Map<string, Set<string>>();
+
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::DynamoDB::GlobalTable',
@@ -8562,8 +8571,10 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     let indexNoun: string | undefined;
     // go-to-k/cdkd#5699: the regions whose replica this delete dropped, so the
     // destroy waits for each regional copy to be gone, not only for the
-    // source table to stop listing it.
-    const droppedReplicaRegions: string[] = [];
+    // source table to stop listing it. Carried across a re-entry.
+    const droppedKey = deleteBudgetKey(physicalId, context?.expectedRegion);
+    const droppedReplicaRegions = this.droppedReplicaRegions.get(droppedKey) ?? new Set<string>();
+    this.droppedReplicaRegions.set(droppedKey, droppedReplicaRegions);
     try {
       const describe = await this.dynamoDBClient.send(
         new DescribeTableCommand({ TableName: physicalId })
@@ -8634,7 +8645,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
             budget,
             context?.maskSecrets
           );
-          droppedReplicaRegions.push(region);
+          droppedReplicaRegions.add(region);
           // go-to-k/cdkd#5581: the read teardown above names only the read
           // dimension; DynamoDB also registered the replica's WRITE target
           // there, which survives the replica and the table.
@@ -8900,10 +8911,14 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // or an unreadable status warns and returns (`delete-gone-wait.ts`).
       // Only a delete: an update's replica removal keeps not waiting (#5581).
       await Promise.all(
-        droppedReplicaRegions.map((region) =>
+        [...droppedReplicaRegions].map((region) =>
           waitForGoneAfterDelete({
             what: deleteMask(`DynamoDB GlobalTable ${physicalId} replica in ${region}`),
             resourceType,
+            consequence:
+              `AWS finishes the delete on its side; until it does, the table still exists in ` +
+              `${region}, and a dependent deleted in the meantime (such as its KMS key) goes ` +
+              `while it is still in use.`,
             describe: async () => {
               try {
                 const out = await this.getRegionalClient(region).send(
@@ -8928,6 +8943,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       // the same name inherit this run's flip.
       this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
       this.protectionFlips.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+      this.droppedReplicaRegions.delete(droppedKey);
     } catch (error) {
       if (error instanceof ResourceNotFoundException) {
         const clientRegion = await this.dynamoDBClient.config.region();
@@ -8948,6 +8964,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
           this.logger.debug(`DynamoDB GlobalTable ${physicalId} does not exist, skipping`);
         }
         this.deleteBudgets.release(deleteBudgetKey(physicalId, context?.expectedRegion));
+        this.droppedReplicaRegions.delete(droppedKey);
         // The table is GONE, so there is no guard to restore, and reaching this
         // line means `delete()` RETURNS rather than throwing — so the
         // compensation never runs on it. Released for the same hygiene as the

@@ -2134,7 +2134,50 @@ describe('DynamoDBGlobalTableProvider round-trip', () => {
           'DescribeTableCommand', // eu-west-1 copy -> RNF ends the wait
         ]);
         expect(mockSend).toHaveBeenCalledTimes(9);
+        // The wait reads the eu-west-1 client, not the source's: the source
+        // table is already gone, so reading it would end the wait at once.
+        const regions = await Promise.all(
+          mockSend.mock.contexts
+            .slice(-3)
+            .map((client) => (client as { config: { region: () => Promise<string> } }).config.region())
+        );
+        expect(regions).toEqual(['eu-west-1', 'eu-west-1', 'eu-west-1']);
         expect(warnSpy).not.toHaveBeenCalled();
+      });
+
+      it('still waits for a copy an earlier attempt dropped when delete() is re-entered', async () => {
+        // Attempt 1 drops eu-west-1, then DeleteTable fails.
+        mockSend.mockResolvedValueOnce({
+          Table: {
+            TableName: TABLE_NAME,
+            Replicas: [{ RegionName: 'us-east-1' }, { RegionName: 'eu-west-1' }],
+          },
+        });
+        mockSend.mockResolvedValueOnce({}); // UpdateTable Delete eu-west-1
+        mockSend.mockResolvedValueOnce({ Table: { Replicas: [{ RegionName: 'us-east-1' }] } });
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // #5581 read
+        mockSend.mockRejectedValueOnce(new Error('boom')); // DeleteTable
+        await expect(
+          provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, { expectedRegion: 'us-east-1' })
+        ).rejects.toThrow();
+
+        // Attempt 2: the source no longer lists eu-west-1.
+        mockSend.mockClear();
+        mockSend.mockResolvedValueOnce({
+          Table: { TableName: TABLE_NAME, Replicas: [{ RegionName: 'us-east-1' }] },
+        });
+        mockSend.mockResolvedValueOnce({}); // DeleteTable
+        mockSend.mockRejectedValueOnce(newRnf()); // waitForTableGone
+        mockSend.mockResolvedValueOnce({ Table: { TableStatus: 'DELETING' } }); // eu-west-1 copy
+        mockSend.mockRejectedValueOnce(newRnf()); // eu-west-1 copy gone
+
+        await provider.delete('X', TABLE_NAME, RESOURCE_TYPE, undefined, {
+          expectedRegion: 'us-east-1',
+        });
+
+        expect(mockSend).toHaveBeenCalledTimes(5);
+        const last = mockSend.mock.contexts.at(-1) as { config: { region: () => Promise<string> } };
+        expect(await last.config.region()).toBe('eu-west-1');
       });
 
       it('warns and returns, never throws, when the copy outlives the cap', async () => {
