@@ -73,8 +73,6 @@ A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
   (#4183), run the set as ONE parallel batch (building fixtures per
   `/run-integ` step 1), then set the marker, record, push and merge without
   starting other work between them (the Merge bullets below still apply).
-- **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
-  a lane stopped at merge-ready drains no queue: re-send, confirm in the TREE.
 
 ### Flatten, then rebase
 

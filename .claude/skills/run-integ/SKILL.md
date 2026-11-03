@@ -139,6 +139,8 @@ verify, clean up.
    P='$1==t && $3=="PASS" && $4~/^[0-9]+$/{print $4; exit}'
    LAST=$( { awk -F'\t' -v t="$T" "$P" "$L"; git log -n 300 --format=%h -- "$L" | while read -r c; do
      git show "$c:docs/_generated/integ-last-run.tsv" | awk -F'\t' -v t="$T" "$P"; done; } | sort -n | tail -n 1)
+   # No PASS row (a NEW fixture): 750 fits a light one only. Set LAST to half the
+   # watchdog its README asks for, or its lane's measured run (#5654, #5719).
    case "$LAST" in ''|*[!0-9]*) LAST=750;; esac
    POLLS=$(( 10#$LAST * 2 / 5 )); [ "$POLLS" -lt 300 ] && POLLS=300
    # Own process group (`perl`: zsh refuses `set -m` without a terminal), so a
