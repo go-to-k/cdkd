@@ -1028,7 +1028,10 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'GlobalTableWitnesses',
           'MRSC witness; same one-call UpdateTable shape as MultiRegionConsistency, measured 2026-11-01. Stays on Cloud Control',
         ],
-        ['MultiRegionConsistency', 'not yet implemented by cdkd'],
+        [
+          'MultiRegionConsistency',
+          "MRSC does not fit the per-replica serial paths: measured 2026-11-01 (us-east-1 / us-east-2 / us-west-2), the replica and witness Creates must go out in ONE UpdateTable with the mode, a lone replica Delete is refused ('does not include all witnesses'), DeleteTable is refused until they are gone, TTL is refused, and the table carries no stream, which create()'s needsStream arm would enable. Stays on Cloud Control",
+        ],
       ]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'StreamArn', 'TableId']),
