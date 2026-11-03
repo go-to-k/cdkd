@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   DEV_VERSION_SENTINEL,
+  LEGACY_PACKAGE_NAME,
+  getCdkdPackageName,
   getCdkdVersion,
   isVersionOnlyInvocation,
+  movedPackageNotice,
 } from '../../src/version.js';
 
 describe('getCdkdVersion', () => {
@@ -10,6 +13,24 @@ describe('getCdkdVersion', () => {
     // tsdown's `define` only runs for `vp run build`, so under vitest the
     // identifier is genuinely absent — this asserts the guard, not a stub.
     expect(getCdkdVersion()).toBe(DEV_VERSION_SENTINEL);
+  });
+});
+
+describe('movedPackageNotice', () => {
+  it('is undefined where the build-time define has not run', () => {
+    expect(getCdkdPackageName()).toBeUndefined();
+    expect(movedPackageNotice(getCdkdPackageName())).toBeUndefined();
+  });
+
+  it('names the new package and the reinstall for a legacy-named build', () => {
+    expect(LEGACY_PACKAGE_NAME).toBe('@go-to-k/cdkd');
+    const notice = movedPackageNotice('@go-to-k/cdkd');
+    expect(notice).toContain('cdkd has moved to the npm package @cdkd/cli');
+    expect(notice).toContain('npm rm -g @go-to-k/cdkd && npm i -g @cdkd/cli');
+  });
+
+  it('is undefined for a build under the new name', () => {
+    expect(movedPackageNotice('@cdkd/cli')).toBeUndefined();
   });
 });
 

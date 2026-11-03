@@ -18,11 +18,18 @@ import {
   UNSETTLED_COMMAND_EXIT_CODE,
   UNSETTLED_COMMAND_MESSAGE,
 } from '../../../src/cli/run-cli.js';
+import { movedPackageNotice } from '../../../src/version.js';
 import { isolatedChildEnv, writeSourceLoaderHooks } from '../source-loader-hooks.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
 const SPAWN_TIMEOUT_MS = 30_000;
 const LOCK_HINT = 'release it with: cdkd force-unlock <stack-name>';
+// A build still named `@go-to-k/cdkd` prints the moved-package notice on every
+// run, so the built CLI's "silence" is that one line until the rename lands.
+const BUILT_NOTICE = movedPackageNotice(
+  (JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as { name: string }).name
+);
+const BUILT_SILENT_STDERR = BUILT_NOTICE ? `${BUILT_NOTICE}\n` : '';
 
 const scratchDirs: string[] = [];
 afterEach(() => {
@@ -193,7 +200,7 @@ describe('dist/cli.js runs main() through runCli (issue #3939)', () => {
     'control: a command that settles exits 0 in silence through the same sandbox',
     () => {
       const result = runBuiltCliWithStubbedTree('async () => {}');
-      expect(result).toEqual({ status: 0, stdout: '', stderr: '' });
+      expect(result).toEqual({ status: 0, stdout: '', stderr: BUILT_SILENT_STDERR });
     },
     SPAWN_TIMEOUT_MS + 5_000
   );

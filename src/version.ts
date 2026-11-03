@@ -3,6 +3,8 @@
 // `node --experimental-strip-types`, where the define never runs, so every
 // read must go through the `typeof` guard below.
 declare const __CDKD_VERSION__: string;
+// The same, from package.json's `name`.
+declare const __CDKD_PACKAGE_NAME__: string;
 
 /** Dev sentinel reported when the build-time define has not run. */
 export const DEV_VERSION_SENTINEL = '0.0.0-dev';
@@ -17,6 +19,32 @@ export const DEV_VERSION_SENTINEL = '0.0.0-dev';
  */
 export function getCdkdVersion(): string {
   return typeof __CDKD_VERSION__ === 'string' ? __CDKD_VERSION__ : DEV_VERSION_SENTINEL;
+}
+
+/** The build-time npm package name, or undefined where the define has not run. */
+export function getCdkdPackageName(): string | undefined {
+  return typeof __CDKD_PACKAGE_NAME__ === 'string' ? __CDKD_PACKAGE_NAME__ : undefined;
+}
+
+/** The npm name cdkd was published under before it moved to `@cdkd/cli`. */
+export const LEGACY_PACKAGE_NAME = '@go-to-k/cdkd';
+
+/**
+ * The notice a build published under the legacy package name prints to stderr
+ * on every run, or undefined for any other build.
+ *
+ * npm shows a deprecation warning only at install time, so a user who updates
+ * the old package and never reads install output would not learn of the move.
+ * The last `@go-to-k/cdkd` release carries this notice; once package.json is
+ * renamed, the define no longer matches and the notice is gone.
+ */
+export function movedPackageNotice(packageName: string | undefined): string | undefined {
+  if (packageName !== LEGACY_PACKAGE_NAME) return undefined;
+  return (
+    `cdkd has moved to the npm package @cdkd/cli; ${LEGACY_PACKAGE_NAME} receives no further releases. ` +
+    `Install @cdkd/cli instead (the command is still \`cdkd\`), e.g. ` +
+    `\`npm rm -g ${LEGACY_PACKAGE_NAME} && npm i -g @cdkd/cli\`.`
+  );
 }
 
 /** The two spellings commander registers for `.version()`. */
