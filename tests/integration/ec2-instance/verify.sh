@@ -68,6 +68,11 @@
 # Fn::GetAtt Instance.PublicIp, and after the stop/start both the PublicIp
 # Output and that parameter must carry the instance's new address.
 #
+# Also the issue #5630 arm: the instance launches with
+# InstanceInitiatedShutdownBehavior=terminate, which Phase 1h changes to stop in
+# place, and the #1281 instance launches with CpuOptions (1 core, 1 thread)
+# and HibernationOptions.Configured=true; each is read back from AWS.
+#
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
 # fixture stack doc.
@@ -922,6 +927,31 @@ if [ "${ACTUAL_AZ}" != "${EXPECTED_AZ}" ]; then
 fi
 echo "    OK: Placement.AvailabilityZone == ${ACTUAL_AZ} on AWS (AvailabilityZone silent-drop CLOSED by #1276, instance stayed on the SDK path)"
 
+# --- Assertions: the issue #5630 launch options reached AWS ------------------
+# Before #5630 each of these was SDK-unwired, so the instance carrying it went
+# to Cloud Control (the provisionedBy guard above reds first); each value here
+# is the non-default one, so a dropped member reads as the default.
+ACTUAL_SHUTDOWN=$(aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" \
+  --attribute instanceInitiatedShutdownBehavior --region "${REGION}" \
+  --query 'InstanceInitiatedShutdownBehavior.Value' --output text 2>&1) \
+  || ACTUAL_SHUTDOWN="<describe-failed: $(sanitize_aws_output "${ACTUAL_SHUTDOWN}")>"
+if [ "${ACTUAL_SHUTDOWN}" != "terminate" ]; then
+  echo "FAIL: issue #5630 -- InstanceInitiatedShutdownBehavior of ${INSTANCE_ID} is '${ACTUAL_SHUTDOWN}', expected terminate (the default is stop)" >&2
+  exit 1
+fi
+echo "    OK: #5630 InstanceInitiatedShutdownBehavior == terminate on ${INSTANCE_ID}"
+ACTUAL_CPU=$(echo "${PUBLIC_INSTANCE}" | jq -r '"\(.CpuOptions.CoreCount // "null")/\(.CpuOptions.ThreadsPerCore // "null")"')
+if [ "${ACTUAL_CPU}" != "1/1" ]; then
+  echo "FAIL: issue #5630 -- CpuOptions CoreCount/ThreadsPerCore of ${PUBLIC_INSTANCE_ID} is '${ACTUAL_CPU}', expected 1/1 (t3.nano's default is 1/2)" >&2
+  exit 1
+fi
+ACTUAL_HIBERNATION=$(echo "${PUBLIC_INSTANCE}" | jq -r 'if (.HibernationOptions | has("Configured")) then .HibernationOptions.Configured | tostring else "null" end')
+if [ "${ACTUAL_HIBERNATION}" != "true" ]; then
+  echo "FAIL: issue #5630 -- HibernationOptions.Configured of ${PUBLIC_INSTANCE_ID} is '${ACTUAL_HIBERNATION}', expected true" >&2
+  exit 1
+fi
+echo "    OK: #5630 ${PUBLIC_INSTANCE_ID} launched with CpuOptions 1/1 and hibernation configured"
+
 # --- Phase 1b: the instance identity read (go-to-k/cdkd#4606) --------------
 # A successful deploy deletes a journaled failed-CREATE instance only when
 # `EC2Provider.isSameResource` answers 'different'. The fix-forward that
@@ -1396,6 +1426,17 @@ if [ "${P1H_USERDATA}" != "${P1H_WANT_USERDATA}" ]; then
   exit 1
 fi
 echo "    OK: #5446 same instance ${INSTANCE_ID} is t3.small, in ${UPDATE_SG_ID} only, running, with the template's user data"
+# Issue #5630: the same deploy changes InstanceInitiatedShutdownBehavior
+# terminate -> stop; the instance id check above proves it was in place.
+P1H_SHUTDOWN=$(aws ec2 describe-instance-attribute --instance-id "${INSTANCE_ID}" \
+  --attribute instanceInitiatedShutdownBehavior --region "${REGION}" \
+  --query 'InstanceInitiatedShutdownBehavior.Value' --output text 2>&1) \
+  || P1H_SHUTDOWN="<describe-failed: $(sanitize_aws_output "${P1H_SHUTDOWN}")>"
+if [ "${P1H_SHUTDOWN}" != "stop" ]; then
+  echo "FAIL: issue #5630 -- InstanceInitiatedShutdownBehavior of ${INSTANCE_ID} is '${P1H_SHUTDOWN}' after the Phase 1h update, expected stop" >&2
+  exit 1
+fi
+echo "    OK: #5630 InstanceInitiatedShutdownBehavior changed terminate -> stop in place on ${INSTANCE_ID}"
 # The stop/start gives the instance (no Elastic IP) a new public address. The
 # update records it, so the `PublicIp` Output (Fn::GetAtt Instance.PublicIp)
 # must read the NEW live address, not the one the instance had before.

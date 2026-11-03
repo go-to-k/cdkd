@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-ec2-vpc-ipam",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd AWS::EC2::VPC CIDR allocated from an IPAM pool on the SDK path (#5633)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}

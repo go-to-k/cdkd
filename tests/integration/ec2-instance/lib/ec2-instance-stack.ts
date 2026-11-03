@@ -35,7 +35,11 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  *
  * UPDATE phase (issue #5446): CDKD_TEST_UPDATE_5446=true changes InstanceType,
  * moves the instance to a second security group and adds UserData; see
- * verify.sh Phase 1h.
+ * verify.sh Phase 1h. The same phase changes InstanceInitiatedShutdownBehavior
+ * terminate -> stop in place (issue #5630).
+ *
+ * Issue #5630 also gives the NetworkInterfaces-shaped instance CpuOptions and
+ * HibernationOptions (with the encrypted root volume hibernation needs).
  *
  * REMOVAL phases (issue #1160; CloudFormation A/B in go-to-k/cdkd#1160
  * issuecomment-6281778130). CDKD_TEST_REMOVAL=true drops MetadataOptions /
@@ -113,6 +117,11 @@ export class Ec2InstanceStack extends cdk.Stack {
         isUpdate5446 ? updateSecurityGroup.securityGroupId : securityGroup.securityGroupId,
       ],
       ...(isUpdate5446 ? { userData: cdk.Fn.base64('#!/bin/bash\necho cdkd-5446\n') } : {}),
+      // Issue #5630: `terminate` (non-default) rides RunInstances; Phase 1h
+      // changes it to `stop` in place (ModifyInstanceAttribute), as
+      // CloudFormation does with no interruption (measured, us-east-1). It
+      // stays declared in every phase: CloudFormation fails a removal.
+      instanceInitiatedShutdownBehavior: isUpdate5446 ? 'stop' : 'terminate',
       // Security-focused property backfill (#609):
       // Termination protection — a silent-drop here would let a user believe
       // the instance is protected when it is not. `cdkd destroy
@@ -211,7 +220,18 @@ export class Ec2InstanceStack extends cdk.Stack {
       // `Encrypted` alone, never the key) and Iops must be 3500, not the
       // baseline. 8 GiB because gp3 caps IOPS at 500 per GiB. No Throughput:
       // CloudFormation's AWS::EC2::Instance Ebs has none.
+      // Issue #5630: launch-only CPU and hibernation options (create-only).
+      // One thread per core (t3.nano's default is two), and hibernation, which
+      // needs an encrypted root volume large enough for the RAM: the /dev/xvda
+      // entry below (the AL2023 root device). CloudFormation launches this
+      // exact shape (measured, us-east-1, t3.nano + AL2023).
+      cpuOptions: { coreCount: 1, threadsPerCore: 1 },
+      hibernationOptions: { configured: true },
       blockDeviceMappings: [
+        {
+          deviceName: '/dev/xvda',
+          ebs: { encrypted: true, volumeType: 'gp3', volumeSize: 8, deleteOnTermination: true },
+        },
         {
           deviceName: '/dev/sdf',
           ebs: {

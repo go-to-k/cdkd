@@ -15,8 +15,9 @@
 # changes one tag and drops another on the IGW, the public RouteTable and the
 # custom NACL, asserted in place on the same physical ids (issue #5448), and
 # changes two VPCs' InstanceTenancy: a removal from dedicated is one in-place
-# ModifyVpcTenancy, default -> dedicated replaces the VPC (issue #5449). Then
-# destroys clean.
+# ModifyVpcTenancy, default -> dedicated replaces the VPC (issue #5449). A
+# fifth VPC carries VpcEncryptionControl, read back after create on the SDK
+# path (issue #5633). Then destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -185,6 +186,28 @@ if [ "${P1_DOWN_TENANCY}" != "dedicated" ] || [ "${P1_UP_TENANCY}" != "default" 
   exit 1
 fi
 echo "    OK: baseline InstanceTenancy dedicated on ${DOWN_VPC}, default on ${UP_VPC}"
+
+# Issue #5633: VpcEncryptionControl reached CreateVpc on the SDK path. The
+# route guard comes first: Cloud Control applies the control too, so only
+# `provisionedBy` tells the SDK wiring from the auto-route it replaced.
+ENC_VPC=$(physical_id EncryptedVpc)
+if [ -z "${ENC_VPC}" ]; then
+  echo "FAIL: EncryptedVpc physical id missing from state (issue #5633)" >&2
+  exit 1
+fi
+ENC_ROUTE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.EncryptedVpc.provisionedBy // "sdk"')
+if [ "${ENC_ROUTE}" != "sdk" ]; then
+  echo "FAIL: EncryptedVpc was provisioned by '${ENC_ROUTE}', expected the SDK provider (issue #5633)" >&2
+  exit 1
+fi
+ENC_CONTROL=$(aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}" \
+  --query 'Vpcs[0].EncryptionControl.[Mode, ResourceExclusions.InternetGateway.State, ResourceExclusions.Lambda.State]' \
+  --output text) || ENC_CONTROL="<describe-vpcs failed>"
+if [ "${ENC_CONTROL}" != "$(printf 'enforce\tenabled\tdisabled')" ]; then
+  echo "FAIL: ${ENC_VPC} encryption control mode/igw-exclusion/lambda-exclusion is '${ENC_CONTROL}', expected enforce/enabled/disabled (issue #5633)" >&2
+  exit 1
+fi
+echo "    OK: ${ENC_VPC} created on the SDK path with encryption control enforce, internet-gateway exclusion enabled (issue #5633)"
 
 # Issue #1160 baseline: the private zone is associated with the main VPC
 # only, so an association still there after the removal is the keep.
@@ -446,7 +469,8 @@ assert_gone "VPC '${MAIN_VPC}' still exists after destroy" aws ec2 describe-vpcs
 assert_gone "VPC '${OFF_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${OFF_VPC}" --region "${REGION}"
 assert_gone "VPC '${DOWN_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${DOWN_VPC}" --region "${REGION}"
 assert_gone "VPC '${P2_UP_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${P2_UP_VPC}" --region "${REGION}"
-echo "    OK: all four VPCs are gone"
+assert_gone "VPC '${ENC_VPC}' still exists after destroy (issue #5633)" aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}"
+echo "    OK: all five VPCs are gone"
 assert_gone "private hosted zone '${ZONE_ID}' still exists after destroy" aws route53 get-hosted-zone --id "${ZONE_ID}"
 echo "    OK: the private hosted zone is gone"
 
@@ -454,4 +478,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + VPC encryption control + clean destroy)"
