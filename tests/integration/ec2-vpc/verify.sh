@@ -202,7 +202,10 @@ if [ "${ENC_ROUTE}" != "sdk" ]; then
 fi
 ENC_CONTROL=$(aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}" \
   --query 'Vpcs[0].EncryptionControl.[Mode, ResourceExclusions.InternetGateway.State, ResourceExclusions.Lambda.State]' \
-  --output text) || ENC_CONTROL="<describe-vpcs failed>"
+  --output text 2>&1) || {
+  echo "FAIL: describe-vpcs ${ENC_VPC} failed: ${ENC_CONTROL} (issue #5633)" >&2
+  exit 1
+}
 if [ "${ENC_CONTROL}" != "$(printf 'enforce\tenabled\tdisabled')" ]; then
   echo "FAIL: ${ENC_VPC} encryption control mode/igw-exclusion/lambda-exclusion is '${ENC_CONTROL}', expected enforce/enabled/disabled (issue #5633)" >&2
   exit 1
@@ -469,7 +472,7 @@ assert_gone "VPC '${MAIN_VPC}' still exists after destroy" aws ec2 describe-vpcs
 assert_gone "VPC '${OFF_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${OFF_VPC}" --region "${REGION}"
 assert_gone "VPC '${DOWN_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${DOWN_VPC}" --region "${REGION}"
 assert_gone "VPC '${P2_UP_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${P2_UP_VPC}" --region "${REGION}"
-assert_gone "VPC '${ENC_VPC}' still exists after destroy (issue #5633)" aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}"
+assert_gone "VPC '${ENC_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}"
 echo "    OK: all five VPCs are gone"
 assert_gone "private hosted zone '${ZONE_ID}' still exists after destroy" aws route53 get-hosted-zone --id "${ZONE_ID}"
 echo "    OK: the private hosted zone is gone"
