@@ -157,7 +157,7 @@ export class IAMAccessKeyProvider implements ResourceProvider {
    * entire CloudFormation semantic is "changing it forces a new key", which
    * the diff layer implements via the registry-schema createOnly
    * classification. Declaring it `unhandledByDesign` instead would put it in
-   * the silent-drop set, and on a NON_PROVISIONABLE type with
+   * the SDK-unwired set, and on a NON_PROVISIONABLE type with
    * `disableCcApiFallback` the #614 auto-route viability guard turns every
    * silent drop into a pre-flight HARD REJECT — wrongly refusing any
    * template that uses `serial`.

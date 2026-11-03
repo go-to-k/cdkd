@@ -2,7 +2,7 @@
  * Stateful-resource guard list (issue [#615]).
  *
  * `--recreate-via-cc-api <LogicalId>` destroys + recreates the named
- * resource in one deploy so a previously-silent-dropped top-level CFn
+ * resource in one deploy so a previously SDK-unwired top-level CFn
  * property reaches AWS via Cloud Control API. For most types this is
  * safe — destroying + recreating an IAM Role or a Lambda Function
  * loses no user data — but for **data-bearing** types the destroy
@@ -281,7 +281,7 @@ export const STATEFUL_TYPES: ReadonlySet<string> = new Set([
   // Nested stack (issue #2548). `NestedStackProvider.delete` destroys the whole
   // child stack, every resource in it, with no per-resource guard. Reachable
   // without any recreate flag: `StackName` is createOnly in the registry
-  // schema and is kept by the silent-drop narrowing, so a `StackName` edit
+  // schema and is kept by the SDK-unwired narrowing, so a `StackName` edit
   // accepted with `--prefer-sdk-route AWS::CloudFormation::Stack:StackName`
   // diffs as a replacement — whose idempotent-create refusal then prescribes
   // `--replace`, the delete-first path.

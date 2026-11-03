@@ -33,7 +33,7 @@ import {
   RemoveTagsCommand,
 } from '@aws-sdk/client-elastic-load-balancing-v2';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
-import { findActionableSilentDrops } from '../../../src/provisioning/property-coverage.js';
+import { findActionableSdkUnwired } from '../../../src/provisioning/property-coverage.js';
 
 const LISTENER = 'AWS::ElasticLoadBalancingV2::Listener';
 const LB_ARN = 'arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/0123456789abcdef';
@@ -66,9 +66,9 @@ beforeEach(() => {
 });
 
 describe('a tagged ALB listener stays on the SDK provider (go-to-k/cdkd#2085)', () => {
-  it('Tags is no Cloud Control-routing silent drop for a listener', () => {
+  it('Tags is no Cloud Control-routing SDK-unwired property for a listener', () => {
     expect(new ELBv2Provider().handledProperties.get(LISTENER)?.has('Tags')).toBe(true);
-    expect(findActionableSilentDrops(LISTENER, taggedListener(SERVER_HEADER_OFF), new Set())).toEqual(
+    expect(findActionableSdkUnwired(LISTENER, taggedListener(SERVER_HEADER_OFF), new Set())).toEqual(
       []
     );
   });

@@ -4,7 +4,7 @@
 # CloudFormation does (issue 3713).
 #
 # Before 3713 such a key ("unrecognized": in neither the handled set nor the
-# silent-drop map) stayed on the SDK route, where the provider never sent it and
+# SDK-unwired map) stayed on the SDK route, where the provider never sent it and
 # the deploy reported success -- a typo was indistinguishable from a property
 # AWS published after the snapshot, and both were silently dropped. The fix
 # routes it via Cloud Control, with three exclusions that keep working
@@ -244,7 +244,7 @@ const table = Object.values(mod).find((v) => v instanceof Map);
 const cov = table && table.get(process.env.TYPE);
 const fail = (m) => { console.error(m); process.exit(1); };
 if (!cov) fail('no coverage entry for ' + process.env.TYPE);
-if (cov.handled.has(process.env.KEY) || cov.silentDrop.has(process.env.KEY)) fail(process.env.KEY + ' is in the schema snapshot');
+if (cov.handled.has(process.env.KEY) || cov.sdkUnwired.has(process.env.KEY)) fail(process.env.KEY + ' is in the schema snapshot');
 if (!cov.readOnly.has('TopicArn')) fail('TopicArn is not read-only');
 if (cov.ccRouteUnavailable) fail(process.env.TYPE + ' has no Cloud Control route');
 "); then

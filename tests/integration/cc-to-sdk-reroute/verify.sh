@@ -117,7 +117,7 @@ LOGICAL_ID=$(jq -r '.Resources | to_entries[] | select(.value.Type == "AWS::SNS:
 [ -n "${LOGICAL_ID}" ] || { echo "FAIL: no AWS::SNS::Topic in ${TEMPLATE}" >&2; exit 1; }
 echo "==> Resource under test: ${LOGICAL_ID}"
 
-echo "==> Phase 1: Deploy (SDK route by default -- SNS::Topic has no silent drops)"
+echo "==> Phase 1: Deploy (SDK route by default -- SNS::Topic has no SDK-unwired properties)"
 env CDKD_TEST_PHASE=base \
   node "${LOCAL_DIST}" deploy "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
 
@@ -127,7 +127,7 @@ LAYER0=$(record '.provisionedBy')
 echo "    OK: created on the SDK route (${P0})"
 
 # MaximumMessageSize (issue #3413) — read back OFF AWS at every phase, because
-# the member was a silent drop until it was wired and a green deploy says
+# the member was SDK-unwired until it was wired and a green deploy says
 # nothing about whether the value reached the topic. A strict capture: a probe
 # failure aborts under set -e rather than reading as "unset".
 max_size() { # usage: max_size <topic-arn> -> the live MaximumMessageSize, or "None"
@@ -145,7 +145,7 @@ echo "    OK: MaximumMessageSize=131072 reached AWS through CreateTopic"
 echo "==> Phase 2: force the resource onto Cloud Control (--recreate-via-cc-api)"
 # Seeds the sticky cc-api state the exemption has to escape from. Deliberately
 # NOT a binary swap against a released cdkd: seeding via the auto-route would
-# need a property that is still a silent drop in THAT release, which is a
+# need a property that is still SDK-unwired in THAT release, which is a
 # moving target as issue 609's backfill lands. This shape needs one binary.
 # CDKD_TEST_PHASE=seed, not base: the seed carries its own DisplayName so the
 # check below can read the Cloud Control write back off AWS. The recreate of an

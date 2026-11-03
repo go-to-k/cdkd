@@ -430,7 +430,7 @@ export class ObservedCapture {
       // same no-baseline outcome skipping produced -- one wasted call on a
       // record that has no observed bag either way. The legacy
       // `getProvider` entry point passes no recorded layer, so a record
-      // stamped `provisionedBy: 'cc-api'` — because a silent-drop property
+      // stamped `provisionedBy: 'cc-api'` — because an SDK-unwired property
       // auto-routed it (issue #614) — had its baseline read back through the
       // SDK provider instead. The bag then describes a layer state does not
       // name, and this bag IS the drift baseline, so the very next

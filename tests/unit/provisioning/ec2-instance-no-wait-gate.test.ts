@@ -393,14 +393,14 @@ describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () 
     expect(handled?.has('AvailabilityZone')).toBe(true);
   });
 
-  it('leaves no actionable silent drop for an L2-shaped property set (the real routing input)', async () => {
+  it('leaves no actionable SDK-unwired property for an L2-shaped property set (the real routing input)', async () => {
     // `handledProperties` above is the provider's DECLARATION; the routing
     // decision in `ProviderRegistry.getProviderFor` reads the GENERATED
     // coverage map instead (they are tied together only by the codegen
     // drift check). Pin the layer routing actually consults, using the
     // property set CDK's L2 `ec2.Instance` emits for a typical app
     // (instance profile + security group + block device + userData + tags).
-    const { findActionableSilentDrops } = await import(
+    const { findActionableSdkUnwired } = await import(
       '../../../src/provisioning/property-coverage.js'
     );
     const l2Emitted = {
@@ -415,7 +415,7 @@ describe('EC2 Instance AvailabilityZone -> Placement mapping (issue #1276)', () 
       UserData: 'IyEvYmluL2Jhc2g=',
     };
 
-    expect(findActionableSilentDrops('AWS::EC2::Instance', l2Emitted, new Set())).toEqual([]);
+    expect(findActionableSdkUnwired('AWS::EC2::Instance', l2Emitted, new Set())).toEqual([]);
   });
 
   it('reverse-maps Placement.AvailabilityZone in readCurrentState (no phantom drift)', async () => {

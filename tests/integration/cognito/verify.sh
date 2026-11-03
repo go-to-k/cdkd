@@ -46,7 +46,7 @@
 # Then asserts the destroy path removes the pools and the state file.
 #
 # All four properties route through the SDK CognitoUserPoolProvider (the
-# template sets no silent-drop top-level property), and the MFA-config family
+# template sets no SDK-unwired top-level property), and the MFA-config family
 # is applied via the post-create SetUserPoolMfaConfig control-plane call.
 #
 # Required env vars:
@@ -745,7 +745,7 @@ if [ "${KEY_ISSUER_ADD_ARN}" != "${POOL_KEY_ARN}" ]; then
   exit 1
 fi
 # The SDK route is the only thing that could not pass before #2762: both
-# properties were silent drops, which sent these pools to Cloud Control. Beside
+# properties were SDK-unwired, which sent these pools to Cloud Control. Beside
 # it, the drift baseline: readCurrentState must carry both members.
 KEY_ISSUER_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
 for lid in KeyIssuerUserPool KeyIssuerAddUserPool; do
@@ -979,7 +979,7 @@ echo "    OK: negative control C3 deployed clean (WEB_AUTHN allowed alongside a 
 # The ACCEPTING shape on the create path: WEB_AUTHN + MfaConfiguration ON +
 # WebAuthnFactorConfiguration MULTI_FACTOR_WITH_USER_VERIFICATION. Rule 3
 # evaluates here and must NOT fire. The SDK-route assertion is what makes this
-# arm specific to #2064: before it the property was an unhandled silent drop,
+# arm specific to #2064: before it the property was SDK-unwired,
 # which routes the whole pool through Cloud Control instead.
 C4_MFA_JSON=$(aws cognito-idp get-user-pool-mfa-config \
   --user-pool-id "${WEBAUTHN_ON_POOL_ID}" --region "${REGION}" --output json)
@@ -1276,8 +1276,8 @@ if [ "${DF_MFA_AFTER_F}" != "ON" ] || [ "${DF_FACTOR_AFTER_F}" != "MULTI_FACTOR_
   echo "${DF_MFA_JSON_AFTER_F}" | jq . >&2 || true
   exit 1
 fi
-# The ROUTE is what makes arm F specific to #2064: pre-fix the property was a
-# silent drop, which would have moved this SDK-recorded pool to Cloud Control,
+# The ROUTE is what makes arm F specific to #2064: pre-fix the property was
+# SDK-unwired, which would have moved this SDK-recorded pool to Cloud Control,
 # where the same shape also lands.
 DF_STATE_AFTER_F=$(aws s3 cp "s3://${STATE_BUCKET}/${PREFLIGHT_STATE_KEY}" - 2>/dev/null)
 DF_PROVISIONED_BY=$(echo "${DF_STATE_AFTER_F}" \

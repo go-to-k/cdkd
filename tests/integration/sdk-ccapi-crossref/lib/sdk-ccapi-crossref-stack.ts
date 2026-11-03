@@ -17,7 +17,7 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * This stack forces a heterogeneous routing mix in ONE stack and crosses the
  * boundary in BOTH directions, against TWO kinds of CC-provisioned resource.
  *
- * HOW THE CC LAYER IS REACHED — and why not through a silent-drop property.
+ * HOW THE CC LAYER IS REACHED — and why not through an SDK-unwired property.
  * This fixture used to put `AWS::Kinesis::Stream` (`DesiredShardLevelMetrics`)
  * and `AWS::Lambda::Function` (`RuntimeManagementConfig`) on Cloud Control by
  * setting a property their SDK Provider did not handle (the #614 auto-route).

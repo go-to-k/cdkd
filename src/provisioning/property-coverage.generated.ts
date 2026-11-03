@@ -6,10 +6,10 @@
  * Regenerate: `vp run gen:property-coverage`.
  *
  * Per-Tier-1-type property coverage for the deploy-time pre-flight check
- * (`ProviderRegistry.validateResourceProperties`). The `silentDrop` set
+ * (`ProviderRegistry.validateResourceProperties`). The `sdkUnwired` set
  * lists top-level CFn schema properties whose SDK provider does not write
  * them to AWS (SDK-unwired). A template using one does NOT lose it:
- * `reportSilentDropDecisions` logs the routing decision at INFO (DEBUG once
+ * `reportSdkUnwiredDecisions` logs the routing decision at INFO (DEBUG once
  * the resource is already sticky on CC) and the resource is auto-routed
  * through Cloud Control, so the property reaches AWS (issue #614). Pre-flight
  * DOES reject the sub-case Cloud Control cannot serve — a NON_PROVISIONABLE
@@ -33,9 +33,9 @@ export interface PropertyCoverage {
    * carries a one-line rationale (either the provider's `unhandledByDesign`
    * rationale or the default `not yet implemented by cdkd`).
    */
-  readonly silentDrop: ReadonlyMap<string, string>;
+  readonly sdkUnwired: ReadonlyMap<string, string>;
   /**
-   * The subset of `silentDrop` this type's committed schema marks
+   * The subset of `sdkUnwired` this type's committed schema marks
    * CREATE-ONLY (issue
    * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
    *
@@ -73,7 +73,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::ApiGateway::Account',
     {
       handled: new Set<string>(['CloudWatchRoleArn']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -94,7 +94,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RestApiId',
         'Type',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['AuthorizerId']),
       ccRouteUnavailable: false,
@@ -104,7 +104,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::ApiGateway::Deployment',
     {
       handled: new Set<string>(['Description', 'RestApiId']),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'DeploymentCanarySettings',
           'API Gateway requires StageName for a canary deployment ("Non null and non empty stageName must be provided for canary deployment"), and StageName is not handled here, so a valid canary Deployment routes to Cloud Control; declare AWS::ApiGateway::Stage with CanarySetting for an SDK-routed canary',
@@ -141,7 +141,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ResourceId',
         'RestApiId',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -151,7 +151,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::ApiGateway::Resource',
     {
       handled: new Set<string>(['ParentId', 'PathPart', 'RestApiId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['ResourceId']),
       ccRouteUnavailable: false,
@@ -176,7 +176,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TracingEnabled',
         'Variables',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -197,7 +197,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Version',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'BasePath',
           'OpenAPI-import-only basePath override; meaningful only on the ImportApi code path.',
@@ -249,7 +249,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'JwtConfiguration',
         'Name',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['AuthorizerId']),
       ccRouteUnavailable: false,
@@ -278,7 +278,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TimeoutInMillis',
         'TlsConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['IntegrationId']),
       ccRouteUnavailable: false,
@@ -301,7 +301,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RouteResponseSelectionExpression',
         'Target',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['RouteId']),
       ccRouteUnavailable: false,
@@ -323,7 +323,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StageVariables',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -333,7 +333,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::AppSync::ApiKey',
     {
       handled: new Set<string>(['ApiId', 'Description', 'Expires']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['ApiKey', 'ApiKeyId', 'Arn']),
       ccRouteUnavailable: false,
@@ -357,7 +357,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ServiceRoleArn',
         'Type',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['DataSourceArn']),
       ccRouteUnavailable: false,
@@ -386,7 +386,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Visibility',
         'XrayEnabled',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'ApiId',
@@ -404,7 +404,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::AppSync::GraphQLSchema',
     {
       handled: new Set<string>(['ApiId', 'Definition', 'DefinitionS3Location']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -432,7 +432,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SyncConfig',
         'TypeName',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['ResolverArn']),
       ccRouteUnavailable: false,
@@ -479,7 +479,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TrafficSources',
         'VPCZoneIdentifier',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'InstanceId',
           'CreateAutoScalingGroup derives a new launch configuration from the instance, and AWS Launch Configurations are end-of-life 2024-10 like LaunchConfigurationName; use LaunchTemplate instead',
@@ -502,7 +502,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::BedrockAgentCore::Browser',
     {
       handled: new Set<string>(),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['BrowserArn', 'BrowserId', 'Name', 'Status']),
       ccRouteUnavailable: true,
@@ -512,7 +512,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::BedrockAgentCore::CodeInterpreter',
     {
       handled: new Set<string>(),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['CodeInterpreterArn', 'CodeInterpreterId', 'Status']),
       ccRouteUnavailable: true,
@@ -529,7 +529,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Level',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'CreatedAt',
@@ -563,7 +563,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RoleArn',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'AgentRuntimeArn',
@@ -582,7 +582,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Budgets::Budget',
     {
       handled: new Set<string>(['Budget', 'NotificationsWithSubscribers', 'ResourceTags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -602,7 +602,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'ValidationMethod',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['CertificateArn']),
       ccRouteUnavailable: false,
@@ -612,7 +612,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudFormation::Stack',
     {
       handled: new Set<string>(['Parameters', 'TemplateURL']),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'Capabilities',
           'CFn-only IAM capability declaration — cdkd does not go through CloudFormation so capabilities have no equivalent',
@@ -672,7 +672,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudFormation::WaitConditionHandle',
     {
       handled: new Set<string>(),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -682,7 +682,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudFront::CloudFrontOriginAccessIdentity',
     {
       handled: new Set<string>(['CloudFrontOriginAccessIdentityConfig']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'S3CanonicalUserId']),
       ccRouteUnavailable: false,
@@ -692,7 +692,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudFront::Distribution',
     {
       handled: new Set<string>(['DistributionConfig', 'Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['DomainName', 'Id']),
       ccRouteUnavailable: false,
@@ -702,7 +702,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::CloudFront::OriginAccessControl',
     {
       handled: new Set<string>(['OriginAccessControlConfig']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -730,7 +730,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'TrailName',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnsTopicArn']),
       ccRouteUnavailable: false,
@@ -768,7 +768,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Unit',
         'WarmUpConfiguration',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -787,7 +787,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SingleMetricAnomalyDetector',
         'Stat',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -823,7 +823,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Visibility',
         'VpcConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: true,
@@ -840,7 +840,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Triggers',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'CloneUrlHttp', 'CloneUrlSsh', 'Name', 'RepositoryId']),
       ccRouteUnavailable: false,
@@ -883,7 +883,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'WebAuthnRelyingPartyID',
         'WebAuthnUserVerification',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'ProviderName', 'ProviderURL', 'UserPoolId']),
       ccRouteUnavailable: false,
@@ -906,7 +906,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'State',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'PolicyId']),
       ccRouteUnavailable: false,
@@ -947,7 +947,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'UseLatestRestorableTime',
         'VpcSecurityGroupIds',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'ClusterResourceId',
@@ -974,7 +974,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'PreferredMaintenanceWindow',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Endpoint', 'Id', 'Port']),
       ccRouteUnavailable: true,
@@ -989,7 +989,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SubnetIds',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -1019,7 +1019,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'WriteOnDemandThroughputSettings',
         'WriteProvisionedThroughputSettings',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'GlobalTableSourceArn',
           "Multi-account replica: CDK's TableV2MultiAccountReplica renders no KeySchema (which create() requires) and DynamoDB asks for a ResourcePolicy on the CreateTable (measured 2026-11-01), a cross-account path this provider cannot exercise. Stays on Cloud Control",
@@ -1063,7 +1063,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VectorIndexes',
         'WarmThroughput',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'ImportSourceSpecification',
           'S3 import uses the separate ImportTable API (not CreateTable) and is create-only with no readback; deferred to a dedicated import-from-S3 PR',
@@ -1084,7 +1084,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'PublicIpv4Pool',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'Address',
           'Bring-your-own-IP: allocating a specific address you own is not yet supported; cdkd allocates an Amazon-owned address',
@@ -1122,7 +1122,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'UserData',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         ['AdditionalInfo', 'not yet implemented by cdkd'],
         ['Affinity', 'not yet implemented by cdkd'],
         ['CpuOptions', 'not yet implemented by cdkd'],
@@ -1184,7 +1184,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::InternetGateway',
     {
       handled: new Set<string>(['Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['InternetGatewayId']),
       ccRouteUnavailable: false,
@@ -1206,7 +1206,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VpcId',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'MaxDrainDurationSeconds',
           'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and the cdkd NatGateway update releases only the AvailabilityZoneAddresses of a regional gateway, never the secondary addresses of a zonal one — routed via Cloud Control instead',
@@ -1227,7 +1227,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::NetworkAcl',
     {
       handled: new Set<string>(['Tags', 'VpcId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -1247,7 +1247,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RuleAction',
         'RuleNumber',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -1274,7 +1274,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcEndpointId',
         'VpcPeeringConnectionId',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['CidrBlock']),
       ccRouteUnavailable: false,
@@ -1284,7 +1284,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::RouteTable',
     {
       handled: new Set<string>(['Tags', 'VpcId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['RouteTableId']),
       ccRouteUnavailable: false,
@@ -1301,7 +1301,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VpcId',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['GroupId', 'Id']),
       ccRouteUnavailable: false,
@@ -1322,7 +1322,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceSecurityGroupOwnerId',
         'ToPort',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'GroupName',
           'EC2-Classic-only — use GroupId for VPC security groups (EC2-Classic retired 2022-08-15)',
@@ -1347,7 +1347,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VpcId',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         ['AssignIpv6AddressOnCreation', 'not yet implemented by cdkd'],
         ['AvailabilityZoneId', 'not yet implemented by cdkd'],
         ['EnableDns64', 'not yet implemented by cdkd'],
@@ -1383,7 +1383,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::SubnetNetworkAclAssociation',
     {
       handled: new Set<string>(['NetworkAclId', 'SubnetId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['AssociationId']),
       ccRouteUnavailable: false,
@@ -1393,7 +1393,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::SubnetRouteTableAssociation',
     {
       handled: new Set<string>(['RouteTableId', 'SubnetId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -1409,7 +1409,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'InstanceTenancy',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         ['Ipv4IpamPoolId', 'not yet implemented by cdkd'],
         ['Ipv4NetmaskLength', 'not yet implemented by cdkd'],
         ['VpcEncryptionControl', 'not yet implemented by cdkd'],
@@ -1433,7 +1433,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EC2::VPCGatewayAttachment',
     {
       handled: new Set<string>(['InternetGatewayId', 'VpcId', 'VpnGatewayId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['AttachmentType']),
       ccRouteUnavailable: false,
@@ -1453,7 +1453,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RepositoryPolicyText',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'RepositoryUri']),
       ccRouteUnavailable: false,
@@ -1471,7 +1471,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ServiceConnectDefaults',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -1510,7 +1510,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VolumeConfigurations',
         'VpcLatticeConfigurations',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Name', 'ServiceArn']),
       ccRouteUnavailable: false,
@@ -1538,7 +1538,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TaskRoleArn',
         'Volumes',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'InferenceAccelerators',
           'AWS Elastic Inference end-of-life 2024-04; use AWS Inferentia / Trainium accelerator instance families instead',
@@ -1553,7 +1553,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::EFS::AccessPoint',
     {
       handled: new Set<string>(['AccessPointTags', 'FileSystemId', 'PosixUser', 'RootDirectory']),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'ClientToken',
           'cdkd supplies its own retry-stable ClientToken on CreateAccessPoint, so a template-supplied value would be overwritten. The SDK does not own this field either: an omitted ClientToken is auto-filled with a FRESH uuid per attempt, which leaves a retried 500 free to mint a second access point, while a caller-supplied value goes on the wire verbatim.',
@@ -1581,7 +1581,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ProvisionedThroughputInMibps',
         'ThroughputMode',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'ReplicationConfiguration',
           'Cross-region EFS replication (CreateReplicationConfiguration) provisions a separate destination file system in another region with its own lifecycle, KMS key, and availability-zone placement; replicating + then tearing down the destination on destroy is a multi-resource, cross-region orchestration that is out of scope for the single-resource SDK provider.',
@@ -1603,7 +1603,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SecurityGroups',
         'SubnetId',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -1638,7 +1638,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TransitEncryptionEnabled',
         'VpcSecurityGroupIds',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'CacheSecurityGroupNames',
           'EC2-Classic-only — use VpcSecurityGroupIds for VPC-deployed clusters (EC2-Classic retired 2022-08-15)',
@@ -1659,7 +1659,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SubnetIds',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -1680,7 +1680,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SslPolicy',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['ListenerArn']),
       ccRouteUnavailable: false,
@@ -1705,7 +1705,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Type',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'CanonicalHostedZoneID',
@@ -1742,7 +1742,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'UnhealthyThresholdCount',
         'VpcId',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'LoadBalancerArns',
@@ -1785,7 +1785,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VisibleToAllUsers',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'MasterPublicDNS']),
       ccRouteUnavailable: true,
@@ -1804,7 +1804,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TargetOnDemandCapacity',
         'TargetSpotCapacity',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['InstanceFleetId']),
       ccRouteUnavailable: true,
@@ -1826,7 +1826,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Market',
         'Name',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['InstanceGroupId']),
       ccRouteUnavailable: true,
@@ -1845,7 +1845,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Policy',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -1865,7 +1865,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Targets',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'RuleName']),
       ccRouteUnavailable: false,
@@ -1890,7 +1890,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'WindowsConfiguration',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'DNSName',
@@ -1906,7 +1906,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Glue::Connection',
     {
       handled: new Set<string>(['CatalogId', 'ConnectionInput', 'Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Name']),
       ccRouteUnavailable: false,
@@ -1932,7 +1932,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Targets',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -1942,7 +1942,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Glue::Database',
     {
       handled: new Set<string>(['CatalogId', 'DatabaseInput', 'DatabaseName']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -1977,7 +1977,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Timeout',
         'WorkerType',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -1987,7 +1987,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Glue::SecurityConfiguration',
     {
       handled: new Set<string>(['EncryptionConfiguration', 'Name']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -2003,7 +2003,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'OpenTableFormatInput',
         'TableInput',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: true,
@@ -2024,7 +2024,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
         'WorkflowName',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -2040,7 +2040,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Name',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -2050,7 +2050,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::IAM::AccessKey',
     {
       handled: new Set<string>(['Serial', 'Status', 'UserName']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'SecretAccessKey']),
       ccRouteUnavailable: true,
@@ -2060,7 +2060,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::IAM::Group',
     {
       handled: new Set<string>(['GroupName', 'ManagedPolicyArns', 'Path', 'Policies']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -2070,7 +2070,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::IAM::InstanceProfile',
     {
       handled: new Set<string>(['InstanceProfileName', 'Path', 'Roles']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -2089,7 +2089,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Users',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'AttachmentCount',
@@ -2108,7 +2108,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::IAM::Policy',
     {
       handled: new Set<string>(['Groups', 'PolicyDocument', 'PolicyName', 'Roles', 'Users']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -2128,7 +2128,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RoleName',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'RoleId']),
       ccRouteUnavailable: false,
@@ -2147,7 +2147,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'UserName',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -2157,7 +2157,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::IAM::UserToGroupAddition',
     {
       handled: new Set<string>(['GroupName', 'Users']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -2177,7 +2177,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'StreamModeDetails',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'WarmThroughputMiBps',
           'AWS accepts it only on an account enrolled in the Kinesis minimum throughput billing commitment, so the SDK path is not wired (go-to-k/cdkd#1695); Cloud Control forwards it.',
@@ -2192,7 +2192,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Kinesis::StreamConsumer',
     {
       handled: new Set<string>(['ConsumerName', 'StreamARN', 'Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['ConsumerARN', 'ConsumerCreationTimestamp', 'ConsumerStatus']),
       ccRouteUnavailable: false,
@@ -2219,7 +2219,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SplunkDestinationConfiguration',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'DatabaseSourceConfiguration',
           'Database as a source was a public preview AWS removed on 2025-09-24 (Firehose document history); CreateDeliveryStream refused DeliveryStreamType DatabaseAsSource in every region probed, so an SDK path could not be verified. Stays on Cloud Control',
@@ -2238,7 +2238,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::KMS::Alias',
     {
       handled: new Set<string>(['AliasName', 'TargetKeyId']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -2261,7 +2261,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RotationPeriodInDays',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'KeyId']),
       ccRouteUnavailable: false,
@@ -2277,7 +2277,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'MaximumRetryAttempts',
         'Qualifier',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: true,
@@ -2316,7 +2316,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Topics',
         'TumblingWindowInSeconds',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['EventSourceMappingArn', 'Id']),
       ccRouteUnavailable: false,
@@ -2358,7 +2358,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TracingConfig',
         'VpcConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'SnapStartResponse']),
       ccRouteUnavailable: false,
@@ -2375,7 +2375,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'LayerName',
         'LicenseInfo',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['LayerVersionArn']),
       ccRouteUnavailable: false,
@@ -2400,7 +2400,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Resources',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'CreatedAt',
@@ -2417,7 +2417,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::Lambda::NetworkConnector',
     {
       handled: new Set<string>(['Configuration', 'Name', 'OperatorRole', 'Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'LatestVersion', 'LatestVersionArn', 'State']),
       ccRouteUnavailable: false,
@@ -2437,7 +2437,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SourceAccount',
         'SourceArn',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -2453,7 +2453,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Qualifier',
         'TargetFunctionArn',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['FunctionArn', 'FunctionUrl']),
       ccRouteUnavailable: false,
@@ -2473,7 +2473,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'ScalingConfig',
         'ThrottleConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'CreatedAt',
@@ -2500,7 +2500,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'KmsKeyArn',
         'ServiceConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'CreatedAt',
@@ -2527,7 +2527,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'RetentionInDays',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'ResourcePolicyDocument',
           'not driven by this provider by decision (issue #1412): no CreateLogGroup / PutRetentionPolicy member carries it, and both policy lifecycles — the account-scoped AWS::Logs::ResourcePolicy type and the log-group-scoped logs:PutResourcePolicy (resourceArn + policyScope RESOURCE) — are ones this provider does not take on — routed via Cloud Control, whose handler applies it',
@@ -2570,7 +2570,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'UseLatestRestorableTime',
         'VpcSecurityGroupIds',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'GlobalClusterIdentifier',
           'Cloud Control owns a global-cluster member: NeptuneProvider has no detach, and a member cannot be deleted while attached (deletesThroughSdkProvider keeps its delete there too)',
@@ -2598,7 +2598,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'PubliclyAccessible',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'DBSnapshotIdentifier',
           'The CloudFormation schema documents it as not supported, and CreateDBInstance has no such member: a Neptune instance is not restored from a snapshot, its cluster is',
@@ -2618,7 +2618,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SubnetIds',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -2642,7 +2642,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Target',
         'TargetParameters',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'Arn',
@@ -2686,7 +2686,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VpcSecurityGroupIds',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         ['AllocatedStorage', 'not yet implemented by cdkd'],
         ['AssociatedRoles', 'not yet implemented by cdkd'],
         ['AutoMinorVersionUpgrade', 'not yet implemented by cdkd'],
@@ -2802,7 +2802,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VPCSecurityGroups',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         ['AdditionalStorageVolumes', 'not yet implemented by cdkd'],
         [
           'ApplyImmediately',
@@ -2899,7 +2899,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
         'VpcSubnetIds',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['DBProxyArn', 'Endpoint', 'VpcId']),
       ccRouteUnavailable: false,
@@ -2917,7 +2917,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VpcSecurityGroupIds',
         'VpcSubnetIds',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['DBProxyEndpointArn', 'Endpoint', 'IsDefault', 'VpcId']),
       ccRouteUnavailable: false,
@@ -2934,7 +2934,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'TargetGroupName',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['TargetGroupArn']),
       ccRouteUnavailable: true,
@@ -2949,7 +2949,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SubnetIds',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['DBSubnetGroupArn']),
       ccRouteUnavailable: false,
@@ -2967,7 +2967,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'QueryLoggingConfig',
         'VPCs',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id', 'NameServers']),
       ccRouteUnavailable: false,
@@ -2995,7 +2995,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
         'Weight',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -3029,7 +3029,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'VersioningConfiguration',
         'WebsiteConfiguration',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'AccessControl',
           'Legacy canned ACL; AWS disables ACLs by default since 2023-04 — use BucketOwnershipControls + BucketPolicy / PublicAccessBlockConfiguration instead',
@@ -3054,7 +3054,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::S3::BucketPolicy',
     {
       handled: new Set<string>(['Bucket', 'PolicyDocument']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -3073,7 +3073,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'MetricsConfigurations',
         'Tags',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'AvailabilityZoneName']),
       ccRouteUnavailable: false,
@@ -3083,7 +3083,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::S3Tables::Namespace',
     {
       handled: new Set<string>(['Namespace', 'TableBucketARN']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(),
       ccRouteUnavailable: false,
@@ -3106,7 +3106,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'WithoutMetadata',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['TableARN', 'VersionToken', 'WarehouseLocation']),
       ccRouteUnavailable: false,
@@ -3124,7 +3124,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'UnreferencedFileRemoval',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['TableBucketARN']),
       ccRouteUnavailable: false,
@@ -3134,7 +3134,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::S3Vectors::VectorBucket',
     {
       handled: new Set<string>(['EncryptionConfiguration', 'Tags', 'VectorBucketName']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['CreationTime', 'VectorBucketArn']),
       ccRouteUnavailable: false,
@@ -3156,7 +3156,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'State',
         'Target',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: true,
@@ -3175,7 +3175,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Type',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: false,
@@ -3185,7 +3185,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::ServiceDiscovery::HttpNamespace',
     {
       handled: new Set<string>(['Description', 'Name', 'Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Id']),
       ccRouteUnavailable: false,
@@ -3195,7 +3195,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::ServiceDiscovery::PrivateDnsNamespace',
     {
       handled: new Set<string>(['Description', 'Name', 'Properties', 'Tags', 'Vpc']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'HostedZoneId', 'Id']),
       ccRouteUnavailable: false,
@@ -3205,7 +3205,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::ServiceDiscovery::PublicDnsNamespace',
     {
       handled: new Set<string>(['Description', 'Name', 'Properties', 'Tags']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'HostedZoneId', 'Id']),
       ccRouteUnavailable: false,
@@ -3225,7 +3225,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'Type',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Id']),
       ccRouteUnavailable: false,
@@ -3246,7 +3246,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'SubscriptionRoleArn',
         'TopicArn',
       ]),
-      silentDrop: new Map<string, string>([
+      sdkUnwired: new Map<string, string>([
         [
           'Region',
           'CFn-only cross-region subscription hint; cdkd uses the SDK client region directly and has no per-resource region override',
@@ -3276,7 +3276,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TopicName',
         'TracingConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['TopicArn']),
       ccRouteUnavailable: false,
@@ -3286,7 +3286,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::SNS::TopicPolicy',
     {
       handled: new Set<string>(['PolicyDocument', 'Topics']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -3313,7 +3313,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VisibilityTimeout',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'QueueUrl']),
       ccRouteUnavailable: false,
@@ -3323,7 +3323,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::SQS::QueuePolicy',
     {
       handled: new Set<string>(['PolicyDocument', 'Queues']),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Id']),
       ccRouteUnavailable: true,
@@ -3343,7 +3343,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Type',
         'Value',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn']),
       ccRouteUnavailable: false,
@@ -3365,7 +3365,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'TracingConfiguration',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Name', 'StateMachineRevisionId']),
       ccRouteUnavailable: false,
@@ -3392,7 +3392,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'TokenDomains',
         'VisibilityConfig',
       ]),
-      silentDrop: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>(),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>(['Arn', 'Capacity', 'Id', 'LabelNamespace']),
       ccRouteUnavailable: false,

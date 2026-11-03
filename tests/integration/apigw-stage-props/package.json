@@ -2,7 +2,7 @@
   "name": "cdkd-integ-apigw-stage-props",
   "version": "1.0.0",
   "private": true,
-  "description": "AWS::ApiGateway::Stage silent-drop property backfill: AccessLogSetting, CanarySetting, ClientCertificateId create/update/removal (issue #609)",
+  "description": "AWS::ApiGateway::Stage SDK-unwired property backfill: AccessLogSetting, CanarySetting, ClientCertificateId create/update/removal (issue #609)",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w"

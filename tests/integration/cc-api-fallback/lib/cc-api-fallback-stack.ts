@@ -19,7 +19,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * close, or the fixture reds on correct behavior the day the property is
  * SDK-wired. That has now happened three times — LoggingConfig →
  * RecursiveLoop (#718) → RuntimeManagementConfig (#1621), each
- * backfilled within weeks of the fixture pinning it. `Body`'s silent-drop
+ * backfilled within weeks of the fixture pinning it. `Body`'s SDK-unwired
  * rationale is ARCHITECTURAL, not backlog position: "OpenAPI/Swagger
  * inline spec; routed through ImportApi, not the field-by-field
  * CreateApi path" — cdkd's provider deliberately models routes and
@@ -30,9 +30,9 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * this selection rule instead of a misleading deploy-time assertion.
  *
  * The fixture's verify.sh asserts:
- *   (0) `Body` is still a silent-drop for AWS::ApiGatewayV2::Api in
+ *   (0) `Body` is still SDK-unwired for AWS::ApiGatewayV2::Api in
  *       property-coverage.generated.ts (self-diagnosing guard)
- *   (a) state.resources.SilentDropApi.provisionedBy === 'cc-api'
+ *   (a) state.resources.SdkUnwiredApi.provisionedBy === 'cc-api'
  *   (b) the spec reached AWS: the route declared ONLY inside `Body`
  *       exists on the live API (`aws apigatewayv2 get-routes`)
  *   (c) three redeploys that edit `Body` succeed in place (go-to-k/cdkd#5260):
@@ -61,7 +61,7 @@ export class CcApiFallbackStack extends cdk.Stack {
     });
 
     // HTTP API declared ENTIRELY through the inline OpenAPI `Body`
-    // (silent-drop in cdkd's SDK Provider — see the class docstring).
+    // (SDK-unwired in cdkd's SDK Provider — see the class docstring).
     // With #614, this resource is auto-routed via Cloud Control API,
     // which imports the spec; the `GET /cdkd-2473-probe` route below
     // exists nowhere else in the template, so its presence on the live
@@ -93,7 +93,7 @@ export class CcApiFallbackStack extends cdk.Stack {
     const s3Key = process.env.CC_BODY_S3_KEY;
     const fromS3 = s3Bucket !== undefined && s3Key !== undefined;
     const declares = fromS3 || (bodyEdit !== undefined && Number(bodyEdit) >= 2);
-    new apigwv2.CfnApi(this, 'SilentDropApi', {
+    new apigwv2.CfnApi(this, 'SdkUnwiredApi', {
       ...(declares
         ? {
             description: 'cdkd-5260-declared',

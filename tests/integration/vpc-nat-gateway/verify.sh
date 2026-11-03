@@ -234,7 +234,7 @@ if [ "${DRAIN_ROUTE}" != "cc-api" ]; then
   echo "FAIL: the MaxDrainDurationSeconds NAT gateway has provisionedBy='${DRAIN_ROUTE}', expected 'cc-api' (issue #1411 auto-route did NOT fire — the property would be silently dropped)" >&2
   exit 1
 fi
-echo "    OK: MaxDrainDurationSeconds NAT gateway provisionedBy == 'cc-api' (silent drop CLOSED by #614 routing)"
+echo "    OK: MaxDrainDurationSeconds NAT gateway provisionedBy == 'cc-api' (SDK-unwired property reached AWS via #614 routing)"
 
 # --- Assertion 2: the plain NAT stayed on the SDK provider -----------------
 PLAIN_ROUTE=$(echo "${STATE}" | jq -r "
@@ -295,7 +295,7 @@ fi
 echo "    OK: drain NAT gateway is available with ConnectivityType=private (CC route forwarded the property map)"
 
 # --- Assertion 4: the regional NAT gateway is on the SDK route (go-to-k/cdkd#2762) ---
-# Pre-fix, AvailabilityMode / AvailabilityZoneAddresses were silent drops, so
+# Pre-fix, AvailabilityMode / AvailabilityZoneAddresses were SDK-unwired, so
 # this gateway auto-routed through Cloud Control (provisionedBy 'cc-api').
 REGIONAL_ID=$(echo "${STATE}" | jq -r "[.resources | to_entries[] | select(.value.resourceType == \"${NAT_TYPE}\") | select(.key | startswith(\"RegionalNatGateway\")) | .key] | first // \"\"")
 [ -n "${REGIONAL_ID}" ] || { echo "FAIL: no RegionalNatGateway in state" >&2; exit 1; }

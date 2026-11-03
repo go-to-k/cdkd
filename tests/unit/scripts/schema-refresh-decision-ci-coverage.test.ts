@@ -288,7 +288,7 @@ const CI_COVERAGE: Record<string, { command: string; covers: string[]; why: stri
     why:
       'The refresh names seven fixture-reading suites explicitly because it has no whole-suite ' +
       'run; CI has one, so every member is reached without naming any of them. The sibling suite ' +
-      'fences the refresh-side list against the silentDrop family.',
+      'fences the refresh-side list against the sdkUnwired family.',
   },
   'sdk-wire-coverage': {
     command: 'vp run test',

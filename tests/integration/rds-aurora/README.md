@@ -27,7 +27,7 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   route, records the value and holds it live (issue #2762)
 
 - **SecurityCluster** (L1 `CfnDBCluster`, aurora-postgresql, no instance) - the
-  issue #609 DBCluster security-property silent-drop assertions
+  issue #609 DBCluster security-property SDK-unwired assertions
   (`ManageMasterUserPassword` / `MasterUserSecret` / `MonitoringRoleArn` /
   `MonitoringInterval` / `EnableIAMDatabaseAuthentication`) plus the issue
   #5004 removal-keeps-the-value assertions: `DeletionProtection` +

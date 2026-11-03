@@ -19,8 +19,8 @@ import {
 } from '../provisioning/create-only-properties.js';
 import { tryGetTopLevelWriteOnlyProperties } from '../provisioning/write-only-properties.js';
 import {
-  withoutAcceptedSilentDropProperties,
-  withoutUnwrittenSilentDropProperties,
+  withoutAcceptedSdkUnwiredProperties,
+  withoutUnwrittenSdkUnwiredProperties,
 } from '../provisioning/property-coverage.js';
 import {
   refuseMalformedResourceEntriesForDeploy,
@@ -397,7 +397,7 @@ export class DiffCalculator {
     // [#3191](https://github.com/go-to-k/cdkd/issues/3191)).
     //
     // WHY HERE AND NOT ON THE FIVE READS. `currentResource.properties` is read
-    // five times below — the type-change UPDATE, the silent-drop narrowing
+    // five times below — the type-change UPDATE, the SDK-unwired narrowing
     // pair, and the UPDATE / NO_CHANGE / DELETE records — and a guard on each
     // is the shape `src/state/malformed-resources-bag.ts`'s header records as
     // INERT: the first cut of go-to-k/cdkd#3018 put `?? {}` on twelve
@@ -582,11 +582,11 @@ export class DiffCalculator {
         // Issue #2750, applied BEFORE the provider narrowing above and gated on
         // the SAME `provisionedBy !== 'cc-api'` question, because it asks the
         // same thing one layer down: does this bag describe the SDK route, on
-        // which a silent-drop property never reaches AWS?
+        // which an SDK-unwired property never reaches AWS?
         //
         // The two sides take DIFFERENT rules and the asymmetry is the fix:
         //
-        // - RECORD side, every silent drop for the type (a create-only one
+        // - RECORD side, every SDK-unwired property for the type (a create-only one
         //   only once this deploy stops accepting it). A resource recorded
         //   `provisionedBy: 'sdk'` cannot have had one written, whatever flags
         //   were passed then, so its presence is junk — and removing it is what
@@ -606,7 +606,7 @@ export class DiffCalculator {
         const sdkRouted = currentResource.provisionedBy !== 'cc-api';
         const desiredAfterDrops =
           sdkRouted && allowedUnsupportedProperties
-            ? withoutAcceptedSilentDropProperties(
+            ? withoutAcceptedSdkUnwiredProperties(
                 desiredResource.Type,
                 resolvedDesiredProps,
                 allowedUnsupportedProperties,
@@ -619,7 +619,7 @@ export class DiffCalculator {
         // the engine refuses unless opted into (issue #2790). No allow set
         // (`cdkd diff`) is the flag-less deploy.
         const currentAfterDrops = sdkRouted
-          ? withoutUnwrittenSilentDropProperties(
+          ? withoutUnwrittenSdkUnwiredProperties(
               desiredResource.Type,
               currentResource.properties,
               resolvedDesiredProps,
@@ -659,7 +659,7 @@ export class DiffCalculator {
         // #2750 narrowing above also drops keys, and they must not reach this
         // warning. Its remedy ("Fix the template to declare only what the
         // resource supports") is wrong for a drop the user opted INTO, and
-        // `ProviderRegistry.reportSilentDropDecisions` already warns about
+        // `ProviderRegistry.reportSdkUnwiredDecisions` already warns about
         // those every deploy with the accurate wording.
         const droppedKeys = canonicalizeProperties
           ? Object.keys(desiredAfterDrops).filter(

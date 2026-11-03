@@ -4407,7 +4407,7 @@ describe('IntrinsicFunctionResolver - Ref to AWS::ApiGateway::Model', () => {
 
   // Issue #963 (hunt-bugs sweep 11): the rest of the ApiGateway compound-id
   // family. These types HAVE an SDK provider (which stores a simple, pipe-free
-  // physical id), but the #614 silent-drop routing sends them through Cloud
+  // physical id), but the #614 SDK-unwired routing sends them through Cloud
   // Control whenever the template carries a property the SDK provider does not
   // wire — e.g. a Stage with `MethodSettings` (CDK `deployOptions.throttling*`
   // / `metricsEnabled` / `loggingLevel`). The CC path stores the compound

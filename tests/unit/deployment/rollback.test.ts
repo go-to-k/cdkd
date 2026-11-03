@@ -329,7 +329,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
 
   it('CC-routed CREATE rollback dispatches via the CC provider, not the SDK provider (#614)', async () => {
     // A CREATE that auto-routed to CC API (because the template had a
-    // silent-drop property) must roll back via the CC provider's delete.
+    // SDK-unwired property) must roll back via the CC provider's delete.
     // Pre-#614, rollback used `getProvider(resourceType)` which is the
     // SDK provider — a CC-managed Lambda being rolled back via the SDK
     // would try to delete with the wrong API + wrong identifier
@@ -406,7 +406,7 @@ describe('DeployEngine - Rollback (event-driven dispatch)', () => {
             return { provider: ccProvider, provisionedBy: 'cc-api' };
           }
           if (input.resourceType === 'AWS::Lambda::Function') {
-            // Fresh CREATE → routes to CC because of (notional) silent-drop.
+            // Fresh CREATE → routes to CC because of (notional) SDK-unwired property.
             return {
               provider: ccProvider,
               provisionedBy: 'cc-api',

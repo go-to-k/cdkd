@@ -1,8 +1,8 @@
 /**
  * Side-effect surface for #614 — `validateResourceProperties` (now an
- * alias for `reportSilentDropDecisions`) no longer throws. Each silent
+ * alias for `reportSdkUnwiredDecisions`) no longer throws. Each silent
  * drop emits either an info log (auto-route via CC API) or a warn log
- * (user opted into the silent drop via `--allow-unsupported-properties`).
+ * (user opted into leaving it unwritten via `--allow-unsupported-properties`).
  *
  * The tests capture log lines by swapping the registry's logger via
  * the global `getLogger` mock — same shape every other registry test
@@ -13,34 +13,34 @@ import { existsSync } from 'node:fs';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { PROPERTY_COVERAGE_BY_TYPE } from '../../../src/provisioning/property-coverage.js';
 
-function pickSilentDropFixture(): { resourceType: string; property: string } {
+function pickSdkUnwiredFixture(): { resourceType: string; property: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-    const first = cov.silentDrop.entries().next();
+    const first = cov.sdkUnwired.entries().next();
     if (!first.done) {
       const [property] = first.value;
       return { resourceType, property };
     }
   }
   throw new Error(
-    'PROPERTY_COVERAGE_BY_TYPE has no silent-drop entries — every Tier 1 ' +
+    'PROPERTY_COVERAGE_BY_TYPE has no SDK-unwired entries — every Tier 1 ' +
       'type is fully handled. Update this test to use a synthetic fixture.'
   );
 }
 
 /**
- * A type with TWO silent drops, so the mixed allow-set case below has a
+ * A type with TWO SDK-unwired properties, so the mixed allow-set case below has a
  * SIBLING to leave un-allowed. Throws rather than skipping: with no such type
  * the case would pass having exercised nothing.
  */
-function pickSilentDropPair(): { resourceType: string; propA: string; propB: string } {
+function pickSdkUnwiredPair(): { resourceType: string; propA: string; propB: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-    if (cov.silentDrop.size >= 2) {
-      const sorted = Array.from(cov.silentDrop.keys()).sort((x, y) => x.localeCompare(y));
+    if (cov.sdkUnwired.size >= 2) {
+      const sorted = Array.from(cov.sdkUnwired.keys()).sort((x, y) => x.localeCompare(y));
       return { resourceType, propA: sorted[0]!, propB: sorted[1]! };
     }
   }
   throw new Error(
-    'PROPERTY_COVERAGE_BY_TYPE has no type with ≥2 silent-drop entries — the ' +
+    'PROPERTY_COVERAGE_BY_TYPE has no type with ≥2 SDK-unwired entries — the ' +
       'mixed allow-set case needs one. Update it to use a synthetic fixture.'
   );
 }
@@ -48,7 +48,7 @@ function pickSilentDropPair(): { resourceType: string; propA: string; propB: str
 /**
  * Build a registry whose `.logger` field is a vi-mocked spy so the test
  * can inspect every `info` / `warn` line emitted by
- * `reportSilentDropDecisions` without touching the real logger.
+ * `reportSdkUnwiredDecisions` without touching the real logger.
  */
 function makeRegistry() {
   const registry = new ProviderRegistry();
@@ -68,33 +68,33 @@ function makeRegistry() {
   return { registry, info, warn };
 }
 
-/** A (type, property) whose silent drop IS create-only. */
+/** A (type, property) that is SDK-unwired AND create-only. */
 function pickCreateOnlyDropFixture(): { resourceType: string; property: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
     const first = [...cov.createOnlyDrops].sort((a, b) => a.localeCompare(b))[0];
     if (first !== undefined) return { resourceType, property: first };
   }
-  throw new Error('no type has a create-only silent drop — use a synthetic fixture');
+  throw new Error('no type has a create-only SDK-unwired property — use a synthetic fixture');
 }
 
-/** A (type, property) whose silent drop is NOT create-only. */
-function pickPlainSilentDropFixtureForWarn(): { resourceType: string; property: string } {
+/** A (type, property) that is SDK-unwired and NOT create-only. */
+function pickPlainSdkUnwiredFixtureForWarn(): { resourceType: string; property: string } {
   for (const [resourceType, cov] of PROPERTY_COVERAGE_BY_TYPE) {
-    for (const property of cov.silentDrop.keys()) {
+    for (const property of cov.sdkUnwired.keys()) {
       if (!cov.createOnlyDrops.has(property)) return { resourceType, property };
     }
   }
-  throw new Error('every silent drop is create-only — use a synthetic fixture');
+  throw new Error('every SDK-unwired property is create-only — use a synthetic fixture');
 }
 
 describe('ProviderRegistry.validateResourceProperties (post-#614, now a report path)', () => {
   let fx: { resourceType: string; property: string };
 
   beforeEach(() => {
-    fx = pickSilentDropFixture();
+    fx = pickSdkUnwiredFixture();
   });
 
-  it('never throws — even for a resource with silent-drop properties', () => {
+  it('never throws — even for a resource with SDK-unwired properties', () => {
     const { registry } = makeRegistry();
     expect(() =>
       registry.validateResourceProperties([
@@ -126,7 +126,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     expect(msg).toContain(`${fx.resourceType}:${fx.property}`);
   });
 
-  it('emits a warn log when the user has explicitly overridden the silent drop', () => {
+  it('emits a warn log when the user has explicitly accepted leaving the property unwritten', () => {
     const { registry, info, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
     registry.validateResourceProperties([
@@ -169,7 +169,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     // is not the broadcast warn #2750 removed — and without it an explicit
     // instruction appears silently ignored, which is the confusion that drove
     // the flag's rename.
-    const pair = pickSilentDropPair();
+    const pair = pickSdkUnwiredPair();
     const { registry, info, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${pair.resourceType}:${pair.propA}`]);
     registry.validateResourceProperties([
@@ -215,13 +215,13 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
    *
    * The `!STICKY_CC_MIGRATION_EXEMPT.has(type)` half of that gate is NOT
    * exercised here and cannot be: an admitted exempt type has an EMPTY
-   * silentDrop map by construction (that is why it was admitted), the same
+   * sdkUnwired map by construction (that is why it was admitted), the same
    * unreachability `wouldReturnToSdkProvider`'s doc comment records for its own
    * both-bags condition. It is present for parity with the sibling
    * `reportUnrecognizedProperties`, which makes the identical test.
    */
   it('does NOT warn about an overridden drop on a resource already recorded cc-api', () => {
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const { registry, info, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
     registry.validateResourceProperties([
@@ -291,7 +291,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
   it('STILL warns for the same bag on a resource recorded sdk', () => {
     // The control for the row above: without it, that row also passes under an
     // implementation that stopped warning entirely.
-    const fx = pickSilentDropFixture();
+    const fx = pickSdkUnwiredFixture();
     const { registry, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
     registry.validateResourceProperties([
@@ -347,7 +347,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
   it('keeps the flag-removal remedy for a NON-create-only drop', () => {
     // The control: without it the row above passes under an implementation
     // that dropped the reroutable remedy for everything.
-    const fx = pickPlainSilentDropFixtureForWarn();
+    const fx = pickPlainSdkUnwiredFixtureForWarn();
     const { registry, warn } = makeRegistry();
     registry.allowUnsupportedProperties([`${fx.resourceType}:${fx.property}`]);
     registry.validateResourceProperties([
@@ -374,7 +374,7 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
     ]);
   });
 
-  it('skips resources with no silent-drop properties (no log noise)', () => {
+  it('skips resources with no SDK-unwired properties (no log noise)', () => {
     const { registry, info, warn } = makeRegistry();
     registry.validateResourceProperties([
       {
@@ -400,9 +400,9 @@ describe('ProviderRegistry.validateResourceProperties (post-#614, now a report p
  * It is the concrete confusion that motivated the rename.
  */
 describe('--prefer-sdk-route had no effect', () => {
-  /** A type with TWO silent drops, so one can be covered and one not. */
+  /** A type with TWO SDK-unwired properties, so one can be covered and one not. */
   function twoDrops() {
-    const { resourceType, propA, propB } = pickSilentDropPair();
+    const { resourceType, propA, propB } = pickSdkUnwiredPair();
     const { registry, warn } = makeRegistry();
     return { registry, warn, resourceType, covered: propA, uncovered: propB };
   }

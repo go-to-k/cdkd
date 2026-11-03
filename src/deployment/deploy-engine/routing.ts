@@ -100,7 +100,7 @@ export function peekRoutingForLabel(
 /**
  * Prepare a property map for a Cloud Control API call. When a Tier 1
  * resource is routed via Cloud Control (either because the user's
- * template hit silent-drop properties under #614 or because the resource
+ * template hit SDK-unwired properties under #614 or because the resource
  * is sticky-routed via `provisionedBy: 'cc-api'`), CC requires the full
  * property map — including identifier-like fields (`BucketName`,
  * `RoleName`, etc.) that the SDK provider would have auto-generated.

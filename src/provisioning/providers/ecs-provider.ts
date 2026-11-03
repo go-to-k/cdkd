@@ -759,7 +759,7 @@ export class ECSProvider implements ResourceProvider {
         'EnableExecuteCommand',
         'ServiceRegistries',
         'Tags',
-        // issue #609 backfill — the previously silent-dropped Service members.
+        // issue #609 backfill — the previously SDK-unwired Service members.
         'AvailabilityZoneRebalancing',
         'DeploymentController',
         'ForceNewDeployment',
@@ -1753,7 +1753,7 @@ export class ECSProvider implements ResourceProvider {
             properties['ServiceRegistries'] as Array<Record<string, unknown>> | undefined
           ),
           tags: convertTags(desiredTags),
-          // issue #609 backfill — previously silent-dropped Service members.
+          // issue #609 backfill — previously SDK-unwired Service members.
           // `ForceNewDeployment` is deliberately NOT mapped here: it is a
           // CFn-only rollout trigger with no CreateService counterpart (the
           // SDK's `forceNewDeployment` boolean exists only on UpdateService),
@@ -2635,7 +2635,7 @@ export class ECSProvider implements ResourceProvider {
     const propagateTagsInput = properties['PropagateTags'] as PropagateTags | undefined;
     const enableExecuteCommandInput = properties['EnableExecuteCommand'] as boolean | undefined;
 
-    // issue #609 backfill — the previously silent-dropped Service members on
+    // issue #609 backfill — the previously SDK-unwired Service members on
     // the update path. All of the config blobs below are change-gated (like
     // LoadBalancers / ServiceRegistries above) because the AWS docs mark them
     // "this parameter triggers a new service deployment": re-sending an

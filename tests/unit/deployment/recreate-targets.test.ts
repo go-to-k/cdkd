@@ -188,7 +188,7 @@ describe('validateRecreateTargets (#615)', () => {
             Type: 'AWS::ApiGatewayV2::Api',
             Properties: {
               Name: 'foo',
-              Body: { openapi: '3.0.1' }, // silent-drop property
+              Body: { openapi: '3.0.1' }, // SDK-unwired property
             },
           },
         },
@@ -221,7 +221,7 @@ describe('validateRecreateTargets (#615)', () => {
       };
       const state = st('S', { MyApi: res('AWS::ApiGatewayV2::Api') });
       // Allow-set covers Name, not Body — the template's
-      // actual silent-drop property is Body, so no overlap fires.
+      // actual SDK-unwired property is Body, so no overlap fires.
       const v = validateRecreateTargets({
         template,
         state,
@@ -232,7 +232,7 @@ describe('validateRecreateTargets (#615)', () => {
       expect(v.ambiguousIntent).toEqual([]);
     });
 
-    it('does NOT report overlap when the template has no silent-drop property at all (override is a no-op)', () => {
+    it('does NOT report overlap when the template has no SDK-unwired property at all (override is a no-op)', () => {
       const template: CloudFormationTemplate = {
         Resources: {
           PlainApi: {
@@ -891,7 +891,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
     expect(error).toContain('AWS::Tier2::Type');
   });
 
-  it('inverse ambiguous-intent: refuses --recreate-via-sdk-provider when template uses a silent-drop property NOT in --allow-unsupported-properties', () => {
+  it('inverse ambiguous-intent: refuses --recreate-via-sdk-provider when template uses an SDK-unwired property NOT in --allow-unsupported-properties', () => {
     const template: CloudFormationTemplate = {
       Resources: {
         MyApi: {
@@ -920,7 +920,7 @@ describe('validateRecreateTargets — #651 reverse direction (--recreate-via-sdk
     expect(error).toContain('Body');
   });
 
-  it('inverse ambiguous-intent: PASSES when the silent-drop property IS in --allow-unsupported-properties', () => {
+  it('inverse ambiguous-intent: PASSES when the SDK-unwired property IS in --allow-unsupported-properties', () => {
     const template: CloudFormationTemplate = {
       Resources: {
         MyApi: {

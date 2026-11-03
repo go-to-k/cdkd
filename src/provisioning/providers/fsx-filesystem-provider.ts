@@ -631,7 +631,7 @@ export class FSxFileSystemProvider implements ResourceProvider {
   /**
    * Cloud Control has NO handlers for this type (`ProvisioningType:
    * NON_PROVISIONABLE` in the CFn registry), so the deploy engine's #614
-   * silent-drop auto-route MUST NOT send a Windows/ONTAP/OpenZFS template
+   * SDK-unwired auto-route MUST NOT send a Windows/ONTAP/OpenZFS template
    * to CC — it would fail at provisioning time with an opaque
    * UnsupportedActionException. With this opt-out the ProviderRegistry
    * rejects such templates pre-flight with a clear error instead.

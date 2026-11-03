@@ -3,7 +3,7 @@
 # StreamSpecification enable-on-UPDATE (#977) integ test.
 #
 # Phase 1 deploys a PROVISIONED DynamoDB table WITHOUT a stream and asserts:
-#   - WarmThroughput (Read/Write UnitsPerSecond) reached AWS (silent-drop #609)
+#   - WarmThroughput (Read/Write UnitsPerSecond) reached AWS (SDK-unwired before #609)
 #   - the table has NO enabled stream yet
 # The UPDATE phase (CDKD_TEST_UPDATE=true) enables `stream: NEW_AND_OLD_IMAGES`
 # on the existing table (plus a Lambda + EventSourceMapping consumer) and

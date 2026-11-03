@@ -3,8 +3,8 @@
 #
 # Two concerns in one fixture:
 #   1. (issue #609) An AWS::S3Tables::Table / ::TableBucket with template-set
-#      Tags has those tags reach AWS after `cdkd deploy` — `Tags` was a
-#      silent-drop before #609. Resolves the ARNs from cdkd state outputs,
+#      Tags has those tags reach AWS after `cdkd deploy` — `Tags` was
+#      SDK-unwired before #609. Resolves the ARNs from cdkd state outputs,
 #      calls `s3tables ListTagsForResource`, asserts the tags are present.
 #   2. (issues #974 / #5316) CloudFormation's `Ref` for an
 #      AWS::S3Tables::Table returns its TableARN. Asserts the Ref resolves to
@@ -26,7 +26,7 @@
 #   6. (issue #2762) The TableBucket's StorageClass / Metrics /
 #      UnreferencedFileRemoval and the IcebergTable's IcebergMetadata /
 #      StorageClass / Compaction / SnapshotManagement — Cloud Control routing
-#      silent drops before #2762 — are sent by the SDK provider: Phase 1
+#      SDK-unwired before #2762 — are sent by the SDK provider: Phase 1
 #      routes the IcebergTable via the SDK and reads every value back from
 #      AWS; Phase 1b changes UnreferencedDays and Compaction in place.
 #   7. (issue #5572) Phase 1e seeds the IcebergTable's record with the
@@ -176,13 +176,13 @@ TABLE_BUCKET_ARN=$(echo "${STATE}" | jq -r '.outputs.TableBucketArn // ""')
 echo "    resolved TableBucket ARN: ${TABLE_BUCKET_ARN}"
 
 # Confirm cdkd routed via the SDK provider (not CC-API). If routing
-# flipped (e.g. an unhandled silent-drop sneaked in), the backfill
+# flipped (e.g. an SDK-unwired property sneaked in), the backfill
 # closure being tested IS the wrong code path.
 # Named: the stack holds two tables, and a `first` over both reads whichever
 # the state lists first.
 PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources.Table.provisionedBy // "MISSING"')
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: AWS::S3Tables::Table routed via '${PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip — backfill is on the wrong path)" >&2
+  echo "FAIL: AWS::S3Tables::Table routed via '${PROVISIONED_BY}', expected 'sdk' (SDK-unwired routing flip — backfill is on the wrong path)" >&2
   exit 1
 fi
 echo "    OK: AWS::S3Tables::Table routed via SDK provider (provisionedBy=sdk)"
@@ -290,14 +290,14 @@ echo "    OK: bucket-team tag == '${EXPECTED_BUCKET_TEAM_TAG}' on AWS"
 # routed it to Cloud Control, so this is where a pre-fix run goes RED first.
 BUCKET_PROVISIONED_BY=$(echo "${STATE}" | jq -r '.resources.TableBucket.provisionedBy // "MISSING"')
 if [ "${BUCKET_PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: AWS::S3Tables::TableBucket routed via '${BUCKET_PROVISIONED_BY}', expected 'sdk' (silent-drop routing flip)" >&2
+  echo "FAIL: AWS::S3Tables::TableBucket routed via '${BUCKET_PROVISIONED_BY}', expected 'sdk' (SDK-unwired routing flip)" >&2
   exit 1
 fi
 echo "    OK: AWS::S3Tables::TableBucket routed via SDK provider (provisionedBy=sdk)"
 
 # --- Assertion: IcebergTable `Ref` resolves to the TableARN (#974 / #5316)
 # The IcebergTable carries IcebergMetadata / Compaction / SnapshotManagement /
-# StorageClassConfiguration, Cloud Control routing silent drops until issue
+# StorageClassConfiguration, Cloud Control routing SDK-unwired properties until issue
 # #2762 wired them into the SDK provider. Assert (1) it now routes via the
 # SDK provider, under cdkd's composite physical id, and (2) both the CfnOutput
 # Ref and the consuming SSM parameter's value equal the TableARN

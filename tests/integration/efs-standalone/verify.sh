@@ -7,7 +7,7 @@
 #   - BackupPolicy         → PutBackupPolicy             (DescribeBackupPolicy)
 #   - FileSystemPolicy     → PutFileSystemPolicy         (DescribeFileSystemPolicy)
 #   - FileSystemProtection → UpdateFileSystemProtection  (DescribeFileSystems)
-# Each was a silent-drop before the backfill. Also asserts the MountTarget's
+# Each was SDK-unwired before the backfill. Also asserts the MountTarget's
 # IpAddressType / IpAddress stay on the SDK route and reach AWS, with its
 # Fn::GetAtt IpAddress output (issue #2762), and that a FileSystemTags /
 # AccessPointTags change is applied in place on redeploy (issue #5464), and that

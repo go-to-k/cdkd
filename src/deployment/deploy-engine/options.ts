@@ -323,7 +323,7 @@ export interface DeployEngineOptions {
    *     that path. There has never been one.)
    *   - UPDATE → force the replacement code path, route the new resource via
    *     the named direction's layer (`viaCcApi`: Cloud Control regardless of
-   *     whether the template has a silent-drop property, stamping
+   *     whether the template has an SDK-unwired property, stamping
    *     `provisionedBy: 'cc-api'`; `viaSdkProvider`: cdkd's SDK provider,
    *     stamping `provisionedBy: 'sdk'`, used to migrate a CC-sticky resource
    *     back after a #609 backfill release adds coverage). The OLD resource's

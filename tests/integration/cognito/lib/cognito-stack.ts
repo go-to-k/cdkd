@@ -71,7 +71,7 @@ export class CognitoStack extends cdk.Stack {
     // L1 UserPool exercising the issue #609 backfill properties. Uses
     // CfnUserPool (not the L2 UserPool) so each backfill property is set
     // explicitly and the integ can assert the exact SDK-path wire shape. None
-    // of this template's top-level properties are silent-drop, so cdkd routes
+    // of this template's top-level properties are SDK-unwired, so cdkd routes
     // the pool through the SDK CognitoUserPoolProvider (not the CC-API
     // fallback) — the path the backfill code lives on.
     //

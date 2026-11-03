@@ -730,7 +730,7 @@ the create knows where it is deploying.
 
 **There are FOUR of these guards, not two, and `assertRegionMatch` is only the
 generic one.** The two above are the SDK route; the Cloud Control route has its
-own pair, because a bucket declaring a silent-drop property (`AccessControl`) is
+own pair, because a bucket declaring an SDK-unwired property (`AccessControl`) is
 auto-routed there and `S3BucketProvider.delete` never runs at all (issue
 [#2283](https://github.com/go-to-k/cdkd/issues/2283), fixed in
 [#2309](https://github.com/go-to-k/cdkd/issues/2309)):
@@ -2692,7 +2692,7 @@ See [tests/unit/provisioning/sqs-queue-provider-update.test.ts](https://github.c
 
 ## `handledProperties` against the CFn schema
 
-Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The provider registry's `getProviderFor` consults that set at routing time — a template carrying a property NOT in the set is auto-routed via Cloud Control API (which forwards the full property map to AWS, closing the silent-drop bug — see #614). `--prefer-sdk-route Type:Prop` is the per-property opt-out that forces the SDK Provider path and accepts the silent drop.
+Every SDK Provider declares a `handledProperties: Map<string, ReadonlySet<string>>` field naming the CFn template properties it knows how to wire to its AWS API calls. The provider registry's `getProviderFor` consults that set at routing time — a template carrying a property NOT in the set is auto-routed via Cloud Control API (which forwards the full property map to AWS, closing the silent-drop bug — see #614). `--prefer-sdk-route Type:Prop` is the per-property opt-out that forces the SDK Provider path and leaves that property unwritten.
 
 That's a **runtime** safety net. It doesn't help during development. A provider author who simply forgets to list a property in `handledProperties` AND forgets to wire it in `create()` / `update()` ships a silent bug — exactly what PR #370 (ApiGateway::Method dropped 15+ fields) demonstrated.
 
@@ -2760,7 +2760,7 @@ audit is regenerated after your provider is registered. Add the type to
 `src/provisioning/unsupported-types.ts` (measured with
 `aws cloudformation list-types --visibility PUBLIC --type RESOURCE
 --provisioning-type NON_PROVISIONABLE`). The `ProviderRegistry` then rejects a
-silent-drop property pre-flight with a clear error (property rationale +
+SDK-unwired property pre-flight with a clear error (property rationale +
 `--prefer-sdk-route` escape hatch) instead of failing at provisioning time with
 an opaque `UnsupportedActionException`, and keeps an unknown key on the SDK
 provider with a warning. It matters for every such type, fully handled or not,
@@ -2798,7 +2798,7 @@ This dumps every unaccounted property per type into `tests/fixtures/cfn-schemas/
 
 ### Workflow when AWS publishes new properties
 
-AWS adds properties to existing resource types fairly regularly — measured at roughly **3 writable properties per month** across the whole Tier 1 surface. A property not yet in the fixture is **unrecognized**, and cdkd routes a resource carrying one through Cloud Control, exactly as it routes a known silent drop. So a new property reaches AWS the day AWS publishes it; the fixture refresh is what lets an SDK provider take the property over later. Why, and what is excluded: [the design record](design/3713-route-unrecognized-properties.md).
+AWS adds properties to existing resource types fairly regularly — measured at roughly **3 writable properties per month** across the whole Tier 1 surface. A property not yet in the fixture is **unrecognized**, and cdkd routes a resource carrying one through Cloud Control, exactly as it routes a known SDK-unwired property. So a new property reaches AWS the day AWS publishes it; the fixture refresh is what lets an SDK provider take the property over later. Why, and what is excluded: [the design record](design/3713-route-unrecognized-properties.md).
 
 Two mechanisms cover it. The operator's side of the first — what arrives, what
 to do with each class, and what to do when NOTHING arrives because the job
@@ -2843,11 +2843,11 @@ A property in `handledProperties` (or `unhandledByDesign`) that is NOT in the CF
 
 The test reports these — but fixing each requires per-provider investigation that often touches the safety-net's runtime behavior. As a stopgap, the tolerance list at `tests/fixtures/cfn-schemas/_todo-backfill.json` under `bogusTolerated[<type>][<prop>]` accepts a one-line rationale per entry, the test stays green, and follow-up PRs investigate one at a time. Day-1 of issue #391 the test surfaced 10 such entries — see the rationale strings in that file for the canonical examples.
 
-An entry is a claim about a DECLARATION — "the provider declares `<prop>`, the schema no longer has it, and here is why the declaration stays" — and every reader keys on that premise: the coverage test consults it only while walking `handledProperties` / `unhandledByDesign` / the backfill list, and the schema-refresh diagnosis only for a property in the generated `handled` map. So when the declaration itself is renamed or removed (the usual fix), **retire the entry in the same change**: the test fails an entry that names a property no declaration on that type carries, because such an entry is inert while reading as protection — and if the declaration was meant to exist, it is masking a silent drop (issue [#3034](https://github.com/go-to-k/cdkd/issues/3034), where a `NetworkAclEntry.IcmpTypeCode` entry written on 2026-05-16 outlived the 2026-05-27 rename to `Icmp` until 2026-09-13). The other staleness direction — AWS re-adds the property — is reported by its own case.
+An entry is a claim about a DECLARATION — "the provider declares `<prop>`, the schema no longer has it, and here is why the declaration stays" — and every reader keys on that premise: the coverage test consults it only while walking `handledProperties` / `unhandledByDesign` / the backfill list, and the schema-refresh diagnosis only for a property in the generated `handled` map. So when the declaration itself is renamed or removed (the usual fix), **retire the entry in the same change**: the test fails an entry that names a property no declaration on that type carries, because such an entry is inert while reading as protection — and if the declaration was meant to exist, it is masking an SDK-unwired property (issue [#3034](https://github.com/go-to-k/cdkd/issues/3034), where a `NetworkAclEntry.IcmpTypeCode` entry written on 2026-05-16 outlived the 2026-05-27 rename to `Icmp` until 2026-09-13). The other staleness direction — AWS re-adds the property — is reported by its own case.
 
 ## Admitting a type to the sticky-CC exemption
 
-Closing the last silent-drop gap for a type is not the end of the story for
+Closing the last SDK-unwired gap for a type is not the end of the story for
 resources ALREADY deployed. A resource recorded `provisionedBy: 'cc-api'`
 stays on Cloud Control by default, so the backfill you just landed speeds up
 new resources only — every existing one keeps paying Cloud Control latency
@@ -2855,7 +2855,7 @@ until the type is admitted to `STICKY_CC_MIGRATION_EXEMPT`
 ([`src/provisioning/provider-registry.ts`](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/provider-registry.ts),
 issue [#2719](https://github.com/go-to-k/cdkd/issues/2719)).
 
-Consider admitting a type in the same PR that empties its `silentDrop` map, or
+Consider admitting a type in the same PR that empties its `sdkUnwired` map, or
 in a small follow-up. It is not mandatory and nothing blocks a release without
 it: an un-admitted type is merely slower, which is the status quo — unless
 Cloud Control also mishandles an update for it, in which case admission is
@@ -2869,7 +2869,7 @@ often agree — but "often" is why this needs observing rather than reasoning.
 
 To admit a type:
 
-1. Confirm the type's `silentDrop` map is empty in
+1. Confirm the type's `sdkUnwired` map is empty in
    `property-coverage.generated.ts`. A type with a real drop must not be
    admitted; the per-resource condition would refuse every resource anyway,
    making the entry dead weight. **And keep it empty**: the daily schema

@@ -19,7 +19,7 @@ import * as smsvoice from 'aws-cdk-lib/aws-smsvoice';
  *  - `SdkInstance` — `DisableApiTermination: true`, every property handled by
  *    the SDK `EC2Provider`, so it deletes through `TerminateInstances`.
  *  - `CcInstance` — the same, plus `InstanceInitiatedShutdownBehavior`, which
- *    the SDK provider does not handle, so the #614 silent-drop rule routes the
+ *    the SDK provider does not handle, so the #614 SDK-unwired rule routes the
  *    whole resource through Cloud Control (`provisionedBy: cc-api`).
  *    `'stop'` is the AWS default, so the property changes nothing else.
  *  - `ProtectConfig` — `AWS::SMSVOICE::ProtectConfiguration`, a Cloud Control

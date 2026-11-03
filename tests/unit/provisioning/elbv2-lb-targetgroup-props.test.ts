@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 
-// #609 ELBv2 LoadBalancer + TargetGroup silent-drop property backfill.
+// #609 ELBv2 LoadBalancer + TargetGroup SDK-unwired property backfill.
 //
 // LoadBalancer: EnablePrefixForIpv6SourceNat, Ipv4IpamPoolId,
 // EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic,
@@ -74,7 +74,7 @@ function callsOf(name: string) {
   return mockSend.mock.calls.filter((c) => c[0].constructor.name === name);
 }
 
-describe('ELBv2 LoadBalancer + TargetGroup silent-drop props (#609)', () => {
+describe('ELBv2 LoadBalancer + TargetGroup SDK-unwired props (#609)', () => {
   let provider: ELBv2Provider;
 
   beforeEach(() => {

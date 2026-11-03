@@ -278,7 +278,7 @@ export async function updateByReplacement(
   );
 
   // The new (replacement) resource gets a fresh routing decision —
-  // a property the SDK provider used to silent-drop may now be
+  // a property the SDK provider used to leave unwritten may now be
   // wired, or vice versa. The OLD resource's delete uses the
   // state-recorded layer (sticky) so a CC-managed legacy is
   // deleted via CC even if the template now would land on SDK.
@@ -286,7 +286,7 @@ export async function updateByReplacement(
   // When the recreate is driven by `--recreate-via-cc-api`, pass
   // an explicit `provisionedBy: 'cc-api'` hint so the routing
   // decision tree's rule 2 ("sticky CC") returns CC even when
-  // the template itself has no silent-drop property. The new
+  // the template itself has no SDK-unwired property. The new
   // physical id then stamps `provisionedBy: 'cc-api'` on state
   // and all subsequent ops stick to CC.
   //

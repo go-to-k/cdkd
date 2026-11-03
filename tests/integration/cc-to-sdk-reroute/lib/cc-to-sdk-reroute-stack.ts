@@ -16,9 +16,9 @@ const DISPLAY_NAME_BY_PHASE: Record<string, string> = {
 
 /**
  * `MaximumMessageSize` by phase (issue #3413). AWS published the member in
- * the 2026-09-18 schema refresh and it was a silent drop on the one type that
+ * the 2026-09-18 schema refresh and it was SDK-unwired on the one type that
  * carries the `'sdk-coverage'` exemption — whose admission premise is an EMPTY
- * silentDrop map. Wiring it restores the premise; this fixture is where the
+ * sdkUnwired map. Wiring it restores the premise; this fixture is where the
  * wire is observed: created on the SDK route (base), carried through the
  * Cloud Control recreate (seed / pinned), UPDATED by the SDK provider on the
  * flip (131072 -> 65536), then REMOVED (`removed` leaves it undeclared),
@@ -53,7 +53,7 @@ const MAXIMUM_MESSAGE_SIZE_BY_PHASE: Record<string, number | undefined> = {
  * Asserting it from provider source is not the same as observing it on a live
  * resource, which is what this fixture does.
  *
- * `AWS::SNS::Topic` is the first admitted type: fully covered (no silent-drop
+ * `AWS::SNS::Topic` is the first admitted type: fully covered (no SDK-unwired
  * properties), cheap, non-stateful, and CC-provisionable. Its schema's
  * `primaryIdentifier` is `TopicArn` and `SnsTopicProvider.create` stores
  * `topicArn` -- the hypothesis this run tests rather than assumes.

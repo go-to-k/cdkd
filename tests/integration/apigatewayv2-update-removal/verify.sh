@@ -386,7 +386,7 @@ if [ -z "${WS_CONNECT_ID}" ] || [ "${WS_CONNECT_ID}" = "None" ] \
 fi
 
 # Issue #609: the four MOCK-integration properties, which only a WebSocket API
-# can carry — the reason they were unreachable while still silent-drop.
+# can carry — the reason they were unreachable while still SDK-unwired.
 WS_MOCK_ID="$(int_id_by_type "${WS_AID}" MOCK)"
 if [ -z "${WS_MOCK_ID}" ] || [ "${WS_MOCK_ID}" = "None" ]; then
   echo "FAIL: could not resolve the WebSocket MOCK integration id" >&2; exit 1
@@ -434,7 +434,7 @@ if [ "$(ws_stage_field "${WS_AID}" 'RouteSettings."$connect".ThrottlingRateLimit
   exit 1
 fi
 
-# Issue #609 routing guard: moving properties out of `silentDrop` and into
+# Issue #609 routing guard: moving properties out of `sdkUnwired` and into
 # `handledProperties` is exactly what decides SDK-vs-Cloud-Control routing
 # (the #614 auto-route). A backfill that accidentally left one property
 # unhandled would route the whole type through Cloud Control, which forwards

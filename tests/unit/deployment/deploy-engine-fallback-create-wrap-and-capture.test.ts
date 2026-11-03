@@ -162,14 +162,14 @@ describe('the UPDATE-not-supported replacement fallback: create-failure wrap + o
       // can actually reach. The real registry
       // (`src/provisioning/provider-registry.ts`) is sticky on ONE value:
       // `provisionedBy: 'cc-api'` short-circuits to Cloud Control, while
-      // `'sdk'` and absent both fall through to the same silent-drop check —
+      // `'sdk'` and absent both fall through to the same SDK-unwired check —
       // and both engine call sites pass the identical `resolvedProps`. So a
       // record stamped `'sdk'` can NEVER route differently from the
       // replacement's layer-less decision, and an earlier draft of this
       // fixture that split on `'sdk'` vs absent was pinning a pair the shipped
       // code cannot produce. The reachable #2608 scenario is the reverse: the
       // record is sticky `cc-api`, the replacement decision passes no recorded
-      // layer, and the silent-drop check routes it to the SDK provider.
+      // layer, and the SDK-unwired check routes it to the SDK provider.
       getProviderFor: vi
         .fn()
         .mockImplementation((input: { provisionedBy?: 'sdk' | 'cc-api' }) =>

@@ -56,7 +56,7 @@ import {
   interruptWatchTestSeam,
   isInterruptedWaitError,
 } from '../../../src/provisioning/interrupt-watch.js';
-import { findSilentDropProperties } from '../../../src/provisioning/property-coverage.js';
+import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
 
@@ -129,7 +129,7 @@ describe('AWS::EC2::NatGateway regional properties are handled (#2762)', () => {
 
   it('routes a regional NAT gateway through the SDK provider, not Cloud Control', () => {
     const properties = { AvailabilityMode: 'regional', VpcId: 'vpc-1', AvailabilityZoneAddresses: ZONE_1A };
-    expect(findSilentDropProperties(TYPE, properties)).toEqual([]);
+    expect(findSdkUnwiredProperties(TYPE, properties)).toEqual([]);
     const registry = new ProviderRegistry();
     registry.register(TYPE, new EC2Provider());
     expect(registry.getProviderFor({ resourceType: TYPE, properties }).provisionedBy).toBe('sdk');

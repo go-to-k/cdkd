@@ -46,7 +46,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { DiffCalculator } from '../../../src/analyzer/diff-calculator.js';
 import { makeCanonicalizePropertiesFn } from '../../../src/provisioning/canonicalize-properties.js';
-import { withoutSilentDropProperties } from '../../../src/provisioning/property-coverage.js';
+import { withoutSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 import {
   DynamoDBGlobalTableProvider,
   replicationImpliedStreamSpecification,
@@ -512,7 +512,7 @@ describe('DynamoDBGlobalTableProvider needsStream record + twin (issue #1723)', 
 
     const recorded = (): Record<string, unknown> => ({ ...twoReplicas(), StreamSpecification: IMPLIED });
 
-    // `MultiRegionConsistency` is a silent-drop key for this provider, so one
+    // `MultiRegionConsistency` is an SDK-unwired key for this provider, so one
     // template reaches the three helper sites as DIFFERENT bags: `create()`
     // reads it raw, the engine strips it from the SDK-route record, and
     // `DiffCalculator` strips it from both sides when it is allow-listed. Pin
@@ -523,7 +523,7 @@ describe('DynamoDBGlobalTableProvider needsStream record + twin (issue #1723)', 
         const template = { ...twoReplicas(), MultiRegionConsistency: mode };
         const result = await provider.create('MyTable', RESOURCE_TYPE, template);
         // What the engine records on the SDK route (record-shape.ts).
-        const record = withoutSilentDropProperties(
+        const record = withoutSdkUnwiredProperties(
           RESOURCE_TYPE,
           result.effectiveProperties ?? template
         );

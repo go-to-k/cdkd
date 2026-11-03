@@ -61,8 +61,8 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
  *      reported L2 pool ran on the SDK provider, which is the path this edge
  *      exercises, so the two agree rather than diverging. What the L1 buys is
  *      that the property set stays pinned HERE: every property below is in the
- *      type's `handled` set, so a future L2 default cannot quietly introduce a
- *      silent drop and move this resource off the path under test.
+ *      type's `handled` set, so a future L2 default cannot quietly introduce an
+ *      SDK-unwired property and move this resource off the path under test.
  *
  * Cost: one t3.micro in a single-AZ no-NAT VPC, one tiny inline Lambda, one
  * S3 bucket, one KMS key, one Cognito user pool, four IAM roles, one instance
@@ -123,7 +123,7 @@ export class PropagationRaces2Stack extends cdk.Stack {
     // and the resource cannot drift onto the Cloud Control route (which would
     // take it off the SDK path these edges exercise). An earlier revision
     // justified it by claiming an L2 instance emits `AvailabilityZone` as a
-    // SILENT DROP; that is false -- it is in this type's `handled` set. (The
+    // SDK-UNWIRED; that is false -- it is in this type's `handled` set. (The
     // type string is deliberately not spelled out in this comment: the integ
     // coverage generator scans fixture sources for type literals and would
     // credit the fixture with `literal` coverage it does not have.) The

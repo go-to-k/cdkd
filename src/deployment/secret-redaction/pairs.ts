@@ -498,7 +498,7 @@ const sameGenerationBags = new WeakSet<object>();
  * `same-generation` to the walk directly, marking nothing:
  * - `propertiesToRecord` — the record's `properties`, installed. The resolved
  *   bag itself when the route drops nothing, a narrowed copy of it when it
- *   does, and `withoutSilentDropProperties` returns its input by reference in
+ *   does, and `withoutSdkUnwiredProperties` returns its input by reference in
  *   the first case, which is why the mark must be taken AFTER the narrowing
  *   and not before.
  * - `drainObservedCaptures` — the `observedProperties` readback it installs,

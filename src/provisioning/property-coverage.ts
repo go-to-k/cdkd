@@ -8,15 +8,15 @@
  * This module adds the runtime predicates + the actionable issue link used
  * by the routing decision (see
  * {@link ./provider-registry.ProviderRegistry.getProviderFor} and
- * {@link ./provider-registry.ProviderRegistry.reportSilentDropDecisions}).
+ * {@link ./provider-registry.ProviderRegistry.reportSdkUnwiredDecisions}).
  *
  * Behavior: when a template uses a top-level CFn property cdkd's SDK
- * Provider does not write to AWS (= silent drop), the resource is
+ * Provider does not write to AWS (= SDK-unwired), the resource is
  * **auto-routed via Cloud Control API** by default — CC forwards the
  * full property map verbatim, closing the silent-drop bug (#614). The
  * user can opt out per-property via
  * `--allow-unsupported-properties <Type:Prop>,...`, which keeps the
- * resource on the SDK Provider path and accepts the silent drop (a
+ * resource on the SDK Provider path and leaves the property unwritten (a
  * warn line is logged for auditability).
  */
 import { isDeepStrictEqual } from 'node:util';
@@ -38,7 +38,7 @@ export function getPropertyCoverage(resourceType: string): PropertyCoverage | un
 }
 
 /**
- * Identify top-level template properties cdkd would silently drop on write
+ * Identify top-level template properties the SDK provider does not wire (SDK-unwired)
  * for a single resource. Returns an array of `{ property, rationale }` for
  * each unhandled top-level key in `templateProperties`, sorted alphabetically.
  *
@@ -48,7 +48,7 @@ export function getPropertyCoverage(resourceType: string): PropertyCoverage | un
  * because the state and diff NARROWINGS below read this list and must stay
  * fixture-only (issue [#3713](https://github.com/go-to-k/cdkd/issues/3713)).
  */
-export function findSilentDropProperties(
+export function findSdkUnwiredProperties(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined
 ): Array<{ property: string; rationale: string }> {
@@ -58,7 +58,7 @@ export function findSilentDropProperties(
   const drops: Array<{ property: string; rationale: string }> = [];
   for (const prop of Object.keys(templateProperties)) {
     if (coverage.handled.has(prop)) continue;
-    const rationale = coverage.silentDrop.get(prop);
+    const rationale = coverage.sdkUnwired.get(prop);
     if (rationale === undefined) continue; // Not in the snapshot: findRoutableUnrecognizedProperties' concern.
     drops.push({ property: prop, rationale });
   }
@@ -70,7 +70,7 @@ export const UNRECOGNIZED_PROPERTY_RATIONALE = "not in cdkd's CFn schema snapsho
 
 /**
  * The properties that drive the Cloud Control auto-route (issue
- * [#614](https://github.com/go-to-k/cdkd/issues/614)): every silent drop whose
+ * [#614](https://github.com/go-to-k/cdkd/issues/614)): every SDK-unwired property whose
  * `<Type>:<Prop>` key is NOT in the `--prefer-sdk-route` allow set, plus every
  * {@link findRoutableUnrecognizedProperties} key. THE routing predicate —
  * `getProviderFor`, the sticky-escape, the plan and diff annotations and the
@@ -84,14 +84,14 @@ export const UNRECOGNIZED_PROPERTY_RATIONALE = "not in cdkd's CFn schema snapsho
  * Sorted by property; `[]` for Tier 2 / Custom / unknown types, an absent bag,
  * or a bag whose every drop is allowed.
  */
-export function findActionableSilentDrops(
+export function findActionableSdkUnwired(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined,
   allowedKeys: ReadonlySet<string>,
   recordedProperties?: Record<string, unknown>,
   options?: UnresolvedValueOption
 ): Array<{ property: string; rationale: string }> {
-  const drops = findSilentDropProperties(resourceType, templateProperties).filter(
+  const drops = findSdkUnwiredProperties(resourceType, templateProperties).filter(
     ({ property }) => !allowedKeys.has(`${resourceType}:${property}`)
   );
   const unrecognized = findRoutableUnrecognizedProperties(
@@ -221,7 +221,7 @@ function toJsonValue(value: unknown): unknown {
 }
 
 /**
- * The silent-drop properties in `templateProperties` the user has opted back
+ * The SDK-unwired properties in `templateProperties` the user has opted back
  * INTO dropping via `--allow-unsupported-properties`, **and that this deploy
  * will therefore really fail to write** (issue
  * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
@@ -234,13 +234,13 @@ function toJsonValue(value: unknown): unknown {
  * The allow set is per `<Type>:<Prop>` while the route is per RESOURCE, so a
  * per-property answer would be wrong for exactly the mixed bag.
  *
- * The complement of {@link findActionableSilentDrops}: one is empty whenever
+ * The complement of {@link findActionableSdkUnwired}: one is empty whenever
  * the other is not, unless the bag has no drops at all (both empty). A
  * route-driving UNRECOGNIZED key empties this too, which is why it takes the
  * same `recordedProperties` — but the accepted list itself stays fixture-only,
  * since it feeds the narrowing.
  */
-export function findAcceptedSilentDrops(
+export function findAcceptedSdkUnwired(
   resourceType: string,
   templateProperties: Record<string, unknown> | undefined,
   allowedKeys: ReadonlySet<string>,
@@ -256,7 +256,7 @@ export function findAcceptedSilentDrops(
   ) {
     return [];
   }
-  const drops = findSilentDropProperties(resourceType, templateProperties);
+  const drops = findSdkUnwiredProperties(resourceType, templateProperties);
   const accepted: string[] = [];
   for (const { property } of drops) {
     if (!allowedKeys.has(`${resourceType}:${property}`)) return [];
@@ -278,7 +278,7 @@ export function findAcceptedSilentDrops(
  *   builds its JSON Patch from the recorded bag, found the property identical on
  *   both sides, and omitted it;
  * - the CURRENT side of the diff for a resource recorded `provisionedBy: 'sdk'`.
- *   A silent-drop key in such a record is junk BY CONSTRUCTION (the SDK route
+ *   An SDK-unwired key in such a record is junk BY CONSTRUCTION (the SDK route
  *   cannot have written it), so removing it is what lets a pre-fix record heal:
  *   the key reads as an addition, the deploy auto-routes, and Cloud Control
  *   sends it.
@@ -289,11 +289,11 @@ export function findAcceptedSilentDrops(
  * may have changed. Returns the input UNCHANGED when nothing applies, so a
  * caller can compare by reference.
  */
-export function withoutSilentDropProperties(
+export function withoutSdkUnwiredProperties(
   resourceType: string,
   properties: Record<string, unknown>
 ): Record<string, unknown> {
-  const removable = removableSilentDrops(resourceType, properties);
+  const removable = removableSdkUnwired(resourceType, properties);
   if (removable.length === 0) return properties;
   const written = { ...properties };
   for (const property of removable) delete written[property];
@@ -302,8 +302,8 @@ export function withoutSilentDropProperties(
 
 /**
  * `properties` minus the drops this deploy's flags have opted INTO
- * ({@link findAcceptedSilentDrops}) — the DESIRED side's twin of
- * {@link withoutSilentDropProperties} (issue
+ * ({@link findAcceptedSdkUnwired}) — the DESIRED side's twin of
+ * {@link withoutSdkUnwiredProperties} (issue
  * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
  *
  * Narrowing only the record and not the desired side is the failure mode the
@@ -316,9 +316,9 @@ export function withoutSilentDropProperties(
  * write the key, so narrowing it there would hide a real difference.
  *
  * It declines a CREATE-ONLY drop for the same reason its record-side twin does
- * — {@link removableSilentDrops} carries the rationale, and both go through
+ * — {@link removableSdkUnwired} carries the rationale, and both go through
  * {@link excludeCreateOnly} so they cannot decline on different rules. The
- * record's COMPARISON twin, {@link withoutUnwrittenSilentDropProperties}, keeps
+ * record's COMPARISON twin, {@link withoutUnwrittenSdkUnwiredProperties}, keeps
  * exactly the create-only drops this helper keeps while it accepts them, which
  * is what keeps a flag-ful redeploy quiet.
  *
@@ -331,7 +331,7 @@ export function withoutSilentDropProperties(
  *
  * Returns the input UNCHANGED when nothing applies.
  */
-export function withoutAcceptedSilentDropProperties(
+export function withoutAcceptedSdkUnwiredProperties(
   resourceType: string,
   properties: Record<string, unknown>,
   allowedKeys: ReadonlySet<string>,
@@ -339,7 +339,7 @@ export function withoutAcceptedSilentDropProperties(
 ): Record<string, unknown> {
   const removable = excludeCreateOnly(
     resourceType,
-    findAcceptedSilentDrops(resourceType, properties, allowedKeys, recordedProperties)
+    findAcceptedSdkUnwired(resourceType, properties, allowedKeys, recordedProperties)
   );
   if (removable.length === 0) return properties;
   const written = { ...properties };
@@ -348,7 +348,7 @@ export function withoutAcceptedSilentDropProperties(
 }
 
 /**
- * The silent-drop properties in `properties` it is SAFE to remove from a bag
+ * The SDK-unwired properties in `properties` it is SAFE to remove from a bag
  * describing the SDK route — every drop except the ones this type's schema
  * marks CREATE-ONLY (issue
  * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
@@ -360,7 +360,7 @@ export function withoutAcceptedSilentDropProperties(
  * template would DELETE and re-CREATE the resource. So the RECORD keeps it,
  * names it in `ResourceState.acceptedCreateOnlyDrops`, and the comparison
  * decides per deploy whether this deploy still accepts the drop:
- * {@link withoutUnwrittenSilentDropProperties} removes a NAMED key only when it
+ * {@link withoutUnwrittenSdkUnwiredProperties} removes a NAMED key only when it
  * does not, and the engine then refuses the replacement that implies unless it
  * was opted into ({@link findUnwrittenCreateOnlyDrops}, issue
  * [#2790](https://github.com/go-to-k/cdkd/issues/2790)).
@@ -371,19 +371,19 @@ export function withoutAcceptedSilentDropProperties(
  * in the snapshot is therefore still narrowed; the daily schema-refresh job is
  * what bounds that window.
  */
-function removableSilentDrops(
+function removableSdkUnwired(
   resourceType: string,
   properties: Record<string, unknown> | undefined
 ): string[] {
   return excludeCreateOnly(
     resourceType,
-    findSilentDropProperties(resourceType, properties).map(({ property }) => property)
+    findSdkUnwiredProperties(resourceType, properties).map(({ property }) => property)
   );
 }
 
 /**
  * `names` minus this type's create-only drops — the ONE spelling of the
- * exclusion {@link removableSilentDrops} documents.
+ * exclusion {@link removableSdkUnwired} documents.
  *
  * Shared rather than repeated because the two narrowings it serves must decline
  * TOGETHER: narrowing one comparison side and not the other is the difference
@@ -398,19 +398,19 @@ function excludeCreateOnly(resourceType: string, names: string[]): string[] {
 }
 
 /**
- * A state record's bag minus every silent-drop key the SDK route cannot have
+ * A state record's bag minus every SDK-unwired key the SDK route cannot have
  * written, for COMPARING it against this deploy's `desiredProperties` (issue
  * [#2790](https://github.com/go-to-k/cdkd/issues/2790)). The diff's current
  * side and the engine's no-change re-check read it, for a record not on
  * `cc-api`.
  *
- * {@link withoutSilentDropProperties} keeps a CREATE-ONLY drop, which is right
+ * {@link withoutSdkUnwiredProperties} keeps a CREATE-ONLY drop, which is right
  * for the record it WRITES (that route accepted the drop) and wrong for a
  * deploy that no longer does: the record then claims a value AWS never held,
  * the template asks for the same value, the diff calls it NO_CHANGE and the
  * property never reaches AWS while the deploy reports success. So a create-only
  * drop the record NAMES in `acceptedCreateOnlyDrops` (`evidence`) stays only
- * while this deploy ACCEPTS it — the {@link findAcceptedSilentDrops} answer the
+ * while this deploy ACCEPTS it — the {@link findAcceptedSdkUnwired} answer the
  * desired side is narrowed by, so the two sides keep it together and a
  * flag-ful redeploy stays quiet. Once the deploy does not accept it, it reads
  * as an addition, which is a replacement the engine refuses unless opted into
@@ -435,7 +435,7 @@ function excludeCreateOnly(resourceType: string, names: string[]): string[] {
  * empty one, since its preview is the flag-less deploy. Returns the input
  * UNCHANGED when nothing applies.
  */
-export function withoutUnwrittenSilentDropProperties(
+export function withoutUnwrittenSdkUnwiredProperties(
   resourceType: string,
   recordedProperties: Record<string, unknown>,
   desiredProperties: Record<string, unknown> | undefined,
@@ -446,7 +446,7 @@ export function withoutUnwrittenSilentDropProperties(
   // A plain (mutable) drop is junk by construction on this side; an
   // evidence-named create-only key goes only where the template still asks
   // for it unchanged or no longer declares it (`evidenceNamedUnwritten`).
-  const removable = findSilentDropProperties(resourceType, recordedProperties)
+  const removable = findSdkUnwiredProperties(resourceType, recordedProperties)
     .map(({ property }) => property)
     .filter((property) => createOnly?.has(property) !== true)
     .concat(
@@ -473,7 +473,7 @@ export function withoutUnwrittenSilentDropProperties(
  * The create-only drops a state record holds that this deploy no longer
  * accepts, and whose recorded value the template still asks for unchanged
  * (issue [#2790](https://github.com/go-to-k/cdkd/issues/2790)) — the keys
- * {@link withoutUnwrittenSilentDropProperties} removes that turn an unchanged
+ * {@link withoutUnwrittenSdkUnwiredProperties} removes that turn an unchanged
  * template into a REPLACEMENT.
  *
  * Each is a property the record NAMES in `acceptedCreateOnlyDrops`
@@ -514,7 +514,7 @@ export function findUnwrittenCreateOnlyDrops(
  * writes ({@link findHandledUnwrittenCreateOnly}, #5572). Sorted.
  *
  * The ONE candidate list both readers filter, so the record side cannot drop a
- * key the refusal does not cover. {@link withoutUnwrittenSilentDropProperties}
+ * key the refusal does not cover. {@link withoutUnwrittenSdkUnwiredProperties}
  * removes a candidate only where the template asks for it unchanged (by
  * {@link askedUnchanged}, the refusal's own test) or no longer declares it; a
  * value that differs is left on both sides, so the diff compares it like any
@@ -531,9 +531,9 @@ function evidenceNamedUnwritten(
   if (evidence.size === 0) return [];
   const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops ?? new Set<string>();
   const accepted = new Set(
-    findAcceptedSilentDrops(resourceType, desiredProperties, allowedKeys, recordedProperties)
+    findAcceptedSdkUnwired(resourceType, desiredProperties, allowedKeys, recordedProperties)
   );
-  const dropped = findSilentDropProperties(resourceType, recordedProperties)
+  const dropped = findSdkUnwiredProperties(resourceType, recordedProperties)
     .map(({ property }) => property)
     .filter(
       (property) => createOnly.has(property) && evidence.has(property) && !accepted.has(property)
@@ -563,10 +563,10 @@ function askedUnchanged(
  * still holds, that this type's SDK provider now WRITES (issue
  * [#5572](https://github.com/go-to-k/cdkd/issues/5572)). Sorted by property.
  *
- * Each was a create-only silent drop when an earlier cdkd recorded it, so the
+ * Each was a create-only SDK-unwired property when an earlier cdkd recorded it, so the
  * SDK route that built the resource never sent it; a later release moved it to
  * `handledProperties` (a #2762 backfill slice). Today's coverage map no longer
- * lists it as a drop, so {@link findSilentDropProperties} cannot see it, yet the
+ * lists it as a drop, so {@link findSdkUnwiredProperties} cannot see it, yet the
  * evidence still holds: AWS does not have the value. Both #2790 readers take
  * these keys exactly as they take a create-only drop the deploy stops
  * accepting. A handled key is never "accepted" (the allow set covers drops
@@ -609,7 +609,7 @@ export function findHandledUnwrittenCreateOnly(
  *
  * - Not on the SDK route: none, since Cloud Control sends the full bag.
  * - `carried` undefined (a new resource: a create, a replacement, a replay's
- *   re-create): every create-only silent drop `recordedProperties` holds. The
+ *   re-create): every create-only SDK-unwired property `recordedProperties` holds. The
  *   SDK route built the resource without them, and sent every handled key.
  * - `carried` given (an in-place update): only those names still present,
  *   among the create-only drops and the keys
@@ -626,7 +626,7 @@ export function acceptedCreateOnlyDropsEvidence(
 ): string[] | undefined {
   if (provisionedBy !== 'sdk') return undefined;
   const createOnly = getPropertyCoverage(resourceType)?.createOnlyDrops ?? new Set<string>();
-  const names = findSilentDropProperties(resourceType, recordedProperties)
+  const names = findSdkUnwiredProperties(resourceType, recordedProperties)
     .map(({ property }) => property)
     .filter(
       (property) => createOnly.has(property) && (carried === undefined || carried.has(property))
@@ -674,7 +674,7 @@ export function unwrittenCreateOnlyReplacement(
 /**
  * A 1-click pre-filled GitHub issue link requesting cdkd support for a
  * specific top-level property on a resource type. Surfaced in the pre-flight
- * error so a user hitting a silent drop lands directly in the "request
+ * error so a user hitting an SDK-unwired property lands directly in the "request
  * support" flow.
  */
 export function unsupportedPropertyIssueUrl(resourceType: string, property: string): string {
@@ -685,10 +685,10 @@ export function unsupportedPropertyIssueUrl(resourceType: string, property: stri
 /**
  * Identify top-level template properties this type's committed CFn schema
  * snapshot does not know about at all — present in neither
- * `coverage.handled` nor `coverage.silentDrop` (issue
+ * `coverage.handled` nor `coverage.sdkUnwired` (issue
  * [#2718](https://github.com/go-to-k/cdkd/issues/2718)).
  *
- * The complement of {@link findSilentDropProperties}. The routing table is
+ * The complement of {@link findSdkUnwiredProperties}. The routing table is
  * built offline from `tests/fixtures/cfn-schemas/*.json`, so every property
  * AWS publishes AFTER that snapshot lands here — as does a typo or an
  * `addPropertyOverride` key. The route-driving subset is
@@ -713,9 +713,9 @@ export function unsupportedPropertyIssueUrl(resourceType: string, property: stri
  *
  * Returns `[]` for Tier 2 / Custom / unknown types (no coverage record — Cloud
  * Control forwards the full property map, so nothing is dropped) and sorts
- * alphabetically, mirroring {@link findSilentDropProperties}. The CALLER is
+ * alphabetically, mirroring {@link findSdkUnwiredProperties}. The CALLER is
  * responsible for firing only when the resource actually resolves to the SDK
- * route; see `ProviderRegistry.reportSilentDropDecisions`.
+ * route; see `ProviderRegistry.reportSdkUnwiredDecisions`.
  */
 export function findUnrecognizedProperties(
   resourceType: string,
@@ -740,7 +740,7 @@ export function findUnrecognizedProperties(
     // `detectUnknownIntrinsicKey`, which governs UNKNOWN keys, not this.
     if (prop === 'Ref' || prop.startsWith('Fn::')) continue;
     if (coverage.handled.has(prop)) continue;
-    if (coverage.silentDrop.has(prop)) continue;
+    if (coverage.sdkUnwired.has(prop)) continue;
     unrecognized.push(prop);
   }
   return unrecognized.sort((a, b) => a.localeCompare(b));

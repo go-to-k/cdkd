@@ -1338,7 +1338,7 @@ export function zipEntryName(type) {
  * left byte-identical — never blanked. That distinction is the whole point:
  * treating absence as "this type now has no properties" would empty
  * `properties`, turn every one of the provider's `handledProperties`
- * declarations into a bogus entry, and destroy silent-drop routing for the
+ * declarations into a bogus entry, and destroy SDK-unwired routing for the
  * type — converting a missing input into a silent behavior change on the
  * deploy path.
  *

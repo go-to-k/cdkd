@@ -47,7 +47,7 @@ CC-API attribute capture / resolution path shows up as a malformed or empty
 `${ChainComposite.Arn}` substitution in `D.Value` and `E`'s environment.
 
 > See the memory rule `feedback_silent_drop_forces_cc_api_routing` for why an
-> SDK-registered type can ALSO be CC-API-routed (a silent-dropped property in
+> SDK-registered type can ALSO be CC-API-routed (an SDK-unwired property in
 > the template), making the `constructAttribute` fallback load-bearing.
 
 ## Cheap by design

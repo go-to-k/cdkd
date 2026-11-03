@@ -690,7 +690,7 @@ describe('splitCompositePhysicalId', () => {
   });
 
   it('accepts the Cloud-Control-written AttachmentType|VpcId shape verbatim', () => {
-    // A template declaring VpnGatewayId trips the #614 silent-drop routing, so
+    // A template declaring VpnGatewayId trips the #614 SDK-unwired routing, so
     // Cloud Control stores the CFn primaryIdentifier joined.
     expect(
       splitCompositePhysicalId('AWS::EC2::VPCGatewayAttachment', 'VGW|vpc-xyz', {})

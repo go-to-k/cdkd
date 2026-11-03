@@ -24,7 +24,7 @@ This stack includes the following resources:
    stream-LESS table first, then re-deploys with `CDKD_TEST_UPDATE=true` to add
    `stream: NEW_AND_OLD_IMAGES`. This exercises the provider `update()`
    StreamSpecification branch (an `UpdateTable` with `StreamEnabled: true`) —
-   which was a silent-drop before #977 — and asserts `LatestStreamArn` is
+   which was SDK-unwired before #977 — and asserts `LatestStreamArn` is
    materialized and enriched back into cdkd's `StreamArn` output. The Lambda /
    EventSourceMapping stream consumer only exists in the UPDATE phase (an ESM
    needs a stream to attach to).

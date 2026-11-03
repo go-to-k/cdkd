@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # verify.sh — cdkd AWS::ECS::Service GatewayConnectors integ test (issue #5634).
 #
-# Before #5634 `GatewayConnectors` was in the coverage map's silent-drop set,
+# Before #5634 `GatewayConnectors` was in the coverage map's SDK-unwired set,
 # so a Service declaring it routed WHOLE through Cloud Control (a sticky
 # `provisionedBy: cc-api`). Each phase below asserts the Service stayed on
 # the SDK route AND reads the connector back from the service REVISION —
@@ -160,7 +160,7 @@ assert_sdk_routed() { # usage: assert_sdk_routed <phase>
   state="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)" || { echo "FAIL: $1: cannot read ${STATE_KEY}" >&2; exit 1; }
   routing="$(printf '%s' "${state}" | jq -r '[.resources[] | select(.resourceType == "AWS::ECS::Service") | (.provisionedBy // "sdk")] | first // "missing"')"
   if [ "${routing}" != "sdk" ]; then
-    echo "FAIL: $1: ECS Service provisionedBy=${routing}, expected sdk — before #5634 GatewayConnectors was a silent drop that sent the whole Service through Cloud Control, which would pass this test for the wrong reason" >&2
+    echo "FAIL: $1: ECS Service provisionedBy=${routing}, expected sdk — before #5634 GatewayConnectors was SDK-unwired, which sent the whole Service through Cloud Control, which would pass this test for the wrong reason" >&2
     exit 1
   fi
   echo "    OK: $1: ECS Service is SDK-routed"

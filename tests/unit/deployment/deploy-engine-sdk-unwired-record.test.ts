@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { DeployEngine } from '../../../src/deployment/deploy-engine.js';
 import {
   getPropertyCoverage,
-  withoutAcceptedSilentDropProperties,
-  withoutSilentDropProperties,
+  withoutAcceptedSdkUnwiredProperties,
+  withoutSdkUnwiredProperties,
 } from '../../../src/provisioning/property-coverage.js';
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
@@ -65,17 +65,17 @@ vi.mock('p-limit', () => ({
  * stays the fixture's job; what is assertable here without Cloud Control is the
  * half that causes the damage: what the engine PERSISTS.
  *
- * The premise (that `ResourcePolicyDocument` really is a silent drop for this type,
+ * The premise (that `ResourcePolicyDocument` really is SDK-unwired for this type,
  * and the other keys really are handled) is asserted rather than assumed —
  * `property-coverage.generated.ts` is regenerated from the CFn schema
  * fixtures, and a provider gaining coverage would otherwise turn every case
  * below into a vacuous pass.
  */
-describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () => {
-  const stackName = 'silent-drop-record-stack';
+describe('DeployEngine - an SDK-unwired property is NOT recorded (#2750)', () => {
+  const stackName = 'sdk-unwired-record-stack';
   const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
   const DROPPED = 'ResourcePolicyDocument';
-  const PHYSICAL_ID = 'silent-drop-record-stack-log-group';
+  const PHYSICAL_ID = 'sdk-unwired-record-stack-log-group';
 
   const WRITTEN = {
     LogGroupName: PHYSICAL_ID,
@@ -100,7 +100,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
   it('PREMISE: the fixture keys are classified as this file assumes', () => {
     const coverage = getPropertyCoverage(RESOURCE_TYPE);
     if (!coverage) throw new Error(`${RESOURCE_TYPE} lost its property-coverage record`);
-    expect(coverage.silentDrop.has(DROPPED)).toBe(true);
+    expect(coverage.sdkUnwired.has(DROPPED)).toBe(true);
     for (const key of Object.keys(WRITTEN)) {
       expect(coverage.handled.has(key)).toBe(true);
     }
@@ -638,7 +638,7 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       // as at the diff call. Without an allow set nothing is narrowed, so the
       // drop stays on the desired side, the record lacks it, and the provider
       // is called -- the pre-#2809 comparison, not a throw. Dropping the
-      // `allowedSilentDrops` guard hands the helper `undefined`, and the drop
+      // `allowedSdkUnwired` guard hands the helper `undefined`, and the drop
       // present here makes that throw.
       delete (mockProviderRegistry as Partial<typeof mockProviderRegistry>)
         .getAllowedUnsupportedProperties;
@@ -674,21 +674,21 @@ describe('DeployEngine - a silent-dropped property is NOT recorded (#2750)', () 
       };
       const SUB_DESIRED = { ...SUB_WRITTEN, [SUB_DROPPED]: 'us-west-2' };
 
-      it('PREMISE: Region is a REMOVABLE silent drop for this type', () => {
+      it('PREMISE: Region is a REMOVABLE SDK-unwired property for this type', () => {
         const coverage = getPropertyCoverage(SUB_TYPE);
         if (!coverage) throw new Error(`${SUB_TYPE} lost its property-coverage record`);
-        expect(coverage.silentDrop.has(SUB_DROPPED)).toBe(true);
+        expect(coverage.sdkUnwired.has(SUB_DROPPED)).toBe(true);
         for (const key of Object.keys(SUB_WRITTEN)) {
           expect(coverage.handled.has(key)).toBe(true);
         }
         // Removable, not merely a drop: a CREATE-ONLY drop is left on BOTH sides
         // by the record-side helper, so the skip was reachable all along and
         // this whole case would pass without the fix.
-        expect(withoutSilentDropProperties(SUB_TYPE, SUB_DESIRED)).toEqual(SUB_WRITTEN);
+        expect(withoutSdkUnwiredProperties(SUB_TYPE, SUB_DESIRED)).toEqual(SUB_WRITTEN);
         // And through the helper the re-check itself calls, with this case's
         // allow set: the desired side the engine compares is the written bag.
         expect(
-          withoutAcceptedSilentDropProperties(
+          withoutAcceptedSdkUnwiredProperties(
             SUB_TYPE,
             SUB_DESIRED,
             new Set([`${SUB_TYPE}:${SUB_DROPPED}`])

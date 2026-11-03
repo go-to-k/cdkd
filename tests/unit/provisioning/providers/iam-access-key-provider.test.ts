@@ -36,7 +36,7 @@ vi.mock('../../../../src/utils/logger.js', () => {
 });
 
 import { IAMAccessKeyProvider } from '../../../../src/provisioning/providers/iam-access-key-provider.js';
-import { findSilentDropProperties } from '../../../../src/provisioning/property-coverage.js';
+import { findSdkUnwiredProperties } from '../../../../src/provisioning/property-coverage.js';
 import { ProvisioningError } from '../../../../src/utils/error-handler.js';
 import { RESOURCE_NOT_FOUND } from '../../../../src/types/resource.js';
 
@@ -77,8 +77,8 @@ describe('IAMAccessKeyProvider', () => {
     expect(provider.disableCcApiFallback).toBe(true);
   });
 
-  it('keeps Serial out of the silent-drop set (a drop would pre-flight HARD-REJECT serial users)', () => {
-    // On a NON_PROVISIONABLE type with disableCcApiFallback, every silent-drop
+  it('keeps Serial out of the SDK-unwired set (a drop would pre-flight HARD-REJECT serial users)', () => {
+    // On a NON_PROVISIONABLE type with disableCcApiFallback, every SDK-unwired
     // property trips the #614 auto-route viability guard and rejects the
     // template pre-flight. Serial's whole CFn semantic (change -> new key) is
     // the registry-schema createOnly replacement classification, so it MUST
@@ -87,7 +87,7 @@ describe('IAMAccessKeyProvider', () => {
     // except here.
     expect(provider.handledProperties.get(TYPE)?.has('Serial')).toBe(true);
     expect(
-      findSilentDropProperties(TYPE, { UserName: 'u', Serial: 1, Status: 'Active' })
+      findSdkUnwiredProperties(TYPE, { UserName: 'u', Serial: 1, Status: 'Active' })
     ).toEqual([]);
   });
 

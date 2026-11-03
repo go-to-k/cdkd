@@ -461,7 +461,7 @@ SDK_ROUTE="$(state_field SdkInstance provisionedBy)"
 CC_ROUTE="$(state_field CcInstance provisionedBy)"
 PC_ROUTE="$(state_field ProtectConfig provisionedBy)"
 if [ "${SDK_ROUTE}" = "cc-api" ]; then
-  echo "FAIL: SdkInstance was provisioned via Cloud Control; a silent-drop property crept in" >&2
+  echo "FAIL: SdkInstance was provisioned via Cloud Control; an SDK-unwired property crept in" >&2
   exit 1
 fi
 if [ "${CC_ROUTE}" != "cc-api" ] || [ "${PC_ROUTE}" != "cc-api" ]; then

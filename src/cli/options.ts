@@ -764,10 +764,10 @@ export const allowUnsupportedTypesOption = new Option(
 ).argParser(parseAllowUnsupportedTypesToken);
 
 /**
- * Escape hatch for the property-level silent-drop pre-flight reject.
+ * Escape hatch for the property-level SDK-unwired pre-flight reject.
  * Comma-separated (and repeatable) `<ResourceType>:<PropertyName>` tokens
- * the user explicitly accepts as silently dropped at deploy time. Per
- * type+property pair (not blanket) so each silent drop is acknowledged
+ * the user explicitly accepts as left unwritten at deploy time. Per
+ * type+property pair (not blanket) so each SDK-unwired property is acknowledged
  * by name.
  *
  * Format-checks each token against `<Namespace>::<Service>::<Type>:<Prop>`
@@ -775,7 +775,7 @@ export const allowUnsupportedTypesOption = new Option(
  * being silently added to the allowlist with no effect.
  *
  * The check is Tier-1-only by design (Cloud Control forwards every property
- * to AWS, so there is no write-side silent drop for Tier 2 / Custom). A
+ * to AWS, so there is nothing left unwritten for Tier 2 / Custom). A
  * `Custom::Foo:Bar` token is therefore always a user mistake — it would be
  * added to the allowlist but never consulted at runtime. Reject it at parse
  * time so the user sees the error immediately.

@@ -383,7 +383,7 @@ export async function resolveRef(
  * The {@link REF_RETURNS_SEGMENT_AFTER_PIPE} types store a COMPOUND physical
  * id `<parentId>|<ref>` while CFn's `Ref` returns only the trailing `<ref>`
  * segment. Most are compound because Cloud Control provisions them (either
- * they have no SDK provider, or the #614 silent-drop routing sent an
+ * they have no SDK provider, or the #614 SDK-unwired routing sent an
  * SDK-backed type through CC) and its primaryIdentifier is compound; the rest
  * — `AWS::S3Tables::Namespace` — are compound because their own SDK provider
  * packs the segments. (`AWS::Glue::Table` builds one too, but

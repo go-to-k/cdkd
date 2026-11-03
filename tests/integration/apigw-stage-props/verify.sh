@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# verify.sh — AWS::ApiGateway::Stage silent-drop property backfill integ
+# verify.sh — AWS::ApiGateway::Stage SDK-unwired property backfill integ
 # (issue #609).
 #
-# Live coverage for the formerly silent-drop Stage properties the SDK
+# Live coverage for the formerly SDK-unwired Stage properties the SDK
 # provider now wires, including the #1160 absent-field-removal semantics:
 #
 # Phases:

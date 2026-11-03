@@ -2,7 +2,7 @@
 # verify.sh -- AWS::ElastiCache::CacheCluster SnapshotArns on the SDK route
 # (issue #5635).
 #
-# Pre-fix, SnapshotArns was a silent-drop property of the SDK provider, so a
+# Pre-fix, SnapshotArns was an SDK-unwired property of the SDK provider, so a
 # template carrying it auto-routed the WHOLE cluster through Cloud Control
 # (#614) and recorded `provisionedBy: cc-api` on its state record (sticky).
 # Post-fix, CreateCacheCluster sends it.
@@ -210,7 +210,7 @@ echo "==> Step 3: routing guard -- the CacheCluster is provisionedBy=sdk"
 # (#614). An absent provisionedBy is a legacy SDK record; an absent RECORD is not.
 PROVISIONED_BY=$(jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::ElastiCache::CacheCluster") | .value.provisionedBy // "sdk"] | first // "<no CacheCluster record>"' <<<"${STATE}")
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: CacheCluster routed via '${PROVISIONED_BY}', expected 'sdk' (SnapshotArns is still a silent-drop -> Cloud Control, issue #5635)" >&2
+  echo "FAIL: CacheCluster routed via '${PROVISIONED_BY}', expected 'sdk' (SnapshotArns is still SDK-unwired -> Cloud Control, issue #5635)" >&2
   exit 1
 fi
 echo "    OK: CacheCluster provisionedBy=sdk"

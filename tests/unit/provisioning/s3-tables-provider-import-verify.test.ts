@@ -19,8 +19,8 @@ vi.mock('@aws-sdk/client-s3tables', async () => {
   return { ...actual, S3TablesClient: MockS3TablesClient };
 });
 
-// The silent-drop list a test pins, else the real one: since go-to-k/cdkd#2762
-// no schema-known Table property is a silent drop, so the Cloud-Control arm
+// The SDK-unwired list a test pins, else the real one: since go-to-k/cdkd#2762
+// no schema-known Table property is SDK-unwired, so the Cloud-Control arm
 // is reached only through a forced one (a schema refresh can add one).
 const forcedDrops = vi.hoisted(() => ({ value: undefined as string[] | undefined }));
 vi.mock('../../../src/provisioning/property-coverage.js', async () => {
@@ -29,8 +29,8 @@ vi.mock('../../../src/provisioning/property-coverage.js', async () => {
   );
   return {
     ...actual,
-    findSilentDropProperties: (...args: Parameters<typeof actual.findSilentDropProperties>) =>
-      forcedDrops.value ?? actual.findSilentDropProperties(...args),
+    findSdkUnwiredProperties: (...args: Parameters<typeof actual.findSdkUnwiredProperties>) =>
+      forcedDrops.value ?? actual.findSdkUnwiredProperties(...args),
   };
 });
 
@@ -349,7 +349,7 @@ describe('S3Tables import: verify the composite before adopting (issue #1668)', 
     });
 
     it('keeps the bare TableARN for a Cloud-Control-routed table (#614 routing)', async () => {
-      // A silent-drop property auto-routes this table to Cloud Control, whose
+      // An SDK-unwired property auto-routes this table to Cloud Control, whose
       // Identifier is the bare TableARN. cdkd import records provisionedBy:
       // 'sdk' but only 'cc-api' is STICKY, so the next deploy/destroy
       // re-derives the route — canonicalizing here would hand CC 'arn|ns|name'.

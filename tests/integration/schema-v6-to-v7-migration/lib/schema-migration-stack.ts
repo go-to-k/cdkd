@@ -13,7 +13,7 @@ import { Construct } from 'constructs';
  *   (a) the v7 reader auto-migrates the v6 state silently
  *   (b) the next write persists `version: 7` cleanly
  *   (c) the resource gets `provisionedBy: 'sdk'` recorded explicitly
- *       (legacy default — the SSM Parameter has no silent-drop
+ *       (legacy default — the SSM Parameter has no SDK-unwired
  *        properties, so the auto-route does not fire)
  *
  * SSM Parameter is the cheapest, fastest cdkd-supported resource — one

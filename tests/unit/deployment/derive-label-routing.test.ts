@@ -82,7 +82,7 @@ describe('deriveLabelRouting (#614 §9)', () => {
 
     // The threaded `provisionedBy` reached the registry — important so
     // sticky CC routing is honored on the live-progress label even when
-    // the update payload has no silent-drop property of its own.
+    // the update payload has no SDK-unwired property of its own.
     expect(registry.getProviderFor).toHaveBeenCalledWith(
       expect.objectContaining({ provisionedBy: 'cc-api' })
     );

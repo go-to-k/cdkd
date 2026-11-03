@@ -109,9 +109,9 @@ Routing matrix (`ProviderRegistry.getProviderFor`):
 
 1. `Custom::*`, `AWS::CloudFormation::CustomResource` -> Custom Resource provider, `'sdk'`.
 2. Recorded `'cc-api'` (sticky) -> Cloud Control, UNLESS `wouldReturnToSdkProvider` lets it leave: rules 3-7 decide, flipping to `'sdk'`.
-3. SDK Provider, no silent-drop property after the `--allow-unsupported-properties` filter -> SDK Provider.
-4. SDK Provider, a silent-drop property NOT in the allow set -> Cloud Control.
-5. SDK Provider, every silent-drop property allowed -> SDK Provider (warn).
+3. SDK Provider, no SDK-unwired property after the `--allow-unsupported-properties` filter -> SDK Provider.
+4. SDK Provider, an SDK-unwired property NOT allowed -> Cloud Control.
+5. SDK Provider, every SDK-unwired property allowed -> SDK Provider (warn).
 6. No SDK Provider, Cloud Control supports the type -> Cloud Control.
 7. `--allow-unsupported-types` -> Cloud Control.
 

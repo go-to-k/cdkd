@@ -33,7 +33,7 @@
 #      (CloudFormation resets both, issue #1160), while
 #      HealthCheckGracePeriod stays 90 and TerminationPolicies stays
 #      ['OldestInstance'] (CloudFormation keeps them, issue #5004).
-#   4. Issue #2762 (each property was a silent drop routing the group through
+#   4. Issue #2762 (each property was SDK-unwired, routing the group through
 #      Cloud Control): phases 1-2 have the spread PlacementGroup and
 #      InstanceLifecyclePolicy TerminateHookAbandon=retain live; the removal
 #      phase clears the placement group, keeps the policy (CloudFormation A/B)
@@ -210,7 +210,7 @@ asg_zone_ids() {
     --query "join(',', sort(AutoScalingGroups[0].AvailabilityZoneIds || \`[]\`))" --output text
 }
 # Issue #2762 routing guard: the ASG record (logical id Asg) must stay on the
-# SDK provider. Pre-fix each of the three properties was a silent drop, which
+# SDK provider. Pre-fix each of the three properties was SDK-unwired, which
 # routes the whole group through Cloud Control.
 assert_asg_sdk_route() { # $1 = label
   local state route

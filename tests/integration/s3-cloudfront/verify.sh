@@ -4,7 +4,7 @@
 #
 # Asserts that the two CDK `Tags.of(distribution).add(...)` calls in
 # `lib/s3-cloudfront-stack.ts` reach AWS — the `Tags` top-level CFn
-# property was a silent-drop on `AWS::CloudFront::Distribution` until
+# property was SDK-unwired on `AWS::CloudFront::Distribution` until
 # this PR wired `CreateDistributionWithTagsCommand` + per-update
 # `TagResource` / `UntagResource` diffing into the dedicated SDK
 # Provider. Without the fix, every CDK-deployed CloudFront distro

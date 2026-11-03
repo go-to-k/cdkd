@@ -10,7 +10,7 @@
 #   Phase 3  - RuntimeManagementConfig, --recreate-via-sdk-provider -> 'sdk' (THE ARM)
 #   Phase 4  destroy
 #
-# The CC baseline is seeded with the explicit flag, NOT with the silent-drop
+# The CC baseline is seeded with the explicit flag, NOT with the SDK-unwired
 # auto-route: the auto-route needs a property the SDK provider does not
 # handle, and every property this fixture used for that was later wired into
 # the provider, which silently moved the baseline to 'sdk'. See
@@ -149,7 +149,7 @@ CDKD_INTEG_PHASE=base node "${LOCAL_DIST}" deploy "${STACK}" \
 STATE_0=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 PROVISIONED_0=$(lambda_layer "${STATE_0}")
 if [ "${PROVISIONED_0}" != "sdk" ]; then
-  echo "FAIL: fresh Lambda has provisionedBy='${PROVISIONED_0}', expected 'sdk'. Likely cause: a property of the base template became an SDK-provider silent drop (a schema refresh added one, or handledProperties lost an entry), so the fresh deploy auto-routed to Cloud Control and the seed below would be refused as already-cc-api. Check the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property." >&2
+  echo "FAIL: fresh Lambda has provisionedBy='${PROVISIONED_0}', expected 'sdk'. Likely cause: a property of the base template became an SDK-unwired property (a schema refresh added one, or handledProperties lost an entry), so the fresh deploy auto-routed to Cloud Control and the seed below would be refused as already-cc-api. Check the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property." >&2
   echo "${STATE_0}" | jq .
   exit 1
 fi

@@ -19,7 +19,7 @@ type DebugLogger = { debug(message: string): void };
  * Shared EC2 instance termination-protection helpers, used by BOTH the SDK
  * `EC2Provider.deleteInstance` path and the Cloud Control `delete` path (an
  * `AWS::EC2::Instance` routes through Cloud Control whenever its template trips
- * the #614 silent-drop routing, so the protection flip-off must live on both
+ * the #614 SDK-unwired routing, so the protection flip-off must live on both
  * delete paths).
  *
  * The core problem: `destroy --remove-protection` flips `DisableApiTermination`

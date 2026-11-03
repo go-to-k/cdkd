@@ -761,9 +761,9 @@ describe('ECS Service config properties (#609)', () => {
   });
 
   describe('declarations', () => {
-    it('reports no silent-drop property left for the type', () => {
+    it('reports no SDK-unwired property left for the type', () => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
-      expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
+      expect([...(coverage?.sdkUnwired.keys() ?? [])]).toEqual([]);
       for (const property of [
         'GatewayConnectors',
         'AvailabilityZoneRebalancing',

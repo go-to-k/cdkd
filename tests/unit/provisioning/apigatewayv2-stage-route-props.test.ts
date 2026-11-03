@@ -592,9 +592,9 @@ describe('ApiGatewayV2 Stage / Route config properties (#609)', () => {
           'RouteResponseSelectionExpression',
         ],
       ],
-    ])('reports no silent-drop property left for %s', (type, properties) => {
+    ])('reports no SDK-unwired property left for %s', (type, properties) => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(type);
-      expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
+      expect([...(coverage?.sdkUnwired.keys() ?? [])]).toEqual([]);
       for (const property of properties) {
         expect(coverage?.handled.has(property), property).toBe(true);
       }

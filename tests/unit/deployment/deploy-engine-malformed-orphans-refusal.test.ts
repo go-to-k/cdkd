@@ -126,7 +126,7 @@ describe('DeployEngine refuses an unreadable orphans container (go-to-k/cdkd#337
       getRegisteredTypes: vi.fn().mockReturnValue([]),
       validateResourceTypes: vi.fn(),
       validateResourceProperties: vi.fn(),
-      reportSilentDropDecisions: vi.fn(),
+      reportSdkUnwiredDecisions: vi.fn(),
       getEffectivePropertiesFn: vi.fn().mockReturnValue(undefined),
     };
   }

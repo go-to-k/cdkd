@@ -16,7 +16,7 @@ Such a key used to stay on the SDK route, so a newly published property never
 reached AWS until the daily schema-refresh PR merged. The deploy still reported
 success, with a warn as the only signal.
 
-It now routes the resource through Cloud Control, the way a known silent drop
+It now routes the resource through Cloud Control, the way a known SDK-unwired property
 does. This page records why, what stays excluded, and what must not change.
 
 ## Decision
@@ -45,7 +45,7 @@ Each exclusion is derivable offline, so the predicate stays a table lookup.
 | --- | --- |
 | A read-only key | CloudFormation **ignores** one: `AWS::SNS::Topic` with `TopicArn` set reaches `CREATE_COMPLETE`. Cloud Control does not refuse one either, but trusts it: `CreateResource` for `AWS::SNS::Topic` with a bogus `TopicArn` succeeded, created the real topic under its generated ARN, and reported the BOGUS value as the `Identifier`. cdkd would record that as the physical id and later update or delete the wrong ARN, orphaning the real topic. The generator emits the schema's `readOnlyProperties` for this. |
 | `Ref` / `Fn::*` keys | Intrinsic keys, not property names. |
-| A key in `--prefer-sdk-route` | The user chose the drop. |
+| A key in `--prefer-sdk-route` | The user chose to leave it unwritten. |
 | A type whose SDK provider declares `disableCcApiFallback`, or `NON_PROVISIONABLE` | There is no Cloud Control route. Routing would make `getProviderFor` refuse a template it deploys today. |
 | A `'cc-broken'` sticky-CC exemption (`AWS::Scheduler::Schedule`) | Its Cloud Control handler cannot manage the type: a schedule in a custom group fails UPDATE with NotFound, so routing a real new property would break a deploy that works today. |
 | A key the state record holds unchanged (compared as JSON, so a prototype or key-order difference is not a change; a recorded `{{resolve:...}}` secret cannot be compared and counts as unchanged) | Zero regression for existing deployments. Without it, an unrelated update would flip an SDK resource to Cloud Control, failing on a typo or on a type whose SDK physical id is not Cloud Control's identifier. Changing or adding the key is what routes. |
@@ -62,7 +62,7 @@ deploy).
 
 ## Invariants
 
-- **One routing predicate.** `findActionableSilentDrops` returns schema-known
+- **One routing predicate.** `findActionableSdkUnwired` returns schema-known
   drops plus `findRoutableUnrecognizedProperties`. `getProviderFor`, the plan
   annotation, `cdkd diff`, the recreate validators and the pre-flight log all
   read it, so none can disagree with the route.
@@ -88,7 +88,7 @@ deploy).
 - **The narrowings stay fixture-only.** Removing an unrecognized key from an SDK
   record would make it read as an addition next deploy. Its create-only status
   is unknown offline, so that could classify as a replacement, and it would also
-  erase the baseline above. `findAcceptedSilentDrops` returns `[]` when an
+  erase the baseline above. `findAcceptedSdkUnwired` returns `[]` when an
   unrecognized key routes, which keeps it the complement of the routing
   predicate.
 
@@ -97,4 +97,4 @@ deploy).
 A fresh resource carrying a misspelled key, or a new `addPropertyOverride` key
 AWS does not accept, now fails at Cloud Control with `Unsupported property`
 instead of deploying with the key silently dropped. This is CloudFormation's
-behavior. `--prefer-sdk-route <Type>:<Prop>` restores the drop.
+behavior. `--prefer-sdk-route <Type>:<Prop>` leaves it unwritten again.

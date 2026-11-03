@@ -21,14 +21,14 @@ import * as iam from 'aws-cdk-lib/aws-iam';
  * per the "do not proliferate per-property integ fixtures" directive):
  *
  * A SECOND, standalone L1 `rds.CfnDBCluster` ("SecurityCluster") is added
- * alongside the L2 cluster above to exercise the #609 silent-drop backfill
+ * alongside the L2 cluster above to exercise the #609 SDK-unwired backfill
  * of the DBCluster security props:
  *   ManageMasterUserPassword / MasterUserSecret / EnableIAMDatabaseAuthentication
  *
  * Why a separate L1 cluster instead of folding onto the existing L2 one:
  * the L2 `rds.DatabaseCluster` emits CDK-default top-level props (some still
- * in the #609 silent-drop list) and per cdkd's #614 routing rule even one
- * silent-dropped prop flips the whole resource off the SDK provider onto
+ * in the #609 SDK-unwired list) and per cdkd's #614 routing rule even one
+ * SDK-unwired prop flips the whole resource off the SDK provider onto
  * Cloud Control — which would defeat the `provisionedBy=sdk` routing guard
  * the security verify relies on. The L1 lets us assert exactly which CFn
  * props reach AWS and keep `provisionedBy=sdk`. It is an Aurora Serverless
@@ -233,7 +233,7 @@ export class RdsAuroraStack extends cdk.Stack {
     );
     // go-to-k/cdkd#2762: phase 1 declares DBClusterParameterGroupName,
     // PreferredBackupWindow, PreferredMaintenanceWindow, CopyTagsToSnapshot and
-    // StorageType, each a non-default. Before #2762 each was a silent drop that
+    // StorageType, each a non-default. Before #2762 each was an SDK-unwired property that
     // routed the SecurityCluster to Cloud Control, which the provisionedBy=sdk
     // guard in verify.sh catches. Phase 2 CHANGES PreferredMaintenanceWindow
     // and DROPS the other four; CloudFormation keeps each (measured, #2762), so

@@ -14,7 +14,7 @@ Application Load Balancer deployment example for cdkd.
   sets a custom `HealthCheckPort: 8080`; the `CDKD_TEST_REMOVAL=true` redeploy
   drops it and asserts the live TG resets to the CFn-parity default
   `traffic-port` — issue #1160 elbv2 batch). Also carries the #609 LB+TG
-  silent-drop batch coverage: an explicit createOnly `IpAddressType: ipv4`, a
+  SDK-unwired batch coverage: an explicit createOnly `IpAddressType: ipv4`, a
   `TargetGroupAttributes` list (`deregistration_delay` 45 → 60 on the
   `CDKD_TEST_UPDATE=true` redeploy, kept at 60 when the removal phase drops
   it, as CloudFormation keeps a removed key), and registered IP `Targets`

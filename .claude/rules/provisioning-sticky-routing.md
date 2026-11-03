@@ -28,7 +28,7 @@ cannot address it. `sdk-coverage` escapes CONDITIONALLY, via
 2. **No properties, no flip** — keeping destroy, rollback deletes and
    observed re-derivation conservative with no special case; an
    absent RECORDED bag is UNKNOWN, not empty.
-3. **BOTH bags free of actionable silent drops.** The desired bag alone fails
+3. **BOTH bags free of actionable unwired keys.** The desired bag alone fails
    the REMOVAL deploy: a property applied under Cloud Control then dropped from
    the template leaves a clean desired bag, so a desired-only condition sends
    that deploy to the SDK provider, which cannot unset it. Cloud Control clears

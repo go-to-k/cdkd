@@ -7,7 +7,7 @@ import {
   findUnwrittenCreateOnlyDrops,
   getPropertyCoverage,
   unwrittenCreateOnlyReplacement,
-  withoutUnwrittenSilentDropProperties,
+  withoutUnwrittenSdkUnwiredProperties,
 } from '../../../src/provisioning/property-coverage.js';
 import type { ResourceChange, ResourceState } from '../../../src/types/state.js';
 
@@ -37,7 +37,7 @@ it('PREMISE: StorageClassConfiguration is HANDLED now, and the type has no creat
   const cov = getPropertyCoverage(TYPE);
   if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
   expect(cov.handled.has(KEY)).toBe(true);
-  expect(cov.silentDrop.has(KEY)).toBe(false);
+  expect(cov.sdkUnwired.has(KEY)).toBe(false);
   // The early returns this fix removed keyed on this set being empty.
   expect(cov.createOnlyDrops.size).toBe(0);
 });
@@ -90,16 +90,16 @@ describe('findHandledUnwrittenCreateOnly', () => {
   });
 });
 
-describe('the comparison narrowing (withoutUnwrittenSilentDropProperties)', () => {
+describe('the comparison narrowing (withoutUnwrittenSdkUnwiredProperties)', () => {
   it('removes the key from the record side, so an unchanged template reads it as an addition', () => {
-    expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE, EVIDENCE)).toEqual(
+    expect(withoutUnwrittenSdkUnwiredProperties(TYPE, RECORD, RECORD, NONE, EVIDENCE)).toEqual(
       WRITTEN
     );
   });
 
   it('removes it under an allow set naming it too: no flag can accept a handled key', () => {
     const allowed = new Set([`${TYPE}:${KEY}`]);
-    expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, allowed, EVIDENCE)).toEqual(
+    expect(withoutUnwrittenSdkUnwiredProperties(TYPE, RECORD, RECORD, allowed, EVIDENCE)).toEqual(
       WRITTEN
     );
   });
@@ -110,20 +110,20 @@ describe('the comparison narrowing (withoutUnwrittenSilentDropProperties)', () =
     // refusal does not cover: a replacement with no opt-in.
     const record = { ...WRITTEN, [KEY]: { StorageClass: 5 } };
     const desired = { ...WRITTEN, [KEY]: { StorageClass: '5' } };
-    expect(withoutUnwrittenSilentDropProperties(TYPE, record, desired, NONE, EVIDENCE)).toBe(
+    expect(withoutUnwrittenSdkUnwiredProperties(TYPE, record, desired, NONE, EVIDENCE)).toBe(
       record
     );
     expect(findUnwrittenCreateOnlyDrops(TYPE, record, desired, NONE, EVIDENCE)).toEqual([]);
   });
 
   it('removes a key the template no longer declares: AWS never held it', () => {
-    expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, WRITTEN, NONE, EVIDENCE)).toEqual(
+    expect(withoutUnwrittenSdkUnwiredProperties(TYPE, RECORD, WRITTEN, NONE, EVIDENCE)).toEqual(
       WRITTEN
     );
   });
 
   it('keeps the record unchanged (by reference) without evidence', () => {
-    expect(withoutUnwrittenSilentDropProperties(TYPE, RECORD, RECORD, NONE, NONE)).toBe(RECORD);
+    expect(withoutUnwrittenSdkUnwiredProperties(TYPE, RECORD, RECORD, NONE, NONE)).toBe(RECORD);
   });
 });
 

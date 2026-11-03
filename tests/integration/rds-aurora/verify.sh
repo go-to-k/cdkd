@@ -4,12 +4,12 @@
 # The rds-aurora fixture deploys an Aurora Serverless v2 L2 cluster + writer
 # instance + DBProxy / DBProxyEndpoint family AND a standalone L1
 # `rds.CfnDBCluster` ("SecurityCluster") added for the #609 DBCluster
-# silent-drop security backfill (this fixture absorbed the DBCluster half of
+# SDK-unwired security backfill (this fixture absorbed the DBCluster half of
 # the former standalone `rds-security-backfill` fixture per the "do not
 # proliferate per-property integ fixtures" directive).
 #
 # This script asserts that the SecurityCluster's #609 security props each
-# reach AWS after `cdkd deploy` — each was a silent-drop before #609:
+# reach AWS after `cdkd deploy` — each was SDK-unwired before #609:
 #   ManageMasterUserPassword / MasterUserSecret / MonitoringRoleArn /
 #   MonitoringInterval / EnableIAMDatabaseAuthentication
 #   — asserted via DescribeDBClusters (MonitoringRoleArn deploy also proves the #794 IAM-race retry).
@@ -77,11 +77,11 @@
 # the maintenance window and drops the other four, which must be kept.
 #
 # #2762 (DBInstance PromotionTier): the L2 writer instance declares
-# PromotionTier 0, its only key that was a silent drop; phase 1 asserts the
+# PromotionTier 0, its only key that was SDK-unwired; phase 1 asserts the
 # writer is provisionedBy=sdk (what a pre-fix cdkd fails) with tier 0 live.
 #
 # #2762 (DBProxyEndpoint EndpointNetworkType): the reader endpoint declares
-# EndpointNetworkType=IPV4. Before #2762 the key was a silent drop, which routed
+# EndpointNetworkType=IPV4. Before #2762 the key was SDK-unwired, which routed
 # the endpoint to Cloud Control; phase 1 asserts provisionedBy=sdk, the recorded
 # value, and the live value from DescribeDBProxyEndpoints. Only the routing
 # check discriminates: IPV4 is also AWS's default, so the live value cannot
@@ -90,7 +90,7 @@
 #
 # #2762 (DBProxy DefaultAuthScheme / EndpointNetworkType /
 # TargetConnectionNetworkType): the proxy declares NONE / IPV4 / IPV4. Before
-# #2762 all three were silent drops, which routed the proxy to Cloud Control;
+# #2762 all three were SDK-unwired, which routed the proxy to Cloud Control;
 # phase 1 asserts provisionedBy=sdk, the recorded values and the live values
 # from DescribeDBProxies. As for the endpoint, only the routing check
 # discriminates (the values are AWS's defaults here); the unit and sdk-wire
@@ -496,13 +496,13 @@ if [ "${AURORA_DELETION_POLICY}" != "Delete" ]; then
 fi
 
 # go-to-k/cdkd#2762 (DBInstance PromotionTier): the L2 writer instance
-# declares PromotionTier 0 (RDS's default is 1), its only key that was a
-# silent drop, which routed the writer to Cloud Control. It must now be
+# declares PromotionTier 0 (RDS's default is 1), its only key that was
+# SDK-unwired, which routed the writer to Cloud Control. It must now be
 # created on the SDK route, with the tier live. A recorded provisionedBy
 # absent from the record is a legacy SDK one; an absent RECORD is not.
 WRITER_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^AuroraClusterWriter"))) | .value.provisionedBy // "sdk"] | first // "<no writer record>"')
 if [ "${WRITER_PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: #2762: the L2 writer instance is routed via '${WRITER_PROVISIONED_BY}', expected 'sdk' (PromotionTier still a silent drop)" >&2
+  echo "FAIL: #2762: the L2 writer instance is routed via '${WRITER_PROVISIONED_BY}', expected 'sdk' (PromotionTier still SDK-unwired)" >&2
   exit 1
 fi
 WRITER_ID=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance" and (.key | test("^AuroraClusterWriter"))) | .value.physicalId] | first // ""')
@@ -519,15 +519,15 @@ fi
 echo "    OK: L2 writer ${WRITER_ID} is provisionedBy=sdk with PromotionTier 0 (#2762)"
 
 # --- Routing guard: the SecurityCluster must be SDK-provisioned -------
-# If any set prop were still a silent-drop, #614 routing would flip the
+# If any set prop were still SDK-unwired, #614 routing would flip the
 # resource to the Cloud Control path (provisionedBy=cc-api) and the
 # SDK-provider assertions below would prove nothing.
 CLUSTER_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.provisionedBy] | first // "sdk"')
 if [ "${CLUSTER_PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: SecurityCluster routed via '${CLUSTER_PROVISIONED_BY}', expected 'sdk' (a set prop is still a silent-drop → CC-API routing)" >&2
+  echo "FAIL: SecurityCluster routed via '${CLUSTER_PROVISIONED_BY}', expected 'sdk' (a set prop is still SDK-unwired → CC-API routing)" >&2
   exit 1
 fi
-echo "    OK: SecurityCluster provisionedBy=sdk (no silent-drop CC-API flip)"
+echo "    OK: SecurityCluster provisionedBy=sdk (no SDK-unwired CC-API flip)"
 
 # Issue #4030 premise: the L1 SecurityCluster declares NO DeletionPolicy, so
 # its destroy applies CloudFormation's default for a DBCluster, Snapshot.

@@ -30,7 +30,7 @@ is caught end-to-end against real AWS.
 ### Both provisioning paths
 
 cdkd routes resources either through a dedicated SDK provider or, for types
-with no SDK provider (or that hit the #614 silent-drop auto-route), through
+with no SDK provider (or that hit the #614 SDK-unwired auto-route), through
 the Cloud Control API, which forwards the full CFn property map. Tag
 handling differs between the two paths, so this fixture exercises both:
 

@@ -1033,7 +1033,7 @@ export class LogsLogGroupProvider implements ResourceProvider {
     // share a reference — the import no-op above is exactly that shape.
     // `JSON.stringify` alone is not INJECTIVE: `Infinity`, `-Infinity` and
     // `NaN` all render `'null'`, so an `Infinity` over a recorded `null` would
-    // compare UNCHANGED and take the refusal-skipped silent-drop route one
+    // compare UNCHANGED and take the refusal-skipped SDK-unwired route one
     // layer down from the bullet above. So: identical by reference, OR
     // structurally equal through a rendering that is FAITHFUL.
     //

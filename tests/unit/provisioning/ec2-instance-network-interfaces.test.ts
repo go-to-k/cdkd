@@ -4,7 +4,7 @@ import { RunInstancesCommand } from '@aws-sdk/client-ec2';
 // Issue #1281: setting `associatePublicIpAddress` (either value) makes the CDK
 // L2 `ec2.Instance` DROP SubnetId / SecurityGroupIds and emit
 // `NetworkInterfaces` instead -- which was in neither `handledProperties` nor
-// `unhandledByDesign`, so the #614 silent-drop rule routed every public-subnet
+// `unhandledByDesign`, so the #614 SDK-unwired rule routed every public-subnet
 // instance authored the CDK-docs way onto the Cloud Control path. These cases
 // pin the RunInstances mapping, the routing declaration, the replacement
 // classification, and the drift-unknown declaration.
@@ -180,10 +180,10 @@ describe('AWS::EC2::Instance NetworkInterfaces mapping (issue #1281)', () => {
     expect(handled?.has('NetworkInterfaces')).toBe(true);
   });
 
-  it('leaves no actionable silent drop for the associatePublicIpAddress-shaped L2 set', async () => {
+  it('leaves no actionable SDK-unwired property for the associatePublicIpAddress-shaped L2 set', async () => {
     // The property set CDK's L2 emits WITH associatePublicIpAddress (from the
     // #1281 issue's synth capture) -- the routing layer's actual input.
-    const { findActionableSilentDrops } = await import(
+    const { findActionableSdkUnwired } = await import(
       '../../../src/provisioning/property-coverage.js'
     );
     const l2Emitted = {
@@ -199,7 +199,7 @@ describe('AWS::EC2::Instance NetworkInterfaces mapping (issue #1281)', () => {
       UserData: 'IyEvYmluL2Jhc2g=',
     };
 
-    expect(findActionableSilentDrops('AWS::EC2::Instance', l2Emitted, new Set())).toEqual([]);
+    expect(findActionableSdkUnwired('AWS::EC2::Instance', l2Emitted, new Set())).toEqual([]);
   });
 
   it('classifies a NetworkInterfaces change as replacement (createOnly; update has no ENI path)', async () => {

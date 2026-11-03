@@ -139,7 +139,7 @@ describe('State schema v7 — provisionedBy for Cloud Control auto-routing', () 
 
   it('a heterogeneous v7 state mixes sdk- and cc-managed resources in one stack', () => {
     // Per #614 §2 — the state file becomes heterogeneous; siblings stay
-    // SDK while a silent-drop-property-using resource flips to CC.
+    // SDK while an SDK-unwired-property-using resource flips to CC.
     const heterogeneous: StackState = {
       version: 7,
       stackName: 'Mixed',

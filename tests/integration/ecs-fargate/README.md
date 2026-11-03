@@ -17,7 +17,7 @@ This stack includes the following resources:
 ## Route note (#609)
 
 The Service sets `ServiceConnectConfiguration` + `VolumeConfigurations`.
-Before the #609 Service-property backfill both were cdkd silent-drops, which
+Before the #609 Service-property backfill both were SDK-unwired, which
 flipped the Service to the #614 Cloud Control fallback route; since the
 backfill the Service is **SDK-routed** and `ECSProvider.createService()`
 delivers both blobs itself. `verify.sh` pins `provisionedBy=sdk` and asserts

@@ -5,7 +5,7 @@
  * flipped:
  *
  *   - Baseline state has `provisionedBy: 'cc-api'` (the resource landed
- *     on CC because cdkd auto-routed a silent-drop property).
+ *     on CC because cdkd auto-routed an SDK-unwired property).
  *   - The deploy engine receives the resource via
  *     `recreateTargets.viaSdkProvider` (NOT `.viaCcApi`).
  *   - The destroy uses the recorded `provisionedBy: 'cc-api'` provider.

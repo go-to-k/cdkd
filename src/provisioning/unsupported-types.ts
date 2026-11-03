@@ -26,7 +26,7 @@ export function isNonProvisionable(resourceType: string): boolean {
  *
  * The generated {@link NON_PROVISIONABLE_TYPES} cannot carry them: the audit
  * behind it excludes every type with a registered provider. Without this set,
- * a route-driving key on one of these types — a silent drop (#614) or a key the
+ * a route-driving key on one of these types — an SDK-unwired property (#614) or a key the
  * schema snapshot does not know (#3713) — would be auto-routed to Cloud Control
  * and fail mid-deploy with `UnsupportedActionException`. The set is per TYPE,
  * so a provider class serving provisionable types too needs nothing else.

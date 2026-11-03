@@ -1213,7 +1213,7 @@ take away:
 - use a type with NO SDK provider at all, such as `AWS::Events::Archive`
   (`sdk-ccapi-crossref`).
 
-Only a fixture whose SUBJECT is the auto-route itself may key on a silent-drop
+Only a fixture whose SUBJECT is the auto-route itself may key on an SDK-unwired
 property, and it then owes `cc-api-fallback`'s step-0 guard: read the generated
 coverage table, and fail with a line naming the dead premise before any deploy
 (issue [#2473](https://github.com/go-to-k/cdkd/issues/2473)). Either way, make

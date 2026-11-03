@@ -12,9 +12,9 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  *
  *   - `rds-aurora` exercises an Aurora Serverless v2 CLUSTER (+ writer
  *     instance + DBProxy family) and a standalone L1 `CfnDBCluster`
- *     asserting the #609 DBCluster security-property silent-drop closure.
+ *     asserting the #609 DBCluster security-property SDK-unwired backfill.
  *   - `rds-dbinstance-backfill` exercises a standalone L1 `CfnDBInstance`
- *     asserting the #609 DBInstance security-property silent-drop closure
+ *     asserting the #609 DBInstance security-property SDK-unwired backfill
  *     and the `provisionedBy=sdk` routing guard.
  *
  * Neither of those:
@@ -50,9 +50,9 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
  * Implementation note (L2 vs L1): unlike the two #609 fixtures, this one
  * INTENTIONALLY uses the L2 `rds.DatabaseInstance` because the realistic
  * "stand up a DB" shape is the whole point. The L2 emits CDK-default
- * top-level props that may trip cdkd's #614 silent-drop routing and flip
+ * top-level props that may trip cdkd's #614 SDK-unwired routing and flip
  * the resource onto the Cloud Control path — but that is FINE here: this
- * fixture does NOT assert silent-drop closure or `provisionedBy=sdk`. The
+ * fixture does NOT assert SDK-unwired backfill or `provisionedBy=sdk`. The
  * computed `Endpoint.Address` attribute is resolved on BOTH the SDK
  * provider path (rds-provider.ts) and the Cloud Control path, so the
  * GetAtt-of-computed-endpoint assertion holds regardless of which route

@@ -1322,7 +1322,7 @@ describe('ApiGatewayProvider', () => {
       });
     });
 
-    describe('silent-drop property backfill (issue #609)', () => {
+    describe('SDK-unwired property backfill (issue #609)', () => {
       const base = { RestApiId: 'api-id', StageName: 'prod', DeploymentId: 'deploy-123' };
 
       it('creates a stage with all six properties: four ride CreateStage, AccessLogSetting + ClientCertificateId ride ONE merged post-create UpdateStage', async () => {

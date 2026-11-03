@@ -67,7 +67,7 @@ import {
   packCompositeId,
   type CompositeIdFormat,
 } from '../composite-id.js';
-import { findSilentDropProperties } from '../property-coverage.js';
+import { findSdkUnwiredProperties } from '../property-coverage.js';
 import {
   planTagDiff,
   tagPlanWarning,
@@ -2431,7 +2431,7 @@ export class S3TablesProvider implements ResourceProvider {
       return null;
     }
 
-    // ROUTE-AWARE physicalId. A table whose template carries a silent-drop
+    // ROUTE-AWARE physicalId. A table whose template carries an SDK-unwired
     // property (none today: the last five were wired by go-to-k/cdkd#2762, but
     // a schema refresh can add one) is auto-routed to Cloud
     // Control by the #614 rule, and CC's Identifier for this type is the bare
@@ -2446,7 +2446,7 @@ export class S3TablesProvider implements ResourceProvider {
     // routes on a deploy only when it differs from the record (issue #3713),
     // and the record this import writes carries the template's bag, so the
     // next deploy keeps such a table on the SDK route.
-    const ccRouted = findSilentDropProperties('AWS::S3Tables::Table', input.properties).length > 0;
+    const ccRouted = findSdkUnwiredProperties('AWS::S3Tables::Table', input.properties).length > 0;
     if (ccRouted) {
       this.logger.debug(
         `S3 Tables Table ${input.logicalId}: template carries a Cloud-Control-routing property, ` +

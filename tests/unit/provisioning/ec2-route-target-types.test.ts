@@ -38,7 +38,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 
 /**
  * AWS::EC2::Route extra-target-type backfill (issue #609): the six formerly
- * silent-drop properties — CarrierGatewayId, CoreNetworkArn,
+ * SDK-unwired properties — CarrierGatewayId, CoreNetworkArn,
  * DestinationPrefixListId, LocalGatewayId, TransitGatewayId, VpcEndpointId —
  * must reach the CreateRoute wire call, round-trip through the
  * `<routeTableId>|<destination>` physicalId (prefix-list destinations

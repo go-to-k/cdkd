@@ -23,7 +23,7 @@ it('PREMISE: AvailabilityZoneId is a create-only drop, EnableDns64 a plain one',
   if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
   expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
   expect(cov.createOnlyDrops.has(PLAIN)).toBe(false);
-  expect(cov.silentDrop.has(PLAIN)).toBe(true);
+  expect(cov.sdkUnwired.has(PLAIN)).toBe(true);
 });
 
 describe('acceptedCreateOnlyDropsField (the writer)', () => {
@@ -141,10 +141,10 @@ describe('unwrittenCreateOnlyReplacement (the shared refusal predicate)', () => 
  * `cdkd diff`'s label (`findUnwrittenCreateOnlyRefusals`) omits the engine's
  * `lostWithParent` exclusion because the two populations are disjoint: a
  * child the engine re-creates with its parent is one of these types, and none
- * of them has a create-only silent drop, so none can carry evidence. A type
+ * of them has a create-only SDK-unwired property, so none can carry evidence. A type
  * gaining one here must add the exclusion to the diff label.
  */
-it('no child-of-a-recreated-parent type has a create-only silent drop', () => {
+it('no child-of-a-recreated-parent type has a create-only SDK-unwired property', () => {
   const types = childStoredInParentTypes();
   expect(types.length).toBeGreaterThan(5);
   expect(

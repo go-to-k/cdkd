@@ -239,7 +239,7 @@ describe('SDK Provider property coverage', () => {
   // three declaration sets below, `partitionSettledRemovals` only for a
   // property in the generated `handled` map. A name in none of them is a
   // rationale asserting nothing: it reads as protection and is inert, and if
-  // the declaration was MEANT to exist it is masking a silent drop. Measured
+  // the declaration was MEANT to exist it is masking an SDK-unwired property. Measured
   // 2026-09-12: 13 entries, 12 declared, 1 not (`AWS::EC2::NetworkAclEntry.
   // IcmpTypeCode`, left over from #408 after #623 renamed the declaration to
   // `Icmp`; deleted with this fence).

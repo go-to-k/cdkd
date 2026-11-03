@@ -2,7 +2,7 @@
 
 Regression integ for issue #963: a REST API whose Stage carries
 a property the SDK provider does not wire routes the Stage through Cloud
-Control (#614 silent-drop routing), which stores the compound
+Control (#614 SDK-unwired routing), which stores the compound
 `<restApiId>|<stageName>` physical id. The trigger is `AccessLogSetting`
 (via `deployOptions.accessLogDestination`); the original #963 trigger was
 `MethodSettings`, which issue #966 wired into the SDK provider, so the

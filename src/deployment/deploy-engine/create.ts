@@ -222,7 +222,7 @@ export async function provisionCreate(
   engine.attemptedResolvedProps.set(logicalId, resolvedProps);
 
   // #614 routing: consult the registry with the resolved properties.
-  // If the SDK provider would silent-drop a top-level key (and the
+  // If the SDK provider would leave a top-level key unwritten (and the
   // user has not overridden it via `--allow-unsupported-properties`),
   // we auto-route via Cloud Control API. The chosen `provisionedBy`
   // is persisted on state so the next update / delete uses the

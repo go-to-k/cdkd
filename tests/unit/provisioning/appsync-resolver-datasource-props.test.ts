@@ -681,13 +681,13 @@ describe('AppSync Resolver + DataSource properties (#609)', () => {
   });
 
   describe('generated property coverage agreement', () => {
-    it('declares zero silent-drop properties for Resolver + DataSource (types CLOSED)', () => {
+    it('declares zero SDK-unwired properties for Resolver + DataSource (types CLOSED)', () => {
       const resolver = PROPERTY_COVERAGE_BY_TYPE.get(RESOLVER_TYPE);
       const dataSource = PROPERTY_COVERAGE_BY_TYPE.get(DATASOURCE_TYPE);
       expect(resolver).toBeDefined();
       expect(dataSource).toBeDefined();
-      expect([...(resolver?.silentDrop.keys() ?? ['<missing>'])]).toEqual([]);
-      expect([...(dataSource?.silentDrop.keys() ?? ['<missing>'])]).toEqual([]);
+      expect([...(resolver?.sdkUnwired.keys() ?? ['<missing>'])]).toEqual([]);
+      expect([...(dataSource?.sdkUnwired.keys() ?? ['<missing>'])]).toEqual([]);
 
       for (const prop of [
         'CachingConfig',

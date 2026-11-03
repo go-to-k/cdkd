@@ -869,17 +869,17 @@ export async function doDeployWithPrefetch(
     engine.logger.debug(`All resource types validated`);
 
     // 3.5. Report top-level resource property routing decisions
-    // (#614). For each resource using a silent-drop top-level property,
+    // (#614). For each resource using an SDK-unwired top-level property,
     // info-log that cdkd is auto-routing it via Cloud Control (which
     // forwards the full property map). For each resource explicitly
     // opted out via `--allow-unsupported-properties Type:Prop`, warn
-    // that the silent drop has been accepted. Neither of those throws —
+    // that the property is left unwritten. Neither of those throws —
     // the legacy PR #608 fail-fast was reversed by #614 to a default-on
     // auto-route — but this step CAN still refuse, and the comment said
-    // it could not until issue #3028. A drop on a type the Cloud Control
+    // it could not until issue #3028. An SDK-unwired key on a type the Cloud Control
     // route cannot serve (`hasNoCloudControlHandlers`, or a provider declaring
     // `disableCcApiFallback`) has nowhere to be auto-routed, so
-    // `ProviderRegistry.reportSilentDropDecisions` throws rather than
+    // `ProviderRegistry.reportSdkUnwiredDecisions` throws rather than
     // letting the route fail later with an opaque error. That refusal
     // lands HERE — ahead of the DAG at step 4 and the diff at step 5 —
     // so the deploy ends having provisioned nothing. Skips
@@ -994,7 +994,7 @@ export async function doDeployWithPrefetch(
       // always has the method — `providerRegistry` is typed as the concrete
       // class, so the `undefined` branch is unreachable in production, and
       // the method's existence is pinned directly on `ProviderRegistry` by
-      // `provider-registry-report-silent-drops.test.ts`, since a mocked
+      // `provider-registry-report-sdk-unwired.test.ts`, since a mocked
       // registry cannot witness the real one losing it.
       engine.providerRegistry.getAllowedUnsupportedProperties?.(),
       // go-to-k/cdkd#3717: a nested child's parameters carrying a `NoEcho`

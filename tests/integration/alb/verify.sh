@@ -5,7 +5,7 @@
 # Listener's `routing.http.response.server.enabled` attribute the fixture sets
 # via the L1 escape hatch actually reached AWS (cdkd applies it through a
 # post-create ModifyListenerAttributes call), asserts the #609 LB+TG
-# silent-drop batch baseline (TG IpAddressType, TargetGroupAttributes,
+# SDK-unwired batch baseline (TG IpAddressType, TargetGroupAttributes,
 # Targets registration), re-deploys with CDKD_TEST_UPDATE=true (attribute
 # diff + target swap via RegisterTargets+DeregisterTargets), re-deploys with
 # CDKD_TEST_REMOVAL=true (issue #1160) and asserts what a CloudFormation

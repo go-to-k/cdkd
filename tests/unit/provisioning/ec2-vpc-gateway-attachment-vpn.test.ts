@@ -78,12 +78,12 @@ describe('EC2Provider VPCGatewayAttachment with a VPN gateway (issue #2762)', ()
   });
 
   describe('declarations', () => {
-    // VpnGatewayId only, not the whole silent-drop list: a property a later
+    // VpnGatewayId only, not the whole SDK-unwired list: a property a later
     // schema refresh adds to the type must not fail this suite.
-    it('handles VpnGatewayId and no longer reports it as a silent drop', () => {
+    it('handles VpnGatewayId and no longer reports it as SDK-unwired', () => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
       expect(coverage).toBeDefined();
-      expect(coverage?.silentDrop.has('VpnGatewayId')).toBe(false);
+      expect(coverage?.sdkUnwired.has('VpnGatewayId')).toBe(false);
       expect(coverage?.handled.has('VpnGatewayId')).toBe(true);
       expect(new EC2Provider().handledProperties.get(TYPE)?.has('VpnGatewayId')).toBe(true);
     });

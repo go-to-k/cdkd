@@ -181,7 +181,7 @@ assert_layer() { # usage: assert_layer <label> <resourceType> <nameProperty> <aw
   echo "    OK: $1 provisionedBy == '$5'"
 }
 
-SDK_DIAG="This resource sets no property outside its SDK Provider's coverage, so it should stay on the SDK layer. Likely cause: a schema refresh made one of its template properties an SDK-provider silent drop, so the fresh deploy auto-routed it to Cloud Control -- look in the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property, then wire the property (src/provisioning/providers/) or drop it from lib/sdk-ccapi-crossref-stack.ts."
+SDK_DIAG="This resource sets no property outside its SDK Provider's coverage, so it should stay on the SDK layer. Likely cause: a schema refresh made one of its template properties an SDK-unwired property, so the fresh deploy auto-routed it to Cloud Control -- look in the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property, then wire the property (src/provisioning/providers/) or drop it from lib/sdk-ccapi-crossref-stack.ts."
 
 assert_sdk_side() {
   assert_layer "IAM Role" "AWS::IAM::Role" "RoleName" "${ROLE_NAME}" "sdk" "${SDK_DIAG}"

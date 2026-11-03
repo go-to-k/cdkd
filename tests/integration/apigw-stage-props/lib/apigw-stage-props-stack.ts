@@ -5,7 +5,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import type { Construct } from 'constructs';
 
 /**
- * AWS::ApiGateway::Stage silent-drop property backfill fixture (issue #609).
+ * AWS::ApiGateway::Stage SDK-unwired property backfill fixture (issue #609).
  *
  * covers: AWS::ApiGateway::RestApi
  * covers: AWS::ApiGateway::Method
@@ -15,7 +15,7 @@ import type { Construct } from 'constructs';
  * covers: AWS::Logs::LogGroup
  * covers: AWS::ApiGateway::Account
  *
- * Exercises the formerly silent-drop Stage properties end to end via L1s
+ * Exercises the formerly SDK-unwired Stage properties end to end via L1s
  * (the L2 RestApi's deployOptions cannot express ClientCertificateId or a
  * canary block directly):
  *

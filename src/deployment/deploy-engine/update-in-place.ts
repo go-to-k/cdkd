@@ -165,9 +165,9 @@ export async function updateInPlace(
   // Normal update (in-place).
   //
   // For an existing resource, the layer is sticky: if it was first
-  // created via Cloud Control (because of silent-drop properties at
+  // created via Cloud Control (because of SDK-unwired properties at
   // CREATE time), the update stays on Cloud Control. If it was
-  // SDK-managed and the user has since added a silent-drop property,
+  // SDK-managed and the user has since added an SDK-unwired property,
   // we re-evaluate via `getProviderFor` — which will auto-route
   // through Cloud Control as long as the user hasn't overridden
   // via `--allow-unsupported-properties`. Once a resource flips
@@ -1006,7 +1006,7 @@ export async function updateInPlace(
             physicalId: currentResource.physicalId,
             resourceType,
             // The layer `updateProvider` was routed to, which can differ from
-            // the record's (a silent-drop auto-route, `--pin-cc-api`).
+            // the record's (an SDK-unwired auto-route, `--pin-cc-api`).
             provisionedBy: updateDecision.provisionedBy,
           });
           const fallbackSkipReason = deleteSkipReason(fallbackDeleteResult);

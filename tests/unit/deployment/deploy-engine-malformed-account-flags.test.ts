@@ -149,7 +149,7 @@ describe('DeployEngine load refusals carry DeployEngineOptions.refusalRecovery (
         getRegisteredTypes: vi.fn().mockReturnValue([]),
         validateResourceTypes: vi.fn(),
         validateResourceProperties: vi.fn(),
-        reportSilentDropDecisions: vi.fn(),
+        reportSdkUnwiredDecisions: vi.fn(),
         getEffectivePropertiesFn: vi.fn().mockReturnValue(undefined),
       } as never,
       { ...(refusalRecovery && { refusalRecovery }) },

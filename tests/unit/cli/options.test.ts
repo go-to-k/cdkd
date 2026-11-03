@@ -722,7 +722,7 @@ describe('parseAllowUnsupportedPropertiesToken', () => {
     ).toThrow(/PascalCase/);
   });
 
-  it('rejects Custom:: tokens (Custom resources have no Tier-1 silent drop)', async () => {
+  it('rejects Custom:: tokens (Custom resources have no Tier-1 SDK-unwired property)', async () => {
     const { parseAllowUnsupportedPropertiesToken } = await import(
       '../../../src/cli/options.js'
     );

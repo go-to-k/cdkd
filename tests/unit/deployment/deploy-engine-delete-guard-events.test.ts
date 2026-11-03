@@ -131,7 +131,7 @@ describe('DeployEngine — indeterminate guards on deploy-path deletes (#2422)',
     const mockProviderRegistry = {
       getProvider: vi.fn().mockReturnValue(provider),
       // Every delete is ROUTED to Cloud Control while the record says `sdk`
-      // (a silent-drop auto-route, `--pin-cc-api`): the guard row must carry
+      // (an SDK-unwired auto-route, `--pin-cc-api`): the guard row must carry
       // the layer the delete actually ran on, not the record's.
       getProviderFor: vi.fn().mockReturnValue({ provider, provisionedBy: 'cc-api' as const }),
       getRegisteredTypes: vi.fn().mockReturnValue([]),

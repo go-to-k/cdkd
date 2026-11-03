@@ -855,11 +855,11 @@ function describeJsonKeys(document: string): string {
  *
  *  1. There is no per-type "CC auto-route list" to remove the type FROM. The
  *     route at `provider-registry.ts` step 3-5 is the generic issue #614
- *     silent-drop rule: a type WITH an SDK provider goes to Cloud Control
+ *     SDK-unwired rule: a type WITH an SDK provider goes to Cloud Control
  *     exactly when its template uses a property that provider would silently
  *     DROP. Suppressing it for buckets means `disableCcApiFallback` on
  *     `S3BucketProvider`, which converts those deploys from "provisioned
- *     correctly via CC" into a hard `buildUnroutableSilentDropMessage` throw.
+ *     correctly via CC" into a hard `buildUnroutableSdkUnwiredMessage` throw.
  *     That is a strictly larger behaviour change than this guard, and it
  *     regresses the bug #614 was filed for.
  *
@@ -872,9 +872,9 @@ function describeJsonKeys(document: string): string {
  *     `STICKY_CC_MIGRATION_EXEMPT` would divert it. Since issue #2719 that
  *     table admits two modes, and NEITHER helps here: `'cc-broken'` is for
  *     types Cloud Control cannot manage, and `'sdk-coverage'` diverts a
- *     resource only when its property bags carry no actionable silent drop --
+ *     resource only when its property bags carry no actionable SDK-unwired property --
  *     which is the opposite of this case by construction. Were a type somehow
- *     admitted anyway, the divert would send the silent-drop property back
+ *     admitted anyway, the divert would send the SDK-unwired property back
  *     down the dropping path on the next deploy; the property gate is what
  *     prevents it.
  *
@@ -2173,7 +2173,7 @@ export class CloudControlProvider implements ResourceProvider {
     );
 
     // `--remove-protection` for an `AWS::AutoScaling::AutoScalingGroup` routed
-    // through Cloud Control (its template set a silent-drop property such as
+    // through Cloud Control (its template set an SDK-unwired property such as
     // `InstanceId`, so the #614 routing rule sent the whole resource
     // via Cloud Control instead of the SDK ASGProvider). Cloud Control's
     // DeleteResource cannot ForceDelete the group, clear its
@@ -2272,7 +2272,7 @@ export class CloudControlProvider implements ResourceProvider {
     }
 
     // `--remove-protection` for an `AWS::EC2::Instance` routed through Cloud
-    // Control (e.g. its template tripped the #614 silent-drop routing): Cloud
+    // Control (e.g. its template tripped the #614 SDK-unwired routing): Cloud
     // Control's DeleteResource has no notion of `DisableApiTermination`, so it
     // 400s "The instance ... may not be terminated. Modify its
     // 'disableApiTermination' instance attribute and try again." We flip the
@@ -4127,11 +4127,11 @@ export class CloudControlProvider implements ResourceProvider {
 
       case 'AWS::RDS::DBInstance':
         // Sibling of the DBCluster branch above: a DBInstance whose template
-        // sets a silent-drop top-level property (BackupRetentionPeriod /
+        // sets an SDK-unwired top-level property (BackupRetentionPeriod /
         // CopyTagsToSnapshot / MultiAZ / PubliclyAccessible / StorageType /
-        // etc. — see the `AWS::RDS::DBInstance` silentDrop set in
+        // etc. — see the `AWS::RDS::DBInstance` sdkUnwired set in
         // property-coverage.generated.ts) is routed entirely through CC API
-        // by the #614 silent-drop routing rule, which bypasses
+        // by the #614 SDK-unwired routing rule, which bypasses
         // RDSProvider.create — so the flat-key `Endpoint.Address` /
         // `Endpoint.Port` attributes the SDK provider would have populated
         // never get set, and `Fn::GetAtt(<DBInstance>, 'Endpoint.Address')`
@@ -4794,7 +4794,7 @@ export class CloudControlProvider implements ResourceProvider {
         // Pipes has had an SDK provider since issue #4423, and a cc-api
         // record moves to it (a 'cc-broken' sticky exemption). A pipe still
         // reaches Cloud Control when its template carries a schema-known
-        // property that provider does not handle (the silent-drop auto-route
+        // property that provider does not handle (the SDK-unwired auto-route
         // in `getProviderFor`). The CC CREATE ResourceModel is sparse there:
         // it does not surface the pipe ARN. `Fn::GetAtt(<Pipe>, 'Arn')` would fall
         // through the resolver's constructAttribute to the physicalId (the

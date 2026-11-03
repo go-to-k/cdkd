@@ -7,7 +7,7 @@
 #
 # Phase 0 deploys both plain (both on SDK).
 # Phase 1 seeds the inverted baseline (Fwd on SDK, Back on CC) with
-#   --recreate-via-cc-api BackProbe -- NOT with the silent-drop auto-route,
+#   --recreate-via-cc-api BackProbe -- NOT with the SDK-unwired auto-route,
 #   whose premise (a property the SDK provider does not handle) rotted every
 #   time that property was wired. See lib/recreate-stack.ts.
 # Phase 2 inverts the template AND combines both flags in one deploy (THE ARM).
@@ -131,7 +131,7 @@ STATE_0=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null)
 for probe in FwdProbe BackProbe; do
   LAYER_0=$(printf '%s' "${STATE_0}" | jq -r --arg id "${probe}" '.resources[$id].provisionedBy // ""')
   if [ "${LAYER_0}" != "sdk" ]; then
-    echo "FAIL: fresh ${probe} has provisionedBy='${LAYER_0}', expected 'sdk'. Likely cause: a property of the phase-0 template became an SDK-provider silent drop (a schema refresh added one, or handledProperties lost an entry), so the fresh deploy auto-routed to Cloud Control. Check the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property." >&2
+    echo "FAIL: fresh ${probe} has provisionedBy='${LAYER_0}', expected 'sdk'. Likely cause: a property of the phase-0 template became an SDK-unwired property (a schema refresh added one, or handledProperties lost an entry), so the fresh deploy auto-routed to Cloud Control. Check the deploy output above for an 'Auto-routing ... via Cloud Control' line naming the property." >&2
     echo "${STATE_0}" | jq .
     exit 1
   fi

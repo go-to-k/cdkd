@@ -302,7 +302,7 @@ export const renderHandled = (handled: string[]): string => {
     .join('\n')}\n      ])`;
 };
 
-export const renderSilentDrop = (
+export const renderSdkUnwired = (
   drops: Array<[string, string]>
 ): string => {
   if (drops.length === 0) return 'new Map<string, string>()';
@@ -389,21 +389,21 @@ export function findMissingCoverageTypes(
 // in the output. (A registered Tier 1 type without a fixture cannot be
 // judged here; a fixture without a handled declaration would be a
 // declaration bug — surface as an empty entry so the pre-flight rejects
-// every prop as silent drop, matching the test layer's expectations.)
+// every prop as SDK-unwired, matching the test layer's expectations.)
 const NOT_IMPLEMENTED_RATIONALE = 'not yet implemented by cdkd';
 
 interface PerTypeCoverage {
   handled: string[];
-  silentDrop: Array<[prop: string, rationale: string]>;
+  sdkUnwired: Array<[prop: string, rationale: string]>;
   /**
-   * The subset of `silentDrop` this type's schema marks CREATE-ONLY (issue
+   * The subset of `sdkUnwired` this type's schema marks CREATE-ONLY (issue
    * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
    *
    * Only the intersection is emitted, not the whole `createOnlyProperties`
    * list: the one consumer is the record narrowing, which iterates the drops.
-   * The routing decision (`findSilentDropProperties` /
-   * `findActionableSilentDrops`) does NOT read it — a create-only property is
-   * still a silent drop and still auto-routes.
+   * The routing decision (`findSdkUnwiredProperties` /
+   * `findActionableSdkUnwired`) does NOT read it — a create-only property is
+   * still SDK-unwired and still auto-routes.
    */
   createOnlyDrops: string[];
   /**
@@ -469,19 +469,19 @@ function main(): void {
     // silently yields an EMPTY set and every consumer below goes inert.
     const createOnly = new Set(fixture.createOnlyProperties ?? []);
 
-    const silentDrop: Array<[string, string]> = [];
+    const sdkUnwired: Array<[string, string]> = [];
     const createOnlyDrops: string[] = [];
     for (const prop of [...fixture.properties].sort((a, b) => a.localeCompare(b))) {
       if (handled.has(prop)) continue;
       if (readOnly.has(prop)) continue;
       const rationale = byDesign.get(prop) ?? NOT_IMPLEMENTED_RATIONALE;
-      silentDrop.push([prop, rationale]);
+      sdkUnwired.push([prop, rationale]);
       if (createOnly.has(prop)) createOnlyDrops.push(prop);
     }
 
     coverageByType.set(type, {
       handled: [...handled].sort((a, b) => a.localeCompare(b)),
-      silentDrop,
+      sdkUnwired,
       createOnlyDrops,
       readOnly: [...readOnly].sort((a, b) => a.localeCompare(b)),
       ccRouteUnavailable:
@@ -490,7 +490,7 @@ function main(): void {
         ccBroken.has(type),
     });
     totalHandled += handled.size;
-    totalDrops += silentDrop.length;
+    totalDrops += sdkUnwired.length;
   }
 
   // Fail loudly (before writing) when a registered type with a fixture is
@@ -524,7 +524,7 @@ function main(): void {
     ${JSON.stringify(type)},
     {
       handled: ${renderHandled(cov.handled)},
-      silentDrop: ${renderSilentDrop(cov.silentDrop)},
+      sdkUnwired: ${renderSdkUnwired(cov.sdkUnwired)},
       createOnlyDrops: ${renderHandled(cov.createOnlyDrops)},
       readOnly: ${renderHandled(cov.readOnly)},
       ccRouteUnavailable: ${cov.ccRouteUnavailable},
@@ -541,10 +541,10 @@ const content = `/**
  * Regenerate: \`vp run gen:property-coverage\`.
  *
  * Per-Tier-1-type property coverage for the deploy-time pre-flight check
- * (\`ProviderRegistry.validateResourceProperties\`). The \`silentDrop\` set
+ * (\`ProviderRegistry.validateResourceProperties\`). The \`sdkUnwired\` set
  * lists top-level CFn schema properties whose SDK provider does not write
  * them to AWS (SDK-unwired). A template using one does NOT lose it:
- * \`reportSilentDropDecisions\` logs the routing decision at INFO (DEBUG once
+ * \`reportSdkUnwiredDecisions\` logs the routing decision at INFO (DEBUG once
  * the resource is already sticky on CC) and the resource is auto-routed
  * through Cloud Control, so the property reaches AWS (issue #614). Pre-flight
  * DOES reject the sub-case Cloud Control cannot serve — a NON_PROVISIONABLE
@@ -568,9 +568,9 @@ export interface PropertyCoverage {
    * carries a one-line rationale (either the provider's \`unhandledByDesign\`
    * rationale or the default \`not yet implemented by cdkd\`).
    */
-  readonly silentDrop: ReadonlyMap<string, string>;
+  readonly sdkUnwired: ReadonlyMap<string, string>;
   /**
-   * The subset of \`silentDrop\` this type's committed schema marks
+   * The subset of \`sdkUnwired\` this type's committed schema marks
    * CREATE-ONLY (issue
    * [#2750](https://github.com/go-to-k/cdkd/issues/2750)).
    *

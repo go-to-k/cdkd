@@ -272,7 +272,7 @@ fi
 echo "    RecursiveLoop delivered (Allow)"
 
 # Routing guard: these assertions are only meaningful for the SDK provider —
-# a silent-drop property would have re-routed the resource to Cloud Control.
+# an SDK-unwired property would have re-routed the resource to Cloud Control.
 for fname in "${FN}" "${DURABLE_FN}"; do
   PB="$(state_provisioned_by "${fname}")"
   if [ "${PB}" != "sdk" ]; then

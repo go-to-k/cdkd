@@ -17,7 +17,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
  *   covers: AWS::ApiGatewayV2::Api / ::Stage / ::Integration / ::Route /
  *           ::Authorizer (+ AWS::Lambda::Function for the REQUEST authorizer URI)
  *
- * Issue #609 also rides this fixture: the `::Integration` silent-drop backfill
+ * Issue #609 also rides this fixture: the `::Integration` SDK-unwired backfill
  * adds ten properties whose delivery is asserted here on CREATE and on UPDATE.
  *
  * Phase 1 sets one-or-more removable fields on each of the five resources.
@@ -261,7 +261,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     // an HTTP API cannot exercise them. The route deliberately carries no
     // Target: this fixture tests the CONFIG path, and a MOCK integration would
     // need `RequestTemplates` / `TemplateSelectionExpression`, which are still
-    // silent-drop on ::Integration and would be rejected by the pre-flight.
+    // SDK-unwired on ::Integration and would be rejected by the pre-flight.
     const wsApi = new apigwv2.CfnApi(this, 'WsApi', {
       name: `${this.stackName}-ws`,
       protocolType: 'WEBSOCKET',
@@ -273,7 +273,7 @@ export class ApiGatewayV2UpdateRemovalStack extends cdk.Stack {
     // PassthroughBehavior / ContentHandlingStrategy are all MOCK-integration
     // properties, and a MOCK integration needs a WebSocket API — which is
     // exactly why the WsRoute comment above said these were unreachable while
-    // they were still silent-drop. The integration carries no route: this
+    // they were still SDK-unwired. The integration carries no route: this
     // fixture exercises the CONFIG path, and an unattached integration is a
     // legal AWS resource.
     //

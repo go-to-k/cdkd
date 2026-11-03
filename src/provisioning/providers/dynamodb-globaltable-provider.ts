@@ -10412,7 +10412,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    *
    * UNCOVERED POPULATION, stated because the fix does NOT reach it: a
    * cc-api-routed GlobalTable gets neither half. A record created while
-   * top-level `WarmThroughput` was a `silentDrop` property (before
+   * top-level `WarmThroughput` was an `sdkUnwired` property (before
    * go-to-k/cdkd#2762), or a template declaring a property that still is, sits
    * on the STICKY Cloud Control route — `drift.ts` then resolves `provider` to
    * `CloudControlProvider`, this hook is never invoked, and the AWS side comes
@@ -12497,7 +12497,7 @@ const STREAM_SPECIFICATION_KEY = 'StreamSpecification';
  * replica likewise loses the recorded stream from its record (a one-time diff
  * line beside its `Replicas` change) while AWS keeps the stream.
  *
- * Any `MultiRegionConsistency` at all disables it. The key is a silent-drop
+ * Any `MultiRegionConsistency` at all disables it. The key is SDK-unwired
  * for this provider, so the three sites see different bags for one template:
  * `create()` / `update()` read the RAW bag (key present), while the twin reads
  * `DiffCalculator`'s bags, which on the SDK route (`--allow-unsupported-properties`)

@@ -3,7 +3,7 @@
 #
 # Asserts that a standalone (non-cluster) RDS Postgres DBInstance whose
 # template sets the #609 sibling-of-DBCluster properties has each one reach
-# AWS after `cdkd deploy` — each was a silent-drop before #609.
+# AWS after `cdkd deploy` — each was SDK-unwired before #609.
 #
 # Original (#738) properties (AWS-readable):
 #   DeletionProtection / EngineVersion / Port / StorageEncrypted /
@@ -344,16 +344,16 @@ fi
 echo "    expected VPC security group: ${EXPECTED_SG}"
 
 # --- Routing guard: the DBInstance must be SDK-provisioned ------------
-# If any set prop were still a silent-drop, #614 routing would flip the
+# If any set prop were still SDK-unwired, #614 routing would flip the
 # resource to the Cloud Control path (provisionedBy=cc-api) and the
 # SDK-provider assertions below would prove nothing.
 # An absent provisionedBy is a legacy SDK record; an absent RECORD is not.
 INST_PROVISIONED_BY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBInstance") | .value.provisionedBy // "sdk"] | first // "<no DBInstance record>"')
 if [ "${INST_PROVISIONED_BY}" != "sdk" ]; then
-  echo "FAIL: DBInstance routed via '${INST_PROVISIONED_BY}', expected 'sdk' (a set prop is still a silent-drop → CC-API routing)" >&2
+  echo "FAIL: DBInstance routed via '${INST_PROVISIONED_BY}', expected 'sdk' (a set prop is still SDK-unwired → CC-API routing)" >&2
   exit 1
 fi
-echo "    OK: DBInstance provisionedBy=sdk (no silent-drop CC-API flip)"
+echo "    OK: DBInstance provisionedBy=sdk (no SDK-unwired CC-API flip)"
 
 # --- Assertion: AWS-readable props reached AWS ------------------------
 # DescribeDBInstances returns every prop the create payload accepted;

@@ -54,7 +54,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
-import { findSilentDropProperties } from '../../../src/provisioning/property-coverage.js';
+import { findSdkUnwiredProperties } from '../../../src/provisioning/property-coverage.js';
 
 const RESOURCE_TYPE = 'AWS::Logs::LogGroup';
 const PROPERTY = 'ResourcePolicyDocument';
@@ -91,8 +91,8 @@ describe('AWS::Logs::LogGroup ResourcePolicyDocument (issue #1412)', () => {
     expect(rationale).toMatch(/AWS::Logs::ResourcePolicy/);
   });
 
-  it('is reported as a silent drop at pre-flight, so the resource auto-routes via CC API', () => {
-    const drops = findSilentDropProperties(RESOURCE_TYPE, {
+  it('is reported as SDK-unwired at pre-flight, so the resource auto-routes via CC API', () => {
+    const drops = findSdkUnwiredProperties(RESOURCE_TYPE, {
       LogGroupName: '/cdkd/probe',
       ResourcePolicyDocument: { Version: '2012-10-17', Statement: [] },
     });
@@ -122,7 +122,7 @@ describe('AWS::Logs::LogGroup ResourcePolicyDocument (issue #1412)', () => {
   });
 
   it('does not opt out of the Cloud Control fallback, so no template is hard-rejected', () => {
-    // The #614 viability guard throws pre-flight when a silent-drop type cannot
+    // The #614 viability guard throws pre-flight when an SDK-unwired type cannot
     // be CC-routed. Declaring the drop is only the honest answer while that
     // route stays available — pin it so a later `disableCcApiFallback` addition
     // cannot silently convert this into a hard reject.

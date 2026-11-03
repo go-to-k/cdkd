@@ -118,7 +118,7 @@ import {
   type AssetRedirectMap,
 } from '../../assets/asset-redirect.js';
 import {
-  findActionableSilentDrops,
+  findActionableSdkUnwired,
   findHandledUnwrittenCreateOnly,
   unwrittenCreateOnlyReplacement,
 } from '../../provisioning/property-coverage.js';
@@ -316,10 +316,10 @@ export interface DiffTreeNode {
   /**
    * Per-resource Cloud Control API auto-route hits (issue [#614]). Maps each
    * logical ID that #614's auto-fallback would route via CC API to the
-   * silent-drop property names that triggered the routing — surfaced as
+   * SDK-unwired property names that triggered the routing — surfaced as
    * `[via CC API: Body]` annotations on each diff line so users can
    * audit the routing decision before they deploy. Empty for stacks whose
-   * template uses no silent-drop top-level property, for state-only DELETE
+   * template uses no SDK-unwired top-level property, for state-only DELETE
    * branches (deletes route via the recorded `provisionedBy`, not via template
    * inspection), and for a type with no Cloud Control route (issue #5600).
    */
@@ -452,7 +452,7 @@ export type CcRouteUnavailableReason = (resourceType: string) => string | undefi
 /**
  * One warning per resource the flag-less `cdkd deploy` of this stack refuses
  * pre-flight because its template drives a Cloud Control route the type does
- * not have (`ProviderRegistry.reportSilentDropDecisions`, issue #5600). Walks
+ * not have (`ProviderRegistry.reportSdkUnwiredDecisions`, issue #5600). Walks
  * what that check walks: every template resource but `AWS::CDK::Metadata`,
  * unchanged rows and `AWS::CloudFormation::Stack` included. A deploy skips a
  * nested stack whose row did not change, so the text says "of this stack". A
@@ -472,7 +472,7 @@ export function findUnroutableDropRefusals(
     if (!resource || resource.Type === 'AWS::CDK::Metadata') continue;
     const reason = ccRouteUnavailableReason(resource.Type);
     if (reason === undefined) continue;
-    const properties = findActionableSilentDrops(
+    const properties = findActionableSdkUnwired(
       resource.Type,
       resource.Properties,
       EMPTY_ALLOW_SET,
@@ -522,7 +522,7 @@ export function findUnwrittenCreateOnlyRefusals(
     // `desired` is the raw template plus each change's new value, so a row the
     // engine would lower or resolve differently can go unwarned.
     // No `lostWithParent` gate, unlike the engine: no type a recreated
-    // parent takes with it has a create-only silent drop TODAY (fenced in
+    // parent takes with it has a create-only SDK-unwired property TODAY (fenced in
     // tests/unit/deployment/accepted-create-only-drops.test.ts). Evidence on
     // such a type can still come from an earlier cdkd, written while a since
     // backfilled key was a drop (#5572); for that record this warning can name
@@ -544,7 +544,7 @@ export function findUnwrittenCreateOnlyRefusals(
     // The keep-dropping list the engine's refusal names: the route is per
     // RESOURCE, so the deploy stays on the SDK provider only with every
     // route-driving key allow-listed, not just the unwritten ones.
-    const routeDriving = findActionableSilentDrops(
+    const routeDriving = findActionableSdkUnwired(
       change.resourceType,
       desired,
       new Set<string>(),
@@ -4343,11 +4343,11 @@ function diffReplaces(change: ResourceChange | undefined, record: ResourceState)
  * auto-route":
  *
  *  - **Fresh hits**: a resource whose template uses one or more
- *    silent-drop top-level CFn properties. Annotation value is the list
+ *    SDK-unwired top-level CFn properties. Annotation value is the list
  *    of property names (e.g. `Body`).
  *  - **Sticky hits**: a resource whose deployed state records
  *    `provisionedBy: 'cc-api'` (from a prior deploy) even when the
- *    current template's silent-drop set is empty. Annotation value is
+ *    current template's SDK-unwired set is empty. Annotation value is
  *    the single token `sticky` so the renderer prints `[via CC API:
  *    sticky]` — the routing decision is unchanged but the tag stays
  *    visible per #614's sticky-state semantics.
@@ -4394,7 +4394,7 @@ export function collectCcApiRoutes(
     if (resource.Type === NESTED_STACK_RESOURCE_TYPE) continue;
     // The record's bag is the baseline an unrecognized property is compared
     // against, as `getProviderFor` does on the update path (issue #3713).
-    const drops = findActionableSilentDrops(
+    const drops = findActionableSdkUnwired(
       resource.Type,
       resource.Properties,
       EMPTY_ALLOW_SET,
@@ -4409,7 +4409,7 @@ export function collectCcApiRoutes(
       }
       continue;
     }
-    // Sticky-CC fallback: no fresh silent-drop hit, but the deployed state
+    // Sticky-CC fallback: no fresh SDK-unwired hit, but the deployed state
     // pins routing to CC API → next op (UPDATE) still goes via CC API per
     // `getProviderFor` rule 2 (sticky). Surface the tag with the
     // distinguishing `sticky` token so the user can tell this case apart
@@ -4423,10 +4423,10 @@ export function collectCcApiRoutes(
       // since issue #961 -- was rendered `[via CC API: sticky]` while
       // `getProviderFor` routed it to the SDK provider: the annotation stated
       // the opposite of what the deploy would do.
-      // No allow-set is threaded, matching the `findActionableSilentDrops` call
+      // No allow-set is threaded, matching the `findActionableSdkUnwired` call
       // above and for the same structural reason: `cdkd diff` has no
       // `--allow-unsupported-properties` flag, so there is nothing to thread.
-      // Inert today (an admitted `'sdk-coverage'` type has an empty silentDrop
+      // Inert today (an admitted `'sdk-coverage'` type has an empty sdkUnwired
       // map, so the allow set cannot change the answer) and it would diverge
       // from the deploy only for a future exempt type with a real drop — which
       // the admission bar in docs/provider-rules.md already discourages.
@@ -4543,7 +4543,7 @@ export interface DiffChangeJson {
   propertyChanges?: ResourceChange['propertyChanges'];
   attributeChanges?: ResourceChange['attributeChanges'];
   /**
-   * Silent-drop property names that #614's auto-fallback would route via
+   * SDK-unwired property names that #614's auto-fallback would route via
    * Cloud Control API for this resource. Present only when the resource is
    * a CC-routed auto-route hit (matches the human renderer's
    * `[via CC API: <prop list>]` annotation), so never on a type with no Cloud

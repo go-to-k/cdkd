@@ -489,9 +489,9 @@ describe('ApiGatewayV2 Integration config properties (#609)', () => {
     });
   });
 
-  it('reports no silent-drop property left for AWS::ApiGatewayV2::Integration', () => {
+  it('reports no SDK-unwired property left for AWS::ApiGatewayV2::Integration', () => {
     const coverage = PROPERTY_COVERAGE_BY_TYPE.get(INTEGRATION_TYPE);
-    expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
+    expect([...(coverage?.sdkUnwired.keys() ?? [])]).toEqual([]);
     for (const property of Object.keys(backfilled)) {
       expect(coverage?.handled.has(property), property).toBe(true);
     }
