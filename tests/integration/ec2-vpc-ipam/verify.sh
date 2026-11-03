@@ -11,6 +11,7 @@
 #      both properties routed it to Cloud Control), that its CIDR is a /28
 #      inside the pool's 10.240.0.0/16 and is this pool's allocation for this
 #      VPC, and that the VpcCidr Output (Fn::GetAtt Vpc.CidrBlock) equals it.
+#      Then `cdkd drift` must report the VPC compared and clean.
 #   2. CDKD_TEST_UPDATE=true adds a tag to the VPC: an in-place update. Assert
 #      the same VPC id, the tag on AWS, and that the recorded CidrBlock
 #      attribute (the VpcCidr Output) still equals the live CIDR.
@@ -92,6 +93,9 @@ cleanup() {
       fi
       ;;
   esac
+  if [ -n "${DRIFT_JSON:-}" ]; then
+    rm -f "${DRIFT_JSON}"
+  fi
   if [ -n "${STATE_BUCKET:-}" ]; then
     if [ "${destroy_rc}" -eq 0 ]; then
       aws s3 rm "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null 2>&1 || true
@@ -160,10 +164,24 @@ read_state() {
 
 # --- Phase 1: deploy ----------------------------------------------------
 echo "==> Phase 1: deploy"
+set +e
 env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+P1_RC=$?
+set -e
+# Record this run's IPAM BEFORE judging the deploy, so a failed deploy whose
+# rollback and `state destroy` both fail still reaches cleanup's cascade
+# delete. Phase 0 proved the region held no IPAM, so the one this stack's
+# record names was created by this run.
+if P1_STATE=$(read_state 2>&1); then
+  IPAM_ID=$(jq -r '.resources.Ipam.physicalId // ""' <<<"${P1_STATE}") || IPAM_ID=""
+fi
+if [ "${P1_RC}" -ne 0 ]; then
+  echo "FAIL: Phase 1 deploy exited ${P1_RC}" >&2
+  exit 1
+fi
 
 STATE=$(read_state)
 IPAM_ID=$(jq -r '.outputs.IpamId // ""' <<<"${STATE}")
@@ -213,6 +231,23 @@ if [ "${VPC_CIDR_OUTPUT}" != "${VPC_CIDR}" ]; then
   exit 1
 fi
 echo "    OK: ${VPC_ID} on the SDK path with ${VPC_CIDR}, allocated from ${POOL_ID}; Fn::GetAtt CidrBlock agrees"
+
+# `cdkd drift` compares the VPC through the SDK provider's readCurrentState
+# (Ipv4NetmaskLength from the CIDR; Ipv4IpamPoolId is declared unreadable):
+# it must be compared and CLEAN right after the deploy.
+DRIFT_JSON="$(mktemp -t cdkd-ec2-vpc-ipam-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+VPC_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "Vpc")] | length' "${DRIFT_JSON}") || VPC_CLEAN="?"
+if [ "${VPC_CLEAN}" != "1" ]; then
+  echo "FAIL: the VPC is not drift-clean right after the deploy (clean=${VPC_CLEAN} rc=${DRIFT_RC}) (issue #5633):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+echo "    OK: ${VPC_ID} reads back drift-clean"
 
 # --- Phase 2: in-place update keeps the CidrBlock attribute --------------
 echo "==> Phase 2: CDKD_TEST_UPDATE=true (tag the VPC in place)"

@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import {
   CreateVpcCommand,
+  DeleteVpcCommand,
   GetIpamPoolAllocationsCommand,
   ModifyVpcAttributeCommand,
   DescribeInstanceAttributeCommand,
@@ -48,7 +49,12 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   return { ...actual, waitUntilInstanceRunning: vi.fn(() => Promise.resolve({})) };
 });
 
-import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import {
+  EC2Provider,
+  resetEc2CreateRetryStateForTests,
+  vpcIpamReleaseWait,
+} from '../../../src/provisioning/providers/ec2-provider.js';
+import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
 
 function sent<T>(ctor: new (...a: never[]) => T): Array<Record<string, unknown>> {
@@ -558,5 +564,217 @@ describe('AWS::EC2::Instance backfill (#5630): review round 1', () => {
     });
     expect(read).not.toHaveProperty('InstanceInitiatedShutdownBehavior');
     expect(read).toHaveProperty('Tags');
+  });
+});
+
+describe('parent review round (#5633 / #5630)', () => {
+  const VPC = { CidrBlock: '10.0.0.0/16' };
+  const INST = { ImageId: 'ami-1', InstanceType: 't3.nano', SubnetId: 'subnet-1' };
+  const update = (
+    type: string,
+    id: string,
+    desired: Record<string, unknown>,
+    previous: Record<string, unknown>,
+    context?: Record<string, unknown>
+  ) => new EC2Provider().update('L', id, type, desired, previous, context);
+
+  it.each([
+    ['VpcEncryptionControl', { VpcEncryptionControl: { Mode: 'enforce' } }, { VpcEncryptionControl: { Mode: 'monitor' } }],
+    ['Ipv4NetmaskLength', { Ipv4IpamPoolId: 'p', Ipv4NetmaskLength: 28 }, { Ipv4IpamPoolId: 'p', Ipv4NetmaskLength: 24 }],
+    ['Ipv4IpamPoolId', { Ipv4IpamPoolId: 'p2' }, { Ipv4IpamPoolId: 'p1' }],
+  ])('refuses a changed VPC %s before any call (only drift --revert reaches update with one)', async (key, desired, previous) => {
+    const error = await update('AWS::EC2::VPC', 'vpc-1', { ...VPC, ...desired }, { ...VPC, ...previous }).catch(
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(String(error)).toContain(key);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse a VPC whose create-only values only differ in spelling, or a pool id the AWS side cannot carry', async () => {
+    await update(
+      'AWS::EC2::VPC',
+      'vpc-1',
+      { Ipv4IpamPoolId: 'p', Ipv4NetmaskLength: '28', VpcEncryptionControl: { Mode: 'monitor' } },
+      { Ipv4NetmaskLength: 28, VpcEncryptionControl: { Mode: 'monitor' } }
+    );
+  });
+
+  it.each([
+    ['CpuOptions', { CpuOptions: { CoreCount: 1, ThreadsPerCore: 1 } }, { CpuOptions: { CoreCount: 1, ThreadsPerCore: 2 } }],
+    ['HibernationOptions', { HibernationOptions: { Configured: true } }, { HibernationOptions: { Configured: false } }],
+  ])('refuses a changed Instance %s before any call', async (key, desired, previous) => {
+    const error = await update('AWS::EC2::Instance', 'i-1', { ...INST, ...desired }, { ...INST, ...previous }).catch(
+      (e: unknown) => e
+    );
+    expect(error).toBeInstanceOf(ResourceUpdateNotSupportedError);
+    expect(String(error)).toContain(key);
+    expect(isRefusedBeforeApplying(error, 'L')).toBe(true);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('does not refuse Instance create-only values that only differ in spelling', async () => {
+    await update(
+      'AWS::EC2::Instance',
+      'i-new',
+      { ...INST, CpuOptions: { CoreCount: '1', ThreadsPerCore: '1' }, HibernationOptions: { Configured: 'true' } },
+      { ...INST, CpuOptions: { CoreCount: 1, ThreadsPerCore: 1 }, HibernationOptions: { Configured: true } }
+    );
+    expect(sent(ModifyInstanceAttributeCommand)).toHaveLength(0);
+  });
+
+  it('refuses a blank Ipv4IpamPoolId beside a CidrBlock', async () => {
+    await expect(
+      new EC2Provider().create('Vpc', 'AWS::EC2::VPC', { ...VPC, Ipv4IpamPoolId: '' })
+    ).rejects.toThrow(/Ipv4IpamPoolId must not be blank/);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('names the state record in a replayed VpcEncryptionControl refusal', async () => {
+    const error = await new EC2Provider()
+      .create('Vpc', 'AWS::EC2::VPC', { ...VPC, VpcEncryptionControl: 'x' }, { replayingState: true })
+      .catch((e: unknown) => e);
+    expect(String(error)).toContain('The value comes from the state record being restored');
+  });
+
+  it.each([33, -1])('refuses Ipv4NetmaskLength %s before any call', async (n) => {
+    await expect(
+      new EC2Provider().create('Vpc', 'AWS::EC2::VPC', { Ipv4IpamPoolId: 'p', Ipv4NetmaskLength: n })
+    ).rejects.toThrow(/Ipv4NetmaskLength must be an integer between 0 and 32/);
+  });
+
+  it('sends an empty HibernationOptions block as declared', async () => {
+    await new EC2Provider().create('Inst', 'AWS::EC2::Instance', { ...INST, HibernationOptions: {} });
+    expect(sent(RunInstancesCommand)[0]).toMatchObject({ HibernationOptions: {} });
+  });
+
+  it('refuses an InstanceInitiatedShutdownBehavior update it cannot read as a string', async () => {
+    await expect(
+      update(
+        'AWS::EC2::Instance',
+        'i-new',
+        { ...INST, InstanceInitiatedShutdownBehavior: ['stop'] },
+        { ...INST, InstanceInitiatedShutdownBehavior: 'terminate' }
+      )
+    ).rejects.toThrow(/InstanceInitiatedShutdownBehavior/);
+    expect(sent(ModifyInstanceAttributeCommand)).toHaveLength(0);
+  });
+
+  it('refuses a recorded stand-in shutdown behavior forward, and keeps the live one on a replay', async () => {
+    const standIn = { ...INST, InstanceInitiatedShutdownBehavior: '{{resolve:ssm:/x}}' };
+    const previous = { ...INST, InstanceInitiatedShutdownBehavior: 'terminate' };
+    await expect(update('AWS::EC2::Instance', 'i-new', standIn, previous)).rejects.toThrow(
+      /recorded stand-in/
+    );
+    await update('AWS::EC2::Instance', 'i-new', standIn, previous, { replayingState: true });
+    expect(sent(ModifyInstanceAttributeCommand)).toHaveLength(0);
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/InstanceInitiatedShutdownBehavior at its current AWS value/);
+  });
+
+  it('reports the pool\'s VPCs when a CreateVpc from an IPAM pool ended ambiguously', async () => {
+    resetEc2CreateRetryStateForTests();
+    let first = true;
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof CreateVpcCommand) {
+        if (first) {
+          first = false;
+          return Promise.reject(
+            Object.assign(new Error('We encountered an internal error. Please try again.'), {
+              name: 'InternalError',
+              $fault: 'server',
+              $metadata: { httpStatusCode: 500 },
+            })
+          );
+        }
+        return Promise.resolve({ Vpc: { VpcId: 'vpc-second', CidrBlock: '10.240.0.16/28' } });
+      }
+      if (cmd instanceof GetIpamPoolAllocationsCommand) {
+        return Promise.resolve({
+          IpamPoolAllocations: [{ ResourceType: 'vpc', ResourceId: 'vpc-lost' }],
+        });
+      }
+      if (cmd instanceof DescribeVpcsCommand) {
+        return Promise.resolve({
+          Vpcs: [{ VpcId: 'vpc-lost', CidrBlock: '10.240.0.0/28', IsDefault: false }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const provider = new EC2Provider();
+    const props = { Ipv4IpamPoolId: 'ipam-pool-1', Ipv4NetmaskLength: 28 };
+    await expect(provider.create('Vpc', 'AWS::EC2::VPC', props)).rejects.toThrow();
+    await provider.create('Vpc', 'AWS::EC2::VPC', props);
+    expect(sent(GetIpamPoolAllocationsCommand)[0]).toMatchObject({ IpamPoolId: 'ipam-pool-1' });
+    const line = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(line).toContain('a VPC allocated from IPAM pool ipam-pool-1');
+    expect(line).toContain('vpc-lost');
+    resetEc2CreateRetryStateForTests();
+  });
+});
+
+describe('IPAM VPC delete waits for the pool allocation to be released (#5633)', () => {
+  const defaults = { ...vpcIpamReleaseWait };
+  beforeEach(() => {
+    vpcIpamReleaseWait.pollIntervalMs = 1;
+    vpcIpamReleaseWait.maxWaitMs = 50;
+  });
+  afterEach(() => Object.assign(vpcIpamReleaseWait, defaults));
+
+  const allocationsFor = (answers: Array<string[] | Error>) => {
+    let i = 0;
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetIpamPoolAllocationsCommand) {
+        const answer = answers[Math.min(i++, answers.length - 1)]!;
+        if (answer instanceof Error) return Promise.reject(answer);
+        return Promise.resolve({
+          IpamPoolAllocations: answer.map((id) => ({ ResourceType: 'vpc', ResourceId: id })),
+        });
+      }
+      return Promise.resolve({});
+    });
+  };
+  const IPAM_VPC = { Ipv4IpamPoolId: 'ipam-pool-0abc', Ipv4NetmaskLength: 28 };
+
+  it('returns once the pool no longer lists the deleted VPC', async () => {
+    allocationsFor([['vpc-1', 'vpc-other'], ['vpc-1'], ['vpc-other']]);
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', IPAM_VPC);
+    const names = mockSend.mock.calls.map((c) => (c[0] as object).constructor.name);
+    expect(names[0]).toBe(DeleteVpcCommand.name);
+    expect(sent(GetIpamPoolAllocationsCommand)).toHaveLength(3);
+    expect(sent(GetIpamPoolAllocationsCommand)[0]).toMatchObject({ IpamPoolId: 'ipam-pool-0abc' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns and returns when the allocation outlives the cap, naming the consequence', async () => {
+    allocationsFor([['vpc-1']]);
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', IPAM_VPC);
+    const line = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(line).toContain('stopped waiting');
+    expect(line).toContain('The CIDR has one or more allocations');
+  });
+
+  it('counts a pool that is already gone as released', async () => {
+    allocationsFor([
+      Object.assign(new Error('The IPAM pool does not exist.'), { name: 'InvalidIpamPoolId.NotFound' }),
+    ]);
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', IPAM_VPC);
+    expect(sent(GetIpamPoolAllocationsCommand)).toHaveLength(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns and returns when the allocations cannot be listed', async () => {
+    allocationsFor([Object.assign(new Error('denied'), { name: 'UnauthorizedOperation' })]);
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', IPAM_VPC);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('could not be read');
+  });
+
+  it.each([
+    ['a CidrBlock VPC', { CidrBlock: '10.0.0.0/16' }],
+    ['a redacted pool id', { Ipv4IpamPoolId: '***' }],
+    ['no recorded properties', undefined],
+  ])('does not wait for %s', async (_label, properties) => {
+    allocationsFor([['vpc-1']]);
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', properties);
+    expect(sent(GetIpamPoolAllocationsCommand)).toHaveLength(0);
   });
 });

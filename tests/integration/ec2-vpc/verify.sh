@@ -85,6 +85,9 @@ cleanup() {
   fi
   # Phase 2's SDK call log and deploy log, left behind when a run fails
   # before they are read.
+  if [ -n "${DRIFT_JSON:-}" ]; then
+    rm -f "${DRIFT_JSON}"
+  fi
   if [ -n "${P2_CALLS_DIR:-}" ]; then
     rm -f "${P2_CALLS_DIR}/calls.jsonl" "${P2_CALLS_DIR}/deploy.log"
     rmdir "${P2_CALLS_DIR}" 2>/dev/null
@@ -211,6 +214,22 @@ if [ "${ENC_CONTROL}" != "$(printf 'enforce\tenabled\tdisabled')" ]; then
   exit 1
 fi
 echo "    OK: ${ENC_VPC} created on the SDK path with encryption control enforce, internet-gateway exclusion enabled (issue #5633)"
+
+# Issue #5633: `cdkd drift` reads the control back through the SDK provider's
+# readCurrentState; the VPC must be compared and CLEAN right after the deploy.
+DRIFT_JSON="$(mktemp -t cdkd-ec2-vpc-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+ENC_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "EncryptedVpc")] | length' "${DRIFT_JSON}") || ENC_CLEAN="?"
+if [ "${ENC_CLEAN}" != "1" ]; then
+  echo "FAIL: EncryptedVpc is not drift-clean right after the deploy (clean=${ENC_CLEAN} rc=${DRIFT_RC}); the VpcEncryptionControl read-back disagrees with the record (issue #5633):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+echo "    OK: EncryptedVpc reads back drift-clean (issue #5633)"
 
 # Issue #1160 baseline: the private zone is associated with the main VPC
 # only, so an association still there after the removal is the keep.

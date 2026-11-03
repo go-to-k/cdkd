@@ -63,6 +63,15 @@ const required = (top: string, says: RegExp, line: string): Throw => ({
 });
 
 /**
+ * go-to-k/cdkd#5633: a VPC takes its primary CIDR from `CidrBlock` or an IPAM
+ * pool, so with neither `createVpc` refuses before any call.
+ */
+const VPC_CIDR_SOURCE_REQUIRED = (top: string): Throw => ({
+  why: `create() refuses a VPC missing ${top} with no other CIDR source before any call (${SRC}, createVpc)`,
+  says: /CidrBlock or Ipv4IpamPoolId is required for VPC/,
+});
+
+/**
  * Declaring a non-default `InstanceTenancy` on a VPC that lacks it is a
  * replacement (`vpcInstanceTenancyChangeReplaces`, replacement-rules.ts:53,
  * CloudFormation measured, go-to-k/cdkd#5449); only `drift --revert` reaches
@@ -390,7 +399,7 @@ export const CASES_16_EC2: TypeCase[] = [
         },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
-          'create:CidrBlock': required('CidrBlock', /CidrBlock or Ipv4IpamPoolId is required for VPC/, '2414-2420'),
+          'create:CidrBlock': VPC_CIDR_SOURCE_REQUIRED('CidrBlock'),
           'update-add:InstanceTenancy': TENANCY_REFUSED,
         },
         expectedSilent: {
@@ -402,11 +411,7 @@ export const CASES_16_EC2: TypeCase[] = [
         name: 'ipam allocation',
         bag: { Ipv4IpamPoolId: 'ipam-pool-1', Ipv4NetmaskLength: 28 },
         expectedRemovalThrows: {
-          'create:Ipv4IpamPoolId': required(
-            'Ipv4IpamPoolId',
-            /CidrBlock or Ipv4IpamPoolId is required for VPC/,
-            '2414-2420'
-          ),
+          'create:Ipv4IpamPoolId': VPC_CIDR_SOURCE_REQUIRED('Ipv4IpamPoolId'),
         },
       },
     ],

@@ -159,6 +159,9 @@ NET_PROBE_TAG_KEY="cdkd-integ-4606-net-probe"
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
   set +eu
+  if [ -n "${DRIFT_JSON:-}" ]; then
+    rm -f "${DRIFT_JSON}"
+  fi
   if [ -n "${NET_PROBE_TAG:-}" ]; then
     # go-to-k/cdkd#4606: the throwaway VPC, subnet and security group of the
     # network identity probe, swept by their per-run tag (set BEFORE the
@@ -951,6 +954,26 @@ if [ "${ACTUAL_HIBERNATION}" != "true" ]; then
   exit 1
 fi
 echo "    OK: #5630 ${PUBLIC_INSTANCE_ID} launched with CpuOptions 1/1 and hibernation configured"
+
+# Issue #5630: `cdkd drift` reads the three properties back. Both instances
+# must be COMPARED (never drift unknown), and neither may report drift under
+# them; drift elsewhere on an instance is out of this arm's scope.
+DRIFT_JSON="$(mktemp -t cdkd-ec2-instance-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+for lid in Instance PublicInstance; do
+  COMPARED=$(jq --arg l "${lid}" '[(.[].clean[], .[].drifted[]) | select(.logicalId == $l)] | length' "${DRIFT_JSON}") || COMPARED="?"
+  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
+  if [ "${COMPARED}" != "1" ] || [ -n "${BACKFILL_DRIFT}" ]; then
+    echo "FAIL: issue #5630 -- cdkd drift on ${lid}: compared=${COMPARED} drifted paths under the backfilled properties='${BACKFILL_DRIFT}' (rc=${DRIFT_RC}):" >&2
+    cat "${DRIFT_JSON}" >&2
+    exit 1
+  fi
+done
+rm -f "${DRIFT_JSON}"
+echo "    OK: #5630 both instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior"
 
 # --- Phase 1b: the instance identity read (go-to-k/cdkd#4606) --------------
 # A successful deploy deletes a journaled failed-CREATE instance only when

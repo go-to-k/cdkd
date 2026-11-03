@@ -183,6 +183,7 @@ import {
 } from './ambiguous-create.js';
 import {
   collectOrphanIds,
+  MAX_ORPHAN_LIST_PAGES,
   orphanCommandRegionArg,
   reportPossibleOrphans,
   type OrphanIds,
@@ -241,6 +242,7 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { withRetry } from '../../deployment/retry.js';
 import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
+import { waitForGoneAfterDelete } from '../delete-gone-wait.js';
 import {
   getPriorAttempts,
   markRefusedBeforeApplying,
@@ -990,6 +992,7 @@ const EIP_ALLOCATION_NOT_FOUND_NAMES: ReadonlySet<string> = new Set([
 const INSTANCE_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidInstanceID.NotFound']);
 /** `DescribeVpcs`'s answer for a VPC id EC2 no longer lists. */
 const VPC_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidVpcID.NotFound']);
+const IPAM_POOL_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidIpamPoolId.NotFound']);
 /** `DescribeSubnets`'s answer for a subnet id EC2 no longer lists. */
 const SUBNET_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidSubnetID.NotFound']);
 /** `DescribeSecurityGroups`'s answer for a group id EC2 no longer lists. */
@@ -1055,6 +1058,12 @@ const allocateAddressLatch = new AmbiguousCreateLatch('ec2:AllocateAddress');
 const ec2IdsCreatedByThisProcess = new RecentIdSet();
 
 /**
+ * go-to-k/cdkd#5633: the wait after deleting an IPAM-allocated VPC for its
+ * pool allocation to be released. Exported so tests can shorten it.
+ */
+export const vpcIpamReleaseWait = { pollIntervalMs: 10_000, maxWaitMs: 15 * 60_000 };
+
+/**
  * What an ambiguous-create orphan report matches a VPC on: the declared
  * primary CIDR, or (go-to-k/cdkd#5633) the IPAM pool it was allocated from.
  */
@@ -1076,6 +1085,52 @@ const VPC_ENCRYPTION_CONTROL_EXCLUSIONS = [
   'VpcLatticeExclusion',
   'ElasticFileSystemExclusion',
 ] as const;
+
+/** The sentence a create-path refusal adds when it is replaying a state record. */
+function replayedRecordNote(context: { replayingState?: boolean } | undefined): string {
+  return context?.replayingState === true
+    ? ' The value comes from the state record being restored.'
+    : '';
+}
+
+/**
+ * go-to-k/cdkd#5633 / #5630: the create-only properties this provider sends
+ * at create time and can never change. A change to one is a replacement in
+ * the engine, so only `cdkd drift --revert` brings one to `update()`.
+ */
+const VPC_CREATE_ONLY_SENT = ['Ipv4IpamPoolId', 'Ipv4NetmaskLength', 'VpcEncryptionControl'];
+const INSTANCE_CREATE_ONLY_SENT = ['CpuOptions', 'HibernationOptions'];
+
+/**
+ * One of those values with CloudFormation's scalar spellings folded (an
+ * integer or boolean written as a string), so the comparison sees a change
+ * only where AWS would hold a different value.
+ */
+function foldCreateOnlySent(key: string, value: unknown): unknown {
+  const asRecord = (v: unknown): Record<string, unknown> | undefined =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : undefined;
+  if (key === 'Ipv4NetmaskLength') return coerceCfnInteger(value) ?? value;
+  if (key === 'CpuOptions') {
+    const cpu = asRecord(value);
+    if (cpu === undefined) return value;
+    return Object.fromEntries(Object.entries(cpu).map(([k, v]) => [k, coerceCfnInteger(v) ?? v]));
+  }
+  if (key === 'HibernationOptions') {
+    const hibernation = asRecord(value);
+    if (hibernation === undefined) return value;
+    return Object.fromEntries(
+      Object.entries(hibernation).map(([k, v]) => [k, coerceCfnBoolean(v) ?? v])
+    );
+  }
+  return value;
+}
+
+/** Whether two sides hold the same create-only value (see foldCreateOnlySent). */
+function sameCreateOnlySent(key: string, a: unknown, b: unknown): boolean {
+  return isDeepStrictEqual(foldCreateOnlySent(key, a), foldCreateOnlySent(key, b));
+}
 
 /** Reset the module-scoped retry-safety state. TEST-ONLY. */
 export function resetEc2CreateRetryStateForTests(): void {
@@ -1614,13 +1669,18 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     context: CreateContext | undefined
   ): { poolId?: string; netmaskLength?: number } {
+    // A BLANK pool id reads as a value; dropping it would allocate the CIDR
+    // from somewhere the template never named (or send no source at all).
     const refusal =
       configStringRefusal(properties, 'Ipv4IpamPoolId', '', resourceType) ??
+      (properties['Ipv4IpamPoolId'] === ''
+        ? `${resourceType}.Ipv4IpamPoolId must not be blank`
+        : undefined) ??
       configIntegerRefusal(properties, 'Ipv4NetmaskLength', resourceType, 0, 32);
     if (refusal !== undefined) {
       throw markNonRetryable(
         new ProvisioningError(
-          `${refusal}. The VPC ${logicalId} was not created.${context?.replayingState === true ? ' The value comes from the state record being restored.' : ''}`,
+          `${refusal}. The VPC ${logicalId} was not created.${replayedRecordNote(context)}`,
           resourceType,
           logicalId
         )
@@ -1646,14 +1706,15 @@ export class EC2Provider implements ResourceProvider {
   private buildVpcEncryptionControl(
     value: unknown,
     resourceType: string,
-    logicalId: string
+    logicalId: string,
+    context: CreateContext | undefined
   ): VpcEncryptionControlConfiguration | undefined {
     if (value === undefined || value === null) return undefined;
     const path = `${resourceType} VpcEncryptionControl`;
     const refuse = (reason: string): never => {
       throw markNonRetryable(
         new ProvisioningError(
-          `${reason}. The VPC ${logicalId} was not created.`,
+          `${reason}. The VPC ${logicalId} was not created.${replayedRecordNote(context)}`,
           resourceType,
           logicalId
         )
@@ -2081,7 +2142,7 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void | ResourceDeleteResult> {
     switch (resourceType) {
       case 'AWS::EC2::VPC':
-        return this.deleteVpc(logicalId, physicalId, resourceType, context);
+        return this.deleteVpc(logicalId, physicalId, resourceType, context, properties);
       case 'AWS::EC2::Subnet':
         return this.deleteSubnet(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::InternetGateway':
@@ -2439,7 +2500,8 @@ export class EC2Provider implements ResourceProvider {
     const encryptionControl = this.buildVpcEncryptionControl(
       properties['VpcEncryptionControl'],
       resourceType,
-      logicalId
+      logicalId,
+      context
     );
     const orphanMatch: VpcOrphanMatch = cidrBlock
       ? { cidrBlock }
@@ -2667,6 +2729,26 @@ export class EC2Provider implements ResourceProvider {
           'destroy + redeploy the VPC (and the resources that depend on it). AWS changes InstanceTenancy in place only to default, and CloudFormation creates a new VPC for this change'
         );
       }
+      // go-to-k/cdkd#5633: the create-only CreateVpc inputs. The engine
+      // replaces the VPC on a change, so only `cdkd drift --revert` reaches
+      // here with one; AWS has no call that changes them, so it is refused
+      // before any call rather than reported as reverted.
+      // `Ipv4IpamPoolId` has no readback (getDriftUnknownPaths), so a revert's
+      // AWS-side bag never carries it: compared only when both sides do.
+      const createOnlyChanged = VPC_CREATE_ONLY_SENT.filter(
+        (key) =>
+          !(
+            key === 'Ipv4IpamPoolId' &&
+            (properties[key] === undefined || previousProperties[key] === undefined)
+          ) && !sameCreateOnlySent(key, properties[key], previousProperties[key])
+      );
+      if (createOnlyChanged.length > 0) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `destroy + redeploy the VPC (and the resources that depend on it). ${createOnlyChanged.join(', ')} can be set only when the VPC is created, and CloudFormation creates a new VPC for this change`
+        );
+      }
 
       // Coerce CFn-string-or-bool ("true" | true) into a real boolean so the
       // diff below treats `"true"` and `true` as the same value.
@@ -2770,7 +2852,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    context?: DeleteContext
+    context?: DeleteContext,
+    properties?: Record<string, unknown>
   ): Promise<void> {
     this.logger.debug(`Deleting VPC ${logicalId}: ${physicalId}`);
 
@@ -2780,6 +2863,7 @@ export class EC2Provider implements ResourceProvider {
       try {
         await this.ec2Client.send(new DeleteVpcCommand({ VpcId: physicalId }));
         this.logger.debug(`Successfully deleted VPC ${logicalId}`);
+        await this.waitForVpcIpamRelease(physicalId, resourceType, properties, context);
         return;
       } catch (error) {
         // go-to-k/cdkd#4606: a journaled orphan counts as gone only on
@@ -2839,6 +2923,61 @@ export class EC2Provider implements ResourceProvider {
         );
       }
     }
+  }
+
+  /**
+   * go-to-k/cdkd#5633: an IPAM-allocated VPC's pool allocation outlives
+   * `DeleteVpc`, and until it is released the pool refuses to deprovision its
+   * CIDR ("The CIDR has one or more allocations."), so a destroy that deletes
+   * the `AWS::EC2::IPAMPoolCidr` next fails. CloudFormation reports the VPC
+   * deleted only once that allocation is gone; this waits for the same, by
+   * the pool's `GetIpamPoolAllocations`.
+   *
+   * The delete is ACCEPTED, so the wait follows `delete-gone-wait.ts`: a cap,
+   * a Ctrl-C or an unreadable listing (a role without
+   * `ec2:GetIpamPoolAllocations`) warns and returns, naming the consequence. A
+   * pool already gone counts as released. Only a recorded pool id cdkd can
+   * send is waited on: a redacted or `{{resolve:...}}` one is skipped.
+   */
+  private async waitForVpcIpamRelease(
+    vpcId: string,
+    resourceType: string,
+    properties: Record<string, unknown> | undefined,
+    context: DeleteContext | undefined
+  ): Promise<void> {
+    const poolId = properties?.['Ipv4IpamPoolId'];
+    if (typeof poolId !== 'string' || !/^ipam-pool-[0-9a-z]+$/.test(poolId)) return;
+    await waitForGoneAfterDelete({
+      what: maskerOrIdentity(context?.maskSecrets)(
+        `the IPAM pool ${poolId} allocation of VPC ${vpcId}`
+      ),
+      resourceType,
+      consequence:
+        'AWS releases the allocation on its side; until it does, the pool refuses to deprovision its CIDR ("The CIDR has one or more allocations."), so re-run the destroy if it stops there.',
+      describe: async () => {
+        try {
+          let token: string | undefined;
+          let pages = 0;
+          do {
+            const page = await this.ec2Client.send(
+              new GetIpamPoolAllocationsCommand({ IpamPoolId: poolId, NextToken: token })
+            );
+            if ((page.IpamPoolAllocations ?? []).some((a) => a.ResourceId === vpcId)) {
+              return 'allocated';
+            }
+            token = page.NextToken;
+            pages++;
+          } while (token && pages < MAX_ORPHAN_LIST_PAGES);
+          return undefined;
+        } catch (error) {
+          if (isNamedError(error, IPAM_POOL_NOT_FOUND_NAMES)) return undefined;
+          throw error;
+        }
+      },
+      logger: this.logger,
+      pollIntervalMs: vpcIpamReleaseWait.pollIntervalMs,
+      maxWaitMs: vpcIpamReleaseWait.maxWaitMs,
+    });
   }
 
   /**
@@ -8523,6 +8662,24 @@ export class EC2Provider implements ResourceProvider {
           'AWS::EC2::Instance InstanceType'
         );
       }
+    }
+
+    // CpuOptions / HibernationOptions (go-to-k/cdkd#5630): create-only, so the
+    // engine replaces the instance on a change and only `cdkd drift --revert`
+    // brings one here. AWS has no call that changes them on a running
+    // instance, so the update is refused before any call rather than reported
+    // as reverted.
+    const createOnlyChanged = INSTANCE_CREATE_ONLY_SENT.filter((key) =>
+      changed(key, (a, b) => sameCreateOnlySent(key, a, b))
+    );
+    if (createOnlyChanged.length > 0) {
+      throw refusedBeforeApplying(
+        new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          `replace the instance (cdkd deploy --replace). ${createOnlyChanged.join(', ')} can be set only when the instance is launched, and CloudFormation creates a new instance for this change`
+        )
+      );
     }
 
     // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): CloudFormation
