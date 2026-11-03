@@ -254,6 +254,7 @@ prints the manual wait command, and continues.
 | CloudFront distribution | Disable, then wait |
 | Kinesis stream, Firehose delivery stream | Until the stream is gone |
 | Lambda network connector | Until the connector is gone |
+| ECS service | Until `INACTIVE` |
 
 Each wait is there for a reason:
 
@@ -267,6 +268,12 @@ Each wait is there for a reason:
 - A Lambda network connector reports `DELETING` before it is gone, so cdkd
   waits until AWS no longer returns it, about 3 seconds, before reporting it
   deleted. A connector that ends in `DELETE_FAILED` fails the destroy.
+- An ECS service is still `DRAINING` when `DeleteService` returns. Until it
+  is `INACTIVE`, its dependents cannot be removed: an ECS gateway, for one,
+  refuses its delete while the cluster association stays active. cdkd waits
+  for `INACTIVE` (or for the service to be gone), as CloudFormation does, for
+  up to 600 seconds or the `--resource-timeout` set for `AWS::ECS::Service`
+  if longer. A wait that runs out fails the delete.
 
 RDS and ElastiCache deletes do not wait, because nothing in a destroy depends
 on them.

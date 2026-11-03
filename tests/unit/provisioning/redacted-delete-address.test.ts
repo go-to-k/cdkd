@@ -503,7 +503,15 @@ describe('CloudWatch AnomalyDetector: every descriptor field is an address', () 
 
 describe('sites with a second source fall back to it instead of skipping', () => {
   it('AWS::ECS::Service uses the cluster in a long-format service ARN', async () => {
-    send.mockResolvedValue({});
+    // The delete waits for INACTIVE (go-to-k/cdkd#5664); that read must use
+    // the derived cluster too, which the loop below checks.
+    send.mockImplementation((command: { constructor: { name: string } }) =>
+      Promise.resolve(
+        command.constructor.name === 'DescribeServicesCommand'
+          ? { services: [{ status: 'INACTIVE' }] }
+          : {}
+      )
+    );
     await new ECSProvider().delete(
       'R',
       'arn:aws:ecs:us-east-1:111122223333:service/my-cluster/s',
@@ -515,6 +523,9 @@ describe('sites with a second source fall back to it instead of skipping', () =>
       expect(JSON.stringify(call[0].input)).not.toContain(SECRET_MASK);
     }
     expect(send.mock.calls[0]![0].input).toMatchObject({ cluster: 'my-cluster' });
+    expect(
+      send.mock.calls.some((call) => call[0].constructor.name === 'DescribeServicesCommand')
+    ).toBe(true);
   });
 
   it('AWS::Lambda::Permission uses the function in the physicalId', async () => {

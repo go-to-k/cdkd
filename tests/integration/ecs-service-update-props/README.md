@@ -57,6 +57,12 @@ needs expensive/out-of-scope infrastructure this fixture deliberately avoids:
 - **Role** — needs a classic ELB setup (legacy service role); create-only
   pass-through + replacement classification are unit-pinned.
 
+### Exercised live elsewhere
+
+- **GatewayConnectors** (#5634) — needs an `AWS::ECS::Gateway` (a two-AZ
+  host-shared ALB) and a named container port, so it runs live in its own
+  fixture, `tests/integration/ecs-service-gateway-connectors`.
+
 ## Resources
 
 - **VPC**: Minimal VPC with 1 AZ and a public subnet (no NAT gateway)

@@ -78,9 +78,6 @@
       "Ipv4NetmaskLength",
       "VpcEncryptionControl"
     ],
-    "AWS::ECS::Service": [
-      "GatewayConnectors"
-    ],
     "AWS::KinesisFirehose::DeliveryStream": [
       "DatabaseSourceConfiguration",
       "SnowflakeDestinationConfiguration"

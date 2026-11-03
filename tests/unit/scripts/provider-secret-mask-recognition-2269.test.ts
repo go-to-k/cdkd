@@ -858,6 +858,10 @@ const NOT_A_MESSAGE_FACTORY: ReadonlyMap<string, string> = new Map([
     "resolveSecretDerivedPrincipals' error masker (#4150): its argument is an EXISTING error, returned as a clone with its chain masked, never a message",
   ],
   [
+    'markDeleteStarted',
+    "stamps an EXISTING error object delete-started (#4946; ecs-provider's INACTIVE wait, #5664); its argument is that error, never a message",
+  ],
+  [
     'markRefusedBeforeApplying',
     'stamps an EXISTING error object refused-before-applying (#4355); its argument is that error, never a message',
   ],
