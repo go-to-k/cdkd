@@ -1150,8 +1150,9 @@ check_endpoints "step 3f"
 # COST, stated so a slow run is not read as a hang. cdkd's destroy has no
 # per-resource target, so it still deletes what does not hang off the refused
 # clusters. Since go-to-k/cdkd#5670 it no longer attempts what the refused
-# clusters depend on (parameter groups, subnet groups, the shared SG, the
-# subnets and the VPC): those are reported "not deleted" and stay in state, so
+# clusters depend on (e.g. the Neptune cluster parameter group, the subnet
+# groups, the shared SG, the subnets, the VPC and the Neptune roles): those are
+# reported "not deleted" and stay in state, so
 # this step no longer sits through DependencyViolation retries. The
 # failure-set assertion below proves nothing ELSE failed along the way, and
 # step 4 deletes what is left.
@@ -1351,8 +1352,8 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
 fi
 echo "[verify] step 5 ok: state cleared"
 
-# The step-3g failure set let both Neptune parameter groups fail while the
-# surviving cluster held them; the final destroy must have removed them.
+# Step 3g kept NeptuneClusterParams behind the refused cluster (and deleted
+# NeptuneInstanceParams); after the final destroy neither may remain.
 for pg in "${NEPTUNE_CLUSTER_PG}:describe-db-cluster-parameter-groups --db-cluster-parameter-group-name" "${NEPTUNE_INSTANCE_PG}:describe-db-parameter-groups --db-parameter-group-name"; do
   pg_name=${pg%%:*}
   pg_cmd=${pg#*:}
