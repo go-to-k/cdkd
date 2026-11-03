@@ -895,7 +895,11 @@ describe('the log lines a secret-derived name newly reaches are masked (go-to-k/
     {
       label: 'DBProxy modify line',
       site: 'RDS DBProxy DBProxyName',
-      answers: { ModifyDBProxyCommand: () => ({}), DescribeDBProxiesCommand: () => ({}) },
+      answers: {
+        ModifyDBProxyCommand: () => ({}),
+        // update() polls for `available` after the modify.
+        DescribeDBProxiesCommand: () => ({ DBProxies: [{ Status: 'available' }] }),
+      },
       pinned: [`Updating DBProxy ${SECRET_MASK}:`],
     },
     {
@@ -1629,7 +1633,11 @@ describe('value masks catch a name below the substring floor on every value-mask
   const cases: Array<{ site: string; answers: Record<string, () => unknown>; pinned: string }> = [
     {
       site: 'RDS DBProxy DBProxyName',
-      answers: { ModifyDBProxyCommand: () => ({}), DescribeDBProxiesCommand: () => ({}) },
+      answers: {
+        ModifyDBProxyCommand: () => ({}),
+        // update() polls for `available` after the modify.
+        DescribeDBProxiesCommand: () => ({ DBProxies: [{ Status: 'available' }] }),
+      },
       pinned: `Updating DBProxy ${SECRET_MASK}:`,
     },
     {

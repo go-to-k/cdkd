@@ -40,6 +40,7 @@ import { getLogger } from '../../../src/utils/logger.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
+import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxy';
 const PROXY_NAME = 'AuroraProxy';
@@ -219,6 +220,28 @@ describe('RDSDBProxyProvider', () => {
       await expect(provider.create('Proxy', RESOURCE_TYPE, validProps)).rejects.toThrow(
         /terminal failure state: incompatible-network/
       );
+    });
+
+    // go-to-k/cdkd#4275: the proxy name can be secret-derived, so the poll's
+    // own messages go through the deploy's masker like the rest of create().
+    it('masks a secret-derived proxy name in the terminal-state message', async () => {
+      const maskSecrets = createSecretMasker(
+        new Map([[PROXY_NAME, `{{resolve:secretsmanager:${PROXY_NAME}}}`]])
+      );
+      mockSend
+        .mockResolvedValueOnce({ DBProxy: { DBProxyName: PROXY_NAME } })
+        .mockResolvedValueOnce({ DBProxies: [{ Status: 'incompatible-network' }] });
+
+      const error = await provider
+        .create('Proxy', RESOURCE_TYPE, validProps, { maskSecrets })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect((error as Error).message).toContain(
+        `DBProxy ${SECRET_MASK} entered terminal failure state: incompatible-network`
+      );
+      expect((error as Error).message).not.toContain(PROXY_NAME);
     });
   });
 
@@ -887,6 +910,12 @@ describe('RDSDBProxyProvider', () => {
       expect((error as Error).message).toContain(
         'to become available after modify (last status: modifying)'
       );
+    });
+
+    it('fails at once when the poll finds no proxy, as DBProxyNotFoundFault does', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce({ DBProxies: [] });
+      await expect(modifyRole()).rejects.toThrow(/was not found while waiting for it after modify/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
     });
 
     it('does not poll when nothing is modified', async () => {

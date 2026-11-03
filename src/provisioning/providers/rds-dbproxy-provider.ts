@@ -370,7 +370,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
           }
           if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
             throw new ProvisioningError(
-              `DBProxy ${dbProxyName} entered terminal failure state: ${status}`,
+              mask(`DBProxy ${dbProxyName} entered terminal failure state: ${status}`),
               resourceType,
               logicalId,
               dbProxyName
@@ -396,7 +396,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
       }
       if (!endpoint || !dbProxyArn) {
         throw new ProvisioningError(
-          `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`,
+          mask(
+            `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`
+          ),
           resourceType,
           logicalId,
           dbProxyName
@@ -611,8 +613,20 @@ export class RDSDBProxyProvider implements ResourceProvider {
         const describe = await client.send(
           new DescribeDBProxiesCommand({ DBProxyName: physicalId })
         );
-        status = describe.DBProxies?.[0]?.Status;
+        const proxy = describe.DBProxies?.[0];
+        // No proxy is the same answer DBProxyNotFoundFault gives below: fail
+        // now instead of waiting out the deadline.
+        if (!proxy) {
+          throw new ProvisioningError(
+            mask(`DBProxy ${physicalId} was not found while waiting for it after modify`),
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        status = proxy.Status;
       } catch (error) {
+        if (error instanceof ProvisioningError) throw error;
         throw this.wrapCaughtError(
           error,
           'UPDATE (poll)',
