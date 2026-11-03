@@ -2085,6 +2085,8 @@ describe('ECSProvider', () => {
         mockSend.mockResolvedValueOnce({});
         // DeleteService (force)
         mockSend.mockResolvedValueOnce({});
+        // DescribeServices: already INACTIVE (go-to-k/cdkd#5664 wait)
+        mockSend.mockResolvedValueOnce({ services: [{ status: 'INACTIVE' }] });
 
         await provider.delete(
           'MyService',
@@ -2093,7 +2095,7 @@ describe('ECSProvider', () => {
           { Cluster: 'my-cluster' }
         );
 
-        expect(mockSend).toHaveBeenCalledTimes(2);
+        expect(mockSend).toHaveBeenCalledTimes(3);
 
         const updateCall = mockSend.mock.calls[0][0];
         expect(updateCall.constructor.name).toBe('UpdateServiceCommand');

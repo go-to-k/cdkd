@@ -150,3 +150,62 @@ describe('ECS Service removal semantics measured by the #1160 CloudFormation A/B
     expect(input.taskDefinition).toBe('my-task-plain:1');
   });
 });
+
+// go-to-k/cdkd#5634: a second CloudFormation A/B, on GatewayConnectors.
+// Dropping the property, alone or beside an EnableECSManagedTags change,
+// started no deployment and the live connector stayed; a DECLARED `[]`
+// started one whose revision carried no connector.
+const GATEWAY_CONNECTORS = [
+  {
+    PortName: 'web',
+    HealthCheck: { HealthCheckPath: '/health', HealthyThresholdCount: 3 },
+    Filters: { AccessTypes: ['PUBLIC', 'PRIVATE'] },
+  },
+];
+
+describe('ECS Service GatewayConnectors removal measured by the #5634 CloudFormation A/B', () => {
+  let provider: ECSProvider;
+
+  beforeEach(() => {
+    mockSend.mockReset();
+    provider = new ECSProvider();
+  });
+
+  const updateInput = async (
+    props: Record<string, unknown>,
+    prev: Record<string, unknown>
+  ): Promise<UpdateServiceCommandInput> => {
+    mockSend.mockResolvedValueOnce({
+      service: { serviceArn: SERVICE_ARN, serviceName: 'my-service' },
+    });
+    await provider.update('Svc', SERVICE_ARN, TYPE, props, prev);
+    const updates = mockSend.mock.calls.filter((c) => c[0] instanceof UpdateServiceCommand);
+    expect(updates).toHaveLength(1);
+    return (updates[0]![0] as UpdateServiceCommand).input;
+  };
+
+  it('a removed GatewayConnectors sends nothing, since CloudFormation keeps the live connector', async () => {
+    const input = await updateInput(baseProps(), {
+      ...baseProps(),
+      GatewayConnectors: GATEWAY_CONNECTORS,
+    });
+    expect(input.gatewayConnectors).toBeUndefined();
+  });
+
+  it('a removal beside another change still sends nothing for the connector', async () => {
+    const input = await updateInput(
+      { ...baseProps(), EnableECSManagedTags: true },
+      { ...baseProps(), GatewayConnectors: GATEWAY_CONNECTORS }
+    );
+    expect(input.gatewayConnectors).toBeUndefined();
+    expect(input.enableECSManagedTags).toBe(true);
+  });
+
+  it('a DECLARED empty list is sent as [], the form that clears the connector', async () => {
+    const input = await updateInput(
+      { ...baseProps(), GatewayConnectors: [] },
+      { ...baseProps(), GatewayConnectors: GATEWAY_CONNECTORS }
+    );
+    expect(input.gatewayConnectors).toEqual([]);
+  });
+});

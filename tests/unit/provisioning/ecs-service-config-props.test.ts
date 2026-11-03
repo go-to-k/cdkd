@@ -101,6 +101,37 @@ const baseProps = (): Record<string, unknown> => ({
   DesiredCount: 0,
 });
 
+// go-to-k/cdkd#5634: every member the registry schema declares on a
+// GatewayConnector, so a near-miss nested spelling cannot hide.
+const GATEWAY_CONNECTOR = {
+  PortName: 'web',
+  HealthCheck: {
+    HealthCheckProtocol: 'HTTPS',
+    HealthCheckPort: 8443,
+    HealthCheckPath: '/health',
+    HealthCheckTimeoutSeconds: 5,
+    HealthCheckIntervalSeconds: 30,
+    HealthyThresholdCount: 3,
+    UnhealthyThresholdCount: 2,
+    Matcher: { HttpCode: '200-299', GrpcCode: '0' },
+  },
+  Filters: { AccessTypes: ['PUBLIC', 'PRIVATE'] },
+};
+const GATEWAY_CONNECTOR_SDK = {
+  portName: 'web',
+  healthCheck: {
+    healthCheckProtocol: 'HTTPS',
+    healthCheckPort: 8443,
+    healthCheckPath: '/health',
+    healthCheckTimeoutSeconds: 5,
+    healthCheckIntervalSeconds: 30,
+    healthyThresholdCount: 3,
+    unhealthyThresholdCount: 2,
+    matcher: { httpCode: '200-299', grpcCode: '0' },
+  },
+  filters: { accessTypes: ['PUBLIC', 'PRIVATE'] },
+};
+
 const findCommand = (ctor: unknown) =>
   mockSend.mock.calls.find((c) => c[0] instanceof (ctor as new (...args: never[]) => object))?.[0];
 
@@ -294,6 +325,22 @@ describe('ECS Service config properties (#609)', () => {
       expect(Object.keys(cmd.input.volumeConfigurations[0].managedEBSVolume)).toContain('sizeInGiB');
     });
 
+    it('GatewayConnectors (#5634) reaches CreateService with every nested member in its SDK spelling', async () => {
+      mockSend.mockResolvedValueOnce(createResponse);
+
+      await provider.create('Svc', TYPE, {
+        ...baseProps(),
+        ServiceName: 'my-service',
+        GatewayConnectors: [GATEWAY_CONNECTOR],
+      });
+
+      const cmd = findCommand(CreateServiceCommand);
+      expect(cmd).toBeDefined();
+      // `toEqual`, not `toMatchObject`: a PascalCase key left beside (or in
+      // place of) its camelCase twin is dropped by the SDK serializer.
+      expect(cmd.input.gatewayConnectors).toEqual([GATEWAY_CONNECTOR_SDK]);
+    });
+
     it('ForceNewDeployment is a create-path no-op (CreateService has no such member)', async () => {
       mockSend.mockResolvedValueOnce(createResponse);
 
@@ -322,6 +369,7 @@ describe('ECS Service config properties (#609)', () => {
       expect(cmd.input.volumeConfigurations).toBeUndefined();
       expect(cmd.input.vpcLatticeConfigurations).toBeUndefined();
       expect(cmd.input.monitoring).toBeUndefined();
+      expect(cmd.input.gatewayConnectors).toBeUndefined();
     });
   });
 
@@ -471,6 +519,50 @@ describe('ECS Service config properties (#609)', () => {
       mockSend.mockReset();
       await update(baseProps(), { ...baseProps(), Monitoring: mon });
       expect(findCommand(UpdateServiceCommand).input.monitoring).toEqual({ metricConfigurations: [] });
+    });
+
+    it('GatewayConnectors (#5634): change is sent converted; unchanged is NOT sent', async () => {
+      await update({ ...baseProps(), GatewayConnectors: [GATEWAY_CONNECTOR] }, baseProps());
+      expect(findCommand(UpdateServiceCommand).input.gatewayConnectors).toEqual([
+        GATEWAY_CONNECTOR_SDK,
+      ]);
+
+      mockSend.mockReset();
+      await update(
+        { ...baseProps(), GatewayConnectors: [GATEWAY_CONNECTOR] },
+        { ...baseProps(), GatewayConnectors: [{ PortName: 'web' }] }
+      );
+      expect(findCommand(UpdateServiceCommand).input.gatewayConnectors).toEqual([
+        GATEWAY_CONNECTOR_SDK,
+      ]);
+
+      mockSend.mockReset();
+      await update(
+        { ...baseProps(), GatewayConnectors: [GATEWAY_CONNECTOR] },
+        { ...baseProps(), GatewayConnectors: [GATEWAY_CONNECTOR] }
+      );
+      expect(findCommand(UpdateServiceCommand).input.gatewayConnectors).toBeUndefined();
+    });
+
+    it('GatewayConnectors (#5634): a pure Filters.AccessTypes reorder is NOT a change (CFn insertionOrder: false)', async () => {
+      const withAccess = (accessTypes: string[]) => [
+        { PortName: 'web', Filters: { AccessTypes: accessTypes } },
+      ];
+      await update(
+        { ...baseProps(), GatewayConnectors: withAccess(['PRIVATE', 'PUBLIC']) },
+        { ...baseProps(), GatewayConnectors: withAccess(['PUBLIC', 'PRIVATE']) }
+      );
+      expect(findCommand(UpdateServiceCommand).input.gatewayConnectors).toBeUndefined();
+
+      // A real membership change still goes out, in the TEMPLATE's order.
+      mockSend.mockReset();
+      await update(
+        { ...baseProps(), GatewayConnectors: withAccess(['PRIVATE', 'PUBLIC']) },
+        { ...baseProps(), GatewayConnectors: withAccess(['PUBLIC']) }
+      );
+      expect(findCommand(UpdateServiceCommand).input.gatewayConnectors).toEqual([
+        { portName: 'web', filters: { accessTypes: ['PRIVATE', 'PUBLIC'] } },
+      ]);
     });
   });
 
@@ -671,16 +763,9 @@ describe('ECS Service config properties (#609)', () => {
   describe('declarations', () => {
     it('reports no silent-drop property left for the type', () => {
       const coverage = PROPERTY_COVERAGE_BY_TYPE.get(TYPE);
-      // Added by AWS in the 2026-10-20 schema refresh (#5123). The installed
-      // `@aws-sdk/client-ecs` models it on CreateServiceRequest / UpdateServiceRequest,
-      // but the provider does not write it yet, so a template using it routes
-      // through Cloud Control. Drop the name from this set once the provider wires it.
-      const notYetWired = new Set(['GatewayConnectors']);
-      for (const property of notYetWired) {
-        expect(coverage?.silentDrop.has(property), property).toBe(true);
-      }
-      expect([...(coverage?.silentDrop.keys() ?? [])].filter((p) => !notYetWired.has(p))).toEqual([]);
+      expect([...(coverage?.silentDrop.keys() ?? [])]).toEqual([]);
       for (const property of [
+        'GatewayConnectors',
         'AvailabilityZoneRebalancing',
         'DeploymentController',
         'ForceNewDeployment',
@@ -698,6 +783,7 @@ describe('ECS Service config properties (#609)', () => {
       expect(provider.getDriftUnknownPaths(TYPE).sort()).toEqual(
         [
           'ForceNewDeployment',
+          'GatewayConnectors',
           'Monitoring',
           'Role',
           'ServiceConnectConfiguration',

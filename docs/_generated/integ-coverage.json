@@ -1459,6 +1459,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -1575,6 +1576,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -1730,6 +1734,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -1840,6 +1845,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -2018,6 +2026,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -2134,6 +2143,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -2288,6 +2300,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -2404,6 +2417,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -2802,6 +2818,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -2927,6 +2944,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -3117,6 +3137,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -3227,6 +3248,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -3375,6 +3399,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -3505,6 +3530,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -3708,6 +3736,7 @@
         "ecs-fargate",
         "ecs-gateway-role-propagation",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "efs-lambda",
         "efs-standalone",
@@ -3824,6 +3853,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -4020,6 +4052,7 @@
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
@@ -4043,6 +4076,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -4091,6 +4127,7 @@
       "integs": [
         "ecs-bluegreen",
         "ecs-fargate",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
@@ -4106,6 +4143,10 @@
           "l2"
         ],
         "ecs-fargate": [
+          "l2",
+          "literal"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2",
           "literal"
         ],
@@ -4153,6 +4194,7 @@
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-schedule-targets",
+        "ecs-service-gateway-connectors",
         "ecs-service-update-props",
         "ecs-taskdef-tags-launch-type",
         "local-ecs-service-connect",
@@ -4177,6 +4219,9 @@
           "l2"
         ],
         "ecs-schedule-targets": [
+          "l2"
+        ],
+        "ecs-service-gateway-connectors": [
           "l2"
         ],
         "ecs-service-update-props": [
@@ -5108,6 +5153,7 @@
         "ec2-instance-fanout",
         "ecs-bluegreen",
         "ecs-gateway-role-propagation",
+        "ecs-service-gateway-connectors",
         "emr-cluster",
         "emr-instance-configs",
         "emr-instance-fleets",
@@ -5283,6 +5329,9 @@
         "ecs-gateway-role-propagation": [
           "l2",
           "literal"
+        ],
+        "ecs-service-gateway-connectors": [
+          "l2"
         ],
         "emr-cluster": [
           "l2",
@@ -8947,6 +8996,7 @@
     "AWS::EC2::VPNGateway",
     "AWS::EC2::Volume",
     "AWS::ECS::Gateway",
+    "AWS::ECS::GatewayClusterAssociations",
     "AWS::EKS::Cluster",
     "AWS::ELBv2::LoadBalancer",
     "AWS::ElastiCache::ParameterGroup",

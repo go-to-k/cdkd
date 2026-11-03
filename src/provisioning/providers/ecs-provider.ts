@@ -84,6 +84,7 @@ import {
   type ServiceConnectConfiguration,
   type ServiceVolumeConfiguration,
   type VpcLatticeConfiguration,
+  type GatewayConnector,
   type MonitoringConfiguration,
   type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
@@ -97,6 +98,7 @@ import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import {
+  markNonRetryable,
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
@@ -458,6 +460,16 @@ export const settleRolloutDelays = {
 };
 
 /**
+ * Test seam for `deleteService`'s wait for the service to reach `INACTIVE`
+ * (go-to-k/cdkd#5664) — tests replace `sleep` to skip the real poll interval
+ * and `now` to drive the deadline.
+ */
+export const serviceInactiveWait = {
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+};
+
+/**
  * The rollout a `CreateService` / `UpdateService` started, read off its
  * response: the PRIMARY
  * deployment's `id`, and its `taskDefinition` (else the service's). Both are
@@ -633,6 +645,41 @@ function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E)
   return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
 }
 
+/**
+ * The `GatewayConnectors` update gate's comparison key (go-to-k/cdkd#5634).
+ * Each connector's `Filters.AccessTypes` is CFn `insertionOrder: false`, so a
+ * reorder of it is not a change and must not start a deployment; it is
+ * compared sorted. Everything else, the connector list's own order included,
+ * compares as written. Used only for the change gate, never for the value
+ * sent. A shape this does not model (a non-array list, a non-object element,
+ * a non-array `AccessTypes`) falls through to the plain serialization.
+ */
+function gatewayConnectorsGateKey(value: unknown): string {
+  if (!Array.isArray(value)) return JSON.stringify(value ?? null);
+  return JSON.stringify(
+    value.map((connector: unknown) => {
+      if (typeof connector !== 'object' || connector === null || Array.isArray(connector)) {
+        return connector;
+      }
+      const filters = (connector as Record<string, unknown>)['Filters'];
+      if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
+        return connector;
+      }
+      const accessTypes = (filters as Record<string, unknown>)['AccessTypes'];
+      if (!Array.isArray(accessTypes)) return connector;
+      return {
+        ...(connector as Record<string, unknown>),
+        Filters: {
+          ...(filters as Record<string, unknown>),
+          // Sorted by serialization: the values are enum strings, but a
+          // malformed element must still sort deterministically.
+          AccessTypes: accessTypes.map((v) => JSON.stringify(v) ?? 'undefined').sort(),
+        },
+      };
+    })
+  );
+}
+
 export class ECSProvider implements ResourceProvider {
   private ecsClient?: ECSClient;
   private taskDefinitionCreateClient?: ECSClient;
@@ -645,8 +692,9 @@ export class ECSProvider implements ResourceProvider {
    * these are removed from the template: CapacityProviderStrategy,
    * PlacementConstraints, PlacementStrategies, PlatformVersion,
    * HealthCheckGracePeriodSeconds, EnableECSManagedTags, PropagateTags,
-   * EnableExecuteCommand, and (#1160) AvailabilityZoneRebalancing.
-   * `UpdateService` keeps an absent member, so sending nothing is parity.
+   * EnableExecuteCommand, (#1160) AvailabilityZoneRebalancing, and (#5634)
+   * GatewayConnectors. `UpdateService` keeps an absent member, so sending
+   * nothing is parity.
    * ServiceConnectConfiguration, VolumeConfigurations,
    * VpcLatticeConfigurations and Monitoring ARE reset by CloudFormation (see
    * `updateService`). The earlier #1160 resets for the keep list were
@@ -720,6 +768,8 @@ export class ECSProvider implements ResourceProvider {
         'ServiceConnectConfiguration',
         'VolumeConfigurations',
         'VpcLatticeConfigurations',
+        // go-to-k/cdkd#5634 — added by AWS in the 2026-10-20 schema refresh.
+        'GatewayConnectors',
       ]),
     ],
   ]);
@@ -1731,6 +1781,10 @@ export class ECSProvider implements ResourceProvider {
           monitoring: this.convertMonitoringConfiguration(
             properties['Monitoring'] as Record<string, unknown> | undefined
           ),
+          // go-to-k/cdkd#5634: the 2026-10-20 schema-refresh addition.
+          gatewayConnectors: this.convertGatewayConnectors(
+            properties['GatewayConnectors'] as Array<Record<string, unknown>> | undefined
+          ),
         })
       );
 
@@ -2597,6 +2651,8 @@ export class ECSProvider implements ResourceProvider {
     //   - AvailabilityZoneRebalancing -> no reset sent: CloudFormation KEEPS
     //     the live value (DISABLED stayed DISABLED, not the schema's ENABLED
     //     default), and UpdateService keeps an absent member.
+    //   - GatewayConnectors -> no reset sent (#5634): CloudFormation KEEPS
+    //     the live connector; see the block below.
     //   - Monitoring -> `{ metricConfigurations: [] }`: CloudFormation resets
     //     the service revision to exactly that, while UpdateService keeps an
     //     absent member (the old 20-second resolution survived).
@@ -2680,6 +2736,25 @@ export class ECSProvider implements ResourceProvider {
         )
       : undefined;
 
+    // go-to-k/cdkd#5634: GatewayConnectors, change-gated like the blobs above.
+    // A CloudFormation A/B settled removal: dropping the property (alone, or
+    // beside another change) starts no deployment and the live connector
+    // stays, so sending nothing is parity — UpdateService keeps an absent
+    // member. Only a DECLARED `[]` clears it (CloudFormation sends it, and
+    // the next service revision carries no connector), and it reaches here
+    // as a change like any other value. The gate compares
+    // `Filters.AccessTypes` as a set (CFn schema `insertionOrder: false`), so
+    // a pure reorder starts no deployment; the value SENT keeps the
+    // template's order.
+    const gatewayConnectorsChanged =
+      gatewayConnectorsGateKey(previousProperties['GatewayConnectors']) !==
+      gatewayConnectorsGateKey(properties['GatewayConnectors']);
+    const gatewayConnectorsInput = gatewayConnectorsChanged
+      ? this.convertGatewayConnectors(
+          properties['GatewayConnectors'] as Array<Record<string, unknown>> | undefined
+        )
+      : undefined;
+
     // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
     // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
     // field is a one-shot trigger, never persisted state).
@@ -2733,6 +2808,7 @@ export class ECSProvider implements ResourceProvider {
           volumeConfigurations: volumeConfigurationsInput,
           vpcLatticeConfigurations: vpcLatticeConfigurationsInput,
           monitoring: monitoringInput,
+          gatewayConnectors: gatewayConnectorsInput,
           forceNewDeployment: forceNewDeploymentInput,
         })
       );
@@ -2840,6 +2916,9 @@ export class ECSProvider implements ResourceProvider {
     // go-to-k/cdkd#4946: set once the scale-down is accepted, so a refused
     // `DeleteService` is never read as a whole survivor.
     let stripped = false;
+    // go-to-k/cdkd#5664: the scale-down found the service NOT ACTIVE (an
+    // earlier attempt deleted it), so only the INACTIVE wait remains.
+    let alreadyDeleted = false;
 
     try {
       // First scale down to 0
@@ -2869,20 +2948,29 @@ export class ECSProvider implements ResourceProvider {
           this.logger.debug(
             `ECS service ${physicalId} not found during scale down, skipping deletion`
           );
-          return;
+          // go-to-k/cdkd#5664: NOT ACTIVE is not gone. A service an earlier
+          // attempt already deleted is still DRAINING, and what depends on it
+          // must not be deleted before it is INACTIVE: skip the delete and
+          // fall through to the wait below (outside this try, so its failure
+          // is not re-wrapped as a delete failure).
+          if (!this.isServiceNotActiveException(error)) return;
+          alreadyDeleted = true;
+        } else {
+          throw error;
         }
-        throw error;
       }
 
       // Then force delete
-      await client.send(
-        new DeleteServiceCommand({
-          cluster,
-          service: physicalId,
-          force: true,
-        })
-      );
-      this.logger.debug(`Successfully deleted ECS service ${logicalId}`);
+      if (!alreadyDeleted) {
+        await client.send(
+          new DeleteServiceCommand({
+            cluster,
+            service: physicalId,
+            force: true,
+          })
+        );
+        this.logger.debug(`Successfully deleted ECS service ${logicalId}`);
+      }
     } catch (error) {
       if (this.isServiceNotFoundException(error)) {
         const clientRegion = await client.config.region();
@@ -2894,29 +2982,117 @@ export class ECSProvider implements ResourceProvider {
           physicalId
         );
         this.logger.debug(`ECS service ${physicalId} not found, skipping deletion`);
-        return;
+        // NOT ACTIVE (#5664): already deleted and possibly still DRAINING,
+        // so it falls through to the wait below instead of returning.
+        if (!this.isServiceNotActiveException(error)) return;
+      } else {
+        const cause = error instanceof Error ? error : undefined;
+        const wrapped = this.wrapCaughtError(
+          maskerOrIdentity(context?.maskSecrets),
+          error,
+          (text) =>
+            new ProvisioningError(
+              `Failed to delete ECS service ${logicalId}: ${text}`,
+              resourceType,
+              logicalId,
+              physicalId,
+              cause
+            )
+        );
+        // A missing CLUSTER means the service is gone too, so it stays readable
+        // as already deleted; any other `NotFound` class (a Service Connect
+        // `NamespaceNotFoundException` from the scale-down UpdateService) is
+        // not this service's.
+        const failure = this.isClusterNotFoundException(error)
+          ? wrapped
+          : markNotGoneOnNotFoundClass(error, wrapped);
+        throw stripped ? markDeleteStarted(failure) : failure;
       }
-      const cause = error instanceof Error ? error : undefined;
-      const wrapped = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete ECS service ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
+    }
+
+    // go-to-k/cdkd#5664: DeleteService returns while the service is still
+    // DRAINING. Wait for INACTIVE before reporting it deleted, as
+    // CloudFormation does, so nothing that depends on it is deleted first.
+    await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
+  }
+
+  /**
+   * Wait for a deleted ECS service to reach `INACTIVE` (go-to-k/cdkd#5664).
+   *
+   * `DeleteService` (with `force`) returns while the service is still
+   * `DRAINING`. CloudFormation waits for `INACTIVE` before it reports the
+   * service deleted; cdkd returned at once, so a dependent's delete ran
+   * against a live service. Measured: an `AWS::ECS::Gateway`'s cluster
+   * association stayed `DISASSOCIATING` and the gateway delete was refused
+   * ("Cannot delete gateway with active cluster associations") while the
+   * service with a gateway connector drained; after `INACTIVE` (~42s for a
+   * desiredCount-0 service) the disassociation and the gateway delete were
+   * immediate. Every SDK-routed service waits, not only one with a connector:
+   * a draining service also holds task ENIs, target-group registrations and
+   * Cloud Map instances that its dependents' deletes run into, and waiting
+   * is what CloudFormation does for every service.
+   *
+   * Like the other destroy waits (NAT gateway, Kinesis), this runs whatever
+   * the deploy wait mode: `--no-wait` / `CDKD_NO_WAIT` is a deploy-time flag.
+   * The cap is the create/update wait's: 600s, lifted (never lowered) by an
+   * explicit `--resource-timeout`. Running out THROWS, marked delete-started
+   * and non-retryable — a warning would let the destroy delete the
+   * service's dependents against a still-draining service, which is the
+   * defect this wait exists for, and a retry would re-run the same wait.
+   * The service counts as gone once DescribeServices reports it `INACTIVE`,
+   * reports it `MISSING`, or its cluster is gone.
+   */
+  private async waitForServiceInactive(
+    logicalId: string,
+    physicalId: string,
+    cluster: string | undefined,
+    resourceType: string
+  ): Promise<void> {
+    const client = this.getClient();
+    const maxWaitSeconds = Math.max(
+      600,
+      (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
+    );
+    const deadline = serviceInactiveWait.now() + maxWaitSeconds * 1000;
+    let delay = 2_000;
+    let lastStatus = 'unknown';
+    for (;;) {
+      try {
+        const out = await client.send(
+          new DescribeServicesCommand({ cluster, services: [physicalId] })
+        );
+        if ((out?.failures ?? []).some((failure) => failure.reason === 'MISSING')) return;
+        const status = out?.services?.[0]?.status;
+        if (status === 'INACTIVE') return;
+        lastStatus = status ?? 'unknown';
+      } catch (error) {
+        if (this.isClusterNotFoundException(error)) return;
+        // Anything else (a throttle, a denial) ends the wait as a failed
+        // delete; the deploy engine's retry re-enters `deleteService`, whose
+        // scale-down then sees the service NOT ACTIVE and comes back here.
+        const readFailure = new ProvisioningError(
+          `Failed to confirm ECS service ${logicalId} deletion: ${error instanceof Error ? error.name : 'unknown error'}`,
+          resourceType,
+          logicalId,
+          physicalId,
+          error instanceof Error ? error : undefined
+        );
+        throw markDeleteStarted(readFailure);
+      }
+      if (serviceInactiveWait.now() >= deadline) {
+        throw markNonRetryable(
+          markDeleteStarted(
+            new ProvisioningError(
+              `ECS service ${logicalIdShown(logicalId)} was deleted but did not reach INACTIVE within ${maxWaitSeconds}s (last status: ${lastStatus}). Re-run once the service is INACTIVE, or raise the limit with --resource-timeout AWS::ECS::Service=${commandHole('duration')}.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
           )
-      );
-      // A missing CLUSTER means the service is gone too, so it stays readable
-      // as already deleted; any other `NotFound` class (a Service Connect
-      // `NamespaceNotFoundException` from the scale-down UpdateService) is
-      // not this service's.
-      const failure = this.isClusterNotFoundException(error)
-        ? wrapped
-        : markNotGoneOnNotFoundClass(error, wrapped);
-      throw stripped ? markDeleteStarted(failure) : failure;
+        );
+      }
+      await serviceInactiveWait.sleep(delay);
+      delay = Math.min(delay * 2, 10_000);
     }
   }
 
@@ -4021,6 +4197,22 @@ export class ECSProvider implements ResourceProvider {
   }
 
   /**
+   * Convert the CFn PascalCase `GatewayConnectors` array to the ECS SDK
+   * camelCase input shape (go-to-k/cdkd#5634). Every key of `{PortName,
+   * HealthCheck: {HealthCheckProtocol, HealthCheckPort, HealthCheckPath,
+   * HealthCheckTimeoutSeconds, HealthCheckIntervalSeconds,
+   * HealthyThresholdCount, UnhealthyThresholdCount, Matcher: {HttpCode,
+   * GrpcCode}}, Filters: {AccessTypes}}` is a pure first-letter flip; the
+   * enum VALUES (`HTTP`, `PUBLIC`, ...) pass through untouched.
+   */
+  private convertGatewayConnectors(
+    items?: Array<Record<string, unknown>>
+  ): GatewayConnector[] | undefined {
+    if (!items) return undefined;
+    return pascalToCamelCaseKeys(items) as GatewayConnector[];
+  }
+
+  /**
    * Convert the CFn PascalCase `Monitoring` block to the ECS SDK camelCase
    * `monitoring` input shape (issue #609). Every key is a pure first-letter
    * flip (`MetricConfigurations[].{MetricNames, ResolutionSeconds}`).
@@ -4233,6 +4425,11 @@ export class ECSProvider implements ResourceProvider {
     return false;
   }
 
+  /** The NOT-ACTIVE arm of {@link isServiceNotFoundException} (go-to-k/cdkd#5664). */
+  private isServiceNotActiveException(error: unknown): boolean {
+    return error instanceof Error && error.name === 'ServiceNotActiveException';
+  }
+
   /**
    * State property paths `readCurrentState` deliberately cannot read back
    * from AWS (issue #609) — fed into the drift comparator's `ignorePaths` so
@@ -4243,7 +4440,9 @@ export class ECSProvider implements ResourceProvider {
    *     the top-level `Service` shape (they surface only per-deployment
    *     under `deployments[]`, which is rollout metadata, not service
    *     config). `VolumeConfigurations` is also registry-recorded write-only.
-   *   - `Monitoring`: not returned by DescribeServices at all.
+   *   - `Monitoring` / `GatewayConnectors` (go-to-k/cdkd#5634): not returned
+   *     by DescribeServices at all — only the service REVISION carries them
+   *     (`GatewayConnectors` is also registry-recorded write-only).
    *   - `ForceNewDeployment`: a write-only rollout trigger, not persisted
    *     service state.
    *   - `Role`: AWS reports `Service.roleArn` as the service-linked
@@ -4260,6 +4459,7 @@ export class ECSProvider implements ResourceProvider {
         'Monitoring',
         'ForceNewDeployment',
         'Role',
+        'GatewayConnectors',
       ];
     }
     return [];
@@ -4540,10 +4740,11 @@ export class ECSProvider implements ResourceProvider {
     // issue #609 read-back additions. Only what the top-level `Service` shape
     // actually returns is surfaced: DescribeServices does NOT return
     // `serviceConnectConfiguration` / `volumeConfigurations` /
-    // `vpcLatticeConfigurations` / `monitoring` on the Service itself (the
-    // first three only appear per-deployment under `deployments[]`), and
-    // `ForceNewDeployment` is a write-only rollout trigger — all five are
-    // declared in `getDriftUnknownPaths` instead of being fabricated here.
+    // `vpcLatticeConfigurations` / `monitoring` / `gatewayConnectors`
+    // (#5634) on the Service itself (the first three only appear
+    // per-deployment under `deployments[]`), and `ForceNewDeployment` is a
+    // write-only rollout trigger — all six are declared in
+    // `getDriftUnknownPaths` instead of being fabricated here.
     // `Role` is deliberately NOT reverse-mapped from `Service.roleArn`: for
     // the typical template that omits Role, AWS reports the
     // AWSServiceRoleForECS service-linked role ARN there, and a template that
