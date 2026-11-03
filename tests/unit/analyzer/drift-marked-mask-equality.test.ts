@@ -65,6 +65,12 @@ describe('the mask comparators treat an undefined-valued key as missing (#5727)'
     );
   });
 
+  it('a mask never matches an undefined or absent live value', () => {
+    expect(equalModuloMask({ S: MASK }, { S: undefined }, MASK)).toBe(false);
+    expect(equalModuloMask({ S: MASK }, {}, MASK)).toBe(false);
+    expect(equalModuloMask({ S: MASK }, { S: undefined, T: 'x' }, MASK)).toBe(false);
+  });
+
   it('equalModuloMarkedMask: an undefined live member is ignored beside unmarked and marked leaves', () => {
     expect(equal([{ Name: MASK }], [{ Name: 'sec', Description: undefined }], ['Tags'], [])).toBe(true);
     expect(
