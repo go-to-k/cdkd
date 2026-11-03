@@ -38,8 +38,12 @@ import {
 } from '../../deployment/retryable-errors.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { safeMsg } from '../../utils/display-safe.js';
-import { maskerOrIdentity } from '../masked-retry-logger.js';
-import { ProvisioningError } from '../../utils/error-handler.js';
+import {
+  createMaskedLogSinks,
+  maskerOrIdentity,
+  withDerivedNameMasks,
+} from '../masked-retry-logger.js';
+import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markNotGone } from '../not-gone.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
@@ -65,7 +69,10 @@ import { definedAttributes, stringifyIfAssigned } from '../attribute-map.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { slowCcOperationTimeoutMs } from '../slow-cc-operation-timeouts.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import {
+  pasteableAwsCommand,
+  protectedReplacementAdvice,
+} from '../replacement-protection-advice.js';
 import {
   ProtectionFlipRegistry,
   deleteWithProtectionCompensation,
@@ -685,6 +692,37 @@ function logExportsApplied(
   );
 }
 
+/**
+ * go-to-k/cdkd#5640: whether a DBInstance update may leave its
+ * `AvailabilityZone` where it is. ModifyDBInstance has no such member, and
+ * CloudFormation's update handler refuses the update ("Resource is
+ * immutable", `ImmutabilityHelper.isAvailabilityZoneChangeMutable`) unless
+ * the zone is unchanged, or the template drops it while declaring
+ * `MultiAZ: true` (the zone is then RDS's to choose). The property is not
+ * create-only in the registry schema, so the engine never replaces for it.
+ */
+function instanceAvailabilityZoneKept(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): boolean {
+  const desired = properties['AvailabilityZone'];
+  if (desired === previousProperties['AvailabilityZone']) return true;
+  return (desired == null || desired === '') && String(properties['MultiAZ']) === 'true';
+}
+
+/**
+ * go-to-k/cdkd#5640: the desired bag with the zone the instance KEPT: the
+ * previous side's, or no key when that side declared none. A copy.
+ */
+function withPreviousAvailabilityZone(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>
+): Record<string, unknown> {
+  const { AvailabilityZone: _desired, ...rest } = properties;
+  const previous = previousProperties['AvailabilityZone'];
+  return previous === undefined ? rest : { ...rest, AvailabilityZone: previous };
+}
+
 /** The template's `AWS::RDS::DBCluster` `ServerlessV2ScalingConfiguration`. */
 interface ServerlessV2ScalingProps {
   MinCapacity?: number;
@@ -1077,6 +1115,12 @@ export class RDSProvider implements ResourceProvider {
         // `CloudwatchLogsExportConfiguration` delta on ModifyDBInstance
         // (`logExportsDelta`).
         'EnableCloudwatchLogsExports',
+        // go-to-k/cdkd#5640: both ride CreateDBInstance only. `DBName` is
+        // create-only (a change replaces). `AvailabilityZone` is not, but
+        // ModifyDBInstance cannot move an instance, so a changed zone is
+        // refused as CloudFormation refuses it (`instanceAvailabilityZoneKept`).
+        'DBName',
+        'AvailabilityZone',
       ]),
     ],
   ]);
@@ -2390,6 +2434,13 @@ export class RDSProvider implements ResourceProvider {
           // go-to-k/cdkd#5640: the declared list, as CloudFormation's create sends it.
           ...(logExports !== undefined &&
             logExports.length > 0 && { EnableCloudwatchLogsExports: logExports }),
+          // go-to-k/cdkd#5640: sent as declared, as CloudFormation's create
+          // sends them; RDS itself refuses a DBName on an engine that takes
+          // none (SQL Server) and a zone beside `MultiAZ: true`.
+          ...(properties['DBName'] != null && { DBName: properties['DBName'] as string }),
+          ...(properties['AvailabilityZone'] != null && {
+            AvailabilityZone: properties['AvailabilityZone'] as string,
+          }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -2482,6 +2533,115 @@ export class RDSProvider implements ResourceProvider {
     );
 
     try {
+      // go-to-k/cdkd#5640: a zone ModifyDBInstance cannot apply is refused
+      // before any change, as CloudFormation refuses the update. A rollback
+      // replay hands over a STATE record the template cannot fix: it warns,
+      // sends nothing for the zone either way, and records the zone the instance
+      // kept (`effectiveProperties` below). A `drift --revert` bag IS the live
+      // readback, so its zone is the one the instance already holds.
+      //
+      // The physical id is the template's DBInstanceIdentifier, which can be
+      // secret-derived; after a rotation it is the PRE-rotation value this
+      // deploy's masker never resolved, so it is paired with the recorded name
+      // (go-to-k/cdkd#4339).
+      const { mask: zoneMask } = withDerivedNameMasks(
+        this.logger,
+        createMaskedLogSinks(this.logger, context?.maskSecrets),
+        [[previousProperties['DBInstanceIdentifier'], physicalId]]
+      );
+      const desiredZone = properties['AvailabilityZone'];
+      // A rollback replay restoring a record that declared no zone restores
+      // exactly that: CloudFormation reverts to the old model, and recording
+      // the forward zone would make the old template's next deploy read as a
+      // zone REMOVAL, refused.
+      let zoneKept =
+        context?.desiredFromAwsReadback === true ||
+        (context?.replayingState === true && (desiredZone == null || desiredZone === '')) ||
+        instanceAvailabilityZoneKept(properties, previousProperties);
+      // A record can lack the zone the instance sits in (deployed while
+      // `--prefer-sdk-route` kept the property out of the record, or a rollback
+      // that recorded none): the zone the template declares is then no change
+      // when the live instance already holds it. An unreadable instance keeps
+      // the refusal.
+      // The live read has more answers than the zone: the instance is gone
+      // (deleted outside cdkd), or the read failed (a throttle, a missing
+      // grant). The refusal names either, so neither reads as "the instance
+      // is elsewhere".
+      // Assigned inside the callbacks, so declared wide (no narrowing to 'read').
+      let liveZoneRead = 'read' as 'read' | 'not-found' | 'unreadable';
+      if (!zoneKept && typeof desiredZone === 'string' && desiredZone !== '') {
+        const liveZone = await this.describeDBInstance(physicalId).then(
+          (instance) => {
+            if (instance === undefined) liveZoneRead = 'not-found';
+            return instance?.AvailabilityZone;
+          },
+          (err: unknown) => {
+            liveZoneRead =
+              (err as { name?: unknown } | null)?.name === 'DBInstanceNotFoundFault'
+                ? 'not-found'
+                : 'unreadable';
+            this.logger.debug(
+              zoneMask(
+                safeMsg`DBInstance ${logicalId}: could not read the live zone: ${describeAwsFailure(err).summary}`
+              )
+            );
+            return undefined;
+          }
+        );
+        zoneKept = liveZone === desiredZone;
+      }
+      if (!zoneKept && context?.replayingState !== true) {
+        throw new ResourceUpdateNotSupportedError(
+          resourceType,
+          logicalId,
+          zoneMask(
+            `AvailabilityZone cannot change on an existing DB instance — ModifyDBInstance has no ` +
+              `such member, and CloudFormation refuses the same update ("Resource is immutable"). ` +
+              `Nothing was applied to DB instance ${physicalId}. ` +
+              (liveZoneRead === 'not-found'
+                ? `RDS reports no such DB instance: it was deleted outside cdkd, so the state ` +
+                  `record no longer matches AWS. `
+                : liveZoneRead === 'unreadable'
+                  ? `cdkd could not read the instance's live zone (an AWS read failed), so it ` +
+                    `could not tell whether the instance already sits in the declared one; a ` +
+                    `re-run may succeed. `
+                  : '') +
+              `To keep the instance where it ` +
+              `is, declare the zone the previous deploy declared (or none, if it declared none), ` +
+              `or drop the zone and declare MultiAZ: true. The replace flags below apply to the ` +
+              `WHOLE deploy: every other stateful resource in the same run whose in-place update ` +
+              `is refused or that needs a replacement is recreated too, so run them with nothing ` +
+              `else pending. To move it, ` +
+              (String(previousProperties['DeletionProtection']) === 'true'
+                ? protectedReplacementAdvice({
+                    evidence:
+                      "cdkd's properties for this DB instance carry DeletionProtection: true",
+                    replaceFlags: 'cdkd deploy --replace --force-stateful-recreation',
+                    disable: {
+                      before: 'aws rds modify-db-instance --db-instance-identifier',
+                      identifier: physicalId,
+                      after: '--no-deletion-protection --apply-immediately',
+                      maskSecrets: zoneMask,
+                    },
+                  })
+                : 'note AWS::RDS::DBInstance is a stateful type: re-run with ' +
+                  'cdkd deploy --replace --force-stateful-recreation to recreate it in the new zone ' +
+                  '(this deletes the instance and its data)')
+          )
+        );
+      }
+      if (!zoneKept) {
+        this.logger.warn(
+          zoneMask(
+            safeMsg`DBInstance ${logicalId} (${physicalId}): AvailabilityZone cannot change in place ` +
+              safeMsg`(ModifyDBInstance has no such member), so the instance keeps its current zone ` +
+              safeMsg`and cdkd records that zone.`
+          )
+        );
+      }
+      const effectiveProperties = zoneKept
+        ? undefined
+        : withPreviousAvailabilityZone(properties, previousProperties);
       // #609 backfill — 6 mutable sibling props matching DBCluster.
       // StorageEncrypted + MasterUsername are create-only per AWS RDS docs
       // and intentionally NOT forwarded here; a template change to either
@@ -2675,8 +2835,12 @@ export class RDSProvider implements ResourceProvider {
           'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
           Arn: described?.DBInstanceArn,
         }),
+        ...(effectiveProperties !== undefined && { effectiveProperties }),
       };
     } catch (error) {
+      // go-to-k/cdkd#5640: the typed zone refusal reaches the deploy engine's
+      // `--replace` fallback unwrapped.
+      if (error instanceof ResourceUpdateNotSupportedError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapCaughtError(
         context?.maskSecrets,
@@ -4033,6 +4197,13 @@ export class RDSProvider implements ResourceProvider {
         inst.PendingModifiedValues?.PendingCloudwatchLogsExports
       );
       if (instanceLogs.length > 0) result['EnableCloudwatchLogsExports'] = instanceLogs;
+    }
+    // go-to-k/cdkd#5640: same names on the Describe shape. The zone only for a
+    // single-AZ instance: a Multi-AZ one moves to its standby's zone on every
+    // failover, which no template controls.
+    if (inst.DBName !== undefined) result['DBName'] = inst.DBName;
+    if (inst.AvailabilityZone !== undefined && inst.MultiAZ !== true) {
+      result['AvailabilityZone'] = inst.AvailabilityZone;
     }
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;

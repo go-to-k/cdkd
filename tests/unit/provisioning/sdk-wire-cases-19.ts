@@ -545,9 +545,22 @@ const INSTANCE_CASE: TypeCase = {
         AllowMajorVersionUpgrade: true,
         DBParameterGroupName: 'pg-1',
         EnableCloudwatchLogsExports: ['postgresql', 'upgrade'],
+        // go-to-k/cdkd#5640: DBName is create-only (create probes only).
+        DBName: 'appdb',
+        AvailabilityZone: 'us-east-1a',
       },
+      expectedRemovalThrows: Object.fromEntries(
+        ['update-add', 'update-remove'].map((d) => [
+          `${d}:AvailabilityZone`,
+          {
+            why: `ModifyDBInstance cannot move an instance, and CloudFormation refuses a changed zone ("Resource is immutable"), so update() refuses it before any call (instanceAvailabilityZoneKept in ${SRC}, go-to-k/cdkd#5640)`,
+            says: /AvailabilityZone cannot change on an existing DB instance/,
+          },
+        ])
+      ),
       expectedSilent: {
         ...INSTANCE_ENGINE_SILENT,
+        'update-vary:AvailabilityZone': `refused like its add and removal: any changed zone throws before a call (instanceAvailabilityZoneKept in ${SRC}, go-to-k/cdkd#5640)`,
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
         'create:AllowMajorVersionUpgrade': `not a CreateDBInstance member; CloudFormation's create sends none either (${SRC} createDBInstance)`,
         'create-vary:AllowMajorVersionUpgrade': `not a CreateDBInstance member; CloudFormation's create sends none either (${SRC} createDBInstance)`,

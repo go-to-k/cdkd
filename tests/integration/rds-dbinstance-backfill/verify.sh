@@ -71,6 +71,12 @@
 # what the previous template declared), with parameter group B kept beside it.
 # Cleanup deletes the CloudWatch log groups RDS created for the exports.
 #
+# go-to-k/cdkd#5640 (DBInstance DBName / AvailabilityZone): declared unchanged
+# in every phase; the provisionedBy=sdk guard is what a pre-fix cdkd fails, and
+# phase 1 asserts the live DBName and zone (the zone the record declares), that
+# the observed baseline holds both, and that `cdkd drift` finds the instance
+# unchanged.
+#
 # Required env vars:
 #   STATE_BUCKET — cdkd state bucket (e.g. cdkd-state-{accountId})
 #   AWS_REGION   — defaults to us-east-1
@@ -530,6 +536,67 @@ assert_log_exports() {
   echo "    OK: ${3}: EnabledCloudwatchLogsExports == '${1}' on AWS (${2}, go-to-k/cdkd#5640)"
 }
 assert_log_exports 'postgresql' 'EnableCloudwatchLogsExports rode CreateDBInstance' 'phase 1'
+
+# go-to-k/cdkd#5640: DBName and AvailabilityZone rode CreateDBInstance. The
+# zone the template declared is the state record's, by logical id (the
+# fixture resolves it from the VPC's second subnet).
+EXPECTED_AZ=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.key | test("^BackfillInstance")) | .value.properties.AvailabilityZone // empty] | first // ""')
+if [ -z "${EXPECTED_AZ}" ]; then
+  echo "FAIL: #5640 premise: the BackfillInstance record declares no AvailabilityZone" >&2
+  exit 1
+fi
+ACTUAL_DB_NAME=$(echo "${INSTANCE}" | jq -r '.DBName // "null"')
+if [ "${ACTUAL_DB_NAME}" != "cdkdbackfill" ]; then
+  echo "FAIL: phase 1: DBName is '${ACTUAL_DB_NAME}', expected 'cdkdbackfill' (DBName did not reach CreateDBInstance, go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: DBName == cdkdbackfill on AWS (go-to-k/cdkd#5640)"
+ACTUAL_AZ=$(echo "${INSTANCE}" | jq -r '.AvailabilityZone // "null"')
+if [ "${ACTUAL_AZ}" != "${EXPECTED_AZ}" ]; then
+  echo "FAIL: phase 1: AvailabilityZone is '${ACTUAL_AZ}', expected '${EXPECTED_AZ}' (AvailabilityZone did not reach CreateDBInstance, go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: AvailabilityZone == ${EXPECTED_AZ} on AWS (go-to-k/cdkd#5640)"
+
+# go-to-k/cdkd#5640: the readback reports both. The record's observed baseline
+# is captured from readCurrentState after the deploy, so it holds them only
+# when the readback emits them; drift then compares the instance through that
+# baseline and must find it unchanged.
+OBSERVED_DB_NAME=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.key | test("^BackfillInstance")) | .value.observedProperties.DBName // "null"] | first // "null"')
+OBSERVED_AZ=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.key | test("^BackfillInstance")) | .value.observedProperties.AvailabilityZone // "null"] | first // "null"')
+if [ "${OBSERVED_DB_NAME}" != "cdkdbackfill" ] || [ "${OBSERVED_AZ}" != "${EXPECTED_AZ}" ]; then
+  echo "FAIL: phase 1: the BackfillInstance observed baseline holds DBName='${OBSERVED_DB_NAME}' AvailabilityZone='${OBSERVED_AZ}', expected 'cdkdbackfill' / '${EXPECTED_AZ}' (readCurrentState does not report them, go-to-k/cdkd#5640)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: the observed baseline holds DBName and AvailabilityZone (go-to-k/cdkd#5640)"
+DRIFT_OUT=$(mktemp)
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" > "${DRIFT_OUT}" 2>&1
+DRIFT_RC=$?
+set -e
+# Only the instance's own rows: other resources' drift is not this arm's subject.
+# `~` drifted, `?` unsupported, `!` not compared (a readback that threw), `-`
+# deleted: each means the readback did not prove the instance unchanged.
+if grep -qE '^[[:space:]]*[~?!-] BackfillInstance \(AWS::RDS::DBInstance\)' "${DRIFT_OUT}"; then
+  echo "FAIL: phase 1: cdkd drift reports the unchanged BackfillInstance as drifted, unsupported, not compared or deleted (go-to-k/cdkd#5640; drift rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_OUT}" >&2
+  rm -f "${DRIFT_OUT}"
+  exit 1
+fi
+# Sentinel: the per-stack verdict heading (`✓ <stack> (<region>): ...` or
+# `⚠ <stack> (<region>): ...`). A crashed run, or one that never reported this
+# stack, prints none, and the row check above cannot tell that from "clean".
+# The rc cannot: a crash exits 1, the same as detected drift.
+if ! grep -qE "^[[:space:]]*(✓|⚠) ${STACK} \(${REGION}\): " "${DRIFT_OUT}"; then
+  echo "FAIL: phase 1: cdkd drift did not report on ${STACK} (rc=${DRIFT_RC}), so it compared nothing (go-to-k/cdkd#5640):" >&2
+  cat "${DRIFT_OUT}" >&2
+  rm -f "${DRIFT_OUT}"
+  exit 1
+fi
+rm -f "${DRIFT_OUT}"
+echo "    OK: phase 1: cdkd drift does not report BackfillInstance as drifted (go-to-k/cdkd#5640)"
 
 # #5542 premise: the VPC's `default` group, which the phase-2 removal of
 # VPCSecurityGroups must attach. Resolved through the instance's own subnet
