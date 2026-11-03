@@ -188,7 +188,7 @@ verify, clean up.
    - Verify the AWS resources are gone, per stack name from synth output, for
      the types the test actually created — the per-service listing commands are
      in `/cleanup` step 4; run them with this run's stack prefix. An
-     RDS `automated` snapshot outlives its instance: re-poll ~2 min (#5593).
+     RDS `automated` snapshot outlives its instance: re-poll ~5 min (#5593; #5640 took 4).
    - FSx tests take an extra check: destroy keeps CFn parity, so
      `DeleteFileSystem` takes a chargeable FINAL BACKUP by default, and it
      usually carries NO tags, so a name scan reports clean over a live billing
