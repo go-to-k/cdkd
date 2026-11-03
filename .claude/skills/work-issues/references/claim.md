@@ -70,10 +70,12 @@ extension>' tests/unit` hits; suites need not mirror `src/`), the fixture §8-c 
 extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW one
 adds `gen:all-matrices`' outputs in `docs/`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
-every comment, doc or rule the fix makes FALSE — stating the old invariant or
-calling the issue open (`grep -rnw '<issue digits>\|<key symbol>\|<each
-changed flag or cdkd subcommand>' src docs .claude/rules plugins`, minus
-`docs/_generated`, each through §2's open-PR `files` query; READ each hit's
+every file the fix makes FALSE — a comment, doc or rule stating the old invariant
+or calling the issue open, or a `verify.sh` / workflow reading a renamed key
+(`grep -rnw '<issue digits>\|<key symbol>\|<each changed flag or cdkd
+subcommand>' --exclude-dir={node_modules,cdk.out,_generated} src docs
+.claude/rules plugins tests/integration .github`, each hit through §2's
+open-PR `files` query; READ each hit's
 prose, as a stale sentence may name no symbol; a `plugins/**` edit adds
 check-docs' two `version` files); a NEW SDK provider adds
 `.claude/rules/providers.md`'s "Adding a New SDK Provider" files, the fenced

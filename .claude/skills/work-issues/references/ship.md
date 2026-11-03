@@ -45,8 +45,9 @@ budget the PARENT computed with that block, named per fixture in the brief
 verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
 its own, #5519) and wait on ONE command exiting with that PID (no per-line
 Monitor: each line re-ends it, #5413), bans attribution
-lines in the ledger commit (#5104), and STOPs on an unreadable state record,
-never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
+lines in the ledger commit (#5104), relaunches only after `pgrep -f verify.sh`
+plus each PID's cwd shows that fixture not running (a duplicate set FAILed,
+#5695), and STOPs on an unreadable state record, never purging (`/run-integ` step 7). A FAIL names the file EMITTING its message (`grep -rlF` a `${}`-free fragment over `src/`
 and the fixture): the PR is blamed when that file is in its diff, cleared when
 the grep hits only outside it, else UNATTRIBUTED (#4981). Size it for ONE
 context (§8-d probe alone, then fixture batches), each run's fixture,
