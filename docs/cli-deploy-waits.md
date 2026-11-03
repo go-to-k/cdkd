@@ -285,7 +285,8 @@ Each wait is there for a reason:
 
 - An RDS, DocumentDB or Neptune cluster or instance, or an ElastiCache cache
   cluster, can take ten minutes or more to delete. cdkd waits for it to be
-  gone, so a delete that is still running is not reported as done.
+  gone, so a delete that is still running is not reported as done. If this
+  wait runs out, the delete fails.
 
 ## Related
 
