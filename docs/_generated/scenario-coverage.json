@@ -1073,6 +1073,11 @@
       "scenarios": []
     },
     {
+      "name": "ec2-vpc-ipam",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "ecr",
       "annotated": true,
       "scenarios": []
@@ -3626,6 +3631,7 @@
     "ec2-instance-fanout",
     "ec2-route-targets",
     "ec2-sg-source-group-name",
+    "ec2-vpc-ipam",
     "ecr-scanning",
     "ecs-gateway-role-propagation",
     "ecs-schedule-targets",

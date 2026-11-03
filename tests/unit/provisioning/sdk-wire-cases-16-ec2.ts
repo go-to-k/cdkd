@@ -63,6 +63,15 @@ const required = (top: string, says: RegExp, line: string): Throw => ({
 });
 
 /**
+ * go-to-k/cdkd#5633: a VPC takes its primary CIDR from `CidrBlock` or an IPAM
+ * pool, so with neither `createVpc` refuses before any call.
+ */
+const VPC_CIDR_SOURCE_REQUIRED = (top: string): Throw => ({
+  why: `create() refuses a VPC missing ${top} with no other CIDR source before any call (${SRC}, createVpc)`,
+  says: /CidrBlock or Ipv4IpamPoolId is required for VPC/,
+});
+
+/**
  * Declaring a non-default `InstanceTenancy` on a VPC that lacks it is a
  * replacement (`vpcInstanceTenancyChangeReplaces`, replacement-rules.ts:53,
  * CloudFormation measured, go-to-k/cdkd#5449); only `drift --revert` reaches
@@ -243,14 +252,22 @@ const INSTANCE_CASE: TypeCase = tc(
           Monitoring: true,
           EbsOptimized: true,
           CreditSpecification: { CPUCredits: 'unlimited' },
+          // go-to-k/cdkd#5630.
+          CpuOptions: { CoreCount: 1, ThreadsPerCore: 1 },
+          HibernationOptions: { Configured: true },
+          InstanceInitiatedShutdownBehavior: 'terminate',
         },
-        variants: { UserData: 'ZWNobyAy' },
+        variants: { UserData: 'ZWNobyAy', InstanceInitiatedShutdownBehavior: 'stop' },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
           ...INSTANCE_THROWS,
           'update-remove:DisableApiTermination': {
             why: `CloudFormation fails an update that removes DisableApiTermination from an existing instance (measured, #1160), so update() refuses it before any call (guardTerminationProtectionRemoval, ${SRC}:8088-8093)`,
             says: /DisableApiTermination was removed from the template, and CloudFormation fails that update/,
+          },
+          'update-remove:InstanceInitiatedShutdownBehavior': {
+            why: `CloudFormation fails an update that removes InstanceInitiatedShutdownBehavior ("No attributes specified", measured, go-to-k/cdkd#5630), so update() refuses it before any call (planInstanceMemberUpdates)`,
+            says: /InstanceInitiatedShutdownBehavior was removed from the template, and CloudFormation fails that update/,
           },
         },
         expectedSilent: {
@@ -367,18 +384,69 @@ export const CASES_16_EC2: TypeCase[] = [
           EnableDnsHostnames: true,
           EnableDnsSupport: false,
           Tags: TAGS,
+          // go-to-k/cdkd#5633: every writable member.
+          VpcEncryptionControl: {
+            Mode: 'enforce',
+            InternetGatewayExclusion: 'enable',
+            EgressOnlyInternetGatewayExclusion: 'disable',
+            NatGatewayExclusion: 'enable',
+            VirtualPrivateGatewayExclusion: 'disable',
+            VpcPeeringExclusion: 'enable',
+            LambdaExclusion: 'disable',
+            VpcLatticeExclusion: 'enable',
+            ElasticFileSystemExclusion: 'disable',
+          },
         },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
-          'create:CidrBlock': required('CidrBlock', /CidrBlock is required for VPC/, '2264'),
+          'create:CidrBlock': VPC_CIDR_SOURCE_REQUIRED('CidrBlock'),
           'update-add:InstanceTenancy': TENANCY_REFUSED,
         },
         expectedSilent: {
           'update-vary:InstanceTenancy': `the varied update declares a non-default tenancy the base lacks, which is refused before any call (${SRC}:2474-2479), so neither side reaches the wire; the removal (dedicated -> default, ModifyVpcTenancy) is what update-remove observes`,
         },
       },
+      {
+        // go-to-k/cdkd#5633: the primary CIDR allocated from an IPAM pool.
+        name: 'ipam allocation',
+        bag: { Ipv4IpamPoolId: 'ipam-pool-1', Ipv4NetmaskLength: 28 },
+        expectedRemovalThrows: {
+          'create:Ipv4IpamPoolId': VPC_CIDR_SOURCE_REQUIRED('Ipv4IpamPoolId'),
+        },
+      },
     ],
-    { targets: tagTargets() }
+    {
+      targets: tagTargets(),
+      // go-to-k/cdkd#5633: what DescribeVpcs reports back under
+      // `EncryptionControl`; CreateVpc's VpcEncryptionControlConfiguration has
+      // no such member, so a template cannot set one.
+      nestedExempt: Object.fromEntries(
+        [
+          'State',
+          'StateMessage',
+          'VpcEncryptionControlId',
+          'VpcId',
+          'ResourceExclusions',
+          ...[
+            'EgressOnlyInternetGateway',
+            'ElasticFileSystem',
+            'InternetGateway',
+            'Lambda',
+            'NatGateway',
+            'VirtualPrivateGateway',
+            'VpcLattice',
+            'VpcPeering',
+          ].flatMap((r) => [
+            `ResourceExclusions.${r}`,
+            `ResourceExclusions.${r}.State`,
+            `ResourceExclusions.${r}.StateMessage`,
+          ]),
+        ].map((p) => [
+          `VpcEncryptionControl.${p}`,
+          'read-only: reported by DescribeVpcs, not a CreateVpc input (buildVpcEncryptionControl)',
+        ])
+      ),
+    }
   ),
   tc(
     'AWS::EC2::Subnet',

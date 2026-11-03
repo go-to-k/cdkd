@@ -19,6 +19,7 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
  * - An in-place NACL entry rule change in the same deploy (issue #5070)
  * - In-place tag changes on the IGW, public RouteTable and NACL (issue #5448)
  * - VPC InstanceTenancy dedicated -> default in place, default -> dedicated replaced (issue #5449)
+ * - VpcEncryptionControl on CreateVpc, on the SDK path (issue #5633)
  * - A private hosted zone whose `VPCs` the removal phase drops (issue #1160)
  * - Fn::GetAtt for outputs (VPC ID, Security Group ID, Subnet IDs, NACL ID, EIP, Launch Template)
  *
@@ -78,6 +79,18 @@ export class Ec2VpcStack extends cdk.Stack {
     const tenancyUpVpc = new ec2.CfnVPC(this, 'TenancyUpVpc', {
       cidrBlock: '10.3.0.0/16',
       instanceTenancy: isRemoval ? 'dedicated' : 'default',
+    });
+
+    // go-to-k/cdkd#5633: a bare VPC whose encryption control rides CreateVpc
+    // on the SDK path. `enforce` is what makes AWS report the exclusions back
+    // (a `monitor` control reports none; measured us-east-1), and the
+    // internet-gateway exclusion is the non-default value verify.sh reads.
+    // Create-only, so it is unchanged in every phase. A property override,
+    // so the fixture does not depend on the aws-cdk-lib version that typed it.
+    const encryptedVpc = new ec2.CfnVPC(this, 'EncryptedVpc', { cidrBlock: '10.4.0.0/16' });
+    encryptedVpc.addPropertyOverride('VpcEncryptionControl', {
+      Mode: 'enforce',
+      InternetGatewayExclusion: 'enable',
     });
 
     // Issue #1160: a private hosted zone on the main VPC. The removal phase

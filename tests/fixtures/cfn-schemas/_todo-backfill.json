@@ -26,12 +26,9 @@
     "AWS::EC2::Instance": [
       "AdditionalInfo",
       "Affinity",
-      "CpuOptions",
       "EnclaveOptions",
-      "HibernationOptions",
       "HostId",
       "HostResourceGroupArn",
-      "InstanceInitiatedShutdownBehavior",
       "Ipv6AddressCount",
       "Ipv6Addresses",
       "KernelId",
@@ -60,11 +57,6 @@
       "Ipv6NetmaskLength",
       "OutpostArn",
       "PrivateDnsNameOptionsOnLaunch"
-    ],
-    "AWS::EC2::VPC": [
-      "Ipv4IpamPoolId",
-      "Ipv4NetmaskLength",
-      "VpcEncryptionControl"
     ],
     "AWS::RDS::DBCluster": [
       "AllocatedStorage",

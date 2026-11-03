@@ -3458,6 +3458,7 @@
         "ec2-instance-fanout",
         "ec2-route-targets",
         "ec2-vpc",
+        "ec2-vpc-ipam",
         "ecs-bluegreen",
         "ecs-fargate",
         "ecs-gateway-role-propagation",
@@ -3588,6 +3589,10 @@
         "ec2-vpc": [
           "l1",
           "l2"
+        ],
+        "ec2-vpc-ipam": [
+          "l1",
+          "literal"
         ],
         "ecs-bluegreen": [
           "l2"
@@ -9077,6 +9082,9 @@
     "AWS::DSQL::Cluster",
     "AWS::DocDB::DBClusterParameterGroup",
     "AWS::DocDB::GlobalCluster",
+    "AWS::EC2::IPAM",
+    "AWS::EC2::IPAMPool",
+    "AWS::EC2::IPAMPoolCidr",
     "AWS::EC2::LaunchTemplate",
     "AWS::EC2::PlacementGroup",
     "AWS::EC2::PrefixList",

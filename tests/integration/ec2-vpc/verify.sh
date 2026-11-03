@@ -15,8 +15,9 @@
 # changes one tag and drops another on the IGW, the public RouteTable and the
 # custom NACL, asserted in place on the same physical ids (issue #5448), and
 # changes two VPCs' InstanceTenancy: a removal from dedicated is one in-place
-# ModifyVpcTenancy, default -> dedicated replaces the VPC (issue #5449). Then
-# destroys clean.
+# ModifyVpcTenancy, default -> dedicated replaces the VPC (issue #5449). A
+# fifth VPC carries VpcEncryptionControl, read back after create on the SDK
+# path (issue #5633). Then destroys clean.
 #
 # Required env vars:
 #   STATE_BUCKET - cdkd state bucket (e.g. cdkd-state-{accountId})
@@ -84,6 +85,9 @@ cleanup() {
   fi
   # Phase 2's SDK call log and deploy log, left behind when a run fails
   # before they are read.
+  if [ -n "${DRIFT_JSON:-}" ]; then
+    rm -f "${DRIFT_JSON}"
+  fi
   if [ -n "${P2_CALLS_DIR:-}" ]; then
     rm -f "${P2_CALLS_DIR}/calls.jsonl" "${P2_CALLS_DIR}/deploy.log"
     rmdir "${P2_CALLS_DIR}" 2>/dev/null
@@ -185,6 +189,47 @@ if [ "${P1_DOWN_TENANCY}" != "dedicated" ] || [ "${P1_UP_TENANCY}" != "default" 
   exit 1
 fi
 echo "    OK: baseline InstanceTenancy dedicated on ${DOWN_VPC}, default on ${UP_VPC}"
+
+# Issue #5633: VpcEncryptionControl reached CreateVpc on the SDK path. The
+# route guard comes first: Cloud Control applies the control too, so only
+# `provisionedBy` tells the SDK wiring from the auto-route it replaced.
+ENC_VPC=$(physical_id EncryptedVpc)
+if [ -z "${ENC_VPC}" ]; then
+  echo "FAIL: EncryptedVpc physical id missing from state (issue #5633)" >&2
+  exit 1
+fi
+ENC_ROUTE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r '.resources.EncryptedVpc.provisionedBy // "sdk"')
+if [ "${ENC_ROUTE}" != "sdk" ]; then
+  echo "FAIL: EncryptedVpc was provisioned by '${ENC_ROUTE}', expected the SDK provider (issue #5633)" >&2
+  exit 1
+fi
+ENC_CONTROL=$(aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}" \
+  --query 'Vpcs[0].EncryptionControl.[Mode, ResourceExclusions.InternetGateway.State, ResourceExclusions.Lambda.State]' \
+  --output text 2>&1) || {
+  echo "FAIL: describe-vpcs ${ENC_VPC} failed: ${ENC_CONTROL} (issue #5633)" >&2
+  exit 1
+}
+if [ "${ENC_CONTROL}" != "$(printf 'enforce\tenabled\tdisabled')" ]; then
+  echo "FAIL: ${ENC_VPC} encryption control mode/igw-exclusion/lambda-exclusion is '${ENC_CONTROL}', expected enforce/enabled/disabled (issue #5633)" >&2
+  exit 1
+fi
+echo "    OK: ${ENC_VPC} created on the SDK path with encryption control enforce, internet-gateway exclusion enabled (issue #5633)"
+
+# Issue #5633: `cdkd drift` reads the control back through the SDK provider's
+# readCurrentState; the VPC must be compared and CLEAN right after the deploy.
+DRIFT_JSON="$(mktemp -t cdkd-ec2-vpc-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+ENC_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "EncryptedVpc")] | length' "${DRIFT_JSON}") || ENC_CLEAN="?"
+if [ "${ENC_CLEAN}" != "1" ]; then
+  echo "FAIL: EncryptedVpc is not drift-clean right after the deploy (clean=${ENC_CLEAN} rc=${DRIFT_RC}); the VpcEncryptionControl read-back disagrees with the record (issue #5633):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+echo "    OK: EncryptedVpc reads back drift-clean (issue #5633)"
 
 # Issue #1160 baseline: the private zone is associated with the main VPC
 # only, so an association still there after the removal is the keep.
@@ -446,7 +491,8 @@ assert_gone "VPC '${MAIN_VPC}' still exists after destroy" aws ec2 describe-vpcs
 assert_gone "VPC '${OFF_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${OFF_VPC}" --region "${REGION}"
 assert_gone "VPC '${DOWN_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${DOWN_VPC}" --region "${REGION}"
 assert_gone "VPC '${P2_UP_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${P2_UP_VPC}" --region "${REGION}"
-echo "    OK: all four VPCs are gone"
+assert_gone "VPC '${ENC_VPC}' still exists after destroy" aws ec2 describe-vpcs --vpc-ids "${ENC_VPC}" --region "${REGION}"
+echo "    OK: all five VPCs are gone"
 assert_gone "private hosted zone '${ZONE_ID}' still exists after destroy" aws route53 get-hosted-zone --id "${ZONE_ID}"
 echo "    OK: the private hosted zone is gone"
 
@@ -454,4 +500,4 @@ assert_gone "state file s3://${STATE_BUCKET}/${STATE_KEY} still exists after des
 echo "    OK: state file is gone"
 
 echo ""
-echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + clean destroy)"
+echo "==> ec2-vpc test passed (removed VPC DNS attributes reset + in-place NACL entry change + kept private zone VPCs + in-place IGW / RouteTable / NACL tags + VPC InstanceTenancy + VPC encryption control + clean destroy)"

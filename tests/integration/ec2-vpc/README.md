@@ -12,6 +12,7 @@ Minimal VPC and Security Group deployment example for cdkd.
 - **Second VPC** - A bare VPC with DNS support off, for the removal phase
 - **Private hosted zone** - Associated with the main VPC, for the removal phase
 - **Two tenancy VPCs** - Bare VPCs (dedicated, default) whose `InstanceTenancy` the removal phase changes
+- **Encrypted VPC** - A bare VPC created with `VpcEncryptionControl` (enforce mode)
 
 No EC2 instances are created to avoid costs.
 
@@ -30,6 +31,7 @@ No EC2 instances are created to avoid costs.
 - Removing `InstanceTenancy` from a dedicated VPC changes it to `default` in
   place, and `default` -> `dedicated` replaces the VPC, as CloudFormation does
   (same phase, issue #5449)
+- `VpcEncryptionControl` reaches `CreateVpc` on the SDK path (issue #5633)
 
 ## Deploy
 
