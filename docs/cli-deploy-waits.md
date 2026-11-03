@@ -257,7 +257,7 @@ prints the manual wait command, and continues.
 | ECS service | Until `INACTIVE` |
 | DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
 | RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |
-| VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation |
+| VPC whose CIDR came from an IPAM pool | Until the pool releases the VPC's allocation (about 18 minutes) |
 
 Each wait is there for a reason:
 
@@ -283,11 +283,12 @@ Each wait is there for a reason:
   key would be deleted under a live table. cdkd waits for every copy, the
   replica regions in parallel, for up to about 12 minutes. If this wait runs
   out, cdkd warns and moves on.
-- An IPAM pool keeps a deleted VPC's allocation for a while after
-  `DeleteVpc` returns, and until it is released the pool refuses to
-  deprovision its CIDR (`The CIDR has one or more allocations.`). cdkd waits
-  for the pool to stop listing the allocation, as CloudFormation does, for up
-  to 15 minutes. If this wait runs out, or the role cannot call
+- AWS releases a deleted VPC's IPAM pool allocation late, around 18 minutes
+  after `DeleteVpc` returns, and until then the pool refuses to deprovision
+  its CIDR (`The CIDR has one or more allocations.`). So destroying a VPC
+  whose CIDR came from an IPAM pool takes that long. cdkd waits for the pool
+  to stop listing the allocation, as CloudFormation must too, for up to
+  25 minutes. If this wait runs out, or the role cannot call
   `ec2:GetIpamPoolAllocations`, cdkd warns and moves on, and a destroy that
   then stops at the pool CIDR can be re-run.
 

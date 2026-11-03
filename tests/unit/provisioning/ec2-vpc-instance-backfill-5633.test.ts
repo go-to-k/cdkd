@@ -17,7 +17,11 @@ import {
 // HibernationOptions / InstanceInitiatedShutdownBehavior): what reaches the
 // SDK call, what is refused before it, and what readCurrentState reports.
 
-const { mockSend, warn } = vi.hoisted(() => ({ mockSend: vi.fn(), warn: vi.fn() }));
+const { mockSend, warn, info } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  warn: vi.fn(),
+  info: vi.fn(),
+}));
 
 vi.mock('../../../src/utils/aws-clients.js', () => ({
   getAwsClients: () => ({
@@ -28,7 +32,7 @@ vi.mock('../../../src/utils/aws-clients.js', () => ({
 vi.mock('../../../src/utils/logger.js', () => {
   const childLogger = {
     debug: vi.fn(),
-    info: vi.fn(),
+    info,
     warn,
     error: vi.fn(),
     child: vi.fn().mockReturnThis(),
@@ -743,6 +747,10 @@ describe('IPAM VPC delete waits for the pool allocation to be released (#5633)',
     expect(sent(GetIpamPoolAllocationsCommand)).toHaveLength(3);
     expect(sent(GetIpamPoolAllocationsCommand)[0]).toMatchObject({ IpamPoolId: 'ipam-pool-0abc' });
     expect(warn).not.toHaveBeenCalled();
+    // The wait is long, so it is announced, naming what it waits for.
+    expect(info.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Waiting for IPAM pool ipam-pool-0abc to release the allocation of deleted VPC vpc-1'
+    );
   });
 
   it('warns and returns when the allocation outlives the cap, naming the consequence', async () => {
@@ -774,7 +782,9 @@ describe('IPAM VPC delete waits for the pool allocation to be released (#5633)',
     ['no recorded properties', undefined],
   ])('does not wait for %s', async (_label, properties) => {
     allocationsFor([['vpc-1']]);
+    info.mockClear();
     await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', properties);
     expect(sent(GetIpamPoolAllocationsCommand)).toHaveLength(0);
+    expect(info.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('IPAM pool');
   });
 });

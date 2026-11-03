@@ -1059,9 +1059,12 @@ const ec2IdsCreatedByThisProcess = new RecentIdSet();
 
 /**
  * go-to-k/cdkd#5633: the wait after deleting an IPAM-allocated VPC for its
- * pool allocation to be released. Exported so tests can shorten it.
+ * pool allocation to be released. AWS releases it late: measured 1092s (about
+ * 18 minutes) after `DeleteVpc` returned (us-east-1, 2026-11-04, a /28 from an
+ * advanced-tier private pool), so the cap is 25 minutes, under the default
+ * 30-minute per-resource deadline. Exported so tests can shorten it.
  */
-export const vpcIpamReleaseWait = { pollIntervalMs: 10_000, maxWaitMs: 15 * 60_000 };
+export const vpcIpamReleaseWait = { pollIntervalMs: 10_000, maxWaitMs: 25 * 60_000 };
 
 /**
  * What an ambiguous-create orphan report matches a VPC on: the declared
@@ -2947,6 +2950,13 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void> {
     const poolId = properties?.['Ipv4IpamPoolId'];
     if (typeof poolId !== 'string' || !/^ipam-pool-[0-9a-z]+$/.test(poolId)) return;
+    // Said up front: the release takes minutes, and a silent wait reads as a
+    // hang. The per-resource warn-after timer repeats the reminder later.
+    this.logger.info(
+      maskerOrIdentity(context?.maskSecrets)(
+        safeMsg`  Waiting for IPAM pool ${poolId} to release the allocation of deleted VPC ${vpcId}; AWS can take about 20 minutes, and the pool CIDR cannot be deprovisioned before then`
+      )
+    );
     await waitForGoneAfterDelete({
       what: maskerOrIdentity(context?.maskSecrets)(
         `the IPAM pool ${poolId} allocation of VPC ${vpcId}`

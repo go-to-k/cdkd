@@ -23,6 +23,12 @@ IPAM it did not create.
   and after an in-place update (`CDKD_TEST_UPDATE=true` tags the VPC)
 - Destroy removes the VPC, the pool, the scope and the IPAM
 
+## Runtime
+
+About 22 minutes. The destroy waits for the pool to release the deleted VPC's
+allocation, which AWS does about 18 minutes after `DeleteVpc` returns; only
+then can the pool CIDR be deprovisioned. Give a watchdog at least 2400 seconds.
+
 ## Run
 
 ```bash
