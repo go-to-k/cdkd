@@ -3,6 +3,7 @@
 import { enableUserCompileCache } from './compile-cache.js';
 import { installPipeCloseHandler } from './pipe-close-handler.js';
 import { runCli } from './run-cli.js';
+import { yellow } from '../utils/colors.js';
 import {
   getCdkdPackageName,
   getCdkdVersion,
@@ -57,9 +58,10 @@ function reorderArgs(argv: string[]): string[] {
 async function main(): Promise<void> {
   installPipeCloseHandler();
 
-  // stderr, so `--version` and every machine-read stdout stay unchanged.
+  // stderr, so `--version` and every machine-read stdout stay unchanged;
+  // yellow, like every other cdkd warning.
   const notice = movedPackageNotice(getCdkdPackageName());
-  if (notice) process.stderr.write(`${notice}\n`);
+  if (notice) process.stderr.write(`${yellow(notice)}\n`);
 
   // `cdkd --version` needs nothing but a string the build already baked in,
   // yet the command tree it would otherwise import costs ~1s of Node module

@@ -19,6 +19,7 @@ import {
   UNSETTLED_COMMAND_MESSAGE,
 } from '../../../src/cli/run-cli.js';
 import { movedPackageNotice } from '../../../src/version.js';
+import { yellow } from '../../../src/utils/colors.js';
 import { isolatedChildEnv, writeSourceLoaderHooks } from '../source-loader-hooks.js';
 
 const REPO_ROOT = resolve(import.meta.dirname, '../../..');
@@ -29,7 +30,7 @@ const LOCK_HINT = 'release it with: cdkd force-unlock <stack-name>';
 const BUILT_NOTICE = movedPackageNotice(
   (JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as { name: string }).name
 );
-const BUILT_SILENT_STDERR = BUILT_NOTICE ? `${BUILT_NOTICE}\n` : '';
+const BUILT_SILENT_STDERR = BUILT_NOTICE ? `${yellow(BUILT_NOTICE)}\n` : '';
 
 const scratchDirs: string[] = [];
 afterEach(() => {
