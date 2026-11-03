@@ -65,7 +65,7 @@ describe('the mask comparators treat an undefined-valued key as missing (#5727)'
     );
   });
 
-  it('equalModuloMarkedMask: unmarked and ANCESTOR positions ignore an undefined live member', () => {
+  it('equalModuloMarkedMask: an undefined live member is ignored beside unmarked and marked leaves', () => {
     expect(equal([{ Name: MASK }], [{ Name: 'sec', Description: undefined }], ['Tags'], [])).toBe(true);
     expect(
       equal([{ Name: MASK, Extra: null }], [{ Name: 'sec', Extra: null, Description: undefined }], ['Tags'], [
