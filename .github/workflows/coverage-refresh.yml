@@ -114,6 +114,10 @@ jobs:
           elif [ "${rc}" -ne 1 ]; then
             exit "${rc}"
           fi
+          # `git diff` does not see an untracked report, so a newly generated one counts.
+          if printf '%s\n' "${changes}" | grep -q '^??'; then
+            content_changed=true
+          fi
           mkdir -p /tmp/coverage-refresh
           if [ -z "${changes}" ] || [ "${content_changed}" = false ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
