@@ -102,8 +102,20 @@ jobs:
           # condition, so an inlined git failure would read as "no change".
           # shellcheck disable=SC2086
           changes=$(git status --porcelain -- ${files})
+          # Every run restamps `generatedAt`, so a run that changed nothing
+          # else still dirties the reports (#5705). `-I` drops a hunk only when
+          # all its changed lines are a timestamp line; exit 1 means a real
+          # change, anything above 1 is a git failure.
+          content_changed=true
+          # shellcheck disable=SC2086
+          git diff --exit-code --quiet -I '^(  "generatedAt": "[^"]*",|- Generated: `[^`]*`)$' -- ${files} || rc=$?
+          if [ "${rc:-0}" -eq 0 ]; then
+            content_changed=false
+          elif [ "${rc}" -ne 1 ]; then
+            exit "${rc}"
+          fi
           mkdir -p /tmp/coverage-refresh
-          if [ -z "${changes}" ]; then
+          if [ -z "${changes}" ] || [ "${content_changed}" = false ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No coverage change."
             exit 0
