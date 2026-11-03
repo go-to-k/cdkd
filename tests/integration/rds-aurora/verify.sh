@@ -111,6 +111,8 @@
 # EnableHttpEndpoint, which turns the Data API off as CloudFormation does
 # (each asserted live). NetworkType IPV4 is AWS's default: only the routing
 # guard discriminates it.
+# go-to-k/cdkd#5707: phase 1a turns that declared Data API off out of band
+# and asserts `cdkd drift --revert` turns it back on and converges.
 #
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
@@ -197,6 +199,8 @@ DESTROY_2B_LOG=""
 # cleanup on every exit).
 EVENT_KEYS_2B=""
 EVENTS_2B=""
+# Phase 1a's captured drift --revert output (issue #5707), likewise.
+REVERT_1A_LOG=""
 # Phase 1c's captured deploy output (issue #4087), removed by cleanup likewise.
 DEPLOY_1C_LOG=""
 # Phase 2's captured deploy output (issue #1160 DBProxy arm), likewise.
@@ -300,6 +304,7 @@ cleanup() {
   [ -n "${EVENT_KEYS_2B}" ] && rm -f "${EVENT_KEYS_2B}"
   [ -n "${EVENTS_2B}" ] && rm -f "${EVENTS_2B}"
   [ -n "${DEPLOY_1C_LOG}" ] && rm -f "${DEPLOY_1C_LOG}"
+  [ -n "${REVERT_1A_LOG}" ] && rm -f "${REVERT_1A_LOG}"
   [ -n "${DEPLOY_2_LOG}" ] && rm -f "${DEPLOY_2_LOG}"
   [ -n "${DEPLOY_2C_LOG}" ] && rm -f "${DEPLOY_2C_LOG}"
   if [ -n "${OOB_INSTANCE_ID}" ]; then
@@ -716,6 +721,77 @@ if [ "${BASE_SCALARS}" != "false true 7 IPV4 true" ]; then
   exit 1
 fi
 echo "    OK: phase 1: SecurityCluster carries AutoMinorVersionUpgrade false, Performance Insights on (7 days), NetworkType IPV4 and the Data API on (#5639)"
+
+# --- Phase 1a: drift --revert restores a DECLARED Data API (#5707) -----
+# The template declares EnableHttpEndpoint: true. Turn the Data API off out of
+# band; `cdkd drift --revert` must turn it back on, because the template (not
+# only the readback baseline) declares it. Before #5707 the revert withheld
+# every enable and warned instead.
+# drift exits 0 clean, 1 drift, 2 clean-but-incomplete (a type it cannot read).
+# usage: sec_http_endpoint -> "<HttpEndpointEnabled> <Status>"
+sec_http_endpoint() {
+  local out
+  out=$(aws rds describe-db-clusters --db-cluster-identifier "${DB_CLUSTER_ID}" \
+    --region "${REGION}" --query "DBClusters[0].[HttpEndpointEnabled || \`false\`, Status]" --output text) || return 1
+  printf '%s' "${out}" | tr '\t' ' ' | tr '[:upper:]' '[:lower:]'
+}
+# usage: wait_http_endpoint <want "true available" / "false available">
+wait_http_endpoint() {
+  local got="" i
+  for i in $(seq 1 60); do
+    got=$(sec_http_endpoint) || return 1
+    [ "${got}" = "$1" ] && return 0
+    sleep 10
+  done
+  echo "FAIL: #5707: SecurityCluster [HttpEndpointEnabled, Status] is '${got}', want '$1' after 10 min" >&2
+  return 1
+}
+drift_rc() { # usage: drift_rc [extra drift flags...] -> prints the exit code
+  local rc=0
+  node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+    --region "${REGION}" "$@" >&2 || rc=$?
+  printf '%s' "${rc}"
+}
+echo "==> Phase 1a: drift --revert turns a declared Data API back on (#5707)"
+SEC_CLUSTER_ARN=$(echo "${CLUSTER}" | jq -r '.DBClusterArn // ""')
+case "${SEC_CLUSTER_ARN}" in
+  arn:aws:rds:*:cluster:*) ;;
+  *) echo "FAIL: #5707: could not read the SecurityCluster ARN (got '${SEC_CLUSTER_ARN}')" >&2; exit 1 ;;
+esac
+PRE_DRIFT_RC=$(drift_rc)
+case "${PRE_DRIFT_RC}" in
+  0|2) ;;
+  *) echo "FAIL: #5707 premise: drift before the out-of-band change exited ${PRE_DRIFT_RC}, want 0 or 2 (the stack must start drift-clean)" >&2; exit 1 ;;
+esac
+aws rds disable-http-endpoint --resource-arn "${SEC_CLUSTER_ARN}" --region "${REGION}" >/dev/null
+wait_http_endpoint "false available"
+OOB_DRIFT_RC=$(drift_rc)
+if [ "${OOB_DRIFT_RC}" != "1" ]; then
+  echo "FAIL: #5707: drift after turning the Data API off exited ${OOB_DRIFT_RC}, want 1 (drift)" >&2
+  exit 1
+fi
+REVERT_1A_LOG="$(mktemp)"
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --revert --yes >"${REVERT_1A_LOG}" 2>&1 || REVERT_RC=$?
+REVERT_1A_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_1A_LOG}")"
+rm -f "${REVERT_1A_LOG}"
+case "${REVERT_RC}" in
+  0|2) ;;
+  *) printf '%s\n' "${REVERT_1A_PLAIN}" >&2; echo "FAIL: #5707: drift --revert exited ${REVERT_RC}" >&2; exit 1 ;;
+esac
+if grep -qF 'does not turn the Data API' <<<"${REVERT_1A_PLAIN}"; then
+  printf '%s\n' "${REVERT_1A_PLAIN}" >&2
+  echo "FAIL: #5707: drift --revert withheld the Data API the template declares" >&2
+  exit 1
+fi
+wait_http_endpoint "true available"
+POST_DRIFT_RC=$(drift_rc)
+case "${POST_DRIFT_RC}" in
+  0|2) ;;
+  *) echo "FAIL: #5707: drift after the revert exited ${POST_DRIFT_RC}, want 0 or 2 (the revert must converge)" >&2; exit 1 ;;
+esac
+echo "    OK: phase 1a: drift --revert turned the declared Data API back on, and drift is clean after it (#5707)"
 
 # --- Phase 1b: Tags on the DBProxyTargetGroup (issue #4087) -----------
 TG_ARN=$(tg_field .physicalId)

@@ -965,10 +965,12 @@ function retentionPeriodValue(value: unknown): number | undefined | 'malformed' 
  * drift revert it is skipped with a warning instead (`'skip'`). A malformed
  * PREVIOUS value is read as absent.
  *
- * A drift revert never turns the Data API ON (`'withheld'`): its desired bag
- * is the recorded `observedProperties` baseline, which records the readback,
- * so it can hold `true` for a template that never declared it. The revert
- * warns and leaves the setting as it is; turning it off still goes through.
+ * A drift revert turns the Data API ON only when the record's template side
+ * declares `EnableHttpEndpoint: true` (`UpdateContext.declaredTrueProperties`,
+ * go-to-k/cdkd#5707). Otherwise it is `'withheld'`: the revert's desired bag is
+ * the recorded `observedProperties` baseline, which records the readback, so
+ * it can hold `true` for a template that never declared it. The revert warns
+ * and leaves the setting as it is; turning it off still goes through.
  */
 function clusterHttpEndpointAction(
   properties: Record<string, unknown>,
@@ -1002,8 +1004,12 @@ function clusterHttpEndpointAction(
   if (desired !== true) return 'disable';
   // A drift revert's desired bag is a recorded readback, not the template: a
   // baseline captured while the Data API was on outside the template would
-  // otherwise turn it back ON. A revert only ever narrows it ('withheld').
-  return context?.desiredFromAwsReadback === true ? 'withheld' : 'enable';
+  // otherwise turn it back ON. A revert turns it on only when the template
+  // declares it (go-to-k/cdkd#5707), and otherwise leaves it ('withheld').
+  return context?.desiredFromAwsReadback === true &&
+    context.declaredTrueProperties?.has('EnableHttpEndpoint') !== true
+    ? 'withheld'
+    : 'enable';
 }
 
 /**
@@ -2105,7 +2111,7 @@ export class RDSProvider implements ResourceProvider {
     }
     if (httpEndpointAction === 'withheld') {
       this.logger.warn(
-        safeMsg`DBCluster ${logicalId}: drift --revert does not turn the Data API (EnableHttpEndpoint) back on; if the template declares it, turn it on with aws rds enable-http-endpoint`
+        safeMsg`DBCluster ${logicalId}: drift --revert does not turn the Data API (EnableHttpEndpoint) back on, because the template does not declare EnableHttpEndpoint: true; declare it, or turn the Data API on with aws rds enable-http-endpoint`
       );
     }
     // go-to-k/cdkd#5639: likewise a retention period that would go out as NaN.
