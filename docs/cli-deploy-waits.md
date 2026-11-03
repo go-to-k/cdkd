@@ -256,6 +256,7 @@ prints the manual wait command, and continues.
 | Lambda network connector | Until the connector is gone |
 | ECS service | Until `INACTIVE` |
 | DynamoDB table, DynamoDB global table and its replicas | Until the table is gone, in every replica region |
+| RDS, DocumentDB and Neptune cluster or instance, ElastiCache cache cluster | Until it is gone |
 
 Each wait is there for a reason:
 
@@ -282,8 +283,10 @@ Each wait is there for a reason:
   replica regions in parallel, for up to about 12 minutes. If this wait runs
   out, cdkd warns and moves on.
 
-RDS and ElastiCache deletes do not wait, because nothing in a destroy depends
-on them.
+- An RDS, DocumentDB or Neptune cluster or instance, or an ElastiCache cache
+  cluster, can take ten minutes or more to delete. cdkd waits for it to be
+  gone, so a delete that is still running is not reported as done. If this
+  wait runs out, the delete fails.
 
 ## Related
 
