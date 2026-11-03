@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vite-plus/test';
-import { equalModuloMarkedMask } from '../../../src/analyzer/drift-calculator.js';
+import { equalModuloMask, equalModuloMarkedMask } from '../../../src/analyzer/drift-calculator.js';
 
 /**
  * go-to-k/cdkd#4043 Phase C: at a marked coordinate the masked state matches
@@ -52,5 +52,34 @@ describe('equalModuloMarkedMask at a marked coordinate and at an ancestor (#4043
 
   it('a container holding no mask is compared as is', () => {
     expect(equal(['a', 'b'], ['a', 'c'], ['L'], [['L', 0]])).toBe(false);
+  });
+});
+
+describe('the mask comparators treat an undefined-valued key as missing (#5727)', () => {
+  it('equalModuloMask: a live element carrying an undefined member still matches its masked baseline', () => {
+    expect(
+      equalModuloMask([{ Name: MASK }], [{ Name: 'sec', Description: undefined }], MASK)
+    ).toBe(true);
+    expect(equalModuloMask([{ Name: MASK, Note: 'n' }], [{ Name: 'sec', Note: undefined }], MASK)).toBe(
+      false
+    );
+  });
+
+  it('a mask never matches an undefined or absent live value', () => {
+    expect(equalModuloMask({ S: MASK }, { S: undefined }, MASK)).toBe(false);
+    expect(equalModuloMask({ S: MASK }, {}, MASK)).toBe(false);
+    expect(equalModuloMask({ S: MASK }, { S: undefined, T: 'x' }, MASK)).toBe(false);
+  });
+
+  it('equalModuloMarkedMask: an undefined live member is ignored beside unmarked and marked leaves', () => {
+    expect(equal([{ Name: MASK }], [{ Name: 'sec', Description: undefined }], ['Tags'], [])).toBe(true);
+    expect(
+      equal([{ Name: MASK, Extra: null }], [{ Name: 'sec', Extra: null, Description: undefined }], ['Tags'], [
+        ['Tags', 0, 'Name'],
+      ])
+    ).toBe(true);
+    expect(
+      equal([{ Name: MASK, Extra: 'x' }], [{ Name: 'sec', Extra: undefined }], ['Tags'], [['Tags', 0, 'Name']])
+    ).toBe(false);
   });
 });
