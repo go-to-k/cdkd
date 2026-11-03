@@ -17,20 +17,18 @@
 `integ-destroy`-scoped file.** A lane runs no integ (it still runs `triage.md`'s
 throwaway CFn change set itself: never brief it down to read-only probes,
 #5401), so only the parent finds an integ-time AWS-side rejection:
-run a NEW arm once EARLY too, as soon as the lane has written it, from a
-`--detach` sibling at the pushed sha (§8-d's `worktree add`, no revert): its own
-`dist/` and `verify.sh`, so no fix round waits on it (#2762). That run sets no
-marker and is no §8-d proof — a new arm's first AWS contact can reject its shape
-(#4618). Sequence:
-dispatch reviewers → (new arm: early run) → apply EVERY finding, nits included →
-§8-d probe → rebase → integ → marker (rebase AFTER the probe: an hour-long
-probe stales the base, #5475). A UNIT-test-only fix round may overlap the parent's
-integ in the lane's tree. Brief the lane: no build, `/check` or `/verify-pr`
-there (a build rewrites the live fixture's `dist/`), no rebase or install, never
-the live fixture's directory, and stage only its own test files (the integ's
-ledger row lands there, #4302). A
-lane REPORTS `mise exec -- markgate status integ-destroy --explain`'s line,
-never "integ not needed": comment-only edits count (#3873).
+run a NEW or edited arm EARLY, to GREEN, once the lane writes it, from a
+`--detach` sibling at the pushed sha (§8-d's `worktree add`, no revert), so no
+fix round waits on it (#2762). It sets no marker and is no §8-d proof (#4618).
+Sequence: reviewers → early run → EVERY finding, nits included → §8-d probe →
+rebase → integ → marker (an hour-long probe stales the base, #5475). A
+UNIT-test-only fix round may overlap the parent's integ in the lane's tree.
+Brief the lane: no build, `/check` or `/verify-pr` there (a build rewrites the
+live fixture's `dist/`), no rebase or install, never the live fixture's
+directory, and stage only its own test files (the integ's ledger row lands
+there, #4302). A lane REPORTS
+`mise exec -- markgate status integ-destroy --explain`'s line, never "integ not
+needed": comment-only edits count (#3873).
 The gate's `hash: diff` stales on a rebase only when main changed a scoped
 file THIS branch changes too, so a set marker on a MERGEABLE PR needs no
 rebase (`mise exec -- markgate status`) — unless main changed code the fixture
@@ -95,7 +93,9 @@ checks.
 
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
-BEFORE the final integ, revert the fix, rebuild, run, confirm the arm goes RED
+BEFORE the final integ, and only once the arm AS IT STANDS at the final sha has
+PASSED (§8-b's early run; a red on an unproven fixture is unattributable),
+revert the fix, rebuild, run, confirm the arm goes RED
 **at YOUR assertion — read which one fired**. A red
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
 means it is unreachable, so redo `triage.md`'s CFn premise (#5204), while a
