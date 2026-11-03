@@ -44,7 +44,10 @@ import { replacementNameOrigin } from './name-collision.js';
 import { withUnchangedSecretPrincipalLists } from '../../provisioning/iam-policy-targets.js';
 import { withRecreatedAttachmentsDropped } from '../child-of-recreated-parent.js';
 import { isInterruptedWaitError } from '../../provisioning/interrupt-watch.js';
-import { STICKY_CC_MIGRATION_EXEMPT } from '../../provisioning/provider-registry.js';
+import {
+  STICKY_CC_MIGRATION_EXEMPT,
+  sdkAddressedPhysicalId,
+} from '../../provisioning/provider-registry.js';
 import { ccAutoRouteUpdateFailureRemedy } from '../../provisioning/cc-autoroute-update-remedy.js';
 import {
   recordedProtectionEvidence,
@@ -114,7 +117,7 @@ export async function updateInPlace(
     counts,
     currentProps,
     currentPropsAsWritten,
-    currentResource,
+    currentResource: recordedResource,
     dependencies,
     desiredForSkipCheckAsWritten,
     logicalId,
@@ -174,16 +177,31 @@ export async function updateInPlace(
   const updateDecision = engine.providerRegistry.getProviderFor({
     resourceType,
     properties: resolvedProps,
-    provisionedBy: currentResource.provisionedBy,
+    provisionedBy: recordedResource.provisionedBy,
     // Issue #2719: the RECORD's bag, not the diff's current side. It is
     // the resolved desired bag of the last successful deploy, so a
     // property applied under Cloud Control and since deleted from the
     // template is still visible here -- which is the one case a
     // desired-only flip condition gets wrong (see
     // `GetProviderForInput.previousProperties`).
-    previousProperties: currentResource.properties,
+    previousProperties: recordedResource.properties,
     ...(isPinnedToCcApi(engine.options, stackName, logicalId) && { forceCcApi: true }),
   });
+  // go-to-k/cdkd#5654: the record as THIS route addresses it. A cc-api record
+  // returning to its SDK provider carries the Cloud Control id, which for a
+  // type with a declared normalizer is not what the SDK provider reads, so
+  // every use below -- the update, the unsettled readback, the replacement
+  // fallback's delete -- takes the SDK form, and the success write persists
+  // it with `provisionedBy: 'sdk'`. A failed update writes nothing, so the
+  // record keeps its Cloud Control id and layer for the rollback and the next
+  // deploy. A normalizer refusing the id throws here, before any AWS call.
+  const currentResource: ResourceState =
+    updateDecision.sdkMigration === true
+      ? {
+          ...recordedResource,
+          physicalId: sdkAddressedPhysicalId(resourceType, recordedResource.physicalId, logicalId),
+        }
+      : recordedResource;
   if (updateDecision.sdkMigration === true) {
     // The ONLY reader of `sdkMigration`, and the reason the field
     // exists: without it this deploy moves a live resource between
@@ -204,7 +222,10 @@ export async function updateInPlace(
     // found an entry in this same table — but the default arm keeps
     // that from being load-bearing.
     const exemptMode = STICKY_CC_MIGRATION_EXEMPT.get(resourceType)?.mode;
-    const preserved = 'The physical id is preserved';
+    const preserved =
+      currentResource.physicalId === recordedResource.physicalId
+        ? 'The physical id is preserved'
+        : "The resource is kept in place, and its recorded physical id takes the SDK provider's form";
     let message: string;
     switch (exemptMode) {
       case 'cc-broken':

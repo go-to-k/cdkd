@@ -630,9 +630,15 @@ consult the constant rather than a list here, since its membership changes.
 Every entry must satisfy the same hard requirement: **the SDK provider
 addresses the resource by the SAME physicalId the Cloud Control path stored**,
 so the re-route costs no churn and the record flips to `'sdk'` transparently on
-its next write. That parity is a per-type empirical fact, not an argument, so
-each entry names an integration fixture that OBSERVED it on a live resource;
-a unit test refuses an entry whose fixture does not exist or has never run.
+its next write. The one alternative is a declared `normalizeCcPhysicalId` on
+the entry: a strict map from the Cloud Control id to the SDK provider's form,
+applied wherever a cc-api record reaches the SDK provider and persisted with
+`'sdk'` on the flip's write (`AWS::ECS::Service`, whose Cloud Control id is
+`<serviceArn>|<cluster>` and SDK id the bare ARN; issue
+[#5654](https://github.com/go-to-k/cdkd/issues/5654)). Either is a per-type
+empirical fact, not an argument, so each entry names an integration fixture
+that OBSERVED it on a live resource; a unit test refuses an entry whose
+fixture does not exist or has never run.
 
 Entries then differ in WHY they were admitted, and the difference decides how
 conditional the escape is:
@@ -657,7 +663,8 @@ conditional the escape is:
   waits one deploy. `AWS::SNS::Topic`,
   `AWS::ElasticLoadBalancingV2::Listener`, `AWS::Lambda::WebFunctionRevision`,
   `AWS::Lambda::WebFunctionEndpoint`, `AWS::Lambda::NetworkConnector`,
-  `AWS::EFS::MountTarget` and `AWS::Route53::HostedZone` are the members today.
+  `AWS::EFS::MountTarget`, `AWS::Route53::HostedZone` and `AWS::ECS::Service`
+  are the members today.
 
 When a `'sdk-coverage'` flip is about to happen, `cdkd diff` annotates the
 resource `[returning to SDK provider]`, and `--pin-cc-api

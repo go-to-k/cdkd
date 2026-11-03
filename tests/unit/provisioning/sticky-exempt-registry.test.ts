@@ -116,6 +116,21 @@ describe('sticky-CC exemption table', () => {
     }
   });
 
+  it('an entry declaring a normalizer says so in physicalIdForm (go-to-k/cdkd#5654)', () => {
+    // A normalizer is the declared exception to parity, so the prose a
+    // reviewer reads must not describe parity for it.
+    const normalized = entries().filter(([, e]) => e.normalizeCcPhysicalId !== undefined);
+    expect(normalized.map(([type]) => type)).toContain('AWS::ECS::Service');
+    for (const [type, e] of normalized) {
+      expect(e.physicalIdForm, `${type}: physicalIdForm must name the normalizer`).toContain(
+        'normalizeCcPhysicalId',
+      );
+      expect(e.physicalIdForm, `${type}: a normalized type does not store one id in both layers`).not.toMatch(
+        /^both layers store/,
+      );
+    }
+  });
+
   it('every entry names an integ fixture DIRECTORY that exists', () => {
     for (const [type, e] of entries()) {
       // A DIRECTORY, not merely a path. `existsSync` was the first spelling and
@@ -160,8 +175,9 @@ describe('sticky-CC exemption table', () => {
   it.each([
     ['AWS::EFS::MountTarget', { IpAddress: '10.0.0.100' }],
     ['AWS::Route53::HostedZone', { DelegationSetId: 'N0123456789' }],
+    ['AWS::ECS::Service', { Cluster: 'c', DesiredCount: 0, GatewayConnectors: [] }],
   ])(
-    'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issue #5641)',
+    'a cc-api %s returns to its SDK provider on a mutating deploy, and a pin declines it (issues #5641, #5654)',
     (resourceType, properties) => {
       const registry = new ProviderRegistry();
       registerAllProviders(registry, providerClasses);

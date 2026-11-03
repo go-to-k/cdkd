@@ -145,6 +145,12 @@ There are two kinds of exception:
 MyTopic (AWS::SNS::Topic): returning to the SDK provider — cdkd now covers every property this resource uses. The physical id is preserved; pass --pin-cc-api MyTopic to decline this for a deploy.
 ```
 
+For a type whose Cloud Control id differs from the SDK provider's
+(`AWS::ECS::Service` records `<serviceArn>|<cluster>` through Cloud Control and
+the bare service ARN through its SDK provider), the line says instead that the
+resource is kept in place and its recorded physical id takes the SDK provider's
+form; the state record carries that form from then on.
+
 The set of types that move back grows with cdkd's coverage, so this page
 does not list them. A resource of any other type can still move back, but
 only by being destroyed and recreated, as the next section describes.

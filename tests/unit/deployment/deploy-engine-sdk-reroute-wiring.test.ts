@@ -211,10 +211,13 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       );
   }
 
-  function stateResources(resourceType: string = TYPE): Record<string, StateRecord> {
+  function stateResources(
+    resourceType: string = TYPE,
+    physicalId = 'arn:aws:sns:us-east-1:1:t'
+  ): Record<string, StateRecord> {
     return {
       [LOGICAL_ID]: {
-        physicalId: 'arn:aws:sns:us-east-1:1:t',
+        physicalId,
         resourceType,
         properties: RECORDED_PROPS,
         attributes: {},
@@ -227,8 +230,9 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
   async function runUpdate(
     engine: InstanceType<typeof DeployEngine>,
     stackName: string,
-    resourceType: string = TYPE
-  ): Promise<void> {
+    resourceType: string = TYPE,
+    physicalId?: string
+  ): Promise<Record<string, StateRecord>> {
     const change: ResourceChange = {
       logicalId: LOGICAL_ID,
       changeType: 'UPDATE',
@@ -244,9 +248,11 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
         },
       ],
     } as unknown as ResourceChange;
-    await provisionOf(engine)(LOGICAL_ID, change, stateResources(resourceType), stackName, {
+    const state = stateResources(resourceType, physicalId);
+    await provisionOf(engine)(LOGICAL_ID, change, state, stackName, {
       Resources: { [LOGICAL_ID]: { Type: resourceType, Properties: DESIRED_PROPS } },
     });
+    return state;
   }
 
   /**
@@ -341,6 +347,83 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
     expect(line).toContain('returning to the SDK provider');
     expect(line).toContain('covers every property');
     expect(line).toContain(`--pin-cc-api ${LOGICAL_ID}`);
+  });
+
+  describe('a type whose Cloud Control id differs from the SDK form (go-to-k/cdkd#5654)', () => {
+    const ECS = 'AWS::ECS::Service';
+    const ARN = 'arn:aws:ecs:us-east-1:123456789012:service/my-cluster/my-service';
+    const CC_ID = `${ARN}|my-cluster`;
+    beforeEach(() => {
+      // ECSProvider.update echoes the id it was handed, as the real one does.
+      (provider.update as ReturnType<typeof vi.fn>).mockImplementation(
+        (_l: string, physicalId: string) => Promise.resolve({ physicalId, wasReplaced: false })
+      );
+    });
+
+    it('a flip updates by, and persists, the SDK form with provisionedBy sdk', async () => {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
+      const state = await runUpdate(makeEngine(), STACK, ECS, CC_ID);
+      expect((provider.update as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(ARN);
+      expect(state[LOGICAL_ID]!.physicalId).toBe(ARN);
+      expect(state[LOGICAL_ID]!.provisionedBy).toBe('sdk');
+      const line = infoLines.find((l) => l.includes('SDK provider'));
+      expect(line).toContain("takes the SDK provider's form");
+      expect(line).not.toContain('The physical id is preserved');
+    });
+
+    it('a route staying on Cloud Control keeps the recorded composite id', async () => {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'cc-api' as const });
+      const state = await runUpdate(makeEngine(), STACK, ECS, CC_ID);
+      expect((provider.update as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(CC_ID);
+      expect(state[LOGICAL_ID]!.physicalId).toBe(CC_ID);
+      expect(state[LOGICAL_ID]!.provisionedBy).toBe('cc-api');
+    });
+
+    it('a flip of an id the normalizer refuses fails before any AWS call, record untouched', async () => {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
+      // The reverse `<clusterArn>|<serviceName>` order is not what Cloud Control records.
+      const reversed = 'arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster|my-service';
+      let state: Record<string, StateRecord> | undefined;
+      const failure = await (async () => {
+          state = stateResources(ECS, reversed);
+          await provisionOf(makeEngine())(
+            LOGICAL_ID,
+            {
+              logicalId: LOGICAL_ID,
+              changeType: 'UPDATE',
+              resourceType: ECS,
+              currentProperties: RECORDED_PROPS,
+              desiredProperties: DESIRED_PROPS,
+              propertyChanges: [
+                { path: 'DisplayName', oldValue: 'a', newValue: 'b', requiresReplacement: false },
+              ],
+            } as unknown as ResourceChange,
+            state,
+            STACK,
+            { Resources: { [LOGICAL_ID]: { Type: ECS, Properties: DESIRED_PROPS } } }
+          );
+      })().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      // The engine wraps a resource failure; the reason is its cause.
+      const cause = (failure as { cause?: unknown } | undefined)?.cause;
+      expect(String((cause as Error | undefined)?.message)).toMatch(
+        /MyTopic \(AWS::ECS::Service\) cannot move from Cloud Control to its SDK provider[\s\S]*--pin-cc-api MyTopic/
+      );
+      expect(provider.update).not.toHaveBeenCalled();
+      expect(state![LOGICAL_ID]!.physicalId).toBe(reversed);
+      expect(state![LOGICAL_ID]!.provisionedBy).toBe('cc-api');
+    });
+
+    it('a parity type keeps its id across the flip', async () => {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
+      const state = await runUpdate(makeEngine(), STACK, TYPE, 'arn:aws:sns:us-east-1:1:t');
+      expect((provider.update as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(
+        'arn:aws:sns:us-east-1:1:t'
+      );
+      expect(state[LOGICAL_ID]!.physicalId).toBe('arn:aws:sns:us-east-1:1:t');
+    });
   });
 
   it('announces a cc-broken flip WITHOUT offering a pin that mode ignores', async () => {

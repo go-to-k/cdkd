@@ -24,6 +24,8 @@ import { injectiveKey } from '../state/record-keys.js';
 import { displaySafe, safeMsg } from '../utils/display-safe.js';
 import { getLogger } from '../utils/logger.js';
 import { carriesSecretMask } from './secret-redaction.js';
+import { CloudControlProvider } from '../provisioning/cloud-control-provider.js';
+import { sdkAddressedPhysicalId } from '../provisioning/provider-registry.js';
 import {
   isHealExcludedType,
   normalizeHealedAttributes,
@@ -54,23 +56,31 @@ export async function readRecordAttributes(input: {
   // record's names no resource. Not attempted, rather than a provider call
   // with that value.
   if (!hasAddressablePhysicalId(resource)) return { kind: 'not-attempted' };
+  // go-to-k/cdkd#5654: every caller routes the record as its own baseline, so
+  // a cc-api record of a `'sdk-coverage'` type reaches its SDK provider here,
+  // which addresses it by the SDK form of the id. A normalizer refusing the
+  // recorded id rejects, which every caller turns into a failed read.
+  const physicalId =
+    resource.provisionedBy === 'cc-api' && !(provider instanceof CloudControlProvider)
+      ? sdkAddressedPhysicalId(resource.resourceType, resource.physicalId, logicalId)
+      : resource.physicalId;
   const found = await provider.import({
     logicalId,
     resourceType: resource.resourceType,
     stackName,
     region,
     properties: resource.properties,
-    knownPhysicalId: resource.physicalId,
+    knownPhysicalId: physicalId,
   });
   if (found === null) return { kind: 'not-found' };
-  if (found.physicalId !== resource.physicalId) {
+  if (found.physicalId !== physicalId) {
     // The `orphan-adoption.ts` guard: nothing enforces a provider's contract to
     // treat `knownPhysicalId` as ground truth, and one that searches instead
     // can answer for a DIFFERENT resource, whose attributes must not be served
     // (nor, on the deploy, merged into the record).
     // not-in-class: the resolver renders this message at debug only, masked.
     throw new Error(
-      `the provider answered for a different resource (${found.physicalId}) than the one asked about (${resource.physicalId})`
+      `the provider answered for a different resource (${found.physicalId}) than the one asked about (${physicalId})`
     );
   }
   // A value carrying `SECRET_MASK` is not a value: `CloudControlProvider.import`

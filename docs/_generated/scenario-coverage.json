@@ -609,6 +609,11 @@
       "scenarios": []
     },
     {
+      "name": "cc-to-sdk-reroute-ecs-service",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "cc-to-sdk-reroute-hosted-zone",
       "annotated": false,
       "scenarios": []
@@ -3583,6 +3588,7 @@
     "cc-final-snapshot-handlers",
     "cc-required-name-generation",
     "cc-to-sdk-reroute",
+    "cc-to-sdk-reroute-ecs-service",
     "cc-to-sdk-reroute-hosted-zone",
     "cc-to-sdk-reroute-mount-target",
     "cc-write-only-create-only",
