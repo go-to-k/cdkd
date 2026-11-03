@@ -23,7 +23,7 @@ gh api --paginate 'repos/{owner}/{repo}/issues?state=open&per_page=100' \
 ```
 
 **The `backfill-type` exclusion is load-bearing** (#2949): a
-slice's `created_at` moves with the coverage map, so §3-0 and rule 7 misread it.
+slice's `created_at` moves with the coverage map, so §3-0 misreads it.
 
 To WORK the campaign, take a type's own issue (`gh issue list --label
 backfill-type`) and read its comments, which hold the claims and measurements —
@@ -32,7 +32,7 @@ REQUIRED before returning an empty pick, since this query hides them
 §4's claim comment goes there, and `filing.md` §5-f says when to write `Closes`.
 A row no live run can prove (AWS-removed preview, third-party account)
 CLOSES via `unhandledByDesign` plus the measured reason: still a silent-drop
-row, so CC auto-routes it (#5636).
+row, so it CC-routes where a CC route exists (#5636).
 
 ## 2. Map the collision landscape
 
