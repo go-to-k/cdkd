@@ -77,7 +77,16 @@ IPAM_ID=""
 RUN_TAG="ec2-vpc-ipam-$$-$(date +%s)"
 export CDKD_IPAM_RUN_TAG="${RUN_TAG}"
 
+# Set once Phase 0 has proved the region holds no IPAM. Until then the stack's
+# shared state key may belong to a LIVE concurrent run of this fixture (the
+# very case Phase 0 refuses), so cleanup touches no state, lock or AWS
+# resource.
+OWNS_STACK=false
+
 cleanup() {
+  if [ "${OWNS_STACK}" != "true" ]; then
+    return 0
+  fi
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
   destroy_rc=0
@@ -142,6 +151,7 @@ if [ -n "${EXISTING_IPAMS}" ]; then
   exit 1
 fi
 echo "    OK: no IPAM in ${REGION}"
+OWNS_STACK=true
 
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
