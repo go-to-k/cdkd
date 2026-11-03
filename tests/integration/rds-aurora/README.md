@@ -49,7 +49,9 @@ This example deploys an Aurora Serverless v2 (MySQL) cluster with minimal cost c
   live; phase 2 changes the maintenance window and drops the other four, which
   verify.sh asserts KEPT, as CloudFormation keeps them (measured, issue #2762).
   It declares `EnableHttpEndpoint: true`; phase 1a turns the Data API off out of
-  band and asserts `cdkd drift --revert` turns it back on (issue #5707).
+  band and asserts `cdkd drift --revert` turns it back on (issue #5707). Before
+  that, phase 1a asserts the freshly deployed stack is drift-clean as a whole,
+  the AuroraProxy's secrets-auth `Auth` included (issue #5723).
 - **EngineCluster** (L1 `CfnDBCluster`, no instance, `DeletionPolicy: Delete`) -
   phase 2c swaps its `Engine` from aurora-mysql to aurora-postgresql, which
   CloudFormation replaces: verify.sh asserts the deploy is refused without

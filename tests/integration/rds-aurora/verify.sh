@@ -745,9 +745,8 @@ wait_http_endpoint() {
   echo "FAIL: #5707: SecurityCluster [HttpEndpointEnabled, Status] is '${got}', want '$1' after 10 min" >&2
   return 1
 }
-# Scoped to the SecurityCluster's own row, never the stack's exit code: an
-# unrelated phantom drift (go-to-k/cdkd#5723, the AuroraProxy's Auth) makes a
-# whole-stack `cdkd drift` exit 1 on an untouched stack.
+# Scoped to the SecurityCluster's own row: once the cluster is drifted on
+# purpose, the stack's exit code no longer says which row moved.
 # usage: sec_drift_row -> the SecurityCluster's drift JSON section(s), comma-joined
 # ("clean", "drifted:<path> <path>", ...); empty when the report lacks the row.
 sec_drift_row() {
@@ -777,6 +776,18 @@ if [ -z "${SEC_LOGICAL}" ]; then
   echo "FAIL: #5707: could not resolve the SecurityCluster logical id from state" >&2
   exit 1
 fi
+# go-to-k/cdkd#5723: the untouched stack is drift-clean as a whole. Before the
+# fix the AuroraProxy's secrets-auth `Auth` entries read back with
+# `undefined`-valued members the persisted baseline lacks: phantom drift, exit 1.
+STACK_DRIFT_RC=0
+STACK_DRIFT=$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
+  --region "${REGION}" --json) || STACK_DRIFT_RC=$?
+if [ "${STACK_DRIFT_RC}" -ne 0 ]; then
+  printf '%s' "${STACK_DRIFT}" | jq -r '[.[] | .drifted[]? | .logicalId + " (" + .resourceType + "): " + ([.changes[].path] | join(" "))] | .[]' >&2 || true
+  echo "FAIL: #5723: cdkd drift on the freshly deployed stack exited ${STACK_DRIFT_RC}, want 0 (phantom drift; an AWS::RDS::DBProxy Auth row is #5723)" >&2
+  exit 1
+fi
+echo "    OK: phase 1a: the freshly deployed stack is drift-clean, AuroraProxy Auth included (#5723)"
 PRE_ROW=$(sec_drift_row)
 if [ "${PRE_ROW}" != "clean" ]; then
   echo "FAIL: #5707 premise: before the out-of-band change, drift reports ${SEC_LOGICAL} as '${PRE_ROW}', want 'clean'" >&2
@@ -789,21 +800,19 @@ if [ "${OOB_ROW}" != "drifted:EnableHttpEndpoint" ]; then
   echo "FAIL: #5707: after turning the Data API off, drift reports ${SEC_LOGICAL} as '${OOB_ROW}', want 'drifted:EnableHttpEndpoint'" >&2
   exit 1
 fi
-# `drift --revert` has no per-resource filter, so it also re-issues the update
-# for any other drifted row (the AuroraProxy under go-to-k/cdkd#5723). Exit 2
-# (a partly failed revert) is accepted for that reason; the SecurityCluster's
-# own outcome is asserted below, by its revert line and by AWS.
-# Once go-to-k/cdkd#5723 is fixed, require exit 0 here again.
+# The stack was drift-clean above, so the SecurityCluster is the only row the
+# revert touches and it must succeed outright.
 REVERT_1A_LOG="$(mktemp)"
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" --revert --yes >"${REVERT_1A_LOG}" 2>&1 || REVERT_RC=$?
 REVERT_1A_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${REVERT_1A_LOG}")"
 rm -f "${REVERT_1A_LOG}"
-case "${REVERT_RC}" in
-  0|2) ;;
-  *) printf '%s\n' "${REVERT_1A_PLAIN}" >&2; echo "FAIL: #5707: drift --revert exited ${REVERT_RC}" >&2; exit 1 ;;
-esac
+if [ "${REVERT_RC}" -ne 0 ]; then
+  printf '%s\n' "${REVERT_1A_PLAIN}" >&2
+  echo "FAIL: #5707: drift --revert exited ${REVERT_RC}, want 0" >&2
+  exit 1
+fi
 if grep -qF "/${SEC_LOGICAL} " <<<"$(grep -F '✗' <<<"${REVERT_1A_PLAIN}" || true)"; then
   printf '%s\n' "${REVERT_1A_PLAIN}" >&2
   echo "FAIL: #5707: drift --revert reported a failure for ${SEC_LOGICAL}" >&2
