@@ -606,6 +606,26 @@ export async function updateInPlace(
     const ccUnsupported = isUpdateUnsupportedError(updateError, logicalId);
     const typedUnsupported = updateError instanceof ResourceUpdateNotSupportedError;
     const replaceOptIn = typedUnsupported && engine.options.replace === true;
+    // go-to-k/cdkd#5654: the deploy that rewrote a cc-api record's id into the
+    // SDK form does not also replace the resource. A rollback of that
+    // replacement compares the journal's SDK-form id with the record's Cloud
+    // Control one, so a same-name replacement would read as renamed and be
+    // undone create-first, colliding with the live service. On Cloud Control
+    // (`--pin-cc-api`) the replacement keeps one id form throughout.
+    if (
+      (ccUnsupported || replaceOptIn) &&
+      currentResource.physicalId !== recordedResource.physicalId
+    ) {
+      throw markNonRetryable(
+        new CdkdError(
+          safeMsg`${logicalId} (${resourceType}) needs a replacement for this change, which cdkd ` +
+            `does not run on the deploy that moves it from Cloud Control to its SDK provider. ` +
+            safeMsg`Re-run with --pin-cc-api ${logicalId} to replace it through Cloud Control.`,
+          'SDK_MIGRATION_REPLACEMENT_REFUSED',
+          updateError instanceof Error ? updateError : undefined
+        )
+      );
+    }
     if (ccUnsupported || replaceOptIn) {
       // go-to-k/cdkd#5064 phase 2: the fallback's new resource takes the next
       // name generation on a stack with an instance id, as a property-driven

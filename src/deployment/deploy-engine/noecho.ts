@@ -138,6 +138,11 @@ export interface NoEchoDeps {
   ) => Promise<FreshNoEchoReadback>;
   /** `masking.ts`'s `maskForResource` with its {@link SecretsRunState} bound. */
   maskForResource: (logicalId: string, text: string) => string;
+  /**
+   * `--pin-cc-api` for this resource (go-to-k/cdkd#5654): the read then stays
+   * on Cloud Control, as the pinned update does. Absent: never pinned.
+   */
+  pinnedToCcApi?: (stackName: string, logicalId: string) => boolean;
 }
 
 /** {@link noEchoPositionSources} with its {@link NoEchoRunState} bound. */
@@ -854,6 +859,7 @@ export async function noEchoAttributeOverridesFor(
             properties: record.properties,
             provisionedBy: record.provisionedBy,
             previousProperties: record.properties,
+            ...(deps.pinnedToCcApi?.(stackName, logicalId) === true && { forceCcApi: true }),
           });
           const outcome = await readRecordAttributes({
             provider,

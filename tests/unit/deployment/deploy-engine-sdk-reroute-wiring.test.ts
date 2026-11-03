@@ -416,6 +416,53 @@ describe('the engine wires the sticky-CC re-route inputs (#2719)', () => {
       expect(state![LOGICAL_ID]!.provisionedBy).toBe('cc-api');
     });
 
+    const unsupported = () =>
+      Object.assign(new Error('update not supported'), { name: 'UnsupportedActionException' });
+    const failureOf = async (resourceType: string, physicalId: string): Promise<unknown> =>
+      runUpdate(makeEngine(), STACK, resourceType, physicalId).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+    const causeText = (failure: unknown): string => {
+      const texts: string[] = [];
+      for (let e = failure as { message?: unknown; cause?: unknown } | undefined; e; e = e.cause as typeof e) {
+        texts.push(String(e.message));
+      }
+      return texts.join(' | ');
+    };
+
+    it('a flip that rewrote the id refuses the update-not-supported replacement', async () => {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
+      (provider.update as ReturnType<typeof vi.fn>).mockRejectedValue(unsupported());
+      const failure = await failureOf(ECS, CC_ID);
+      expect(causeText(failure)).toMatch(
+        /MyTopic \(AWS::ECS::Service\) needs a replacement for this change[\s\S]*--pin-cc-api MyTopic/
+      );
+      expect(provider.create).not.toHaveBeenCalled();
+      expect(provider.delete).not.toHaveBeenCalled();
+    });
+
+    it('a parity flip is not refused the replacement', async () => {
+      getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
+      (provider.update as ReturnType<typeof vi.fn>).mockRejectedValue(unsupported());
+      const failure = await failureOf(TYPE, 'arn:aws:sns:us-east-1:1:t');
+      expect(causeText(failure)).not.toContain('needs a replacement for this change');
+      expect(provider.create).toHaveBeenCalled();
+    });
+
+    it('wires --pin-cc-api into the engine reads that route a record as its own baseline', () => {
+      const engine = makeEngine({ stackName: STACK, logicalIds: new Set([LOGICAL_ID]) });
+      expect(engine.noEchoDeps().pinnedToCcApi?.(STACK, LOGICAL_ID)).toBe(true);
+      expect(engine.noEchoDeps().pinnedToCcApi?.(CHILD_STACK, LOGICAL_ID)).toBe(false);
+      const healerDeps = (
+        engine.rebaseline({}) as unknown as {
+          deps: { pinnedToCcApi?: (s: string, l: string) => boolean };
+        }
+      ).deps;
+      expect(healerDeps.pinnedToCcApi?.(STACK, LOGICAL_ID)).toBe(true);
+      expect(healerDeps.pinnedToCcApi?.(STACK, 'Other')).toBe(false);
+    });
+
     it('a parity type keeps its id across the flip', async () => {
       getProviderFor.mockReturnValue({ provider, provisionedBy: 'sdk' as const, sdkMigration: true });
       const state = await runUpdate(makeEngine(), STACK, TYPE, 'arn:aws:sns:us-east-1:1:t');

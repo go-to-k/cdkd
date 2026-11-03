@@ -40,6 +40,10 @@ describe('ecsServiceSdkPhysicalId', () => {
     ['a cluster ARN naming another cluster', `${LONG}|${CLUSTER_ARN.replace('my-cluster', 'x')}`],
     ['a cluster segment that is an ARN of another kind', `${LONG}|arn:aws:iam::123456789012:role/r`],
     ['an empty string', ''],
+    ['a short-format ARN with a non-cluster ARN', `${SHORT}|arn:aws:iam::123456789012:role/r`],
+    ['a short-format ARN with a cluster segment carrying a slash', `${SHORT}|a/b`],
+    ['a four-segment service ARN', `${LONG}/extra|my-cluster`],
+    ['a service name carrying a newline', `${LONG}\nx|my-cluster`],
   ])('refuses %s', (_label, ccId) => {
     expect(() => ecsServiceSdkPhysicalId(ccId)).toThrow();
   });
