@@ -154,8 +154,8 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   ```
 
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
-  test runs only after the push: re-run `vp install --frozen-lockfile` (on a
-  stale install gen exits 1), then `vp run gen:all-matrices && vp run format`
+  test runs only after the push: re-run `vp install --frozen-lockfile &&
+  vp run build` (left stale, gen exits 1 and `version.test.ts` fails), then `vp run gen:all-matrices && vp run format`
   (it ends in the ledger normalize) after EVERY rebase; push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
 - **A bot can push onto the PR's own branch mid-merge** (#5123): merge with
