@@ -2932,9 +2932,12 @@ export class EC2Provider implements ResourceProvider {
    * go-to-k/cdkd#5633: an IPAM-allocated VPC's pool allocation outlives
    * `DeleteVpc`, and until it is released the pool refuses to deprovision its
    * CIDR ("The CIDR has one or more allocations."), so a destroy that deletes
-   * the `AWS::EC2::IPAMPoolCidr` next fails. CloudFormation reports the VPC
-   * deleted only once that allocation is gone; this waits for the same, by
-   * the pool's `GetIpamPoolAllocations`.
+   * the `AWS::EC2::IPAMPoolCidr` next fails (the first ec2-vpc-ipam integ
+   * did). Whichever resource waits, a stack delete removing both cannot finish
+   * before AWS releases the allocation, so this waits here, by the pool's
+   * `GetIpamPoolAllocations`. The provider cannot see whether the same run
+   * deletes the pool CIDR, so a VPC on a pool another stack owns waits too.
+   * Not measured: whether CloudFormation's own VPC handler is what waits.
    *
    * The delete is ACCEPTED, so the wait follows `delete-gone-wait.ts`: a cap,
    * a Ctrl-C or an unreadable listing (a role without
@@ -2954,7 +2957,7 @@ export class EC2Provider implements ResourceProvider {
     // hang. The per-resource warn-after timer repeats the reminder later.
     this.logger.info(
       maskerOrIdentity(context?.maskSecrets)(
-        safeMsg`  Waiting for IPAM pool ${poolId} to release the allocation of deleted VPC ${vpcId}; AWS can take about 20 minutes, and the pool CIDR cannot be deprovisioned before then`
+        safeMsg`  Waiting for IPAM pool ${poolId} to release the allocation of deleted VPC ${vpcId}; AWS can take about 18 minutes, and the pool CIDR cannot be deprovisioned before then`
       )
     );
     await waitForGoneAfterDelete({
@@ -2978,7 +2981,9 @@ export class EC2Provider implements ResourceProvider {
             token = page.NextToken;
             pages++;
           } while (token && pages < MAX_ORPHAN_LIST_PAGES);
-          return undefined;
+          // A listing cut at the page cap proves nothing about the pages
+          // never read: keep waiting rather than call the VPC released.
+          return token ? 'unknown (allocation listing truncated)' : undefined;
         } catch (error) {
           if (isNamedError(error, IPAM_POOL_NOT_FOUND_NAMES)) return undefined;
           throw error;

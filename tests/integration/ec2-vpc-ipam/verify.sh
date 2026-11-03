@@ -69,9 +69,13 @@ POOL_CIDR_PREFIX="10.240."
 # reports it instead. We are in the fixture dir, three levels below repo root.
 LOCAL_DIST="${PWD}/../../../dist/cli.js"
 
-# Set only once THIS run's deploy has recorded the IPAM it created, so the
-# fallback teardown below can never reach an IPAM this run did not make.
+# Set once THIS stack's record names an IPAM. The record's state key is
+# shared, so a concurrent run of this fixture can put ITS IPAM there: the
+# fallback cascade delete below acts only on an IPAM carrying this run's own
+# nonce tag (CDKD_IPAM_RUN_TAG, which the stack writes as `cdkd-integ-run`).
 IPAM_ID=""
+RUN_TAG="ec2-vpc-ipam-$$-$(date +%s)"
+export CDKD_IPAM_RUN_TAG="${RUN_TAG}"
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
@@ -84,10 +88,13 @@ cleanup() {
   fi
   # A run that created its IPAM and failed before the destroy finished: the
   # cascade delete takes the scopes, the pool and its CIDRs with it. Only the
-  # id this run recorded, never a listing.
+  # id this stack recorded, never a listing, and only while it carries this
+  # run's own tag.
   case "${IPAM_ID}" in
     ipam-?*)
-      if aws ec2 describe-ipams --ipam-ids "${IPAM_ID}" --region "${REGION}" >/dev/null 2>&1; then
+      ipam_tag=$(aws ec2 describe-ipams --ipam-ids "${IPAM_ID}" --region "${REGION}" \
+        --query 'Ipams[0].Tags[?Key==`cdkd-integ-run`].Value | [0]' --output text 2>/dev/null)
+      if [ "${ipam_tag}" = "${RUN_TAG}" ]; then
         aws ec2 delete-ipam --ipam-id "${IPAM_ID}" --cascade --region "${REGION}" >/dev/null 2>&1 \
           && echo "    deleted this run's IPAM ${IPAM_ID} (cascade)"
       fi

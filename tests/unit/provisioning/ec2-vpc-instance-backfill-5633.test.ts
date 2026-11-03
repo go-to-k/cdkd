@@ -761,6 +761,38 @@ describe('IPAM VPC delete waits for the pool allocation to be released (#5633)',
     expect(line).toContain('The CIDR has one or more allocations');
   });
 
+  it('reads past the first page of allocations before calling the VPC released', async () => {
+    let call = 0;
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (!(cmd instanceof GetIpamPoolAllocationsCommand)) return Promise.resolve({});
+      call++;
+      // Polls 1-2: the VPC sits on the SECOND page. Poll 3: released.
+      if (call <= 4) {
+        return Promise.resolve(
+          cmd.input.NextToken === undefined
+            ? { IpamPoolAllocations: [{ ResourceType: 'vpc', ResourceId: 'vpc-other' }], NextToken: 'p2' }
+            : { IpamPoolAllocations: [{ ResourceType: 'vpc', ResourceId: 'vpc-1' }] }
+        );
+      }
+      return Promise.resolve({ IpamPoolAllocations: [] });
+    });
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', IPAM_VPC);
+    expect(sent(GetIpamPoolAllocationsCommand).length).toBeGreaterThanOrEqual(5);
+    expect(sent(GetIpamPoolAllocationsCommand)[1]).toMatchObject({ NextToken: 'p2' });
+  });
+
+  it('keeps waiting when the allocation listing is cut at the page cap', async () => {
+    mockSend.mockImplementation((cmd: unknown) =>
+      Promise.resolve(
+        cmd instanceof GetIpamPoolAllocationsCommand
+          ? { IpamPoolAllocations: [{ ResourceType: 'vpc', ResourceId: 'vpc-other' }], NextToken: 'more' }
+          : {}
+      )
+    );
+    await new EC2Provider().delete('Vpc', 'vpc-1', 'AWS::EC2::VPC', IPAM_VPC);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('stopped waiting');
+  });
+
   it('counts a pool that is already gone as released', async () => {
     allocationsFor([
       Object.assign(new Error('The IPAM pool does not exist.'), { name: 'InvalidIpamPoolId.NotFound' }),

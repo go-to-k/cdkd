@@ -33,7 +33,14 @@ export class Ec2VpcIpamStack extends cdk.Stack {
     const ipam = new ec2.CfnIPAM(this, 'Ipam', {
       tier: 'advanced',
       operatingRegions: [{ regionName: this.region }],
-      tags: [{ key: 'cdkd-integ', value: 'ec2-vpc-ipam' }],
+      tags: [
+        { key: 'cdkd-integ', value: 'ec2-vpc-ipam' },
+        // verify.sh's per-run nonce: its fallback cleanup deletes only an
+        // IPAM carrying the value this run set.
+        ...(process.env.CDKD_IPAM_RUN_TAG
+          ? [{ key: 'cdkd-integ-run', value: process.env.CDKD_IPAM_RUN_TAG }]
+          : []),
+      ],
     });
 
     const pool = new ec2.CfnIPAMPool(this, 'Pool', {

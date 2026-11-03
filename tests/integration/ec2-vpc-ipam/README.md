@@ -27,7 +27,7 @@ IPAM it did not create.
 
 About 22 minutes. The destroy waits for the pool to release the deleted VPC's
 allocation, which AWS does about 18 minutes after `DeleteVpc` returns; only
-then can the pool CIDR be deprovisioned. Give a watchdog at least 2400 seconds.
+then can the pool CIDR be deprovisioned. Give a watchdog at least 3000 seconds: the in-provider wait is capped at 25 minutes, and the gone-checks after the destroy wait up to 10 more.
 
 ## Run
 
