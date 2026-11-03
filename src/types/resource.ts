@@ -708,6 +708,12 @@ export interface UpdateContext extends SecretMaskingContext {
    * turns back on only when the template declares `EnableHttpEndpoint: true`).
    * Names only, like {@link declaredEmptyProperties}: no recorded value
    * reaches the provider. Absent on every other caller.
+   *
+   * "Template side" is the record's `properties`. On a record with no
+   * `observedProperties`, `cdkd drift --accept` writes an accepted readback
+   * value there, so a flag the user accepted counts as declared; and the
+   * revert's desired bag is that same `properties`, so the set adds a
+   * constraint only on a record that has an observed baseline.
    */
   declaredTrueProperties?: ReadonlySet<string> | undefined;
 

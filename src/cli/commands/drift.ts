@@ -7604,7 +7604,9 @@ async function runRevert(
                           ),
                           // go-to-k/cdkd#5707: which flags the template turns
                           // on, so a feature it declares can be restored while
-                          // one only the readback holds stays as it is.
+                          // one only the readback holds stays as it is. With no
+                          // observed baseline the desired bag IS `properties`,
+                          // so the set constrains only observed-baseline records.
                           declaredTrueProperties: declaredTrueProperties(stateResource.properties),
                           maskSecrets: createSecretMasker(secrets),
                           expectedRegion: report.region,
@@ -9858,6 +9860,8 @@ export function declaredEmptyProperties(properties: unknown): ReadonlySet<string
  * boolean `true`: `true` or the string `'true'`
  * (`UpdateContext.declaredTrueProperties`, go-to-k/cdkd#5707). Anything else,
  * `'True'`, a mask, an intrinsic or a nested `true` included, is not in it.
+ * On a record with no `observedProperties`, `properties` can also hold a value
+ * `cdkd drift --accept` wrote from the readback, which then counts.
  */
 export function declaredTrueProperties(properties: unknown): ReadonlySet<string> {
   const out = new Set<string>();

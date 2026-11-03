@@ -746,7 +746,7 @@ wait_http_endpoint() {
   echo "FAIL: #5707: SecurityCluster [HttpEndpointEnabled, Status] is '${got}', want '$1' after 10 min" >&2
   return 1
 }
-drift_rc() { # usage: drift_rc [extra drift flags...] -> prints the exit code
+drift_rc() { # usage: drift_rc -> prints the exit code of a plain drift
   local rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
     --region "${REGION}" "$@" >&2 || rc=$?
