@@ -177,7 +177,8 @@ const authRequired = (properties: Record<string, unknown>): boolean => {
  *   `Endpoint` / `DBProxyArn` / `VpcId` in attributes.
  * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
  *   DefaultAuthScheme / DebugLogging / IdleClientTimeout / RequireTLS /
- *   RoleArn / SecurityGroups); a removed field is left at its live value and
+ *   RoleArn / SecurityGroups), then poll `DescribeDBProxies` until the proxy
+ *   is `available` again; a removed field is left at its live value and
  *   warned about (`RETAINED_ON_REMOVAL`), except an `Auth` removal AWS would
  *   refuse, which is refused before any call (`authRemovalRefused`). Tags
  *   handled via separate `AddTagsToResource` / `RemoveTagsFromResource` diff.
@@ -560,6 +561,11 @@ export class RDSDBProxyProvider implements ResourceProvider {
       } catch (error) {
         throw this.wrapCaughtError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
       }
+      // ModifyDBProxy returns while the proxy is `modifying`. Wait for
+      // `available` before returning, as create() does: a dependent's update
+      // in the same deploy, or the next modify, is refused with
+      // InvalidDBProxyStateFault while it is still `modifying`.
+      await this.waitForAvailableAfterModify(physicalId, resourceType, logicalId, mask);
     }
 
     // Invalidate attribute cache BEFORE applyTagDiff so the ARN warm-up
@@ -584,6 +590,57 @@ export class RDSDBProxyProvider implements ResourceProvider {
     this.warnOnRetainedRemovals(logicalId, resourceType, properties, previousProperties, context);
 
     return { physicalId, wasReplaced: false };
+  }
+
+  /**
+   * Polls `DescribeDBProxies` until the proxy reports `available` after a
+   * `ModifyDBProxy`, bounded by the same deadline as create(). A terminal
+   * failure state or the deadline is a `ProvisioningError`.
+   */
+  private async waitForAvailableAfterModify(
+    physicalId: string,
+    resourceType: string,
+    logicalId: string,
+    mask: (s: string) => string
+  ): Promise<void> {
+    const client = this.getClient();
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let status: string | undefined;
+    while (Date.now() < deadline) {
+      try {
+        const describe = await client.send(
+          new DescribeDBProxiesCommand({ DBProxyName: physicalId })
+        );
+        status = describe.DBProxies?.[0]?.Status;
+      } catch (error) {
+        throw this.wrapCaughtError(
+          error,
+          'UPDATE (poll)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
+      }
+      if (status === 'available') return;
+      if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
+        throw new ProvisioningError(
+          mask(`DBProxy ${physicalId} entered terminal failure state after modify: ${status}`),
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    throw new ProvisioningError(
+      mask(
+        `Timed out waiting for DBProxy ${physicalId} to become available after modify (last status: ${status ?? 'unknown'})`
+      ),
+      resourceType,
+      logicalId,
+      physicalId
+    );
   }
 
   /**
