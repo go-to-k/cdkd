@@ -1544,7 +1544,9 @@ Checklist when writing or reviewing an `update()`:
   `false` on both types. Every other measured removal (`DeletionProtection`,
   `EnableIAMDatabaseAuthentication`, `MonitoringInterval`, `EngineVersion`,
   `MonitoringRoleArn`, and more) is KEPT, so `update()` forwards it only when
-  present.
+  present. A removed DBCluster `EnableHttpEndpoint: true` is the exception the
+  handler source shows: CloudFormation turns the Data API off
+  (`DisableHttpEndpoint`), and so does cdkd.
 - A real CloudFormation A/B can show it KEEPS the live value: for
   `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
   `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset

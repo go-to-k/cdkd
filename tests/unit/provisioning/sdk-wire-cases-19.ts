@@ -162,7 +162,16 @@ function armCluster(_physicalId: string, bag: Bag): void {
   let groups = (bag['VpcSecurityGroupIds'] as string[] | undefined) ?? [];
   let port = bag['Port'] as number | undefined;
   let logs = liveLogs(bag);
+  let httpEndpoint = bag['EnableHttpEndpoint'] === true;
   setOutputOverrides({
+    EnableHttpEndpointCommand: () => {
+      httpEndpoint = true;
+      return {};
+    },
+    DisableHttpEndpointCommand: () => {
+      httpEndpoint = false;
+      return {};
+    },
     ModifyDBClusterCommand: (input) => {
       const sentGroups = input['VpcSecurityGroupIds'] as string[] | undefined;
       if (sentGroups !== undefined) groups = sentGroups;
@@ -182,6 +191,7 @@ function armCluster(_physicalId: string, bag: Bag): void {
           ...(port !== undefined && { Port: port }),
           VpcSecurityGroups: groups.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
           EnabledCloudwatchLogsExports: logs,
+          HttpEndpointEnabled: httpEndpoint,
         },
       ],
     }),
@@ -222,6 +232,27 @@ const CLUSTER_BACKFILL_KEPT = Object.fromEntries(
   ].map((key) => [
     `update-remove:${key}`,
     `left in place on removal: ModifyDBCluster treats an absent member as "no change", and a real CloudFormation A/B (go-to-k/cdkd#2762) measured a removed ${key} KEPT (${SRC} clusterModifyBackfillMembers)`,
+  ])
+);
+
+/**
+ * go-to-k/cdkd#5639: a removed scalar sends nothing. CloudFormation's update
+ * translation (`Translator.modifyDbClusterRequest`) sends the desired value,
+ * `null` (unsent) for a removed key, and `ModelAdapter.setDefaults` fills none
+ * of these, so the live value is kept (read from the handler source, not
+ * measured). A removed Performance Insights member beside unchanged siblings
+ * changes nothing the trio sends.
+ */
+const CLUSTER_SCALARS_KEPT = Object.fromEntries(
+  [
+    'AutoMinorVersionUpgrade',
+    'NetworkType',
+    'PerformanceInsightsEnabled',
+    'PerformanceInsightsKmsKeyId',
+    'PerformanceInsightsRetentionPeriod',
+  ].map((key) => [
+    `update-remove:${key}`,
+    `left in place on removal: ModifyDBCluster treats an absent member as "no change", and CloudFormation's handler sends null for a removed ${key} with no default filled (${SRC} clusterModifyScalarMembers)`,
   ])
 );
 
@@ -277,11 +308,18 @@ const CLUSTER_CASE: TypeCase = {
         CopyTagsToSnapshot: true,
         StorageType: 'aurora-iopt1',
         EnableCloudwatchLogsExports: ['postgresql', 'iam-db-auth-error'],
+        AutoMinorVersionUpgrade: false,
+        NetworkType: 'DUAL',
+        PerformanceInsightsEnabled: true,
+        PerformanceInsightsKmsKeyId: KMS,
+        PerformanceInsightsRetentionPeriod: 465,
+        EnableHttpEndpoint: true,
         Tags: fresh(TAGS),
       },
       expectedSilent: {
         ...CLUSTER_ENGINE_SILENT,
         ...CLUSTER_BACKFILL_KEPT,
+        ...CLUSTER_SCALARS_KEPT,
         ...CLUSTER_MASTER_USERNAME_SILENT,
         'update-remove:MasterUserPassword': PASSWORD_REMOVED,
         'update-remove:DeletionProtection': KEPT('DeletionProtection', '1192-1193'),
