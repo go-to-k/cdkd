@@ -99,6 +99,12 @@ import {
   type ResourceType as Ec2TagResourceType,
   type TagSpecification,
   type AvailabilityMode,
+  type VpcEncryptionControlConfiguration,
+  type VpcEncryptionControlMode,
+  type VpcEncryptionControlExclusionStateInput,
+  type CpuOptionsRequest,
+  type HibernationOptionsRequest,
+  type ShutdownBehavior,
   type NatGatewayAddress,
   type NatGateway,
   AssociateNatGatewayAddressCommand,
@@ -126,7 +132,15 @@ import {
 } from '../../utils/error-handler.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { stateOrphanRecordRemedy } from '../state-orphan-remedy.js';
-import { replayWarn, requireConfigString } from '../config-shape.js';
+import {
+  coerceCfnBoolean,
+  coerceCfnInteger,
+  configBooleanRefusal,
+  configIntegerRefusal,
+  configStringRefusal,
+  replayWarn,
+  requireConfigString,
+} from '../config-shape.js';
 import {
   compositeIdFormatMessage,
   compositeIdSeparatorRefusal,
@@ -304,6 +318,8 @@ interface InstanceMemberPlan {
   /** `vpc-default` is resolved to a `set` by `prepareInstanceMemberUpdates`. */
   securityGroups?: { kind: 'set'; ids: string[] } | { kind: 'vpc-default' };
   deleteOnTermination?: Array<{ DeviceName: string; DeleteOnTermination: boolean }>;
+  /** go-to-k/cdkd#5630: in place, no stop. */
+  shutdownBehavior?: string;
 }
 
 /**
@@ -1037,6 +1053,29 @@ const allocateAddressLatch = new AmbiguousCreateLatch('ec2:AllocateAddress');
  */
 const ec2IdsCreatedByThisProcess = new RecentIdSet();
 
+/**
+ * What an ambiguous-create orphan report matches a VPC on: the declared
+ * primary CIDR, or (go-to-k/cdkd#5633) the IPAM pool it was allocated from.
+ */
+type VpcOrphanMatch = { cidrBlock: string } | { ipamPoolId: string; netmaskLength?: number };
+
+/**
+ * The writable members of CloudFormation's `VpcEncryptionControl`, each the
+ * same-named `VpcEncryptionControlConfiguration` member (go-to-k/cdkd#5633).
+ * The schema's other members (`State`, `StateMessage`, `VpcId`,
+ * `VpcEncryptionControlId`, `ResourceExclusions`) are what AWS reports back.
+ */
+const VPC_ENCRYPTION_CONTROL_EXCLUSIONS = [
+  'InternetGatewayExclusion',
+  'EgressOnlyInternetGatewayExclusion',
+  'NatGatewayExclusion',
+  'VirtualPrivateGatewayExclusion',
+  'VpcPeeringExclusion',
+  'LambdaExclusion',
+  'VpcLatticeExclusion',
+  'ElasticFileSystemExclusion',
+] as const;
+
 /** Reset the module-scoped retry-safety state. TEST-ONLY. */
 export function resetEc2CreateRetryStateForTests(): void {
   createVpcLatch.resetForTests();
@@ -1159,7 +1198,17 @@ export class EC2Provider implements ResourceProvider {
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::EC2::VPC',
-      new Set(['CidrBlock', 'InstanceTenancy', 'EnableDnsHostnames', 'EnableDnsSupport', 'Tags']),
+      new Set([
+        'CidrBlock',
+        'InstanceTenancy',
+        'EnableDnsHostnames',
+        'EnableDnsSupport',
+        'Tags',
+        // go-to-k/cdkd#5633: CreateVpc inputs, all create-only.
+        'Ipv4IpamPoolId',
+        'Ipv4NetmaskLength',
+        'VpcEncryptionControl',
+      ]),
     ],
     [
       'AWS::EC2::Subnet',
@@ -1253,7 +1302,7 @@ export class EC2Provider implements ResourceProvider {
         // Issue #1276: the CDK L2 `ec2.Instance` construct ALWAYS emits
         // AvailabilityZone (from the selected subnet), so leaving it
         // unhandled routed every ordinary CDK-authored instance onto the
-        // Cloud Control path via the #614 silent-drop rule -- paying CC's
+        // Cloud Control path via the #614 sdkUnwired rule -- paying CC's
         // async polling for a resource this provider handles directly, and
         // leaving the whole SDK create/update/readback surface (including
         // the #609 backfill) dead code for L2 users. Maps to
@@ -1274,6 +1323,10 @@ export class EC2Provider implements ResourceProvider {
         'Monitoring',
         'EbsOptimized',
         'CreditSpecification',
+        // go-to-k/cdkd#5630: RunInstances inputs (buildLaunchOnlyInstanceOptions).
+        'CpuOptions',
+        'HibernationOptions',
+        'InstanceInitiatedShutdownBehavior',
       ]),
     ],
     ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],
@@ -1373,8 +1426,8 @@ export class EC2Provider implements ResourceProvider {
           // It is NOT modelled as a replacement trigger either: the registry
           // schema does not list it under `createOnlyProperties`, so recreating
           // the gateway on a drain-timeout change would diverge from
-          // CloudFormation and needlessly break the data plane. Declaring the
-          // silent drop here routes any template that sets it through the #614
+          // CloudFormation and needlessly break the data plane. Declaring it
+          // sdkUnwired here routes any template that sets it through the #614
           // Cloud Control fallback, where AWS's own resource handler applies it.
           'MaxDrainDurationSeconds',
           'write-only address-drain timeout with no CreateNatGateway member and no NAT gateway modify API; only ec2:DisassociateNatGatewayAddress / UnassignPrivateNatGatewayAddress accept it, and the cdkd NatGateway update releases only the AvailabilityZoneAddresses of a regional gateway, never the secondary addresses of a zonal one — routed via Cloud Control instead',
@@ -1484,17 +1537,30 @@ export class EC2Provider implements ResourceProvider {
    */
   private async reportPossibleOrphanVpcs(
     logicalId: string,
-    cidrBlock: string,
+    match: VpcOrphanMatch,
     sent: CfnTagEntry[],
     window: AmbiguousCreateWindow,
     context: CreateContext | undefined
   ): Promise<void> {
     const log = createMaskedLogSinks(this.logger, context?.maskSecrets);
-    const wanted = canonicalizeIpv4Cidr(cidrBlock) ?? cidrBlock;
+    // go-to-k/cdkd#5633: an IPAM-allocated VPC has no declared CIDR, and
+    // DescribeVpcs names no pool, so its candidates are matched on the prefix
+    // length the create asked for (any length when the pool's default applies).
+    const cidrMatches = (cidr: string): boolean => {
+      if ('cidrBlock' in match) {
+        const wanted = canonicalizeIpv4Cidr(match.cidrBlock) ?? match.cidrBlock;
+        return (canonicalizeIpv4Cidr(cidr) ?? cidr) === wanted;
+      }
+      return match.netmaskLength === undefined || cidr.endsWith(`/${match.netmaskLength}`);
+    };
+    const subject =
+      'cidrBlock' in match
+        ? `a VPC with CIDR ${log.value(match.cidrBlock)}`
+        : `a VPC allocated from IPAM pool ${log.value(match.ipamPoolId)}${match.netmaskLength === undefined ? '' : ` with a /${match.netmaskLength} CIDR`}`;
     await this.reportPossibleEc2Orphans(logicalId, window, log, {
       action: 'CreateVpc',
       listAction: 'DescribeVpcs',
-      subject: `a VPC with CIDR ${log.value(cidrBlock)}`,
+      subject,
       noun: lostCreateNoun('VPC(s)', sent),
       list: () =>
         collectOrphanIds(
@@ -1509,7 +1575,7 @@ export class EC2Provider implements ResourceProvider {
             vpc.IsDefault !== true &&
             mayBeLostCreate(vpc.Tags, sent) &&
             vpc.CidrBlock !== undefined &&
-            (canonicalizeIpv4Cidr(vpc.CidrBlock) ?? vpc.CidrBlock) === wanted &&
+            cidrMatches(vpc.CidrBlock) &&
             !ec2IdsCreatedByThisProcess.has(vpc.VpcId)
               ? vpc.VpcId
               : undefined
@@ -1517,6 +1583,85 @@ export class EC2Provider implements ResourceProvider {
       inspect: (aws, id, regionArg) =>
         aws`aws ec2 describe-vpcs --vpc-ids ${id}${regionArg}`.render(),
     });
+  }
+
+  /**
+   * go-to-k/cdkd#5633: `Ipv4IpamPoolId` and `Ipv4NetmaskLength`, both
+   * create-only, onto CreateVpc. A malformed value is refused before any call,
+   * on a rollback replay too: CreateVpc rejects it every time, so a replay
+   * sending it could not succeed, and dropping it would allocate the VPC's
+   * CIDR from somewhere the record never named.
+   */
+  private readVpcIpamAllocation(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    context: CreateContext | undefined
+  ): { poolId?: string; netmaskLength?: number } {
+    const refusal =
+      configStringRefusal(properties, 'Ipv4IpamPoolId', '', resourceType) ??
+      configIntegerRefusal(properties, 'Ipv4NetmaskLength', resourceType, 0, 32);
+    if (refusal !== undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${refusal}. The VPC ${logicalId} was not created.${context?.replayingState === true ? ' The value comes from the state record being restored.' : ''}`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+    const poolId = properties['Ipv4IpamPoolId'];
+    const netmaskLength = coerceCfnInteger(properties['Ipv4NetmaskLength']);
+    return {
+      ...(typeof poolId === 'string' && poolId !== '' && { poolId }),
+      ...(netmaskLength !== undefined && { netmaskLength }),
+    };
+  }
+
+  /**
+   * go-to-k/cdkd#5633: CloudFormation's `VpcEncryptionControl` (create-only)
+   * onto CreateVpc's `VpcEncryptionControl`. Only the writable members are
+   * sent (`Mode` plus the eight `*Exclusion` switches, same names on both
+   * sides); the read-only ones a template cannot set are left out. A
+   * malformed block is refused before any call, a replay included, for the
+   * reason `readVpcIpamAllocation` gives: dropping it would create the VPC
+   * WITHOUT the encryption enforcement the record declares.
+   */
+  private buildVpcEncryptionControl(
+    value: unknown,
+    resourceType: string,
+    logicalId: string
+  ): VpcEncryptionControlConfiguration | undefined {
+    if (value === undefined) return undefined;
+    const path = `${resourceType} VpcEncryptionControl`;
+    const refuse = (reason: string): never => {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${reason}. The VPC ${logicalId} was not created.`,
+          resourceType,
+          logicalId
+        )
+      );
+    };
+    const containerRefusal = configStringRefusal(value, 'Mode', '', path);
+    if (containerRefusal !== undefined) return refuse(containerRefusal);
+    const block = value as Record<string, unknown>;
+    // An absent `Mode` is sent absent: whether CreateVpc then refuses it is
+    // AWS's answer to give, as it is for CloudFormation's handler.
+    const mode = block['Mode'];
+    const config: VpcEncryptionControlConfiguration = {
+      Mode:
+        typeof mode === 'string' && mode !== '' ? (mode as VpcEncryptionControlMode) : undefined,
+    };
+    for (const key of VPC_ENCRYPTION_CONTROL_EXCLUSIONS) {
+      const memberRefusal = configStringRefusal(block, key, '', path);
+      if (memberRefusal !== undefined) return refuse(memberRefusal);
+      const member = block[key];
+      if (typeof member === 'string' && member !== '') {
+        config[key] = member as VpcEncryptionControlExclusionStateInput;
+      }
+    }
+    return config;
   }
 
   /**
@@ -2261,14 +2406,31 @@ export class EC2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
-    const cidrBlock = properties['CidrBlock'] as string;
-    if (!cidrBlock) {
+    // go-to-k/cdkd#5633: the primary CIDR is either declared or allocated from
+    // an IPAM pool (`Ipv4IpamPoolId`, with an optional `Ipv4NetmaskLength`);
+    // CreateVpc takes exactly one of the two sources.
+    const cidrBlock = properties['CidrBlock'] as string | undefined;
+    const ipamAllocation = this.readVpcIpamAllocation(properties, resourceType, logicalId, context);
+    if (!cidrBlock && ipamAllocation.poolId === undefined) {
       throw new ProvisioningError(
-        `CidrBlock is required for VPC ${logicalId}`,
+        `CidrBlock or Ipv4IpamPoolId is required for VPC ${logicalId}`,
         resourceType,
         logicalId
       );
     }
+    const encryptionControl = this.buildVpcEncryptionControl(
+      properties['VpcEncryptionControl'],
+      resourceType,
+      logicalId
+    );
+    const orphanMatch: VpcOrphanMatch = cidrBlock
+      ? { cidrBlock }
+      : {
+          ipamPoolId: ipamAllocation.poolId!,
+          ...(ipamAllocation.netmaskLength !== undefined && {
+            netmaskLength: ipamAllocation.netmaskLength,
+          }),
+        };
 
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // delete the VPC this call created.
@@ -2281,7 +2443,7 @@ export class EC2Provider implements ResourceProvider {
       if (orphanWindow !== undefined) {
         await this.reportPossibleOrphanVpcs(
           logicalId,
-          cidrBlock,
+          orphanMatch,
           desiredTags,
           orphanWindow,
           context
@@ -2298,7 +2460,14 @@ export class EC2Provider implements ResourceProvider {
           (TagSpecifications) =>
             createClient.send(
               new CreateVpcCommand({
-                CidrBlock: cidrBlock,
+                ...(cidrBlock ? { CidrBlock: cidrBlock } : {}),
+                ...(ipamAllocation.poolId !== undefined && {
+                  Ipv4IpamPoolId: ipamAllocation.poolId,
+                }),
+                ...(ipamAllocation.netmaskLength !== undefined && {
+                  Ipv4NetmaskLength: ipamAllocation.netmaskLength,
+                }),
+                ...(encryptionControl !== undefined && { VpcEncryptionControl: encryptionControl }),
                 InstanceTenancy: (properties['InstanceTenancy'] as Tenancy) ?? undefined,
                 ...(TagSpecifications && { TagSpecifications }),
               })
@@ -2319,7 +2488,7 @@ export class EC2Provider implements ResourceProvider {
       if (vpcReplayWindow !== undefined) {
         await this.reportPossibleOrphanVpcs(
           logicalId,
-          cidrBlock,
+          orphanMatch,
           desiredTags,
           vpcReplayWindow,
           context
@@ -2423,9 +2592,10 @@ export class EC2Provider implements ResourceProvider {
         // above failed; the resolver's own arm for it then repeats this same
         // filtered `DescribeSecurityGroups` live, and REFUSES (never the VPC
         // id) when that read fails or finds nothing (issue #3096).
+        // An IPAM-allocated CIDR is known only from the CreateVpc response.
         attributes: definedAttributes({
           VpcId: vpcId,
-          CidrBlock: cidrBlock,
+          CidrBlock: cidrBlock || response.Vpc?.CidrBlock,
           DefaultSecurityGroup: defaultSgId,
         }),
       };
@@ -2541,13 +2711,26 @@ export class EC2Provider implements ResourceProvider {
 
       this.logger.debug(`Successfully updated VPC ${logicalId}`);
 
+      // go-to-k/cdkd#5633: an IPAM-allocated VPC declares no CidrBlock; its
+      // CIDR (create-only, so unchanged by this update) is read back instead.
+      // The map REPLACES the record's, so a CidrBlock left out here would be
+      // lost to every later `Fn::GetAtt`.
+      const declaredCidr = properties['CidrBlock'];
+      const cidrBlock =
+        typeof declaredCidr === 'string' && declaredCidr !== ''
+          ? declaredCidr
+          : properties['Ipv4IpamPoolId'] !== undefined
+            ? (await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] })))
+                ?.Vpcs?.[0]?.CidrBlock
+            : undefined;
+
       return {
         physicalId,
         wasReplaced: false,
-        attributes: {
+        attributes: definedAttributes({
           VpcId: physicalId,
-          CidrBlock: properties['CidrBlock'] as string,
-        },
+          CidrBlock: cidrBlock,
+        }),
       };
     } catch (error) {
       // The InstanceTenancy refusal is control flow the deploy engine matches
@@ -7466,6 +7649,12 @@ export class EC2Provider implements ResourceProvider {
     // as a boolean (issue #5445), which must stop the create, not launch an
     // instance whose volume silently drops the declared encryption.
     const blockDeviceMappings = this.buildBlockDeviceMappings(properties, logicalId);
+    // go-to-k/cdkd#5630: refused before any AWS call too.
+    const launchOnlyOptions = this.buildLaunchOnlyInstanceOptions(
+      properties,
+      resourceType,
+      logicalId
+    );
 
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // terminate the instance this call launched.
@@ -7557,6 +7746,7 @@ export class EC2Provider implements ResourceProvider {
               // DISAGREE, AWS rejects the RunInstances call; that is the correct
               // outcome to surface rather than to paper over by dropping one.
               Placement: this.buildPlacement(properties),
+              ...launchOnlyOptions,
             })
           )
       );
@@ -8221,6 +8411,9 @@ export class EC2Provider implements ResourceProvider {
    *    CloudFormation replaces; the replacement rule routes that.)
    *  - `BlockDeviceMappings`: only a `DeleteOnTermination` change is in place;
    *    everything else is routed to replacement.
+   *  - `InstanceInitiatedShutdownBehavior` (go-to-k/cdkd#5630, measured
+   *    2026-11-04): in place, no interruption; a removal FAILS the update, so
+   *    it is refused here.
    *
    * A member is CHANGED per the engine's `changedProperties` when it is set
    * (a redacted state value cannot be compared to a resolved one), else per
@@ -8314,6 +8507,35 @@ export class EC2Provider implements ResourceProvider {
           properties['InstanceType'],
           '',
           'AWS::EC2::Instance InstanceType'
+        );
+      }
+    }
+
+    // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): CloudFormation
+    // changes it in place with no interruption, both ways, and FAILS an update
+    // that removes it ("No attributes specified"; measured us-east-1,
+    // 2026-11-04, a t3.nano), so a removal is refused as InstanceType's is.
+    if (changed('InstanceInitiatedShutdownBehavior', (a, b) => a === b)) {
+      if (properties['InstanceInitiatedShutdownBehavior'] === undefined) {
+        if (context?.replayingState === true) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): the state being restored does not declare InstanceInitiatedShutdownBehavior; the rollback leaves it at its current AWS value.`
+          );
+        } else {
+          throw refusedBeforeApplying(
+            new ProvisioningError(
+              safeMsg`${logicalId} (${resourceType}): InstanceInitiatedShutdownBehavior was removed from the template, and CloudFormation fails that update for an existing instance. Keep it declared (set it to stop, the default, to leave the behavior at AWS's default). The instance was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+      } else if (!standInSkips('InstanceInitiatedShutdownBehavior')) {
+        plan.shutdownBehavior = requireConfigString(
+          properties['InstanceInitiatedShutdownBehavior'],
+          '',
+          'AWS::EC2::Instance InstanceInitiatedShutdownBehavior'
         );
       }
     }
@@ -8542,6 +8764,16 @@ export class EC2Provider implements ResourceProvider {
         })
       );
       applied.push('the new DeleteOnTermination');
+    }
+
+    if (plan.shutdownBehavior !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          InstanceInitiatedShutdownBehavior: { Value: plan.shutdownBehavior },
+        })
+      );
+      applied.push('the new InstanceInitiatedShutdownBehavior');
     }
 
     if (plan.instanceType === undefined && plan.userData === undefined) {
@@ -9333,6 +9565,62 @@ export class EC2Provider implements ResourceProvider {
     const obj = spec as Record<string, unknown>;
     const raw = obj['CPUCredits'] ?? obj['CpuCredits'];
     return typeof raw === 'string' ? raw : undefined;
+  }
+
+  /**
+   * go-to-k/cdkd#5630: the launch-only RunInstances inputs. `CpuOptions` and
+   * `HibernationOptions` are create-only (a change replaces the instance via
+   * the schema's `createOnlyProperties`); `InstanceInitiatedShutdownBehavior`
+   * also changes in place (`planInstanceMemberUpdates`). Member names match
+   * on both sides. A malformed value is refused before RunInstances, on a
+   * rollback replay too: RunInstances rejects it every time, so the replay
+   * could not succeed, and dropping it would launch an instance with CPU,
+   * hibernation or shutdown settings the record never declared.
+   */
+  private buildLaunchOnlyInstanceOptions(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string
+  ): {
+    CpuOptions?: CpuOptionsRequest;
+    HibernationOptions?: HibernationOptionsRequest;
+    InstanceInitiatedShutdownBehavior?: ShutdownBehavior;
+  } {
+    const cpu = properties['CpuOptions'];
+    const hibernation = properties['HibernationOptions'];
+    const refusal =
+      configIntegerRefusal(cpu, 'CoreCount', `${resourceType} CpuOptions`, 1) ??
+      configIntegerRefusal(cpu, 'ThreadsPerCore', `${resourceType} CpuOptions`, 1) ??
+      configBooleanRefusal(hibernation, 'Configured', `${resourceType} HibernationOptions`) ??
+      configStringRefusal(properties, 'InstanceInitiatedShutdownBehavior', '', resourceType);
+    if (refusal !== undefined) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${refusal}. The instance ${logicalId} was not launched.`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+    const out: ReturnType<EC2Provider['buildLaunchOnlyInstanceOptions']> = {};
+    if (cpu !== undefined && cpu !== null) {
+      const block = cpu as Record<string, unknown>;
+      const coreCount = coerceCfnInteger(block['CoreCount']);
+      const threadsPerCore = coerceCfnInteger(block['ThreadsPerCore']);
+      out.CpuOptions = {
+        ...(coreCount !== undefined && { CoreCount: coreCount }),
+        ...(threadsPerCore !== undefined && { ThreadsPerCore: threadsPerCore }),
+      };
+    }
+    if (hibernation !== undefined && hibernation !== null) {
+      const configured = coerceCfnBoolean((hibernation as Record<string, unknown>)['Configured']);
+      out.HibernationOptions = configured === undefined ? {} : { Configured: configured };
+    }
+    const shutdown = properties['InstanceInitiatedShutdownBehavior'];
+    if (typeof shutdown === 'string' && shutdown !== '') {
+      out.InstanceInitiatedShutdownBehavior = shutdown as ShutdownBehavior;
+    }
+    return out;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────
@@ -10630,7 +10918,7 @@ export class EC2Provider implements ResourceProvider {
     try {
       switch (resourceType) {
         case 'AWS::EC2::VPC':
-          return await this.readVpcCurrentState(physicalId);
+          return await this.readVpcCurrentState(physicalId, properties);
         case 'AWS::EC2::Subnet':
           return await this.readSubnetCurrentState(physicalId);
         case 'AWS::EC2::InternetGateway':
@@ -10642,7 +10930,7 @@ export class EC2Provider implements ResourceProvider {
         case 'AWS::EC2::SecurityGroup':
           return await this.readSecurityGroupCurrentState(physicalId, properties);
         case 'AWS::EC2::Instance':
-          return await this.readInstanceCurrentState(physicalId);
+          return await this.readInstanceCurrentState(physicalId, properties);
         case 'AWS::EC2::NetworkAcl':
           return await this.readNetworkAclCurrentState(physicalId);
         case 'AWS::EC2::EIP':
@@ -10717,6 +11005,10 @@ export class EC2Provider implements ResourceProvider {
       // Lambda's Code (issue #1281).
       case 'AWS::EC2::Instance':
         return ['NetworkInterfaces'];
+      // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
+      // read back from the CIDR instead.
+      case 'AWS::EC2::VPC':
+        return ['Ipv4IpamPoolId'];
       case 'AWS::EC2::Route':
       case 'AWS::EC2::VPCGatewayAttachment':
       case 'AWS::EC2::SubnetRouteTableAssociation':
@@ -10805,15 +11097,43 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async readVpcCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(new DescribeVpcsCommand({ VpcIds: [physicalId] }));
     const vpc = resp.Vpcs?.[0];
     if (!vpc) return RESOURCE_NOT_FOUND;
 
     const result: Record<string, unknown> = {};
-    if (vpc.CidrBlock !== undefined) result['CidrBlock'] = vpc.CidrBlock;
+    if (vpc.CidrBlock !== undefined) {
+      result['CidrBlock'] = vpc.CidrBlock;
+      // go-to-k/cdkd#5633: an IPAM allocation's netmask is the CIDR's prefix
+      // length, reported only for a bag that declares it. `Ipv4IpamPoolId`
+      // has no readback here (getDriftUnknownPaths).
+      const prefix = /\/(\d+)$/.exec(vpc.CidrBlock)?.[1];
+      if (prefix !== undefined && properties?.['Ipv4NetmaskLength'] !== undefined) {
+        result['Ipv4NetmaskLength'] = Number(prefix);
+      }
+    }
     if (vpc.InstanceTenancy !== undefined) result['InstanceTenancy'] = vpc.InstanceTenancy;
+    // go-to-k/cdkd#5633: AWS reports each exclusion as `enabled` / `disabled`
+    // (or the `-ing` transition) under `ResourceExclusions.<Resource>.State`,
+    // where CloudFormation writes `<Resource>Exclusion: enable | disable`.
+    // Measured us-east-1, 2026-11-04: an `enforce` control reports all eight,
+    // a `monitor` one none.
+    const control = vpc.EncryptionControl;
+    if (control?.Mode !== undefined) {
+      const out: Record<string, unknown> = { Mode: control.Mode };
+      const exclusions = control.ResourceExclusions as
+        | Record<string, { State?: string } | undefined>
+        | undefined;
+      for (const key of VPC_ENCRYPTION_CONTROL_EXCLUSIONS) {
+        const state = exclusions?.[key.slice(0, -'Exclusion'.length)]?.State;
+        if (state === 'enabled' || state === 'enabling') out[key] = 'enable';
+        else if (state === 'disabled' || state === 'disabling') out[key] = 'disable';
+      }
+      result['VpcEncryptionControl'] = out;
+    }
 
     // EnableDnsHostnames / EnableDnsSupport require separate
     // DescribeVpcAttribute calls.
@@ -11073,7 +11393,8 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async readInstanceCurrentState(
-    physicalId: string
+    physicalId: string,
+    properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(
       new DescribeInstancesCommand({ InstanceIds: [physicalId] })
@@ -11156,6 +11477,22 @@ export class EC2Provider implements ResourceProvider {
         out['InstanceMetadataTags'] = md.InstanceMetadataTags;
       }
       if (Object.keys(out).length > 0) result['MetadataOptions'] = out;
+    }
+
+    // go-to-k/cdkd#5630: the launch-time CPU and hibernation options, same
+    // member names as CloudFormation's. DescribeInstances also reports
+    // `CpuOptions.AmdSevSnp`, which CloudFormation has no member for.
+    if (instance.CpuOptions !== undefined) {
+      const cpu: Record<string, unknown> = {};
+      if (instance.CpuOptions.CoreCount !== undefined)
+        cpu['CoreCount'] = instance.CpuOptions.CoreCount;
+      if (instance.CpuOptions.ThreadsPerCore !== undefined) {
+        cpu['ThreadsPerCore'] = instance.CpuOptions.ThreadsPerCore;
+      }
+      if (Object.keys(cpu).length > 0) result['CpuOptions'] = cpu;
+    }
+    if (instance.HibernationOptions?.Configured !== undefined) {
+      result['HibernationOptions'] = { Configured: instance.HibernationOptions.Configured };
     }
 
     // Tenancy: lives under Placement.Tenancy.
@@ -11289,6 +11626,28 @@ export class EC2Provider implements ResourceProvider {
           describeAwsFailure(err).detail
         }`
       );
+    }
+
+    // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): another
+    // DescribeInstanceAttribute call, made only for a bag that declares it, so
+    // an instance without it pays no extra read. Best-effort as above.
+    if (properties?.['InstanceInitiatedShutdownBehavior'] !== undefined) {
+      try {
+        const attrResp = await this.ec2Client.send(
+          new DescribeInstanceAttributeCommand({
+            InstanceId: physicalId,
+            Attribute: 'instanceInitiatedShutdownBehavior',
+          })
+        );
+        if (attrResp.InstanceInitiatedShutdownBehavior?.Value !== undefined) {
+          result['InstanceInitiatedShutdownBehavior'] =
+            attrResp.InstanceInitiatedShutdownBehavior.Value;
+        }
+      } catch (err) {
+        this.logger.debug(
+          safeMsg`DescribeInstanceAttribute(instanceInitiatedShutdownBehavior, ${physicalId}) failed: ${describeAwsFailure(err).detail}`
+        );
+      }
     }
 
     // CreditSpecification (#609): not returned by DescribeInstances; needs a
@@ -11755,7 +12114,7 @@ export class EC2Provider implements ResourceProvider {
         // state files written by both the post-#613-fix code (which
         // uses CFn-canonical `Icmp`) AND any pre-fix state files that
         // stored `IcmpTypeCode` directly (template authors bypassed
-        // the silent-drop pre-flight by using the AWS API name).
+        // the sdkUnwired pre-flight by using the AWS API name).
         result['Icmp'] = icmp;
         result['IcmpTypeCode'] = icmp;
       }

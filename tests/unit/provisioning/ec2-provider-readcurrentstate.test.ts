@@ -2327,7 +2327,6 @@ describe('EC2Provider.readCurrentState', () => {
 
     it('returns [] for tag-bearing parent resource types (VPC / Subnet / SG / etc.)', () => {
       const TAG_BEARING_TYPES = [
-        'AWS::EC2::VPC',
         'AWS::EC2::Subnet',
         'AWS::EC2::InternetGateway',
         'AWS::EC2::NatGateway',
@@ -2338,6 +2337,10 @@ describe('EC2Provider.readCurrentState', () => {
       for (const t of TAG_BEARING_TYPES) {
         expect(provider.getDriftUnknownPaths(t)).toEqual([]);
       }
+    });
+
+    it('VPC declares only Ipv4IpamPoolId unreadable: DescribeVpcs names no pool (go-to-k/cdkd#5633)', () => {
+      expect(provider.getDriftUnknownPaths('AWS::EC2::VPC')).toEqual(['Ipv4IpamPoolId']);
     });
 
     it('Instance declares only NetworkInterfaces unreadable (issue #1281)', () => {
