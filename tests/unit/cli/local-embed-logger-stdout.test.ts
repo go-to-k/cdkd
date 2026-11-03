@@ -17,16 +17,40 @@ import {
 // reservation once `createLocalCommand` has installed cdkd's logger into the
 // embed config. Nothing at the shim boundary is mocked: the line is produced
 // by cdk-local's own logger module.
+// Both cases spawn the docker binary, so each declares its own timeout: the
+// 5 s default is sized for in-process work and timed out on a loaded CI runner.
+const SPAWN_CASE_TIMEOUT_MS = 120_000;
+
 describe("cdk-local's own log lines under cdkd's stdout reservation", () => {
   const dirs: string[] = [];
+  let restoreDocker: (() => void) | undefined;
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    restoreDocker?.();
+    restoreDocker = undefined;
     releaseStdoutForPayload();
     resetEmbedConfig();
     vi.restoreAllMocks();
   });
 
+  // A fake docker that accepts every call, so no case depends on (or waits
+  // for) a real Docker daemon on the host.
+  function useFakeDocker(dir: string): void {
+    const fake = join(dir, 'docker');
+    writeFileSync(fake, '#!/bin/sh\nexit 0\n');
+    chmodSync(fake, 0o755);
+    const saved = process.env['CDK_DOCKER'];
+    restoreDocker = () => {
+      if (saved === undefined) delete process.env['CDK_DOCKER'];
+      else process.env['CDK_DOCKER'] = saved;
+    };
+    process.env['CDK_DOCKER'] = fake;
+  }
+
   it('never writes a cdk-local progress line to stdout while the payload owns it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-2429-docker-'));
+    dirs.push(dir);
+    useFakeDocker(dir);
     createLocalCommand();
     reserveStdoutForPayload();
     const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -37,8 +61,7 @@ describe("cdk-local's own log lines under cdkd's stdout reservation", () => {
     const cdkOut = mkdtempSync(join(tmpdir(), 'cdkd-2429-'));
     dirs.push(cdkOut);
     // `--no-build` logs its progress line and then looks the tag up; the
-    // lookup's outcome (no Docker on the host, or no such image) is not under
-    // test.
+    // lookup's outcome is not under test.
     await buildContainerImage({ source: { directory: 'asset.x' } } as never, cdkOut, {
       architecture: 'x86_64',
       noBuild: true,
@@ -49,7 +72,7 @@ describe("cdk-local's own log lines under cdkd's stdout reservation", () => {
     expect(info).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled();
     expect(out.mock.calls.map((c) => String(c[0])).join('')).not.toContain('Skipping docker build');
-  });
+  }, SPAWN_CASE_TIMEOUT_MS);
 
   it('masks a build-arg value on the --verbose docker build line (go-to-k/cdkd#4967)', async () => {
     // Obviously fake: the value only has to be recognisable in the output.
@@ -58,13 +81,8 @@ describe("cdk-local's own log lines under cdkd's stdout reservation", () => {
     dirs.push(dir);
     const cdkOut = join(dir, 'cdk.out');
     mkdirSync(join(cdkOut, 'asset.x'), { recursive: true });
-    // A fake docker that accepts every call, so the build line is logged and
-    // nothing is built.
-    const fake = join(dir, 'docker');
-    writeFileSync(fake, '#!/bin/sh\nexit 0\n');
-    chmodSync(fake, 0o755);
-    const savedDocker = process.env['CDK_DOCKER'];
-    process.env['CDK_DOCKER'] = fake;
+    // The build line is logged and nothing is built.
+    useFakeDocker(dir);
 
     createLocalCommand();
     const savedLevel = getLogger().getLevel();
@@ -98,8 +116,6 @@ describe("cdk-local's own log lines under cdkd's stdout reservation", () => {
       expect(everything).not.toContain(SENTINEL);
     } finally {
       getLogger().setLevel(savedLevel);
-      if (savedDocker === undefined) delete process.env['CDK_DOCKER'];
-      else process.env['CDK_DOCKER'] = savedDocker;
     }
-  });
+  }, SPAWN_CASE_TIMEOUT_MS);
 });
