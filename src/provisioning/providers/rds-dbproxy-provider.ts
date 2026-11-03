@@ -177,7 +177,8 @@ const authRequired = (properties: Record<string, unknown>): boolean => {
  *   `Endpoint` / `DBProxyArn` / `VpcId` in attributes.
  * - `update`: `ModifyDBProxyCommand` for the mutable fields (Auth /
  *   DefaultAuthScheme / DebugLogging / IdleClientTimeout / RequireTLS /
- *   RoleArn / SecurityGroups); a removed field is left at its live value and
+ *   RoleArn / SecurityGroups), then poll `DescribeDBProxies` until the proxy
+ *   is `available` again; a removed field is left at its live value and
  *   warned about (`RETAINED_ON_REMOVAL`), except an `Auth` removal AWS would
  *   refuse, which is refused before any call (`authRemovalRefused`). Tags
  *   handled via separate `AddTagsToResource` / `RemoveTagsFromResource` diff.
@@ -369,7 +370,7 @@ export class RDSDBProxyProvider implements ResourceProvider {
           }
           if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
             throw new ProvisioningError(
-              `DBProxy ${dbProxyName} entered terminal failure state: ${status}`,
+              mask(`DBProxy ${dbProxyName} entered terminal failure state: ${status}`),
               resourceType,
               logicalId,
               dbProxyName
@@ -395,7 +396,9 @@ export class RDSDBProxyProvider implements ResourceProvider {
       }
       if (!endpoint || !dbProxyArn) {
         throw new ProvisioningError(
-          `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`,
+          mask(
+            `Timed out waiting for DBProxy ${dbProxyName} to become available (last status: ${status ?? 'unknown'})`
+          ),
           resourceType,
           logicalId,
           dbProxyName
@@ -560,6 +563,11 @@ export class RDSDBProxyProvider implements ResourceProvider {
       } catch (error) {
         throw this.wrapCaughtError(error, 'UPDATE', resourceType, logicalId, physicalId, mask);
       }
+      // ModifyDBProxy returns while the proxy is `modifying`. Wait for
+      // `available` before returning, as create() does: a dependent's update
+      // in the same deploy, or the next modify, is refused with
+      // InvalidDBProxyStateFault while it is still `modifying`.
+      await this.waitForAvailableAfterModify(physicalId, resourceType, logicalId, mask);
     }
 
     // Invalidate attribute cache BEFORE applyTagDiff so the ARN warm-up
@@ -584,6 +592,69 @@ export class RDSDBProxyProvider implements ResourceProvider {
     this.warnOnRetainedRemovals(logicalId, resourceType, properties, previousProperties, context);
 
     return { physicalId, wasReplaced: false };
+  }
+
+  /**
+   * Polls `DescribeDBProxies` until the proxy reports `available` after a
+   * `ModifyDBProxy`, bounded by the same deadline as create(). A terminal
+   * failure state or the deadline is a `ProvisioningError`.
+   */
+  private async waitForAvailableAfterModify(
+    physicalId: string,
+    resourceType: string,
+    logicalId: string,
+    mask: (s: string) => string
+  ): Promise<void> {
+    const client = this.getClient();
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let status: string | undefined;
+    while (Date.now() < deadline) {
+      try {
+        const describe = await client.send(
+          new DescribeDBProxiesCommand({ DBProxyName: physicalId })
+        );
+        const proxy = describe.DBProxies?.[0];
+        // No proxy is the same answer DBProxyNotFoundFault gives below: fail
+        // now instead of waiting out the deadline.
+        if (!proxy) {
+          throw new ProvisioningError(
+            mask(`DBProxy ${physicalId} was not found while waiting for it after modify`),
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        status = proxy.Status;
+      } catch (error) {
+        if (error instanceof ProvisioningError) throw error;
+        throw this.wrapCaughtError(
+          error,
+          'UPDATE (poll)',
+          resourceType,
+          logicalId,
+          physicalId,
+          mask
+        );
+      }
+      if (status === 'available') return;
+      if (status === 'incompatible-network' || status === 'insufficient-resource-limits') {
+        throw new ProvisioningError(
+          mask(`DBProxy ${physicalId} entered terminal failure state after modify: ${status}`),
+          resourceType,
+          logicalId,
+          physicalId
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    throw new ProvisioningError(
+      mask(
+        `Timed out waiting for DBProxy ${physicalId} to become available after modify (last status: ${status ?? 'unknown'})`
+      ),
+      resourceType,
+      logicalId,
+      physicalId
+    );
   }
 
   /**
@@ -803,13 +874,21 @@ export class RDSDBProxyProvider implements ResourceProvider {
       RequireTLS: p.RequireTLS ?? false,
       IdleClientTimeout: p.IdleClientTimeout,
       DebugLogging: p.DebugLogging ?? false,
+      // Each member AWS does not report is OMITTED, never set to `undefined`
+      // (go-to-k/cdkd#5723). The baseline is persisted as JSON, which drops an
+      // `undefined` member, while the drift comparator's array-element walk
+      // counts own keys: a secrets-auth proxy (no `Description` / `UserName`)
+      // reported phantom `Auth` drift on a fresh deploy, and `--accept` could
+      // not converge it.
       Auth: (p.Auth ?? []).map((a) => ({
-        Description: a.Description,
-        UserName: a.UserName,
-        AuthScheme: a.AuthScheme,
-        SecretArn: a.SecretArn,
-        IAMAuth: a.IAMAuth,
-        ClientPasswordAuthType: a.ClientPasswordAuthType,
+        ...(a.Description !== undefined && { Description: a.Description }),
+        ...(a.UserName !== undefined && { UserName: a.UserName }),
+        ...(a.AuthScheme !== undefined && { AuthScheme: a.AuthScheme }),
+        ...(a.SecretArn !== undefined && { SecretArn: a.SecretArn }),
+        ...(a.IAMAuth !== undefined && { IAMAuth: a.IAMAuth }),
+        ...(a.ClientPasswordAuthType !== undefined && {
+          ClientPasswordAuthType: a.ClientPasswordAuthType,
+        }),
       })),
       // Omitted when AWS reports none: the drift comparator ignores a key
       // state does not hold, and a proxy created without the property records

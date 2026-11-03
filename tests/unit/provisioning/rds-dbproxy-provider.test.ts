@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test';
 import { DBProxyNotFoundFault } from '@aws-sdk/client-rds';
 
 const { mockSend } = vi.hoisted(() => ({ mockSend: vi.fn() }));
@@ -40,12 +40,17 @@ import { getLogger } from '../../../src/utils/logger.js';
 import { prepareRemovalForUpdate } from '../../../src/provisioning/update-removal.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
 import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rules.js';
+import { createSecretMasker, SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 
 const RESOURCE_TYPE = 'AWS::RDS::DBProxy';
 const PROXY_NAME = 'AuroraProxy';
 const PROXY_ARN = 'arn:aws:rds:us-east-1:123456789012:db-proxy:prx-aaaa';
 const PROXY_ENDPOINT = 'auroraproxy.proxy-abcdef.us-east-1.rds.amazonaws.com';
 const ROLE_ARN = 'arn:aws:iam::123456789012:role/AuroraProxyRole';
+// The DescribeDBProxies answer update() polls for after ModifyDBProxy.
+const AVAILABLE_AFTER_MODIFY = {
+  DBProxies: [{ DBProxyName: PROXY_NAME, DBProxyArn: PROXY_ARN, Status: 'available' }],
+};
 
 describe('RDSDBProxyProvider', () => {
   let provider: RDSDBProxyProvider;
@@ -216,6 +221,28 @@ describe('RDSDBProxyProvider', () => {
         /terminal failure state: incompatible-network/
       );
     });
+
+    // go-to-k/cdkd#4275: the proxy name can be secret-derived, so the poll's
+    // own messages go through the deploy's masker like the rest of create().
+    it('masks a secret-derived proxy name in the terminal-state message', async () => {
+      const maskSecrets = createSecretMasker(
+        new Map([[PROXY_NAME, `{{resolve:secretsmanager:${PROXY_NAME}}}`]])
+      );
+      mockSend
+        .mockResolvedValueOnce({ DBProxy: { DBProxyName: PROXY_NAME } })
+        .mockResolvedValueOnce({ DBProxies: [{ Status: 'incompatible-network' }] });
+
+      const error = await provider
+        .create('Proxy', RESOURCE_TYPE, validProps, { maskSecrets })
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect((error as Error).message).toContain(
+        `DBProxy ${SECRET_MASK} entered terminal failure state: incompatible-network`
+      );
+      expect((error as Error).message).not.toContain(PROXY_NAME);
+    });
   });
 
   describe('update', () => {
@@ -279,7 +306,7 @@ describe('RDSDBProxyProvider', () => {
     );
 
     it('sends a DefaultAuthScheme change on ModifyDBProxy', async () => {
-      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY);
       await provider.update(
         'Proxy',
         PROXY_NAME,
@@ -287,7 +314,7 @@ describe('RDSDBProxyProvider', () => {
         { DefaultAuthScheme: 'IAM_AUTH' },
         { DefaultAuthScheme: 'NONE' }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2); // ModifyDBProxy + the available poll
       expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
       expect(mockSend.mock.calls[0]![0].input.DefaultAuthScheme).toBe('IAM_AUTH');
     });
@@ -295,6 +322,7 @@ describe('RDSDBProxyProvider', () => {
     it('issues ModifyDBProxy when RoleArn changes', async () => {
       mockSend
         .mockResolvedValueOnce({ DBProxy: {} }) // ModifyDBProxy
+        .mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY)
         .mockResolvedValueOnce({ DBProxies: [{ DBProxyArn: PROXY_ARN }] }); // Describe for tag-arn
       const newRole = 'arn:aws:iam::123456789012:role/NewRole';
       await provider.update(
@@ -311,6 +339,7 @@ describe('RDSDBProxyProvider', () => {
     it('translates VpcSecurityGroupIds → SecurityGroups in the ModifyDBProxy call', async () => {
       mockSend
         .mockResolvedValueOnce({ DBProxy: {} })
+        .mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY)
         .mockResolvedValueOnce({ DBProxies: [{ DBProxyArn: PROXY_ARN }] });
       await provider.update(
         'Proxy',
@@ -594,7 +623,7 @@ describe('RDSDBProxyProvider', () => {
       );
       expect(mockSend).not.toHaveBeenCalled();
       // IAM_AUTH does not require Auth.
-      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY);
       await provider.update(
         'Proxy',
         PROXY_NAME,
@@ -606,7 +635,7 @@ describe('RDSDBProxyProvider', () => {
     });
 
     it('sends a switch to DefaultAuthScheme NONE that declares Auth', async () => {
-      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY);
       await provider.update(
         'Proxy',
         PROXY_NAME,
@@ -614,7 +643,7 @@ describe('RDSDBProxyProvider', () => {
         { ...withAuth, DefaultAuthScheme: 'NONE' },
         { ...base, DefaultAuthScheme: 'IAM_AUTH' }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2); // ModifyDBProxy + the available poll
       const input = mockSend.mock.calls[0]![0].input;
       expect(input.DefaultAuthScheme).toBe('NONE');
       expect(input.Auth).toEqual(Auth);
@@ -666,7 +695,7 @@ describe('RDSDBProxyProvider', () => {
     });
 
     it('passes a kept change through and omits the removed field from the call', async () => {
-      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY);
       const newRole = 'arn:aws:iam::123456789012:role/NewRole';
       await provider.update(
         'Proxy',
@@ -675,7 +704,7 @@ describe('RDSDBProxyProvider', () => {
         { ...base, RoleArn: newRole, RequireTLS: false },
         { ...base, RequireTLS: true, IdleClientTimeout: 600 }
       );
-      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend).toHaveBeenCalledTimes(2); // ModifyDBProxy + the available poll
       const input = mockSend.mock.calls[0]![0].input;
       expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
       expect(input).toEqual({ DBProxyName: PROXY_NAME, RoleArn: newRole, RequireTLS: false });
@@ -788,7 +817,7 @@ describe('RDSDBProxyProvider', () => {
         Auth: [{ AuthScheme: 'SECRETS', SecretArn: 'arn:...' }],
       };
       const awsCurrent = { ...observed, RoleArn: 'arn:aws:iam::123456789012:role/Hijacked' };
-      mockSend.mockResolvedValueOnce({ DBProxy: {} });
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce(AVAILABLE_AFTER_MODIFY);
       await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, observed, awsCurrent);
       expect(mockSend.mock.calls[0]![0].constructor.name).toBe('ModifyDBProxyCommand');
       expect(mockSend.mock.calls[0]![0].input.RoleArn).toBe(ROLE_ARN);
@@ -809,6 +838,95 @@ describe('RDSDBProxyProvider', () => {
       await provider.update('Proxy', PROXY_NAME, RESOURCE_TYPE, observed, awsCurrent);
       expect(mockSend.mock.calls[1]![0].constructor.name).toBe('AddTagsToResourceCommand');
       expect(mockSend.mock.calls[1]![0].input.Tags).toEqual([{ Key: 'env', Value: 'prod' }]);
+    });
+  });
+
+  // ModifyDBProxy returns while the proxy is `modifying`; a dependent's update
+  // or the next modify is refused with InvalidDBProxyStateFault until it is
+  // `available` again, so update() waits for it (raised on PR #5721).
+  describe('update waits for available after ModifyDBProxy', () => {
+    const statusDescribe = (Status: string) => ({
+      DBProxies: [{ DBProxyName: PROXY_NAME, DBProxyArn: PROXY_ARN, Status }],
+    });
+    const modifyRole = () =>
+      provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { RoleArn: 'arn:aws:iam::123456789012:role/NewRole' },
+        { RoleArn: ROLE_ARN }
+      );
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('returns only once DescribeDBProxies reports available', async () => {
+      vi.useFakeTimers();
+      mockSend
+        .mockResolvedValueOnce({ DBProxy: {} }) // ModifyDBProxy
+        .mockResolvedValueOnce(statusDescribe('modifying'))
+        .mockResolvedValueOnce(statusDescribe('modifying'))
+        .mockResolvedValueOnce(statusDescribe('available'));
+      let settled = false;
+      const done = modifyRole().then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(5000);
+      await done;
+
+      const names = mockSend.mock.calls.map((c) => c[0].constructor.name);
+      expect(names).toEqual([
+        'ModifyDBProxyCommand',
+        'DescribeDBProxiesCommand',
+        'DescribeDBProxiesCommand',
+        'DescribeDBProxiesCommand',
+      ]);
+      expect(mockSend.mock.calls[1]![0].input).toEqual({ DBProxyName: PROXY_NAME });
+    });
+
+    it('fails on a terminal state instead of waiting it out', async () => {
+      mockSend
+        .mockResolvedValueOnce({ DBProxy: {} })
+        .mockResolvedValueOnce(statusDescribe('incompatible-network'));
+      await expect(modifyRole()).rejects.toThrow(
+        /terminal failure state after modify: incompatible-network/
+      );
+    });
+
+    it('fails once the deadline passes with the proxy still modifying', async () => {
+      vi.useFakeTimers();
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValue(statusDescribe('modifying'));
+      const result = modifyRole().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 5000);
+      const error = await result;
+      expect(error).toBeInstanceOf(ProvisioningError);
+      expect((error as Error).message).toContain(
+        'to become available after modify (last status: modifying)'
+      );
+    });
+
+    it('fails at once when the poll finds no proxy, as DBProxyNotFoundFault does', async () => {
+      mockSend.mockResolvedValueOnce({ DBProxy: {} }).mockResolvedValueOnce({ DBProxies: [] });
+      await expect(modifyRole()).rejects.toThrow(/was not found while waiting for it after modify/);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not poll when nothing is modified', async () => {
+      await provider.update(
+        'Proxy',
+        PROXY_NAME,
+        RESOURCE_TYPE,
+        { RoleArn: ROLE_ARN },
+        { RoleArn: ROLE_ARN }
+      );
+      expect(mockSend).not.toHaveBeenCalled();
     });
   });
 
