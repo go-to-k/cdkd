@@ -177,7 +177,10 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   a SUCCESS.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check may be a peer's just-merged content: fetch, rebase,
-  re-run.
+  re-run. A GREEN one may predate a peer's new ratchet (the ruleset does not
+  require an up-to-date branch): when the PR's `baseRefOid` is behind
+  `origin/main`, run `vp test run` on it merged onto current `main` before
+  `gh pr merge` (#5685).
 
 - **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
   merge the release PR, confirm the npm version, then comment on the issue in
