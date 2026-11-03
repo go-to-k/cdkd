@@ -566,7 +566,7 @@ describe('RDSProvider AWS::RDS::DBCluster scalars (go-to-k/cdkd#5639)', () => {
       expect(sent('EnableHttpEndpointCommand')).toHaveLength(1);
     });
 
-    it('a drift revert never turns the Data API on: it warns and records the live setting', async () => {
+    it('a drift revert with no template side never turns the Data API on: it warns and records the live setting', async () => {
       arm({ httpEndpoint: false });
       const result = await update(
         { EnableHttpEndpoint: true },
@@ -600,7 +600,6 @@ describe('RDSProvider AWS::RDS::DBCluster scalars (go-to-k/cdkd#5639)', () => {
     it.each([
       ['declares nothing true', new Set<string>()],
       ['declares only other flags true', new Set(['AutoMinorVersionUpgrade', 'EnableHttpEndpointX'])],
-      ['is absent', undefined],
     ])(
       'a drift revert keeps it withheld when the template side %s',
       async (_label, declaredTrueProperties) => {

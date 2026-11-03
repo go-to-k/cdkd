@@ -2111,7 +2111,7 @@ export class RDSProvider implements ResourceProvider {
     }
     if (httpEndpointAction === 'withheld') {
       this.logger.warn(
-        safeMsg`DBCluster ${logicalId}: drift --revert does not turn the Data API (EnableHttpEndpoint) back on, because the template does not declare EnableHttpEndpoint: true; declare it, or turn the Data API on with aws rds enable-http-endpoint`
+        safeMsg`DBCluster ${logicalId}: drift --revert does not turn the Data API (EnableHttpEndpoint) back on, because the template does not declare EnableHttpEndpoint: true; declare it and deploy, or turn the Data API on with aws rds enable-http-endpoint`
       );
     }
     // go-to-k/cdkd#5639: likewise a retention period that would go out as NaN.
