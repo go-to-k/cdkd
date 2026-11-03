@@ -434,6 +434,35 @@ describe('AWS::EC2::VPC backfill (#5633): review round 1', () => {
     expect(line).not.toContain('vpc-notavpc');
   });
 
+  it('says the IPAM orphan search was cut when the pool allocations do not end', async () => {
+    mockSend.mockImplementation((cmd: unknown) => {
+      if (cmd instanceof GetIpamPoolAllocationsCommand) {
+        return Promise.resolve({ IpamPoolAllocations: [], NextToken: 'more' });
+      }
+      if (cmd instanceof DescribeVpcsCommand) return Promise.resolve({ Vpcs: [] });
+      return Promise.resolve({});
+    });
+    const provider = new EC2Provider() as unknown as {
+      reportPossibleOrphanVpcs: (
+        logicalId: string,
+        match: { ipamPoolId: string },
+        sent: unknown[],
+        window: { floorMs: number; ceilingMs: number },
+        context: undefined
+      ) => Promise<void>;
+    };
+    await provider.reportPossibleOrphanVpcs(
+      'Vpc',
+      { ipamPoolId: 'ipam-pool-1' },
+      [],
+      { floorMs: 0, ceilingMs: 1 },
+      undefined
+    );
+    expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'The search was incomplete'
+    );
+  });
+
   it('treats a null VpcEncryptionControl as absent and refuses a blank Mode', async () => {
     const provider = new EC2Provider();
     await provider.create('Vpc', 'AWS::EC2::VPC', {

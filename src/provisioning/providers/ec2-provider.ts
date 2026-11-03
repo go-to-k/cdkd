@@ -1573,7 +1573,7 @@ export class EC2Provider implements ResourceProvider {
       );
     await this.reportPossibleEc2Orphans(logicalId, window, log, {
       action: 'CreateVpc',
-      listAction: 'cidrBlock' in match ? 'DescribeVpcs' : 'GetIpamPoolAllocations',
+      listAction: 'cidrBlock' in match ? 'DescribeVpcs' : 'GetIpamPoolAllocations + DescribeVpcs',
       subject:
         'cidrBlock' in match
           ? `a VPC with CIDR ${log.value(match.cidrBlock)}`
