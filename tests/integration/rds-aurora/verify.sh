@@ -749,7 +749,7 @@ wait_http_endpoint() {
 drift_rc() { # usage: drift_rc -> prints the exit code of a plain drift
   local rc=0
   node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
-    --region "${REGION}" "$@" >&2 || rc=$?
+    --region "${REGION}" >&2 || rc=$?
   printf '%s' "${rc}"
 }
 echo "==> Phase 1a: drift --revert turns a declared Data API back on (#5707)"

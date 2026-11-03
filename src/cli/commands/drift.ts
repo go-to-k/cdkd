@@ -7605,7 +7605,7 @@ async function runRevert(
                           // go-to-k/cdkd#5707: which flags the template turns
                           // on, so a feature it declares can be restored while
                           // one only the readback holds stays as it is. With no
-                          // observed baseline the desired bag IS `properties`,
+                          // observed baseline the desired bag is built on `properties`,
                           // so the set constrains only observed-baseline records.
                           declaredTrueProperties: declaredTrueProperties(stateResource.properties),
                           maskSecrets: createSecretMasker(secrets),
