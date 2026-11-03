@@ -53,7 +53,7 @@ checks.
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
   integ's **destroy** step completes cleanly (`integ-destroy`); a CROSS-CUTTING
   change takes a BROAD-set fixture (multi-resource VPC / Lambda /
-  Custom-Resource paths). A gate-only run's RED is a defect to trace,
+  Custom-Resource paths). A gate-only run's RED is a defect,
   never flake (#5699). Run one via
   **`/run-integ <name>`** — never raw `cdkd deploy` / `cdkd destroy`, the
   bypass being **any real-AWS work outside a fixture**.
