@@ -1148,13 +1148,14 @@ check_endpoints "step 3f"
 # the out-of-band re-enable below is then idempotent.)
 #
 # COST, stated so a slow run is not read as a hang. cdkd's destroy has no
-# per-resource target and its level loop does not stop at a failure, so this
-# destroy deletes everything it can and keeps going below the refused
-# clusters. Their subnet groups, the shared SG, the subnets and the VPC are
-# still held by the out-of-band members' ENIs and answer DependencyViolation,
-# which the EC2 provider and the destroy loop both retry: expect this step to
-# add tens of minutes. The failure-set assertion below proves nothing ELSE
-# failed along the way, and step 4 deletes what is left.
+# per-resource target, so it still deletes what does not hang off the refused
+# clusters. Since go-to-k/cdkd#5670 it no longer attempts what the refused
+# clusters depend on (e.g. the Neptune cluster parameter group, the subnet
+# groups, the shared SG, the subnets, the VPC and the Neptune roles): those are
+# reported "not deleted" and stay in state, so
+# this step no longer sits through DependencyViolation retries. The
+# failure-set assertion below proves nothing ELSE failed along the way, and
+# step 4 deletes what is left.
 echo "[verify] step 3g: --remove-protection compensation after a terminal delete failure (issue #2204)"
 aws docdb modify-db-cluster --db-cluster-identifier "${DOCDB_CLUSTER_ID}" \
   --region "${REGION}" --deletion-protection --apply-immediately >/dev/null
@@ -1227,10 +1228,9 @@ for premise in "Failed to delete DocDB DBCluster DocdbCluster" "Failed to delete
     exit 1
   fi
 done
-# The FAILURE SET: both clusters, and nothing but them and what the
-# out-of-band members' ENIs hold (subnet groups, the shared SG, the VPC and its
-# subnets). Anything else failing here would otherwise be absorbed silently by
-# step 4's destroy.
+# The FAILURE SET: both clusters and nothing else. What they depend on is
+# kept, not attempted (go-to-k/cdkd#5670), so it cannot fail here. Anything
+# else failing would otherwise be absorbed silently by step 4's destroy.
 FAILED_3G="$(printf '%s\n' "${DESTROY_3G_PLAIN}" | sed -n 's/^.*✗ Failed to delete \([A-Za-z0-9]*\):.*$/\1/p' | sort -u)"
 for cluster_lid in DocdbCluster NeptuneCluster; do
   if ! grep -qx "${cluster_lid}" <<<"${FAILED_3G}"; then
@@ -1238,15 +1238,20 @@ for cluster_lid in DocdbCluster NeptuneCluster; do
     exit 1
   fi
 done
-# NeptuneClusterParams / NeptuneInstanceParams: the NeptuneCluster delete fails
-# on purpose, and destroy's level loop does not skip dependents, so the parameter
-# groups (NeptuneCluster depends on them) are attempted too and fail because the
-# surviving cluster still has them attached.
-UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster|NeptuneClusterParams|NeptuneInstanceParams|DocdbSubnetGroup|NeptuneSubnetGroup|Sg[0-9A-F]{8}|Vpc[A-Za-z0-9]*)$' || true)"
+UNEXPECTED_3G="$(printf '%s\n' "${FAILED_3G}" | grep -vE '^(DocdbCluster|NeptuneCluster)$' || true)"
 if [ -n "${UNEXPECTED_3G}" ]; then
   echo "[verify] FAIL: step 3g: deletes failed outside the engineered set: $(printf '%s ' ${UNEXPECTED_3G})" >&2
   exit 1
 fi
+# go-to-k/cdkd#5670: what a refused cluster depends on is reported as kept,
+# not attempted. The empty failure set above passes just as well if these
+# lines vanish and the resources were never reached, so name them.
+for kept_lid in NeptuneClusterParams DocdbSubnetGroup NeptuneSubnetGroup; do
+  if ! grep -qE "${kept_lid} \([A-Za-z0-9:]+\) not deleted \(" <<<"${DESTROY_3G_PLAIN}"; then
+    echo "[verify] FAIL: step 3g: ${kept_lid} is not reported as kept behind a refused cluster (go-to-k/cdkd#5670)" >&2
+    exit 1
+  fi
+done
 # go-to-k/cdkd#2319: the failed deletes' persisted RESOURCE_FAILED events name
 # AWS's refusal by its class, and deployments/*.jsonl outlives the run. The
 # engineered member refusal may quote no account id, so the account-id check
@@ -1347,8 +1352,8 @@ if ${CLI} state list --state-bucket "${STATE_BUCKET}" | grep -q "${STACK}"; then
 fi
 echo "[verify] step 5 ok: state cleared"
 
-# The step-3g failure set let both Neptune parameter groups fail while the
-# surviving cluster held them; the final destroy must have removed them.
+# Step 3g kept NeptuneClusterParams behind the refused cluster (and deleted
+# NeptuneInstanceParams); after the final destroy neither may remain.
 for pg in "${NEPTUNE_CLUSTER_PG}:describe-db-cluster-parameter-groups --db-cluster-parameter-group-name" "${NEPTUNE_INSTANCE_PG}:describe-db-parameter-groups --db-parameter-group-name"; do
   pg_name=${pg%%:*}
   pg_cmd=${pg#*:}

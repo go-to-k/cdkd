@@ -407,6 +407,7 @@ which PR took it, so nobody picks it up twice.
 | — | chore(agents): in the go-to-k/cdkd#5656 run a `pr-*-reviewer` in a scratch dir ran `cat > /tmp/null`, which read stdin and hung; its kill and `rm` were permission-denied and the maintainer had to clear it. First occurrence, nothing is built; candidate if it recurs: the agent files' probe recipe says to redirect to `/dev/null`, never a `/tmp` path. |
 | — | chore(work-issues): a lane's targeted suites in the go-to-k/cdkd#5656 run missed the twin-list fence `compat-corpus.test.ts`, which surfaced only in CI. First occurrence, so nothing is built; candidate if it recurs: the lane brief names the fence tests for the file family it edits. |
 | — | chore(work-issues): issue verification lines say `pnpm vitest run <path>`, and `vp exec vitest` also fails in a lane tree; the working command is `vp test run <path>`. First occurrence, so nothing is built. |
+| — | chore(work-issues): in the go-to-k/cdkd#5628 run a lane waited about 6 hours for CI on a PR that had turned `CONFLICTING`. CI never fires in that state. `gates-and-pr.md` already points lanes at `ship.md`'s merge-state poll, and the parent did not check a lane that kept reporting "waiting on background work". First occurrence, so nothing is built. If it recurs, candidates: the lane brief names the poll, and the parent reads `mergeStateStatus` on each such report. |
 
 ## Deferred test-coverage gaps
 
