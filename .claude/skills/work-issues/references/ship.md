@@ -41,7 +41,7 @@ it (#5245); the `.live` Monitor below is the only progress signal. Its brief
 (the runner never reads this file) makes marker and ledger due once the last PID
 exits, has it run `/run-integ` step 5's block per fixture AS WRITTEN under the
 budget the PARENT computed with that block, named per fixture in the brief
-(runners' own picks killed healthy runs twice: 2026-10-30, #5657), take each
+(never the runner's own, #5657), take each
 verdict from that fixture's stdout file's `verify.sh rc=` line (no driver of
 its own, #5519) and wait on ONE command exiting with that PID (no per-line
 Monitor: each line re-ends it, #5413), bans attribution
@@ -56,8 +56,8 @@ dispatching, the PARENT runs `/run-integ` step 4's live-lock check and lists
 open PRs touching each fixture: a held one gets a lock watcher, not a runner
 (#5190). The PARENT Monitors those PIDs (`timeout_ms` 1800000,
 re-armed on expiry; in `bash -c`: zsh won't split `$pids`),
-read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`; a bare digit
-grep matches a `mktemp` path's zeroes, and `kill -0 0000` always succeeds),
+read only from each line's `pid=` field (`grep -oE 'pid=[0-9]+'`: a bare-digit
+grep matches a `mktemp` path's zeroes),
 `SendMessage`s the runner as each exits, and alarms when no PID has run for 15
 min unreported (#5135).
 A stand-down lands on the NEXT tool round: `TaskStop` it once its PIDs exit.
@@ -113,18 +113,18 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
 ```
 
 - **A GENERATED file is REGENERATED, never hand-merged nor trusted when git
-  merged it CLEANLY** (`update-wrap-coverage.json` came out inconsistent):
-  take upstream's copy whole — it is the generator's BASELINE — re-run the
-  generator, commit ITS output before the push (#4460). Take it with
+  merged it CLEANLY**: take upstream's copy whole — the generator's BASELINE —
+  re-run the generator, commit ITS output before the push (#4460). Take it with
   `git show origin/main:<file> > <file>`: mid-rebase `checkout -- <file>` hits
   `dirty-path-restore-gate` on the staged copy.
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
-  Once every other pre-merge step is done and the post-rebase push leaves
-  `git status --porcelain` empty, arm `gh pr merge <n> --squash --delete-branch
-  --auto` so it lands before the next peer merge (#4966). It merges whatever head
-  goes green, so `--disable-auto` before any push or body edit; the turn holds
+  Once every other pre-merge step (Merge's up-to-date suite too) is done
+  and the post-rebase push leaves `git status --porcelain` empty, arm
+  `gh pr merge <n> --squash --delete-branch --auto` to land before the next peer
+  merge (#4966). It merges whatever head goes green, so `--disable-auto` before
+  any push or body edit, and re-run that suite before re-arming; the turn holds
   to `MERGED`.
 
 ### Merge
@@ -159,12 +159,11 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   stale install gen exits 1), then `vp run gen:all-matrices && vp run format`
   (it ends in the ledger normalize) after EVERY rebase; push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
-- **A bot can push onto the PR's own branch mid-merge** (`cfn-schema-refresh`'s
-  `additional CFn schema drift`, #5123): merge with `--match-head-commit <the
-  sha you verified>`, take a head you did not author by the MERGE ARM, never a
-  force-push, and approve its runs — `gh run list --branch <b> --status
-  action_required`, then `gh api -X POST repos/<R>/actions/runs/<id>/approve`; until
-  then `gh pr checks` says `no checks reported`.
+- **A bot can push onto the PR's own branch mid-merge** (#5123): merge with
+  `--match-head-commit <the sha you verified>`, take a head you did not author
+  by the MERGE ARM, never a force-push, and approve its runs —
+  `gh run list --branch <b> --status action_required`, then
+  `gh api -X POST repos/<R>/actions/runs/<id>/approve`; until then `gh pr checks` says `no checks reported`.
 - **A body edit RE-RUNS four required checks** (`on: edited`), green or
   not: merge only at `gh pr view <N> --json mergeStateStatus` = `CLEAN` (else
   "base branch policy prohibits the merge"); `gh run rerun` what it or a quick
@@ -177,15 +176,13 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   a SUCCESS.
 - **A lane that fixes a full-suite flake merges FIRST**, and the others rebase
   onto it. A RED check may be a peer's just-merged content: fetch, rebase,
-  re-run. A GREEN one may predate a peer's new ratchet (the ruleset does not
-  require an up-to-date branch): when the PR's `baseRefOid` is behind
-  `origin/main`, run `vp test run` on it merged onto current `main` before
-  `gh pr merge` (#5685).
+  re-run. A GREEN one may predate a peer's new ratchet (no up-to-date branch is
+  required): with `baseRefOid` behind `origin/main`, `vp test run` the PR merged
+  onto it first (#5685).
 
 - **An OUTSIDE reporter's issue is thanked after the RELEASE, not the merge**:
-  merge the release PR, confirm the npm version, then comment on the issue in
-  English — thanks, the version it shipped in, "feel free to open an issue"
-  (#3624).
+  merge the release PR, confirm the npm version, then thank them in English
+  with that version (#3624).
 
 ### Pull, then rebuild the linked binary
 
