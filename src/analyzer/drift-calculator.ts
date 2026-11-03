@@ -309,12 +309,8 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
   const aObj = a as Record<string, unknown>;
   const bObj = b as Record<string, unknown>;
-  // An `undefined`-valued key is a missing one, at every depth: persisted state
-  // cannot hold it, so counting it reports drift `--accept` cannot converge
-  // (go-to-k/cdkd#5727).
-  const aKeys = Object.keys(aObj).filter((k) => aObj[k] !== undefined);
-  const bKeys = Object.keys(bObj).filter((k) => bObj[k] !== undefined);
-  if (aKeys.length !== bKeys.length) return false;
+  const aKeys = definedKeys(aObj);
+  if (aKeys.length !== definedKeys(bObj).length) return false;
   for (const key of aKeys) {
     if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
     if (!deepEqual(aObj[key], bObj[key])) return false;
@@ -355,8 +351,8 @@ export function equalModuloMask(state: unknown, aws: unknown, mask: string): boo
   }
   const aObj = a as Record<string, unknown>;
   const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj);
-  if (aKeys.length !== Object.keys(bObj).length) return false;
+  const aKeys = definedKeys(aObj);
+  if (aKeys.length !== definedKeys(bObj).length) return false;
   return aKeys.every(
     (key) =>
       Object.prototype.hasOwnProperty.call(bObj, key) && equalModuloMask(aObj[key], bObj[key], mask)
@@ -409,8 +405,8 @@ export function equalModuloMarkedMask(
   }
   const aObj = a as Record<string, unknown>;
   const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj);
-  if (aKeys.length !== Object.keys(bObj).length) return false;
+  const aKeys = definedKeys(aObj);
+  if (aKeys.length !== definedKeys(bObj).length) return false;
   return aKeys.every(
     (key) =>
       Object.prototype.hasOwnProperty.call(bObj, key) &&
@@ -437,7 +433,11 @@ function wholeMaskOf(value: unknown, mask: string): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map((v) => wholeMaskOf(v, mask));
   if (isPlainObject(value)) {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, wholeMaskOf(v, mask)]));
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, wholeMaskOf(v, mask)])
+    );
   }
   return mask;
 }
@@ -474,11 +474,20 @@ function sameJson(a: unknown, b: unknown): boolean {
   }
   const aObj = a as Record<string, unknown>;
   const bObj = b as Record<string, unknown>;
-  const keys = Object.keys(aObj);
+  const keys = definedKeys(aObj);
   return (
-    keys.length === Object.keys(bObj).length &&
+    keys.length === definedKeys(bObj).length &&
     keys.every((k) => Object.prototype.hasOwnProperty.call(bObj, k) && sameJson(aObj[k], bObj[k]))
   );
+}
+
+/**
+ * The own keys every comparator here counts: an `undefined`-valued key is a
+ * missing one, at every depth. Persisted state cannot hold it (JSON drops it),
+ * so counting it reports drift `--accept` cannot converge (go-to-k/cdkd#5727).
+ */
+function definedKeys(obj: Record<string, unknown>): string[] {
+  return Object.keys(obj).filter((k) => obj[k] !== undefined);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

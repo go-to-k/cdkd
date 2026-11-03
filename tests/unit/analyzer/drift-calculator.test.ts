@@ -52,6 +52,14 @@ describe('calculateResourceDrift', () => {
     ]);
   });
 
+  it('still reports a state member AWS now reads back as undefined (#5727)', () => {
+    const state = { Auth: [{ AuthScheme: 'SECRETS', UserName: 'admin' }] };
+    const aws = { Auth: [{ AuthScheme: 'SECRETS', UserName: undefined }] };
+    expect(calculateResourceDrift(state, aws)).toEqual([
+      { path: 'Auth', stateValue: state.Auth, awsValue: aws.Auth },
+    ]);
+  });
+
   it('ignores AWS-only keys not present in state', () => {
     // AWS reports many managed-by-AWS fields cdkd never set; treating
     // those as drift would fire false positives on every resource.
