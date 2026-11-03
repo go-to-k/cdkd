@@ -4287,8 +4287,8 @@ packages:
   satori-html@0.3.2:
     resolution: {integrity: sha512-wjTh14iqADFKDK80e51/98MplTGfxz2RmIzh0GqShlf4a67+BooLywF17TvJPD6phO0Hxm7Mf1N5LtRYvdkYRA==}
 
-  satori@0.33.4:
-    resolution: {integrity: sha512-dCnaW6D/tkCJxG5UvpZPWnnvfTdGTVVSAq1tzH6xC5MeOhAeeswRcSq5zT7C6lRCdTGow9PRGus7PCzdp5JJYw==}
+  satori@0.33.5:
+    resolution: {integrity: sha512-PNW6ktrQ8SM6kk7u4aOuTkkUewkzyTOrj+QeEzXSsnNMAdff4ire9CAqIz8+4C3rCiBtK8QTELv52AZEd1PbRw==}
     engines: {node: '>=16'}
 
   scheduler@0.28.0:
@@ -6276,7 +6276,7 @@ snapshots:
       rehype-parse: 9.0.1
       rehype-stringify: 10.0.1
       rolldown: 1.2.9
-      satori: 0.33.4
+      satori: 0.33.5
       satori-html: 0.3.2
       terser: 5.51.2
       typescript: 7.0.2
@@ -8958,7 +8958,7 @@ snapshots:
     dependencies:
       ultrahtml: 1.7.0
 
-  satori@0.33.4:
+  satori@0.33.5:
     dependencies:
       '@shuding/opentype.js': 1.4.0-beta.0
       css-background-parser: 0.1.0
