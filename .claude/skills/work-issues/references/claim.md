@@ -81,8 +81,16 @@ check-docs' two `version` files); a NEW SDK provider adds
 `.claude/rules/providers.md`'s "Adding a New SDK Provider" files, the fenced
 tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
-SDK client, `package.json` + `pnpm-lock.yaml` — a narrower list stops the lane
-mid-run to ask (#1160).
+SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
+rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
+fall as keys get wired and match no basename grep (#5611, #5719) — a narrower
+list stops the lane mid-run to ask (#1160).
+
+**Editing a file another contributor's CLAIM holds** (only on the maintainer's
+yes, outside the lines they hold — triage.md §2) owes THEM a comment on their
+issue, now and again when the lane merges: what they must do — nothing, rebase,
+regenerate generated files rather than hand-merge them, and who resolves a
+conflict in their logic (#5632).
 
 **Correct the classification lines in the same turn as the claim**: rewrite a
 legacy packed body to the four-line shape (§3), fill a missing `Severity`, fix

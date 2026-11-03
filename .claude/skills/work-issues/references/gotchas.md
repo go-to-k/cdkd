@@ -37,6 +37,9 @@
   at the reset time**, scheduled when the limit is ANNOUNCED.
 - **Qualify every published issue/PR reference as `owner/repo#N`** — a bare `#N`
   renders against whichever repo reads it.
+- **A `SendMessage` answering "queued" (or `Resuming agent`) is NOT delivery** —
+  a lane STOPPED (at merge-ready, or on a question mid-round, #5719) drains no
+  queue and may hand back unaware: re-send, confirm in the TREE.
 - **An agent KILLED by a usage limit or a 429 keeps its context — `SendMessage`
   it, never re-dispatch**, and tell it its OWN reviewer subagents died too: only
   it can resume them. A HOST RESTART may kill it outright (`SendMessage` first,

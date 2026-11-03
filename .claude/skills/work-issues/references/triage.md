@@ -65,7 +65,8 @@ be merged, since this repo SQUASH-merges, so ask by CONTENT
 diff disagrees with `status --porcelain`, the dirty tree wins.
 
 **A file another agent is editing is OFF-LIMITS** — read the "working on this"
-comments. An open PR — a peer session's or a fork's, never the standing
+comments; only the maintainer can open it, and claim.md says what that owes.
+An open PR — a peer session's or a fork's, never the standing
 `chore(release): <ver>` PR, which release-please regenerates — holds its DIFF's
 hunks, their neighbours and code coupled to them, cross-cutting files included; read
 `gh pr diff <N>` before waiting. A contributor's PR idle for weeks whose
