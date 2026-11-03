@@ -52,17 +52,18 @@ checks.
 
 - **Deletion / DAG-order / state-cleanup change** → unmergeable until an
   integ's **destroy** step completes cleanly (`integ-destroy`); a CROSS-CUTTING
-  change takes a BROAD-set fixture, a narrow one never reaching the
-  multi-resource VPC / Lambda / Custom-Resource paths. Run one via
+  change takes a BROAD-set fixture (multi-resource VPC / Lambda /
+  Custom-Resource paths). A gate-only run's RED is a defect until
+  traced, never flake (#5699). Run one via
   **`/run-integ <name>`** — never raw `cdkd deploy` / `cdkd destroy`, the
-  bypass being not those NAMES but **any real-AWS work outside a fixture**.
+  bypass being **any real-AWS work outside a fixture**.
   `/pick-integ` picks the fixture(s).
 - **Non-deletion source change** → still live-test the fixed path end to end
   (deploy → the redeploy that reproduced the bug → destroy). A lane barred from
   real-AWS RUNS still WRITES the arm; the parent runs it. "No fixture can reach
   it" needs `grep -rl '<type's last segment>' tests/integration/*/lib` empty
-  first (an L2 fixture need not spell the full type; one an L2 creates
-  IMPLICITLY needs a synthed template grepped) — an existing fixture takes the new arm
+  first (an L2 need not spell the full type; an IMPLICIT one needs a
+  synthed template grepped) — an existing fixture takes the new arm
   (#4369). A mode behind an env flag `verify.sh` does not set itself
   (`grep -n 'CDKD_INTEG_[A-Z_]*:-' <fixture>/verify.sh`, `RUN_ID` aside) is its
   own run: a PR on its path runs the flag and the ledger NOTE names the mode
