@@ -793,6 +793,7 @@ fi
 # for any other drifted row (the AuroraProxy under go-to-k/cdkd#5723). Exit 2
 # (a partly failed revert) is accepted for that reason; the SecurityCluster's
 # own outcome is asserted below, by its revert line and by AWS.
+# Once go-to-k/cdkd#5723 is fixed, require exit 0 here again.
 REVERT_1A_LOG="$(mktemp)"
 REVERT_RC=0
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" \
