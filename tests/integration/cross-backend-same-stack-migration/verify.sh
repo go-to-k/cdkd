@@ -525,10 +525,12 @@ assert_gone "the registry marker ${MARKER_P} still exists after the destroy" \
 
 # --- (c) a log group an older release kept (review CB-14b) ------------------
 # The previous release's destroy keeps a RETAIN log group and writes no
-# retained.json. This build's redeploy under the SAME prefix must take it back
-# (licensed by that prefix's own earlier record / event history), not refuse
-# its generated name; and this build's destroy then records it in
-# retained.json.
+# retained.json. This build's redeploy under the SAME prefix is a new stack
+# lifetime (go-to-k/cdkd#5064): it does NOT take the kept log group back but
+# creates a new one under its lifetime's name, leaving the kept one untouched,
+# and -- with no retained.json to read -- says so from the prefix's own earlier
+# record / event history (go-to-k/cdkd#5760). This build's destroy then records
+# the NEW log group in retained.json.
 DEPLOYED_R=1
 run_logged "(c)1 the previous release deploys ${RETAIN} under ${PREFIX_R}" "${OLD_BIN}" deploy "${RETAIN}" \
   --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --yes
@@ -548,20 +550,38 @@ LG_KEPT="$(aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP_R}"
 run_logged "(c)3 this build redeploys ${RETAIN} under the same prefix" "${LOCAL_DIST}" deploy "${RETAIN}" \
   --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --yes
 if [ "${CMD_RC}" -ne 0 ] || grep -qF "nothing this stack records names that resource" "${RUN_LOG}"; then
-  echo "FAIL: this build refused to take back the log group the previous release kept (go-to-k/cdkd#4705 review CB-14b)" >&2
+  echo "FAIL: this build's redeploy of ${RETAIN} failed or refused (output above)" >&2
   exit 1
 fi
-[ "$(state_physical_id "${STATE_KEY_R}" 'AWS::Logs::LogGroup')" = "${LOG_GROUP_R}" ] || {
-  echo "FAIL: the redeployed record does not name the kept log group ${LOG_GROUP_R}" >&2
+LOG_GROUP_R2="$(state_physical_id "${STATE_KEY_R}" 'AWS::Logs::LogGroup')"
+# The new lifetime's generated name: the kept name plus its 12-hex suffix.
+case "${LOG_GROUP_R2}" in
+  "${LOG_GROUP_R}"-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *) echo "FAIL: the redeployed record names log group '${LOG_GROUP_R2}', not a new lifetime's ${LOG_GROUP_R}-<12 hex> (go-to-k/cdkd#5064)" >&2; exit 1 ;;
+esac
+LG_KEPT="$(aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP_R}" --region "${REGION}" \
+  --query "length(logGroups[?logGroupName=='${LOG_GROUP_R}'])" --output text)"
+[ "${LG_KEPT}" = "1" ] || { echo "FAIL: the kept log group ${LOG_GROUP_R} is gone after the redeploy (count '${LG_KEPT}')" >&2; exit 1; }
+# go-to-k/cdkd#5760: the warning, with the count the history names. The
+# second needle is a sentinel on the same line: present while the count is
+# not means the wording drifted, not that nothing was said.
+if ! grep -qF "kept 1 resource(s) here (DeletionPolicy: Retain)" "${RUN_LOG}"; then
+  if grep -qF "An earlier deployment of" "${RUN_LOG}"; then
+    echo "FAIL: the kept-resource warning's wording drifted (sentinel present, count needle absent; output above)" >&2
+  else
+    echo "FAIL: the redeploy did not say the previous release kept ${LOG_GROUP_R} (go-to-k/cdkd#5760)" >&2
+  fi
   exit 1
-}
+fi
+grep -qF "adopt it with 'cdkd import'" "${RUN_LOG}" || { echo "FAIL: the kept-resource warning does not name cdkd import" >&2; exit 1; }
+echo "    OK: (c)3 a new lifetime: ${LOG_GROUP_R2} created, ${LOG_GROUP_R} kept and named in the warning"
 run_logged "(c)4 this build destroys ${RETAIN}: retained.json lists the log group" "${LOCAL_DIST}" destroy "${RETAIN}" \
   --region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force
 [ "${CMD_RC}" -eq 0 ] || { echo "FAIL: this build's destroy of ${RETAIN} failed (output above)" >&2; exit 1; }
 KEPT_R="$(aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_R}" - | jq -r '[.resources[].physicalId] | join(" ")')"
 case " ${KEPT_R} " in
-  *" ${LOG_GROUP_R} "*) ;;
-  *) echo "FAIL: ${RETAINED_KEY_R} does not list ${LOG_GROUP_R} (got '${KEPT_R}')" >&2; exit 1 ;;
+  *" ${LOG_GROUP_R2} "*) ;;
+  *) echo "FAIL: ${RETAINED_KEY_R} does not list ${LOG_GROUP_R2} (got '${KEPT_R}')" >&2; exit 1 ;;
 esac
 run_logged "(c)5 state orphan empties the kept-resource record (no record left)" "${LOCAL_DIST}" state orphan "${RETAIN}" \
   --stack-region "${REGION}" --state-bucket "${STATE_BUCKET}" --state-prefix "${PREFIX_R}" --force
@@ -569,6 +589,7 @@ run_logged "(c)5 state orphan empties the kept-resource record (no record left)"
 KEPT_R="$(aws s3 cp "s3://${STATE_BUCKET}/${RETAINED_KEY_R}" - | jq -c '.resources')"
 [ "${KEPT_R}" = "[]" ] || { echo "FAIL: ${RETAINED_KEY_R} is not the empty tombstone after state orphan (got '${KEPT_R}')" >&2; exit 1; }
 aws logs delete-log-group --log-group-name "${LOG_GROUP_R}" --region "${REGION}"
+aws logs delete-log-group --log-group-name "${LOG_GROUP_R2}" --region "${REGION}"
 
 rm -f "${RUN_LOG}"
 trap - EXIT INT TERM
@@ -579,4 +600,4 @@ sweep_prefix "${PREFIX_B}" "${STATE_KEY_B}" "${JOURNAL_KEY_B}"
 sweep_prefix "${PREFIX_R}" "${STATE_KEY_R}" "${JOURNAL_KEY_R}"
 rescan
 rm -rf "${OLD_TMPDIR}"
-echo "[verify] PASS — stacks the previous release (${OLD_CDKD_VERSION}) deployed redeploy and destroy under this build; a pre-fix pair's destroy and rollback under the second prefix are refused and keep the first deployment's queue; a log group the previous release kept is taken back by this build's redeploy (#4705)"
+echo "[verify] PASS — stacks the previous release (${OLD_CDKD_VERSION}) deployed redeploy and destroy under this build; a pre-fix pair's destroy and rollback under the second prefix are refused and keep the first deployment's queue; a log group the previous release kept is left alone by this build's redeploy, which creates its own and says so (#5064, #5760)"

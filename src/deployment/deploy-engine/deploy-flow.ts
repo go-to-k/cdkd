@@ -18,7 +18,11 @@ import {
 } from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
-import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../generated-name-guard.js';
+import {
+  GeneratedNameGuard,
+  type GeneratedNameGuardInput,
+  type KeptInHistory,
+} from '../generated-name-guard.js';
 import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import { nameGenerationsOf, nextNameGeneration } from '../../state/name-generation.js';
@@ -130,6 +134,43 @@ import { buildResolverContext, maskedInputSources } from './resolver-context.js'
  * backend's client.
  */
 const TAIL_WARM_CONNECTIONS = 3;
+
+/** This prefix's own history of what `stackName` kept (go-to-k/cdkd#4705). */
+function readKeptInHistory(
+  engine: DeployEngine,
+  stackName: string
+): Promise<readonly KeptInHistory[]> {
+  const reader = new DeploymentEventsReader(engine.stateBackend);
+  return loadKeptInHistory(
+    {
+      earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
+      listRuns: (s, r) => reader.listRuns(s, r),
+      readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
+    },
+    stackName,
+    engine.stackRegion
+  );
+}
+
+/**
+ * go-to-k/cdkd#5760: what an older cdkd's destroy kept, for a first deploy
+ * that finds no `retained.json`. Each resource once, though both sources may
+ * name it.
+ */
+async function keptBeforeRetainedRecord(
+  engine: DeployEngine,
+  stackName: string
+): Promise<KeptInHistory[]> {
+  const seen = new Set<string>();
+  const out: KeptInHistory[] = [];
+  for (const k of await readKeptInHistory(engine, stackName)) {
+    const key = `${k.resourceType}\0${k.physicalId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(k);
+  }
+  return out;
+}
 
 export async function doDeployWithPrefetch(
   engine: DeployEngine,
@@ -295,8 +336,13 @@ export async function doDeployWithPrefetch(
           )
         : undefined;
     // Its failure is the guard's to report (it refuses on unreadable
-    // evidence); the warning below only reads a successful answer.
-    const retainedForWarning = retainedAtFirstDeploy?.catch(() => null);
+    // evidence); the warning below only reads a successful answer. An ABSENT
+    // record is what an older cdkd's destroy leaves (it wrote none), so the
+    // warning then reads this prefix's own history of what was kept
+    // (go-to-k/cdkd#5760); an empty record is this cdkd's "nothing kept".
+    const retainedForWarning = retainedAtFirstDeploy
+      ?.then((retained) => retained ?? keptBeforeRetainedRecord(engine, stackName))
+      .catch(() => null);
     // go-to-k/cdkd#5200: the read `resolveStackInstanceId` opens with, started
     // now so it overlaps the diff; the write-ahead itself still waits for the
     // approval. Optional for the test doubles.
@@ -1719,18 +1765,7 @@ export async function doDeployWithPrefetch(
       loadRetained: () =>
         retainedAtFirstDeploy ??
         engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
-      loadKeptInHistory: () => {
-        const reader = new DeploymentEventsReader(engine.stateBackend);
-        return loadKeptInHistory(
-          {
-            earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
-            listRuns: (s, r) => reader.listRuns(s, r),
-            readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
-          },
-          stackName,
-          engine.stackRegion
-        );
-      },
+      loadKeptInHistory: () => readKeptInHistory(engine, stackName),
       accountInfo: () => getAccountInfo(engine.stackRegion),
       warn: (message) => engine.logger.warn(message),
       // G-1: this deploy took over the lock an abandoned run left.

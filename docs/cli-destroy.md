@@ -176,7 +176,10 @@ destroy keeps (`RemovalPolicy.RETAIN`) is listed in `retained.json` beside
 the record's key. The next deploy starts a new lifetime of the stack, whose
 generated names differ, so it creates new resources beside the kept ones (as
 CloudFormation does) and warns once, naming `cdkd import` for adopting them.
-`cdkd state orphan` empties that list.
+`cdkd state orphan` empties that list. A destroy by an older cdkd wrote no
+`retained.json`; the next deploy then finds what it kept in the stack's
+earlier `state.json` versions and deployment history, and gives the same
+warning.
 
 If S3 denies access to the marker, the destroy warns and falls back to
 listing the bucket's prefixes.
