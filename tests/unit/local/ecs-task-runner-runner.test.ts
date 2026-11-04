@@ -1577,6 +1577,41 @@ describe('runEcsTask — a secret --env-vars gives is not fetched (go-to-k/cdkd#
     expect((runCall.opts as { env?: Record<string, string> }).env?.['DB_PASS']).toBeUndefined();
   });
 
+  it('keeps an --env-vars value for a DROPPED secret off argv', async () => {
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    // The resolver dropped DB_PASS (intrinsic ValueFrom, no state source), so
+    // it is absent from `secrets`; the override still carries a secret.
+    const c = makeContainer({ name: 'app', droppedSecretNames: ['DB_PASS'] });
+    await runEcsTask(
+      makeTask({ containers: [c] }),
+      { ...baseOptions(), envOverrides: { app: { DB_PASS: 'local-pass' } } },
+      createEcsRunState()
+    );
+    const runCall = dockerRunCalls()[0]!;
+    expect(runCall.args).toContain('DB_PASS');
+    expect(runCall.args.join(' ')).not.toContain('local-pass');
+    expect((runCall.opts as { env?: Record<string, string> }).env?.['DB_PASS']).toBe('local-pass');
+  });
+
+  it('still fetches a secret whose override is an object (applyOverrideMap ignores it)', async () => {
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: SECRET_ARN }],
+    });
+    await runEcsTask(
+      makeTask({ containers: [c] }),
+      {
+        ...baseOptions(),
+        envOverrides: { app: { DB_PASS: {} as unknown as string } },
+      },
+      createEcsRunState()
+    );
+    expect(fetchedNames()).toEqual(['DB_PASS']);
+  });
+
   it("still fetches a secret another container's override names", async () => {
     captured.responder = (_cmd: string, args: string[]) =>
       args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
@@ -1817,6 +1852,22 @@ describe('runEcsTask under finch on macOS (issue #3600)', () => {
     expect(secretsStubs.resolveEcsSecrets).not.toHaveBeenCalled();
     expect(networkStubs.createTaskNetwork).not.toHaveBeenCalled();
     expect(captured.calls).toHaveLength(0);
+  });
+
+  // go-to-k/cdkd#5756: a DROPPED secret reaches the container only through an
+  // `--env-vars` override, so it is refused only when one names it.
+  it('refuses an --env-vars value for a dropped secret, and not the dropped name alone', async () => {
+    const c = makeContainer({ name: 'app', droppedSecretNames: ['DB_PASS'] });
+    await expect(
+      runEcsTask(
+        makeTask({ containers: [c] }),
+        { ...baseOptions(), envOverrides: { app: { DB_PASS: 'local-pass' } } },
+        createEcsRunState()
+      )
+    ).rejects.toThrow(/Container app: refusing to forward secret\(s\) DB_PASS under CDK_DOCKER=finch/);
+    await expect(
+      runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState())
+    ).resolves.toBeDefined();
   });
 
   it('names every refused container in one error, not only the first', async () => {

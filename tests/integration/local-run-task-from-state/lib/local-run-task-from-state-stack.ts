@@ -317,8 +317,7 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
           command: [
             'sh',
             '-c',
-            // eslint-disable-next-line no-template-curly-in-string
-            'echo "UNEXPECTED_RESOLUTION_SUCCEEDED"; echo "DB_PASS_VALUE=${DB_PASS}"',
+            'echo "UNEXPECTED_RESOLUTION_SUCCEEDED"; echo "DB_PASS_VALUE=$DB_PASS"',
           ],
           // The ECS `:json-key:` form: ARN, then the key, then the empty
           // version-stage / version-id fields. cdkd fetches the secret,
@@ -360,8 +359,8 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
           memory: 256,
           entryPoint: ['/bin/sh', '-c'],
           command: [
-            // eslint-disable-next-line no-template-curly-in-string
-            'echo "RELATIVE_URI=${AWS_CONTAINER_CREDENTIALS_RELATIVE_URI}"; echo "CALLER=$(aws sts get-caller-identity --region us-east-1 --query Arn --output text 2>&1 | tr "\\n" " ")"',
+            // `$VAR` without braces: cfn-lint reads `${...}` as a Fn::Sub parameter.
+            'echo "RELATIVE_URI=$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"; echo "CALLER=$(aws sts get-caller-identity --region us-east-1 --query Arn --output text 2>&1 | tr "\\n" " ")"',
           ],
         },
       ],

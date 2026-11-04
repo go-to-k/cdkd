@@ -615,6 +615,10 @@ export async function runEcsTask(
     const refusal = finchSecretArgvRefusal(
       [
         ...c.secrets.map((s) => s.name),
+        // A dropped secret reaches the container only through an override.
+        ...(c.droppedSecretNames ?? []).filter((n) =>
+          overriddenEnvKeys(options.envOverrides, c.name).includes(n)
+        ),
         ...(c.resolvedDynamicReferenceKeys ?? []),
         ...dynamicReferenceEnvKeys(c, options.envOverrides),
       ].filter((n) => !isMalformedEnvKey(n) && !isDockerClientEnvKey(n)),
@@ -1643,6 +1647,9 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
     // (go-to-k/cdkd#5756), so it is absent from `secrets`; the value the
     // override supplies for it is still treated as a secret and kept off the argv.
     ...container.secrets.map((s) => s.name),
+    // Same for a declared secret the resolver dropped (intrinsic ValueFrom, no
+    // state source): an `--env-vars` value for it is still a secret.
+    ...(container.droppedSecretNames ?? []),
     ...(opts.plaintextEnvKeys ?? []),
   ]);
   // `subject` names the container in the win32 letter-case warning (#2190).

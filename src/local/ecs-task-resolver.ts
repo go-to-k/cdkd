@@ -107,6 +107,12 @@ export interface ResolvedEcsContainer {
    */
   resolvedDynamicReferenceKeys?: string[];
   /**
+   * `Secrets` names the resolver DROPPED (intrinsic `ValueFrom` with no state
+   * to resolve it). A value `--env-vars` supplies for one is still a secret, so
+   * the runner keeps it off the `docker run` argv (go-to-k/cdkd#5756).
+   */
+  droppedSecretNames?: string[];
+  /**
    * Container port mappings. `name` (mirrors the CFn `Name` field) is
    * surfaced for Service Connect resolution (Phase 3 of #262 / Issue
    * #460) — the resolver matches `ServiceConnectConfiguration.Services[].PortName`
@@ -1008,6 +1014,7 @@ function parseContainerDefinition(
   if (user !== undefined) out.user = user;
   if (privileged !== undefined) out.privileged = privileged;
   if (readonlyRootFilesystem !== undefined) out.readonlyRootFilesystem = readonlyRootFilesystem;
+  if (droppedSecretKeys.length > 0) out.droppedSecretNames = droppedSecretKeys.map((d) => d.key);
   return out;
 }
 
@@ -1741,6 +1748,9 @@ export async function applyCrossStackResolverToTask(
         if (sub.kind === 'literal' && typeof sub.value === 'string' && sub.value.length > 0) {
           container.secrets.push({ name: sName, valueFrom: sub.value });
           resolvedSecretNames.add(sName);
+          if (container.droppedSecretNames) {
+            container.droppedSecretNames = container.droppedSecretNames.filter((n) => n !== sName);
+          }
         }
       }
     }

@@ -1541,6 +1541,8 @@ describe('resolveEcsTaskTarget --from-state env / secret substitution', () => {
     expect(r.containers[0]!.warnings).toContain(
       "Secret 'DB_PASSWORD' dropped: intrinsic-valued ValueFrom; pass --from-state to resolve the deployed ARN"
     );
+    // go-to-k/cdkd#5756: the runner keeps an --env-vars value for it off argv.
+    expect(r.containers[0]!.droppedSecretNames).toEqual(['DB_PASSWORD']);
   });
 
   it('drops env intrinsic with a per-key reason when state lacks the referenced logical ID', () => {

@@ -705,11 +705,9 @@ if ! grep -qxF "DB_PASS_VALUE=cdkd5756-override-value" <<<"${SKIP_LOGS}"; then
   echo "[verify] FAIL: the container did not receive the --env-vars value for DB_PASS"
   exit 1
 fi
-# The override value of a declared secret still travels off the argv.
-if docker inspect "${SKIP_CONTAINER_ID}" --format '{{json .Args}}' | grep -qF "cdkd5756-override-value"; then
-  echo "[verify] FAIL: the override value for a declared secret reached the container's argv"
-  exit 1
-fi
+# That the override value of a declared secret stays off the `docker run`
+# argv is guarded by the unit suite (ecs-task-runner-runner.test.ts, #5756):
+# `docker inspect` shows the container's own args, never the CLI's argv.
 docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
 docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 echo "[verify]   the overridden secret was not fetched and the container got the --env-vars value"
