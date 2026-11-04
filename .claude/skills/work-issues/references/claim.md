@@ -83,8 +83,9 @@ tables (`name-keys.ts`,
 `reverse-replacement-name-holder.test.ts`, `docs/cli-drift.md`) and, for a new
 SDK client, `package.json` + `pnpm-lock.yaml`; a backfill (`_todo-backfill.json`
 rows) adds `sdk-unwired-guard-key-disjointness.test.ts`, whose literal floors
-no basename grep finds (#5611, #5719), and the type's rows in
-`docs/cli-deploy.md`'s wait table and `docs/cli-deploy-waits.md`, as a newly
+fall as keys get wired and which no basename grep finds (#5611, #5719), and the
+type's `docs/cli-deploy.md` wait-table row plus any `docs/cli-deploy-waits.md`
+section or destroy row for it, as a newly
 sent member may need a wait (providers.md rule 5; #5719, #5780) — a narrower
 list stops the lane mid-run to ask (#1160).
 
