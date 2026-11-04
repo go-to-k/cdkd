@@ -100,10 +100,12 @@ DEPLOY_LOG="$(mktemp -t cdkd-s3-vectors-deploy.XXXXXX)"
 # fix the provider refused its create, failing this deploy; name that refusal
 # instead of leaving only the deploy's exit code.
 deploy_rc=0
+# --verbose: the refusal check below reads AWS's own text, which cdkd prints
+# only with it (#5271).
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes 2>&1 | tee "${DEPLOY_LOG}" || deploy_rc=$?
+  --yes --verbose 2>&1 | tee "${DEPLOY_LOG}" || deploy_rc=$?
 if [ "${deploy_rc}" != "0" ]; then
   if grep -qF 'VectorBucketName is required' "${DEPLOY_LOG}"; then
     echo "FAIL: the nameless VectorBucket's create was refused (issue #5309 NOT closed)" >&2

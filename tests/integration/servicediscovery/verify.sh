@@ -136,10 +136,12 @@ echo "==> Phase 1: deploy with the local binary"
 # of leaving only the deploy's exit code.
 P1_LOG="$(mktemp -t cdkd-svcdisc-p1.XXXXXX)"
 P1_RC=0
+# --verbose: the refusal check below reads AWS's own text, which cdkd prints
+# only with it (#5271).
 node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
-  --yes 2>&1 | tee "${P1_LOG}" || P1_RC=$?
+  --yes --verbose 2>&1 | tee "${P1_LOG}" || P1_RC=$?
 if [ "${P1_RC}" != "0" ]; then
   if grep -qF 'Name is required for ServiceDiscovery Service' "${P1_LOG}"; then
     echo "FAIL: the nameless Cloud Map service's create was refused (go-to-k/cdkd#5348 NOT closed)" >&2
