@@ -539,7 +539,21 @@ fi
 assert_members_drift_clean "M2, after the view-type change"
 
 echo "==> Phase M3: an out-of-band policy delete is drift, and --revert restores it"
-aws dynamodb delete-resource-policy --resource-arn "${STREAM_ARN_2}" --region "${REGION}" >/dev/null
+# AWS refuses a resource-policy change within 15s of the previous one
+# (M2's deploy just wrote it): retry that refusal alone, bounded.
+DEL_OK=false
+for _attempt in 1 2 3 4 5 6; do
+  if DEL_OUT="$(aws dynamodb delete-resource-policy --resource-arn "${STREAM_ARN_2}" --region "${REGION}" 2>&1 >/dev/null)"; then
+    DEL_OK=true
+    break
+  fi
+  grep -qF "modified within the previous" <<<"${DEL_OUT}" || break
+  sleep 5
+done
+if [ "${DEL_OK}" != true ]; then
+  echo "FAIL: the out-of-band delete-resource-policy was refused: ${DEL_OUT}" >&2
+  exit 1
+fi
 wait_members_on "${STREAM_ARN_2}" "none" "${MEMBERS_TAG_VALUE}" "out-of-band delete landed"
 run_drift_json "M3, after the out-of-band delete"
 case " $(members_drift_paths) " in
