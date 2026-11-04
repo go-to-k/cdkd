@@ -215,7 +215,12 @@ design answers and "what does this break that CFn or the CDK CLI accepts?" (a
 redaction slice adds: "sweep every helper that returns or mutates the ORIGINAL
 SDK error after the try — created-before-failure cleanup, orphan notes, retire
 paths", #5161; a state machine adds the table to walk: path × previous side ×
-desired side, #5611), to read by explicit sha after
+desired side, #5611; a refusal or forward-only guard in `update()` adds "does
+it fire on the rollback replay, whose diff runs BACKWARD?" —
+`provider-replay-and-refusals.md`, missed by both lanes' reviewers in one run,
+#5730, #5731; a HAND replacement rule on a newly wired schema-mutable property
+adds "does a record LACKING the key replace?" — #5572's guard covers schema
+create-only drops only, #5730), to read by explicit sha after
 `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
 shared across worktrees, `fetch.prune` DELETES a ref fetched from the short
 `pull/<N>/head`, and without `+` a force-push is rejected. A later fix round goes to the same reviewer with the delta. **The reviewer set is
