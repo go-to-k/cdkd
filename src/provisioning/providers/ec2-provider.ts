@@ -8969,9 +8969,10 @@ export class EC2Provider implements ResourceProvider {
           );
         }
       } else if (context?.replayingState === true) {
-        // A rollback revert: its arms pass no removedProperties, so a record
-        // that adopted Tenancy on the failed deploy reads as a removal here.
-        // Leave the tenancy and revert the other members.
+        // A rollback revert: a record that adopted Tenancy on the failed
+        // deploy carries it on the previous side and not on the desired one,
+        // so the revert reads it as a removal. Leave the tenancy and revert
+        // the other members.
         this.logger.warn(
           safeMsg`${logicalId} (${resourceType}): the rollback would change Tenancy (${before === undefined ? 'unset' : before} -> ${after === undefined ? 'unset' : after}), which needs a new instance; the instance keeps its current tenancy.`
         );
