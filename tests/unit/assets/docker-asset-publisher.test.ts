@@ -367,6 +367,8 @@ describe('DockerAssetPublisher', () => {
         'received unexpected HTTP status: 403 Forbidden',
         // #5747: an expired token cached in docker's credential store.
         'error from registry: Your authorization token has expired. Reauthenticate and try again.',
+        // The containerd store's rendering of an IAM denial (no `denied:`).
+        'error from registry: User: arn:aws:sts::123456789012:assumed-role/r/s is not authorized to perform: ecr:InitiateLayerUpload',
       ]) {
         expect(isDockerAuthFailure(s)).toBe(true);
       }
@@ -437,6 +439,12 @@ describe('DockerAssetPublisher', () => {
       expect(countAuthTokenCalls()).toBe(1);
       expect(countLoginExecs()).toBe(1);
       expect(pushes).toBe(2);
+      // The ORDER is the behaviour: the retry push follows the login.
+      expect(
+        mockRunDocker.mock.calls
+          .map(([a]) => (a as string[])[0])
+          .filter((v) => v === 'push' || v === 'login')
+      ).toEqual(['push', 'login', 'push']);
     });
 
     it('a tag failure surfaces the docker stderr, trimmed', async () => {
