@@ -138,7 +138,7 @@ printf '%s\n' "${FAIL_OUT}"
 [ "${FAIL_RC}" -ne 0 ] || { echo "FAIL: premise: the phase 2 deploy succeeded; the sibling was meant to fail it" >&2; exit 1; }
 # cdkd shortens AWS's text to the exception class (#5271), so the class
 # name is what a refused value prints without --verbose.
-grep -qi 'allowedPattern\|failed to satisfy constraint\|ValidationException\|ParameterPatternMismatchException' <<<"${FAIL_OUT}" || {
+grep -qi 'allowedPattern\|failed to satisfy constraint\|ValidationException\|Sibling: ParameterPatternMismatchException' <<<"${FAIL_OUT}" || {
   echo "FAIL: premise: the phase 2 deploy failed for another reason than the sibling's refused value" >&2
   exit 1
 }

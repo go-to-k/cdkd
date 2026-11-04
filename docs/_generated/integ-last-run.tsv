@@ -65,7 +65,7 @@ cognito-custom-attribute-add	2026-10-27T13:14:59Z	PASS	80	verify.sh	rc ok, orph 
 cognito-identity-pool	2026-10-11T15:28:51Z	PASS	57	verify.sh	PR #4796, rc ok, orph clean
 cognito-lambda-triggers	2026-10-11T15:28:51Z	PASS	78	verify.sh	PR #4796, rc ok, orph clean
 cognito-resource-server	2026-10-16T08:15:12Z	PASS	96	verify.sh	rc ok, orph clean (#3341 slice 4995)
-cognito-userpool-user-ref	2026-10-11T15:28:51Z	PASS	104	verify.sh	PR #4796, rc ok, orph clean
+cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
 composite-stack	2026-11-04T05:26:26Z	PASS	54	standard	batch 3 (rc=0, destroy 17 deleted 0 errors); account clean
 conditions	2026-10-18T11:16:06Z	PASS	35	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
@@ -84,11 +84,11 @@ custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc 
 custom-resource-noecho-nested	2026-10-23T03:22:35Z	PASS	1358	verify.sh	rc ok, orph clean, 0 surviving versions (regression net #5193)
 custom-resource-provider	2026-10-25T13:14:00Z	PASS	651	verify.sh	us-east-1; PR #5262 a4722aee6; rc ok, orph clean
 custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+destroy clean, 0 orphans
-custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
-data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+custom-resource-service-token-change	2026-11-04T09:28:41Z	PASS	130	verify.sh	rc 0, own bucket, orph clean
+data-analytics	2026-11-04T09:28:41Z	PASS	90	verify.sh	rc 0, own bucket, orph clean (Kinesis/Firehose/Glue/log groups none)
 data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-10-25T15:51:57Z	PASS	81	verify.sh	rc ok, orph clean; AccountId-revert probe FAILed at B2
-deletion-ordering-complex	2026-10-11T09:33:22Z	PASS	205	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+deletion-ordering-complex	2026-11-04T09:28:41Z	PASS	191	verify.sh	rc 0, own bucket, orph clean (fixture rebuilt dist itself)
 deletion-policy-retain	2026-10-17T07:24:50Z	PASS	40	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
 deletion-policy-snapshot	2026-10-25T00:07:44Z	PASS	245	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 deletion-policy-snapshot-heavy	2026-10-25T00:07:44Z	PASS	812	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
@@ -114,7 +114,7 @@ dynamodb-autoscaling	2026-11-04T07:57:30Z	PASS	120	verify.sh	rc ok, destroy 0 er
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-30T20:57:28Z	PASS	2090	verify.sh	rc 0, orph clean; PR #5582 161892a57 multi-region; 12e0/16a4 no replica scalable target left; probe red at 12e0
 dynamodb-globaltable-implied-stream	2026-11-03T13:15:53Z	PASS	235	verify.sh	PR #5704 at 3daeca2e5; us-east-1; rc=0, destroy 0 errors, 0 orphans; replica gone at the post-destroy probe
-dynamodb-globaltable-replica-settings	2026-11-02T10:27:52Z	PASS	3928	verify.sh	rc ok, orph clean, #5615 table10 first deploy; pre-fix red Phase 6b
+dynamodb-globaltable-replica-settings	2026-11-04T10:46:14Z	FAIL	4241	verify.sh	phase 1a took branch (a) refused while gsi1 moving (no-send check not reached); phases 1-6e pass; 6f deploy died on local DNS blip getaddrinfo ENOTFOUND dynamodb.us-east-1.amazonaws.com (not a code failure); cleanup ok, orph clean
 dynamodb-gsi-update	2026-11-01T16:00:55Z	PASS	4554	verify.sh	rc ok, orph clean, #5606; pre-fix probes red at V3m and V3w
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
@@ -280,7 +280,7 @@ loggroup-class-guard	2026-10-22T07:45:16Z	PASS	135	verify.sh	PR #5161 (#2319) @4
 loggroup-kms-associate	2026-11-04T08:44:47Z	PASS	50	verify.sh	rc 0, destroy clean, orph clean (own state bucket)
 loggroup-never-expire-guard	2026-11-04T08:44:47Z	PASS	105	verify.sh	rc 0, destroy clean, orph clean (own state bucket)
 logs-loggroup-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	96	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
-lost-child-after-failed-deploy	2026-11-04T09:00:37Z	PASS	85	verify.sh	re-run after premise grep widened to ParameterPatternMismatchException; rc ok, premise + #4443 assertions pass, orph clean
+lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-04T06:21:47Z	PASS	56	verify.sh	batch 7; rc ok, 0 errors, orph clean (2 Lambda log groups leaked, deleted)
 microservices	2026-10-24T06:41:12Z	PASS	55	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (19 deleted)
 migrate-from-cfn	2026-10-20T06:19:30Z	PASS	376	run.sh	deploy+destroy clean, 0 orphans
