@@ -196,6 +196,7 @@ import {
   secretNamePrintingBags,
 } from '../../deployment/secret-name-needles.js';
 import { withPrintingSecrets } from '../../deployment/resource-secrets-scope.js';
+import { coerceCfnBoolean } from '../../provisioning/config-shape.js';
 
 /**
  * Why cdkd did not compare every property a resource records.
@@ -3388,6 +3389,59 @@ export function undeclaredUncomparedDriftKeys(resourceType: string, properties: 
 }
 
 /**
+ * The top-level keys drift must NOT compare on one resource because its
+ * observed baseline holds a value an earlier cdkd recorded by mistake
+ * (go-to-k/cdkd#5749). Today one rule: an `AWS::Lambda::EventSourceMapping`
+ * whose baseline holds `Enabled: false` while the template does not declare
+ * `Enabled: false` and the live mapping reads `Enabled: true`.
+ *
+ * WHY: before #5737 the post-create baseline was read while the mapping was
+ * still `Creating` and recorded `Enabled: false` for every mapping the
+ * template leaves enabled. A no-change deploy never re-reads it, so on such a
+ * stack `cdkd drift` reported `Enabled: false -> true` and `--revert` sent
+ * `Enabled: false`, stopping the consumer. CloudFormation compares the live
+ * value with the template (absent means `true`), so it reports nothing here.
+ *
+ * Read with {@link coerceCfnBoolean}, the reading the provider's
+ * `enabledFromState` gives the template value. A template declaring
+ * `Enabled: false` keeps the normal comparison, as does a live mapping that
+ * reads disabled, so a disable cdkd did not make is still reported against a
+ * `true` baseline. What the rule cannot tell apart: a disable that was
+ * accepted into the baseline and then re-enabled outside cdkd. Re-enabling
+ * against the template's own default is not reported, which is what
+ * CloudFormation would say too. A live `true` also comes from a mapping still
+ * `Creating` / `Updating` under such a template (`enabledFromState` answers
+ * the template's value there); skipping the key then is no loss, since the
+ * comparison would have reported the same stale `false -> true`.
+ *
+ * Read-only and per resource: nothing is written to state. `--revert` and
+ * `--accept` act only on detected changes, so neither touches the key. The
+ * baseline is rewritten by the next update deploy of the mapping or by
+ * `cdkd state refresh-observed`. Only the observed baseline can carry the
+ * artifact; the `properties` fallback is the template itself.
+ */
+export function preFixBaselineUncomparedDriftKeys(
+  resourceType: string,
+  observed: Record<string, unknown> | undefined,
+  properties: unknown,
+  aws: Record<string, unknown>
+): string[] {
+  if (resourceType !== 'AWS::Lambda::EventSourceMapping') return [];
+  if (observed === undefined) return [];
+  if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
+    return [];
+  }
+  const declared = hasOwnKey(properties as Record<string, unknown>, 'Enabled')
+    ? coerceCfnBoolean((properties as Record<string, unknown>)['Enabled'])
+    : undefined;
+  const recorded = hasOwnKey(observed, 'Enabled')
+    ? coerceCfnBoolean(observed['Enabled'])
+    : undefined;
+  const live = hasOwnKey(aws, 'Enabled') ? aws['Enabled'] : undefined;
+  return recorded === false && declared !== false && live === true ? ['Enabled'] : [];
+}
+
+/**
  * Run drift detection for one stack and shape the per-resource outcomes
  * into a {@link StackDriftReport}. The state object + etag are stored on
  * the report so `--accept` can write back without a re-read, and
@@ -4251,10 +4305,24 @@ async function runDriftForStack(
             resource.resourceType,
             resource.properties
           );
+          // go-to-k/cdkd#5749: a baseline value a pre-#5737 cdkd recorded by
+          // mistake (an event source mapping's `Enabled: false`) is not
+          // compared while the template and the live mapping agree on enabled.
+          const preFixIgnorePaths = preFixBaselineUncomparedDriftKeys(
+            resource.resourceType,
+            resource.observedProperties,
+            resource.properties,
+            aws
+          );
           const changes = calculateResourceDrift(comparedBaseline, paired.aws, {
             ignorePaths:
-              observedIgnorePaths.length || ownedIgnorePaths.length
-                ? [...ignorePaths, ...observedIgnorePaths, ...ownedIgnorePaths]
+              observedIgnorePaths.length || ownedIgnorePaths.length || preFixIgnorePaths.length
+                ? [
+                    ...ignorePaths,
+                    ...observedIgnorePaths,
+                    ...ownedIgnorePaths,
+                    ...preFixIgnorePaths,
+                  ]
                 : ignorePaths,
             unionWalkObjects: useObserved,
             unorderedPaths,

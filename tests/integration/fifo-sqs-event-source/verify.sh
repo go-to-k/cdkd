@@ -15,6 +15,10 @@
 #      observedProperties baseline recorded `Enabled: true` and `cdkd drift`
 #      reports the mapping clean (issue #5737: the baseline read while the
 #      mapping was still `Creating` recorded `Enabled: false`).
+#   1c. Write that old `Enabled: false` baseline into state (lock-free, ETag-
+#      guarded put, one field), then assert `cdkd drift` still reports the
+#      mapping clean and `cdkd drift --revert --yes` leaves it `Enabled`
+#      (issue #5749: a pre-#5737 baseline healed at read time, no --accept).
 #   1b. CDKD_TEST_REMOVAL=true redeploy DROPS contentBasedDeduplication,
 #      deduplicationScope, and fifoThroughputLimit from the queue and asserts
 #      ContentBasedDeduplication reads 'false' (reset, as CloudFormation does)
@@ -250,6 +254,80 @@ if [ "${ESM_CLEAN}" != "1" ] || [ "${ESM_DRIFTED}" != "0" ]; then
   exit 1
 fi
 echo "    OK: mapping settled to Enabled; baseline Enabled=true; cdkd drift reports ${ESM_LID} clean (drift rc=${DRIFT_RC})"
+
+# --- Phase 1c: a pre-#5737 Enabled: false baseline heals in drift (#5749) -----
+# A mapping deployed by an older cdkd still holds observedProperties.Enabled:
+# false. Write that old baseline into state (guarded: no lock held, and the put
+# carries the read's ETag), then assert cdkd drift reports the mapping clean and
+# drift --revert leaves it Enabled (the pre-fix binary reported false -> true
+# and the revert DISABLED the consumer). Only that one field is rewritten.
+echo "==> Phase 1c: inject the pre-#5737 Enabled: false baseline, assert drift is clean and --revert keeps the mapping Enabled (#5749)"
+LOCK_KEY="cdkd/${STACK}/${REGION}/lock.json"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "${LOCK_KEY}"; then
+  echo "FAIL (#5749): ${LOCK_KEY} exists -- refusing to rewrite state while a lock is held" >&2
+  exit 1
+fi
+INJECT_DIR="$(mktemp -d)"
+INJECT_IN="${INJECT_DIR}/state.json"
+INJECT_OUT="${INJECT_DIR}/state.injected.json"
+if ! INJECT_ETAG="$(aws s3api get-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+    --query 'ETag' --output text "${INJECT_IN}" 2>/dev/null)" || [ -z "${INJECT_ETAG}" ] || [ "${INJECT_ETAG}" = "None" ]; then
+  echo "FAIL (#5749): could not read ${STATE_KEY} with its ETag" >&2
+  rm -rf "${INJECT_DIR}"
+  exit 1
+fi
+jq --arg l "${ESM_LID}" '.resources[$l].observedProperties.Enabled = false' "${INJECT_IN}" >"${INJECT_OUT}"
+# Exactly one field changed, from true: with it deleted, the documents match.
+INJECT_SAME="$(jq -n --arg l "${ESM_LID}" --slurpfile a "${INJECT_IN}" --slurpfile b "${INJECT_OUT}" \
+  '($a[0].resources[$l].observedProperties.Enabled == true)
+   and (($a[0] | del(.resources[$l].observedProperties.Enabled)) == ($b[0] | del(.resources[$l].observedProperties.Enabled)))')"
+if [ "${INJECT_SAME}" != "true" ]; then
+  echo "FAIL (#5749): the injection would change more than ${ESM_LID}.observedProperties.Enabled (true -> false)" >&2
+  rm -rf "${INJECT_DIR}"
+  exit 1
+fi
+if ! aws s3api put-object --bucket "${STATE_BUCKET}" --key "${STATE_KEY}" \
+    --body "${INJECT_OUT}" --content-type application/json --if-match "${INJECT_ETAG}" >/dev/null; then
+  echo "FAIL (#5749): the guarded state rewrite was refused or failed" >&2
+  rm -rf "${INJECT_DIR}"
+  exit 1
+fi
+rm -rf "${INJECT_DIR}"
+# The write LANDED: read back from S3.
+INJECTED_ENABLED="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - | jq -r --arg l "${ESM_LID}" '.resources[$l].observedProperties.Enabled | tostring')"
+if [ "${INJECTED_ENABLED}" != "false" ]; then
+  echo "FAIL (#5749): after the injection ${ESM_LID} observedProperties.Enabled reads '${INJECTED_ENABLED}', expected 'false'" >&2
+  exit 1
+fi
+
+HEAL_JSON_OUT=""
+HEAL_RC=0
+HEAL_JSON_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || HEAL_RC=$?
+HEAL_CLEAN="$(printf '%s' "${HEAL_JSON_OUT}" | jq --arg l "${ESM_LID}" '[.[].clean[] | select(.logicalId == $l)] | length' 2>/dev/null || echo "?")"
+HEAL_DRIFTED="$(printf '%s' "${HEAL_JSON_OUT}" | jq --arg l "${ESM_LID}" '[.[].drifted[] | select(.logicalId == $l)] | length' 2>/dev/null || echo "?")"
+if [ "${HEAL_CLEAN}" != "1" ] || [ "${HEAL_DRIFTED}" != "0" ]; then
+  echo "FAIL (#5749): expected ${ESM_LID} CLEAN in cdkd drift over the pre-#5737 Enabled: false baseline (clean=${HEAL_CLEAN} drifted=${HEAL_DRIFTED} rc=${HEAL_RC}). Report: ${HEAL_JSON_OUT}" >&2
+  exit 1
+fi
+
+# The destructive half: --revert must not send Enabled: false. Its rc is not
+# this arm's subject (another resource's revert may fail); the mapping's live
+# State is, read a few times so a Disabling transition cannot slip past.
+# drift has no per-resource filter, so this reverts the WHOLE stack: any other
+# resource drifted at this point is written back to its baseline before Phase 1b.
+REVERT_RC=0
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes || REVERT_RC=$?
+for i in 1 2 3; do
+  ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+    --query 'State' --output text)"
+  echo "    poll ${i}: after drift --revert, mapping State=${ESM_STATE}"
+  if [ "${ESM_STATE}" != "Enabled" ]; then
+    echo "FAIL (#5749): drift --revert left ${ESM_LID} (${ESM_UUID}) in State=${ESM_STATE}, expected Enabled (revert rc=${REVERT_RC})" >&2
+    exit 1
+  fi
+  if [ "${i}" -lt 3 ]; then sleep 10; fi
+done
+echo "    OK: drift reports ${ESM_LID} clean over the old baseline; drift --revert left it Enabled (drift rc=${HEAL_RC}, revert rc=${REVERT_RC})"
 
 # --- Phase 1b: in-place removal of FIFO attributes (issues #1237 / #1160) ----
 echo "==> Phase 1b: capture baseline queue attributes"
