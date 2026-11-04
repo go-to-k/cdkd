@@ -12,8 +12,11 @@ target from state. Unit tests cover the algorithm
 (`tests/unit/analyzer/orphan-rewriter.test.ts`); this integ test
 exercises the load-bearing real-AWS assertions that unit tests can't:
 
-- Sibling resources' `Ref` / `Fn::GetAtt` are rewritten to literal strings
-  (not left as intrinsic objects pointing at the now-missing orphan).
+- The sibling's dependency edge on the orphan is dropped, and its
+  recorded `BUCKET_NAME` stays the literal bucket name. State records the
+  values cdkd resolved and sent, so this stack gives the rewriter no
+  intrinsic to substitute; the `Ref` / `Fn::GetAtt` / `Fn::Sub` rewrites
+  are covered by the unit tests only.
 - The orphaned AWS resource really survives — `cdkd orphan` only
   removes the cdkd state record.
 - The orphan is reversible via `cdkd import` — re-importing the bucket
@@ -25,8 +28,9 @@ Two resources, with one explicit cross-reference:
 
 - **AWS::S3::Bucket** (`MyBucket`) — the orphan target.
 - **AWS::Lambda::Function** (`Handler`) — `BUCKET_NAME` env var is
-  `bucket.bucketName`, which CDK emits as `{Ref: MyBucket}`. This is
-  the reference the orphan rewriter has to substitute.
+  `bucket.bucketName`, which CDK emits as `{Ref: MyBucket}`. cdkd records
+  the resolved bucket name in state, plus a `dependencies` entry on
+  `MyBucket`, which is what the orphan rewriter drops.
 
 The Bucket has `RemovalPolicy.RETAIN` so a wrong-order `cdkd destroy`
 (without orphaning first) doesn't accidentally delete it; the integ

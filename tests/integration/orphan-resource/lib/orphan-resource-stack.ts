@@ -17,10 +17,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  *   - `Handler` (AWS::Lambda::Function) — its `BUCKET_NAME` env var
  *     is `bucket.bucketName`, which CDK synthesizes to `{Ref: MyBucket}`.
  *
- * After `cdkd orphan CdkdOrphanResourceExample/MyBucket`, the state file
- * for the Function should have `BUCKET_NAME` rewritten to the literal
- * physical bucket name (a string), and the Bucket should no longer be
- * tracked in cdkd state — but it must still exist in AWS.
+ * State records the resolved bucket name for `BUCKET_NAME`, so after
+ * `cdkd orphan CdkdOrphanResourceExample/MyBucket` the Function's record
+ * keeps that literal and only loses its `dependencies` entry on the
+ * Bucket. The Bucket is no longer tracked in cdkd state, but it must
+ * still exist in AWS.
  *
  * The Bucket uses `RemovalPolicy.RETAIN` because the destroy path of
  * this test only removes the Lambda; the test driver deletes the
@@ -40,10 +41,9 @@ export class OrphanResourceStack extends cdk.Stack {
       autoDeleteObjects: false,
     });
 
-    // Lambda's BUCKET_NAME env var holds `{Ref: MyBucket}` after synth.
-    // After orphaning MyBucket, the rewriter must resolve that Ref via
-    // S3BucketProvider.getAttribute(... 'Ref') and substitute the literal
-    // bucket name string into state.
+    // Lambda's BUCKET_NAME env var holds `{Ref: MyBucket}` after synth;
+    // state records the resolved bucket name, so orphaning MyBucket
+    // leaves it as is and drops only the dependency edge.
     new lambda.Function(this, 'Handler', {
       runtime: lambda.Runtime.PYTHON_3_12,
       code: lambda.Code.fromAsset(path.join(__dirname, '../lambda')),
