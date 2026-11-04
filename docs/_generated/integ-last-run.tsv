@@ -158,7 +158,7 @@ eventsourcemapping-race	2026-10-20T05:07:15Z	PASS	70	verify.sh	rc ok, orph clean
 export	2026-10-24T06:38:32Z	PASS	226	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); CFn stack deleted, orph clean
 export-nested-stack	2026-10-20T04:25:11Z	PASS	195	verify.sh	deploy+destroy clean, 0 orphans
 fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
-fifo-sqs-event-source	2026-11-04T06:18:47Z	PASS	142	verify.sh	PR #5739 (#5737) final on 846964631; rc ok, orph clean; Phase 1a Enabled=true, drift clean
+fifo-sqs-event-source	2026-11-04T10:39:18Z	PASS	180	verify.sh	rc ok, orph clean, Phase 1c #5749 OK
 firehose-iceberg-destination	2026-11-03T06:45:16Z	PASS	151	verify.sh	PR #5694; us-east-1; rc=0, destroy 0 errors, 0 orphans
 firehose-msk-source	2026-11-02T19:24:26Z	PASS	588	verify.sh	rc ok, destroy 9 deleted 0 errors, orph clean
 fsx-lustre	2026-10-27T21:43:55Z	PASS	2661	verify.sh	#5430 LogConfiguration create/update; rc ok, orph clean, probe red pre-fix
