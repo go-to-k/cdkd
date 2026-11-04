@@ -84,6 +84,11 @@ mechanics. Make the unit test **fail without the fix and pass with it**. A
 hook's harness is `.claude/hooks/<name>.test.sh`, run by `run-tests.sh` from
 BESIDE its subject.
 
+**A fix to a value cdkd CAPTURES into state** (a drift baseline, a recorded
+attribute) also heals, or compares around, the records written before it, in
+the SAME issue: old state keeps the bad value, and a no-change deploy re-reads
+nothing (#5737 needed #5749).
+
 **Adding a HANDLER to a single slot REPLACES it** — a second `trap ... EXIT`
 disarms the first, which in an integ fixture is the AWS teardown. Work inside
 it, or re-install one calling the original
