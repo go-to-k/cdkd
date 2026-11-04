@@ -28,7 +28,8 @@ exercises. A turn blocked on a fixture fix never blocks the other lanes.
 step 4**, whichever lane owns it — its isolation rules are not per-lane:
 - a `SAFETY NOTE` fixture gets its OWN region;
 - a `cdkd gc` fixture waits until no other lane's integ is running, and none
-  starts during it;
+  starts during it (`custom-resource-provider` likewise beside any other
+  custom-resource fixture);
 - a rollback-journal reader or `cdkd rollback` caller gets its own state
   bucket (#5104);
 - cap fixtures in flight per region at what the account's VPC / EIP / NAT
