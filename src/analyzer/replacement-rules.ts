@@ -114,6 +114,23 @@ export function instanceTenancyChangeReplaces(oldValue: unknown, newValue: unkno
 
 /**
  * Conditional-replacement predicate for
+ * `AWS::EC2::Instance.PrivateDnsNameOptions` (issue
+ * [#5630](https://github.com/go-to-k/cdkd/issues/5630)). MEASURED against
+ * CloudFormation (us-east-1, 2026-11-04, a t3.nano): removing the whole block
+ * creates a new instance (the new one takes the subnet's defaults), while
+ * adding it or changing a member keeps the instance (`EC2Provider` applies
+ * those with ModifyPrivateDnsNameOptions, a HostnameType change with a stop and
+ * a start). A block the RECORD lacks is never a removal.
+ */
+export function instancePrivateDnsNameOptionsChangeReplaces(
+  oldValue: unknown,
+  newValue: unknown
+): boolean {
+  return oldValue != null && newValue == null;
+}
+
+/**
+ * Conditional-replacement predicate for
  * `AWS::EC2::Instance.BlockDeviceMappings` (issue
  * [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED against
  * CloudFormation (us-east-1, 2026-10-28): a change to `Ebs.DeleteOnTermination`
@@ -1381,7 +1398,8 @@ export class ReplacementRulesRegistry {
     // EC2 Instance — EbsOptimized can only be changed on a STOPPED instance
     // (a running instance returns IncorrectInstanceState). `updateInstance`
     // stops an instance only for an InstanceType / UserData change (issue
-    // #5446, measured), and an EbsOptimized change was not measured against
+    // #5446, measured) or a PrivateDnsNameOptions.HostnameType change
+    // (go-to-k/cdkd#5630, measured), and an EbsOptimized change was not measured against
     // CloudFormation, so it stays routed to replacement
     // (the create path sets it on the new instance). The other four #609
     // security-backfill props (DisableApiTermination / Monitoring /
@@ -1414,6 +1432,8 @@ export class ReplacementRulesRegistry {
         'HibernationOptions',
         'PlacementGroupName',
         'PrivateIpAddress',
+        'Ipv6AddressCount',
+        'Ipv6Addresses',
       ]),
       // Issue #5446: InstanceType / UserData (a stop-modify-start),
       // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in
@@ -1424,6 +1444,8 @@ export class ReplacementRulesRegistry {
         // go-to-k/cdkd#5630: the schema leaves Tenancy mutable; see the
         // predicate for which changes replace.
         ['Tenancy', instanceTenancyChangeReplaces],
+        // go-to-k/cdkd#5630: only a removal of the whole block replaces.
+        ['PrivateDnsNameOptions', instancePrivateDnsNameOptionsChangeReplaces],
       ]),
     });
 

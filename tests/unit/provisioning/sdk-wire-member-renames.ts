@@ -269,11 +269,15 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       'NetworkInterfaces.GroupSet': ['Groups'],
       // go-to-k/cdkd#5630: RunInstances' `Placement.GroupName`.
       PlacementGroupName: ['GroupName'],
+      // go-to-k/cdkd#5630: ModifyPrivateDnsNameOptions' spelling.
+      'PrivateDnsNameOptions.HostnameType': ['PrivateDnsHostnameType'],
       SecurityGroupIds: ['Groups'],
     },
     containers: {
       CreditSpecification: ['InstanceCreditSpecifications'],
       MetadataOptions: ['ModifyInstanceMetadataOptionsCommand'],
+      // go-to-k/cdkd#5630: the update's members sit at the command's top level.
+      PrivateDnsNameOptions: ['ModifyPrivateDnsNameOptionsCommand'],
     },
     transformed: {
       Monitoring:
