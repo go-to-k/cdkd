@@ -3338,6 +3338,85 @@ function redactDriftChanges(
 }
 
 /**
+ * A top-level property of one resource that a SIBLING custom resource in the
+ * same stack writes (go-to-k/cdkd#5736). `ownerType` names the custom resource,
+ * whose `ownerNameProperty` holds the target's physical id; `ownedKey` is the
+ * target's property that the custom resource sets.
+ */
+interface CustomResourceOwnedKey {
+  readonly ownerType: string;
+  readonly ownerNameProperty: string;
+  readonly targetType: string;
+  readonly ownedKey: string;
+}
+
+/**
+ * CDK's `bucket.addEventNotification(...)` (and `eventBridgeEnabled`) does not
+ * declare `NotificationConfiguration` on the bucket. It synthesizes a
+ * `Custom::S3BucketNotifications` resource whose handler calls
+ * `PutBucketNotificationConfiguration` on `BucketName`.
+ */
+const CUSTOM_RESOURCE_OWNED_KEYS: readonly CustomResourceOwnedKey[] = [
+  {
+    ownerType: 'Custom::S3BucketNotifications',
+    ownerNameProperty: 'BucketName',
+    targetType: 'AWS::S3::Bucket',
+    ownedKey: 'NotificationConfiguration',
+  },
+];
+
+/**
+ * Per logical id, the top-level keys drift must NOT compare because a sibling
+ * custom resource in the same stack owns them (go-to-k/cdkd#5736).
+ *
+ * WHY: the observed baseline is captured when the TARGET settles, which is
+ * before the custom resource that writes the key runs (the #1498 ordering).
+ * For an S3 bucket the capture still holds a non-empty
+ * `NotificationConfiguration` (`readNotification` always emits
+ * `EventBridgeConfiguration`), so {@link undeclaredEmptyObservedKeys} does not
+ * skip it, and every fresh deploy showed the custom resource's queue / lambda /
+ * topic configurations as drift. `drift --revert` then wrote the baseline back
+ * and deleted the live notifications.
+ *
+ * CloudFormation drift compares only the properties the template declares, and
+ * the template declares none of this on the bucket, so CloudFormation reports
+ * nothing here. A key the target DOES declare is still compared, as it would be
+ * in CloudFormation. The rule reads only state, so a stack deployed with the old
+ * baseline is fixed without a redeploy, and `--revert` / `--accept` never act
+ * on the key: both work from the detected changes.
+ *
+ * The match is by physical id against the custom resource's RESOLVED property
+ * (state records resolved properties), so it holds for an SDK-provisioned and a
+ * Cloud Control-provisioned target alike. A record whose `properties` is not a
+ * plain object neither names an owner nor is matched as a target.
+ */
+export function customResourceOwnedDriftKeys(
+  resources: Readonly<Record<string, ResourceState>>
+): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const isBag = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v);
+  for (const rule of CUSTOM_RESOURCE_OWNED_KEYS) {
+    const ownedNames = new Set<string>();
+    for (const record of Object.values(resources)) {
+      if (record?.resourceType !== rule.ownerType || !isBag(record.properties)) continue;
+      const name = ownValue(record.properties, rule.ownerNameProperty);
+      if (typeof name === 'string' && name !== '') ownedNames.add(name);
+    }
+    if (ownedNames.size === 0) continue;
+    for (const [logicalId, record] of Object.entries(resources)) {
+      if (record?.resourceType !== rule.targetType || !isBag(record.properties)) continue;
+      if (!ownedNames.has(record.physicalId)) continue;
+      if (hasOwnKey(record.properties, rule.ownedKey)) continue;
+      const keys = out.get(logicalId) ?? [];
+      keys.push(rule.ownedKey);
+      out.set(logicalId, keys);
+    }
+  }
+  return out;
+}
+
+/**
  * Run drift detection for one stack and shape the per-resource outcomes
  * into a {@link StackDriftReport}. The state object + etag are stored on
  * the report so `--accept` can write back without a re-read, and
@@ -3535,6 +3614,8 @@ async function runDriftForStack(
       stateBackend
     );
     const entries = Object.entries(state.resources ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    // go-to-k/cdkd#5736: keys a sibling custom resource writes, once per stack.
+    const crOwnedKeys = customResourceOwnedDriftKeys(state.resources ?? {});
     // go-to-k/cdkd#3869: each record's needles judged once for the stack.
     const printingBagOf = secretNamePrintingBags(state.resources ?? {}, undefined);
     // go-to-k/cdkd#3869: a drifted row's AWS side can name a secret-named record
@@ -4194,10 +4275,14 @@ async function runDriftForStack(
                 driftAbsentMeansDefaultKeys(provider, resource.resourceType, resource.properties)
               )
             : nameBaseline;
+          // go-to-k/cdkd#5736: a key a sibling custom resource owns is not
+          // compared, whichever baseline is in use.
+          const ownedIgnorePaths = crOwnedKeys.get(logicalId) ?? [];
           const changes = calculateResourceDrift(comparedBaseline, paired.aws, {
-            ignorePaths: observedIgnorePaths.length
-              ? [...ignorePaths, ...observedIgnorePaths]
-              : ignorePaths,
+            ignorePaths:
+              observedIgnorePaths.length || ownedIgnorePaths.length
+                ? [...ignorePaths, ...observedIgnorePaths, ...ownedIgnorePaths]
+                : ignorePaths,
             unionWalkObjects: useObserved,
             unorderedPaths,
           });

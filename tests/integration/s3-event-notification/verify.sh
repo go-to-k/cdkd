@@ -9,7 +9,9 @@
 #
 # Phases:
 #   1. Deploy. Assert the bucket carries a Lambda NotificationConfiguration
-#      (the Custom::S3BucketNotifications CR actually PUT it).
+#      (the Custom::S3BucketNotifications CR actually PUT it). Then
+#      `cdkd drift` must be clean and `drift --revert` must leave the
+#      notification in place (issue #5736).
 #   2. Functional: put an object, then poll the DynamoDB table until the key
 #      appears (proves the notification delivered + the handler ran + the
 #      grant worked end-to-end).
@@ -133,6 +135,51 @@ if [ "${NOTIFY_COUNT}" = "0" ] || [ "${NOTIFY_COUNT}" = "None" ]; then
   exit 1
 fi
 echo "    OK: bucket carries ${NOTIFY_COUNT} Lambda notification configuration(s)"
+
+# --- Phase 1b: drift on the untouched stack (issue #5736) -------------
+# The bucket's observed baseline is captured BEFORE the CR writes the
+# notification, so pre-fix `cdkd drift` reported the CR's LambdaConfigurations
+# as bucket drift on every fresh deploy, and `drift --revert` deleted them.
+echo "==> Phase 1b: cdkd drift reports no drift on the fresh deploy (#5736)"
+set +e
+DRIFT_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" 2>&1)"
+DRIFT_RC=$?
+set -e
+if [ "${DRIFT_RC}" -ne 0 ]; then
+  if grep -q 'NotificationConfiguration' <<<"${DRIFT_OUT}"; then
+    echo "FAIL: #5736: cdkd drift reported the CR-owned bucket NotificationConfiguration as drift (rc ${DRIFT_RC}):" >&2
+  else
+    echo "FAIL: cdkd drift exited ${DRIFT_RC} on an untouched stack:" >&2
+  fi
+  printf '%s\n' "${DRIFT_OUT}" >&2
+  exit 1
+fi
+echo "    OK: cdkd drift is clean"
+
+# A revert of ANOTHER bucket key must leave the CR's notification in place: an
+# out-of-band tag gives the revert a real write on the bucket, and the S3
+# provider then receives the whole bag (the template declares only the
+# autoDeleteObjects tag, which is put back with the injected one).
+echo "==> Phase 1c: cdkd drift --revert of a tag keeps the bucket notification (#5736)"
+aws s3api put-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --tagging 'TagSet=[{Key=aws-cdk:auto-delete-objects,Value=true},{Key=cdkd-integ-5736,Value=injected}]'
+node "${LOCAL_DIST}" drift "${STACK}" \
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --revert --yes
+INJECTED_AFTER="$(aws s3api get-bucket-tagging --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --query "length(TagSet[?Key=='cdkd-integ-5736'])" --output text)"
+if [ "${INJECTED_AFTER}" != "0" ]; then
+  echo "FAIL: drift --revert did not remove the injected tag (count ${INJECTED_AFTER}) -- the revert never wrote the bucket" >&2
+  exit 1
+fi
+NOTIFY_AFTER="$(aws s3api get-bucket-notification-configuration \
+  --bucket "${BUCKET_NAME}" --region "${REGION}" \
+  --query 'length(LambdaFunctionConfigurations || `[]`)' --output text)"
+if [ "${NOTIFY_AFTER}" != "${NOTIFY_COUNT}" ]; then
+  echo "FAIL: #5736: drift --revert changed the bucket's Lambda notifications (${NOTIFY_COUNT} -> ${NOTIFY_AFTER})" >&2
+  exit 1
+fi
+echo "    OK: tag reverted; bucket still carries ${NOTIFY_AFTER} Lambda notification configuration(s)"
 
 # --- Phase 2: functional — put object, prove the Lambda fired ---------
 echo "==> Phase 2: put an object and assert the notification fired"
