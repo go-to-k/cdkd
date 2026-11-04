@@ -23,18 +23,18 @@ app-autoscaling-recreate	2026-11-04T07:59:30Z	PASS	141	verify.sh	rc ok, destroy 
 appconfig	2026-11-04T05:45:58Z	PASS	85	verify.sh	1104 sweep b5; rc ok, 0 orph
 appsync	2026-10-30T05:02:32Z	PASS	206	verify.sh	#5540 ApiKeyRef plural apikeys; destroy 0 errors, orph clean, versions swept
 asset-auto-create	2026-11-04T07:52:45Z	PASS	195	verify.sh	rc ok, orph clean; eu-north-1 (auto-create + opt-out + skip-assets; storage/marker/log groups cleaned)
-asset-bootstrap	2026-11-04T07:51:26Z	PASS	140	verify.sh	rc ok, orph clean; eu-west-2 (#2624 PR #4573)
+asset-bootstrap	2026-11-04T10:48:42Z	PASS	166	verify.sh	rc ok, orph clean; eu-west-2 (#5745 PR #5752)
 asset-migration	2026-10-11T09:33:22Z	PASS	641	verify.sh	PR #4720 (#4705) final c53f78f; rc 0 in eu-west-1, 0 orphans
-aws-custom-resource	2026-11-04T07:51:26Z	PASS	74	verify.sh	rc ok, orph clean (#1730)
+aws-custom-resource	2026-11-04T10:48:42Z	PASS	101	verify.sh	rc ok, orph clean (#5745 PR #5752)
 backup	2026-10-15T02:06:45Z	PASS	95	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
-basic	2026-10-20T19:58:09Z	PASS	94	standard	PR #5100 pre-merge run, deploy+destroy clean, 0 orphans
+basic	2026-11-04T10:48:42Z	PASS	111	standard	rc ok, orph clean (#5745 PR #5752)
 batch	2026-11-04T05:26:26Z	PASS	94	standard	batch 3 (rc=0, destroy 12 deleted 0 errors); no CE/queue/ENI/VPC leftovers; account clean
 bedrock-agentcore	2026-10-29T20:58:21Z	PASS	150	verify.sh	rc ok, destroy 0 errors, orph clean
 bench-ccapi	2026-10-24T06:41:39Z	PASS	90	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
 bench-cdk-sample	2026-10-29T18:05:48Z	PASS	456	standard	final head 212db23c8 (#5508); destroy 38 deleted, 2 retained by DeletionPolicy, 0 errors
 bench-sdk	2026-10-24T06:40:41Z	PASS	40	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (5 deleted)
 bootstrap-free-region	2026-11-04T07:51:26Z	PASS	140	verify.sh	rc 0, 0 orphans; ca-central-1 (#2624 PR #4573)
-bucket-deployment	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+bucket-deployment	2026-11-04T10:48:42Z	PASS	101	verify.sh	rc ok, orph clean (#5745 PR #5752)
 budgets	2026-10-22T21:55:31Z	PASS	133	verify.sh	PR#5188 Run C at HEAD (73687a4de): Phase2b clean (2 checked, 0 unsupported); Phase2c drift exit1 on Budget.BudgetLimit.Amount (2->3) OK; Phase2d --revert restored limit to 2, kept both subscribers and FilterExpression, drift clean after; destroy 0 errors; AWS/S3 clean after; marker SET.
 cache-streaming	2026-10-30T13:07:14Z	PASS	3339	verify.sh	rc ok, #5558 AZ-removal replacement verified (probe red at the zone-list removal assertion), orph clean
 cc-abandoned-create-resume	2026-10-20T03:03:42Z	PASS	121	verify.sh	deploy+destroy clean, 0 orphans
@@ -75,14 +75,14 @@ created-before-failure-revert	2026-10-29T20:43:22Z	PASS	181	verify.sh	PR #5535 P
 cross-backend-same-stack	2026-10-25T00:07:44Z	PASS	306	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 cross-backend-same-stack-migration	2026-10-11T09:33:22Z	PASS	386	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 cross-region-concurrent-stacks	2026-10-23T03:26:26Z	PASS	216	verify.sh	rc ok, orph clean both regions (regression net #5193)
-cross-region-state-bucket	2026-10-25T02:23:30Z	PASS	32	verify.sh	rc ok, orph clean
+cross-region-state-bucket	2026-11-04T10:48:42Z	PASS	41	verify.sh	rc ok, orph clean (#5745 PR #5752)
 cross-stack-cfn-fallback	2026-10-18T11:16:06Z	PASS	125	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 cross-stack-references	2026-10-25T02:23:30Z	PASS	38	standard	rc ok, orph clean
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
 custom-resource-getatt-data	2026-11-04T07:47:19Z	PASS	101	verify.sh	rc ok, orph clean (PR #5742 #5738 CR recycle Description; regression run, recycle not triggerable)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-23T03:22:35Z	PASS	1358	verify.sh	rc ok, orph clean, 0 surviving versions (regression net #5193)
-custom-resource-provider	2026-10-25T13:14:00Z	PASS	651	verify.sh	us-east-1; PR #5262 a4722aee6; rc ok, orph clean
+custom-resource-provider	2026-11-04T10:48:42Z	PASS	727	verify.sh	rc ok, orph clean; rerun alone after a race with parallel aws-custom-resource/bucket-deployment on the state-bucket lifecycle rule (run 1 FAIL, #5745 PR #5752)
 custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+destroy clean, 0 orphans
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
@@ -356,7 +356,7 @@ route53	2026-11-02T17:29:26Z	PASS	568	verify.sh	PR #5662 c63dba225 rc ok, orph c
 s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
-s3-directory-bucket	2026-10-29T19:12:05Z	PASS	255	verify.sh	rc ok, orph clean; probe red at sdk-route assert (probe tree: explicit BucketName + zone-id LocationName for the pre-fix CC route)
+s3-directory-bucket	2026-11-04T10:48:42Z	PASS	251	verify.sh	rc ok, orph clean (#5745 PR #5752)
 s3-event-notification	2026-11-04T08:38:33Z	PASS	231	verify.sh	us-east-1; PR #5751 776b0358d; cross-stack fromBucketName notification arm; drift clean (1b), revert keeps notifications (1c/1d), destroy 0 errors; rc ok, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
 s3-lifecycle	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
