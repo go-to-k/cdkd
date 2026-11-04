@@ -18,11 +18,7 @@ import {
 } from './masking.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { getAccountInfo } from '../intrinsic-function-resolver.js';
-import {
-  GeneratedNameGuard,
-  type GeneratedNameGuardInput,
-  type KeptInHistory,
-} from '../generated-name-guard.js';
+import { GeneratedNameGuard, type GeneratedNameGuardInput } from '../generated-name-guard.js';
 import { withStackScope, type StackScope } from '../../provisioning/resource-name.js';
 import { stackInstanceIdOf } from '../../state/stack-instance-id.js';
 import { nameGenerationsOf, nextNameGeneration } from '../../state/name-generation.js';
@@ -34,7 +30,11 @@ import {
 } from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
 import { PhaseClock, phaseScopeForStack } from '../../utils/phase-timings.js';
-import { loadKeptInHistory } from '../kept-in-history.js';
+import {
+  loadKeptForWarning,
+  loadKeptInHistory,
+  type KeptInHistorySources,
+} from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
@@ -135,41 +135,14 @@ import { buildResolverContext, maskedInputSources } from './resolver-context.js'
  */
 const TAIL_WARM_CONNECTIONS = 3;
 
-/** This prefix's own history of what `stackName` kept (go-to-k/cdkd#4705). */
-function readKeptInHistory(
-  engine: DeployEngine,
-  stackName: string
-): Promise<readonly KeptInHistory[]> {
+/** What `loadKeptInHistory` / `loadKeptForWarning` read, from the engine. */
+function keptHistorySources(engine: DeployEngine): KeptInHistorySources {
   const reader = new DeploymentEventsReader(engine.stateBackend);
-  return loadKeptInHistory(
-    {
-      earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
-      listRuns: (s, r) => reader.listRuns(s, r),
-      readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
-    },
-    stackName,
-    engine.stackRegion
-  );
-}
-
-/**
- * go-to-k/cdkd#5760: what an older cdkd's destroy kept, for a first deploy
- * that finds no `retained.json`. Each resource once, though both sources may
- * name it.
- */
-async function keptBeforeRetainedRecord(
-  engine: DeployEngine,
-  stackName: string
-): Promise<KeptInHistory[]> {
-  const seen = new Set<string>();
-  const out: KeptInHistory[] = [];
-  for (const k of await readKeptInHistory(engine, stackName)) {
-    const key = `${k.resourceType}\0${k.physicalId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(k);
-  }
-  return out;
+  return {
+    earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
+    listRuns: (s, r) => reader.listRuns(s, r),
+    readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
+  };
 }
 
 export async function doDeployWithPrefetch(
@@ -341,7 +314,10 @@ export async function doDeployWithPrefetch(
     // warning then reads this prefix's own history of what was kept
     // (go-to-k/cdkd#5760); an empty record is this cdkd's "nothing kept".
     const retainedForWarning = retainedAtFirstDeploy
-      ?.then((retained) => retained ?? keptBeforeRetainedRecord(engine, stackName))
+      ?.then(
+        (retained) =>
+          retained ?? loadKeptForWarning(keptHistorySources(engine), stackName, engine.stackRegion)
+      )
       .catch(() => null);
     // go-to-k/cdkd#5200: the read `resolveStackInstanceId` opens with, started
     // now so it overlaps the diff; the write-ahead itself still waits for the
@@ -1765,7 +1741,8 @@ export async function doDeployWithPrefetch(
       loadRetained: () =>
         retainedAtFirstDeploy ??
         engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
-      loadKeptInHistory: () => readKeptInHistory(engine, stackName),
+      loadKeptInHistory: () =>
+        loadKeptInHistory(keptHistorySources(engine), stackName, engine.stackRegion),
       accountInfo: () => getAccountInfo(engine.stackRegion),
       warn: (message) => engine.logger.warn(message),
       // G-1: this deploy took over the lock an abandoned run left.

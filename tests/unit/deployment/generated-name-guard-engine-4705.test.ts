@@ -745,6 +745,7 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveRetainedResources).not.toHaveBeenCalled();
       expect(stateBackend.earlierStateResources).toHaveBeenCalledTimes(1);
+      expect(stateBackend.getRawObject).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -888,8 +889,11 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
 
     it('an unreadable history warns nothing and does not fail the first deploy (#5760)', async () => {
       const { engine, provider, stateBackend } = buildEngine({});
-      stateBackend.earlierStateResources.mockRejectedValue(new Error('AccessDenied: ListObjectVersions'));
-      stateBackend.listRawKeys.mockRejectedValue(new Error('AccessDenied: ListObjectsV2'));
+      // A synchronous throw escapes `loadKeptForWarning`'s per-source catches:
+      // the warning's own outer catch is what keeps the deploy going.
+      stateBackend.earlierStateResources.mockImplementation(() => {
+        throw new Error('AccessDenied: ListObjectVersions');
+      });
       deriving(provider);
       const before = warned().length;
       await engine.deploy(STACK, template);
