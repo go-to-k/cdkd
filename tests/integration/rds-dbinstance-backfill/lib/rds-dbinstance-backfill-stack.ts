@@ -242,6 +242,14 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // SECOND subnet's, read back from the state record by verify.sh.
       dbName: 'cdkdbackfill',
       availabilityZone: vpc.isolatedSubnets[1]!.availabilityZone,
+      // go-to-k/cdkd#5640, unchanged in every phase: before #5640 either one
+      // routed the instance to Cloud Control (the provisionedBy=sdk guard
+      // catches it). EngineLifecycleSupport is not AWS's default, so verify.sh
+      // asserts it live; a change is refused, as CloudFormation refuses it.
+      // MasterUserAuthenticationType is write-only (no Describe field);
+      // `password` is the one type a managed master password allows.
+      engineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+      masterUserAuthenticationType: 'password',
     });
   }
 }
