@@ -79,7 +79,7 @@ cross-region-state-bucket	2026-10-25T02:23:30Z	PASS	32	verify.sh	rc ok, orph cle
 cross-stack-cfn-fallback	2026-10-18T11:16:06Z	PASS	125	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 cross-stack-references	2026-10-25T02:23:30Z	PASS	38	standard	rc ok, orph clean
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
-custom-resource-getatt-data	2026-10-09T09:36:48Z	PASS	95	verify.sh	rc ok, orph clean (PR #4763 #4043 Phase C drift)
+custom-resource-getatt-data	2026-11-04T07:47:19Z	PASS	101	verify.sh	rc ok, orph clean (PR #5742 #5738 CR recycle Description; regression run, recycle not triggerable)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-23T03:22:35Z	PASS	1358	verify.sh	rc ok, orph clean, 0 surviving versions (regression net #5193)
 custom-resource-provider	2026-10-25T13:14:00Z	PASS	651	verify.sh	us-east-1; PR #5262 a4722aee6; rc ok, orph clean
