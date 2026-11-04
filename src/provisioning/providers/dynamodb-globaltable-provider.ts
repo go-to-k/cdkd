@@ -10544,7 +10544,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       localRegion,
       completed !== baseline
     );
-    return converted === baseline ? { baseline, aws } : { baseline: converted, aws };
+    // go-to-k/cdkd#5789: the read-back puts each replica's class and deletion
+    // protection on its entry (#5397); a baseline that never declared them
+    // (a template bag, when the record has no `observedProperties`) takes
+    // them at their AWS default only.
+    const defaulted = completeReplicaDefaults(converted, aws);
+    return defaulted === baseline ? { baseline, aws } : { baseline: defaulted, aws };
   }
 
   /**
@@ -11404,6 +11409,49 @@ function readReplicaDisassociationProtection(
  * a baseline whose `Replicas` has no entry for the local region gets the
  * read-back's local entry. Identity when nothing applies.
  */
+/**
+ * go-to-k/cdkd#5789: `readCurrentState` writes `TableClass` (`STANDARD` when
+ * AWS reports none) and a boolean `DeletionProtectionEnabled` into EVERY
+ * `Replicas[]` entry, and arrays compare whole. A baseline entry that omits
+ * either -- a template bag the comparison falls back to when the record has
+ * no `observedProperties` (a rollback's reverse-replacement re-create, a
+ * pre-v3 record) -- takes the AWS side's value ONLY when that value is the
+ * default (`STANDARD`, `false`), matched by `Region`. A non-default live value
+ * still differs, and `drift --revert` sends nothing the live table lacks.
+ * Identity when nothing is completed.
+ */
+function completeReplicaDefaults(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>
+): Record<string, unknown> {
+  const key = 'Replicas';
+  const baselineReplicas = baseline[key];
+  const awsReplicas = aws[key];
+  if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) return baseline;
+  let changed = false;
+  const next = baselineReplicas.map((entry) => {
+    const record = asRecord(entry);
+    const region = record?.['Region'];
+    if (record === undefined || typeof region !== 'string') return entry;
+    const live = awsReplicas.map(asRecord).find((r) => r?.['Region'] === region);
+    if (live === undefined) return entry;
+    let out: Record<string, unknown> | undefined;
+    if (record['TableClass'] === undefined && live['TableClass'] === 'STANDARD') {
+      out = { ...(out ?? record), TableClass: 'STANDARD' };
+    }
+    if (
+      record['DeletionProtectionEnabled'] === undefined &&
+      live['DeletionProtectionEnabled'] === false
+    ) {
+      out = { ...(out ?? record), DeletionProtectionEnabled: false };
+    }
+    if (out === undefined) return entry;
+    changed = true;
+    return out;
+  });
+  return changed ? { ...baseline, [key]: next } : baseline;
+}
+
 function completeLegacyLocalReplica(
   baseline: Record<string, unknown>,
   aws: Record<string, unknown>,
