@@ -9,7 +9,7 @@ access-key-cloudmap-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	165	verify.sh	r
 acm-certificate	2026-10-26T01:33:59Z	PASS	126	verify.sh	rc 0, destroy 0 errors, orphans clean (PR #5289 local run)
 agentcore-tools	2026-11-04T09:11:36Z	PASS	75	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy 0 errors, orph clean; own state bucket
 alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
-alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
+alb-advanced	2026-11-04T20:19:14Z	PASS	153	standard	deploy rc=0, destroy 17 deleted 0 errors; VPC/NAT/ALB/EIP gone, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
 apigateway	2026-10-27T17:38:45Z	PASS	175	verify.sh	rc ok, orph clean; #5408 authorizer ProviderARNs + method scopes arms
 apigatewayv2-update-removal	2026-10-30T07:35:38Z	PASS	207	verify.sh	rc ok, orph clean; #5548 route ApiKeyRequired kept
@@ -64,13 +64,13 @@ cognito	2026-11-01T08:00:57Z	PASS	255	verify.sh	rc ok, orph clean, #2762 key+iss
 cognito-custom-attribute-add	2026-10-27T13:14:59Z	PASS	80	verify.sh	rc ok, orph clean; #1160 tag/MFA/recovery arm; probe on origin/main provider red at tag-still-present
 cognito-identity-pool	2026-11-04T18:06:18Z	PASS	45	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cognito-lambda-triggers	2026-11-04T18:05:31Z	PASS	60	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
-cognito-resource-server	2026-10-16T08:15:12Z	PASS	96	verify.sh	rc ok, orph clean (#3341 slice 4995)
+cognito-resource-server	2026-11-04T19:35:08Z	PASS	85	verify.sh	rc ok, orph clean
 cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
 composite-stack	2026-11-04T05:26:26Z	PASS	54	standard	batch 3 (rc=0, destroy 17 deleted 0 errors); account clean
 conditions	2026-10-18T11:16:06Z	PASS	35	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
 conditions-update-2	2026-10-21T08:34:51Z	PASS	99	verify.sh	rc ok, orph clean, PR #5146
-context-test	2026-10-17T13:23:24Z	PASS	30	standard	PR #5029 head dd1a5504a; rc ok, orph clean
+context-test	2026-11-04T20:19:14Z	PASS	22	standard	deploy+destroy rc ok, orph clean
 created-before-failure-revert	2026-10-29T20:43:22Z	PASS	181	verify.sh	PR #5535 PASS at 53787485b (fixture unchanged since); not re-run at dd4c69bb9
 cross-backend-same-stack	2026-10-25T00:07:44Z	PASS	306	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 cross-backend-same-stack-migration	2026-11-04T10:52:56Z	PASS	241	verify.sh	#5760 arm (c)3 rewritten; rc 0, destroy clean, orph clean
@@ -89,7 +89,7 @@ data-analytics	2026-11-04T09:28:41Z	PASS	90	verify.sh	rc 0, own bucket, orph cle
 data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-10-25T15:51:57Z	PASS	81	verify.sh	rc ok, orph clean; AccountId-revert probe FAILed at B2
 deletion-ordering-complex	2026-11-04T09:28:41Z	PASS	191	verify.sh	rc 0, own bucket, orph clean (fixture rebuilt dist itself)
-deletion-policy-retain	2026-10-17T07:24:50Z	PASS	40	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
+deletion-policy-retain	2026-11-04T20:19:14Z	PASS	27	verify.sh	rc ok, orph clean
 deletion-policy-snapshot	2026-10-25T00:07:44Z	PASS	245	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 deletion-policy-snapshot-heavy	2026-10-25T00:07:44Z	PASS	812	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 deployment-events	2026-11-04T18:01:46Z	PASS	36	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
@@ -104,9 +104,9 @@ docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @7
 docdb-global-cluster	2026-11-02T14:05:08Z	PASS	241	verify.sh	rc 0, destroy 0 errors, 0 orphans, detach lines seen (create/update/change refused/removal/re-add refused/destroy)
 docdb-neptune	2026-11-03T00:01:22Z	PASS	5990	verify.sh	rc ok, destroy 0 errors, 0 orphans (#5682 step 3g kept-dependency lines)
 docdb-restore	2026-11-03T02:25:22Z	PASS	387	verify.sh	rc 0, destroy 0 errors, 0 orphans; snapshot+PITR restore on sdk route
-docker-image-asset	2026-10-17T13:23:24Z	PASS	90	verify.sh	PR #5029 head dd1a5504a; rc ok, orph clean
+docker-image-asset	2026-11-04T20:19:14Z	PASS	75	verify.sh	rc ok, orph clean (no new ECR image pushed)
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
-drift-revert-arrays	2026-10-16T18:55:45Z	PASS	221	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
+drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
 drift-revert-vpc	2026-10-24T05:58:14Z	PASS	366	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); 22 deleted 0 errors, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-10-18T05:07:43Z	PASS	279	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
@@ -157,7 +157,7 @@ eventbus-policy	2026-10-25T00:07:44Z	PASS	60	verify.sh	rc 0, destroy 0 errors, o
 eventsourcemapping-race	2026-10-20T05:07:15Z	PASS	70	verify.sh	rc ok, orph clean; #5105
 export	2026-10-24T06:38:32Z	PASS	226	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); CFn stack deleted, orph clean
 export-nested-stack	2026-10-20T04:25:11Z	PASS	195	verify.sh	deploy+destroy clean, 0 orphans
-fallback-recreate-children	2026-10-17T05:11:06Z	PASS	115	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
+fallback-recreate-children	2026-11-04T20:04:01Z	PASS	100	verify.sh	rc ok, orph clean
 fifo-sqs-event-source	2026-11-04T10:39:18Z	PASS	180	verify.sh	rc ok, orph clean, Phase 1c #5749 OK
 firehose-iceberg-destination	2026-11-03T06:45:16Z	PASS	151	verify.sh	PR #5694; us-east-1; rc=0, destroy 0 errors, 0 orphans
 firehose-msk-source	2026-11-02T19:24:26Z	PASS	588	verify.sh	rc ok, destroy 9 deleted 0 errors, orph clean
@@ -170,7 +170,7 @@ gc-custom-asset-names	2026-11-04T07:51:26Z	PASS	163	verify.sh	rc ok, orph clean;
 generated-name-lifecycle	2026-10-20T19:58:09Z	PASS	1040	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
 generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+destroy clean, 0 orphans
 getatt-fallback-guard	2026-10-18T04:25:39Z	PASS	172	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-getstackoutput-crossregion	2026-10-18T00:55:44Z	PASS	456	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
+getstackoutput-crossregion	2026-11-04T20:19:14Z	PASS	342	verify.sh	re-run after Phase 6a v12+ lower-bound fix: 6a and all later phases pass; rc ok, orph clean us-east-1+us-west-2
 globaltable-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	165	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, destroy 0 errors, 0 orphans
 glue-securityconfig-replace	2026-10-30T00:18:42Z	PASS	60	verify.sh	rc ok, orph clean
 glue-update-hardening	2026-10-26T08:45:57Z	PASS	281	verify.sh	rc ok, orph clean
@@ -194,12 +194,12 @@ import-attribute-readback-network	2026-11-04T09:00:37Z	PASS	320	verify.sh	batch 
 import-attributes	2026-11-04T06:21:47Z	PASS	45	verify.sh	batch 7; rc ok, orph clean
 import-auto-mode	2026-11-04T07:51:26Z	PASS	87	verify.sh	rc ok, orph clean (#4607 PR #4608)
 import-deployed-parameter-secret	2026-10-18T05:20:41Z	PASS	377	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-import-heal-prefix-record	2026-10-18T00:55:44Z	PASS	155	verify.sh	rc ok, orph clean (resolver-core refactor #5038)
+import-heal-prefix-record	2026-11-04T20:04:01Z	PASS	170	verify.sh	rc ok, orph clean
 import-lambda-url-attributes	2026-11-04T06:43:31Z	PASS	115	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
 import-migrate-vpc	2026-10-19T00:17:40Z	PASS	356	verify.sh	rc ok, orph clean (#5077)
 import-nested-stack	2026-10-20T04:27:51Z	PASS	155	verify.sh	deploy+destroy clean, 0 orphans
-import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clean (NoEchoRunState refactor #5022)
+import-noecho-parameter	2026-11-04T20:04:01Z	PASS	126	verify.sh	rc ok, orph clean
 import-reimport-masked-attrs	2026-10-18T05:25:05Z	PASS	246	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-retain-destroy	2026-11-04T08:44:47Z	PASS	140	verify.sh	rc 0, destroy clean, retained Kept param removed by fixture, orph clean (own state bucket)
 import-secret-observed	2026-10-18T05:14:02Z	PASS	150	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
@@ -301,12 +301,12 @@ nested-stack-secret	2026-10-18T13:32:15Z	PASS	360	verify.sh	PR #5052 (stage2 Red
 nlb-quic-server-id	2026-10-27T14:28:12Z	PASS	236	verify.sh	rc ok, orph clean; probes red at Phase1 create and Phase2 order
 nlb-source-nat	2026-11-04T18:46:30Z	PASS	341	verify.sh	rc ok, destroy 0 errors, orph clean; own state bucket
 nodejs-function	2026-11-04T05:36:33Z	PASS	79	verify.sh	batch 4; rc ok, 0 orph
-noecho-named-producer	2026-10-17T02:35:06Z	PASS	120	verify.sh	rc ok, orph clean (SecretsRunState refactor #5023)
+noecho-named-producer	2026-11-04T19:47:52Z	PASS	105	verify.sh	rc ok, orph clean
 noecho-parameter-masking	2026-10-24T15:38:28Z	PASS	1283	verify.sh	PR #5265 (#2319) c10ed412; destroy 0 errors, orph clean, own ephemeral bucket swept; pre-fix probe FAILed at the Phase 2 class-only persisted-event arm
 opensearch-domain-getatt	2026-11-04T07:36:26Z	PASS	1744	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 orphan-getatt-takeover	2026-10-18T05:38:03Z	PASS	82	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 orphan-resource	2026-11-04T05:17:34Z	PASS	99	standard	manual README flow (no verify.sh): deploy, orphan, state/bucket survive, import, destroy 0 errors; orph clean
-output-never-resolved-diff	2026-10-16T21:07:57Z	PASS	186	verify.sh	rc ok, orph clean (OutputsRunState refactor #5021)
+output-never-resolved-diff	2026-11-04T19:47:52Z	PASS	161	verify.sh	rc ok, orph clean
 outputs-only-export	2026-10-18T13:38:55Z	PASS	130	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; rc 0, all 13 checks passed, destroy 0 errors
 parameters	2026-11-04T05:01:38Z	PASS	38	standard	deploy+destroy 0 errors, orph clean
 partial-create-handback	2026-10-20T06:23:43Z	PASS	430	verify.sh	deploy+destroy clean, 0 orphans
@@ -319,12 +319,12 @@ rds-aurora	2026-11-04T08:34:01Z	PASS	3537	verify.sh	rc ok, orph clean
 rds-dbinstance-backfill	2026-11-04T08:34:01Z	PASS	2044	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
-recreate-mixed-direction	2026-10-17T05:11:06Z	PASS	130	verify.sh	rc ok, orph clean (ReplacementRunState refactor #5024)
+recreate-mixed-direction	2026-11-04T19:47:52Z	PASS	100	verify.sh	rc ok, orph clean
 recreate-nested-logical-id-collision	2026-10-16T16:59:47Z	PASS	150	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
 recreate-parent-child-permission	2026-10-24T14:12:33Z	PASS	90	verify.sh	rc ok, orph clean
 recreate-target-readers	2026-11-04T06:43:31Z	PASS	75	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 recreate-via-cc-api	2026-11-03T14:15:44Z	PASS	146	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
-recreate-via-sdk-provider	2026-10-17T13:29:07Z	PASS	106	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
+recreate-via-sdk-provider	2026-11-04T19:47:52Z	PASS	85	verify.sh	rc ok, orph clean
 redacted-delete-address	2026-10-18T18:32:28Z	PASS	91	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
 redshift-cluster-getatt	2026-11-04T07:36:26Z	PASS	301	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 refactor-command	2026-10-23T23:41:04Z	PASS	115	verify.sh	rc ok, orph clean; re-run on 4a1466a76 (hint only pairs refactor would plan): ambiguous topics show no hint, table/queue still do (#5232)
@@ -343,8 +343,8 @@ retain-orphan-redeploy	2026-10-20T09:30:01Z	PASS	298	verify.sh	#5064 head re-run
 retain-orphan-secret	2026-10-20T06:27:45Z	PASS	100	verify.sh	deploy+destroy clean, 0 orphans
 rollback-command	2026-10-29T20:43:22Z	PASS	824	verify.sh	PR #5535 PASS at 53787485b (fixture unchanged since); not re-run at dd4c69bb9
 rollback-cross-region-secret	2026-10-18T04:35:14Z	PASS	372	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean; first attempt hit the known pnpm/mise-shim env issue (5s rc=1), passed clean on retry with a scratch PATH shim
-rollback-deletion-policy-snapshot	2026-10-17T10:48:50Z	PASS	145	verify.sh	rc ok, orph clean (rollback refactor #5027)
-rollback-explicit-name-rewrite	2026-10-17T10:48:50Z	PASS	216	verify.sh	rc ok, orph clean (rollback refactor #5027)
+rollback-deletion-policy-snapshot	2026-11-04T20:04:01Z	PASS	120	verify.sh	re-run after verify.sh state check switched to jq .resources|has(VolumeSnap); retiredNameGenerations names VolumeSnap (#5064), resources empty; orph clean
+rollback-explicit-name-rewrite	2026-11-04T19:35:08Z	PASS	180	verify.sh	rc ok, orph clean
 rollback-failure-injection	2026-10-29T20:43:22Z	PASS	364	verify.sh	PR #5535 PASS at 53787485b (fixture unchanged since); not re-run at dd4c69bb9
 rollback-nested-cross-region-secret	2026-10-18T20:07:28Z	PASS	537	verify.sh	PR #5062 f0655a21a7; rc ok, orph clean both regions (us-east-1 + us-west-2)
 rollback-replacement-retain	2026-10-29T20:43:22Z	PASS	72	verify.sh	PR #5535 PASS at 53787485b (fixture unchanged since); not re-run at dd4c69bb9
@@ -376,7 +376,7 @@ schema-v5-to-v6-migration	2026-11-04T05:36:33Z	PASS	52	verify.sh	batch 4; transp
 schema-v6-to-v7-migration	2026-11-04T05:36:33Z	PASS	59	verify.sh	batch 4; transparent auto-upgrade verified, own state bucket, 0 err 0 orph
 schema-v7-to-v8-migration	2026-11-04T05:01:38Z	PASS	135	verify.sh	rc ok, orph clean; current-binary phase asserts derived version 15 (#5733)
 schema-v8-to-v9-migration	2026-11-04T05:01:38Z	PASS	165	verify.sh	rc ok, orph clean; derived-version assert (#5733); own state bucket
-schema-v9-to-v10-migration	2026-10-16T18:55:45Z	PASS	185	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
+schema-v9-to-v10-migration	2026-11-04T19:35:08Z	PASS	140	verify.sh	rc ok, orph clean
 scrub-nested-child	2026-10-18T13:42:37Z	PASS	210	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
 sdk-ccapi-crossref	2026-10-18T14:34:21Z	PASS	110	verify.sh	rc ok, orph clean; #5044 EventBus provider re-run
 sdk-to-cc-autoroute	2026-11-03T14:15:44Z	PASS	201	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
@@ -418,7 +418,7 @@ throttle-wide-dag	2026-10-24T11:08:27Z	PASS	311	verify.sh	rc ok, orph clean
 type-change-replacement	2026-10-20T19:58:09Z	PASS	210	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
 update-policy-mutations	2026-11-04T08:15:09Z	PASS	70	verify.sh	rc ok, orph clean
-update-replace	2026-10-17T13:29:07Z	PASS	86	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
+update-replace	2026-11-04T19:35:08Z	PASS	70	verify.sh	rc ok, orph clean
 vpc-lambda	2026-10-25T16:18:19Z	PASS	831	standard	us-east-1; rerun on formatting-only head f4b9115ab (#5276); destroy 16 deleted 0 errors; rc ok, orph clean, no Gave up warning
 vpc-lambda-cr-race	2026-10-25T15:55:05Z	PASS	326	standard	us-east-1; final build 8c364cddb (#5276); 21 deleted 0 errors, orph clean, no Gave up warning
 vpc-lookup	2026-11-04T05:36:33Z	PASS	34	standard	batch 4; context-provider loop ok, 0 err 0 orph
