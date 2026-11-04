@@ -277,10 +277,20 @@ else
   STATE_JSON=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)
   # The resource map only: a rolled-back CREATE also retires its name
   # generation under the same logical id (`retiredNameGenerations`, #5064).
-  if [ "$(jq -r '.resources | has("VolumeSnap")' <<<"${STATE_JSON}")" != "false" ]; then
-    echo "FAIL: VolumeSnap is still recorded in cdkd state after the rollback" >&2
-    exit 1
-  fi
+  # A state with no resource map must not read as "gone" (jq 1.8 answers
+  # `has` on null with false).
+  HAS_SNAP="$(jq -r '.resources | if type == "object" then has("VolumeSnap") else "unreadable" end' <<<"${STATE_JSON}" 2>/dev/null || true)"
+  case "${HAS_SNAP}" in
+    false) ;;
+    true)
+      echo "FAIL: VolumeSnap is still recorded in cdkd state after the rollback" >&2
+      exit 1
+      ;;
+    *)
+      echo "FAIL: the kept state has no readable resource map ('${HAS_SNAP}')" >&2
+      exit 1
+      ;;
+  esac
   echo "    state file kept for the failed resource; VolumeSnap record removed"
 fi
 

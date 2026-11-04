@@ -37,7 +37,7 @@
 #   5d. `cdkd scrub --dry-run --fail`: no refusal, nothing to scrub.
 #   5e. Rotate the main secret, edit the reader: it still holds the ARN of the
 #       queue AWS has (the version the queue's record holds).
-#   6.  CdkdGsoConsumerPre under v12: the migration deploy captures the
+#   6.  CdkdGsoConsumerPre under v12+: the migration deploy captures the
 #       provenance (region + version; region only for the rotated queue),
 #       then the readers: the unrotated queue's ARN is served; the rotated
 #       one is served as recorded with the generation warning, never from
@@ -530,7 +530,7 @@ if aws sqs get-queue-url --queue-name "cdkd-gso-4847-west-b-${SUFFIX}" --region 
 fi
 
 # --- Phase 6 (go-to-k/cdkd#4847): a consumer deployed before the upgrade ----
-echo "==> Phase 6a: the first v12 deploy of ${PRE_STACK} (the one-time capture)"
+echo "==> Phase 6a: the first v12+ deploy of ${PRE_STACK} (the one-time capture)"
 node "${LOCAL_DIST}" deploy "${PRE_STACK}" "${CTX[@]}" \
   --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
   || fail "6a: the migration deploy of ${PRE_STACK} failed"
