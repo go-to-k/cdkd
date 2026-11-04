@@ -4,6 +4,14 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+
+/**
+ * The bucket {@link S3EventNotificationConsumerStack} imports by name. Its own
+ * stack declares no notification on it (go-to-k/cdkd#5741).
+ */
+export const sharedBucketName = (): string =>
+  `cdkd-s3evt-shared-${cdk.Aws.ACCOUNT_ID}-${cdk.Aws.REGION}`;
 
 /**
  * S3 -> Lambda event notification stack.
@@ -70,7 +78,39 @@ export class S3EventNotificationStack extends cdk.Stack {
     });
     bucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(fn));
 
+    // go-to-k/cdkd#5741: a bucket with NO notification in this stack. The
+    // consumer stack adds one through `fromBucketName(...)`, so this stack's
+    // state holds no Custom::S3BucketNotifications naming it. `versioned`
+    // gives verify.sh a declared key to drift and revert.
+    new s3.Bucket(this, 'SharedBucket', {
+      bucketName: sharedBucketName(),
+      versioned: true,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     new cdk.CfnOutput(this, 'BucketName', { value: bucket.bucketName });
     new cdk.CfnOutput(this, 'TableName', { value: table.tableName });
+  }
+}
+
+/**
+ * The cross-stack `Bucket.fromBucketName(...).addEventNotification(...)`
+ * pattern (go-to-k/cdkd#5741): the Custom::S3BucketNotifications resource lives
+ * HERE, with `Managed: false`, and merges an SQS notification into the shared
+ * bucket that {@link S3EventNotificationStack} owns. Deployed after, and
+ * destroyed before, that stack.
+ */
+export class S3EventNotificationConsumerStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const queue = new sqs.Queue(this, 'Queue', {
+      queueName: 'cdkd-s3evt-consumer-q',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    s3.Bucket.fromBucketName(this, 'Shared', sharedBucketName()).addEventNotification(
+      s3.EventType.OBJECT_REMOVED,
+      new s3n.SqsDestination(queue)
+    );
   }
 }

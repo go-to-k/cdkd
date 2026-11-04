@@ -7980,6 +7980,7 @@
         "rollback-sqs-cooldown",
         "route53",
         "s3-analytics-inventory",
+        "s3-event-notification",
         "s3-lifecycle",
         "scheduler-custom-group",
         "schema-v11-to-v12-migration",
@@ -8195,6 +8196,9 @@
         ],
         "s3-analytics-inventory": [
           "l1"
+        ],
+        "s3-event-notification": [
+          "l2"
         ],
         "s3-lifecycle": [
           "l1"
