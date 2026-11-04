@@ -51,9 +51,10 @@ verify, clean up.
    header needs absent or present, passed via `AWS_REGION` or the header's
    region variable. A fixture that runs `cdkd gc` runs ALONE, after the set:
    gc refuses while ANY stack holds a lock, its batch-mates' included. So does
-   `custom-resource-provider` beside another custom-resource fixture: its Arm D
-   needs ITS deploy to add the state bucket's lifecycle rule, and a batch-mate's
-   deploy adds it first (go-to-k/cdkd#5752). Every
+   `custom-resource-provider`: its Arm D needs ITS deploy to add the state
+   bucket's lifecycle rule, which any batch-mate invoking a Lambda-backed
+   custom resource (`autoDeleteObjects`, `BucketDeployment`, `AwsCustomResource`
+   included) adds first (go-to-k/cdkd#5752). Every
    resource-scan `--region`, `AWS_REGION` and synth/deploy/destroy `--region`
    in steps 4-7 then uses the fixture's region. Synth first (for the stack name and
    resource types), then scan:
