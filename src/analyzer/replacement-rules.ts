@@ -84,6 +84,35 @@ export function instanceSecurityGroupIdsChangeReplaces(
 }
 
 /**
+ * Conditional-replacement predicate for `AWS::EC2::Instance.Tenancy` (issue
+ * [#5630](https://github.com/go-to-k/cdkd/issues/5630)). MEASURED against
+ * CloudFormation (us-east-1, 2026-11-04, a t3.nano; change sets say
+ * `Replacement: Conditional`): removing a declared `default` and adding
+ * `default` to an instance without it both create a new instance.
+ *
+ * - A RECORDED value changed to or from `default` (a removal included)
+ *   replaces, as CloudFormation does.
+ * - A change between two non-default values (`dedicated` <-> `host`) is NOT
+ *   measured (it needs a Dedicated Host): CloudFormation may apply it in place
+ *   with ModifyInstancePlacement on a stopped instance. It does not replace
+ *   here, and `EC2Provider` refuses it before any call rather than guess.
+ * - A value the RECORD lacks does not replace: a record written by an earlier
+ *   cdkd under `--prefer-sdk-route` dropped a declared Tenancy (it was
+ *   SDK-unwired), so the template's value may be what AWS already holds.
+ *   `EC2Provider` reads the live tenancy and refuses (`cdkd deploy --replace`
+ *   opts in) only when it differs.
+ */
+export function instanceTenancyChangeReplaces(oldValue: unknown, newValue: unknown): boolean {
+  if (oldValue == null) return false;
+  if (newValue == null) return true;
+  const text = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify(v));
+  const before = text(oldValue);
+  const after = text(newValue);
+  if (before === after) return false;
+  return before === 'default' || after === 'default';
+}
+
+/**
  * Conditional-replacement predicate for
  * `AWS::EC2::Instance.BlockDeviceMappings` (issue
  * [#5446](https://github.com/go-to-k/cdkd/issues/5446)). MEASURED against
@@ -1379,6 +1408,12 @@ export class ReplacementRulesRegistry {
         // no ENI-modification path -- an in-place classification would leave
         // state recording the new value while AWS keeps the old one.
         'NetworkInterfaces',
+        // go-to-k/cdkd#5630: createOnly per the CFn schema, listed here too so
+        // a failed DescribeType still classifies them.
+        'CpuOptions',
+        'HibernationOptions',
+        'PlacementGroupName',
+        'PrivateIpAddress',
       ]),
       // Issue #5446: InstanceType / UserData (a stop-modify-start),
       // IamInstanceProfile and, with a SubnetId, SecurityGroupIds update in
@@ -1386,6 +1421,9 @@ export class ReplacementRulesRegistry {
       conditionalReplacements: new Map<string, ConditionalReplacement>([
         ['SecurityGroupIds', instanceSecurityGroupIdsChangeReplaces],
         ['BlockDeviceMappings', instanceBlockDeviceMappingsChangeReplaces],
+        // go-to-k/cdkd#5630: the schema leaves Tenancy mutable; see the
+        // predicate for which changes replace.
+        ['Tenancy', instanceTenancyChangeReplaces],
       ]),
     });
 

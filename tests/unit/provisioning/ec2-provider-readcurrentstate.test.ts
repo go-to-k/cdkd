@@ -2343,13 +2343,17 @@ describe('EC2Provider.readCurrentState', () => {
       expect(provider.getDriftUnknownPaths('AWS::EC2::VPC')).toEqual(['Ipv4IpamPoolId']);
     });
 
-    it('Instance declares only NetworkInterfaces unreadable (issue #1281)', () => {
+    it('Instance declares only NetworkInterfaces (issue #1281) and PropagateTagsToVolumeOnCreation (#5630) unreadable', () => {
       // AssociatePublicIpAddress is launch-time-only input DescribeInstances
       // never returns, and the drift comparator compares arrays wholesale --
       // any reconstruction would phantom-drift every associatePublicIpAddress
-      // template. Everything else the Instance reverse-mapper emits IS
-      // faithful, so the list stays exactly this one entry.
-      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance')).toEqual(['NetworkInterfaces']);
+      // template. PropagateTagsToVolumeOnCreation is a CloudFormation-side
+      // switch with no EC2 attribute. Everything else the Instance
+      // reverse-mapper emits IS faithful, so the list stays exactly these two.
+      expect(provider.getDriftUnknownPaths('AWS::EC2::Instance')).toEqual([
+        'NetworkInterfaces',
+        'PropagateTagsToVolumeOnCreation',
+      ]);
     });
   });
 });

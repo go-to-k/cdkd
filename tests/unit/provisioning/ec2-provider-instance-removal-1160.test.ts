@@ -70,8 +70,13 @@ describe('EC2Provider AWS::EC2::Instance property removal (#1160)', () => {
     return warn.mock.calls.filter((c) => String(c[0]).includes('DisableApiTermination'));
   }
 
-  it('declares Monitoring -> false as the Instance removal default', () => {
-    expect(provider.removalDefaults.get(TYPE)).toEqual(new Map([['Monitoring', false]]));
+  it('declares Monitoring -> false (and SourceDestCheck -> true, #5630) as the Instance removal defaults', () => {
+    expect(provider.removalDefaults.get(TYPE)).toEqual(
+      new Map<string, unknown>([
+        ['Monitoring', false],
+        ['SourceDestCheck', true],
+      ])
+    );
   });
 
   it('a removed Monitoring that was on calls UnmonitorInstances (direct call)', async () => {

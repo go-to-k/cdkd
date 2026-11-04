@@ -122,7 +122,7 @@ dynamodb-stream-filter	2026-10-03T04:27:52Z	PASS	73	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
-ec2-instance	2026-11-03T18:37:59Z	PASS	291	verify.sh	PR #5719 0932f5dee rc 0, probe red pre-fix; #5630 drift check OK, orph clean
+ec2-instance	2026-11-04T03:59:03Z	PASS	341	verify.sh	PR #5730 08d5ce75b rc 0, orph clean
 ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
