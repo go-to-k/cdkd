@@ -43,8 +43,16 @@ cdkd local run-task MyStack/TaskDef --from-state
 cdkd local run-task MyStack/TaskDef --from-cfn-stack
 ```
 
-Without either flag, a reference to a same-stack repository fails with an
-error that names the two flags.
+To run a local build instead, without deploying, pass `--image-override`
+with a Dockerfile; the repository then needs no state at all:
+
+```bash
+cdkd local run-task MyStack/TaskDef --image-override MyStack/TaskDef=./Dockerfile
+```
+
+Without a state flag or an override, a reference to a same-stack repository
+fails before any container starts, with an error that names the two flags
+and `--image-override`.
 
 ## Which registry hosts are treated as ECR
 

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vite-plus/test';
 import {
+  assertEcsTaskImagesResolvable,
   derivePartitionAndUrlSuffix,
   detectEcsImageResolutionNeeds,
   EcsTaskResolutionError,
@@ -634,7 +635,9 @@ describe('resolveEcsTaskTarget', () => {
     });
   });
 
-  it('hard-errors with --from-state hint when Fn::Sub references a same-stack ECR Repo and no state was provided', () => {
+  // go-to-k/cdkd#5768: returned as a `same-stack-ecr` pin `--image-override`
+  // can cover, refused by `assertEcsTaskImagesResolvable` when nothing does.
+  it('resolves a Fn::Sub same-stack ECR Repo with no state to a same-stack-ecr pin the assertion refuses', () => {
     const stack = buildStack('S1', {
       MyRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
       TD: makeTaskDef({
@@ -644,16 +647,23 @@ describe('resolveEcsTaskTarget', () => {
       }),
     });
     // Tier 1 only — substitutes pseudo parameters but leaves `${MyRepo}` for state.
+    const task = resolveEcsTaskTarget('TD', [stack], {
+      pseudoParameters: {
+        accountId: '123456789012',
+        region: 'us-east-1',
+        partition: 'aws',
+        urlSuffix: 'amazonaws.com',
+      },
+    });
+    const image = task.containers[0]!.image;
+    expect(image).toMatchObject({ kind: 'same-stack-ecr', repoLogicalId: 'MyRepo' });
+    expect(() => assertEcsTaskImagesResolvable(task)).toThrow(
+      /references same-stack ECR repository 'MyRepo'\. .*--from-state.*or pass --image-override to build it from a local Dockerfile\./
+    );
+    // Covered by an override: no refusal.
     expect(() =>
-      resolveEcsTaskTarget('TD', [stack], {
-        pseudoParameters: {
-          accountId: '123456789012',
-          region: 'us-east-1',
-          partition: 'aws',
-          urlSuffix: 'amazonaws.com',
-        },
-      })
-    ).toThrow(/--from-state/);
+      assertEcsTaskImagesResolvable(task, new Map([[task.containers[0]!.name, 'tag']]))
+    ).not.toThrow();
   });
 
   it('resolves Fn::Sub with same-stack ECR Repo Ref via Tier 2 state', () => {
@@ -932,21 +942,38 @@ describe('resolveEcsTaskTarget', () => {
       }
     });
 
-    it('hard-errors with a --from-state hint when state is missing', () => {
+    it('resolves to a same-stack-ecr pin (via Fn::Join) the assertion refuses when state is missing', () => {
       const stack = buildStack('S1', {
         MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
         TD: makeTaskDef({ image: makeFromEcrRepositoryJoin('MyEcrRepo') }),
       });
-      expect(() =>
-        resolveEcsTaskTarget('TD', [stack], {
-          pseudoParameters: {
-            accountId: '123456789012',
-            region: 'us-east-1',
-            partition: 'aws',
-            urlSuffix: 'amazonaws.com',
-          },
-        })
-      ).toThrow(/--from-state/);
+      const task = resolveEcsTaskTarget('TD', [stack], {
+        pseudoParameters: {
+          accountId: '123456789012',
+          region: 'us-east-1',
+          partition: 'aws',
+          urlSuffix: 'amazonaws.com',
+        },
+      });
+      expect(task.containers[0]!.image).toMatchObject({
+        kind: 'same-stack-ecr',
+        repoLogicalId: 'MyEcrRepo',
+      });
+      expect(() => assertEcsTaskImagesResolvable(task)).toThrow(
+        /references same-stack ECR repository 'MyEcrRepo' via Fn::Join\. .*--from-state/
+      );
+    });
+
+    it('resolves a RepositoryUri GetAtt with no state to a same-stack-ecr pin', () => {
+      const stack = buildStack('S1', {
+        MyEcrRepo: { Type: 'AWS::ECR::Repository', Properties: {} },
+        TD: makeTaskDef({ image: { 'Fn::GetAtt': ['MyEcrRepo', 'RepositoryUri'] } }),
+      });
+      const task = resolveEcsTaskTarget('TD', [stack]);
+      expect(task.containers[0]!.image).toMatchObject({
+        kind: 'same-stack-ecr',
+        repoLogicalId: 'MyEcrRepo',
+      });
     });
 
     it('synthesizes the ECR image URI from the physical name + pseudo parameters when state lacks the Repository Arn attribute', () => {

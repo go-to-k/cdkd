@@ -80,6 +80,13 @@ Docker is required. The first run also pulls the ECS metadata sidecar image,
 | `--platform <platform>` | from `RuntimePlatform.CpuArchitecture` | Force `linux/amd64` or `linux/arm64`. |
 | `--no-pull` | off | Skip `docker pull` for every container image and the sidecar. |
 | `--ecr-role-arn <arn>` | — | Role to assume before authenticating to ECR, for another account's registry. No effect with `--no-pull`. |
+| `--image-override <task=dockerfile or dockerfile...>` | — | Build the task's image from a local Dockerfile instead. |
+| `--image-build-arg <KEY=VAL...>` | — | `docker build --build-arg` for the override build. |
+| `--image-build-secret <id=src...>` | — | `docker build --secret` for the override build. |
+| `--image-target <stage or task=stage...>` | — | `docker build --target` for the override build. |
+| `--image-context <dir or task=dir...>` | the Dockerfile's directory | `docker build` context for the override build. |
+| `--no-interactive-overrides` | off | Do not prompt for a Dockerfile at startup. |
+| `--strict-overrides` | off | Refuse to start while the task still runs a registry image. |
 
 The command also accepts every
 [common flag](local-emulation.md#common-flags). Three of them behave in a
@@ -241,9 +248,37 @@ assume a role in the target account.
 
 An image from `ContainerImage.fromEcrRepository(repo)`, where `repo` is in
 the same stack, needs `--from-state` or `--from-cfn-stack` so that cdkd can
-find the deployed repository's name.
+find the deployed repository's name, or `--image-override` to build it
+locally instead.
 [Images in cdkd local run-task](local-run-task-images.md) covers that case,
 which registry hosts count as ECR, and how an asset image is recognized.
+
+### Building the image from a local Dockerfile
+
+A registry image (ECR or public) runs the bytes that were pushed, so local
+source edits never reach the container. `--image-override` builds the task's
+image from a Dockerfile in your working copy instead, and runs that:
+
+```bash
+# the task's essential container, from a local Dockerfile
+cdkd local run-task MyStack/TaskDef --from-state \
+  --image-override MyStack/TaskDef=./web/Dockerfile
+
+# a monorepo: the Dockerfile sits below the build context it needs
+cdkd local run-task MyStack/TaskDef \
+  --image-override TaskDef=apps/web/Dockerfile --image-context TaskDef=.
+```
+
+The override replaces the image of the task's essential container (the first
+one, when none is marked essential). The key before `=` is the target you
+passed, the task definition's logical id, `Stack:LogicalId`, or its construct
+id. In a terminal, cdkd asks for a Dockerfile at startup whenever the task's
+image is a registry image, and a bare `--image-override <dockerfile>` asks
+which task it is for; `--no-interactive-overrides` turns both questions off. The other flags work as in
+[Image overrides for local ECS services](local-start-service-image-overrides.md).
+
+When the image stays a registry image, cdkd warns that local edits will not
+take effect; `--strict-overrides` makes that an error.
 
 ## Environment variables and secrets
 

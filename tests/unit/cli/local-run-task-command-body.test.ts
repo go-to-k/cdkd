@@ -107,7 +107,8 @@ vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => ({
     stack: { stackName: 'CdkdUnitStack', region: 'us-east-1' },
     taskDefinitionLogicalId: 'TaskDef',
     family: 'cdkd-unit-family',
-    containers: [{ name: 'app' }],
+    // A local CDK asset image: `--image-override` has nothing pinned to cover.
+    containers: [{ name: 'app', image: { kind: 'cdk-asset' } }],
     taskRoleArn: undefined,
   }),
   detectEcsImageResolutionNeeds: vi.fn().mockReturnValue({ needsCrossStackResolver: false }),

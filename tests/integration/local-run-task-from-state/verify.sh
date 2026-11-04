@@ -138,6 +138,17 @@ PULL_DOCKER_CONFIG=""
 # busybox that prints and EXITS, so by teardown time it is already `Exited` and
 # a running-only `docker ps` never lists it — it survived every run until the
 # issue 2183 pre-merge integs caught it twice in a row.
+# Issue #5768: the image step 10b's --image-override builds. The tag is
+# `cdkd-local-override-<first 24 chars of the slugged target>-<hash>:local`, so
+# this prefix names this fixture's build only, whatever the hash.
+OVERRIDE_IMAGE_PREFIX="cdkd-local-override-cdkdlocalruntaskfromstat-"
+sweep_override_images() {
+  ( set +eu
+    docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${OVERRIDE_IMAGE_PREFIX}" \
+      | xargs -r docker rmi -f >/dev/null 2>&1
+    true )
+}
+
 cleanup() {
   rc=$?
   set +e
@@ -146,6 +157,8 @@ cleanup() {
   # Sweep local docker containers + networks first (cheap, low-risk).
   docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+  # Issue #5768: step 10b's --image-override build, also when its run failed.
+  sweep_override_images
   if [ -n "${PULL_DOCKER_CONFIG}" ]; then
     rm -rf "${PULL_DOCKER_CONFIG}"
   fi
@@ -768,8 +781,76 @@ docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm
 docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
 echo "[verify]   the container ran as the task role through the sidecar's /creds route"
 
+# ---------------------------------------------------------------------------
+# Issue #5768: `--image-override` on `cdkd local run-task`. Without a state
+# source, NginxTaskDefL2's image (ContainerImage.fromEcrRepository on the
+# same-stack MyRepo) has no URI to pull.
+#   10a: uncovered, the run REFUSES before any container or network exists,
+#        naming the repository and --image-override.
+#   10b: covered by --image-override + --image-context, the task RUNS a local
+#        build whose COPY reaches outside the Dockerfile's directory, and
+#        serves the marker the build baked in.
+# Before the fix 10a's message did not name --image-override and 10b failed
+# on `unknown option '--image-override'`.
+# ---------------------------------------------------------------------------
+echo "[verify] step 10a: an uncovered same-stack ECR image refuses before boot (#5768)"
+set +e
+UNCOVERED_OUT="$(${CDKD} local run-task "${TASK_PATH_JOIN}" \
+  --no-pull \
+  --no-interactive-overrides \
+  --container-host 127.0.0.1 2>&1)"
+UNCOVERED_RC=$?
+set -e
+echo "${UNCOVERED_OUT}" | tail -3
+if [ "${UNCOVERED_RC}" -eq 0 ]; then
+  echo "[verify] FAIL: run-task with an uncovered same-stack ECR image exited 0"
+  exit 1
+fi
+for needle in "references same-stack ECR repository 'MyRepo' via Fn::Join" \
+  "or pass --image-override to build it from a local Dockerfile"; do
+  if ! grep -qF -- "${needle}" <<<"${UNCOVERED_OUT}"; then
+    echo "[verify] FAIL: the refusal did not carry '${needle}'"
+    exit 1
+  fi
+done
+UNCOVERED_LEFTOVER=$(docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | wc -l | tr -d ' ')
+UNCOVERED_NET_LEFTOVER=$(docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | wc -l | tr -d ' ')
+if [[ "${UNCOVERED_LEFTOVER}" -ne 0 || "${UNCOVERED_NET_LEFTOVER}" -ne 0 ]]; then
+  echo "[verify] FAIL: ${UNCOVERED_LEFTOVER} container(s) / ${UNCOVERED_NET_LEFTOVER} network(s) left after the refusal"
+  exit 1
+fi
+echo "[verify]   refused before boot, naming the repository and --image-override"
+
+echo "[verify] step 10b: --image-override + --image-context build and run it locally (#5768)"
+OVERRIDE_APP="${TEST_DIR}/override-app"
+OVERRIDE_MARKER="$(tr -d '\n' <"${OVERRIDE_APP}/shared/index.html")"
+[ -n "${OVERRIDE_MARKER}" ] || { echo "[verify] FAIL: override-app/shared/index.html is empty"; exit 1; }
+${CDKD} local run-task "${TASK_PATH_JOIN}" \
+  --detach \
+  --no-pull \
+  --no-interactive-overrides \
+  --container-host 127.0.0.1 \
+  --image-override "${TASK_PATH_JOIN}=${OVERRIDE_APP}/apps/web/Dockerfile" \
+  --image-context "${OVERRIDE_APP}"
+sleep 5
+OVERRIDE_BODY="$(curl -s "http://127.0.0.1:${HOST_PORT_JOIN}/" || true)"
+echo "[verify]   body: ${OVERRIDE_BODY}"
+OVERRIDE_IMAGE_COUNT=$(docker images --format '{{.Repository}}' | grep -c "^${OVERRIDE_IMAGE_PREFIX}" || true)
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+sweep_override_images
+if [ "${OVERRIDE_IMAGE_COUNT}" -lt 1 ]; then
+  echo "[verify] FAIL: no ${OVERRIDE_IMAGE_PREFIX}* image was built - the sweep prefix no longer matches the tag"
+  exit 1
+fi
+if [ "${OVERRIDE_BODY}" != "${OVERRIDE_MARKER}" ]; then
+  echo "[verify] FAIL: the task did not serve the --image-override build (want '${OVERRIDE_MARKER}')"
+  exit 1
+fi
+echo "[verify]   the task ran the local build, its context set by --image-context"
+
 # NOTE: no explicit `cleanup` call here. It ends with `exit "${rc}"`, so calling
 # it would terminate the script before anything after it ran -- the trap is what
 # invokes it, and the state-version sweep lives inside it.
 echo ""
-echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, the issue #4857 --assume-task-role failure rendered once with its operation, the issue #5756 --env-vars override skipped the secret fetch, the issue #5763 task role reached the container via /creds, and zero state versions survived - all against deployed cdkd state."
+echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, the issue #4857 --assume-task-role failure rendered once with its operation, the issue #5756 --env-vars override skipped the secret fetch, the issue #5763 task role reached the container via /creds, the issue #5768 --image-override built and ran a same-stack ECR image locally (and its absence refused before boot), and zero state versions survived - all against deployed cdkd state."

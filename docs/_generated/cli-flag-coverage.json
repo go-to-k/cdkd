@@ -2513,6 +2513,7 @@
     "--if-none-match",
     "--ignore-scripts",
     "--ignore-workspace",
+    "--image-context",
     "--image-id",
     "--image-identifier",
     "--image-ids",
