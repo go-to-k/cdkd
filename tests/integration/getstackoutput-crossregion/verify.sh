@@ -37,7 +37,7 @@
 #   5d. `cdkd scrub --dry-run --fail`: no refusal, nothing to scrub.
 #   5e. Rotate the main secret, edit the reader: it still holds the ARN of the
 #       queue AWS has (the version the queue's record holds).
-#   6.  CdkdGsoConsumerPre under v12: the migration deploy captures the
+#   6.  CdkdGsoConsumerPre under v12+: the migration deploy captures the
 #       provenance (region + version; region only for the rotated queue),
 #       then the readers: the unrotated queue's ARN is served; the rotated
 #       one is served as recorded with the generation warning, never from
@@ -530,12 +530,17 @@ if aws sqs get-queue-url --queue-name "cdkd-gso-4847-west-b-${SUFFIX}" --region 
 fi
 
 # --- Phase 6 (go-to-k/cdkd#4847): a consumer deployed before the upgrade ----
-echo "==> Phase 6a: the first v12 deploy of ${PRE_STACK} (the one-time capture)"
+echo "==> Phase 6a: the first v12+ deploy of ${PRE_STACK} (the one-time capture)"
 node "${LOCAL_DIST}" deploy "${PRE_STACK}" "${CTX[@]}" \
   --state-bucket "${STATE_BUCKET}" --region "${CONSUMER_REGION}" --yes \
   || fail "6a: the migration deploy of ${PRE_STACK} failed"
 PRE_STATE="$(aws s3 cp "s3://${STATE_BUCKET}/${PRE_STATE_KEY}" -)"
-[ "$(printf '%s' "${PRE_STATE}" | jq -r '.version')" = "12" ] || fail "6a: ${PRE_STACK} state is not version 12"
+# v12+: the capture this phase checks arrived in v12; a later bump keeps it.
+PRE_VERSION="$(printf '%s' "${PRE_STATE}" | jq -r '.version')"
+case "${PRE_VERSION}" in
+  '' | *[!0-9]*) fail "6a: ${PRE_STACK} state has no numeric version ('${PRE_VERSION}')" ;;
+esac
+[ "${PRE_VERSION}" -ge 12 ] || fail "6a: ${PRE_STACK} state is version ${PRE_VERSION}, not v12+"
 STILL_PROV="$(printf '%s' "${PRE_STATE}" | jq -c '[.resources.QueueStill.referenceProvenance[]?]')"
 ROT_PROV="$(printf '%s' "${PRE_STATE}" | jq -c '[.resources.QueueRotated.referenceProvenance[]?]')"
 case "${STILL_PROV}" in
