@@ -170,6 +170,81 @@ describe('LambdaEventSourceMappingProvider.readCurrentState', () => {
     expect(result?.['Enabled']).toBe(false);
   });
 
+  // go-to-k/cdkd#5737: the post-create baseline is read while the mapping is
+  // still `Creating`. Reading that as `false` recorded `Enabled: false` for
+  // every `SqsEventSource`, so once it settled `Enabled` drift fired and
+  // `drift --revert` disabled the live mapping. A state that carries no
+  // enabled-ness answers what the call that started it SENT (the bag the
+  // caller passes), with CloudFormation's absent default `true`.
+  describe('Enabled from a transitional State (#5737)', () => {
+    async function enabledFor(
+      state: string,
+      properties?: Record<string, unknown>
+    ): Promise<unknown> {
+      mockSend.mockResolvedValueOnce({
+        FunctionArn: 'arn:aws:lambda:us-east-1:123:function:fn',
+        EventSourceArn: 'arn:aws:sqs:us-east-1:123:my-queue',
+        State: state,
+      });
+      const result = bagOf(
+        await provider.readCurrentState(
+          'abc-123',
+          'Logical',
+          'AWS::Lambda::EventSourceMapping',
+          properties
+        )
+      );
+      return result?.['Enabled'];
+    }
+
+    const AMBIGUOUS = ['Creating', 'Updating', 'Deleting', 'SomeFutureState'];
+
+    it.each(AMBIGUOUS)('%s with no Enabled declared reads true (CFn default)', async (state) => {
+      expect(await enabledFor(state, { FunctionName: 'fn' })).toBe(true);
+    });
+
+    it.each(AMBIGUOUS)('%s with no properties bag at all reads true', async (state) => {
+      expect(await enabledFor(state)).toBe(true);
+    });
+
+    it.each(AMBIGUOUS)('%s with Enabled: false declared reads false', async (state) => {
+      expect(await enabledFor(state, { Enabled: false })).toBe(false);
+    });
+
+    it.each(AMBIGUOUS)("%s with Enabled: 'false' (string) declared reads false", async (state) => {
+      expect(await enabledFor(state, { Enabled: 'false' })).toBe(false);
+    });
+
+    it.each(AMBIGUOUS)("%s reads a string Enabled case-insensitively ('False' / 'TRUE')", async (
+      state
+    ) => {
+      expect(await enabledFor(state, { Enabled: 'False' })).toBe(false);
+      expect(await enabledFor(state, { Enabled: 'TRUE' })).toBe(true);
+    });
+
+    it.each(AMBIGUOUS)('%s with Enabled: true declared reads true', async (state) => {
+      expect(await enabledFor(state, { Enabled: true })).toBe(true);
+    });
+
+    // A state that DOES carry enabled-ness wins over the bag: it is the
+    // signal drift exists to compare, so the bag must not mask it.
+    it.each([
+      ['Enabled', false, true],
+      ['Enabling', false, true],
+      ['Disabled', true, false],
+      ['Disabling', true, false],
+      ['Disabled', undefined, false],
+      ['Disabling', undefined, false],
+    ] as const)('%s reads its own enabled-ness whatever the bag declares (Enabled: %s)', async (
+      state,
+      declared,
+      expected
+    ) => {
+      const bag = declared === undefined ? {} : { Enabled: declared };
+      expect(await enabledFor(state, bag)).toBe(expected);
+    });
+  });
+
   it('returns RESOURCE_NOT_FOUND when mapping gone', async () => {
     mockSend.mockRejectedValueOnce(
       new ResourceNotFoundException({ message: 'gone', $metadata: {} })
