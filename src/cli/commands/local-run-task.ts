@@ -371,6 +371,15 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       options
     );
     const task = resolveEcsTaskTarget(target, stacks, imageContext);
+    // An uncovered same-stack ECR image that nothing can cover any more (no
+    // `--image-override`, and no boot prompt: not a terminal, or
+    // `--no-interactive-overrides`) refuses HERE, before an `--assume-task-role`
+    // STS call or a credentials file. Otherwise the check after the override
+    // pass below decides (go-to-k/cdkd#5768).
+    const canPrompt =
+      options.interactiveOverrides !== false &&
+      Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    if (!options.imageOverride?.length && !canPrompt) assertEcsTaskImagesResolvable(task);
     logger.info(
       `Target: ${task.stack.stackName}/${task.taskDefinitionLogicalId} (family=${task.family}, containers=${task.containers.length})`
     );
@@ -1392,7 +1401,7 @@ export interface RunTaskImageOverrideResult {
  * The names `--image-override <key>=<dockerfile>` accepts for the task besides
  * the target string itself: the task definition's logical id, its
  * stack-qualified `Stack:LogicalId`, and its construct id (the last
- * `aws:cdk:path` segment that is not `Resource` / `Default`). Mirrors
+ * `aws:cdk:path` segment that is not `Service` / `Resource` / `Default`). Mirrors
  * cdk-local's `runTaskOverrideKeyAliases`.
  */
 function runTaskOverrideKeyAliases(task: ResolvedEcsTask): string[] {
@@ -1404,7 +1413,7 @@ function runTaskOverrideKeyAliases(task: ResolvedEcsTask): string[] {
     const segments = cdkPath.split('/');
     while (
       segments.length > 1 &&
-      ['Resource', 'Default'].includes(segments[segments.length - 1]!)
+      ['Service', 'Resource', 'Default'].includes(segments[segments.length - 1]!)
     ) {
       segments.pop();
     }

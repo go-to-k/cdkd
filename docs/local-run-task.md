@@ -272,8 +272,9 @@ cdkd local run-task MyStack/TaskDef \
 The override replaces the image of the task's essential container (the first
 one, when none is marked essential). The key before `=` is the target you
 passed, the task definition's logical id, `Stack:LogicalId`, or its construct
-id. A bare `--image-override <dockerfile>` asks in a terminal; with
-`--no-interactive-overrides` it is ignored. The other flags work as in
+id. In a terminal, cdkd asks for a Dockerfile at startup whenever the task's
+image is a registry image, and a bare `--image-override <dockerfile>` asks
+which task it is for; `--no-interactive-overrides` turns both questions off. The other flags work as in
 [Image overrides for local ECS services](local-start-service-image-overrides.md).
 
 When the image stays a registry image, cdkd warns that local edits will not

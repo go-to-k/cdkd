@@ -138,6 +138,17 @@ PULL_DOCKER_CONFIG=""
 # busybox that prints and EXITS, so by teardown time it is already `Exited` and
 # a running-only `docker ps` never lists it — it survived every run until the
 # issue 2183 pre-merge integs caught it twice in a row.
+# Issue #5768: the image step 10b's --image-override builds. The tag is
+# `cdkd-local-override-<first 24 chars of the slugged target>-<hash>:local`, so
+# this prefix names this fixture's build only, whatever the hash.
+OVERRIDE_IMAGE_PREFIX="cdkd-local-override-cdkdlocalruntaskfromstat-"
+sweep_override_images() {
+  ( set +eu
+    docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${OVERRIDE_IMAGE_PREFIX}" \
+      | xargs -r docker rmi -f >/dev/null 2>&1
+    true )
+}
+
 cleanup() {
   rc=$?
   set +e
@@ -146,6 +157,8 @@ cleanup() {
   # Sweep local docker containers + networks first (cheap, low-risk).
   docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
   docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+  # Issue #5768: step 10b's --image-override build, also when its run failed.
+  sweep_override_images
   if [ -n "${PULL_DOCKER_CONFIG}" ]; then
     rm -rf "${PULL_DOCKER_CONFIG}"
   fi
@@ -812,7 +825,6 @@ echo "[verify] step 10b: --image-override + --image-context build and run it loc
 OVERRIDE_APP="${TEST_DIR}/override-app"
 OVERRIDE_MARKER="$(tr -d '\n' <"${OVERRIDE_APP}/shared/index.html")"
 [ -n "${OVERRIDE_MARKER}" ] || { echo "[verify] FAIL: override-app/shared/index.html is empty"; exit 1; }
-OVERRIDE_IMAGES_BEFORE="$(docker images --format '{{.Repository}}:{{.Tag}}' | grep '^cdkd-local-override-' | sort || true)"
 ${CDKD} local run-task "${TASK_PATH_JOIN}" \
   --detach \
   --no-pull \
@@ -823,12 +835,13 @@ ${CDKD} local run-task "${TASK_PATH_JOIN}" \
 sleep 5
 OVERRIDE_BODY="$(curl -s "http://127.0.0.1:${HOST_PORT_JOIN}/" || true)"
 echo "[verify]   body: ${OVERRIDE_BODY}"
-OVERRIDE_IMAGES_NEW="$(comm -13 <(printf '%s\n' "${OVERRIDE_IMAGES_BEFORE}") \
-  <(docker images --format '{{.Repository}}:{{.Tag}}' | grep '^cdkd-local-override-' | sort || true))"
+OVERRIDE_IMAGE_COUNT=$(docker images --format '{{.Repository}}' | grep -c "^${OVERRIDE_IMAGE_PREFIX}" || true)
 docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
 docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
-if [ -n "${OVERRIDE_IMAGES_NEW}" ]; then
-  printf '%s\n' "${OVERRIDE_IMAGES_NEW}" | xargs -r docker rmi -f >/dev/null 2>&1 || true
+sweep_override_images
+if [ "${OVERRIDE_IMAGE_COUNT}" -lt 1 ]; then
+  echo "[verify] FAIL: no ${OVERRIDE_IMAGE_PREFIX}* image was built - the sweep prefix no longer matches the tag"
+  exit 1
 fi
 if [ "${OVERRIDE_BODY}" != "${OVERRIDE_MARKER}" ]; then
   echo "[verify] FAIL: the task did not serve the --image-override build (want '${OVERRIDE_MARKER}')"

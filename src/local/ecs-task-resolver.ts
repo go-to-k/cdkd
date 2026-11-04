@@ -1318,14 +1318,6 @@ function classifyResolvedImage(uri: string, cdkAssetContainerRepo?: string): Res
 }
 
 /**
- * Handle the discrete `Fn::GetAtt: [<Repo>, 'RepositoryUri']` /
- * `'<Repo>.RepositoryUri'` shape against state-recorded resources. CDK
- * occasionally emits this instead of `Fn::Sub` when the user writes
- * `ContainerImage.fromEcrRepository(repo, tag)` and the tag is a literal.
- * Returns the resolved URI string on hit, `undefined` on miss (the caller
- * falls through to `extractImageString` for `Fn::Sub` / `Fn::Join` / `Ref`).
- */
-/**
  * The image for a same-stack ECR repository the resolver cannot turn into a
  * URI. Returned rather than thrown so `--image-override` can replace it;
  * {@link assertEcsTaskImagesResolvable} raises `unresolvedReason` for a
@@ -1343,7 +1335,7 @@ function sameStackEcrImage(
     unresolvedReason:
       `Container '${containerName}' in task '${taskLogicalId}' references same-stack ECR repository '${repoLogicalId}'${via}. ` +
       'cdkd local run-task cannot resolve the repository URI without state — ' +
-      'pass --from-state (the stack must have been deployed via cdkd deploy), ' +
+      'pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed), ' +
       'build via ContainerImage.fromAsset, pin a public image, or pass --image-override to build it from a local Dockerfile.',
   };
 }
@@ -1368,6 +1360,16 @@ export function assertEcsTaskImagesResolvable(
   if (reasons.length > 0) throw new EcsTaskResolutionError(reasons.join('\n'));
 }
 
+/**
+ * Handle the discrete `Fn::GetAtt: [<Repo>, 'RepositoryUri']` /
+ * `'<Repo>.RepositoryUri'` shape against state-recorded resources. CDK
+ * occasionally emits this instead of `Fn::Sub` when the user writes
+ * `ContainerImage.fromEcrRepository(repo, tag)` and the tag is a literal.
+ * Returns `resolved` with the state-recorded URI, `needs-state` for a
+ * `RepositoryUri` the state does not carry (a same-stack pin
+ * `--image-override` can cover), or `undefined` when the shape does not apply
+ * (the caller falls through to `Fn::Sub` / `Fn::Join` / `Ref`).
+ */
 function tryResolveImageGetAtt(
   raw: unknown,
   resources: Record<string, TemplateResource>,
