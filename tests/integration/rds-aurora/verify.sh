@@ -107,10 +107,12 @@
 # AutoMinorVersionUpgrade false, Performance Insights on with 7-day retention,
 # NetworkType IPV4 and EnableHttpEndpoint true (each asserted live; before
 # #5639 the provisionedBy=sdk guard fails). Phase 2 flips
-# AutoMinorVersionUpgrade to true, raises the retention to 31 days and DROPS
-# EnableHttpEndpoint, which turns the Data API off as CloudFormation does
-# (each asserted live). NetworkType IPV4 is AWS's default: only the routing
-# guard discriminates it.
+# AutoMinorVersionUpgrade to true, raises the retention to 465 days with
+# DatabaseInsightsMode `standard` -> `advanced`, and DROPS EnableHttpEndpoint,
+# which turns the Data API off as CloudFormation does (each asserted live).
+# NetworkType IPV4 is AWS's default: only the routing guard discriminates it.
+# EngineLifecycleSupport (Extended Support disabled, asserted live) stays
+# unchanged.
 # go-to-k/cdkd#5707: phase 1a turns that declared Data API off out of band
 # and asserts `cdkd drift --revert` turns it back on and converges.
 #
@@ -543,6 +545,18 @@ if [ "${CLUSTER_PROVISIONED_BY}" != "sdk" ]; then
 fi
 echo "    OK: SecurityCluster provisionedBy=sdk (no SDK-unwired CC-API flip)"
 
+# go-to-k/cdkd#5639: the EngineCluster declares MasterUserAuthenticationType
+# `password` (the SecurityCluster cannot: CreateDBCluster refuses any declared
+# type beside its Data API). Before #5639 the property routed the cluster to
+# Cloud Control; it is write-only (no Describe field), so the route and the
+# record are what can be checked.
+ENGINE_ROUTE=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("EngineCluster"))) | "\(.value.provisionedBy // "sdk") \(.value.properties.MasterUserAuthenticationType // "absent")"] | first // "<no EngineCluster record>"')
+if [ "${ENGINE_ROUTE}" != "sdk password" ]; then
+  echo "FAIL: #5639: EngineCluster [provisionedBy, recorded MasterUserAuthenticationType] is '${ENGINE_ROUTE}', want 'sdk password' (MasterUserAuthenticationType is still SDK-unwired, so the cluster routed via Cloud Control)" >&2
+  exit 1
+fi
+echo "    OK: EngineCluster provisionedBy=sdk with MasterUserAuthenticationType password (#5639)"
+
 # Issue #4030 premise: the L1 SecurityCluster declares NO DeletionPolicy, so
 # its destroy applies CloudFormation's default for a DBCluster, Snapshot.
 SEC_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.deletionPolicy // "absent"] | first // ""')
@@ -713,14 +727,14 @@ echo "    OK: phase 1: SecurityCluster exports postgresql (#5639)"
 # go-to-k/cdkd#5639: the scalars, in one line so a mismatch prints them all.
 # usage: sec_scalars <DescribeDBClusters JSON>
 sec_scalars() {
-  echo "${1}" | jq -r '[(.AutoMinorVersionUpgrade | tostring), (.PerformanceInsightsEnabled | tostring), (.PerformanceInsightsRetentionPeriod | tostring), (.NetworkType // "absent"), (.HttpEndpointEnabled // false | tostring)] | join(" ")'
+  echo "${1}" | jq -r '[(.AutoMinorVersionUpgrade | tostring), (.PerformanceInsightsEnabled | tostring), (.PerformanceInsightsRetentionPeriod | tostring), (.NetworkType // "absent"), (.HttpEndpointEnabled // false | tostring), (.DatabaseInsightsMode // "absent"), (.EngineLifecycleSupport // "absent")] | join(" ")'
 }
 BASE_SCALARS=$(sec_scalars "${CLUSTER}")
-if [ "${BASE_SCALARS}" != "false true 7 IPV4 true" ]; then
-  echo "FAIL: #5639: phase 1: SecurityCluster [AutoMinorVersionUpgrade, PerformanceInsightsEnabled, PerformanceInsightsRetentionPeriod, NetworkType, HttpEndpointEnabled] is '${BASE_SCALARS}', want 'false true 7 IPV4 true' (CreateDBCluster did not send them)" >&2
+if [ "${BASE_SCALARS}" != "false true 7 IPV4 true standard open-source-rds-extended-support-disabled" ]; then
+  echo "FAIL: #5639: phase 1: SecurityCluster [AutoMinorVersionUpgrade, PerformanceInsightsEnabled, PerformanceInsightsRetentionPeriod, NetworkType, HttpEndpointEnabled, DatabaseInsightsMode, EngineLifecycleSupport] is '${BASE_SCALARS}', want 'false true 7 IPV4 true standard open-source-rds-extended-support-disabled' (CreateDBCluster did not send them)" >&2
   exit 1
 fi
-echo "    OK: phase 1: SecurityCluster carries AutoMinorVersionUpgrade false, Performance Insights on (7 days), NetworkType IPV4 and the Data API on (#5639)"
+echo "    OK: phase 1: SecurityCluster carries AutoMinorVersionUpgrade false, Performance Insights on (7 days), NetworkType IPV4, the Data API on, Database Insights standard and Extended Support disabled (#5639)"
 
 # --- Phase 1a: drift --revert restores a DECLARED Data API (#5707) -----
 # The template declares EnableHttpEndpoint: true. Turn the Data API off out of
@@ -1210,14 +1224,15 @@ fi
 echo "    OK: phase 2: SecurityCluster exports iam-db-auth-error only; postgresql was disabled (#5639)"
 
 # go-to-k/cdkd#5639: phase 2 flipped AutoMinorVersionUpgrade, raised the
-# Performance Insights retention and dropped EnableHttpEndpoint. cdkd returns
-# once the Data API reports off, so the same read decides.
+# Performance Insights retention to 465 days with DatabaseInsightsMode
+# `advanced`, and dropped EnableHttpEndpoint. cdkd returns once the Data API
+# reports off, so the same read decides. EngineLifecycleSupport is unchanged.
 AFTER_SCALARS=$(sec_scalars "${AFTER_LOGS_JSON}")
-if [ "${AFTER_SCALARS}" != "true true 31 IPV4 false" ]; then
-  echo "FAIL: #5639: phase 2: SecurityCluster [AutoMinorVersionUpgrade, PerformanceInsightsEnabled, PerformanceInsightsRetentionPeriod, NetworkType, HttpEndpointEnabled] is '${AFTER_SCALARS}', want 'true true 31 IPV4 false' (ModifyDBCluster must send the changed flag and retention; the removed EnableHttpEndpoint must turn the Data API off)" >&2
+if [ "${AFTER_SCALARS}" != "true true 465 IPV4 false advanced open-source-rds-extended-support-disabled" ]; then
+  echo "FAIL: #5639: phase 2: SecurityCluster [AutoMinorVersionUpgrade, PerformanceInsightsEnabled, PerformanceInsightsRetentionPeriod, NetworkType, HttpEndpointEnabled, DatabaseInsightsMode, EngineLifecycleSupport] is '${AFTER_SCALARS}', want 'true true 465 IPV4 false advanced open-source-rds-extended-support-disabled' (ModifyDBCluster must send the changed flag, retention and Database Insights mode; the removed EnableHttpEndpoint must turn the Data API off)" >&2
   exit 1
 fi
-echo "    OK: phase 2: AutoMinorVersionUpgrade true, retention 31 days, Data API off after its removal (#5639)"
+echo "    OK: phase 2: AutoMinorVersionUpgrade true, retention 465 days, Database Insights advanced, Data API off after its removal (#5639)"
 
 # Phase 2 sets no CDKD_TEST_TG_TAGS, so the template dropped Tags (#4087).
 TAGS=$(tg_tags "${TG_ARN}")

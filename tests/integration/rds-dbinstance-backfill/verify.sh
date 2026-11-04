@@ -56,6 +56,11 @@
 # upgraded version live. A cdkd re-sending the unchanged EngineVersion fails
 # that deploy: RDS refuses it as a downgrade.
 #
+# go-to-k/cdkd#5640 (EngineLifecycleSupport / MasterUserAuthenticationType):
+# declared in every phase; before #5640 either one routed the instance to Cloud
+# Control (the provisionedBy=sdk guard catches it). EngineLifecycleSupport is
+# asserted live.
+#
 # go-to-k/cdkd#2762 (DBInstance DBParameterGroupName): the instance declares a
 # custom parameter group (A); the provisionedBy=sdk guard is what a pre-fix cdkd
 # fails, and phase 1 asserts A is live and in-sync. Phase 2b changes ONLY the
@@ -514,6 +519,12 @@ assert_instance_field '.PerformanceInsightsRetentionPeriod' '31' 'PerformanceIns
 assert_instance_field '.NetworkType' 'IPV4' 'NetworkType' 'phase 1'
 assert_instance_field '.LicenseModel' 'postgresql-license' 'LicenseModel' 'phase 1'
 assert_instance_field '.DatabaseInsightsMode' 'standard' 'DatabaseInsightsMode' 'phase 1'
+# go-to-k/cdkd#5640: EngineLifecycleSupport rode CreateDBInstance (AWS's
+# default is open-source-rds-extended-support, so a dropped value reads back
+# differently). MasterUserAuthenticationType `password` is write-only (no
+# Describe field): only the provisionedBy=sdk guard above sees it. Both are
+# unchanged in every phase.
+assert_instance_field '.EngineLifecycleSupport' 'open-source-rds-extended-support-disabled' 'EngineLifecycleSupport' 'phase 1'
 # go-to-k/cdkd#2762: DBParameterGroupName rode CreateDBInstance. RDS stores the
 # name lower-cased, so both sides are compared lower-cased.
 PG_A_LOWER=$(printf '%s' "${PG_A_ID}" | tr '[:upper:]' '[:lower:]')

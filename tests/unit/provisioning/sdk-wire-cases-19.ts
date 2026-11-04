@@ -360,6 +360,44 @@ const CLUSTER_CASE: TypeCase = {
       expectedSilent: { ...CLUSTER_ENGINE_SILENT, ...CLUSTER_MASTER_USERNAME_SILENT },
     },
     {
+      name: 'Database Insights, engine lifecycle and master user authentication (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        MasterUsername: 'admin',
+        PerformanceInsightsEnabled: true,
+        PerformanceInsightsRetentionPeriod: 465,
+        DatabaseInsightsMode: 'advanced',
+        EngineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+        MasterUserAuthenticationType: 'iam-db-auth',
+      },
+      expectedRemovalThrows: Object.fromEntries(
+        ['update-add', 'update-remove'].map((d) => [
+          `${d}:EngineLifecycleSupport`,
+          {
+            why: `CloudFormation refuses any change to EngineLifecycleSupport, an addition and a removal included ("EngineLifecycleSupport cannot be modified.", measured go-to-k/cdkd#5639), so update() refuses it before any call unless the live cluster already holds the declared value (engineLifecycleSupportAction in ${SRC})`,
+            says: /EngineLifecycleSupport cannot change on an existing DB cluster/,
+          },
+        ])
+      ),
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_MASTER_USERNAME_SILENT,
+        'update-vary:EngineLifecycleSupport': `refused like its add and removal: any changed value throws before a call (engineLifecycleSupportAction in ${SRC}, go-to-k/cdkd#5639)`,
+        ...Object.fromEntries(
+          ['PerformanceInsightsEnabled', 'PerformanceInsightsRetentionPeriod'].map((key) => [
+            `update-remove:${key}`,
+            CLUSTER_SCALARS_KEPT[`update-remove:${key}`]!,
+          ])
+        ),
+        ...Object.fromEntries(
+          ['DatabaseInsightsMode', 'MasterUserAuthenticationType'].map((key) => [
+            `update-remove:${key}`,
+            `left in place on removal: update() sends ${key} only when the template changed it, and CloudFormation sends none for a removed one (measured with CloudTrail, go-to-k/cdkd#5639; ${SRC})`,
+          ])
+        ),
+      },
+    },
+    {
       name: 'Multi-AZ DB cluster (mysql), a declared Port',
       bag: { Engine: 'mysql', Port: 3307 },
       // A removed Port sends 3306, as CloudFormation does; RDS refuses it on a
@@ -613,6 +651,34 @@ const INSTANCE_CASE: TypeCase = {
             'DBParameterGroupName',
           ].map((key) => [`update-remove:${key}`, CFN_DIFF_KEPT(key)])
         ),
+      },
+    },
+    {
+      name: 'engine lifecycle and master user authentication (go-to-k/cdkd#5640)',
+      bag: {
+        DBInstanceIdentifier: INSTANCE_ID,
+        DBInstanceClass: 'db.t4g.micro',
+        Engine: 'postgres',
+        AllocatedStorage: '20',
+        MasterUsername: 'admin',
+        EngineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+        MasterUserAuthenticationType: 'iam-db-auth',
+      },
+      expectedRemovalThrows: Object.fromEntries(
+        ['update-add', 'update-remove'].map((d) => [
+          `${d}:EngineLifecycleSupport`,
+          {
+            why: `CloudFormation refuses any change to EngineLifecycleSupport, an addition and a removal included ("EngineLifecycleSupport cannot be modified.", measured go-to-k/cdkd#5640), so update() refuses it before any call unless the live instance already holds the declared value (engineLifecycleSupportAction in ${SRC})`,
+            says: /EngineLifecycleSupport cannot change on an existing DB instance/,
+          },
+        ])
+      ),
+      expectedSilent: {
+        ...INSTANCE_ENGINE_SILENT,
+        'update-vary:EngineLifecycleSupport': `refused like its add and removal: any changed value throws before a call (engineLifecycleSupportAction in ${SRC}, go-to-k/cdkd#5640)`,
+        'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
+        'update-remove:AllocatedStorage': CFN_DIFF_KEPT('AllocatedStorage'),
+        'update-remove:MasterUserAuthenticationType': CFN_DIFF_KEPT('MasterUserAuthenticationType'),
       },
     },
   ],

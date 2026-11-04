@@ -334,12 +334,16 @@ export function runDeleteAttempt<T>(isFinal: boolean, attempt: () => Promise<T>)
  *     retry/timeout config already applies to it, and it is the ONLY thing
  *     standing between a Ctrl-C and a live resource with its guard stripped — a
  *     timeout short enough to be felt during teardown would mostly convert
- *     successful restores into the "could NOT re-enable" line. The ONE adopter
- *     that waits is the Cloud Control registry path, whose `UpdateResource` is
+ *     successful restores into the "could NOT re-enable" line. Two adopters
+ *     wait. The Cloud Control registry path's `UpdateResource` is
  *     asynchronous: its wait is not interruptible, gives up on a transport
  *     outage after the flip's own short transient grace, and otherwise waits
  *     out an update that stays in progress for the type's full Cloud Control
- *     poll budget (15 minutes, longer for a known-slow type).
+ *     poll budget (15 minutes, longer for a known-slow type). The RDS
+ *     DBCluster / DBInstance re-enable resends a busy / not-available refusal
+ *     for up to `PROTECTION_FLIP_RETRY_WAIT_MS` (10 minutes), bounded by
+ *     `enclosingDeadlineRemainingMs()` minus a margin, Ctrl-C teardown
+ *     included.
  */
 export function isTerminalDeleteFailure(error: unknown): boolean {
   if (isInterruptedWaitError(error)) return true;
