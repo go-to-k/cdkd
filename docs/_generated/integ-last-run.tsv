@@ -284,8 +284,8 @@ lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 
 macro-expansion	2026-11-04T06:21:47Z	PASS	56	verify.sh	batch 7; rc ok, 0 errors, orph clean (2 Lambda log groups leaked, deleted)
 microservices	2026-10-24T06:41:12Z	PASS	55	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (19 deleted)
 migrate-from-cfn	2026-10-20T06:19:30Z	PASS	376	run.sh	deploy+destroy clean, 0 orphans
-multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
+multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
 multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
 multi-resource	2026-10-24T06:41:39Z	PASS	85	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (17 deleted)
 multi-stack-deps	2026-10-24T06:42:03Z	PASS	100	standard	final #5242 round (engine default --concurrency 20); all 3 stacks destroyed 0 errors, 0 orphans
