@@ -344,6 +344,28 @@ export class RdsAuroraStack extends cdk.Stack {
       // it out there. `password` beside the managed password is accepted on
       // create (measured), and no Data API is declared here.
       masterUserAuthenticationType: 'password',
+      // go-to-k/cdkd#5639: before #5639 each routed the EngineCluster to Cloud
+      // Control (the provisionedBy=sdk guard in verify.sh catches it).
+      //   * ClusterScalabilityType `standard` in every phase (create-only).
+      //     `standard` is AWS's default, so only the routing guard
+      //     discriminates it (as NetworkType IPV4 on the SecurityCluster).
+      //   * BacktrackWindow 3600 in phase 1, 7200 in phases 1b / 1c (keyed on
+      //     CDKD_TEST_TG_TAGS, set only there), so ModifyDBCluster must send
+      //     the change; DROPPED in phase 2, where the live window is kept.
+      //   * EnableLocalWriteForwarding true in phases 1-1c, DROPPED in phase
+      //     2, which turns forwarding off, as CloudFormation's handler does
+      //     (`Translator.modifyDbClusterRequest`). That disable also proves
+      //     phase 2's ModifyDBCluster reached this cluster, so the kept
+      //     BacktrackWindow assertion cannot pass vacuously.
+      // Both are aurora-mysql features; phase 2c's Engine swap is an update
+      // phase, so neither is declared there.
+      clusterScalabilityType: 'standard',
+      ...(isUpdate
+        ? {}
+        : {
+            backtrackWindow: process.env.CDKD_TEST_TG_TAGS ? 7200 : 3600,
+            enableLocalWriteForwarding: true,
+          }),
       backupRetentionPeriod: 1,
       dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
       serverlessV2ScalingConfiguration: { minCapacity: 0, maxCapacity: 1 },

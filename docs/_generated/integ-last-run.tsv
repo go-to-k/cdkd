@@ -315,7 +315,7 @@ pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans
 profile-region-default	2026-11-04T18:01:46Z	PASS	160	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
 propagation-races-2	2026-10-22T21:44:19Z	PASS	130	verify.sh	PR #5187; ran alone after batch of 4; rc ok, destroy clean 0 errors, 0 orphans
 raw-cfn-conditions-params	2026-11-04T05:57:23Z	PASS	79	verify.sh	rc ok, orph clean
-rds-aurora	2026-11-04T08:34:01Z	PASS	3537	verify.sh	rc ok, orph clean
+rds-aurora	2026-11-04T21:23:42Z	PASS	3679	verify.sh	rc ok, orph clean
 rds-dbinstance-backfill	2026-11-04T08:34:01Z	PASS	2044	verify.sh	rc ok, orph clean
 rds-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	1031	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans
 rds-full-stack	2026-10-24T22:46:19Z	PASS	1011	verify.sh	PR #5268: PASS at same src (65165c17a); no --remove-protection/compensation/delete-budget path, not re-run; 0 destroy errors, 0 orphans

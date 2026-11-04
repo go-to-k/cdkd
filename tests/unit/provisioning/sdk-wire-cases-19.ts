@@ -163,7 +163,13 @@ function armCluster(_physicalId: string, bag: Bag): void {
   let port = bag['Port'] as number | undefined;
   let logs = liveLogs(bag);
   let httpEndpoint = bag['EnableHttpEndpoint'] === true;
+  let forwarding = bag['EnableLocalWriteForwarding'] === true;
   setOutputOverrides({
+    // The create wait reads back the write forwarding the create sent.
+    CreateDBClusterCommand: (input) => {
+      forwarding = input['EnableLocalWriteForwarding'] === true;
+      return { DBCluster: { DBClusterIdentifier: CLUSTER_ID } };
+    },
     EnableHttpEndpointCommand: () => {
       httpEndpoint = true;
       return {};
@@ -178,6 +184,8 @@ function armCluster(_physicalId: string, bag: Bag): void {
       const sentPort = input['Port'] as number | undefined;
       if (sentPort !== undefined) port = sentPort;
       logs = applyLogDelta(logs, input);
+      const sentForwarding = input['EnableLocalWriteForwarding'] as boolean | undefined;
+      if (sentForwarding !== undefined) forwarding = sentForwarding;
       return {};
     },
     DescribeDBClustersCommand: () => ({
@@ -192,6 +200,7 @@ function armCluster(_physicalId: string, bag: Bag): void {
           VpcSecurityGroups: groups.map((id) => ({ VpcSecurityGroupId: id, Status: 'active' })),
           EnabledCloudwatchLogsExports: logs,
           HttpEndpointEnabled: httpEndpoint,
+          LocalWriteForwardingStatus: forwarding ? 'enabled' : 'disabled',
         },
       ],
     }),
@@ -395,6 +404,21 @@ const CLUSTER_CASE: TypeCase = {
             `left in place on removal: update() sends ${key} only when the template changed it, and CloudFormation sends none for a removed one (measured with CloudTrail, go-to-k/cdkd#5639; ${SRC})`,
           ])
         ),
+      },
+    },
+    {
+      name: 'Aurora MySQL backtracking, local write forwarding and scalability type (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-mysql',
+        MasterUsername: 'admin',
+        BacktrackWindow: 3600,
+        EnableLocalWriteForwarding: true,
+        ClusterScalabilityType: 'standard',
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_MASTER_USERNAME_SILENT,
+        'update-remove:BacktrackWindow': `left in place on removal: ModifyDBCluster treats an absent member as "no change", and CloudFormation's handler (Translator.modifyDbClusterRequest) sends null for a removed BacktrackWindow, read from the handler source, not measured (${SRC} clusterModifyScalarMembers)`,
       },
     },
     {

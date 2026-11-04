@@ -27,6 +27,7 @@ import {
   type PendingCloudwatchLogsExports,
   type MasterUserAuthenticationType,
   type ModifyDBClusterCommandInput,
+  type CreateDBClusterCommandInput,
   type ModifyDBInstanceCommandInput,
   type CreateDBInstanceCommandInput,
 } from '@aws-sdk/client-rds';
@@ -1041,6 +1042,8 @@ type ClusterScalarMembers = Pick<
   | 'DatabaseInsightsMode'
   | 'EngineLifecycleSupport'
   | 'MasterUserAuthenticationType'
+  | 'BacktrackWindow'
+  | 'EnableLocalWriteForwarding'
 >;
 
 /** go-to-k/cdkd#5639: the CFn name of each Performance Insights member, with its SDK name. */
@@ -1095,6 +1098,15 @@ function clusterCreateScalarMembers(properties: Record<string, unknown>): Cluste
         'MasterUserAuthenticationType'
       ] as ClusterScalarMembers['MasterUserAuthenticationType'],
     }),
+    // A malformed one is refused or skipped before any call.
+    ...(typeof backtrackWindowValue(properties['BacktrackWindow']) === 'number' && {
+      BacktrackWindow: backtrackWindowValue(properties['BacktrackWindow']) as number,
+    }),
+    ...(typeof localWriteForwardingFlag(properties['EnableLocalWriteForwarding']) === 'boolean' && {
+      EnableLocalWriteForwarding: localWriteForwardingFlag(
+        properties['EnableLocalWriteForwarding']
+      ) as boolean,
+    }),
   };
 }
 
@@ -1115,7 +1127,15 @@ function clusterCreateScalarMembers(properties: Record<string, unknown>): Cluste
  * Performance Insights members beside it (`advanced` needs them on with a
  * 465-day retention). Measured against CloudFormation (us-east-1, 2026-11-04,
  * CloudTrail): a changed mode is sent with the trio, and a removed `advanced`
- * sends no mode and stays `advanced`. `EngineLifecycleSupport` and
+ * sends no mode and stays `advanced`.
+ *
+ * `BacktrackWindow` goes out only when changed, and a removal keeps the live
+ * window: the handler sends the desired value, unsent when removed (read from
+ * the archived `aws-cloudformation-resource-providers-rds` source, not
+ * measured). `EnableLocalWriteForwarding` follows the handler's own rule
+ * (`localWriteForwardingToSend`).
+ *
+ * `EngineLifecycleSupport` and
  * `MasterUserAuthenticationType` are not here: `engineLifecycleSupportAction`
  * and `masterUserAuthenticationTypeToSend` decide them.
  */
@@ -1142,7 +1162,91 @@ function clusterModifyScalarMembers(
       'DatabaseInsightsMode'
     ] as ClusterScalarMembers['DatabaseInsightsMode'];
   }
+  // A malformed one is refused or skipped before any call.
+  const backtrackWindow = backtrackWindowValue(properties['BacktrackWindow']);
+  if (typeof backtrackWindow === 'number' && changed('BacktrackWindow')) {
+    members.BacktrackWindow = backtrackWindow;
+  }
+  const localWriteForwarding = localWriteForwardingToSend(properties, previousProperties, context);
+  if (typeof localWriteForwarding === 'boolean') {
+    members.EnableLocalWriteForwarding = localWriteForwarding;
+  }
   return members;
+}
+
+/**
+ * go-to-k/cdkd#5639: a DBCluster `BacktrackWindow` read off a bag, in seconds:
+ * `undefined` when absent, the whole number (a number or its numeric-string
+ * spelling), or `'malformed'`. The 0-259200 range is AWS's to enforce.
+ */
+function backtrackWindowValue(value: unknown): number | undefined | 'malformed' {
+  return retentionPeriodValue(value);
+}
+
+/**
+ * go-to-k/cdkd#5639: a DBCluster `EnableLocalWriteForwarding` read off a bag,
+ * as {@link httpEndpointFlag} reads the Data API flag.
+ */
+function localWriteForwardingFlag(value: unknown): boolean | undefined | 'malformed' {
+  return httpEndpointFlag(value);
+}
+
+/**
+ * go-to-k/cdkd#5639: the `EnableLocalWriteForwarding` an update sends, as
+ * CloudFormation's update translation (`Translator.modifyDbClusterRequest`)
+ * decides it: a removed `true` sends `false`, because RDS keeps write
+ * forwarding on until told otherwise; a `false` declared where the previous
+ * template declared nothing sends nothing, since forwarding is off by default;
+ * otherwise only a changed value goes out (`instanceValueChanged`). Any other
+ * removal sends nothing. A malformed desired value is refused or skipped
+ * before this runs; a malformed previous one reads as absent.
+ *
+ * A drift revert turns forwarding ON only when the record's template side
+ * declares `EnableLocalWriteForwarding: true`
+ * (`UpdateContext.declaredTrueProperties`), as `clusterHttpEndpointAction`
+ * does for the Data API: the revert's desired bag is the recorded readback,
+ * which can hold `true` for a template that never declared it. Otherwise it is
+ * `'withheld'`; turning forwarding off still goes through.
+ */
+function localWriteForwardingToSend(
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  context: UpdateContext | undefined
+): boolean | 'withheld' | undefined {
+  const desired = localWriteForwardingFlag(properties['EnableLocalWriteForwarding']);
+  const previousFlag = localWriteForwardingFlag(previousProperties['EnableLocalWriteForwarding']);
+  const previous = typeof previousFlag === 'boolean' ? previousFlag : undefined;
+  if (desired === undefined) return previous === true ? false : undefined;
+  if (desired === 'malformed') return undefined;
+  if (previous === undefined && desired === false) return undefined;
+  if (
+    !instanceValueChanged(properties, previousProperties, 'EnableLocalWriteForwarding', context)
+  ) {
+    return undefined;
+  }
+  return desired &&
+    context?.desiredFromAwsReadback === true &&
+    context.declaredTrueProperties?.has('EnableLocalWriteForwarding') !== true
+    ? 'withheld'
+    : desired;
+}
+
+/**
+ * go-to-k/cdkd#5639: whether a cluster's local write forwarding has reached
+ * `enabled`. CloudFormation's stabilization
+ * (`BaseHandlerStd.isLocalWriteForwardingStabilized`) waits while the status
+ * is `enabling` or `disabling`, and its read handler projects `requested` and
+ * `enabled` as on (`Translator.translateLocalWriteForwardingStatus`). The
+ * status is matched against the value sent, not only "not in transition", so a
+ * describe answering before the change starts does not end the wait.
+ */
+function localWriteForwardingApplied(cluster: DBCluster, enabled: boolean): boolean {
+  const status = cluster.LocalWriteForwardingStatus;
+  // Never reported: nothing to wait on, as CloudFormation's check waits only
+  // while the status is `enabling` / `disabling`.
+  if (status === undefined) return true;
+  if (status === 'enabling' || status === 'disabling') return false;
+  return (status === 'requested' || status === 'enabled') === enabled;
 }
 
 /**
@@ -1162,6 +1266,7 @@ const CLUSTER_BOOLEAN_SCALARS = [
   'AutoMinorVersionUpgrade',
   'PerformanceInsightsEnabled',
   'EnableHttpEndpoint',
+  'EnableLocalWriteForwarding',
 ] as const;
 
 /**
@@ -1269,6 +1374,10 @@ const usableHttpEndpoint = (value: unknown): boolean =>
   typeof httpEndpointFlag(value) === 'boolean';
 const usableRetentionPeriod = (value: unknown): boolean =>
   typeof retentionPeriodValue(value) === 'number';
+const usableBacktrackWindow = (value: unknown): boolean =>
+  typeof backtrackWindowValue(value) === 'number';
+const usableLocalWriteForwarding = (value: unknown): boolean =>
+  typeof localWriteForwardingFlag(value) === 'boolean';
 
 /**
  * go-to-k/cdkd#2762: whether this cluster update changes `EngineVersion`, the
@@ -1507,6 +1616,14 @@ export class RDSProvider implements ResourceProvider {
         'DatabaseInsightsMode',
         'EngineLifecycleSupport',
         'MasterUserAuthenticationType',
+        // go-to-k/cdkd#5639: `BacktrackWindow` and `EnableLocalWriteForwarding`
+        // ride CreateDBCluster and, when changed, ModifyDBCluster
+        // (`clusterModifyScalarMembers`; a removed `EnableLocalWriteForwarding:
+        // true` turns forwarding off). `ClusterScalabilityType` is create-only
+        // and rides CreateDBCluster alone.
+        'BacktrackWindow',
+        'EnableLocalWriteForwarding',
+        'ClusterScalabilityType',
       ]),
     ],
     [
@@ -2067,6 +2184,29 @@ export class RDSProvider implements ResourceProvider {
         safeMsg`DBCluster ${logicalId}: the replayed PerformanceInsightsRetentionPeriod is not a whole number of days; the cluster is created with AWS's default retention`
       );
     }
+    // go-to-k/cdkd#5639: likewise the backtrack window and the write-forwarding
+    // flag; a rollback re-create sends neither (AWS's defaults: both off).
+    const backtrackSkipped = backtrackWindowValue(properties['BacktrackWindow']) === 'malformed';
+    const forwardingSkipped =
+      localWriteForwardingFlag(properties['EnableLocalWriteForwarding']) === 'malformed';
+    for (const [skipped, key, expected, created] of [
+      [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
+      [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
+    ] as const) {
+      if (!skipped) continue;
+      if (!replaying) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${resourceType} ${logicalId}: ${key} must be ${expected}`,
+            resourceType,
+            logicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed ${key} is not ${expected}; the cluster is created with ${created}`
+      );
+    }
     // What the call sent: a record without a skipped key
     // (provider-property-fidelity: a replay-create that skipped drops the key).
     const skippedKeys = [
@@ -2074,6 +2214,8 @@ export class RDSProvider implements ResourceProvider {
         ? ['EnableHttpEndpoint']
         : []),
       ...(retentionSkipped ? ['PerformanceInsightsRetentionPeriod'] : []),
+      ...(backtrackSkipped ? ['BacktrackWindow'] : []),
+      ...(forwardingSkipped ? ['EnableLocalWriteForwarding'] : []),
     ];
     const effectiveProperties =
       skippedKeys.length > 0
@@ -2157,6 +2299,12 @@ export class RDSProvider implements ResourceProvider {
           // provisioned and Serverless v2 clusters).
           ...clusterCreateScalarMembers(properties),
           ...(httpEndpoint !== undefined && { EnableHttpEndpoint: httpEndpoint }),
+          // go-to-k/cdkd#5639: create-only (a change replaces the cluster).
+          ...(properties['ClusterScalabilityType'] != null && {
+            ClusterScalabilityType: properties[
+              'ClusterScalabilityType'
+            ] as CreateDBClusterCommandInput['ClusterScalabilityType'],
+          }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -2195,6 +2343,17 @@ export class RDSProvider implements ResourceProvider {
         // Wait for cluster to become available (skip with --no-wait)
         if (process.env['CDKD_NO_WAIT'] !== 'true') {
           await this.waitForClusterAvailable(logicalId, dbClusterIdentifier);
+          // go-to-k/cdkd#5639: CloudFormation's create stabilizes only once
+          // local write forwarding is no longer `enabling`
+          // (`BaseHandlerStd.isLocalWriteForwardingStabilized`).
+          if (localWriteForwardingFlag(properties['EnableLocalWriteForwarding']) === true) {
+            await this.waitForClusterState(
+              logicalId,
+              dbClusterIdentifier,
+              (cluster) => localWriteForwardingApplied(cluster, true),
+              'local write forwarding setting'
+            );
+          }
         }
 
         // Describe to get final attributes
@@ -2378,6 +2537,44 @@ export class RDSProvider implements ResourceProvider {
       );
       skippedKeys.push(['PerformanceInsightsRetentionPeriod', usableRetentionPeriod]);
     }
+    // go-to-k/cdkd#5639: likewise the backtrack window and the write-forwarding
+    // flag, which would go out as NaN or read as "not true".
+    for (const [malformed, key, expected, usable] of [
+      [
+        backtrackWindowValue(properties['BacktrackWindow']) === 'malformed',
+        'BacktrackWindow',
+        'a whole number of seconds',
+        usableBacktrackWindow,
+      ],
+      [
+        localWriteForwardingFlag(properties['EnableLocalWriteForwarding']) === 'malformed',
+        'EnableLocalWriteForwarding',
+        'true or false',
+        usableLocalWriteForwarding,
+      ],
+    ] as const) {
+      if (!malformed) continue;
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${resourceType} ${logicalId}: ${key} must be ${expected}`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed ${key} is not ${expected}; the setting is left as it is`
+      );
+      skippedKeys.push([key, usable]);
+    }
+    if (localWriteForwardingToSend(properties, previousProperties, context) === 'withheld') {
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: drift --revert does not turn local write forwarding (EnableLocalWriteForwarding) back on, because the template does not declare EnableLocalWriteForwarding: true; declare it and deploy, or turn it on with aws rds modify-db-cluster --enable-local-write-forwarding`
+      );
+      skippedKeys.push(['EnableLocalWriteForwarding', usableLocalWriteForwarding]);
+    }
 
     try {
       // go-to-k/cdkd#5639: a changed EngineLifecycleSupport is refused before
@@ -2476,7 +2673,9 @@ export class RDSProvider implements ResourceProvider {
       //     #2762 backfill members (`clusterModifyBackfillMembers`) and the
       //     #5639 scalars (`clusterModifyScalarMembers`).
       //   * TURNED OFF: a removed `EnableHttpEndpoint: true` disables the Data
-      //     API, as CloudFormation's handler does (`clusterHttpEndpointAction`).
+      //     API, as CloudFormation's handler does (`clusterHttpEndpointAction`),
+      //     and a removed `EnableLocalWriteForwarding: true` disables write
+      //     forwarding (`localWriteForwardingToSend`).
       // MasterUserSecret removed while the managed password stays on: the
       // credential gate re-sends ManageMasterUserPassword=true with no key, as
       // CloudFormation does, and the secret stays on its customer key
@@ -2501,6 +2700,7 @@ export class RDSProvider implements ResourceProvider {
         previousProperties,
         context
       );
+      const scalarMembers = clusterModifyScalarMembers(properties, previousProperties, context);
       await this.getClient().send(
         new ModifyDBClusterCommand({
           DBClusterIdentifier: physicalId,
@@ -2560,8 +2760,9 @@ export class RDSProvider implements ResourceProvider {
           }),
           // go-to-k/cdkd#2762: only what changed; a removal keeps the live value.
           ...clusterModifyBackfillMembers(properties, previousProperties, context),
-          // go-to-k/cdkd#5639: only what changed; a removal keeps the live value.
-          ...clusterModifyScalarMembers(properties, previousProperties, context),
+          // go-to-k/cdkd#5639: only what changed; a removal keeps the live value,
+          // except a removed EnableLocalWriteForwarding: true, which turns it off.
+          ...scalarMembers,
           // go-to-k/cdkd#5639: only a drift revert sends it; only a change
           // sends the authentication type, beside the credential settings.
           ...(engineLifecycleSupport !== undefined && {
@@ -2606,6 +2807,36 @@ export class RDSProvider implements ResourceProvider {
               cluster.PendingModifiedValues?.PendingCloudwatchLogsExports
             ),
           'CloudWatch Logs exports'
+        );
+      }
+
+      // go-to-k/cdkd#5639: CloudFormation's update stabilizes only once local
+      // write forwarding is no longer `enabling` / `disabling`
+      // (`BaseHandlerStd.isLocalWriteForwardingStabilized`).
+      const forwardingSent = scalarMembers.EnableLocalWriteForwarding;
+      if (!noWait && forwardingSent !== undefined) {
+        await this.waitForClusterState(
+          logicalId,
+          physicalId,
+          (cluster) => localWriteForwardingApplied(cluster, forwardingSent),
+          'local write forwarding setting'
+        );
+      }
+
+      // go-to-k/cdkd#5639: RDS applies a changed BacktrackWindow after
+      // ModifyDBCluster returns (measured: a describe right after the call
+      // still read the old window), and it is not among the pending modified
+      // values. CloudFormation reports the update only once the cluster has
+      // stabilized (`BaseHandlerStd.isDBClusterStabilized`), so wait for the
+      // window sent; a describe that never reports one ends the wait.
+      const backtrackSent = scalarMembers.BacktrackWindow;
+      if (!noWait && backtrackSent !== undefined) {
+        await this.waitForClusterState(
+          logicalId,
+          physicalId,
+          (cluster) =>
+            cluster.BacktrackWindow === undefined || cluster.BacktrackWindow === backtrackSent,
+          'backtrack window'
         );
       }
 
@@ -4849,10 +5080,12 @@ export class RDSProvider implements ResourceProvider {
       const value = properties[key];
       if (value === 'true' || value === 'false') set(key, value === 'true');
     }
-    const retention = properties['PerformanceInsightsRetentionPeriod'];
-    if (typeof retention === 'string') {
-      const parsed = retentionPeriodValue(retention);
-      if (typeof parsed === 'number') set('PerformanceInsightsRetentionPeriod', parsed);
+    for (const key of ['PerformanceInsightsRetentionPeriod', 'BacktrackWindow']) {
+      const value = properties[key];
+      if (typeof value === 'string') {
+        const parsed = retentionPeriodValue(value);
+        if (typeof parsed === 'number') set(key, parsed);
+      }
     }
     return out ?? properties;
   }
@@ -5317,6 +5550,19 @@ export class RDSProvider implements ResourceProvider {
     }
     if (cluster.EngineLifecycleSupport !== undefined) {
       result['EngineLifecycleSupport'] = cluster.EngineLifecycleSupport;
+    }
+    // go-to-k/cdkd#5639. `ClusterScalabilityType` is not read back: the
+    // registry schema lists it write-only, and a recorded create-only value
+    // the template never declared would read as a removal.
+    if (cluster.BacktrackWindow !== undefined) {
+      result['BacktrackWindow'] = cluster.BacktrackWindow;
+    }
+    // `requested` and `enabled` read as on, as CloudFormation's read handler
+    // projects the status (`Translator.translateLocalWriteForwardingStatus`).
+    if (cluster.LocalWriteForwardingStatus !== undefined) {
+      result['EnableLocalWriteForwarding'] =
+        cluster.LocalWriteForwardingStatus === 'requested' ||
+        cluster.LocalWriteForwardingStatus === 'enabled';
     }
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
