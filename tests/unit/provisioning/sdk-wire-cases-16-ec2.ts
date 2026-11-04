@@ -209,6 +209,21 @@ const BDM_REPLACES: Record<string, string> = Object.fromEntries([
   ...BDM_VARIED.map((p) => [`update-vary:BlockDeviceMappings${p}`, BDM_REASON]),
 ]);
 
+/**
+ * go-to-k/cdkd#5630: CloudFormation applies PropagateTagsToVolumeOnCreation at
+ * launch only (measured us-east-1, 2026-11-04: a Tags change and the flag's
+ * removal both left the volume tags as they were), so update() sends nothing
+ * for it.
+ */
+const PROPAGATE_REASON =
+  'PropagateTagsToVolumeOnCreation acts at launch only (CloudFormation measured, go-to-k/cdkd#5630), so an update sends nothing for it';
+const PROPAGATE_SILENT: Record<string, string> = Object.fromEntries(
+  ['update-add', 'update-remove', 'update-vary'].map((d) => [
+    `${d}:PropagateTagsToVolumeOnCreation`,
+    PROPAGATE_REASON,
+  ])
+);
+
 const INSTANCE_CASE: TypeCase = tc(
     'AWS::EC2::Instance',
     'i-1',
@@ -256,8 +271,17 @@ const INSTANCE_CASE: TypeCase = tc(
           CpuOptions: { CoreCount: 1, ThreadsPerCore: 1 },
           HibernationOptions: { Configured: true },
           InstanceInitiatedShutdownBehavior: 'terminate',
+          SourceDestCheck: false,
+          Tenancy: 'dedicated',
+          PlacementGroupName: 'pg-1',
+          PrivateIpAddress: '10.0.1.5',
+          PropagateTagsToVolumeOnCreation: true,
         },
-        variants: { UserData: 'ZWNobyAy', InstanceInitiatedShutdownBehavior: 'stop' },
+        variants: {
+          UserData: 'ZWNobyAy',
+          InstanceInitiatedShutdownBehavior: 'stop',
+          SourceDestCheck: true,
+        },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
           ...INSTANCE_THROWS,
@@ -274,6 +298,7 @@ const INSTANCE_CASE: TypeCase = tc(
           'update-remove:MetadataOptions': INSTANCE_KEPT('MetadataOptions'),
           'update-remove:CreditSpecification': INSTANCE_KEPT('CreditSpecification'),
           'update-remove:CreditSpecification.CPUCredits': INSTANCE_KEPT('CreditSpecification'),
+          ...PROPAGATE_SILENT,
           ...BDM_REPLACES,
         },
       },
@@ -369,7 +394,9 @@ const INSTANCE_CASE: TypeCase = tc(
 // An EbsOptimized change is a replacement (replacement-rules.ts:1062-1083: it
 // is accepted only on a STOPPED instance), so the update probes skip it, as
 // the engine's replacement would.
-INSTANCE_CASE.createOnly = new Set([...INSTANCE_CASE.createOnly, 'EbsOptimized']);
+// A Tenancy change is a replacement too (replacement-rules.ts; CloudFormation
+// measured, go-to-k/cdkd#5630).
+INSTANCE_CASE.createOnly = new Set([...INSTANCE_CASE.createOnly, 'EbsOptimized', 'Tenancy']);
 
 export const CASES_16_EC2: TypeCase[] = [
   tc(

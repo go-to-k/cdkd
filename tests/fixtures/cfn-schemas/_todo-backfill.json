@@ -34,14 +34,9 @@
       "KernelId",
       "LaunchTemplate",
       "LicenseSpecifications",
-      "PlacementGroupName",
       "PrivateDnsNameOptions",
-      "PrivateIpAddress",
-      "PropagateTagsToVolumeOnCreation",
       "RamdiskId",
-      "SourceDestCheck",
       "SsmAssociations",
-      "Tenancy",
       "Volumes"
     ],
     "AWS::EC2::Subnet": [

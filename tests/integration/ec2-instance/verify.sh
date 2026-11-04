@@ -72,6 +72,11 @@
 # InstanceInitiatedShutdownBehavior=terminate, which Phase 1h changes to stop in
 # place, and the #1281 instance launches with CpuOptions (1 core, 1 thread)
 # and HibernationOptions.Configured=true; each is read back from AWS.
+# The second #5630 slice: the instance launches with SourceDestCheck=false, a
+# fixed PrivateIpAddress, a spread PlacementGroupName and Tenancy=default
+# (read back from DescribeInstances), Phase 1h removes SourceDestCheck (back
+# to true in place, as CloudFormation does), and the #1281 instance's
+# PropagateTagsToVolumeOnCreation tag must be on both of its volumes.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -155,6 +160,9 @@ DEFAULT_VPC_SG_NAME="CdkdEc2InstanceIntegDefaultVpcSg"
 # go-to-k/cdkd#4606 (Phase 1c): the tag key the throwaway VPC, subnet and
 # security group carry; the value is per run (NET_PROBE_TAG).
 NET_PROBE_TAG_KEY="cdkd-integ-4606-net-probe"
+# Issue #5630: the fixture's spread placement group (a generated name, read
+# from the state outputs after Phase 1), swept if state destroy cannot reach it.
+PLACEMENT_GROUP_NAME=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
@@ -260,6 +268,19 @@ cleanup() {
   if [ -n "${PUBLIC_INSTANCE_ID:-}" ]; then
     aws ec2 terminate-instances \
       --instance-ids "${PUBLIC_INSTANCE_ID}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${PLACEMENT_GROUP_NAME:-}" ]; then
+    # Issue #5630: the group refuses a delete while an instance is in it, so
+    # wait for the main instance to terminate first. A group state destroy
+    # already deleted answers not-found, the normal case, hence `|| true`.
+    if [ -n "${INSTANCE_ID}" ]; then
+      aws ec2 wait instance-terminated \
+        --instance-ids "${INSTANCE_ID}" \
+        --region "${REGION}" >/dev/null 2>&1 || true
+    fi
+    aws ec2 delete-placement-group \
+      --group-name "${PLACEMENT_GROUP_NAME}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   fi
   if [ -n "${CLIENT_TOKEN:-}" ]; then
@@ -466,6 +487,9 @@ fi
 # Capture the ids now so the cleanup trap can reach the instances from here on.
 INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.InstanceId // ""')
 PUBLIC_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicInstanceId // ""')
+# Issue #5630: set this early too, so a failure between Phase 0 and Phase 1
+# still lets cleanup sweep the placement group.
+PLACEMENT_GROUP_NAME=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PlacementGroupName // ""')
 # Issue #5445: the fixture CMK exists from this deploy on, so the trap's
 # schedule-key-deletion must be able to reach it from here too.
 EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
@@ -628,6 +652,7 @@ if [ -z "${INSTANCE_ID}" ] || [ "${INSTANCE_ID}" = "null" ]; then
   exit 1
 fi
 echo "    resolved instance id: ${INSTANCE_ID}"
+PLACEMENT_GROUP_NAME=$(echo "${STATE}" | jq -r '.outputs.PlacementGroupName // ""')
 
 # --- Assertions: issue #2039 RunInstances idempotency token -----------------
 # cdkd retries a transient HTTP 500 across a multi-second schedule, so a 500
@@ -955,6 +980,50 @@ if [ "${ACTUAL_HIBERNATION}" != "true" ]; then
 fi
 echo "    OK: #5630 ${PUBLIC_INSTANCE_ID} launched with CpuOptions 1/1 and hibernation configured"
 
+# Issue #5630 (second slice): SourceDestCheck=false is not a RunInstances input,
+# so cdkd sends it after the launch (Phase 0 sent it to a `pending` instance);
+# a dropped call reads as true, the EC2 default.
+ACTUAL_SDC=$(echo "${INSTANCE}" | jq -r 'if has("SourceDestCheck") then .SourceDestCheck | tostring else "null" end')
+if [ "${ACTUAL_SDC}" != "false" ]; then
+  echo "FAIL: issue #5630 -- SourceDestCheck of ${INSTANCE_ID} is '${ACTUAL_SDC}', expected false (the default is true)" >&2
+  exit 1
+fi
+ACTUAL_PRIVATE_IP=$(echo "${INSTANCE}" | jq -r '.PrivateIpAddress // "null"')
+if [ "${ACTUAL_PRIVATE_IP}" != "10.0.0.200" ]; then
+  echo "FAIL: issue #5630 -- PrivateIpAddress of ${INSTANCE_ID} is '${ACTUAL_PRIVATE_IP}', expected 10.0.0.200 (a dropped one is AWS-assigned)" >&2
+  exit 1
+fi
+EXPECTED_PG="${PLACEMENT_GROUP_NAME}"
+ACTUAL_PG=$(echo "${INSTANCE}" | jq -r '.Placement.GroupName // ""')
+if [ -z "${EXPECTED_PG}" ] || [ "${ACTUAL_PG}" != "${EXPECTED_PG}" ]; then
+  echo "FAIL: issue #5630 -- Placement.GroupName of ${INSTANCE_ID} is '${ACTUAL_PG}', expected the fixture's placement group '${EXPECTED_PG}'" >&2
+  exit 1
+fi
+ACTUAL_TENANCY=$(echo "${INSTANCE}" | jq -r '.Placement.Tenancy // "null"')
+if [ "${ACTUAL_TENANCY}" != "default" ]; then
+  echo "FAIL: issue #5630 -- Placement.Tenancy of ${INSTANCE_ID} is '${ACTUAL_TENANCY}', expected default" >&2
+  exit 1
+fi
+echo "    OK: #5630 ${INSTANCE_ID} has SourceDestCheck=false, PrivateIpAddress 10.0.0.200, placement group ${ACTUAL_PG}, tenancy default"
+# PropagateTagsToVolumeOnCreation: RunInstances tags BOTH block-device volumes
+# (root /dev/xvda and data /dev/sdf) with the instance's tag. Count the volume
+# ROWS carrying it, never a length(), and require the attached total too.
+PROPAGATE_VOLUMES=$(aws ec2 describe-volumes --region "${REGION}" \
+  --filters "Name=attachment.instance-id,Values=${PUBLIC_INSTANCE_ID}" \
+  --query 'Volumes[].[VolumeId, join(`,`, Tags[?Key==`Cdkd5630Propagate`].Value || `[]`)]' \
+  --output text 2>&1) || {
+  echo "FAIL: issue #5630 -- describe-volumes for ${PUBLIC_INSTANCE_ID} failed: $(sanitize_aws_output "${PROPAGATE_VOLUMES}")" >&2
+  exit 1
+}
+PROPAGATE_TOTAL=$(printf '%s\n' "${PROPAGATE_VOLUMES}" | awk 'NF>0' | wc -l | tr -d ' ')
+PROPAGATE_TAGGED=$(printf '%s\n' "${PROPAGATE_VOLUMES}" | awk '$2=="volume-tag"' | wc -l | tr -d ' ')
+if [ "${PROPAGATE_TOTAL}" != "2" ] || [ "${PROPAGATE_TAGGED}" != "2" ]; then
+  echo "FAIL: issue #5630 -- ${PROPAGATE_TAGGED} of ${PROPAGATE_TOTAL} volumes of ${PUBLIC_INSTANCE_ID} carry Cdkd5630Propagate=volume-tag, expected 2 of 2 (PropagateTagsToVolumeOnCreation):" >&2
+  printf '%s\n' "${PROPAGATE_VOLUMES}" >&2
+  exit 1
+fi
+echo "    OK: #5630 both volumes of ${PUBLIC_INSTANCE_ID} carry the propagated instance tag"
+
 # Issue #5630: `cdkd drift` reads the three properties back. Both instances
 # must be COMPARED (never drift unknown), and neither may report drift under
 # them; drift elsewhere on an instance is out of this arm's scope.
@@ -965,7 +1034,7 @@ DRIFT_RC=$?
 set -e
 for lid in Instance PublicInstance; do
   COMPARED=$(jq --arg l "${lid}" '[(.[].clean[], .[].drifted[]) | select(.logicalId == $l)] | length' "${DRIFT_JSON}") || COMPARED="?"
-  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
+  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior|SourceDestCheck|Tenancy|PlacementGroupName|PrivateIpAddress)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
   if [ "${COMPARED}" != "1" ] || [ -n "${BACKFILL_DRIFT}" ]; then
     echo "FAIL: issue #5630 -- cdkd drift on ${lid}: compared=${COMPARED} drifted paths under the backfilled properties='${BACKFILL_DRIFT}' (rc=${DRIFT_RC}):" >&2
     cat "${DRIFT_JSON}" >&2
@@ -973,7 +1042,7 @@ for lid in Instance PublicInstance; do
   fi
 done
 rm -f "${DRIFT_JSON}"
-echo "    OK: #5630 both instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior"
+echo "    OK: #5630 both instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior / SourceDestCheck / Tenancy / PlacementGroupName / PrivateIpAddress"
 
 # --- Phase 1b: the instance identity read (go-to-k/cdkd#4606) --------------
 # A successful deploy deletes a journaled failed-CREATE instance only when
@@ -1460,6 +1529,15 @@ if [ "${P1H_SHUTDOWN}" != "stop" ]; then
   exit 1
 fi
 echo "    OK: #5630 InstanceInitiatedShutdownBehavior changed terminate -> stop in place on ${INSTANCE_ID}"
+# Issue #5630 (second slice): Phase 1h's template no longer declares
+# SourceDestCheck; CloudFormation sets a removed one back to true in place
+# (measured, us-east-1), and the instance id check above proves it was in place.
+P1H_SDC=$(echo "${P1H_INSTANCE}" | jq -r 'if has("SourceDestCheck") then .SourceDestCheck | tostring else "null" end')
+if [ "${P1H_SDC}" != "true" ]; then
+  echo "FAIL: issue #5630 -- SourceDestCheck of ${INSTANCE_ID} is '${P1H_SDC}' after Phase 1h removed it, expected true (CloudFormation resets a removed one)" >&2
+  exit 1
+fi
+echo "    OK: #5630 a removed SourceDestCheck went back to true in place on ${INSTANCE_ID}"
 # The stop/start gives the instance (no Elastic IP) a new public address. The
 # update records it, so the `PublicIp` Output (Fn::GetAtt Instance.PublicIp)
 # must read the NEW live address, not the one the instance had before.

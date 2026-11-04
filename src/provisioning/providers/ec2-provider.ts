@@ -323,6 +323,14 @@ interface InstanceMemberPlan {
   deleteOnTermination?: Array<{ DeviceName: string; DeleteOnTermination: boolean }>;
   /** go-to-k/cdkd#5630: in place, no stop. */
   shutdownBehavior?: string;
+  /** go-to-k/cdkd#5630: in place, no stop; `true` for a removal. */
+  sourceDestCheck?: boolean;
+  /**
+   * go-to-k/cdkd#5630: a Tenancy the template declares and the record lacks.
+   * `prepareInstanceMemberUpdates` compares it with the live tenancy; nothing
+   * is ever sent for it.
+   */
+  tenancyAddition?: { value: string; replaying: boolean };
 }
 
 /**
@@ -1102,7 +1110,15 @@ function replayedRecordNote(context: { replayingState?: boolean } | undefined): 
  * the engine, so only `cdkd drift --revert` brings one to `update()`.
  */
 const VPC_CREATE_ONLY_SENT = ['Ipv4IpamPoolId', 'Ipv4NetmaskLength', 'VpcEncryptionControl'];
-const INSTANCE_CREATE_ONLY_SENT = ['CpuOptions', 'HibernationOptions'];
+// go-to-k/cdkd#5630: `PlacementGroupName` / `PrivateIpAddress` are create-only
+// in the schema too. `Tenancy` replaces only on some changes and is planned on
+// its own (`planInstanceMemberUpdates`).
+const INSTANCE_CREATE_ONLY_SENT = [
+  'CpuOptions',
+  'HibernationOptions',
+  'PlacementGroupName',
+  'PrivateIpAddress',
+];
 
 /**
  * One of those values with CloudFormation's scalar spellings folded (an
@@ -1386,6 +1402,15 @@ export class EC2Provider implements ResourceProvider {
         'CpuOptions',
         'HibernationOptions',
         'InstanceInitiatedShutdownBehavior',
+        // go-to-k/cdkd#5630: `PrivateIpAddress` and `Placement.Tenancy` /
+        // `.GroupName` ride on RunInstances; `SourceDestCheck` is a
+        // ModifyInstanceAttribute after launch and on update;
+        // `PropagateTagsToVolumeOnCreation` adds a `volume` TagSpecification.
+        'SourceDestCheck',
+        'Tenancy',
+        'PlacementGroupName',
+        'PrivateIpAddress',
+        'PropagateTagsToVolumeOnCreation',
       ]),
     ],
     ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],
@@ -1432,7 +1457,17 @@ export class EC2Provider implements ResourceProvider {
     // SecurityGroupIds is read from `removedProperties` instead, because its
     // CloudFormation reset is a call (clear, disassociate, the VPC's default
     // group), not a value (issue #5446, see planInstanceMemberUpdates).
-    ['AWS::EC2::Instance', new Map<string, unknown>([['Monitoring', false]])],
+    //
+    // go-to-k/cdkd#5630: a CloudFormation update that removes `SourceDestCheck`
+    // sets it back to `true`, the EC2 default, in place (measured us-east-1,
+    // 2026-11-04, a t3.nano: `false` -> removed read back `true`, same instance).
+    [
+      'AWS::EC2::Instance',
+      new Map<string, unknown>([
+        ['Monitoring', false],
+        ['SourceDestCheck', true],
+      ]),
+    ],
   ]);
 
   unhandledByDesign = new Map<string, ReadonlyMap<string, string>>([
@@ -7869,6 +7904,13 @@ export class EC2Provider implements ResourceProvider {
         logicalId,
       });
 
+      // go-to-k/cdkd#5630: `PropagateTagsToVolumeOnCreation` gives the volumes
+      // RunInstances creates the instance's tags. CloudFormation applies them
+      // at launch only: a later Tags change, or removing the flag, leaves the
+      // volume tags as they are (measured us-east-1, 2026-11-04), so update()
+      // sends nothing for it.
+      const propagateToVolumes =
+        coerceCfnBoolean(properties['PropagateTagsToVolumeOnCreation']) === true;
       const { response, tagsApplied } = await this.sendTaggedCreate(
         logicalId,
         'instance',
@@ -7876,7 +7918,17 @@ export class EC2Provider implements ResourceProvider {
         (TagSpecifications) =>
           this.ec2Client.send(
             new RunInstancesCommand({
-              ...(TagSpecifications && { TagSpecifications }),
+              ...(TagSpecifications && {
+                TagSpecifications: propagateToVolumes
+                  ? [
+                      ...TagSpecifications,
+                      ...TagSpecifications.map((spec) => ({
+                        ...spec,
+                        ResourceType: 'volume' as const,
+                      })),
+                    ]
+                  : TagSpecifications,
+              }),
               ClientToken: runInstancesToken.value,
               ImageId: imageId,
               InstanceType: instanceType as _InstanceType,
@@ -8060,6 +8112,18 @@ export class EC2Provider implements ResourceProvider {
           }
         }
 
+        // go-to-k/cdkd#5630: RunInstances has no SourceDestCheck input, so a
+        // declared `false` is set on the launched instance, as CloudFormation
+        // does. `true` is EC2's default and needs no call.
+        if (coerceCfnBoolean(properties['SourceDestCheck']) === false) {
+          await this.ec2Client.send(
+            new ModifyInstanceAttributeCommand({
+              InstanceId: instanceId,
+              SourceDestCheck: { Value: false },
+            })
+          );
+        }
+
         // Describe instance to get attributes after running. Under
         // --no-wait the instance can still be `pending` here, so the public
         // address may not be assigned yet; `describedInstanceAttributes`
@@ -8068,6 +8132,28 @@ export class EC2Provider implements ResourceProvider {
           new DescribeInstancesCommand({ InstanceIds: [instanceId] })
         );
         const runningInstance = describeResponse.Reservations?.[0]?.Instances?.[0];
+
+        // go-to-k/cdkd#5630: the launch went out without TagSpecifications
+        // (sendTaggedCreate's untagged re-send), so the volumes did not get
+        // the tags either: apply them to the attached volumes now.
+        if (propagateToVolumes && !tagsApplied && desiredTags.length > 0) {
+          const volumeIds = (runningInstance?.BlockDeviceMappings ?? [])
+            .map((m) => m.Ebs?.VolumeId)
+            .filter((id): id is string => typeof id === 'string' && id !== '');
+          if (volumeIds.length === 0) {
+            this.logger.warn(
+              safeMsg`${logicalId}: PropagateTagsToVolumeOnCreation is set, but the launch went out without tags (the tagged RunInstances was refused) and DescribeInstances reported no attached volume for ${instanceId} yet (under --no-wait the instance may still be pending), so its volumes were not tagged. Tag them with ec2:CreateTags once they are attached.`
+            );
+          }
+          for (const volumeId of volumeIds) {
+            await this.applyTags(
+              volumeId,
+              desiredTags,
+              logicalId,
+              maskerOrIdentity(context?.maskSecrets)
+            );
+          }
+        }
 
         const attributes = describedInstanceAttributes(instanceId, runningInstance);
 
@@ -8582,6 +8668,17 @@ export class EC2Provider implements ResourceProvider {
    *  - `InstanceInitiatedShutdownBehavior` (go-to-k/cdkd#5630, measured
    *    2026-11-04): in place, no interruption; a removal FAILS the update, so
    *    it is refused here.
+   *  - `SourceDestCheck` (go-to-k/cdkd#5630, measured 2026-11-04): in place,
+   *    no interruption; a removal sets it back to `true`.
+   *  - `PlacementGroupName`, `PrivateIpAddress` (go-to-k/cdkd#5630): any
+   *    change, a removal or an addition replaces the instance, so only
+   *    `cdkd drift --revert` brings one here, where it is refused.
+   *  - `Tenancy` (go-to-k/cdkd#5630): a recorded value changed to or from
+   *    `default` (a removal included) replaces. A value the record lacks is
+   *    compared with the live tenancy (no call when it matches, refused when
+   *    not); a `dedicated` <-> `host` change is unmeasured and refused.
+   *  - `PropagateTagsToVolumeOnCreation` (go-to-k/cdkd#5630, measured
+   *    2026-11-04): applied at launch only; a change sends nothing.
    *
    * A member is CHANGED per the engine's `changedProperties` when it is set
    * (a redacted state value cannot be compared to a resolved one), else per
@@ -8679,11 +8776,11 @@ export class EC2Provider implements ResourceProvider {
       }
     }
 
-    // CpuOptions / HibernationOptions (go-to-k/cdkd#5630): create-only, so the
-    // engine replaces the instance on a change and only `cdkd drift --revert`
-    // brings one here. AWS has no call that changes them on a running
-    // instance, so the update is refused before any call rather than reported
-    // as reverted.
+    // CpuOptions / HibernationOptions / PlacementGroupName / PrivateIpAddress /
+    // Tenancy (go-to-k/cdkd#5630): the engine replaces the instance on a
+    // change, as CloudFormation does, and only `cdkd drift --revert` brings
+    // one here. None changes on a running instance, so the update is refused
+    // before any call rather than reported as reverted.
     const createOnlyChanged = INSTANCE_CREATE_ONLY_SENT.filter((key) =>
       changed(key, (a, b) => sameCreateOnlySent(key, a, b))
     );
@@ -8695,6 +8792,72 @@ export class EC2Provider implements ResourceProvider {
           `replace the instance (cdkd deploy --replace). ${createOnlyChanged.join(', ')} can be set only when the instance is launched, and CloudFormation creates a new instance for this change`
         )
       );
+    }
+
+    // Tenancy (go-to-k/cdkd#5630; `instanceTenancyChangeReplaces` decides
+    // which changes the engine replaces for).
+    if (changed('Tenancy', (a, b) => a === b) && !standInSkips('Tenancy')) {
+      const before = previousProperties['Tenancy'];
+      const after = properties['Tenancy'];
+      const refusal = configStringRefusal(properties, 'Tenancy', '', resourceType);
+      if (refusal !== undefined) {
+        throw refusedBeforeApplying(
+          new ProvisioningError(
+            `${refusal}. The instance ${logicalId} was not updated.`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      if (before == null && typeof after === 'string') {
+        // The record lacks it: an earlier cdkd under --prefer-sdk-route
+        // dropped a declared Tenancy, so AWS may already hold this value.
+        // Checked against the live tenancy before any mutating call.
+        plan.tenancyAddition = { value: after, replaying: context?.replayingState === true };
+      } else if (
+        typeof before === 'string' &&
+        typeof after === 'string' &&
+        before !== 'default' &&
+        after !== 'default'
+      ) {
+        // UNMEASURED: a change between two non-default tenancies
+        // (dedicated <-> host) needs a Dedicated Host to measure.
+        // CloudFormation may apply it in place (a stop and
+        // ModifyInstancePlacement) rather than replace, so cdkd neither
+        // replaces nor applies it.
+        if (context?.replayingState === true) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): the rollback would change Tenancy ${before} -> ${after}, which cdkd does not apply; the instance keeps its current tenancy.`
+          );
+        } else {
+          throw refusedBeforeApplying(
+            new ResourceUpdateNotSupportedError(
+              resourceType,
+              logicalId,
+              safeMsg`cdkd does not change Tenancy ${before} -> ${after}. How CloudFormation applies a change between two non-default tenancies has not been measured (it may stop the instance and move it rather than replace it), so cdkd neither replaces the instance nor applies the change. Keep the current tenancy, or replace the instance explicitly with cdkd deploy --replace`
+            )
+          );
+        }
+      } else if (context?.replayingState === true) {
+        // A rollback revert: its arms pass no removedProperties, so a record
+        // that adopted Tenancy on the failed deploy reads as a removal here.
+        // Leave the tenancy and revert the other members.
+        this.logger.warn(
+          safeMsg`${logicalId} (${resourceType}): the rollback would change Tenancy (${before === undefined ? 'unset' : before} -> ${after === undefined ? 'unset' : after}), which needs a new instance; the instance keeps its current tenancy.`
+        );
+      } else {
+        // To or from `default`, or a removal: the engine replaces the instance,
+        // as CloudFormation does, so only `cdkd drift --revert` (or a direct
+        // call) brings one here. No call changes it on a running instance.
+        throw refusedBeforeApplying(
+          new ResourceUpdateNotSupportedError(
+            resourceType,
+            logicalId,
+            'replace the instance (cdkd deploy --replace). CloudFormation creates a new instance for a Tenancy change to or from default'
+          )
+        );
+      }
     }
 
     // InstanceInitiatedShutdownBehavior (go-to-k/cdkd#5630): CloudFormation
@@ -8723,6 +8886,41 @@ export class EC2Provider implements ResourceProvider {
           '',
           'AWS::EC2::Instance InstanceInitiatedShutdownBehavior'
         );
+      }
+    }
+
+    // SourceDestCheck (go-to-k/cdkd#5630): CloudFormation changes it in place
+    // with no interruption, and a removal sets it back to `true` (measured
+    // us-east-1, 2026-11-04); the engine hands a removal over as the `true`
+    // from `removalDefaults`, and a direct call's bare removal means the same.
+    // An absent side is the default `true`; a malformed one is no boolean, so
+    // it never compares equal to a readable side and reaches the refusal.
+    const sourceDestCheckOf = (v: unknown): boolean | undefined =>
+      v === undefined ? true : coerceCfnBoolean(v);
+    if (
+      changed('SourceDestCheck', (a, b) => sourceDestCheckOf(a) === sourceDestCheckOf(b)) &&
+      !standInSkips('SourceDestCheck')
+    ) {
+      const raw = properties['SourceDestCheck'];
+      const want = raw === undefined ? true : coerceCfnBoolean(raw);
+      if (want === undefined) {
+        const refusal = configBooleanRefusal(properties, 'SourceDestCheck', resourceType);
+        if (context?.replayingState === true || context?.desiredFromAwsReadback === true) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): ${refusal ?? 'SourceDestCheck is not a boolean'}; it is left at its current AWS value.`
+          );
+        } else {
+          throw refusedBeforeApplying(
+            new ProvisioningError(
+              `${refusal ?? `${resourceType}.SourceDestCheck must be a boolean`}. The instance ${logicalId} was not updated.`,
+              resourceType,
+              logicalId,
+              physicalId
+            )
+          );
+        }
+      } else {
+        plan.sourceDestCheck = want;
       }
     }
 
@@ -8846,11 +9044,34 @@ export class EC2Provider implements ResourceProvider {
   ): Promise<void> {
     const needsStop = plan.instanceType !== undefined || plan.userData !== undefined;
     const needsDefaultGroup = plan.securityGroups?.kind === 'vpc-default';
-    if (!needsStop && !needsDefaultGroup) return;
+    const tenancy = plan.tenancyAddition;
+    if (!needsStop && !needsDefaultGroup && tenancy === undefined) return;
     const resp = await this.ec2Client.send(
       new DescribeInstancesCommand({ InstanceIds: [physicalId] })
     );
     const instance = resp.Reservations?.[0]?.Instances?.[0];
+    if (tenancy !== undefined) {
+      // go-to-k/cdkd#5630: AWS already holding the declared tenancy means
+      // nothing to do (the record then takes the template's value). Anything
+      // else needs a new instance, which is the user's call: a record without
+      // Tenancy cannot say whether the template just added it.
+      const live = instance?.Placement?.Tenancy;
+      if (live !== tenancy.value) {
+        if (tenancy.replaying) {
+          this.logger.warn(
+            safeMsg`${logicalId} (${resourceType}): the state being restored declares Tenancy ${tenancy.value}, but the instance has ${live ?? 'an unreadable tenancy'}; the rollback leaves it as it is.`
+          );
+        } else {
+          throw markRefusedBeforeApplying(
+            new ResourceUpdateNotSupportedError(
+              resourceType,
+              logicalId,
+              safeMsg`the template declares Tenancy ${tenancy.value}, the instance has ${live ?? 'a tenancy DescribeInstances did not report'}, and the state record does not say which tenancy it was launched with. Changing it needs a new instance: replace it with cdkd deploy --replace, or declare Tenancy ${live ?? 'as the instance has it'}`
+            )
+          );
+        }
+      }
+    }
     if (needsStop) {
       const members = [
         plan.instanceType !== undefined ? 'InstanceType' : '',
@@ -8960,6 +9181,16 @@ export class EC2Provider implements ResourceProvider {
         })
       );
       applied.push('the new InstanceInitiatedShutdownBehavior');
+    }
+
+    if (plan.sourceDestCheck !== undefined) {
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: physicalId,
+          SourceDestCheck: { Value: plan.sourceDestCheck },
+        })
+      );
+      applied.push('the new SourceDestCheck');
     }
 
     if (plan.instanceType === undefined && plan.userData === undefined) {
@@ -9634,18 +9865,24 @@ export class EC2Provider implements ResourceProvider {
    * omitted entirely -- an empty `Placement: {}` would be a pointless
    * shape change on every instance that does not set the property.
    *
-   * Only AvailabilityZone is mapped. The other `Placement` members
-   * (Tenancy, GroupName, HostId, Affinity, PartitionNumber) are separate
-   * top-level CFn properties on this type and are deliberately not handled
-   * here; adding one means adding it to `handledProperties` too, or the
-   * #614 routing rule will keep sending the resource to Cloud Control.
+   * go-to-k/cdkd#5630 adds the top-level CFn `Tenancy` and
+   * `PlacementGroupName` (`Placement.Tenancy` / `.GroupName`); a malformed
+   * one is refused by `buildLaunchOnlyInstanceOptions` before this runs.
+   * HostId and Affinity (Dedicated Host) stay unhandled; adding one means
+   * adding it to `handledProperties` too, or the #614 routing rule will keep
+   * sending the resource to Cloud Control.
    */
   private buildPlacement(
     properties: Record<string, unknown>
-  ): { AvailabilityZone: string } | undefined {
+  ): { AvailabilityZone?: string; Tenancy?: Tenancy; GroupName?: string } | undefined {
+    const out: { AvailabilityZone?: string; Tenancy?: Tenancy; GroupName?: string } = {};
     const az = properties['AvailabilityZone'];
-    if (typeof az !== 'string' || az === '') return undefined;
-    return { AvailabilityZone: az };
+    if (typeof az === 'string' && az !== '') out.AvailabilityZone = az;
+    const tenancy = properties['Tenancy'];
+    if (typeof tenancy === 'string' && tenancy !== '') out.Tenancy = tenancy as Tenancy;
+    const group = properties['PlacementGroupName'];
+    if (typeof group === 'string' && group !== '') out.GroupName = group;
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   /**
@@ -9757,8 +9994,11 @@ export class EC2Provider implements ResourceProvider {
    * go-to-k/cdkd#5630: the launch-only RunInstances inputs. `CpuOptions` and
    * `HibernationOptions` are create-only (a change replaces the instance via
    * the schema's `createOnlyProperties`); `InstanceInitiatedShutdownBehavior`
-   * also changes in place (`planInstanceMemberUpdates`). Member names match
-   * on both sides. A malformed value is refused before RunInstances, on a
+   * also changes in place (`planInstanceMemberUpdates`); `PrivateIpAddress`
+   * is create-only too. The same refusal also covers `Tenancy` /
+   * `PlacementGroupName` (sent by `buildPlacement`), `SourceDestCheck` (set
+   * after the launch) and `PropagateTagsToVolumeOnCreation`. Member names
+   * match on both sides. A malformed value is refused before RunInstances, on a
    * rollback replay too: RunInstances rejects it every time, so the replay
    * could not succeed, and dropping it would launch an instance with CPU,
    * hibernation or shutdown settings the record never declared.
@@ -9771,6 +10011,7 @@ export class EC2Provider implements ResourceProvider {
     CpuOptions?: CpuOptionsRequest;
     HibernationOptions?: HibernationOptionsRequest;
     InstanceInitiatedShutdownBehavior?: ShutdownBehavior;
+    PrivateIpAddress?: string;
   } {
     const cpu = properties['CpuOptions'];
     const hibernation = properties['HibernationOptions'];
@@ -9778,7 +10019,15 @@ export class EC2Provider implements ResourceProvider {
       configIntegerRefusal(cpu, 'CoreCount', `${resourceType} CpuOptions`, 1) ??
       configIntegerRefusal(cpu, 'ThreadsPerCore', `${resourceType} CpuOptions`, 1) ??
       configBooleanRefusal(hibernation, 'Configured', `${resourceType} HibernationOptions`) ??
-      configStringRefusal(properties, 'InstanceInitiatedShutdownBehavior', '', resourceType);
+      configStringRefusal(properties, 'InstanceInitiatedShutdownBehavior', '', resourceType) ??
+      // go-to-k/cdkd#5630: dropping one of these would launch an instance
+      // with a tenancy, placement group, address, source/destination check or
+      // volume tags the template never declared.
+      configStringRefusal(properties, 'Tenancy', '', resourceType) ??
+      configStringRefusal(properties, 'PlacementGroupName', '', resourceType) ??
+      configStringRefusal(properties, 'PrivateIpAddress', '', resourceType) ??
+      configBooleanRefusal(properties, 'SourceDestCheck', resourceType) ??
+      configBooleanRefusal(properties, 'PropagateTagsToVolumeOnCreation', resourceType);
     if (refusal !== undefined) {
       throw markNonRetryable(
         new ProvisioningError(
@@ -9806,6 +10055,8 @@ export class EC2Provider implements ResourceProvider {
     if (typeof shutdown === 'string' && shutdown !== '') {
       out.InstanceInitiatedShutdownBehavior = shutdown as ShutdownBehavior;
     }
+    const privateIp = properties['PrivateIpAddress'];
+    if (typeof privateIp === 'string' && privateIp !== '') out.PrivateIpAddress = privateIp;
     return out;
   }
 
@@ -11028,7 +11279,8 @@ export class EC2Provider implements ResourceProvider {
    *    list of `SecurityGroups[].GroupId` for stable positional compare),
    *    `PrivateIpAddress`, `SourceDestCheck`, `Monitoring` (mapped from
    *    AWS `Monitoring.State` to CFn boolean), `Tenancy` (from
-   *    `Placement.Tenancy`), `IamInstanceProfile` (ARN form — v2 fallback
+   *    `Placement.Tenancy`), `PlacementGroupName` (from
+   *    `Placement.GroupName`), `IamInstanceProfile` (ARN form — v2 fallback
    *    state holding a name will fire one-time drift, resolved via
    *    `cdkd state refresh-observed`), `Tags` (filtered `aws:*`). For
    *    `BlockDeviceMappings`, `DescribeInstances` only returns
@@ -11189,8 +11441,10 @@ export class EC2Provider implements ResourceProvider {
       // template (i.e. every template that has the property at all, since
       // it is what routes CDK onto this shape). Declared unreadable, like
       // Lambda's Code (issue #1281).
+      // go-to-k/cdkd#5630: `PropagateTagsToVolumeOnCreation` is a
+      // CloudFormation-side switch with no EC2 attribute to read back.
       case 'AWS::EC2::Instance':
-        return ['NetworkInterfaces'];
+        return ['NetworkInterfaces', 'PropagateTagsToVolumeOnCreation'];
       // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
       // read back from the CIDR instead. A `monitor` encryption control
       // reports no exclusions at all (measured, us-east-1), so a declared
@@ -11697,6 +11951,11 @@ export class EC2Provider implements ResourceProvider {
     // Tenancy: lives under Placement.Tenancy.
     if (instance.Placement?.Tenancy !== undefined) {
       result['Tenancy'] = instance.Placement.Tenancy;
+    }
+    // go-to-k/cdkd#5630: PlacementGroupName lives under Placement.GroupName
+    // (AWS omits it, or reports it empty, for an instance in no group).
+    if (typeof instance.Placement?.GroupName === 'string' && instance.Placement.GroupName !== '') {
+      result['PlacementGroupName'] = instance.Placement.GroupName;
     }
 
     // IamInstanceProfile: CFn accepts either a name or an ARN. AWS returns

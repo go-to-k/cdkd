@@ -41,6 +41,15 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  * Issue #5630 also gives the NetworkInterfaces-shaped instance CpuOptions and
  * HibernationOptions (with the encrypted root volume hibernation needs).
  *
+ * Issue #5630 (second slice): the main instance launches with
+ * SourceDestCheck=false (a ModifyInstanceAttribute after RunInstances, which
+ * Phase 0 sends while the instance is still `pending`), a fixed
+ * PrivateIpAddress, a spread PlacementGroupName and an explicit
+ * Tenancy=default; Phase 1h REMOVES SourceDestCheck, which CloudFormation sets
+ * back to true in place (measured, us-east-1). The NetworkInterfaces-shaped
+ * instance sets PropagateTagsToVolumeOnCreation with a tag, which both of its
+ * volumes must carry.
+ *
  * REMOVAL phases (issue #1160; CloudFormation A/B in go-to-k/cdkd#1160
  * issuecomment-6281778130). CDKD_TEST_REMOVAL=true drops MetadataOptions /
  * Monitoring / CreditSpecification: CloudFormation turns a removed Monitoring
@@ -100,6 +109,11 @@ export class Ec2InstanceStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
+    // Issue #5630: a spread placement group (t3 supports spread, not cluster).
+    const placementGroup = new ec2.CfnPlacementGroup(this, 'PlacementGroup5630', {
+      strategy: 'spread',
+    });
+
     // Resolve the Amazon Linux 2023 AMI for this stack's region.
     const ami = ec2.MachineImage.latestAmazonLinux2023().getImage(this).imageId;
 
@@ -122,6 +136,17 @@ export class Ec2InstanceStack extends cdk.Stack {
       // CloudFormation does with no interruption (measured, us-east-1). It
       // stays declared in every phase: CloudFormation fails a removal.
       instanceInitiatedShutdownBehavior: isUpdate5446 ? 'stop' : 'terminate',
+      // Issue #5630 (second slice). SourceDestCheck=false is the non-default
+      // value; Phase 1h removes it, which CloudFormation resets to true in
+      // place. PrivateIpAddress / PlacementGroupName / Tenancy are replacing
+      // properties, so they stay identical in every phase. The address sits in
+      // the public subnet (10.0.0.0/24, the first /24 of the VPC's default
+      // 10.0.0.0/16). Tenancy=default proves only the SDK route: a dedicated
+      // instance carries an hourly region fee, and the wire is unit-tested.
+      ...(isUpdate5446 ? {} : { sourceDestCheck: false }),
+      privateIpAddress: '10.0.0.200',
+      placementGroupName: placementGroup.ref,
+      tenancy: 'default',
       // Security-focused property backfill (#609):
       // Termination protection — a silent-drop here would let a user believe
       // the instance is protected when it is not. `cdkd destroy
@@ -227,6 +252,9 @@ export class Ec2InstanceStack extends cdk.Stack {
       // exact shape (measured, us-east-1, t3.nano + AL2023).
       cpuOptions: { coreCount: 1, threadsPerCore: 1 },
       hibernationOptions: { configured: true },
+      // Issue #5630: both block-device volumes must carry this tag.
+      propagateTagsToVolumeOnCreation: true,
+      tags: [{ key: 'Cdkd5630Propagate', value: 'volume-tag' }],
       blockDeviceMappings: [
         {
           deviceName: '/dev/xvda',
@@ -255,9 +283,19 @@ export class Ec2InstanceStack extends cdk.Stack {
       ],
     });
 
+    // Issue #5630: the main instance claims the fixed 10.0.0.200 in the same
+    // /24 this instance takes an auto-assigned address from, so launch it
+    // first; otherwise this one could be handed .200 and the main launch fail.
+    publicInstance.addDependency(instance);
+
     new cdk.CfnOutput(this, 'PublicInstanceId', {
       value: publicInstance.ref,
       description: 'NetworkInterfaces-shaped EC2 Instance ID (issue #1281)',
+    });
+
+    new cdk.CfnOutput(this, 'PlacementGroupName', {
+      value: placementGroup.ref,
+      description: 'The spread placement group the main instance launches in (issue #5630)',
     });
 
     new cdk.CfnOutput(this, 'EbsKeyArn', {

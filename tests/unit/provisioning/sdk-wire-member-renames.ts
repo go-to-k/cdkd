@@ -267,6 +267,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     members: {
       IamInstanceProfile: ['Name'],
       'NetworkInterfaces.GroupSet': ['Groups'],
+      // go-to-k/cdkd#5630: RunInstances' `Placement.GroupName`.
+      PlacementGroupName: ['GroupName'],
       SecurityGroupIds: ['Groups'],
     },
     containers: {
@@ -276,6 +278,9 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
     transformed: {
       Monitoring:
         'MonitorInstances versus UnmonitorInstances: the value picks the command, which carries only `InstanceIds`',
+      // go-to-k/cdkd#5630.
+      PropagateTagsToVolumeOnCreation:
+        'the flag adds a `volume` copy of the instance TagSpecification to RunInstances; it carries the tags, not the value',
     },
   },
   'AWS::EC2::NatGateway': {
