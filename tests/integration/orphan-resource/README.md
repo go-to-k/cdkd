@@ -12,8 +12,11 @@ target from state. Unit tests cover the algorithm
 (`tests/unit/analyzer/orphan-rewriter.test.ts`); this integ test
 exercises the load-bearing real-AWS assertions that unit tests can't:
 
-- Sibling resources' `Ref` / `Fn::GetAtt` are rewritten to literal strings
-  (not left as intrinsic objects pointing at the now-missing orphan).
+- The sibling's dependency edge on the orphan is dropped, and its
+  recorded `BUCKET_NAME` stays the literal bucket name. State records the
+  values cdkd resolved and sent, so this stack gives the rewriter no
+  intrinsic to substitute; the `Ref` / `Fn::GetAtt` / `Fn::Sub` rewrites
+  are covered by the unit tests only.
 - The orphaned AWS resource really survives — `cdkd orphan` only
   removes the cdkd state record.
 - The orphan is reversible via `cdkd import` — re-importing the bucket
@@ -25,8 +28,9 @@ Two resources, with one explicit cross-reference:
 
 - **AWS::S3::Bucket** (`MyBucket`) — the orphan target.
 - **AWS::Lambda::Function** (`Handler`) — `BUCKET_NAME` env var is
-  `bucket.bucketName`, which CDK emits as `{Ref: MyBucket}`. This is
-  the reference the orphan rewriter has to substitute.
+  `bucket.bucketName`, which CDK emits as `{Ref: MyBucket}`. cdkd records
+  the resolved bucket name in state, plus a `dependencies` entry on
+  `MyBucket`, which is what the orphan rewriter drops.
 
 The Bucket has `RemovalPolicy.RETAIN` so a wrong-order `cdkd destroy`
 (without orphaning first) doesn't accidentally delete it; the integ
@@ -43,8 +47,9 @@ Run with `/run-integ orphan-resource`. The expected flow:
    ```
 
    `cdkd state resources CdkdOrphanResourceExample` should list both
-   `MyBucket` and `Handler`. The Lambda's `BUCKET_NAME` env var in
-   state should still be `{Ref: MyBucket}` (intrinsic form).
+   `MyBucket` and `Handler`. State records the values cdkd SENT, so the
+   Lambda's `BUCKET_NAME` env var is already the literal bucket name, and
+   `Handler`'s `dependencies` lists `MyBucket`.
 
 2. **Orphan the bucket**
 
@@ -61,8 +66,12 @@ Run with `/run-integ orphan-resource`. The expected flow:
    ```text
    Orphaning 1 resource(s): MyBucketF68F3FF0
    Applied 1 rewrite(s):
-     [property] Handler<hash>.Properties.Environment.Variables.BUCKET_NAME: {"Ref":"MyBucketF68F3FF0"} → "<physical-bucket-name>"
+     [dependency] Handler<hash>.dependencies: "MyBucketF68F3FF0" → (dropped)
    ```
+
+   A `[ref]` / `[getAtt]` / `[sub]` line appears only when a sibling's
+   recorded `properties` or `attributes` still hold an intrinsic naming the
+   orphan; this stack's resolved `BUCKET_NAME` holds none.
 
    (The `F68F3FF0`-style suffixes are CDK-generated; the `Handler` logical
    ID gets a similar suffix.)
@@ -70,8 +79,8 @@ Run with `/run-integ orphan-resource`. The expected flow:
 3. **Verify**
 
    - `cdkd state resources CdkdOrphanResourceExample` lists ONLY `Handler`.
-   - The Lambda's `BUCKET_NAME` env var in state is now a literal string
-     (the real bucket name), not `{Ref: MyBucket}`.
+   - `Handler`'s `dependencies` no longer lists `MyBucket`, and its
+     `BUCKET_NAME` env var is still the real bucket name.
    - `aws s3api head-bucket --bucket <bucket-name>` succeeds — the
      bucket is still there.
 
