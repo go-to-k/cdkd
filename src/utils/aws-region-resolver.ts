@@ -1,5 +1,6 @@
 import { GetBucketLocationCommand, S3Client } from '@aws-sdk/client-s3';
 import { awsClientDefaults } from './aws-client-defaults.js';
+import { s3ClientDefaults } from './s3-client-defaults.js';
 
 /**
  * Per-bucket region cache.
@@ -132,6 +133,7 @@ export async function resolveBucketRegion(
     // `auth` carries no `region`, so nothing below is shadowed.
     let client = new S3Client({
       ...awsClientDefaults({ profile: opts.profile }),
+      ...s3ClientDefaults(),
       ...auth,
       ...(explicitRegion && { region: explicitRegion }),
     });
@@ -144,6 +146,7 @@ export async function resolveBucketRegion(
       probeRegion = 'us-east-1';
       client = new S3Client({
         ...awsClientDefaults({ profile: opts.profile }),
+        ...s3ClientDefaults(),
         ...auth,
         region: probeRegion,
       });

@@ -104,6 +104,7 @@
     "@aws-sdk/credential-provider-node": "^3.972.81",
     "@aws-sdk/s3-request-presigner": "^3.1016.0",
     "@smithy/node-http-handler": "^4.11.3",
+    "@smithy/shared-ini-file-loader": "^4.4.9",
     "adm-zip": "^0.6.0",
     "agent-base": "^9.0.0",
     "archiver": "^8.0.0",

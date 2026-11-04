@@ -4,6 +4,11 @@ import { getCdkdVersion } from '../version.js';
 import { guardStackRegionOptions } from './options.js';
 import { setPasteableAwsProfile } from '../utils/pasteable-aws-profile.js';
 import { setPasteableRunFlags, setPasteableVerbFlags } from '../utils/pasteable-run-context.js';
+import {
+  resolveS3ClientDefaults,
+  setS3ClientDefaultsDebugLog,
+} from '../utils/s3-client-defaults.js';
+import { getLogger } from '../utils/logger.js';
 
 import { createBootstrapCommand } from './commands/bootstrap.js';
 import { createSynthCommand } from './commands/synth.js';
@@ -58,7 +63,10 @@ export function buildProgram(): Command {
     // same helper without importing this module at all.
     .version(getCdkdVersion());
 
-  program.hook('preAction', (_thisCommand, actionCommand) => {
+  // Before the hook, so a client built ahead of resolution is reported too.
+  setS3ClientDefaultsDebugLog((message) => getLogger().debug(message));
+
+  program.hook('preAction', async (_thisCommand, actionCommand) => {
     const { profile } = actionCommand.optsWithGlobals<{ profile?: string }>();
     // The EXPLICIT flag only: every pasteable `aws ...` command then carries it
     // (go-to-k/cdkd#3959). An inherited AWS_PROFILE is not recorded.
@@ -83,6 +91,11 @@ export function buildProgram(): Command {
     if (profile !== undefined) {
       process.env['AWS_PROFILE'] = profile;
     }
+    // AFTER the mirror above: profile config reaches the SDK only through
+    // AWS_PROFILE, and the S3 endpoint override and addressing_style can both
+    // come from the profile (go-to-k/cdkd#5745). Once per process, local file
+    // reads only (no AWS call), and it never rejects.
+    await resolveS3ClientDefaults({ profile });
   });
 
   program.addCommand(createBootstrapCommand());

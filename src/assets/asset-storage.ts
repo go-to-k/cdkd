@@ -33,6 +33,7 @@ import {
   safeMsg,
   STACK_REF_MAX_CODE_POINTS,
 } from '../utils/display-safe.js';
+import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
  * cdkd-owned asset storage — naming, bootstrap marker, and deploy-time
@@ -699,7 +700,11 @@ export async function verifyAssetStorageExists(
   // `finally` below destroying one client would tear down the other's. The two
   // destroys are adjacent today, but the sharing is the hazard the per-client
   // agent rule exists to prevent, and it is invisible at the call site.
-  const s3Client = new S3Client({ ...awsClientDefaults({ profile: opts.profile }), ...clientOpts });
+  const s3Client = new S3Client({
+    ...awsClientDefaults({ profile: opts.profile }),
+    ...s3ClientDefaults(),
+    ...clientOpts,
+  });
   const ecrClient = new ECRClient({
     ...awsClientDefaults({ profile: opts.profile }),
     ...clientOpts,
@@ -1309,6 +1314,7 @@ export class AssetModeResolver {
     try {
       s3Client = new S3Client({
         ...awsClientDefaults({ profile: this.profile }),
+        ...s3ClientDefaults(),
         region,
         ...(this.profile && { profile: this.profile }),
       });

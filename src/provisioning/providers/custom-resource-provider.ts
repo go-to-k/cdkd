@@ -27,6 +27,12 @@ import {
   type AwsAccountInfo,
 } from '../../deployment/intrinsic-function-resolver.js';
 import { rebuildClientForBucketRegion } from '../../utils/bucket-region-client.js';
+import {
+  CR_S3_ENDPOINT_ENV,
+  customResourceS3Endpoint,
+  responsePresignClient,
+  type CustomResourceS3Endpoint,
+} from './custom-resource-response-endpoint.js';
 import { AccountIdUnavailableError, ProvisioningError } from '../../utils/error-handler.js';
 import {
   withRetry,
@@ -3865,6 +3871,15 @@ export class CustomResourceProvider implements ResourceProvider {
       return 'https://localhost/cfn-response-not-configured';
     }
 
+    // Read (and validate) `CDKD_CR_S3_ENDPOINT_URL` BEFORE the placeholder
+    // PUT, so a malformed value refuses without leaving an object behind.
+    let signingEndpoint: CustomResourceS3Endpoint | undefined;
+    try {
+      signingEndpoint = customResourceS3Endpoint();
+    } catch (error) {
+      throw markNonRetryable(error as Error);
+    }
+
     // The pre-signed URL's host is region-specific: sign against the bucket's
     // ACTUAL region, not the deploy region (issue #1195).
     await this.ensureResponseClient();
@@ -3939,7 +3954,18 @@ export class CustomResourceProvider implements ResourceProvider {
       Key: responseKey,
     });
 
-    const presignedUrl = await getSignedUrl(this.s3Client, command, {
+    // `CDKD_CR_S3_ENDPOINT_URL` signs for the endpoint the Lambda can reach,
+    // with the (region-corrected) response client's region and credentials.
+    // The host is part of the signature, so it is signed for, never rewritten.
+    let signer = this.s3Client;
+    if (signingEndpoint !== undefined) {
+      signer = await responsePresignClient(this.s3Client, signingEndpoint);
+      // The origin only: the URL itself is a bearer credential.
+      this.logger.debug(
+        safeMsg`Signing the custom resource ResponseURL for ${CR_S3_ENDPOINT_ENV} (${signingEndpoint.origin})`
+      );
+    }
+    const presignedUrl = await getSignedUrl(signer, command, {
       expiresIn: 7200,
     });
 

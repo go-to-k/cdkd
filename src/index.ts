@@ -55,6 +55,12 @@ export {
   clearBucketRegionCache,
   type ResolveBucketRegionOptions,
 } from './utils/aws-region-resolver.js';
+export {
+  resolveS3ClientDefaults,
+  s3AddressingDecision,
+  type S3AddressingDecision,
+  type S3AddressingStyle,
+} from './utils/s3-client-defaults.js';
 
 // Synthesis
 export {

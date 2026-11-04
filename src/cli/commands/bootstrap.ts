@@ -43,6 +43,7 @@ import {
 } from '../../state/state-bucket-lifecycle.js';
 import { CUSTOM_RESOURCE_RESPONSE_PREFIX } from '../../state/state-prefix.js';
 import { safeMsg } from '../../utils/display-safe.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * Bootstrap command implementation
@@ -172,6 +173,7 @@ async function bootstrapCommand(options: {
     const probeBackend = new S3StateBackend(
       new S3Client({
         ...awsClientDefaults({ profile: options.profile }),
+        ...s3ClientDefaults(),
         region: effective.region,
         ...(options.profile && { profile: options.profile }),
       }),
@@ -404,6 +406,7 @@ async function bootstrapCommand(options: {
       // putRawObject) but the constructor requires one.
       const markerS3Client = new S3Client({
         ...awsClientDefaults({ profile: options.profile }),
+        ...s3ClientDefaults(),
         region,
         ...(options.profile && { profile: options.profile }),
       });

@@ -7,6 +7,7 @@ import { purgeNoncurrentKeyVersions } from '../state/s3-noncurrent-version-purge
 import { getLogger } from '../utils/logger.js';
 import { describeAwsFailure } from '../utils/aws-failure-text.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
+import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
  * CloudFormation `TemplateBody` hard limit (51,200 bytes). Templates larger
@@ -118,6 +119,7 @@ export async function uploadCfnTemplate(
   });
   const s3 = new S3Client({
     ...awsClientDefaults({ profile: s3ClientOpts?.profile }),
+    ...s3ClientDefaults(),
     region,
     ...(s3ClientOpts?.profile && { profile: s3ClientOpts.profile }),
     ...(s3ClientOpts?.credentials && { credentials: s3ClientOpts.credentials }),

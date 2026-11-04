@@ -289,6 +289,68 @@ does, while Go's `net/http` prefers the upper-case one.
 A CIDR entry in `NO_PROXY` is ignored because a hostname never contains `/`,
 so the entry falls into the exact-match branch and can never match.
 
+## S3 endpoint overrides and path-style addressing
+
+The AWS SDK for JavaScript v3 honours an S3 endpoint override but keeps
+building virtual-hosted URLs against it (`http://<bucket>.s3:4566/<key>`),
+which an S3 emulator usually cannot answer. It also ignores the profile's
+`s3 = addressing_style` setting. cdkd therefore applies the AWS CLI's rule to
+every S3 client it builds, plus the AWS CDK CLI's `CDK_S3_FORCE_PATH_STYLE`:
+
+| Configuration | Addressing |
+| --- | --- |
+| No S3 endpoint override, no `addressing_style` | Virtual-hosted, unchanged |
+| An override: `AWS_ENDPOINT_URL_S3`, `AWS_ENDPOINT_URL`, or `endpoint_url` (in the profile or its `services` section) | Path-style: `http://s3:4566/<bucket>/<key>` |
+| An override plus `addressing_style = virtual` | Virtual-hosted |
+| `addressing_style = path` | Path-style, with or without an override |
+| `CDK_S3_FORCE_PATH_STYLE` set to any non-empty value | Path-style, even with `addressing_style = virtual` |
+
+`AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` turns the override off, and with
+it the override-driven path-style switch (`addressing_style = path` and
+`CDK_S3_FORCE_PATH_STYLE` still apply). The profile is the one `--profile` or `AWS_PROFILE`
+selects. As in the AWS CLI, `addressing_style` is read from the profile's
+`s3` section in the config file, unless the same profile in the shared
+credentials file has an `s3` section, which then replaces it. With
+`--verbose`, cdkd prints a line saying why path-style is on.
+
+`CDK_S3_FORCE_PATH_STYLE` behaves exactly as in the AWS CDK CLI: any
+non-empty value turns path-style on, including `false` and `0`. Unset it, or
+set it to the empty string, to leave the decision to the table above.
+
+```ini
+[profile emulator]
+endpoint_url = http://localhost:4566
+s3 =
+  addressing_style = virtual   # opt back out of path-style
+```
+
+Path-style does not apply to S3 Express directory buckets; their URLs are the
+same either way.
+
+### The custom-resource response endpoint
+
+A custom resource's handler sends its result to a pre-signed S3 URL cdkd
+generates. When cdkd reaches the emulator under one name and the handler's
+Lambda must use another, set `CDKD_CR_S3_ENDPOINT_URL`. It is modelled on
+the AWS CDK CLI's `AWS_ENDPOINT_URL_S3_FOR_CLOUDFORMATION`, which does the same
+for the template URL the CDK CLI hands to CloudFormation; cdkd applies it to
+the custom-resource response URL instead.
+
+```bash
+AWS_ENDPOINT_URL_S3=http://localhost:4566 \
+CDKD_CR_S3_ENDPOINT_URL=http://s3:4566 \
+  cdkd deploy   # cdkd uses localhost; the response URL is signed for s3:4566
+```
+
+| `CDKD_CR_S3_ENDPOINT_URL` | Effect |
+| --- | --- |
+| Unset or empty | The response URL uses cdkd's own S3 endpoint |
+| An `http://` or `https://` URL | Only the response URL is signed for it, path-style unless `addressing_style = virtual` without `CDK_S3_FORCE_PATH_STYLE` |
+| Anything else (no scheme, user info, a query) | The custom resource fails before it is invoked, naming the variable |
+
+The URL is signed for that host rather than rewritten afterwards, because the
+host is part of the signature.
+
 ## Related
 
 - [Troubleshooting](troubleshooting.md)

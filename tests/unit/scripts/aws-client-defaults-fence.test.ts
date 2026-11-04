@@ -89,32 +89,33 @@ describe('SDK client construction critic', () => {
   });
 
   describe('verdicts', () => {
-    const IMPORT = `import { S3Client } from '@aws-sdk/client-s3';\n`;
+    // A non-S3 client: the S3Client-only half has its own block below.
+    const IMPORT = `import { SQSClient } from '@aws-sdk/client-sqs';\n`;
 
     it('accepts a literal that opens with the defaults', () => {
-      const found = sites(`${IMPORT}new S3Client({ ...awsClientDefaults(), region: 'x' });`);
+      const found = sites(`${IMPORT}new SQSClient({ ...awsClientDefaults(), region: 'x' });`);
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first']);
     });
 
     it('rejects a bare construction', () => {
-      const found = sites(`${IMPORT}new S3Client({ region: 'x' });`);
+      const found = sites(`${IMPORT}new SQSClient({ region: 'x' });`);
       expect(found.map((s) => s.verdict)).toEqual(['missing']);
     });
 
     it('rejects a construction with no config at all', () => {
-      expect(sites(`${IMPORT}new S3Client();`).map((s) => s.verdict)).toEqual(['missing']);
+      expect(sites(`${IMPORT}new SQSClient();`).map((s) => s.verdict)).toEqual(['missing']);
     });
 
     it('rejects the defaults spread LAST, which would clobber explicit credentials', () => {
       // The order is the property, not the presence: a site that supplies its
       // own `credentials` must keep them.
-      const found = sites(`${IMPORT}new S3Client({ credentials: c, ...awsClientDefaults() });`);
+      const found = sites(`${IMPORT}new SQSClient({ credentials: c, ...awsClientDefaults() });`);
       expect(found.map((s) => s.verdict)).toEqual(['defaults-not-first']);
     });
 
     it('sees through a shared config bag', () => {
       const found = sites(
-        `${IMPORT}const opts = { ...awsClientDefaults(), region: 'x' };\nnew S3Client(opts);`
+        `${IMPORT}const opts = { ...awsClientDefaults(), region: 'x' };\nnew SQSClient(opts);`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first']);
     });
@@ -123,7 +124,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}class A {
            private get clientOptions() { return { ...awsClientDefaults(), region: 'x' }; }
-           make() { return new S3Client({ ...this.clientOptions, logger: undefined }); }
+           make() { return new SQSClient({ ...this.clientOptions, logger: undefined }); }
          }`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first']);
@@ -135,7 +136,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}class A {
            private get clientOptions() { return { region: 'x' }; }
-           make() { return new S3Client({ ...this.clientOptions }); }
+           make() { return new SQSClient({ ...this.clientOptions }); }
          }`
       );
       expect(found.map((s) => s.verdict)).toEqual(['missing']);
@@ -150,7 +151,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
          const opts = { ...awsClientDefaults(), region: 'x' };
-         const a = new S3Client(opts);
+         const a = new SQSClient(opts);
          const b = new ECRClient(opts);`
       );
       expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
@@ -162,8 +163,8 @@ describe('SDK client construction critic', () => {
       // which is right about the ORDER and blind to the SHARING.
       const found = sites(
         `${IMPORT}const auth = { ...awsClientDefaults(), profile: 'p' };
-         const a = new S3Client({ ...auth, region: 'x' });
-         const b = new S3Client({ ...auth, region: 'y' });`
+         const a = new SQSClient({ ...auth, region: 'x' });
+         const b = new SQSClient({ ...auth, region: 'y' });`
       );
       expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
     });
@@ -177,7 +178,7 @@ describe('SDK client construction critic', () => {
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
          class A {
            private readonly opts = { ...awsClientDefaults(), region: 'x' };
-           one() { return new S3Client(this.opts); }
+           one() { return new SQSClient(this.opts); }
            two() { return new ECRClient(this.opts); }
          }`
       );
@@ -194,7 +195,7 @@ describe('SDK client construction critic', () => {
          class A {
            private readonly cached = { ...awsClientDefaults(), region: 'x' };
            private get opts() { return { ...this.cached }; }
-           one() { return new S3Client({ ...this.opts }); }
+           one() { return new SQSClient({ ...this.opts }); }
            two() { return new ECRClient({ ...this.opts }); }
          }`
       );
@@ -226,7 +227,7 @@ describe('SDK client construction critic', () => {
          class A {
            private readonly plain = { region: 'x' };
            private get opts() { return { ...awsClientDefaults(), ...this.plain }; }
-           one() { return new S3Client({ ...this.opts }); }
+           one() { return new SQSClient({ ...this.opts }); }
            two() { return new ECRClient({ ...this.opts }); }
          }`
       );
@@ -245,7 +246,7 @@ describe('SDK client construction critic', () => {
          class A {
            private readonly cached = { ...awsClientDefaults(), region: 'x' };
            private get opts() { return { ...awsClientDefaults(), ...this.cached }; }
-           one() { return new S3Client({ ...this.opts }); }
+           one() { return new SQSClient({ ...this.opts }); }
            two() { return new ECRClient({ ...this.opts }); }
          }`
       );
@@ -260,8 +261,8 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}class A {
            private get clientOptions() { return { ...awsClientDefaults(), region: 'x' }; }
-           one() { return new S3Client({ ...this.clientOptions }); }
-           two() { return new S3Client({ ...this.clientOptions }); }
+           one() { return new SQSClient({ ...this.clientOptions }); }
+           two() { return new SQSClient({ ...this.clientOptions }); }
          }`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first', 'defaults-first']);
@@ -273,8 +274,8 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}class A {
            private readonly opts = { ...awsClientDefaults(), region: 'x' };
-           one() { return new S3Client({ ...this.opts }); }
-           two() { return new S3Client({ ...this.opts }); }
+           one() { return new SQSClient({ ...this.opts }); }
+           two() { return new SQSClient({ ...this.opts }); }
          }`
       );
       expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
@@ -286,7 +287,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
          const opts = { region: 'x' };
-         const a = new S3Client({ ...awsClientDefaults(), ...opts });
+         const a = new SQSClient({ ...awsClientDefaults(), ...opts });
          const b = new ECRClient({ ...awsClientDefaults(), ...opts });`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first', 'defaults-first']);
@@ -300,7 +301,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
          const shared = { ...awsClientDefaults(), region: 'x' };
-         const a = new S3Client({ ...awsClientDefaults(), ...shared });
+         const a = new SQSClient({ ...awsClientDefaults(), ...shared });
          const b = new ECRClient({ ...awsClientDefaults(), ...shared });`
       );
       expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
@@ -313,7 +314,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
          const plain = { region: 'x' };
-         const a = new S3Client({ ...awsClientDefaults(), ...plain });
+         const a = new SQSClient({ ...awsClientDefaults(), ...plain });
          const b = new ECRClient({ ...awsClientDefaults(), ...plain });`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first', 'defaults-first']);
@@ -325,7 +326,7 @@ describe('SDK client construction critic', () => {
       const found = sites(
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
          const opts = { region: 'x' };
-         const a = new S3Client(opts);
+         const a = new SQSClient(opts);
          const b = new ECRClient(opts);`
       );
       expect(found.map((s) => s.verdict)).toEqual(['missing', 'missing']);
@@ -333,7 +334,7 @@ describe('SDK client construction critic', () => {
 
     it('leaves a bag used by ONE client alone', () => {
       const found = sites(
-        `${IMPORT}const opts = { ...awsClientDefaults(), region: 'x' };\nnew S3Client(opts);`
+        `${IMPORT}const opts = { ...awsClientDefaults(), region: 'x' };\nnew SQSClient(opts);`
       );
       expect(found.map((s) => s.verdict)).toEqual(['defaults-first']);
     });
@@ -397,19 +398,19 @@ describe('SDK client construction critic', () => {
       // correctness bug.
       const found = sites(
         `${IMPORT}import { ECRClient } from '@aws-sdk/client-ecr';
-         function one() { const opts = { ...awsClientDefaults() }; return new S3Client(opts); }
+         function one() { const opts = { ...awsClientDefaults() }; return new SQSClient(opts); }
          function two() { const opts = { ...awsClientDefaults() }; return new ECRClient(opts); }`
       );
       expect(found.map((s) => s.verdict)).toEqual(['shared-defaults', 'shared-defaults']);
     });
 
     it('reports a config it cannot read as opaque rather than assuming it clean', () => {
-      const found = sites(`${IMPORT}new S3Client(buildConfig());`);
+      const found = sites(`${IMPORT}new SQSClient(buildConfig());`);
       expect(found.map((s) => s.verdict)).toEqual(['opaque']);
     });
 
     it('finds a construction split across lines', () => {
-      const found = sites(`${IMPORT}new S3Client(\n  {\n    region: 'x',\n  }\n);`);
+      const found = sites(`${IMPORT}new SQSClient(\n  {\n    region: 'x',\n  }\n);`);
       expect(found).toHaveLength(1);
       expect(found[0]!.verdict).toBe('missing');
     });
@@ -626,8 +627,8 @@ describe('SDK client construction critic', () => {
       writeFileSync(
         target,
         readFileSync(target, 'utf8').replace(
-          '...awsClientDefaults({ profile: opts.profile }),\n    region: bucketRegion,',
-          'region: bucketRegion,\n    ...awsClientDefaults({ profile: opts.profile }),'
+          '...awsClientDefaults({ profile: opts.profile }),\n    ...s3ClientDefaults(),\n    region: bucketRegion,',
+          '...s3ClientDefaults(),\n    region: bucketRegion,\n    ...awsClientDefaults({ profile: opts.profile }),'
         )
       );
       const report = buildReport(srcDir, allowList);
@@ -769,6 +770,129 @@ describe('SDK client construction critic', () => {
       );
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('only valid with --check');
+    });
+  });
+
+  describe('the S3Client half: s3ClientDefaults() (issue #5745)', () => {
+    const verdicts = (source: string): string[] => sites(source).map((s) => s.verdict);
+
+    it('refuses an S3Client that carries awsClientDefaults() but not s3ClientDefaults()', () => {
+      expect(
+        verdicts(
+          `import { S3Client } from '@aws-sdk/client-s3';\nnew S3Client({ ...awsClientDefaults(), region: 'x' });`
+        )
+      ).toEqual(['s3-defaults-missing']);
+    });
+
+    it('accepts it anywhere after the first spread, and through a bag', () => {
+      const IMPORT = `import { S3Client } from '@aws-sdk/client-s3';\n`;
+      expect(
+        verdicts(`${IMPORT}new S3Client({ ...awsClientDefaults(), ...s3ClientDefaults(), region: 'x' });`)
+      ).toEqual(['defaults-first']);
+      expect(
+        verdicts(
+          `${IMPORT}new S3Client({ ...ambientClientDefaults(), region: 'x', ...s3ClientDefaults({ explicitEndpoint: true }) });`
+        )
+      ).toEqual(['defaults-first']);
+      expect(
+        verdicts(
+          `${IMPORT}class A { get o() { return { ...awsClientDefaults(), x: 1 }; } m() { return new S3Client({ ...this.o, ...s3ClientDefaults() }); } }`
+        )
+      ).toEqual(['defaults-first']);
+    });
+
+    it('reports the louder generic verdict first', () => {
+      expect(
+        verdicts(`import { S3Client } from '@aws-sdk/client-s3';\nnew S3Client({ region: 'x' });`)
+      ).toEqual(['missing']);
+    });
+
+    it('binds through an alias, a destructured dynamic import and a namespace import', () => {
+      expect(
+        verdicts(
+          `import { S3Client as B } from '@aws-sdk/client-s3';\nnew B({ ...awsClientDefaults() });`
+        )
+      ).toEqual(['s3-defaults-missing']);
+      expect(
+        verdicts(
+          `async function f() { const { S3Client } = await import('@aws-sdk/client-s3'); return new S3Client({ ...awsClientDefaults() }); }`
+        )
+      ).toEqual(['s3-defaults-missing']);
+      expect(
+        verdicts(
+          `async function f() { const m = await import('@aws-sdk/client-s3'); return new m.S3Client({ ...awsClientDefaults() }); }`
+        )
+      ).toEqual(['s3-defaults-missing']);
+    });
+
+    it('leaves the other S3-family packages and other clients alone (no forcePathStyle there)', () => {
+      expect(
+        verdicts(
+          `import { S3ControlClient } from '@aws-sdk/client-s3-control';\nimport { SQSClient } from '@aws-sdk/client-sqs';\nnew S3ControlClient({ ...awsClientDefaults() });\nnew SQSClient({ ...awsClientDefaults() });`
+        )
+      ).toEqual(['defaults-first', 'defaults-first']);
+    });
+
+    it('sees the real S3Client population (floor), every site carrying the helper', () => {
+      // A LITERAL floor (29 sites when #5745 landed) plus a text-scan agreement.
+      const files: string[] = [];
+      const walk = (dir: string): void => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (entry.name.endsWith('.ts')) files.push(full);
+        }
+      };
+      walk(join(repoRoot, 'src'));
+      const s3Sites = files.flatMap((file) =>
+        findClientSites(file, readFileSync(file, 'utf8')).filter((site) => site.client === 'S3Client')
+      );
+      // TWO independent counts that must agree: the generic AST walk's
+      // S3Client sites, and a text scan of non-comment `new S3Client(` /
+      // `new <ns>.S3Client(` lines; the literal floor catches both collapsing
+      // together. `site.s3` then proves the S3 HALF bound every one of them,
+      // which the generic walk alone cannot show.
+      const textCount = files.reduce(
+        (n, file) =>
+          n +
+          readFileSync(file, 'utf8')
+            .split('\n')
+            .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+            .filter((line) => /new\s+(?:[A-Za-z_$][\w$]*\.)?S3Client\(/.test(line)).length,
+        0
+      );
+      expect(s3Sites.length).toBe(textCount);
+      expect(s3Sites.length).toBeGreaterThanOrEqual(29);
+      expect(s3Sites.filter((site) => !site.s3)).toEqual([]);
+      expect(s3Sites.filter((site) => site.verdict !== 'defaults-first')).toEqual([]);
+    });
+
+    it('reports the REAL bucket-region rebuild losing the helper, through the shipped --check', () => {
+      const srcDir = scratchCopyOfSrc();
+      const target = join(srcDir, 'utils/bucket-region-client.ts');
+      const before = readFileSync(target, 'utf8');
+      const after = before.replace('    ...s3ClientDefaults(),\n', '');
+      expect(after, 'the anchored spread moved — re-point this probe').not.toBe(before);
+      writeFileSync(target, after);
+      const report = buildReport(srcDir, allowList);
+      expect(
+        report.gaps
+          .filter((gap) => gap.file === 'src/utils/bucket-region-client.ts')
+          .map((gap) => gap.verdict)
+      ).toEqual(['s3-defaults-missing']);
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(repoRoot, 'scripts/check-aws-client-defaults.ts'),
+          '--check',
+          `--src-dir=${srcDir}`,
+          `--allow-list=${allowListPath}`,
+        ],
+        { encoding: 'utf8', timeout: CONTENDED_CASE_TIMEOUT_MS }
+      );
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('bucket-region-client.ts');
+      expect(result.stderr).toContain('s3-defaults-missing');
     });
   });
   // FILE-LEVEL, not on the two cases the flake report named (issue #2491).

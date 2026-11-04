@@ -2,6 +2,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { resolveBucketRegion } from './aws-region-resolver.js';
 import { awsClientDefaults } from './aws-client-defaults.js';
 import { quietS3Logger } from './sdk-call-log.js';
+import { s3ClientDefaults } from './s3-client-defaults.js';
 
 /**
  * Shared "rebuild a region-corrected S3 client for the state bucket" helper.
@@ -188,6 +189,7 @@ export async function rebuildClientForBucketRegion(
 
   const replacement = new S3Client({
     ...awsClientDefaults({ profile: opts.profile }),
+    ...s3ClientDefaults(),
     region: bucketRegion,
     ...(opts.profile && { profile: opts.profile }),
     ...(rebuiltCredentials !== undefined && { credentials: rebuiltCredentials }),

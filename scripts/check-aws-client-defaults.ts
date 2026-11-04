@@ -5,7 +5,9 @@
  * ----------------
  * Every `new XClient(...)` under `src/**` where `XClient` was imported from an
  * `@aws-sdk/client-*` package must spread `awsClientDefaults(...)` as the FIRST
- * property of its config object.
+ * property of its config object. A `new S3Client(...)` must ALSO spread
+ * `s3ClientDefaults()` (issue #5745, {@link S3_DEFAULTS_HELPER}), verdict
+ * `s3-defaults-missing` otherwise.
  *
  * WHY IT HAS TO BE MECHANICAL
  * ---------------------------
@@ -80,6 +82,15 @@ export const DEFAULTS_HELPERS: ReadonlySet<string> = new Set([
   'clientDefaultsFor',
 ]);
 
+/**
+ * The S3-ONLY helper every `new S3Client(...)` literal must ALSO spread (issue
+ * #5745): it carries `forcePathStyle` when an endpoint override or the profile's
+ * `addressing_style` asks for it, and nothing otherwise. Any position after the
+ * first: it never carries `credentials`, so it cannot clobber a site's own. A
+ * missing spread fails only against an S3 emulator, which no unit test runs.
+ */
+export const S3_DEFAULTS_HELPER = 's3ClientDefaults';
+
 /** Its own module, which is the one file that legitimately does not call it. */
 export const HELPER_MODULE = join(REPO_ROOT, 'src/utils/aws-client-defaults.ts');
 
@@ -90,6 +101,8 @@ export type SiteVerdict =
   | 'defaults-not-first'
   /** Does not call it at all. */
   | 'missing'
+  /** An `S3Client` that opens with the defaults but never spreads `s3ClientDefaults()`. */
+  | 's3-defaults-missing'
   /** Config argument is not an object literal this checker can read. */
   | 'opaque'
   /**
@@ -110,6 +123,8 @@ export interface ClientSite {
   readonly line: number;
   readonly client: string;
   readonly verdict: SiteVerdict;
+  /** Bound to `@aws-sdk/client-s3`'s `S3Client`, so the S3 half applied. */
+  readonly s3: boolean;
 }
 
 /** Is this the `await import('@aws-sdk/client-*')` expression? */
@@ -236,13 +251,70 @@ export function sdkClientIdentifiers(source: ts.SourceFile): Set<string> {
   return names;
 }
 
-/** Is this expression a call to one of {@link DEFAULTS_HELPERS}? */
-function isDefaultsCall(node: ts.Expression): boolean {
+/** Is this expression a call to one of `helpers` (default {@link DEFAULTS_HELPERS})? */
+function isDefaultsCall(
+  node: ts.Expression,
+  helpers: ReadonlySet<string> = DEFAULTS_HELPERS
+): boolean {
   return (
     ts.isCallExpression(node) &&
     ts.isIdentifier(node.expression) &&
-    DEFAULTS_HELPERS.has(node.expression.text)
+    helpers.has(node.expression.text)
   );
+}
+
+const S3_DEFAULTS_HELPERS: ReadonlySet<string> = new Set([S3_DEFAULTS_HELPER]);
+
+/**
+ * Local names bound to `@aws-sdk/client-s3`'s `S3Client`, and names bound to the
+ * whole `@aws-sdk/client-s3` module by a dynamic import — the two shapes
+ * {@link sdkClientIdentifiers} / {@link sdkClientNamespaces} read, narrowed to
+ * the one package whose client takes `forcePathStyle`. The S3 Control, Tables
+ * and Vectors clients are separate packages with no such option.
+ */
+export function s3ClientBindings(source: ts.SourceFile): {
+  identifiers: Set<string>;
+  namespaces: Set<string>;
+} {
+  const identifiers = new Set<string>();
+  const namespaces = new Set<string>();
+  const isS3Import = (node: ts.Node | undefined): boolean => {
+    if (node === undefined) return false;
+    const call = ts.isAwaitExpression(node) ? node.expression : node;
+    if (!ts.isCallExpression(call) || call.expression.kind !== ts.SyntaxKind.ImportKeyword) {
+      return false;
+    }
+    const arg = call.arguments[0];
+    return arg !== undefined && ts.isStringLiteral(arg) && arg.text === '@aws-sdk/client-s3';
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && isS3Import(node.initializer)) {
+      if (ts.isIdentifier(node.name)) namespaces.add(node.name.text);
+      if (ts.isObjectBindingPattern(node.name)) {
+        for (const element of node.name.elements) {
+          const exported = element.propertyName ?? element.name;
+          if (ts.isIdentifier(exported) && exported.text === 'S3Client' && ts.isIdentifier(element.name)) {
+            identifiers.add(element.name.text);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(specifier) || specifier.text !== '@aws-sdk/client-s3') continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      if ((element.propertyName ?? element.name).text === 'S3Client') {
+        identifiers.add(element.name.text);
+      }
+    }
+  }
+  return { identifiers, namespaces };
 }
 
 /**
@@ -340,15 +412,33 @@ function opensWithDefaults(
 function mentionsDefaults(
   literal: ts.ObjectLiteralExpression,
   source: ts.SourceFile,
-  depth: number
+  depth: number,
+  helpers: ReadonlySet<string> = DEFAULTS_HELPERS
 ): boolean {
   return literal.properties.some((property) => {
     if (!ts.isSpreadAssignment(property)) return false;
-    if (isDefaultsCall(property.expression)) return true;
+    if (isDefaultsCall(property.expression, helpers)) return true;
     if (depth >= MAX_RESOLUTION_DEPTH) return false;
     const inner = resolveObjectLiteral(property.expression, source);
-    return inner !== undefined && mentionsDefaults(inner, source, depth + 1);
+    return inner !== undefined && mentionsDefaults(inner, source, depth + 1, helpers);
   });
+}
+
+/**
+ * The `S3Client` half (#5745): a site whose generic verdict is clean must also
+ * spread `s3ClientDefaults()` somewhere in its literal (through a bag too). A
+ * worse generic verdict is reported as itself, the louder problem.
+ */
+export function classifyS3ConfigArgument(
+  argument: ts.Expression | undefined,
+  source: ts.SourceFile
+): SiteVerdict {
+  const verdict = classifyConfigArgument(argument, source);
+  if (verdict !== 'defaults-first' || argument === undefined) return verdict;
+  const literal = resolveObjectLiteral(argument, source);
+  return literal !== undefined && mentionsDefaults(literal, source, 0, S3_DEFAULTS_HELPERS)
+    ? verdict
+    : 's3-defaults-missing';
 }
 
 export { resolveObjectLiteral };
@@ -534,6 +624,7 @@ export function findClientSites(filePath: string, source: string): ClientSite[] 
   const clients = sdkClientIdentifiers(parsed);
   const namespaces = sdkClientNamespaces(parsed);
   if (clients.size === 0 && namespaces.size === 0) return [];
+  const s3 = s3ClientBindings(parsed);
 
   const sites: ClientSite[] = [];
   /** Config-bag identifier per site, for the shared-bag pass below. */
@@ -554,11 +645,20 @@ export function findClientSites(filePath: string, source: string): ClientSite[] 
           : undefined;
       if (client !== undefined) {
         const argument = node.arguments?.[0];
+        const isS3 = ts.isIdentifier(node.expression)
+          ? s3.identifiers.has(node.expression.text)
+          : ts.isPropertyAccessExpression(node.expression) &&
+            ts.isIdentifier(node.expression.expression) &&
+            s3.namespaces.has(node.expression.expression.text) &&
+            node.expression.name.text === 'S3Client';
         sites.push({
           file: filePath,
           line: parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1,
           client,
-          verdict: classifyConfigArgument(argument, parsed),
+          s3: isS3,
+          verdict: isS3
+            ? classifyS3ConfigArgument(argument, parsed)
+            : classifyConfigArgument(argument, parsed),
         });
         bagNames.push(sharedDefaultsSource(argument, parsed));
       }
@@ -588,7 +688,10 @@ export function findClientSites(filePath: string, source: string): ClientSite[] 
     // Only when the bag actually carries the defaults: a bag WITHOUT them is
     // already reported `missing`, and saying "shared" there would name the
     // lesser of the two problems.
-    return site.verdict === 'defaults-first' ? { ...site, verdict: 'shared-defaults' as const } : site;
+    // `s3-defaults-missing` too: sharing is the louder defect of the two.
+    return site.verdict === 'defaults-first' || site.verdict === 's3-defaults-missing'
+      ? { ...site, verdict: 'shared-defaults' as const }
+      : site;
   });
 }
 

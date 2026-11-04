@@ -46,6 +46,7 @@ import { pasteableCommand } from '../../utils/pasteable-command.js';
 import { accountArgs, withheldAccountClause } from '../../state/malformed-resources-bag.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * `cdkd gc` — garbage-collect unreferenced objects / images from the
@@ -1268,6 +1269,7 @@ export async function gcCommand(options: GcOptions): Promise<void> {
   // than --region. The asset bucket / ECR repo clients keep using --region.
   const markerS3Client = new S3Client({
     ...awsClientDefaults({ profile: options.profile }),
+    ...s3ClientDefaults(),
     region: effective.region,
     ...(options.profile && { profile: options.profile }),
   });
