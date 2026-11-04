@@ -365,6 +365,8 @@ describe('DockerAssetPublisher', () => {
         'denied: requested access to the resource is denied',
         'received unexpected HTTP status: 401 Unauthorized',
         'received unexpected HTTP status: 403 Forbidden',
+        // #5747: an expired token cached in docker's credential store.
+        'error from registry: Your authorization token has expired. Reauthenticate and try again.',
       ]) {
         expect(isDockerAuthFailure(s)).toBe(true);
       }
@@ -415,6 +417,26 @@ describe('DockerAssetPublisher', () => {
       expect(
         isDockerAuthFailure('denied: requested access to the resource is denied')
       ).toBe(true);
+    });
+
+    it('an expired cached ECR token logs in and retries the push (#5747)', async () => {
+      wireEcrMocks();
+      let pushes = 0;
+      mockRunDocker.mockImplementation((args: string[]) => {
+        if (args[0] === 'push' && pushes++ === 0) {
+          const err = new Error('push failed') as Error & { stderr: string };
+          err.stderr =
+            'error from registry: Your authorization token has expired. Reauthenticate and try again.\n';
+          return Promise.reject(err);
+        }
+        return Promise.resolve({ stdout: '', stderr: '' });
+      });
+
+      await publisher.publish('h1', makeDockerAsset(), '/tmp/cdk.out', '123456789012', 'us-east-1');
+
+      expect(countAuthTokenCalls()).toBe(1);
+      expect(countLoginExecs()).toBe(1);
+      expect(pushes).toBe(2);
     });
 
     it('a tag failure surfaces the docker stderr, trimmed', async () => {

@@ -74,7 +74,9 @@ function ecrRegistryHost(accountId: string, region: string): string {
  * log in and retry — a NON-auth failure is surfaced unchanged, never retried.
  */
 export function isDockerAuthFailure(errText: string): boolean {
-  return /no basic auth credentials|unauthorized|authentication required|denied|\b401\b|\b403\b/i.test(
+  // `authorization token has expired`: ECR's answer to an expired token
+  // cached in docker's credential store (#5747).
+  return /no basic auth credentials|unauthorized|authentication required|denied|authorization token has expired|\b401\b|\b403\b/i.test(
     errText
   );
 }
