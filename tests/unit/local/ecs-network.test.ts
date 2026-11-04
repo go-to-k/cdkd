@@ -79,12 +79,33 @@ describe('buildMetadataEnv', () => {
     expect(env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).toBeUndefined();
   });
 
-  it('embeds the role-arn path when roleArn is set', () => {
+  // go-to-k/cdkd#5763: the sidecar's `/role/<arn>` route answers 404 for an
+  // ARN path; it holds the already-assumed credentials, served at `/creds`.
+  it('points the credentials URI at the sidecar /creds route when roleArn is set', () => {
     const env = buildMetadataEnv({
       containerName: 'app',
       roleArn: 'arn:aws:iam::123:role/Foo',
     });
-    expect(env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).toContain('arn%3Aaws%3Aiam');
+    expect(env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).toBe('/creds');
+  });
+
+  it('refuses a task role on a sidecar away from 169.254.170.2 (SDKs read credentials only there)', () => {
+    expect(() =>
+      buildMetadataEnv({
+        containerName: 'app',
+        roleArn: 'arn:aws:iam::123:role/Foo',
+        sidecarIp: '169.254.171.2',
+      })
+    ).toThrow(/needs the metadata sidecar at 169\.254\.170\.2.*put it at 169\.254\.171\.2/);
+  });
+
+  it('accepts an explicit 169.254.170.2 sidecarIp with a task role', () => {
+    const env = buildMetadataEnv({
+      containerName: 'app',
+      roleArn: 'arn:aws:iam::123:role/Foo',
+      sidecarIp: METADATA_ENDPOINT_IP,
+    });
+    expect(env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI).toBe('/creds');
   });
 
   it('forwards region when supplied', () => {

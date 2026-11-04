@@ -1054,7 +1054,7 @@ export async function resolveSidecarCredentials(
  *
  * 1. `sidecarCredentials` — what the AWS-published
  *    `amazon-ecs-local-container-endpoints` sidecar serves at
- *    `169.254.170.2/role/<role>`; {@link resolveSidecarCredentials} owns the
+ *    `169.254.170.2/creds`; {@link resolveSidecarCredentials} owns the
  *    precedence (issue #658).
  * 2. `profileCredsFile` — the ECS analogue of PR #670 (Lambda-container
  *    fix-back finding #1). When `--profile <p>` is set AND `--assume-task-role`
@@ -1067,7 +1067,7 @@ export async function resolveSidecarCredentials(
  *
  *    Gating on `!assumedCredentials` preserves the documented precedence
  *    (assume-task-role > profile-file > sidecar): when `--assume-task-role`
- *    won, the sidecar's `/role/<arn>` endpoint already serves the assumed creds
+ *    won, the sidecar's `/creds` endpoint already serves the assumed creds
  *    and the file's env vars must NOT override them.
  *
  * ONE helper rather than two, and that is the substance of issue

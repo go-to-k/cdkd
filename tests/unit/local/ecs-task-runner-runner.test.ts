@@ -218,7 +218,7 @@ const networkStubs = vi.hoisted(() => ({
     const env: Record<string, string> = {
       ECS_CONTAINER_METADATA_URI_V4: `http://169.254.170.2/v4/${opts.containerName}`,
     };
-    if (opts.roleArn) env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = `/role/${opts.roleArn}`;
+    if (opts.roleArn) env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = '/creds';
     if (opts.region) env['AWS_REGION'] = opts.region;
     return env;
   }),
@@ -1512,6 +1512,106 @@ describe('runEcsTask — secret values stay off argv (issue #2183)', () => {
     expect((runCall.opts as { env?: Record<string, string> }).env?.['DB_PASS']).toBe(
       'resolved-DB_PASS'
     );
+  });
+});
+
+describe('runEcsTask — a secret --env-vars gives is not fetched (go-to-k/cdkd#5756)', () => {
+  const SECRET_ARN = 'arn:aws:secretsmanager:us-east-1:999999999999:secret:other-account';
+
+  function fetchedNames(): string[] {
+    return secretsStubs.resolveEcsSecrets.mock.calls.flatMap((call) =>
+      (call[0] as { name: string }[]).map((e) => e.name)
+    );
+  }
+
+  it.each([
+    ['the container key', { app: { DB_PASS: 'local-pass' } }],
+    ['the Parameters key', { Parameters: { DB_PASS: 'local-pass' } }],
+  ])(
+    'skips the fetch when %s overrides it, and keeps the override value off argv',
+    async (_label, envOverrides) => {
+      captured.responder = (_cmd: string, args: string[]) =>
+        args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+      const c = makeContainer({
+        name: 'app',
+        secrets: [
+          { name: 'DB_PASS', valueFrom: SECRET_ARN },
+          { name: 'API_KEY', valueFrom: 'arn:aws:secretsmanager:us-east-1:1:secret:api' },
+        ],
+      });
+      await runEcsTask(
+        makeTask({ containers: [c] }),
+        { ...baseOptions(), envOverrides },
+        createEcsRunState()
+      );
+
+      // The overridden secret is not fetched; its sibling still is.
+      expect(fetchedNames()).toEqual(['API_KEY']);
+      const runCall = dockerRunCalls()[0]!;
+      const joined = runCall.args.join(' ');
+      // The override value for a declared secret is still a secret: a
+      // value-less `-e DB_PASS` on argv, the value in the spawn env.
+      expect(runCall.args).toContain('DB_PASS');
+      expect(joined).not.toContain('local-pass');
+      const env = (runCall.opts as { env?: Record<string, string> }).env;
+      expect(env?.['DB_PASS']).toBe('local-pass');
+      expect(env?.['API_KEY']).toBe('resolved-API_KEY');
+    }
+  );
+
+  it('skips the fetch for a null clear, and the container gets no such key', async () => {
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: SECRET_ARN }],
+    });
+    await runEcsTask(
+      makeTask({ containers: [c] }),
+      { ...baseOptions(), envOverrides: { app: { DB_PASS: null } } },
+      createEcsRunState()
+    );
+    expect(fetchedNames()).toEqual([]);
+    const runCall = dockerRunCalls()[0]!;
+    expect(runCall.args).not.toContain('DB_PASS');
+    expect((runCall.opts as { env?: Record<string, string> }).env?.['DB_PASS']).toBeUndefined();
+  });
+
+  it("still fetches a secret another container's override names", async () => {
+    captured.responder = (_cmd: string, args: string[]) =>
+      args[0] === 'run' ? { stdout: 'cid\n' } : { stdout: '' };
+    const c = makeContainer({
+      name: 'app',
+      secrets: [{ name: 'DB_PASS', valueFrom: SECRET_ARN }],
+    });
+    await runEcsTask(
+      makeTask({ containers: [c] }),
+      { ...baseOptions(), envOverrides: { other: { DB_PASS: 'local-pass' } } },
+      createEcsRunState()
+    );
+    expect(fetchedNames()).toEqual(['DB_PASS']);
+  });
+});
+
+describe('runEcsTask — a task role keeps the network on 169.254.170.0/24 (go-to-k/cdkd#5763)', () => {
+  it('drops a subnetOctet when a task role is set', async () => {
+    await runEcsTask(
+      makeTask({ containers: [makeContainer()] }),
+      { ...baseOptions(), subnetOctet: 171, taskRoleArn: 'arn:aws:iam::123:role/r' },
+      createEcsRunState()
+    );
+    const opts = networkStubs.createTaskNetwork.mock.calls[0]![0] as { subnetOctet?: number };
+    expect(opts.subnetOctet).toBeUndefined();
+  });
+
+  it('forwards a subnetOctet without a task role', async () => {
+    await runEcsTask(
+      makeTask({ containers: [makeContainer()] }),
+      { ...baseOptions(), subnetOctet: 171 },
+      createEcsRunState()
+    );
+    const opts = networkStubs.createTaskNetwork.mock.calls[0]![0] as { subnetOctet?: number };
+    expect(opts.subnetOctet).toBe(171);
   });
 });
 

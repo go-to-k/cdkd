@@ -16,7 +16,7 @@ import {
 // `--assume-task-role`) used to resolve the profile for cdkd's OWN AWS
 // calls but the AWS-published `amazon-ecs-local-container-endpoints`
 // sidecar started with empty `AWS_*` env, so every user container that
-// hit `169.254.170.2/role/<role>` got a credential-provider failure.
+// hit `169.254.170.2/creds` got a credential-provider failure.
 // This test exercises the small `resolveSidecarCredentials` helper that
 // drives the new precedence: assumed-creds win when set; otherwise the
 // profile chain is resolved; otherwise undefined (the pre-existing

@@ -108,7 +108,11 @@ export interface RunEcsTaskOptions {
     secretAccessKey: string;
     sessionToken?: string;
   };
-  /** ARN of the task role being assumed (forwarded to AWS_CONTAINER_CREDENTIALS_RELATIVE_URI). */
+  /**
+   * ARN of the task role being assumed. When set, containers get
+   * `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds` and a runner-created
+   * network stays on `169.254.170.0/24` (ignoring {@link subnetOctet}).
+   */
   taskRoleArn?: string;
   /** Force a `--platform` (default: inferred from task `RuntimePlatform.CpuArchitecture`). */
   platformOverride?: string;
@@ -149,10 +153,9 @@ export interface RunEcsTaskOptions {
   imagePlanByContainer?: Map<string, string>;
   /**
    * Optional second-from-last octet of the link-local /24 subnet for this
-   * task's docker network (1..254). Default 170 (AWS-documented). `cdkd
-   * local start-service` walks this per replica so concurrent replicas
-   * don't collide on the same /24. See `buildEndpointSubnet` in
-   * `ecs-network.ts`.
+   * task's docker network (1..254). Default 170 (AWS-documented). Ignored
+   * when {@link taskRoleArn} is set: task-role credentials are served only
+   * from 169.254.170.2. See `buildEndpointSubnet` in `ecs-network.ts`.
    */
   subnetOctet?: number;
   /**
@@ -656,9 +659,23 @@ export async function runEcsTask(
   // Resolve every container's secrets in parallel BEFORE network /
   // container boot — any failure short-circuits the whole task. Mirrors
   // the ECS Agent's "fail-fast on missing secret" UX.
+  //
+  // A secret whose env key `--env-vars` names for this container (or under
+  // `Parameters`; a `null` clear included) is NOT fetched (go-to-k/cdkd#5756,
+  // mirroring go-to-k/cdk-local#848): the override replaces the value in the
+  // container anyway, so the AWS call buys nothing and fails the boot when the
+  // caller holds no credentials for the secret's account. The key stays off
+  // the `docker run` argv — see `buildDockerRunArgs`.
   const allSecrets: { containerName: string; name: string; valueFrom: string }[] = [];
   for (const c of task.containers) {
+    const overridden = new Set(overriddenEnvKeys(options.envOverrides, c.name));
     for (const s of c.secrets) {
+      if (overridden.has(s.name)) {
+        logger.debug(
+          `Secret ${displayIdent(c.name)}.${displayIdent(s.name)} not fetched: --env-vars gives this key.`
+        );
+        continue;
+      }
       allSecrets.push({ containerName: c.name, name: s.name, valueFrom: s.valueFrom });
     }
   }
@@ -722,7 +739,12 @@ export async function runEcsTask(
     };
     if (options.taskCredentials) netCreateOpts.credentials = options.taskCredentials;
     if (options.cluster) netCreateOpts.cluster = options.cluster;
-    if (options.subnetOctet !== undefined) netCreateOpts.subnetOctet = options.subnetOctet;
+    // A task role pins the AWS-documented 169.254.170.0/24 (the default, no
+    // octet): SDKs read `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only from
+    // 169.254.170.2 (go-to-k/cdkd#5763).
+    if (options.subnetOctet !== undefined && !options.taskRoleArn) {
+      netCreateOpts.subnetOctet = options.subnetOctet;
+    }
     await runDockerStep(
       state,
       () => createTaskNetwork(netCreateOpts),
@@ -1617,6 +1639,10 @@ export function buildDockerRunArgs(opts: BuildDockerRunArgs): {
   const sensitiveKeys = new Set<string>([
     ...SENSITIVE_ENV_KEYS,
     ...secrets.map((s) => s.name),
+    // A declared secret that `--env-vars` overrode was never fetched
+    // (go-to-k/cdkd#5756), so it is absent from `secrets`; the value the
+    // override supplies for it is still treated as a secret and kept off the argv.
+    ...container.secrets.map((s) => s.name),
     ...(opts.plaintextEnvKeys ?? []),
   ]);
   // `subject` names the container in the win32 letter-case warning (#2190).
