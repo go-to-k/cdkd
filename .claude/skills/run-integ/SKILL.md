@@ -300,8 +300,8 @@ verify, clean up.
     docker network ls --filter name=cdkd-local-svc- --format '{{.ID}}'
     ```
 
-    Subnet-overlap gotcha: `cdkd local start-service` uses the FIXED subnet
-    `169.254.171.0/24`, so a `local-start-*` test can fail with `Pool overlaps`
+    Subnet-overlap gotcha: `run-task` and `--assume-role` runs PIN
+    `169.254.170.0/24`, so a `local-*` test can fail with `Pool overlaps`
     even when all three are empty — a foreign leftover network (e.g. cdk-local's
     `cdkl-svc-*`) may own the subnet. Diagnose with
     `docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}} {{len .Containers}}'`
