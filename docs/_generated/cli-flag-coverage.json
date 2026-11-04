@@ -1464,6 +1464,7 @@
         "local-engine-role-identity",
         "local-invoke-from-cfn-stack",
         "local-invoke-from-state",
+        "local-run-task-from-state",
         "local-start-web-function-from-state",
         "logs-loggroup-fix-forward-orphan",
         "neptune-fix-forward-orphan",

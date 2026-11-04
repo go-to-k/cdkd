@@ -107,12 +107,16 @@ mean what they mean on that command, and that page explains them:
 | `--image-build-arg <KEY=VAL...>` | — | `docker build --build-arg` for override builds. |
 | `--image-build-secret <id=src...>` | — | `docker build --secret` for override builds. |
 | `--image-target <stage or svc=stage...>` | — | `docker build --target` for override builds. |
+| `--image-context <dir or svc=dir...>` | the Dockerfile's directory | `docker build` context for override builds. |
 | `--no-interactive-overrides` | off | Do not prompt for Dockerfiles at startup. |
 | `--strict-overrides` | off | Refuse to start while a service still runs a deployed image. |
 
 `--shadow-ready-timeout` can also be set with the
 `CDKD_SHADOW_READY_TIMEOUT_MS` environment variable, and the flag wins when
-both are set. `--assume-task-role` is a deprecated alias of `--assume-role`.
+both are set. `--assume-task-role` is a deprecated alias of `--assume-role`;
+how it reaches the containers, and why every service must resolve to the same
+task role, is described under
+[start-service's network](local-start-service.md#the-network-and-its-helper-container).
 The override flags are explained in
 [Image overrides for local ECS services](local-start-service-image-overrides.md).
 

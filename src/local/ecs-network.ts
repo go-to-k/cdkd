@@ -164,9 +164,10 @@ async function createNetworkAndSidecar(args: {
       `docker network create failed: ${describeDockerFailure(err, createArgs)}. ` +
         `Hint: another cdkd run may already own subnet ${cidr}; wait for it to ` +
         'finish, or remove the leftover network with `docker network ls` + ' +
-        '`docker network rm`. `cdkd local start-service` shares one network ' +
-        'across every service in the run; bare `cdkd local run-task` uses a ' +
-        'per-task network so only one run can be active at a time.'
+        '`docker network rm`. `cdkd local run-task` always uses ' +
+        '169.254.170.0/24, where AWS SDKs read task-role credentials, as does a ' +
+        '`cdkd local start-service` / `start-alb` run with `--assume-role`, so ' +
+        'only one of them can be active at a time.'
     );
   }
 

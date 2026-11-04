@@ -114,6 +114,7 @@ comes from the task definition's `RuntimePlatform.CpuArchitecture`.
 | `--image-build-arg <KEY=VAL...>` | — | `docker build --build-arg` for override builds. |
 | `--image-build-secret <id=src...>` | — | `docker build --secret` for override builds. |
 | `--image-target <stage or svc=stage...>` | — | `docker build --target` for override builds. |
+| `--image-context <dir or svc=dir...>` | the Dockerfile's directory | `docker build` context for override builds. |
 | `--no-interactive-overrides` | off | Do not prompt for Dockerfiles at startup. |
 | `--strict-overrides` | off | Refuse to start while a service still runs a deployed image. |
 
@@ -232,9 +233,21 @@ through an Envoy proxy that retries and load-balances; see
 ### The network and its helper container
 
 The network is named `<cluster>-svc-<random>` and uses the subnet
-`169.254.171.0/24`. One extra container, the metadata sidecar, runs at
-`169.254.171.2`. It serves the ECS task metadata endpoint, which is how code
-in a container asks ECS about its own task.
+`169.254.171.0/24`, or the next free `169.254.<N>.0/24` when another run holds
+it, so several runs can be active at once. One extra container, the metadata
+sidecar, runs at `.2` of that subnet. It serves the ECS task metadata
+endpoint, which is how code in a container asks ECS about its own task.
+
+With `--assume-role`, the network uses `169.254.170.0/24` instead, with the
+sidecar at `169.254.170.2`: AWS SDKs read task-role credentials only from that
+address. The sidecar serves the assumed role's credentials at `/creds`, and
+every container gets `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds`. One
+sidecar holds one set of credentials, so every service in the run must
+resolve to the same task role; when they do not, the run fails and names both
+roles. Pass one role with `--assume-role <arn>`. Only one run with a task role
+can be active at a time, and it cannot run beside a `cdkd local run-task`,
+which also uses `169.254.170.0/24`. The role is assumed once at startup, so
+its credentials expire after one hour; restart the run to refresh them.
 
 Each replica reports the cluster name
 `<cluster>-svc-<service-logical-id>-r<index>`. The same name identifies the

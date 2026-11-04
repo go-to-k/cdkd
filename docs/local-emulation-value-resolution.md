@@ -50,6 +50,12 @@ apply to every resource.
 
 A `null` value removes the variable from the container environment.
 
+On `local run-task`, `local start-service` and `local start-alb`, an ECS
+`Secrets` entry whose key the file gives for that container, or under
+`Parameters`, is not fetched from AWS. The run then needs no access to that
+secret, and the value from the file is still passed to the container the way a
+secret is, off the `docker run` command line.
+
 What you write as the top-level key depends on the command:
 
 | Command | The top-level key is |

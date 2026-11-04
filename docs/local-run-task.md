@@ -85,7 +85,8 @@ The command also accepts every
 [common flag](local-emulation.md#common-flags). Three of them behave in a
 way specific to this command:
 
-- `--env-vars` is keyed by container name.
+- `--env-vars` is keyed by container name. A `Secrets` entry whose key the
+  file gives is not fetched from AWS.
 - `--container-host` is the IP that published ports bind to.
 - `--profile` credentials are passed to the containers.
 
@@ -142,14 +143,20 @@ Inside the network:
   `ECS_CONTAINER_METADATA_URI_V4=http://169.254.170.2/v4/<container-name>`
   set, as on ECS.
 - **Credentials.** With `--assume-task-role`, every container also has
-  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<task-role-arn>` set.
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds` set. The sidecar holds the
+  assumed role's credentials and serves them there, so an AWS SDK in the
+  container runs as the task role.
 - **Your machine.** A container reaches it as
   [`host.docker.internal`](local-emulation.md#reaching-a-server-on-the-host),
   where the Docker daemon supports that name.
 
 The network is named `cdkd-local-task-<random>`, or
 `<cluster>-task-<random>` when you pass `--cluster`. Its subnet is always
-`169.254.170.0/24`.
+`169.254.170.0/24`: AWS SDKs read task-role credentials only from
+`169.254.170.2`. So only one `run-task` can be active at a time, and a
+`run-task` cannot run beside a `start-service` or `start-alb` started with
+`--assume-role`, which takes the same subnet. The second run fails to create
+its network.
 
 ### Reaching a container from the host
 
