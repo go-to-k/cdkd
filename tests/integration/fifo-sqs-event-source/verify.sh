@@ -11,6 +11,10 @@
 #   1. Deploy. send 3 messages across 2 MessageGroupIds, then poll the DynamoDB
 #      table until all 3 are recorded (proves the FIFO ESM fires end-to-end and
 #      preserves the group ids).
+#   1a. Wait for the event source mapping to settle to `Enabled`, then assert the
+#      observedProperties baseline recorded `Enabled: true` and `cdkd drift`
+#      reports the mapping clean (issue #5737: the baseline read while the
+#      mapping was still `Creating` recorded `Enabled: false`).
 #   1b. CDKD_TEST_REMOVAL=true redeploy DROPS contentBasedDeduplication,
 #      deduplicationScope, and fifoThroughputLimit from the queue and asserts
 #      ContentBasedDeduplication reads 'false' (reset, as CloudFormation does)
@@ -188,6 +192,64 @@ if [ "${GROUP_B1}" != "g2" ]; then
   exit 1
 fi
 echo "    all 3 FIFO messages processed; MessageGroupId preserved (msg-A1 -> g1, msg-B1 -> g2)"
+
+# --- Phase 1a: no phantom Enabled drift once the mapping settles (#5737) -----
+# The post-create observedProperties baseline is read while the mapping is
+# still `Creating`; cdkd used to read that as `Enabled: false`, so once the
+# mapping settled to `Enabled` every drift run reported `Enabled: false -> true`
+# and `drift --revert` DISABLED the consumer. Wait for the settled state first:
+# a drift run while it is still `Creating` reads the same wrong value on both
+# sides and passes vacuously.
+echo "==> Phase 1a: wait for the event source mapping to settle, then assert no Enabled drift (#5737)"
+ESM_UUIDS="$(aws lambda list-event-source-mappings --function-name "${FN_NAME}" \
+  --region "${REGION}" --query 'EventSourceMappings[].UUID' --output text)"
+ESM_COUNT="$(printf '%s\n' "${ESM_UUIDS}" | wc -w | tr -d ' ')"
+if [ "${ESM_COUNT}" != "1" ]; then
+  echo "FAIL: expected exactly 1 event source mapping on ${FN_NAME}, got ${ESM_COUNT} (${ESM_UUIDS})" >&2
+  exit 1
+fi
+ESM_UUID="${ESM_UUIDS}"
+ESM_STATE=""
+for i in $(seq 1 12); do
+  ESM_STATE="$(aws lambda get-event-source-mapping --uuid "${ESM_UUID}" --region "${REGION}" \
+    --query 'State' --output text)"
+  echo "    poll ${i}: mapping State=${ESM_STATE}"
+  if [ "${ESM_STATE}" = "Enabled" ]; then break; fi
+  if [ "${i}" -lt 12 ]; then sleep 10; fi
+done
+if [ "${ESM_STATE}" != "Enabled" ]; then
+  echo "FAIL: event source mapping ${ESM_UUID} did not settle to Enabled within 120s (last State=${ESM_STATE})" >&2
+  exit 1
+fi
+
+# The baseline itself: the template never declares Enabled, so the recorded
+# observedProperties must read true (the pre-fix binary recorded false here).
+ESM_STATE_JSON="$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -)"
+ESM_LIDS="$(printf '%s' "${ESM_STATE_JSON}" | jq -r '.resources | to_entries[] | select(.value.resourceType == "AWS::Lambda::EventSourceMapping") | .key')"
+ESM_LID_COUNT="$(printf '%s\n' "${ESM_LIDS}" | wc -w | tr -d ' ')"
+if [ "${ESM_LID_COUNT}" != "1" ]; then
+  echo "FAIL: expected exactly 1 AWS::Lambda::EventSourceMapping record in state, got ${ESM_LID_COUNT} (${ESM_LIDS})" >&2
+  exit 1
+fi
+ESM_LID="${ESM_LIDS}"
+ESM_OBSERVED_ENABLED="$(printf '%s' "${ESM_STATE_JSON}" | jq -r --arg l "${ESM_LID}" '.resources[$l].observedProperties.Enabled | tostring')"
+if [ "${ESM_OBSERVED_ENABLED}" != "true" ]; then
+  echo "FAIL (#5737): ${ESM_LID} observedProperties.Enabled is '${ESM_OBSERVED_ENABLED}', expected 'true' (the mapping was created enabled; a false baseline makes drift --revert disable it)" >&2
+  exit 1
+fi
+
+# And the comparison drift makes from it, read for THIS resource only (the
+# stack's other resources are not this arm's subject).
+DRIFT_JSON_OUT=""
+DRIFT_RC=0
+DRIFT_JSON_OUT="$(node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json)" || DRIFT_RC=$?
+ESM_CLEAN="$(printf '%s' "${DRIFT_JSON_OUT}" | jq --arg l "${ESM_LID}" '[.[].clean[] | select(.logicalId == $l)] | length' 2>/dev/null || echo "?")"
+ESM_DRIFTED="$(printf '%s' "${DRIFT_JSON_OUT}" | jq --arg l "${ESM_LID}" '[.[].drifted[] | select(.logicalId == $l)] | length' 2>/dev/null || echo "?")"
+if [ "${ESM_CLEAN}" != "1" ] || [ "${ESM_DRIFTED}" != "0" ]; then
+  echo "FAIL (#5737): expected ${ESM_LID} compared and CLEAN in cdkd drift after the mapping settled (clean=${ESM_CLEAN} drifted=${ESM_DRIFTED} rc=${DRIFT_RC}). Report: ${DRIFT_JSON_OUT}" >&2
+  exit 1
+fi
+echo "    OK: mapping settled to Enabled; baseline Enabled=true; cdkd drift reports ${ESM_LID} clean (drift rc=${DRIFT_RC})"
 
 # --- Phase 1b: in-place removal of FIFO attributes (issues #1237 / #1160) ----
 echo "==> Phase 1b: capture baseline queue attributes"

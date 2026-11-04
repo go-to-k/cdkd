@@ -51,6 +51,7 @@ import {
   type MaskedLogSinks,
   type MaskerFn,
 } from '../masked-retry-logger.js';
+import { coerceCfnBoolean } from '../config-shape.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { pasteableAwsCommand } from '../replacement-protection-advice.js';
 import {
@@ -149,6 +150,30 @@ const ARN_SERVICE_TO_EVENT_SOURCE_KIND: Readonly<Record<string, EventSourceKind>
   // catch the case where `DocumentDBEventSourceConfig` is present.
   rds: 'documentdb',
 };
+
+/**
+ * The CFn `Enabled` a mapping in `state` will SETTLE to (go-to-k/cdkd#5737).
+ *
+ * `Enabled` / `Enabling` settle enabled and `Disabled` / `Disabling` settle
+ * disabled. `Creating`, `Updating` and `Deleting` carry no enabled-ness: a
+ * mapping created with `Enabled: false` passes through `Creating` to
+ * `Disabled`, one created without it to `Enabled`, an `Updating` mapping
+ * returns to whichever it was, and a `Deleting` one settles to nothing. For
+ * those (and any state AWS adds later) the
+ * answer is what the call that started the transition sent, i.e. the
+ * `properties` bag the caller hands `readCurrentState` (the just-sent bag on
+ * the post-create / post-update baseline capture, the recorded bag on a drift
+ * read), with CloudFormation's absent default `true`. Reading such a state
+ * as `false` made the post-create baseline record `Enabled: false` for every
+ * `SqsEventSource`, and `cdkd drift --revert` then DISABLED the live mapping.
+ * The cost: an out-of-band disable that lands while the mapping is still
+ * `Updating` reads as the sent value until it settles; the next read reports it.
+ */
+function enabledFromState(state: string, properties?: Record<string, unknown>): boolean {
+  if (state === 'Enabled' || state === 'Enabling') return true;
+  if (state === 'Disabled' || state === 'Disabling') return false;
+  return coerceCfnBoolean(properties?.['Enabled']) ?? true;
+}
 
 /**
  * @internal EXPORTED for tests only (issue #1815). Every production consumer is a
@@ -1686,14 +1711,7 @@ export class LambdaEventSourceMappingProvider implements ResourceProvider {
       result['StartingPositionTimestamp'] = Math.floor(date.getTime() / 1000);
     }
 
-    // `Enabled` derives from `State`: AWS exposes the underlying state
-    // (Enabled / Disabled / Enabling / Disabling / Updating / Creating /
-    // Deleting); cdkd state stores the boolean the user set on create.
-    if (resp.State !== undefined) {
-      const enabled =
-        resp.State === 'Enabled' || resp.State === 'Enabling' || resp.State === 'Updating';
-      result['Enabled'] = enabled;
-    }
+    if (resp.State !== undefined) result['Enabled'] = enabledFromState(resp.State, properties);
 
     // Tags via ListTags(Resource: <ESM ARN>). cdkd's create() reshapes
     // CFn `Tags: [{Key, Value}]` into the SDK's `{Key: Value}` map at
