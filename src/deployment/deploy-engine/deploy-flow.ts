@@ -30,7 +30,11 @@ import {
 } from './rollback.js';
 import { journalCanOwnResources } from '../../state/cross-prefix-stack-scan.js';
 import { PhaseClock, phaseScopeForStack } from '../../utils/phase-timings.js';
-import { loadKeptInHistory } from '../kept-in-history.js';
+import {
+  loadKeptForWarning,
+  loadKeptInHistory,
+  type KeptInHistorySources,
+} from '../kept-in-history.js';
 import { DeploymentEventsReader } from '../../state/deployment-events-store.js';
 import { poisonRenderedSpellingsCollidingIn } from '../intrinsic-resolver/parameter-secrets.js';
 import { type DeployEngine, crossStackReadsForPartialSave } from '../deploy-engine.js';
@@ -130,6 +134,16 @@ import { buildResolverContext, maskedInputSources } from './resolver-context.js'
  * backend's client.
  */
 const TAIL_WARM_CONNECTIONS = 3;
+
+/** What `loadKeptInHistory` / `loadKeptForWarning` read, from the engine. */
+function keptHistorySources(engine: DeployEngine): KeptInHistorySources {
+  const reader = new DeploymentEventsReader(engine.stateBackend);
+  return {
+    earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
+    listRuns: (s, r) => reader.listRuns(s, r),
+    readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
+  };
+}
 
 export async function doDeployWithPrefetch(
   engine: DeployEngine,
@@ -295,8 +309,16 @@ export async function doDeployWithPrefetch(
           )
         : undefined;
     // Its failure is the guard's to report (it refuses on unreadable
-    // evidence); the warning below only reads a successful answer.
-    const retainedForWarning = retainedAtFirstDeploy?.catch(() => null);
+    // evidence); the warning below only reads a successful answer. An ABSENT
+    // record is what an older cdkd's destroy leaves (it wrote none), so the
+    // warning then reads this prefix's own history of what was kept
+    // (go-to-k/cdkd#5760); an empty record is this cdkd's "nothing kept".
+    const retainedForWarning = retainedAtFirstDeploy
+      ?.then(
+        (retained) =>
+          retained ?? loadKeptForWarning(keptHistorySources(engine), stackName, engine.stackRegion)
+      )
+      .catch(() => null);
     // go-to-k/cdkd#5200: the read `resolveStackInstanceId` opens with, started
     // now so it overlaps the diff; the write-ahead itself still waits for the
     // approval. Optional for the test doubles.
@@ -1719,18 +1741,8 @@ export async function doDeployWithPrefetch(
       loadRetained: () =>
         retainedAtFirstDeploy ??
         engine.stateBackend.loadRetainedRecord(stackName, engine.stackRegion),
-      loadKeptInHistory: () => {
-        const reader = new DeploymentEventsReader(engine.stateBackend);
-        return loadKeptInHistory(
-          {
-            earlierStateResources: (s, r) => engine.stateBackend.earlierStateResources(s, r),
-            listRuns: (s, r) => reader.listRuns(s, r),
-            readRunEvents: (s, r, id) => reader.readRunEvents(s, r, id),
-          },
-          stackName,
-          engine.stackRegion
-        );
-      },
+      loadKeptInHistory: () =>
+        loadKeptInHistory(keptHistorySources(engine), stackName, engine.stackRegion),
       accountInfo: () => getAccountInfo(engine.stackRegion),
       warn: (message) => engine.logger.warn(message),
       // G-1: this deploy took over the lock an abandoned run left.

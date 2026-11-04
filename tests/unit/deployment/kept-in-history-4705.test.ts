@@ -9,6 +9,8 @@ import { describe, it, expect, vi } from 'vite-plus/test';
 import {
   keptInEarlierRecords,
   keptInEventHistory,
+  keptWhenRecordsEnded,
+  loadKeptForWarning,
   loadKeptInHistory,
   loadRollbackRetainedCopies,
   RETAINED_SURVIVOR_REASON_PREFIX,
@@ -130,6 +132,86 @@ describe('loadKeptInHistory', () => {
       'us-east-1'
     );
     expect(kept).toEqual([{ logicalId: 'Logs', resourceType: 'AWS::Logs::LogGroup', physicalId: LG }]);
+  });
+});
+
+describe('keptWhenRecordsEnded (go-to-k/cdkd#5760)', () => {
+  const Q = 'AWS::SQS::Queue';
+  it('the newest record: kept only under a retaining DeletionPolicy', () => {
+    expect(
+      keptWhenRecordsEnded([
+        { writtenAt: 2, resources: {
+          Kept: { resourceType: Q, physicalId: 'q-kept', deletionPolicy: 'Retain' },
+          Deleted: { resourceType: Q, physicalId: 'q-del', deletionPolicy: 'Delete' },
+        } },
+      ])
+    ).toEqual([{ logicalId: 'Kept', resourceType: Q, physicalId: 'q-kept', keptAt: 2 }]);
+  });
+
+  it('judges each id at its LAST appearance: Retain dropped before the destroy is not kept', () => {
+    const records = [
+      { writtenAt: 2, resources: { Q1: { resourceType: Q, physicalId: 'q1', deletionPolicy: 'Delete' } } },
+      { writtenAt: 1, resources: { Q1: { resourceType: Q, physicalId: 'q1', deletionPolicy: 'Retain' } } },
+    ];
+    expect(keptWhenRecordsEnded(records)).toEqual([]);
+    // The same id in both records is no replacement, whatever its
+    // UpdateReplacePolicy says.
+    expect(
+      keptWhenRecordsEnded(
+        records.map((r) => ({
+          ...r,
+          resources: { Q1: { ...(r.resources.Q1 as object), updateReplacePolicy: 'Retain' } },
+        }))
+      )
+    ).toEqual([]);
+    // The license reader, by contrast, names it (a non-holder costs nothing there).
+    expect(keptInEarlierRecords(records).map((k) => k.physicalId)).toEqual(['q1']);
+  });
+
+  it('a template removal keeps it under a retaining DeletionPolicy', () => {
+    expect(
+      keptWhenRecordsEnded([
+        { writtenAt: 2, resources: {} },
+        { writtenAt: 1, resources: { Gone: { resourceType: Q, physicalId: 'q-gone', deletionPolicy: 'Retain' } } },
+      ])
+    ).toEqual([{ logicalId: 'Gone', resourceType: Q, physicalId: 'q-gone', keptAt: 1 }]);
+  });
+
+  it('a replacement keeps the old id only under a retaining UpdateReplacePolicy', () => {
+    const replaced = (updateReplacePolicy: string) => [
+      { writtenAt: 2, resources: { Q1: { resourceType: Q, physicalId: 'q1-new', deletionPolicy: 'Delete', updateReplacePolicy } } },
+      { writtenAt: 1, resources: { Q1: { resourceType: Q, physicalId: 'q1-old', deletionPolicy: 'Retain', updateReplacePolicy } } },
+    ];
+    expect(keptWhenRecordsEnded(replaced('Delete'))).toEqual([]);
+    expect(keptWhenRecordsEnded(replaced('Retain')).map((k) => k.physicalId)).toEqual(['q1-old']);
+  });
+});
+
+describe('loadKeptForWarning (go-to-k/cdkd#5760)', () => {
+  const sources = (records: unknown[], runs: DeploymentEvent[][]) => ({
+    earlierStateResources: async () => records as never,
+    listRuns: async () => runs.map((_, i) => ({ runId: `r${runs.length - 1 - i}` })),
+    readRunEvents: async (_s: string, _r: string, id: string) => runs[Number(id.slice(1))] ?? null,
+  });
+
+  it('names a resource both sources show once', async () => {
+    const kept = await loadKeptForWarning(
+      sources([{ resources: { Queue: { resourceType: 'AWS::SQS::Queue', physicalId: URL, deletionPolicy: 'Retain' } } }], [deployRun, destroyRun]),
+      'App',
+      'us-east-1'
+    );
+    expect(kept.map((k) => k.physicalId)).toEqual([URL]);
+  });
+
+  it('a kept resource a later run made again is not counted from the history', async () => {
+    const later = (e: Partial<DeploymentEvent>) => ev({ ...e, timestamp: '2026-09-02T00:00:00.000Z' });
+    const takenBack = [
+      later({ eventType: 'RUN_STARTED', command: 'deploy' }),
+      later({ eventType: 'RESOURCE_SUCCEEDED', operation: 'CREATE', logicalId: 'Queue', resourceType: 'AWS::SQS::Queue', physicalId: URL }),
+      later({ eventType: 'RUN_FINISHED', result: 'SUCCEEDED' }),
+    ];
+    const kept = await loadKeptForWarning(sources([], [deployRun, destroyRun, takenBack]), 'App', 'us-east-1');
+    expect(kept).toEqual([]);
   });
 });
 

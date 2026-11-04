@@ -431,7 +431,10 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       ],
     });
     await expect(viaHistory.engine.deploy(STACK, template)).rejects.toThrow(/Q2/);
-    expect(viaHistory.stateBackend.earlierStateResources).not.toHaveBeenCalled();
+    expect(viaHistory.provider.create.mock.calls.map((c) => c[0])).not.toContain('Q2');
+    // Read once, for the first deploy's warning only (#5760): it licenses
+    // nothing, so the holder is still refused above.
+    expect(viaHistory.stateBackend.earlierStateResources).toHaveBeenCalledTimes(1);
   });
 
   it('a lookup that FAILS refuses every create it was asked about: nothing is created (fail closed)', async () => {
@@ -731,16 +734,18 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
       await engine.deploy(STACK, templateOf(levels));
       // One lookup; the ledger read once; two ledger writes (the intent, and
       // the success cleanup run beside the post-save writes); no evidence
-      // read (nothing held), no history, no re-read. retained.json is read
-      // ONCE, beside the diff: a first deploy says what an earlier lifetime
-      // kept (go-to-k/cdkd#5064), and the guard would share that read.
+      // read (nothing held), no re-read. retained.json is read ONCE, beside
+      // the diff: a first deploy says what an earlier lifetime kept
+      // (go-to-k/cdkd#5064), and the guard would share that read. Absent, the
+      // warning reads the prefix's history once instead (#5760): the earlier
+      // versions, and the event index (no runs here, so no run read).
       expect(provider.lookupNames).toHaveBeenCalledTimes(1);
       expect(stateBackend.loadCreateTokenLedger).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveCreateTokenLedger).toHaveBeenCalledTimes(2);
       expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
       expect(stateBackend.saveRetainedResources).not.toHaveBeenCalled();
-      expect(stateBackend.earlierStateResources).not.toHaveBeenCalled();
-      expect(stateBackend.getRawObject).not.toHaveBeenCalled();
+      expect(stateBackend.earlierStateResources).toHaveBeenCalledTimes(1);
+      expect(stateBackend.getRawObject).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -842,6 +847,58 @@ describe('the generated-name guard through the deploy engine (go-to-k/cdkd#4705)
         .filter((w) => w.includes('kept 1 resource(s)'));
       expect(notes).toHaveLength(1);
       expect(notes[0]).toContain("adopt it with 'cdkd import'");
+    });
+
+    it('with no retained.json (an older destroy), warns from what the earlier records kept (#5760)', async () => {
+      // Two earlier versions name the same kept queue: one resource, said once.
+      const keptQ1 = { resourceType: QUEUE, physicalId: urlOf('App-Q1'), deletionPolicy: 'Retain' };
+      const { engine, provider, stateBackend } = buildEngine({
+        earlierRecords: [
+          { resources: { Q1: keptQ1, Q2: { resourceType: QUEUE, physicalId: urlOf('App-Q2') } }, writtenAt: 2 },
+          { resources: { Q1: keptQ1 }, writtenAt: 1 },
+        ],
+      });
+      deriving(provider);
+      const before = warned().length;
+      await engine.deploy(STACK, template);
+      expect(stateBackend.loadRetainedRecord).toHaveBeenCalledTimes(1);
+      expect(stateBackend.earlierStateResources).toHaveBeenCalledTimes(1);
+      // Still not taken back: the new lifetime creates all three.
+      expect(provider.create.mock.calls.map((c) => c[0])).toEqual(['Q1', 'Q2', 'Q3']);
+      const notes = warned()
+        .slice(before)
+        .filter((w) => w.includes('resource(s) here'));
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain('kept 1 resource(s)');
+      expect(notes[0]).toContain("adopt it with 'cdkd import'");
+    });
+
+    it('an empty retained.json (this cdkd kept nothing) reads no history and warns nothing (#5760)', async () => {
+      const { engine, provider, stateBackend } = buildEngine({
+        retained: [],
+        earlierRecords: [
+          { resources: { Q1: { resourceType: QUEUE, physicalId: urlOf('App-Q1'), deletionPolicy: 'Retain' } } },
+        ],
+      });
+      deriving(provider);
+      const before = warned().length;
+      await engine.deploy(STACK, template);
+      expect(stateBackend.earlierStateResources).not.toHaveBeenCalled();
+      expect(warned().slice(before).filter((w) => w.includes('resource(s) here'))).toEqual([]);
+    });
+
+    it('an unreadable history warns nothing and does not fail the first deploy (#5760)', async () => {
+      const { engine, provider, stateBackend } = buildEngine({});
+      // A synchronous throw escapes `loadKeptForWarning`'s per-source catches:
+      // the warning's own outer catch is what keeps the deploy going.
+      stateBackend.earlierStateResources.mockImplementation(() => {
+        throw new Error('AccessDenied: ListObjectVersions');
+      });
+      deriving(provider);
+      const before = warned().length;
+      await engine.deploy(STACK, template);
+      expect(provider.create).toHaveBeenCalledTimes(3);
+      expect(warned().slice(before).some((w) => w.includes('resource(s) here'))).toBe(false);
     });
 
     it('warns about nothing kept: an empty record, or a stack that has one', async () => {

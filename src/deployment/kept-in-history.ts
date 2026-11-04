@@ -25,6 +25,7 @@
  * one) created no later than it was kept.
  */
 import { shouldRetainResource } from '../types/state.js';
+import { injectiveKey } from '../state/record-keys.js';
 import type { DeploymentEvent } from '../types/deployment-events.js';
 import type { EarlierStateRecord } from '../state/earlier-state-versions.js';
 import type { KeptInHistory } from './generated-name-guard.js';
@@ -114,6 +115,94 @@ export async function loadKeptInHistory(
     readRecentRuns(sources, stackName, region),
   ]);
   return [...keptInEarlierRecords(records), ...keptInEventHistory(runs, stackName)];
+}
+
+/**
+ * go-to-k/cdkd#5760: what a lifetime whose record is gone actually KEPT, for
+ * the first deploy's warning. Stricter than {@link keptInEarlierRecords} (a
+ * license, where a non-holder costs nothing): each physical id is judged at
+ * its LAST appearance, `records` newest first. In the newest record it was
+ * kept by the destroy if its `DeletionPolicy` retains; in an older one it left
+ * by a template removal (the same rule) or, when the next record holds its
+ * logical id under another physical id, by a replacement, kept only under a
+ * retaining `UpdateReplacePolicy`.
+ */
+export function keptWhenRecordsEnded(records: readonly EarlierStateRecord[]): KeptInHistory[] {
+  const seen = new Set<string>();
+  const out: KeptInHistory[] = [];
+  records.forEach((record, i) => {
+    const newer = i === 0 ? undefined : records[i - 1]!.resources;
+    for (const [logicalId, raw] of Object.entries(record.resources)) {
+      if (raw === null || typeof raw !== 'object') continue;
+      const r = raw as {
+        resourceType?: unknown;
+        physicalId?: unknown;
+        deletionPolicy?: unknown;
+        updateReplacePolicy?: unknown;
+      };
+      if (typeof r.resourceType !== 'string' || typeof r.physicalId !== 'string') continue;
+      if (r.physicalId === '') continue;
+      const key = injectiveKey(r.resourceType, r.physicalId);
+      if (seen.has(key)) continue; // a newer record judged it
+      seen.add(key);
+      const next = newer?.[logicalId] as { physicalId?: unknown } | null | undefined;
+      const replaced = next !== undefined && next !== null && typeof next === 'object';
+      // Still under the same id in the next record cannot happen here: that
+      // record's own entry was judged first.
+      const policy = replaced ? r.updateReplacePolicy : r.deletionPolicy;
+      if (!shouldRetainResource(policy as Parameters<typeof shouldRetainResource>[0])) continue;
+      out.push({
+        logicalId,
+        resourceType: r.resourceType,
+        physicalId: r.physicalId,
+        ...(record.writtenAt !== undefined && { keptAt: record.writtenAt }),
+      });
+    }
+  });
+  return out;
+}
+
+/**
+ * The first deploy's warning source (go-to-k/cdkd#5760): what the earlier
+ * records and the event history show was kept, each resource once.
+ * Best-effort like {@link loadKeptInHistory}.
+ */
+export async function loadKeptForWarning(
+  sources: KeptInHistorySources,
+  stackName: string,
+  region: string
+): Promise<KeptInHistory[]> {
+  const [records, runs] = await Promise.all([
+    sources.earlierStateResources(stackName, region).catch(() => []),
+    readRecentRuns(sources, stackName, region),
+  ]);
+  // A kept resource a LATER run made again (an older cdkd took it back) was
+  // managed afterwards: only a later retained row says it was kept again.
+  const lastMadeAt = new Map<string, number>();
+  for (const events of runs) {
+    for (const e of events) {
+      if (e.stackName !== stackName || typeof e.physicalId !== 'string') continue;
+      if (typeof e.resourceType !== 'string') continue;
+      if (e.eventType !== 'RESOURCE_SUCCEEDED') continue;
+      if (e.operation !== 'CREATE' && e.operation !== 'UPDATE') continue;
+      const at = Date.parse(e.timestamp);
+      if (Number.isFinite(at)) lastMadeAt.set(injectiveKey(e.resourceType, e.physicalId), at);
+    }
+  }
+  const fromEvents = keptInEventHistory(runs, stackName).filter(
+    (k) =>
+      k.keptAt === undefined ||
+      (lastMadeAt.get(injectiveKey(k.resourceType, k.physicalId)) ?? -Infinity) <= k.keptAt
+  );
+  const seen = new Set<string>();
+  const out: KeptInHistory[] = [];
+  for (const k of [...keptWhenRecordsEnded(records), ...fromEvents]) {
+    const key = injectiveKey(k.resourceType, k.physicalId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(k);
+  }
+  return out;
 }
 
 /**
