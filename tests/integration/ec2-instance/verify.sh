@@ -77,6 +77,11 @@
 # (read back from DescribeInstances), Phase 1h removes SourceDestCheck (back
 # to true in place, as CloudFormation does), and the #1281 instance's
 # PropagateTagsToVolumeOnCreation tag must be on both of its volumes.
+# The third #5630 slice: PrivateDnsNameOptions on the instance (Phase 1h
+# changes it inside the InstanceType stop; Phase 1i flips the A record alone, in
+# place; Phase 1j changes HostnameType alone, with its own stop and start; a
+# PrivateDnsName reader must follow each name change), and two instances in an
+# IPv6 subnet launched with Ipv6AddressCount / Ipv6Addresses.
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -163,6 +168,10 @@ NET_PROBE_TAG_KEY="cdkd-integ-4606-net-probe"
 # Issue #5630: the fixture's spread placement group (a generated name, read
 # from the state outputs after Phase 1), swept if state destroy cannot reach it.
 PLACEMENT_GROUP_NAME=""
+# Issue #5630 (third slice): the two instances in the IPv6 subnet, terminated
+# by the trap if state destroy cannot reach them.
+IPV6_COUNT_INSTANCE_ID=""
+IPV6_ADDRESS_INSTANCE_ID=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
@@ -270,6 +279,11 @@ cleanup() {
       --instance-ids "${PUBLIC_INSTANCE_ID}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   fi
+  for v6_instance in ${IPV6_COUNT_INSTANCE_ID:-} ${IPV6_ADDRESS_INSTANCE_ID:-}; do
+    aws ec2 terminate-instances \
+      --instance-ids "${v6_instance}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  done
   if [ -n "${PLACEMENT_GROUP_NAME:-}" ]; then
     # Issue #5630: the group refuses a delete while an instance is in it, so
     # wait for the main instance to terminate first. A group state destroy
@@ -490,6 +504,9 @@ PUBLIC_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PublicInstanceId /
 # Issue #5630: set this early too, so a failure between Phase 0 and Phase 1
 # still lets cleanup sweep the placement group.
 PLACEMENT_GROUP_NAME=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PlacementGroupName // ""')
+# Issue #5630 (third slice): the IPv6-subnet instances, for the trap.
+IPV6_COUNT_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.Ipv6CountInstanceId // ""')
+IPV6_ADDRESS_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.Ipv6AddressInstanceId // ""')
 # Issue #5445: the fixture CMK exists from this deploy on, so the trap's
 # schedule-key-deletion must be able to reach it from here too.
 EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
@@ -1005,6 +1022,55 @@ if [ "${ACTUAL_TENANCY}" != "default" ]; then
   exit 1
 fi
 echo "    OK: #5630 ${INSTANCE_ID} has SourceDestCheck=false, PrivateIpAddress 10.0.0.200, placement group ${ACTUAL_PG}, tenancy default"
+# Issue #5630 (third slice): PrivateDnsNameOptions rides RunInstances. Both
+# declared values are the non-default ones (the subnet's default is ip-name,
+# A record off), and a resource-name hostname is the instance id.
+ACTUAL_DNS=$(echo "${INSTANCE}" | jq -r '"\(.PrivateDnsNameOptions.HostnameType // "null")/\(.PrivateDnsNameOptions.EnableResourceNameDnsARecord | if . == null then "null" else tostring end)"')
+if [ "${ACTUAL_DNS}" != "resource-name/true" ]; then
+  echo "FAIL: issue #5630 -- PrivateDnsNameOptions HostnameType/EnableResourceNameDnsARecord of ${INSTANCE_ID} is '${ACTUAL_DNS}', expected resource-name/true (the subnet default is ip-name/false)" >&2
+  exit 1
+fi
+P1_DNS_NAME=$(echo "${INSTANCE}" | jq -r '.PrivateDnsName // ""')
+case "${P1_DNS_NAME}" in
+  "${INSTANCE_ID}".*) ;;
+  *) echo "FAIL: issue #5630 -- PrivateDnsName of ${INSTANCE_ID} is '${P1_DNS_NAME}', expected the resource-name form ${INSTANCE_ID}.<domain>" >&2; exit 1 ;;
+esac
+echo "    OK: #5630 ${INSTANCE_ID} launched with PrivateDnsNameOptions resource-name + A record (${P1_DNS_NAME})"
+# Issue #5630 (third slice): Ipv6AddressCount / Ipv6Addresses ride RunInstances
+# for the two instances in the IPv6 subnet; a dropped one leaves the instance
+# with no IPv6 address (the subnet does not assign one on its own).
+IPV6_COUNT_INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.Ipv6CountInstanceId // ""')
+IPV6_ADDRESS_INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.Ipv6AddressInstanceId // ""')
+IPV6_EXPECTED=$(echo "${STATE}" | jq -r '.outputs.Ipv6AddressExpected // ""')
+# Kept to prove no later phase replaces them (both properties are create-only).
+P1_IPV6_COUNT_INSTANCE_ID="${IPV6_COUNT_INSTANCE_ID}"
+P1_IPV6_ADDRESS_INSTANCE_ID="${IPV6_ADDRESS_INSTANCE_ID}"
+case "${IPV6_EXPECTED}" in
+  *::77) ;;
+  *) echo "FAIL: issue #5630 -- .outputs.Ipv6AddressExpected is '${IPV6_EXPECTED}', expected <the subnet /64>::77" >&2; exit 1 ;;
+esac
+V6_COUNT_ADDRS=$(aws ec2 describe-instances --instance-ids "${IPV6_COUNT_INSTANCE_ID}" --region "${REGION}" \
+  --query "join(',', sort(Reservations[0].Instances[0].NetworkInterfaces[0].Ipv6Addresses[].Ipv6Address || \`[]\`))" \
+  --output text 2>&1) \
+  || V6_COUNT_ADDRS="<describe-failed: $(sanitize_aws_output "${V6_COUNT_ADDRS}")>"
+case "${V6_COUNT_ADDRS}" in
+  *:*,*|""|"<"*|None) echo "FAIL: issue #5630 -- ${IPV6_COUNT_INSTANCE_ID} (Ipv6AddressCount 1) holds IPv6 addresses '${V6_COUNT_ADDRS}', expected exactly one" >&2; exit 1 ;;
+  *:*) ;;
+  *) echo "FAIL: issue #5630 -- ${IPV6_COUNT_INSTANCE_ID} (Ipv6AddressCount 1) holds IPv6 addresses '${V6_COUNT_ADDRS}', expected exactly one" >&2; exit 1 ;;
+esac
+V6_FIXED_ADDRS=$(aws ec2 describe-instances --instance-ids "${IPV6_ADDRESS_INSTANCE_ID}" --region "${REGION}" \
+  --query "join(',', sort(Reservations[0].Instances[0].NetworkInterfaces[0].Ipv6Addresses[].Ipv6Address || \`[]\`))" \
+  --output text 2>&1) \
+  || V6_FIXED_ADDRS="<describe-failed: $(sanitize_aws_output "${V6_FIXED_ADDRS}")>"
+# Compared in canonical form: the expected value is built from uncompressed
+# hextets (`<h1>:<h2>:<h3>:0::77` when the fourth is zero), while EC2 reports
+# RFC 5952 compression.
+canonical_v6() { python3 -c 'import ipaddress, sys; print(ipaddress.ip_address(sys.argv[1]))' "$1" 2>/dev/null || printf '<not an address: %s>' "$1"; }
+if [ "$(canonical_v6 "${V6_FIXED_ADDRS}")" != "$(canonical_v6 "${IPV6_EXPECTED}")" ]; then
+  echo "FAIL: issue #5630 -- ${IPV6_ADDRESS_INSTANCE_ID} (Ipv6Addresses ${IPV6_EXPECTED}) holds IPv6 addresses '${V6_FIXED_ADDRS}'" >&2
+  exit 1
+fi
+echo "    OK: #5630 Ipv6AddressCount gave ${IPV6_COUNT_INSTANCE_ID} ${V6_COUNT_ADDRS}; Ipv6Addresses gave ${IPV6_ADDRESS_INSTANCE_ID} ${V6_FIXED_ADDRS}"
 # PropagateTagsToVolumeOnCreation: RunInstances tags BOTH block-device volumes
 # (root /dev/xvda and data /dev/sdf) with the instance's tag. Count the volume
 # ROWS carrying it, never a length(), and require the attached total too.
@@ -1024,6 +1090,16 @@ if [ "${PROPAGATE_TOTAL}" != "2" ] || [ "${PROPAGATE_TAGGED}" != "2" ]; then
 fi
 echo "    OK: #5630 both volumes of ${PUBLIC_INSTANCE_ID} carry the propagated instance tag"
 
+# Issue #5630 (third slice): the deploy-time readback recorded the hostname
+# options in the instance's observedProperties, so the drift arm below compares
+# a real baseline under PrivateDnsNameOptions rather than an absent key.
+OBSERVED_DNS=$(echo "${STATE}" | jq -r '.resources.Instance.observedProperties.PrivateDnsNameOptions.HostnameType // "<absent>"')
+if [ "${OBSERVED_DNS}" != "resource-name" ]; then
+  echo "FAIL: issue #5630 -- observedProperties.PrivateDnsNameOptions.HostnameType of Instance is '${OBSERVED_DNS}', expected resource-name (readCurrentState did not record the hostname options)" >&2
+  exit 1
+fi
+echo "    OK: #5630 observedProperties.PrivateDnsNameOptions.HostnameType == resource-name on Instance"
+
 # Issue #5630: `cdkd drift` reads the three properties back. Both instances
 # must be COMPARED (never drift unknown), and neither may report drift under
 # them; drift elsewhere on an instance is out of this arm's scope.
@@ -1034,7 +1110,7 @@ DRIFT_RC=$?
 set -e
 for lid in Instance PublicInstance; do
   COMPARED=$(jq --arg l "${lid}" '[(.[].clean[], .[].drifted[]) | select(.logicalId == $l)] | length' "${DRIFT_JSON}") || COMPARED="?"
-  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior|SourceDestCheck|Tenancy|PlacementGroupName|PrivateIpAddress)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
+  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior|SourceDestCheck|Tenancy|PlacementGroupName|PrivateIpAddress|PrivateDnsNameOptions)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
   if [ "${COMPARED}" != "1" ] || [ -n "${BACKFILL_DRIFT}" ]; then
     echo "FAIL: issue #5630 -- cdkd drift on ${lid}: compared=${COMPARED} drifted paths under the backfilled properties='${BACKFILL_DRIFT}' (rc=${DRIFT_RC}):" >&2
     cat "${DRIFT_JSON}" >&2
@@ -1042,7 +1118,7 @@ for lid in Instance PublicInstance; do
   fi
 done
 rm -f "${DRIFT_JSON}"
-echo "    OK: #5630 both instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior / SourceDestCheck / Tenancy / PlacementGroupName / PrivateIpAddress"
+echo "    OK: #5630 both instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior / SourceDestCheck / Tenancy / PlacementGroupName / PrivateIpAddress / PrivateDnsNameOptions"
 
 # --- Phase 1b: the instance identity read (go-to-k/cdkd#4606) --------------
 # A successful deploy deletes a journaled failed-CREATE instance only when
@@ -1458,6 +1534,28 @@ echo "==> Phase 1g: DisableApiTermination declared true again (issue #1160)"
 removal_deploy P1G_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_IP_READER=true
 poll_until "termination protection after DisableApiTermination: true" "True" read_dat
 echo "    OK: explicit DisableApiTermination true applied; the destroy below meets a protected instance"
+# Issue #5630 (third slice): the PrivateDnsName reader exists from this deploy
+# on, holding the resource-name form, so Phase 1h's check below proves it was
+# PROMOTED rather than created with the new name.
+P1G_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5630 -- could not read the state after the Phase 1g deploy: $(sanitize_aws_output "${P1G_STATE}")" >&2
+  exit 1
+}
+P1G_DNS_READER=$(echo "${P1G_STATE}" | jq -r '.outputs.DnsReaderParamName // ""')
+if [ -z "${P1G_DNS_READER}" ]; then
+  echo "FAIL: issue #5630 -- .outputs.DnsReaderParamName is missing after Phase 1g" >&2
+  exit 1
+fi
+P1G_DNS_READER_VALUE=$(aws ssm get-parameter --name "${P1G_DNS_READER}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text 2>&1) || {
+  echo "FAIL: issue #5630 -- get-parameter ${P1G_DNS_READER} failed: $(sanitize_aws_output "${P1G_DNS_READER_VALUE}")" >&2
+  exit 1
+}
+if [ "${P1G_DNS_READER_VALUE}" != "${P1_DNS_NAME}" ]; then
+  echo "FAIL: issue #5630 -- SSM parameter ${P1G_DNS_READER} (Fn::GetAtt Instance.PrivateDnsName) is '${P1G_DNS_READER_VALUE}' after Phase 1g, expected the resource-name form '${P1_DNS_NAME}'" >&2
+  exit 1
+fi
+echo "    OK: #5630 the PrivateDnsName reader holds ${P1G_DNS_READER_VALUE} before the hostname change"
 
 # Phase 1h (issue #5446): InstanceType t3.micro -> t3.small, SecurityGroupIds
 # moved to the stack's second group, and UserData added, in ONE deploy.
@@ -1538,6 +1636,22 @@ if [ "${P1H_SDC}" != "true" ]; then
   exit 1
 fi
 echo "    OK: #5630 a removed SourceDestCheck went back to true in place on ${INSTANCE_ID}"
+# Issue #5630 (third slice): the same deploy changes PrivateDnsNameOptions
+# resource-name/true -> ip-name/false. CloudFormation keeps the instance (the
+# id check above), turning the A record off in place and changing the hostname
+# type with a stop and a start; EC2 refuses a HostnameType on a running
+# instance, so one sent outside the stopped window fails this deploy.
+P1H_DNS=$(echo "${P1H_INSTANCE}" | jq -r '"\(.PrivateDnsNameOptions.HostnameType // "null")/\(.PrivateDnsNameOptions.EnableResourceNameDnsARecord | if . == null then "null" else tostring end)"')
+if [ "${P1H_DNS}" != "ip-name/false" ]; then
+  echo "FAIL: issue #5630 -- PrivateDnsNameOptions HostnameType/EnableResourceNameDnsARecord of ${INSTANCE_ID} is '${P1H_DNS}' after Phase 1h, expected ip-name/false" >&2
+  exit 1
+fi
+P1H_DNS_NAME=$(echo "${P1H_INSTANCE}" | jq -r '.PrivateDnsName // ""')
+case "${P1H_DNS_NAME}" in
+  ip-*) ;;
+  *) echo "FAIL: issue #5630 -- PrivateDnsName of ${INSTANCE_ID} is '${P1H_DNS_NAME}' after Phase 1h, expected the ip-name form ip-<address>.<domain>" >&2; exit 1 ;;
+esac
+echo "    OK: #5630 PrivateDnsNameOptions changed to ip-name/false in place on ${INSTANCE_ID} (${P1H_DNS_NAME})"
 # The stop/start gives the instance (no Elastic IP) a new public address. The
 # update records it, so the `PublicIp` Output (Fn::GetAtt Instance.PublicIp)
 # must read the NEW live address, not the one the instance had before.
@@ -1574,6 +1688,123 @@ if [ "${P1H_IP_AFTER}" = "${P1H_IP_BEFORE}" ]; then
 else
   echo "    OK: #5446 the PublicIp reader (SSM parameter) followed the stop/start to ${IP_READER_VALUE}"
 fi
+
+# Issue #5630 (third slice): the RESOURCE reader of Fn::GetAtt
+# Instance.PrivateDnsName (Phase 1g created it, while the name was the
+# resource-name form) must be promoted by Phase 1h and carry the new name.
+DNS_READER_NAME=$(echo "${P1H_STATE}" | jq -r '.outputs.DnsReaderParamName // ""')
+if [ -z "${DNS_READER_NAME}" ]; then
+  echo "FAIL: issue #5630 -- .outputs.DnsReaderParamName is missing; Phase 1g should have created the PrivateDnsName reader" >&2
+  exit 1
+fi
+DNS_READER_VALUE=$(aws ssm get-parameter --name "${DNS_READER_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text 2>&1) || {
+  echo "FAIL: issue #5630 -- get-parameter ${DNS_READER_NAME} failed: $(sanitize_aws_output "${DNS_READER_VALUE}")" >&2
+  exit 1
+}
+if [ "${DNS_READER_VALUE}" != "${P1H_DNS_NAME}" ] || [ "${DNS_READER_VALUE}" = "${P1G_DNS_READER_VALUE}" ]; then
+  echo "FAIL: issue #5630 -- SSM parameter ${DNS_READER_NAME} (Fn::GetAtt Instance.PrivateDnsName) is '${DNS_READER_VALUE}' after Phase 1h, expected the live name '${P1H_DNS_NAME}' (before: ${P1_DNS_NAME}); the reader was not promoted" >&2
+  exit 1
+fi
+echo "    OK: #5630 the PrivateDnsName reader (SSM parameter) followed the hostname change ${P1_DNS_NAME} -> ${DNS_READER_VALUE}"
+
+# Read the main instance's launch time, state, hostname options and DNS name.
+read_dns_snapshot() {
+  aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].{t:LaunchTime,s:State.Name,h:PrivateDnsNameOptions.HostnameType,a:PrivateDnsNameOptions.EnableResourceNameDnsARecord,n:PrivateDnsName}' \
+    --output json
+}
+
+# Phase 1i (issue #5630, third slice): ONLY the A-record flag changes
+# (false -> true, HostnameType stays ip-name). CloudFormation applies it in
+# place with no stop (measured), so the instance keeps its launch time and
+# stays running, and ModifyPrivateDnsNameOptions is sent to a RUNNING instance.
+echo "==> Phase 1i: PrivateDnsNameOptions flag-only change, in place with no stop (issue #5630)"
+P1I_BEFORE=$(read_dns_snapshot 2>&1) || {
+  echo "FAIL: issue #5630 -- describe-instances ${INSTANCE_ID} failed before Phase 1i: $(sanitize_aws_output "${P1I_BEFORE}")" >&2
+  exit 1
+}
+removal_deploy P1I_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=flag
+P1I_AFTER=$(read_dns_snapshot 2>&1) || {
+  echo "FAIL: issue #5630 -- describe-instances ${INSTANCE_ID} failed after Phase 1i: $(sanitize_aws_output "${P1I_AFTER}")" >&2
+  exit 1
+}
+P1I_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5630 -- could not read the state after Phase 1i: $(sanitize_aws_output "${P1I_STATE}")" >&2
+  exit 1
+}
+P1I_STATE_ID=$(echo "${P1I_STATE}" | jq -r '.outputs.InstanceId // ""')
+if [ "${P1I_STATE_ID}" != "${INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- .outputs.InstanceId is '${P1I_STATE_ID}' after Phase 1i, expected the same instance ${INSTANCE_ID}" >&2
+  exit 1
+fi
+P1I_SUMMARY=$(echo "${P1I_AFTER}" | jq -r '"\(.s)/\(.h)/\(.a | if . == null then "null" else tostring end)"')
+if [ "${P1I_SUMMARY}" != "running/ip-name/true" ]; then
+  echo "FAIL: issue #5630 -- state/HostnameType/EnableResourceNameDnsARecord of ${INSTANCE_ID} is '${P1I_SUMMARY}' after Phase 1i, expected running/ip-name/true" >&2
+  exit 1
+fi
+P1I_T_BEFORE=$(echo "${P1I_BEFORE}" | jq -r '.t // ""')
+P1I_T_AFTER=$(echo "${P1I_AFTER}" | jq -r '.t // ""')
+if [ -z "${P1I_T_BEFORE}" ] || [ "${P1I_T_AFTER}" != "${P1I_T_BEFORE}" ]; then
+  echo "FAIL: issue #5630 -- LaunchTime of ${INSTANCE_ID} moved '${P1I_T_BEFORE}' -> '${P1I_T_AFTER}' in Phase 1i; a flag-only PrivateDnsNameOptions change must not stop the instance" >&2
+  exit 1
+fi
+echo "    OK: #5630 EnableResourceNameDnsARecord turned on in place on ${INSTANCE_ID} (no stop, LaunchTime ${P1I_T_AFTER})"
+
+# Phase 1j (issue #5630, third slice): ONLY HostnameType changes
+# (ip-name -> resource-name, the flag stays true), so PrivateDnsNameOptions
+# alone takes the stop and the start CloudFormation applies it with
+# (measured): same instance, a new launch time, the resource-name DNS name.
+echo "==> Phase 1j: PrivateDnsNameOptions HostnameType-only change, with a stop and a start (issue #5630)"
+removal_deploy P1J_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname
+P1J_AFTER=$(read_dns_snapshot 2>&1) || {
+  echo "FAIL: issue #5630 -- describe-instances ${INSTANCE_ID} failed after Phase 1j: $(sanitize_aws_output "${P1J_AFTER}")" >&2
+  exit 1
+}
+P1J_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5630 -- could not read the state after Phase 1j: $(sanitize_aws_output "${P1J_STATE}")" >&2
+  exit 1
+}
+P1J_STATE_ID=$(echo "${P1J_STATE}" | jq -r '.outputs.InstanceId // ""')
+if [ "${P1J_STATE_ID}" != "${INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- .outputs.InstanceId is '${P1J_STATE_ID}' after Phase 1j, expected the same instance ${INSTANCE_ID}; CloudFormation changes HostnameType in place" >&2
+  exit 1
+fi
+P1J_SUMMARY=$(echo "${P1J_AFTER}" | jq -r '"\(.s)/\(.h)/\(.a | if . == null then "null" else tostring end)"')
+if [ "${P1J_SUMMARY}" != "running/resource-name/true" ]; then
+  echo "FAIL: issue #5630 -- state/HostnameType/EnableResourceNameDnsARecord of ${INSTANCE_ID} is '${P1J_SUMMARY}' after Phase 1j, expected running/resource-name/true" >&2
+  exit 1
+fi
+P1J_T_AFTER=$(echo "${P1J_AFTER}" | jq -r '.t // ""')
+if [ -z "${P1J_T_AFTER}" ] || [ "${P1J_T_AFTER}" = "${P1I_T_AFTER}" ]; then
+  echo "FAIL: issue #5630 -- LaunchTime of ${INSTANCE_ID} is '${P1J_T_AFTER}' after Phase 1j, the same as before (${P1I_T_AFTER}); the HostnameType change was not applied with a stop and a start" >&2
+  exit 1
+fi
+P1J_DNS_NAME=$(echo "${P1J_AFTER}" | jq -r '.n // ""')
+case "${P1J_DNS_NAME}" in
+  "${INSTANCE_ID}".*) ;;
+  *) echo "FAIL: issue #5630 -- PrivateDnsName of ${INSTANCE_ID} is '${P1J_DNS_NAME}' after Phase 1j, expected the resource-name form ${INSTANCE_ID}.<domain>" >&2; exit 1 ;;
+esac
+P1J_READER_VALUE=$(aws ssm get-parameter --name "${DNS_READER_NAME}" --region "${REGION}" \
+  --query 'Parameter.Value' --output text 2>&1) || {
+  echo "FAIL: issue #5630 -- get-parameter ${DNS_READER_NAME} failed after Phase 1j: $(sanitize_aws_output "${P1J_READER_VALUE}")" >&2
+  exit 1
+}
+if [ "${P1J_READER_VALUE}" != "${P1J_DNS_NAME}" ]; then
+  echo "FAIL: issue #5630 -- SSM parameter ${DNS_READER_NAME} is '${P1J_READER_VALUE}' after Phase 1j, expected the live name '${P1J_DNS_NAME}'; the reader was not promoted" >&2
+  exit 1
+fi
+echo "    OK: #5630 HostnameType alone stopped and restarted ${INSTANCE_ID} (LaunchTime ${P1I_T_AFTER} -> ${P1J_T_AFTER}); name ${P1J_DNS_NAME}, reader followed"
+
+# Issue #5630 (third slice): Ipv6AddressCount / Ipv6Addresses are create-only,
+# and no phase changed them, so both instances must still be the Phase 1 ones.
+IPV6_COUNT_INSTANCE_ID=$(echo "${P1J_STATE}" | jq -r '.outputs.Ipv6CountInstanceId // ""')
+IPV6_ADDRESS_INSTANCE_ID=$(echo "${P1J_STATE}" | jq -r '.outputs.Ipv6AddressInstanceId // ""')
+if [ "${IPV6_COUNT_INSTANCE_ID}" != "${P1_IPV6_COUNT_INSTANCE_ID}" ] || [ "${IPV6_ADDRESS_INSTANCE_ID}" != "${P1_IPV6_ADDRESS_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- the IPv6 instances are '${IPV6_COUNT_INSTANCE_ID}' / '${IPV6_ADDRESS_INSTANCE_ID}' after the update phases, expected the Phase 1 ones '${P1_IPV6_COUNT_INSTANCE_ID}' / '${P1_IPV6_ADDRESS_INSTANCE_ID}' (a spurious create-only replacement)" >&2
+  exit 1
+fi
+echo "    OK: #5630 the IPv6 instances were not replaced by the update phases"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
@@ -1642,6 +1873,26 @@ else
   exit 1
 fi
 
+# Issue #5630 (third slice): the two IPv6-subnet instances must be gone too.
+for v6_instance in "${IPV6_COUNT_INSTANCE_ID}" "${IPV6_ADDRESS_INSTANCE_ID}"; do
+  if gone_probe aws ec2 describe-instances --instance-ids "${v6_instance}" --region "${REGION}"; then
+    V6_STATE="gone"
+  elif ! V6_STATE=$(aws ec2 describe-instances \
+      --instance-ids "${v6_instance}" \
+      --region "${REGION}" \
+      --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${V6_STATE}" \
+      && V6_STATE="gone" \
+      || { echo "FAIL: describe-instances requery undetermined: ${V6_STATE}" >&2; exit 1; }
+  fi
+  case "${V6_STATE}" in
+    terminated|shutting-down|gone) echo "    OK: #5630 instance ${v6_instance} is ${V6_STATE}" ;;
+    *) echo "FAIL: #5630 instance ${v6_instance} still in unexpected state after destroy: ${V6_STATE}" >&2; exit 1 ;;
+  esac
+done
+IPV6_COUNT_INSTANCE_ID=""
+IPV6_ADDRESS_INSTANCE_ID=""
+
 # Issue #5445: the fixture CMK must be scheduled for deletion by the destroy
 # (RemovalPolicy.DESTROY), never left Enabled.
 EBS_KEY_STATE=$(aws kms describe-key \
@@ -1657,4 +1908,4 @@ echo "    OK: #5445 fixture CMK is PendingDeletion"
 EBS_KEY_ARN=""
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update + #5630 launch options) ==="

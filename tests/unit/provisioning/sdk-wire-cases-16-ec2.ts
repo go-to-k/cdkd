@@ -224,6 +224,41 @@ const PROPAGATE_SILENT: Record<string, string> = Object.fromEntries(
   ])
 );
 
+/**
+ * go-to-k/cdkd#5630: adding AdditionalInfo to a running instance, or removing
+ * it, completes with no change in CloudFormation (measured us-east-1,
+ * 2026-11-04; EC2 refuses it at launch), so update() sends nothing for it.
+ */
+const ADDITIONAL_INFO_REASON =
+  'AdditionalInfo is a launch-only input; CloudFormation changes nothing for it on an update (measured, go-to-k/cdkd#5630), so update() sends nothing';
+const ADDITIONAL_INFO_SILENT: Record<string, string> = Object.fromEntries(
+  ['update-add', 'update-remove', 'update-vary'].map((d) => [
+    `${d}:AdditionalInfo`,
+    ADDITIONAL_INFO_REASON,
+  ])
+);
+
+/**
+ * go-to-k/cdkd#5630, CloudFormation measured (us-east-1, 2026-11-04): removing
+ * the whole PrivateDnsNameOptions block creates a new instance (the engine's
+ * conditional replacement; `update()` refuses one that reaches it), and
+ * removing one member fails the update ("No valid attributes specified"), so
+ * `update()` refuses it before any call.
+ */
+const DNS_MEMBER_REMOVAL: Throw = {
+  why: 'CloudFormation fails an update that removes a PrivateDnsNameOptions member ("No valid attributes specified", measured, go-to-k/cdkd#5630), so update() refuses it before any call (planPrivateDnsNameOptions)',
+  says: /was removed from the template, and CloudFormation fails that update \("No valid attributes specified"\)/,
+};
+const DNS_THROWS: Record<string, Throw> = {
+  'update-remove:PrivateDnsNameOptions': {
+    why: 'removing the whole PrivateDnsNameOptions block creates a new instance in CloudFormation (measured, go-to-k/cdkd#5630; instancePrivateDnsNameOptionsChangeReplaces), so a removal reaching update() is refused',
+    says: /CloudFormation creates a new instance when PrivateDnsNameOptions is removed/,
+  },
+  'update-remove:PrivateDnsNameOptions.HostnameType': DNS_MEMBER_REMOVAL,
+  'update-remove:PrivateDnsNameOptions.EnableResourceNameDnsARecord': DNS_MEMBER_REMOVAL,
+  'update-remove:PrivateDnsNameOptions.EnableResourceNameDnsAAAARecord': DNS_MEMBER_REMOVAL,
+};
+
 const INSTANCE_CASE: TypeCase = tc(
     'AWS::EC2::Instance',
     'i-1',
@@ -276,6 +311,13 @@ const INSTANCE_CASE: TypeCase = tc(
           PlacementGroupName: 'pg-1',
           PrivateIpAddress: '10.0.1.5',
           PropagateTagsToVolumeOnCreation: true,
+          AdditionalInfo: 'reserved',
+          Ipv6AddressCount: 1,
+          PrivateDnsNameOptions: {
+            HostnameType: 'resource-name',
+            EnableResourceNameDnsARecord: true,
+            EnableResourceNameDnsAAAARecord: false,
+          },
         },
         variants: {
           UserData: 'ZWNobyAy',
@@ -285,6 +327,7 @@ const INSTANCE_CASE: TypeCase = tc(
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
           ...INSTANCE_THROWS,
+          ...DNS_THROWS,
           'update-remove:DisableApiTermination': {
             why: `CloudFormation fails an update that removes DisableApiTermination from an existing instance (measured, #1160), so update() refuses it before any call (guardTerminationProtectionRemoval, ${SRC}:8088-8093)`,
             says: /DisableApiTermination was removed from the template, and CloudFormation fails that update/,
@@ -299,13 +342,26 @@ const INSTANCE_CASE: TypeCase = tc(
           'update-remove:CreditSpecification': INSTANCE_KEPT('CreditSpecification'),
           'update-remove:CreditSpecification.CPUCredits': INSTANCE_KEPT('CreditSpecification'),
           ...PROPAGATE_SILENT,
+          ...ADDITIONAL_INFO_SILENT,
           ...BDM_REPLACES,
         },
       },
       {
         name: 'classic group names',
-        bag: { ImageId: 'ami-1', InstanceType: 't3.small', SecurityGroups: ['default', 'web'] },
-        expectedRemovalThrows: INSTANCE_THROWS,
+        bag: {
+          ImageId: 'ami-1',
+          InstanceType: 't3.small',
+          SecurityGroups: ['default', 'web'],
+          // go-to-k/cdkd#5630.
+          Ipv6Addresses: [{ Ipv6Address: '2001:db8::7' }],
+        },
+        expectedRemovalThrows: {
+          ...INSTANCE_THROWS,
+          'create:Ipv6Addresses.0.Ipv6Address': {
+            why: 'the schema requires Ipv6Address in each Ipv6Addresses entry; a launch without it would drop an address the template declared, so it is refused before RunInstances (go-to-k/cdkd#5630)',
+            says: /Ipv6Addresses\[0\]\.Ipv6Address is required/,
+          },
+        },
       },
       {
         name: 'network interfaces',

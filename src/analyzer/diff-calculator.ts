@@ -141,7 +141,9 @@ const IN_PLACE_UPDATE_DERIVED_ATTRS: Readonly<Record<string, ReadonlySet<string>
   // instance, which gives an instance without an Elastic IP a new public
   // address and DNS name (its private address and DNS name stay). The update
   // records the new pair, so a reader re-resolves against it.
-  'AWS::EC2::Instance': new Set(['PublicIp', 'PublicDnsName']),
+  // go-to-k/cdkd#5630: a PrivateDnsNameOptions.HostnameType change moves the
+  // private DNS name in place (`ip-10-0-0-1...` <-> `i-0123...`, measured).
+  'AWS::EC2::Instance': new Set(['PublicIp', 'PublicDnsName', 'PrivateDnsName']),
 });
 
 /**

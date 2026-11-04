@@ -11,6 +11,8 @@ Minimal EC2 Instance deployment example for cdkd.
 - **Security Group** - Allows inbound SSH (port 22) from anywhere
 - **EC2 Instance** - t3.micro with Amazon Linux 2023
 - **KMS Key** - customer managed key for an EBS data volume (issue #5445)
+- **IPv6 subnet** - an Amazon-provided IPv6 /56 on the VPC (`AWS::EC2::VPCCidrBlock`) and a subnet
+  holding its first /64, with two t3.nano instances (issue #5630)
 
 ## Demonstrates
 
@@ -35,6 +37,13 @@ Minimal EC2 Instance deployment example for cdkd.
   instance to a second security group and adds `UserData`. As in CloudFormation, the same instance
   is stopped, modified and started again. An SSM parameter reading `Fn::GetAtt Instance.PublicIp`
   (added in Phase 1g, `CDKD_TEST_IP_READER=true`) must follow the new public address.
+- `AWS::EC2::Instance` launch options (issue #5630): `PrivateDnsNameOptions` on the main instance,
+  which Phase 1h changes from `resource-name` hostnames with an A record to `ip-name` without one
+  (as in CloudFormation, the same instance, with the stop the `InstanceType` change takes; an SSM
+  parameter reading `Fn::GetAtt Instance.PrivateDnsName` must follow the new name). Phase 1i
+  (`CDKD_TEST_DNS_5630=flag`) turns the A record on alone, in place with no stop, and Phase 1j
+  (`=hostname`) changes only `HostnameType`, which stops and starts the instance on its own. And
+  `Ipv6AddressCount` / `Ipv6Addresses` on the two instances in the IPv6 subnet.
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.
