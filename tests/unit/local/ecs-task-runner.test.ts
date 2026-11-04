@@ -193,7 +193,7 @@ describe('buildDockerRunArgs', () => {
     });
     const joined = args.join(' ');
     expect(joined).toContain('ECS_CONTAINER_METADATA_URI_V4=');
-    expect(joined).toContain('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=');
+    expect(joined).toContain('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds');
     expect(joined).toContain('LOG_LEVEL=info'); // override beats template literal
     // A resolved secret is passed value-LESS on argv (`-e X`) and its value is
     // handed to the container through the spawn env instead, so it never lands

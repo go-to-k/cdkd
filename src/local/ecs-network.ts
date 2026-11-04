@@ -23,8 +23,9 @@ const execFileAsync = promisify(execFile);
  * `cdkd local run-task`. The sidecar (a small Go binary maintained by
  * awslabs) is started at `169.254.170.2` on the per-task docker network so
  * containers can hit `http://169.254.170.2/v4/<container-id>` for task
- * metadata AND `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<role-arn>`
- * for IAM task-role credentials. cdkd does NOT re-implement the sidecar
+ * metadata AND `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds` for IAM
+ * task-role credentials (the sidecar holds the already-assumed role's
+ * credentials, so `/creds` serves exactly those). cdkd does NOT re-implement the sidecar
  * — pulling the AWS-published image keeps cdkd in lock-step with whatever
  * ECS-Agent fidelity AWS chooses to provide. The `cdkd local start-service`
  * / `start-alb` shared-network shape lives in cdk-local's bundled ECS
@@ -41,6 +42,12 @@ export const METADATA_ENDPOINT_IMAGE = 'amazon/amazon-ecs-local-container-endpoi
  * to reach it.
  */
 export const METADATA_ENDPOINT_IP = '169.254.170.2';
+
+/**
+ * The metadata sidecar's credentials route. The sidecar is started with the
+ * task role's already-assumed credentials, so `/creds` serves exactly those.
+ */
+export const TASK_ROLE_CREDENTIALS_PATH = '/creds';
 
 /** Default subnet — used when no `subnetOctet` override is supplied. */
 const DEFAULT_METADATA_ENDPOINT_SUBNET = '169.254.170.0/24';
@@ -100,7 +107,7 @@ export interface CreateTaskNetworkOptions {
   /**
    * When set, the sidecar receives `AWS_ACCESS_KEY_ID` /
    * `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` env vars so its
-   * `/role/<role-arn>` endpoint serves these creds to the user
+   * `/creds` endpoint serves these creds to the user
    * containers. When unset, the sidecar falls back to its default
    * credential chain (typically empty — the user containers will get
    * 4xx from the credentials endpoint, mimicking IAM-misconfigured prod).
@@ -157,9 +164,10 @@ async function createNetworkAndSidecar(args: {
       `docker network create failed: ${describeDockerFailure(err, createArgs)}. ` +
         `Hint: another cdkd run may already own subnet ${cidr}; wait for it to ` +
         'finish, or remove the leftover network with `docker network ls` + ' +
-        '`docker network rm`. `cdkd local start-service` shares one network ' +
-        'across every service in the run; bare `cdkd local run-task` uses a ' +
-        'per-task network so only one run can be active at a time.'
+        '`docker network rm`. `cdkd local run-task` always uses ' +
+        '169.254.170.0/24, where AWS SDKs read task-role credentials, as does a ' +
+        '`cdkd local start-service` / `start-alb` run with `--assume-role`, so ' +
+        'only one of them can be active at a time.'
     );
   }
 
@@ -279,10 +287,11 @@ export async function createTaskNetwork(
  * id post-`run` — at this point we use the container name as a stable
  * proxy since the metadata endpoint accepts a name lookup.
  *
- * `roleArn` is the optional task role ARN. When set, the credentials
- * endpoint path bakes it in so AWS SDK clients pull the assumed creds
- * automatically; when unset, the path is omitted (containers fall back
- * to whichever credentials AWS SDK chains find).
+ * `roleArn` is the optional task role ARN. When set, containers get
+ * `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/creds` so AWS SDK clients pull
+ * the assumed creds from the sidecar, which must then sit at
+ * `169.254.170.2`; when unset, the variable is omitted (containers fall
+ * back to whichever credentials AWS SDK chains find).
  */
 export function buildMetadataEnv(opts: {
   containerName: string;
@@ -303,11 +312,19 @@ export function buildMetadataEnv(opts: {
     ECS_CONTAINER_METADATA_URI: `http://${ip}/v3/${opts.containerName}`,
   };
   if (opts.roleArn) {
-    // cdkd-arn-display: a URI PATH the container's SDK fetches, not a terminal
-    // line. `encodeURIComponent` percent-encodes every control byte already,
-    // and the metadata sidecar has to receive the ARN it was given -- a
-    // sanitizing pass would address a different role.
-    env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = `/role/${encodeURIComponent(opts.roleArn)}`;
+    // SDKs resolve `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` only against the
+    // fixed host 169.254.170.2, so a sidecar anywhere else serves nobody.
+    if (ip !== METADATA_ENDPOINT_IP) {
+      throw new DockerRunnerError(
+        `A task role needs the metadata sidecar at ${METADATA_ENDPOINT_IP} (SDKs read task-role ` +
+          `credentials only from there), but this task's network put it at ${ip}.`
+      );
+    }
+    // The sidecar is handed the already-assumed role's credentials, so its
+    // `/creds` route serves exactly those. Its `/role/<arn>` route answers 404
+    // for an ARN path, so no container ever got task-role credentials
+    // (go-to-k/cdkd#5763, mirroring go-to-k/cdk-local#853).
+    env['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'] = TASK_ROLE_CREDENTIALS_PATH;
   }
   if (opts.region) env['AWS_REGION'] = opts.region;
   return env;

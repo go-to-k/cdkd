@@ -258,10 +258,10 @@ local-invoke-stage	2026-10-22T23:04:14Z	PASS	35	verify.sh	PR #5192 stack-keyed m
 local-run-task	2026-10-22T04:25:39Z	PASS	25	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump
 local-run-task-awsvpc	2026-10-22T05:48:49Z	PASS	9	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-run-task-cdkd-assets	2026-10-22T05:48:49Z	PASS	14	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
-local-run-task-from-state	2026-10-22T05:48:49Z	PASS	214	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
+local-run-task-from-state	2026-11-04T11:52:52Z	PASS	251	verify.sh	PR #5769 cdk-local 0.158.1; new steps 8 (--env-vars skips secret fetch, #5756) + 9 (--assume-task-role /creds, #5763), both red pre-fix; DOCKER_HOST set (no /var/run/docker.sock on host); destroy 0 errors, docker sweep clean
 local-run-task-multi-container	2026-10-22T05:48:49Z	PASS	10	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-start-agentcore	2026-10-22T19:59:29Z	PASS	15	verify.sh	PR #5174 cdk-local 0.154.0 bump; 1st attempt rc=1 bc runner omitted AWS_REGION (step 8 --sigv4 needs a region), not a FAIL; retry w/ AWS_REGION=us-east-1 passed all 10 steps, docker sweep clean
-local-start-alb	2026-10-22T19:42:03Z	PASS	20	verify.sh	PR #5174 cdk-local 0.154.0 bump; front-door routed inbound request, clean teardown, docker sweep clean
+local-start-alb	2026-11-04T11:52:52Z	PASS	20	verify.sh	PR #5769 cdk-local 0.158.1 bump; rc ok, docker sweep clean
 local-start-alb-from-state	2026-10-22T19:48:15Z	PASS	325	verify.sh	PR #5174 cdk-local 0.154.0 bump; VPC+ALB+2 Fargate svc+Lambda target, --image-override by construct id/ServiceName, destroy+docker sweep clean
 local-start-api	2026-10-22T04:25:39Z	PASS	30	verify.sh	rc ok, orph clean; cdk-local 0.153.2 bump
 local-start-api-container	2026-10-22T05:48:49Z	PASS	15	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
@@ -271,7 +271,7 @@ local-start-cloudfront	2026-10-29T15:35:22Z	PASS	8	verify.sh	PR #5533 cdk-local 
 local-start-cloudfront-from-state	2026-10-22T19:53:26Z	PASS	240	verify.sh	PR #5174 cdk-local 0.154.0 bump; served deployed S3 origin byte-for-byte; destroy+docker sweep clean
 local-start-microvm	2026-10-26T04:59:45Z	PASS	25	verify.sh	rc ok, docker clean; rerun @5999c0499
 local-start-microvm-from-state	2026-10-26T06:19:33Z	PASS	301	verify.sh	rc ok, orph clean; state versions remain (history); @c6949c3bd
-local-start-service	2026-10-22T19:41:02Z	PASS	105	verify.sh	PR #5174 cdk-local 0.154.0 bump; 2 replicas + dual-stack/FIPS ECR pull; destroy+docker sweep clean
+local-start-service	2026-11-04T11:52:52Z	PASS	90	verify.sh	PR #5769 cdk-local 0.158.1 bump; rc ok, docker sweep clean, orph clean
 local-start-service-watch-fast	2026-10-22T05:48:49Z	PASS	62	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-start-web-function	2026-10-25T18:43:18Z	PASS	15	verify.sh	rc ok, docker clean; rerun @c9cdb4870
 local-start-web-function-from-state	2026-10-25T18:43:18Z	PASS	95	verify.sh	rc ok, orph clean; rerun @c9cdb4870

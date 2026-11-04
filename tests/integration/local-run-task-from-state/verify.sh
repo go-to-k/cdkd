@@ -61,6 +61,7 @@ TASK_PATH_SUB="${STACK}/NginxTaskDef"
 TASK_PATH_JOIN="${STACK}/NginxTaskDefL2"
 TASK_PATH_ENV="${STACK}/EnvTaskDef"
 TASK_PATH_JSONKEY="${STACK}/JsonKeyTaskDef"
+TASK_PATH_ROLE="${STACK}/RoleTaskDef"
 TASK_PATH_DUALSTACK="${STACK}/NginxTaskDefDualStack"
 TASK_PATH_FIPS="${STACK}/NginxTaskDefFips"
 # Issue #2189: the literal this fixture's PlainSecret holds. verify.sh greps
@@ -76,6 +77,7 @@ HOST_PORT_FIPS=18085
 SIDECAR_IMAGE="amazon/amazon-ecs-local-container-endpoints:latest-amd64"
 NGINX_IMAGE="public.ecr.aws/nginx/nginx:alpine"
 BUSYBOX_IMAGE="public.ecr.aws/docker/library/busybox:1.36"
+AWSCLI_IMAGE="public.ecr.aws/aws-cli/aws-cli:2.31.0"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEST_DIR="${REPO_ROOT}/tests/integration/local-run-task-from-state"
@@ -122,6 +124,7 @@ echo "[verify] step 1c: pulling fixture images"
 docker pull "${SIDECAR_IMAGE}"
 docker pull "${NGINX_IMAGE}"
 docker pull "${BUSYBOX_IMAGE}"
+docker pull "${AWSCLI_IMAGE}"
 
 # Cleanup trap: empty ECR repo (cdkd destroy fails if it has images),
 # cdkd destroy, then docker rm orphan containers + networks. Runs on
@@ -663,8 +666,110 @@ if [[ "${ASSUME_LEFTOVER}" -ne 0 || "${ASSUME_NET_LEFTOVER}" -ne 0 ]]; then
 fi
 echo "[verify]   the AssumeRole failure rendered with its operation, AWS's diagnosis once, and an operation-only Caused by line"
 
+# ---------------------------------------------------------------------------
+# Issue #5756: a Secrets entry whose key `--env-vars` gives is NOT fetched.
+# JsonKeyTaskDef's DB_PASS is the json-key reference step 4d proved refuses
+# when fetched. With `--env-vars` giving DB_PASS, the fetch must be skipped, so
+# the task RUNS and the container sees the override. Before the fix the fetch
+# ran anyway and the run refused exactly as in step 4d.
+# ---------------------------------------------------------------------------
+echo "[verify] step 8: --env-vars giving a Secrets key skips its fetch (#5756)"
+ENV_VARS_5756="$(mktemp)"
+printf '%s\n' '{"jsonkey":{"DB_PASS":"cdkd5756-override-value"}}' >"${ENV_VARS_5756}"
+set +e
+SKIP_OUT="$(${CDKD} local run-task "${TASK_PATH_JSONKEY}" \
+  --from-state \
+  --detach \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --env-vars "${ENV_VARS_5756}" \
+  --state-bucket "${STATE_BUCKET}" 2>&1)"
+SKIP_RC=$?
+set -e
+rm -f "${ENV_VARS_5756}"
+echo "${SKIP_OUT}" | tail -5
+if [ "${SKIP_RC}" -ne 0 ]; then
+  echo "[verify] FAIL: run-task with --env-vars giving DB_PASS exited rc=${SKIP_RC}; the secret was still fetched"
+  exit 1
+fi
+if grep -qF "not valid JSON" <<<"${SKIP_OUT}"; then
+  echo "[verify] FAIL: the json-key refusal fired - the overridden secret was fetched"
+  exit 1
+fi
+sleep 3
+SKIP_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-cdkd-local-run-task-from-state-jsonkey-fixture-jsonkey-" --format '{{.ID}}' | head -n 1)"
+[ -n "${SKIP_CONTAINER_ID}" ] || { echo "[verify] FAIL: jsonkey container not found after the --env-vars run"; exit 1; }
+SKIP_LOGS="$(docker logs "${SKIP_CONTAINER_ID}" 2>&1)"
+echo "${SKIP_LOGS}" | sed 's/^/[verify]     /'
+if ! grep -qxF "DB_PASS_VALUE=cdkd5756-override-value" <<<"${SKIP_LOGS}"; then
+  echo "[verify] FAIL: the container did not receive the --env-vars value for DB_PASS"
+  exit 1
+fi
+# That the override value of a declared secret stays off the `docker run`
+# argv is guarded by the unit suite (ecs-task-runner-runner.test.ts, #5756):
+# `docker inspect` shows the container's own args, never the CLI's argv.
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+echo "[verify]   the overridden secret was not fetched and the container got the --env-vars value"
+
+# ---------------------------------------------------------------------------
+# Issue #5763: `--assume-task-role` credentials reach an SDK in the container.
+# Before the fix the containers got AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=
+# /role/<arn>, which the sidecar answers 404, so `sts get-caller-identity`
+# found no credentials. Now it is /creds and the container runs as the role.
+# ---------------------------------------------------------------------------
+echo "[verify] step 9: --assume-task-role serves the task role at /creds (#5763)"
+ROLE_NAME_5763="$(${CDKD} state resources "${STACK}" --state-bucket "${STATE_BUCKET}" --json \
+  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d);for(const r of j){if(r.logicalId==="RoleTaskDefTaskRole"){console.log(r.physicalId);process.exit(0)}}process.exit(1)})')"
+[ -n "${ROLE_NAME_5763}" ] || { echo "[verify] FAIL: could not read RoleTaskDefTaskRole from state"; exit 1; }
+ROLE_ARN_5763="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME_5763}"
+# IAM trust propagation is eventually consistent: wait until the caller can
+# assume the role, so a red below is the container's, not IAM's.
+PROPAGATED_5763=0
+for _ in $(seq 1 20); do
+  if aws sts assume-role --role-arn "${ROLE_ARN_5763}" --role-session-name cdkd-5763-probe \
+    --duration-seconds 900 --query 'AssumedRoleUser.Arn' --output text >/dev/null 2>&1; then
+    PROPAGATED_5763=1
+    break
+  fi
+  sleep 3
+done
+[ "${PROPAGATED_5763}" -eq 1 ] || { echo "[verify] FAIL: sts:AssumeRole into ${ROLE_ARN_5763} did not succeed within 60s"; exit 1; }
+set +e
+ROLE_OUT="$(${CDKD} local run-task "${TASK_PATH_ROLE}" \
+  --from-state \
+  --detach \
+  --no-pull \
+  --container-host 127.0.0.1 \
+  --assume-task-role "${ROLE_ARN_5763}" \
+  --state-bucket "${STATE_BUCKET}" 2>&1)"
+ROLE_RC=$?
+set -e
+echo "${ROLE_OUT}" | tail -5
+[ "${ROLE_RC}" -eq 0 ] || { echo "[verify] FAIL: run-task --assume-task-role exited rc=${ROLE_RC}"; exit 1; }
+ROLE_CONTAINER_ID="$(docker ps -a --filter "name=cdkd-local-cdkd-local-run-task-from-state-role-fixture-identity-" --format '{{.ID}}' | head -n 1)"
+[ -n "${ROLE_CONTAINER_ID}" ] || { echo "[verify] FAIL: identity container not found"; exit 1; }
+ROLE_LOGS=""
+for _ in $(seq 1 30); do
+  ROLE_LOGS="$(docker logs "${ROLE_CONTAINER_ID}" 2>&1)"
+  grep -q '^CALLER=' <<<"${ROLE_LOGS}" && break
+  sleep 2
+done
+echo "${ROLE_LOGS}" | sed 's/^/[verify]     /'
+if ! grep -qxF "RELATIVE_URI=/creds" <<<"${ROLE_LOGS}"; then
+  echo "[verify] FAIL: the container's AWS_CONTAINER_CREDENTIALS_RELATIVE_URI is not /creds"
+  exit 1
+fi
+if ! grep -qF "CALLER=arn:aws:sts::${ACCOUNT_ID}:assumed-role/${ROLE_NAME_5763}/" <<<"${ROLE_LOGS}"; then
+  echo "[verify] FAIL: sts get-caller-identity in the container did not run as the task role"
+  exit 1
+fi
+docker ps -a --filter "name=cdkd-local-" --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true
+docker network ls --filter "name=cdkd-local-task-" --format '{{.ID}}' | xargs -r docker network rm >/dev/null 2>&1 || true
+echo "[verify]   the container ran as the task role through the sidecar's /creds route"
+
 # NOTE: no explicit `cleanup` call here. It ends with `exit "${rc}"`, so calling
 # it would terminate the script before anything after it ran -- the trap is what
 # invokes it, and the state-version sweep lives inside it.
 echo ""
-echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, the issue #4857 --assume-task-role failure rendered once with its operation, and zero state versions survived - all against deployed cdkd state."
+echo "[verify] All checks passed: --from-state substituted ECR Repository ref (Fn::Sub + Fn::Join), env-var / Ref-secret intrinsics (issue #291), the issue #2189 json-key refusal withheld the secret plaintext, the issue #4857 --assume-task-role failure rendered once with its operation, the issue #5756 --env-vars override skipped the secret fetch, the issue #5763 task role reached the container via /creds, and zero state versions survived - all against deployed cdkd state."

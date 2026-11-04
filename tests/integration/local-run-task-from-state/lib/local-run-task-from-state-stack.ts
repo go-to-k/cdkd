@@ -311,7 +311,14 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
           // is here only so a REGRESSION (resolution unexpectedly
           // succeeding) prints something verify.sh can recognise rather
           // than hanging.
-          command: ['sh', '-c', 'echo "UNEXPECTED_RESOLUTION_SUCCEEDED"'],
+          // Issue #5756's arm reruns this task with `--env-vars` giving
+          // DB_PASS, which skips the fetch, so the container runs: it prints
+          // the override (fixture data, never a secret) for verify.sh.
+          command: [
+            'sh',
+            '-c',
+            'echo "UNEXPECTED_RESOLUTION_SUCCEEDED"; echo "DB_PASS_VALUE=$DB_PASS"',
+          ],
           // The ECS `:json-key:` form: ARN, then the key, then the empty
           // version-stage / version-id fields. cdkd fetches the secret,
           // finds it is not JSON, and refuses.
@@ -322,5 +329,42 @@ export class LocalRunTaskFromStateStack extends cdk.Stack {
       ],
     });
     jsonKeyTaskDef.overrideLogicalId('JsonKeyTaskDef');
+
+    // --- Issue #5763: `--assume-task-role` credentials reach the container --
+    //
+    // run-task set `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI=/role/<arn>`, which
+    // the metadata sidecar answers 404, so no SDK in the container got the task
+    // role. The role trusts the deploying account so the caller can
+    // `sts:AssumeRole` into it, as `--assume-task-role` does; the container runs
+    // the AWS CLI's `sts get-caller-identity` (a real SDK reading the URI from
+    // 169.254.170.2) and prints the ARN it resolved as.
+    const roleTaskRole = new iam.Role(this, 'RoleTaskDefTaskRole', {
+      assumedBy: new iam.CompositePrincipal(
+        new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+        new iam.AccountRootPrincipal()
+      ),
+    });
+    (roleTaskRole.node.defaultChild as iam.CfnRole).overrideLogicalId('RoleTaskDefTaskRole');
+
+    const roleTaskDef = new ecs.CfnTaskDefinition(this, 'RoleTaskDef', {
+      family: 'cdkd-local-run-task-from-state-role-fixture',
+      requiresCompatibilities: ['EC2'],
+      networkMode: 'bridge',
+      taskRoleArn: roleTaskRole.roleArn,
+      containerDefinitions: [
+        {
+          name: 'identity',
+          image: 'public.ecr.aws/aws-cli/aws-cli:2.31.0',
+          essential: true,
+          memory: 256,
+          entryPoint: ['/bin/sh', '-c'],
+          command: [
+            // `$VAR` without braces: cfn-lint reads `${...}` as a Fn::Sub parameter.
+            'echo "RELATIVE_URI=$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"; echo "CALLER=$(aws sts get-caller-identity --region us-east-1 --query Arn --output text 2>&1 | tr "\\n" " ")"',
+          ],
+        },
+      ],
+    });
+    roleTaskDef.overrideLogicalId('RoleTaskDef');
   }
 }

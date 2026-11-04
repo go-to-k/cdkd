@@ -206,7 +206,7 @@ describe('--assume-task-role wins over --profile, through the command body (issu
 
     // The gate. `resolveTaskCredentialChannels` writes a file only when
     // `--assume-task-role` produced NOTHING, because the sidecar already serves
-    // the assumed credentials at `/role/<arn>` and a mounted file's env vars
+    // the assumed credentials at `/creds` and a mounted file's env vars
     // would override them.
     expect(
       runOpts.profileCredentialsFile,
