@@ -102,6 +102,7 @@ const { createLocalRunTaskCommand, resolveRunTaskImageOverride, buildEcsImageRes
   await import('../../../src/cli/commands/local-run-task.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
 const { detectEcsImageResolutionNeeds } = await import('../../../src/local/ecs-task-resolver.js');
+const { resolveImageOverrides } = await import('cdk-local/internal');
 
 const SAME_STACK_REASON =
   "Container 'app' in task 'TD' references same-stack ECR repository 'Repo'. cdkd local run-task cannot resolve the repository URI without state — pass --from-state (cdkd-deployed) or --from-cfn-stack (cdk-deployed), build via ContainerImage.fromAsset, pin a public image, or pass --image-override to build it from a local Dockerfile.";
@@ -222,6 +223,39 @@ describe('localRunTaskCommand — same-stack ECR images (go-to-k/cdkd#5768)', ()
       errSpy.mockRestore();
     }
     expect(h.stsSend).not.toHaveBeenCalled();
+    expect(h.runEcsTask).not.toHaveBeenCalled();
+  });
+
+  it('in a terminal, defers the refusal to after the override pass (the boot prompt may cover it)', async () => {
+    h.task = makeTask({ kind: 'same-stack-ecr', repoLogicalId: 'Repo', unresolvedReason: SAME_STACK_REASON });
+    h.stsSend.mockResolvedValue({
+      Credentials: { AccessKeyId: 'a', SecretAccessKey: 'b', SessionToken: 'c' },
+    });
+    // The prompt itself is the engine's; here it answers "no Dockerfile".
+    vi.mocked(resolveImageOverrides).mockImplementationOnce(async () => new Map());
+    const stdinTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const cmd = createLocalRunTaskCommand();
+      cmd.exitOverride();
+      await cmd.parseAsync(['S/TD', '--assume-task-role', 'arn:aws:iam::123456789012:role/r'], {
+        from: 'user',
+      });
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(errSpy.mock.calls.flat().join('\n')).toMatch(/references same-stack ECR repository 'Repo'/);
+    } finally {
+      exit.mockRestore();
+      errSpy.mockRestore();
+      if (stdinTty) Object.defineProperty(process.stdin, 'isTTY', stdinTty);
+      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+      if (stdoutTty) Object.defineProperty(process.stdout, 'isTTY', stdoutTty);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+    }
+    expect(h.stsSend).toHaveBeenCalledTimes(1);
     expect(h.runEcsTask).not.toHaveBeenCalled();
   });
 
