@@ -215,12 +215,12 @@ kinesis-stream-mode-switch	2026-10-29T20:43:22Z	PASS	181	verify.sh	PR #5535 dd4c
 kms-encryption	2026-10-26T05:02:44Z	PASS	87	verify.sh	destroy 0 errors, orph clean; #5299 KeyUsage refusal + lockout bypass OK; pre-fix probe red at Phase 2b (PR 5304)
 lambda	2026-10-24T14:12:33Z	PASS	101	verify.sh	rc ok, orph clean
 lambda-alias-provisioned-concurrency	2026-11-04T05:17:34Z	PASS	264	verify.sh	rc 0, destroy 4 deleted 0 errors, orph clean
-lambda-arch-switch	2026-10-01T04:01:28Z	PASS	121	verify.sh	rc ok, orph clean (#4241)
+lambda-arch-switch	2026-11-04T06:31:22Z	PASS	60	verify.sh	rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
 lambda-config-field-removal	2026-10-02T01:44:21Z	PASS	110	verify.sh	PR #4378 removalDefaults; rc ok, orph clean
 lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
 lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
-lambda-env-removal	2026-10-01T04:01:28Z	PASS	110	verify.sh	rc ok, orph clean (#4241)
+lambda-env-removal	2026-11-04T06:31:22Z	PASS	60	verify.sh	rc ok, orph clean
 lambda-esm-documentdb	2026-11-02T01:39:49Z	PASS	897	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 lambda-esm-self-managed-kafka	2026-11-01T00:07:49Z	PASS	201	verify.sh	rc ok, orph clean; #3850 Queue create/update, mode refusal, collision, --replace
 lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok, orph clean
@@ -229,8 +229,8 @@ lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph 
 lambda-log-retention	2026-11-04T05:45:58Z	PASS	91	verify.sh	1104 sweep b5; rc ok, 0 orph
 lambda-microvm-image	2026-10-20T05:07:15Z	PASS	862	verify.sh	rc ok, orph clean; #5105
 lambda-network-connector	2026-10-30T10:53:30Z	PASS	979	verify.sh	rc 0, orph clean; PR #5123 e1e18f02a ElasticIpConfiguration refusal; probe red at 'deploy declaring ElasticIpConfiguration SUCCEEDED'
-lambda-reserved-concurrency	2026-10-01T04:01:28Z	PASS	126	verify.sh	rc ok, orph clean (#4241)
-lambda-snapstart	2026-10-01T04:01:28Z	PASS	226	verify.sh	rc ok, orph clean (#4241)
+lambda-reserved-concurrency	2026-11-04T06:31:22Z	PASS	50	verify.sh	rc ok, orph clean
+lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
 lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105
 lambda-versioning	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 4 del 0 err, 0 orph
 lambda-web-function-revision-replace	2026-10-20T19:58:09Z	PASS	452	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
@@ -424,6 +424,6 @@ vpc-lambda-cr-race	2026-10-25T15:55:05Z	PASS	326	standard	us-east-1; final build
 vpc-lookup	2026-11-04T05:36:33Z	PASS	34	standard	batch 4; context-provider loop ok, 0 err 0 orph
 vpc-nat-gateway	2026-10-26T12:39:04Z	PASS	2098	verify.sh	rc ok, orph clean, #2762 regional NAT; 1h/1i wait exercised
 wafv2	2026-10-29T17:47:25Z	PASS	188	verify.sh	rc ok, orph clean; probe red at assert_sdk_route (cc-api routing)
-wait-condition-handle	2026-09-30T12:06:02Z	PASS	66	verify.sh	rc ok, orph clean (#4228)
+wait-condition-handle	2026-11-04T06:31:22Z	PASS	45	verify.sh	rc ok, orph clean
 wide-independent	2026-10-24T07:02:56Z	PASS	1343	verify.sh	final #5242 round, default settings (SDK 10/30, CC 10/20/30); 1 throttling line + retry after ProvisioningError (ThrottlingException) x16 at CC30; destroy 0 errors, orph clean incl SSM docs + Athena wg
 wide-web-functions	2026-10-24T06:46:45Z	PASS	396	verify.sh	final #5242 round, default settings (12 functions, --concurrency 10 20); retry after ProvisioningError (ValidationException) x38 at cc20; destroy 0 errors, orph clean incl log groups
