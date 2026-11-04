@@ -2648,7 +2648,9 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     {
       handled: new Set<string>([
         'AutoMinorVersionUpgrade',
+        'BacktrackWindow',
         'BackupRetentionPeriod',
+        'ClusterScalabilityType',
         'CopyTagsToSnapshot',
         'DatabaseInsightsMode',
         'DatabaseName',
@@ -2659,6 +2661,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'EnableCloudwatchLogsExports',
         'EnableHttpEndpoint',
         'EnableIAMDatabaseAuthentication',
+        'EnableLocalWriteForwarding',
         'Engine',
         'EngineLifecycleSupport',
         'EngineVersion',
@@ -2688,8 +2691,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['AllocatedStorage', 'not yet implemented by cdkd'],
         ['AssociatedRoles', 'not yet implemented by cdkd'],
         ['AvailabilityZones', 'not yet implemented by cdkd'],
-        ['BacktrackWindow', 'not yet implemented by cdkd'],
-        ['ClusterScalabilityType', 'not yet implemented by cdkd'],
         ['DBClusterInstanceClass', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
         ['DBSystemId', 'not yet implemented by cdkd'],
@@ -2700,7 +2701,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['Domain', 'not yet implemented by cdkd'],
         ['DomainIAMRoleName', 'not yet implemented by cdkd'],
         ['EnableGlobalWriteForwarding', 'not yet implemented by cdkd'],
-        ['EnableLocalWriteForwarding', 'not yet implemented by cdkd'],
         ['EngineMode', 'not yet implemented by cdkd'],
         ['GlobalClusterIdentifier', 'not yet implemented by cdkd'],
         ['Iops', 'not yet implemented by cdkd'],
@@ -2716,7 +2716,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         ['WithExpressConfiguration', 'not yet implemented by cdkd'],
       ]),
       createOnlyDrops: new Set<string>([
-        'ClusterScalabilityType',
         'DBSystemId',
         'EngineMode',
         'RestoreToTime',

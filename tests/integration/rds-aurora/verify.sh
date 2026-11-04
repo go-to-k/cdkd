@@ -116,6 +116,14 @@
 # go-to-k/cdkd#5707: phase 1a turns that declared Data API off out of band
 # and asserts `cdkd drift --revert` turns it back on and converges.
 #
+# go-to-k/cdkd#5639 (DBCluster BacktrackWindow, EnableLocalWriteForwarding,
+# ClusterScalabilityType): the EngineCluster (aurora-mysql) declares
+# ClusterScalabilityType standard in every phase, BacktrackWindow 3600 and
+# write forwarding on in phase 1 (asserted live; before #5639 its
+# provisionedBy=sdk check fails), BacktrackWindow 7200 in phases 1b / 1c
+# (asserted live), and DROPS both in phase 2: the live window stays 7200 and
+# forwarding turns off, as CloudFormation's handler does (both asserted live).
+#
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
 # to the Cloud Control path (which would make the SDK-provider verification
@@ -557,6 +565,34 @@ if [ "${ENGINE_ROUTE}" != "sdk password" ]; then
 fi
 echo "    OK: EngineCluster provisionedBy=sdk with MasterUserAuthenticationType password (#5639)"
 
+# go-to-k/cdkd#5639: the EngineCluster also declares ClusterScalabilityType,
+# BacktrackWindow and EnableLocalWriteForwarding, each SDK-unwired before
+# #5639 (the route check above fails a pre-fix cdkd). Live values, in one
+# line: [BacktrackWindow, write forwarding on/off, ClusterScalabilityType].
+# Forwarding reads as CloudFormation projects LocalWriteForwardingStatus:
+# `requested` / `enabled` are on. A status still in transition prints itself,
+# which no assertion accepts: the deploy returns only once it settled.
+# `standard` is AWS's default scalability type, so a describe that omits the
+# field reads as `standard`: only the route check discriminates that value.
+ENGINE_CLUSTER_ID=$(echo "${STATE}" | jq -r '.resources.EngineCluster.physicalId // ""')
+if [ -z "${ENGINE_CLUSTER_ID}" ]; then
+  echo "FAIL: #5639: could not resolve the EngineCluster identifier from state" >&2
+  exit 1
+fi
+# usage: engine_cluster_5639 -> "<window> <on|off|status> <scalability type>"
+engine_cluster_5639() {
+  local out
+  out=$(aws rds describe-db-clusters --db-cluster-identifier "${ENGINE_CLUSTER_ID}" \
+    --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r '.DBClusters[0] | [(.BacktrackWindow // "absent" | tostring), (.LocalWriteForwardingStatus // "absent" | if . == "enabled" or . == "requested" then "on" elif . == "disabled" or . == "absent" then "off" else . end), (.ClusterScalabilityType // "standard")] | join(" ")'
+}
+ENGINE_5639=$(engine_cluster_5639) || { echo "FAIL: #5639: DescribeDBClusters on the EngineCluster failed" >&2; exit 1; }
+if [ "${ENGINE_5639}" != "3600 on standard" ]; then
+  echo "FAIL: #5639: phase 1: EngineCluster [BacktrackWindow, write forwarding, ClusterScalabilityType] is '${ENGINE_5639}', want '3600 on standard' (CreateDBCluster did not send them, or returned before forwarding settled)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: EngineCluster backtracks 3600 s, forwards writes, scalability standard (#5639)"
+
 # Issue #4030 premise: the L1 SecurityCluster declares NO DeletionPolicy, so
 # its destroy applies CloudFormation's default for a DBCluster, Snapshot.
 SEC_DELETION_POLICY=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::RDS::DBCluster" and (.key | test("SecurityCluster"))) | .value.deletionPolicy // "absent"] | first // ""')
@@ -871,6 +907,15 @@ if [ "${TAGS}" != "cdkd-drop=me cdkd-team=db" ]; then
 fi
 echo "    OK: Tags reached the target group on the SDK route (${TAGS})"
 
+# go-to-k/cdkd#5639: phase 1b changes the EngineCluster's BacktrackWindow
+# 3600 -> 7200 (keyed on CDKD_TEST_TG_TAGS); ModifyDBCluster must send it.
+ENGINE_5639=$(engine_cluster_5639) || { echo "FAIL: #5639: DescribeDBClusters on the EngineCluster failed" >&2; exit 1; }
+if [ "${ENGINE_5639}" != "7200 on standard" ]; then
+  echo "FAIL: #5639: phase 1b: EngineCluster [BacktrackWindow, write forwarding, ClusterScalabilityType] is '${ENGINE_5639}', want '7200 on standard' (the changed BacktrackWindow was not sent, or the update returned before it applied)" >&2
+  exit 1
+fi
+echo "    OK: phase 1b: EngineCluster BacktrackWindow changed to 7200 s in place (#5639)"
+
 # --- Phase 1c: a cc-api record returns to the SDK provider (issue #4087) --
 echo "==> Phase 1c: seed provisionedBy=cc-api, then redeploy with changed Tags (CDKD_TEST_TG_TAGS=v2)"
 seed_tg_cc_api
@@ -1048,6 +1093,25 @@ DEPLOY_2_PLAIN="$(sed $'s/\x1b\\[[0-9;]*m//g' "${DEPLOY_2_LOG}")"
 rm -f "${DEPLOY_2_LOG}"
 DEPLOY_2_LOG=""
 printf '%s\n' "${DEPLOY_2_PLAIN}"
+
+# go-to-k/cdkd#5639: phase 2 DROPS the EngineCluster's BacktrackWindow (sent
+# nothing, so the live 7200 is kept) and EnableLocalWriteForwarding: true
+# (sent false, as CloudFormation's handler does, so forwarding is off). The
+# disable is the witness that this deploy's ModifyDBCluster reached the
+# cluster, so the kept window is not vacuous. The record must hold neither.
+ENGINE_5639=$(engine_cluster_5639) || { echo "FAIL: #5639: DescribeDBClusters on the EngineCluster failed" >&2; exit 1; }
+if [ "${ENGINE_5639}" != "7200 off standard" ]; then
+  echo "FAIL: #5639: phase 2: EngineCluster [BacktrackWindow, write forwarding, ClusterScalabilityType] is '${ENGINE_5639}', want '7200 off standard' (a removed BacktrackWindow keeps the live window; a removed EnableLocalWriteForwarding: true turns forwarding off)" >&2
+  exit 1
+fi
+ENGINE_5639_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) \
+  || { echo "FAIL: #5639: could not read the state file" >&2; exit 1; }
+ENGINE_5639_RECORD=$(echo "${ENGINE_5639_STATE}" | jq -r '.resources.EngineCluster | "\(.provisionedBy // "sdk") \(if .properties | has("BacktrackWindow") then (.properties.BacktrackWindow | tostring) else "absent" end) \(if .properties | has("EnableLocalWriteForwarding") then (.properties.EnableLocalWriteForwarding | tostring) else "absent" end)"')
+if [ "${ENGINE_5639_RECORD}" != "sdk absent absent" ]; then
+  echo "FAIL: #5639: phase 2: EngineCluster record [provisionedBy, BacktrackWindow, EnableLocalWriteForwarding] is '${ENGINE_5639_RECORD}', want 'sdk absent absent'" >&2
+  exit 1
+fi
+echo "    OK: phase 2: dropping BacktrackWindow kept 7200 s, dropping EnableLocalWriteForwarding turned forwarding off (#5639)"
 
 # --- #1160 DBProxy removal: kept on AWS, and warned about -------------
 if ! grep -qF "${PROXY_LOGICAL} (AWS::RDS::DBProxy): property DebugLogging was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyDBProxy keeps a setting it is not sent" <<<"${DEPLOY_2_PLAIN}"; then
