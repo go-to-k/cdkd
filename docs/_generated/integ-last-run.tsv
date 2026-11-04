@@ -123,7 +123,7 @@ dynamodb-streams	2026-10-13T02:41:29Z	PASS	235	verify.sh	rc ok, orph clean, own 
 dynamodb-tableclass-switch	2026-10-03T04:27:40Z	PASS	67	verify.sh	rc ok, orph clean (#4283 PR #4449)
 dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
 ec2-instance	2026-11-04T03:59:03Z	PASS	341	verify.sh	PR #5730 08d5ce75b rc 0, orph clean
-ec2-instance-fanout	2026-10-19T00:17:40Z	PASS	90	verify.sh	rc ok, orph clean (#5077)
+ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
 ec2-vpc	2026-11-03T18:37:59Z	PASS	145	verify.sh	PR #5719 0932f5dee rc 0, probe red pre-fix; EncryptedVpc drift-clean, orph clean
@@ -308,7 +308,7 @@ orphan-getatt-takeover	2026-10-18T05:38:03Z	PASS	82	verify.sh	PR #5049 (#1940 Re
 orphan-resource	2026-07-26T18:04:53Z	PASS	38	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
 output-never-resolved-diff	2026-10-16T21:07:57Z	PASS	186	verify.sh	rc ok, orph clean (OutputsRunState refactor #5021)
 outputs-only-export	2026-10-18T13:38:55Z	PASS	130	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; rc 0, all 13 checks passed, destroy 0 errors
-parameters	2026-07-26T18:04:53Z	PASS	24	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
+parameters	2026-11-04T05:01:38Z	PASS	38	standard	deploy+destroy 0 errors, orph clean
 partial-create-handback	2026-10-20T06:23:43Z	PASS	430	verify.sh	deploy+destroy clean, 0 orphans
 perf-cross-backend-check	2026-10-11T09:33:22Z	PASS	1523	verify.sh	PR #4720 (#4705) c53f78f arms 1/2/4 vs 6728bcdc: single/redeploy/teardown no diff; destroy --all -6.60s; adopt deploy +0.42s
 pipes-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	128	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
@@ -366,7 +366,7 @@ s3-retry-own-bucket	2026-10-24T14:12:33Z	PASS	70	verify.sh	rc ok, orph clean
 s3-subconfig-removal	2026-11-01T12:46:03Z	PASS	276	verify.sh	rc ok, orph clean, #2762 ABAC+metadata+prefix; pre-fix: CC route refused the prefix at create
 s3-tables	2026-10-30T15:59:00Z	PASS	191	verify.sh	rc 0, orph clean; PR #5578 73dac7708 Phase 1e accepted-drop refusal + import remedy; probe red at Phase 1e (diff exit 0 without #5572 warning needle, pre-fix NO_CHANGE)
 s3-vectors	2026-10-26T02:21:56Z	PASS	55	verify.sh	rc ok, orph clean; #5309 pre-fix RED at nameless-create check
-scheduled-task	2026-07-26T18:04:53Z	PASS	44	standard	0727b sweep-b1 staleness re-run (rc=0); account clean
+scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
 scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean; #5228 not-gone mark
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
 schema-v11-to-v12-migration	2026-10-16T16:59:47Z	PASS	161	verify.sh	rc ok, orph clean (stateless-mixins refactor #5015, rebased)
@@ -374,8 +374,8 @@ schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 tra
 schema-v14-to-v15-migration	2026-10-29T20:43:22Z	PASS	1664	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean
 schema-v5-to-v6-migration	2026-08-10T05:24:30Z	PASS	57	verify.sh	0810 P2 sweep b7; v5->v8 transparent auto-upgrade verified, 0 err 0 orph
 schema-v6-to-v7-migration	2026-08-10T05:24:30Z	PASS	54	verify.sh	0810 P2 sweep b7; v6->v8 transparent auto-upgrade verified, 0 err 0 orph
-schema-v7-to-v8-migration	2026-10-12T05:44:10Z	FAIL	100	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
-schema-v8-to-v9-migration	2026-10-12T05:46:57Z	FAIL	160	verify.sh	PR #4812: fixture stale, asserts literal schema version (state is v11); GetStackOutput/ImportValue resolved, cleanup clean
+schema-v7-to-v8-migration	2026-11-04T05:01:38Z	PASS	135	verify.sh	rc ok, orph clean; current-binary phase asserts derived version 15 (#5733)
+schema-v8-to-v9-migration	2026-11-04T05:01:38Z	PASS	165	verify.sh	rc ok, orph clean; derived-version assert (#5733); own state bucket
 schema-v9-to-v10-migration	2026-10-16T18:55:45Z	PASS	185	verify.sh	rc ok, orph clean (ObservedCapture refactor #5020)
 scrub-nested-child	2026-10-18T13:42:37Z	PASS	210	verify.sh	PR #5052 (stage2 RedactionContext refactor) b22bc1158; pnpm/mise shim used; rc 0, destroy 0 errors, 0 surviving state versions
 sdk-ccapi-crossref	2026-10-18T14:34:21Z	PASS	110	verify.sh	rc ok, orph clean; #5044 EventBus provider re-run
