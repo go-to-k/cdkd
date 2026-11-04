@@ -74,7 +74,12 @@ function ecrRegistryHost(accountId: string, region: string): string {
  * log in and retry — a NON-auth failure is surfaced unchanged, never retried.
  */
 export function isDockerAuthFailure(errText: string): boolean {
-  return /no basic auth credentials|unauthorized|authentication required|denied|\b401\b|\b403\b/i.test(
+  // `authorization token has expired`: ECR's answer to an expired token
+  // cached in docker's credential store (#5747). The containerd image store
+  // drops ECR's `denied:` prefix from every message, so an IAM denial for a
+  // cached token minted by another principal needs `is not authorized to
+  // perform` to take the same re-login the classic store's `denied` does.
+  return /no basic auth credentials|unauthorized|authentication required|denied|authorization token has expired|is not authorized to perform|\b401\b|\b403\b/i.test(
     errText
   );
 }
