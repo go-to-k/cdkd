@@ -82,7 +82,7 @@ cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph cl
 custom-resource-getatt-data	2026-11-04T07:47:19Z	PASS	101	verify.sh	rc ok, orph clean (PR #5742 #5738 CR recycle Description; regression run, recycle not triggerable)
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-23T03:22:35Z	PASS	1358	verify.sh	rc ok, orph clean, 0 surviving versions (regression net #5193)
-custom-resource-provider	2026-11-04T10:48:42Z	PASS	727	verify.sh	rc ok, orph clean; rerun alone after a race with parallel aws-custom-resource/bucket-deployment on the state-bucket lifecycle rule (run 1 FAIL, #5745 PR #5752)
+custom-resource-provider	2026-11-04T11:03:04Z	PASS	747	verify.sh	rc ok, orph clean; re-run at df595b4db (#5745 PR #5752)
 custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+destroy clean, 0 orphans
 custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
 data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
