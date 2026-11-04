@@ -9,6 +9,8 @@ description: "Build an ECS service's image from a local Dockerfile while cdkd lo
 [`cdkd local start-service`](local-start-service.md) and
 [`cdkd local start-alb`](local-start-alb.md). It builds a service's image from
 a local Dockerfile, in place of the image the service names.
+[`cdkd local run-task`](local-run-task.md#building-the-image-from-a-local-dockerfile)
+takes the same flags for a single task.
 
 You need it when the service uses an image that is already in a registry
 (`ContainerImage.fromEcrRepository` or `fromRegistry`). cdkd pulls that image,

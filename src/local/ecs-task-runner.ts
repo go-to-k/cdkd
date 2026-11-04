@@ -152,6 +152,15 @@ export interface RunEcsTaskOptions {
    */
   imagePlanByContainer?: Map<string, string>;
   /**
+   * Per-container `--image-override` tag map (go-to-k/cdkd#5768): the
+   * override engine already built and tagged the image locally, so the runner
+   * uses the tag verbatim and skips the pull / build path for that container.
+   * Sibling containers without an entry still go through their normal
+   * resolution. Distinct from {@link imagePlanByContainer} (a full
+   * short-circuit used by tests).
+   */
+  imageOverrideByContainer?: ReadonlyMap<string, string>;
+  /**
    * Optional second-from-last octet of the link-local /24 subnet for this
    * task's docker network (1..254). Default 170 (AWS-documented). Ignored
    * when {@link taskRoleArn} is set: task-role credentials are served only
@@ -1174,6 +1183,15 @@ async function prepareImages(
   // Sequential is fine — most tasks have 1–3 containers and each
   // `docker build` / pull would saturate IO anyway.
   for (const container of task.containers) {
+    // A local-only `--image-override` tag exists in no registry: never pull it.
+    const overrideTag = options.imageOverrideByContainer?.get(container.name);
+    if (overrideTag !== undefined) {
+      out.set(container.name, overrideTag);
+      logger.debug(
+        safeMsg`Container ${displayIdent(container.name)} image=${displayIdent(overrideTag)} (--image-override)`
+      );
+      continue;
+    }
     const image = await prepareOneImage(task, container, options);
     out.set(container.name, image);
     logger.debug(`Container '${container.name}' image=${image}`);
@@ -1187,6 +1205,10 @@ async function prepareOneImage(
 ): Promise<string> {
   const image: ResolvedEcsImage = container.image;
   switch (image.kind) {
+    case 'same-stack-ecr':
+      // No URI to pull. The CLI refuses this before any resource exists
+      // (`assertEcsTaskImagesResolvable`); this covers a direct runner caller.
+      throw new EcsTaskRunnerError(image.unresolvedReason);
     case 'public': {
       await pullImage(image.uri, options.skipPull);
       return image.uri;

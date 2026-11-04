@@ -429,6 +429,39 @@ describe('runEcsTask — image preparation (G1)', () => {
     expect(runCall.args).toContain('busybox:latest');
   });
 
+  // go-to-k/cdkd#5768: an --image-override tag is local-only, so it is never pulled.
+  it('imageOverrideByContainer → uses the override tag, no pull, siblings unaffected', async () => {
+    captured.responder = happyDockerResponder();
+    const app = makeContainer({
+      name: 'app',
+      image: { kind: 'ecr', uri: '1.dkr.ecr.us-east-1.amazonaws.com/r:t', account: '1', region: 'us-east-1' },
+    });
+    const side = makeContainer({
+      name: 'side',
+      essential: false,
+      image: { kind: 'public', uri: 'busybox:latest' },
+    });
+    await runEcsTask(
+      makeTask({ containers: [app, side] }),
+      { ...baseOptions(), imageOverrideByContainer: new Map([['app', 'cdkl-override-x:local']]) },
+      createEcsRunState()
+    );
+    expect(ecrStubs.pullEcrImage).not.toHaveBeenCalled();
+    expect(dockerRunnerStubs.pullImage).toHaveBeenCalledWith('busybox:latest', true);
+    const images = dockerRunCalls().map((c) => c.args);
+    expect(images.some((a) => a.includes('cdkl-override-x:local'))).toBe(true);
+  });
+
+  it('same-stack-ecr image kind with no override → refuses with its reason before any docker run', async () => {
+    const c = makeContainer({
+      image: { kind: 'same-stack-ecr', repoLogicalId: 'Repo', unresolvedReason: 'needs state: Repo' },
+    });
+    await expect(
+      runEcsTask(makeTask({ containers: [c] }), baseOptions(), createEcsRunState())
+    ).rejects.toThrow('needs state: Repo');
+    expect(dockerRunCalls()).toHaveLength(0);
+  });
+
   it('ecr image kind → routes through pullEcrImage and propagates region', async () => {
     captured.responder = happyDockerResponder();
     ecrStubs.pullEcrImage.mockImplementationOnce(async (uri) => `${uri}-pulled-tag`);
