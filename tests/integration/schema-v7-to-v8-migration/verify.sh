@@ -117,6 +117,40 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+# The schema version the LOCAL binary writes. It was 8 when this fixture was
+# written; a later bump moves it, so the local-binary phases assert "the
+# current version", not a literal (go-to-k/cdkd#5733). Read from the BUILT
+# binary (the `schema-v9-to-v10-migration` fixture's derivation, verbatim):
+# the readable list's LAST entry is the version a binary writes.
+LOCAL_SCHEMA_VERSION="$(cat ../../../dist/*.js 2>/dev/null | awk '
+  !inside && !done && /STATE_SCHEMA_VERSIONS_READABLE = \[/ {
+    inside = 1
+    sub(/.*STATE_SCHEMA_VERSIONS_READABLE = \[/, "")
+  }
+  inside {
+    line = $0
+    closes = (line ~ /\]/)
+    sub(/\].*/, "", line)
+    n = split(line, parts, ",")
+    for (i = 1; i <= n; i++) {
+      gsub(/[^0-9]/, "", parts[i])
+      if (parts[i] != "") last = parts[i]
+    }
+    if (closes) { inside = 0; done = 1 }
+  }
+  END { if (done) print last }
+')"
+case "${LOCAL_SCHEMA_VERSION}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read the readable schema versions from the built dist/ (is it built?)" >&2
+    exit 1
+    ;;
+esac
+if [ "${LOCAL_SCHEMA_VERSION}" -lt 8 ]; then
+  echo "FAIL: the local binary writes schema ${LOCAL_SCHEMA_VERSION}; this fixture needs a v8+ local binary" >&2
+  exit 1
+fi
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   pnpm install --ignore-workspace --prefer-offline
@@ -202,12 +236,12 @@ CDKD_TEST_SCHEMA_PHASE=v8 node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" \
 
 CONSUMER_V8_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" - 2>/dev/null)
 CONSUMER_V8_VERSION=$(echo "${CONSUMER_V8_STATE}" | jq -r '.version')
-if [ "${CONSUMER_V8_VERSION}" != "8" ]; then
-  echo "FAIL: consumer state.version after v8 deploy is ${CONSUMER_V8_VERSION}, expected 8" >&2
+if [ "${CONSUMER_V8_VERSION}" != "${LOCAL_SCHEMA_VERSION}" ]; then
+  echo "FAIL: consumer state.version after v8 deploy is ${CONSUMER_V8_VERSION}, expected ${LOCAL_SCHEMA_VERSION}" >&2
   echo "${CONSUMER_V8_STATE}" | jq .
   exit 1
 fi
-echo "    OK: consumer state.version == 8 after v8 deploy (transparent upgrade)"
+echo "    OK: consumer state.version == ${LOCAL_SCHEMA_VERSION} after v8 deploy (transparent upgrade)"
 
 # The v8 binary must have populated outputReads with one entry that
 # names the producer + region + output. This is the load-bearing

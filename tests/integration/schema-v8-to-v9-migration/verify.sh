@@ -132,6 +132,40 @@ if [ ! -f "${LOCAL_DIST}" ]; then
   exit 1
 fi
 
+# The schema version the LOCAL binary writes. It was 9 when this fixture was
+# written; a later bump moves it, so the local-binary phases assert "the
+# current version", not a literal (go-to-k/cdkd#5733). Read from the BUILT
+# binary (the `schema-v9-to-v10-migration` fixture's derivation, verbatim):
+# the readable list's LAST entry is the version a binary writes.
+LOCAL_SCHEMA_VERSION="$(cat ../../../dist/*.js 2>/dev/null | awk '
+  !inside && !done && /STATE_SCHEMA_VERSIONS_READABLE = \[/ {
+    inside = 1
+    sub(/.*STATE_SCHEMA_VERSIONS_READABLE = \[/, "")
+  }
+  inside {
+    line = $0
+    closes = (line ~ /\]/)
+    sub(/\].*/, "", line)
+    n = split(line, parts, ",")
+    for (i = 1; i <= n; i++) {
+      gsub(/[^0-9]/, "", parts[i])
+      if (parts[i] != "") last = parts[i]
+    }
+    if (closes) { inside = 0; done = 1 }
+  }
+  END { if (done) print last }
+')"
+case "${LOCAL_SCHEMA_VERSION}" in
+  '' | *[!0-9]*)
+    echo "FAIL: could not read the readable schema versions from the built dist/ (is it built?)" >&2
+    exit 1
+    ;;
+esac
+if [ "${LOCAL_SCHEMA_VERSION}" -lt 9 ]; then
+  echo "FAIL: the local binary writes schema ${LOCAL_SCHEMA_VERSION}; this fixture needs a v9+ local binary" >&2
+  exit 1
+fi
+
 echo "==> Installing fixture deps"
 if [ ! -d node_modules ]; then
   pnpm install --ignore-workspace --prefer-offline
@@ -226,7 +260,7 @@ echo "==> Phase 3a: re-deploy Producer with v9 binary -> version: 9, exportNames
 PRODUCER_V9_LOG=$(mktemp)
 CDKD_TEST_SCHEMA_PHASE=v9 node "${LOCAL_DIST}" deploy "${PRODUCER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${PRODUCER_V9_LOG}"
-assert_version "producer (v9 deploy)" "${PRODUCER_STATE_KEY}" 9
+assert_version "producer (v9 deploy)" "${PRODUCER_STATE_KEY}" "${LOCAL_SCHEMA_VERSION}"
 PRODUCER_EXPORTS=$(state_json "${PRODUCER_STATE_KEY}" | jq -c '.exportNames')
 if [ "${PRODUCER_EXPORTS}" != "[\"${SHARED_NAME}\"]" ]; then
   echo "FAIL: producer state.exportNames is ${PRODUCER_EXPORTS}, expected [\"${SHARED_NAME}\"]" >&2
@@ -254,7 +288,7 @@ echo "    OK: producer v9 deploy warned about the decoy's stale entry (transitio
 echo "==> Phase 3b: re-deploy Decoy with v9 binary -> version: 9, exportNames: [] (written, not omitted)"
 CDKD_TEST_SCHEMA_PHASE=v9 node "${LOCAL_DIST}" deploy "${DECOY_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_version "decoy (v9 deploy)" "${DECOY_STATE_KEY}" 9
+assert_version "decoy (v9 deploy)" "${DECOY_STATE_KEY}" "${LOCAL_SCHEMA_VERSION}"
 DECOY_STATE=$(state_json "${DECOY_STATE_KEY}")
 if [ "$(echo "${DECOY_STATE}" | jq -r 'has("exportNames")')" != "true" ] || [ "$(echo "${DECOY_STATE}" | jq -c '.exportNames')" != "[]" ]; then
   echo "FAIL: decoy state.exportNames must be an EMPTY ARRAY (written), got: $(echo "${DECOY_STATE}" | jq -c '.exportNames // "absent"')" >&2
@@ -272,7 +306,7 @@ echo "    OK: decoy state.exportNames == [] and its plain output is still in sta
 echo "==> Phase 3c: re-deploy Consumer with v9 binary -> rebinds to the PRODUCER's export"
 CDKD_TEST_SCHEMA_PHASE=v9 node "${LOCAL_DIST}" deploy "${CONSUMER_STACK}" \
   --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
-assert_version "consumer (v9 deploy)" "${CONSUMER_STATE_KEY}" 9
+assert_version "consumer (v9 deploy)" "${CONSUMER_STATE_KEY}" "${LOCAL_SCHEMA_VERSION}"
 
 # The fix, on real AWS: same template, same three stacks, and the consumer now
 # holds the PRODUCER's ARN.
