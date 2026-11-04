@@ -45,6 +45,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * CloudFormation's `StateMachineRevisionId` for a described state machine.
@@ -103,6 +104,7 @@ export class StepFunctionsProvider implements ResourceProvider {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
         ...ambientClientDefaults(),
+        ...s3ClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

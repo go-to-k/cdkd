@@ -80,6 +80,7 @@ import {
   type NoncurrentVersionPurgeOptions,
   type PrefixPurgeResult,
 } from './s3-noncurrent-version-purge.js';
+import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
  * An error's text for a state message: the ASCII allowlist, and
@@ -314,6 +315,7 @@ export class S3StateBackend {
     const region = await this.s3Client.config.region();
     this.scanClient = new S3Client({
       ...awsClientDefaults(this.clientOpts.profile ? { profile: this.clientOpts.profile } : {}),
+      ...s3ClientDefaults(),
       region,
       credentials: this.s3Client.config.credentials,
     });

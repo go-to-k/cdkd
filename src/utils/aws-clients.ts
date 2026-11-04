@@ -28,6 +28,7 @@ import { currentStackAwsScope, runInStackAwsScope } from './stack-aws-scope.ts';
 import { quietS3Logger } from './sdk-call-log.ts';
 import { API_GATEWAY_MAX_ATTEMPTS, withApiGatewayPacing } from './apigateway-pacing.ts';
 import { IAM_MAX_ATTEMPTS } from './iam-max-attempts.ts';
+import { s3ClientDefaults } from './s3-client-defaults.ts';
 
 /**
  * AWS client configuration
@@ -248,6 +249,7 @@ export class AwsClients {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
         ...this.clientOptions,
+        ...s3ClientDefaults(),
         // Suppress "Are you using a Stream of unknown length" warning
         logger: quietS3Logger(),
       });

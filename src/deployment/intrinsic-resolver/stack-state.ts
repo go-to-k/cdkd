@@ -8,6 +8,7 @@ import { assumeRoleForCrossAccountStateRead, parseIamRoleArn } from '../../utils
 import { type ResolverContext } from './support.js';
 import { S3Client } from '@aws-sdk/client-s3';
 import { quietS3Logger } from '../../utils/sdk-call-log.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * Read the producer's state from the SAME AWS account (no RoleArn).
@@ -114,6 +115,7 @@ export async function getCrossAccountStackState(
 
   const s3 = new S3Client({
     ...awsClientDefaults(),
+    ...s3ClientDefaults(),
     region: bucketRegion,
     credentials: {
       accessKeyId: credentials.accessKeyId,

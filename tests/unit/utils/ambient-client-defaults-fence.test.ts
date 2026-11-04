@@ -61,6 +61,9 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'src/cli/config-loader.ts':
     "default-bucket probe deliberately reuses the STS client's resolved provider " +
     '(a CONDITIONAL credentials spread); CLI-only',
+  'src/utils/s3-client-defaults.ts':
+    "the S3 endpoint resolver's probe sends no request, so it has no identity to carry; and " +
+    'the module is in the literal-.ts closure aws-clients.ts heads, which ambient-client-defaults.ts is outside (#5745)',
 };
 
 const ROUTED_HELPERS = new Set(['ambientClientDefaults', 'clientDefaultsFor']);

@@ -162,6 +162,7 @@ import {
   type ResourceDeleteResult,
   type ReadCurrentStateContext,
 } from '../../types/resource.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * The "remove this bucket by hand" clause both partial-create cleanup arms end
@@ -2457,7 +2458,11 @@ export class S3BucketProvider implements ResourceProvider {
     holder.client ??= this.s3Client.config.region().then(
       (region) =>
         withoutServerErrorRetries(
-          new S3Client({ ...clientDefaultsFor(this.credentialConfig), region })
+          new S3Client({
+            ...clientDefaultsFor(this.credentialConfig),
+            ...s3ClientDefaults(),
+            region,
+          })
         ),
       (error: unknown) => {
         holder.client = undefined;

@@ -131,6 +131,7 @@ import {
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * Retry-safety state for `CreateGraphqlApi`, which has no idempotency token
@@ -716,6 +717,7 @@ export class AppSyncProvider implements ResourceProvider {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
         ...ambientClientDefaults(),
+        ...s3ClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

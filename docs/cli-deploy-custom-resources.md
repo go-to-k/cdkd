@@ -10,6 +10,8 @@ out by a handler you supply, usually a Lambda function. The resource's
 `ServiceToken` property is the handler's ARN. This page covers the two
 situations where `cdkd deploy` treats a custom resource differently from other
 resources: the `ServiceToken` changed, or cdkd could not send the delete.
+Against an S3 emulator, see
+[The custom-resource response endpoint](troubleshooting-internals.md#the-custom-resource-response-endpoint).
 
 ## A changed custom-resource ServiceToken
 

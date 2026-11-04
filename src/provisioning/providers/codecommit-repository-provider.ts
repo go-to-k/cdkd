@@ -62,6 +62,7 @@ import { safeMsg } from '../../utils/display-safe.js';
 import { holdsSecretDerivedEntry } from '../iam-policy-targets.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * CFn `Tags` entry shape (`[{Key, Value}]`). CodeCommit's SDK tag APIs use a
@@ -388,6 +389,7 @@ export class CodeCommitRepositoryProvider implements ResourceProvider {
     if (!this.s3Client) {
       this.s3Client = new S3Client({
         ...ambientClientDefaults(),
+        ...s3ClientDefaults(),
         ...(this.providerRegion ? { region: this.providerRegion } : {}),
       });
     }

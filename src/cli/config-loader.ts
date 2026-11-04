@@ -11,6 +11,7 @@ import {
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { displayIdent, safeMsg } from '../utils/display-safe.js';
 import { StateError } from '../utils/error-handler.js';
+import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
  * CDK configuration loaded from cdk.json and environment variables
@@ -558,6 +559,7 @@ export async function resolveStateBucketWithDefaultAndSource(
   // exactly the profile-less chain this site fell back to before.
   const probe = new S3Client({
     ...awsClientDefaults(),
+    ...s3ClientDefaults(),
     region: 'us-east-1',
     ...(typeof stsCredentials === 'function' && { credentials: stsCredentials as never }),
   });

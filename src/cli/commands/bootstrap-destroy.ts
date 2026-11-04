@@ -45,6 +45,7 @@ import { displayIdent } from '../../utils/display-safe.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { awsClientDefaults } from '../../utils/aws-client-defaults.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * `cdkd bootstrap --destroy` — teardown of cdkd-created account resources
@@ -454,6 +455,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
     const probeBackend = new S3StateBackend(
       new S3Client({
         ...awsClientDefaults({ profile: options.profile }),
+        ...s3ClientDefaults(),
         region: effective.region,
         ...(options.profile && { profile: options.profile }),
       }),
@@ -483,6 +485,7 @@ export async function bootstrapDestroyCommand(options: BootstrapDestroyOptions):
 
   const markerS3Client = new S3Client({
     ...awsClientDefaults({ profile: options.profile }),
+    ...s3ClientDefaults(),
     region,
     ...(options.profile && { profile: options.profile }),
   });

@@ -133,6 +133,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../types/resource.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../utils/stack-aws-scope.js';
+import { s3ClientDefaults } from '../utils/s3-client-defaults.js';
 
 /**
  * AWS Cloud Control API Provider
@@ -1955,6 +1956,7 @@ export class CloudControlProvider implements ResourceProvider {
         redirected = true;
         const regional = new S3Client({
           ...awsClientDefaults(),
+          ...s3ClientDefaults(),
           region: redirectRegion,
           // The same credential provider as the client that was redirected.
           credentials: first.config?.credentials,

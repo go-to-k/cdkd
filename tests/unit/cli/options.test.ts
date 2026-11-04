@@ -953,7 +953,7 @@ describe('parseStackRegion (issue #2556)', () => {
       });
     }
 
-    it('passes a real region through to an INHERITED declaration', () => {
+    it('passes a real region through to an INHERITED declaration', async () => {
       // The polarity that keeps the guard from being a blanket refusal, driven
       // through commander after the sweep rather than by calling the helper —
       // and on one of the four options cdkd does not declare, since those are
@@ -974,7 +974,10 @@ describe('parseStackRegion (issue #2556)', () => {
       };
       program.commands.forEach(stub);
 
-      program.parse(
+      // parseAsync, as the CLI itself parses: the root `preAction` hook is async
+      // (it resolves the S3 addressing style, #5745), so a sync `parse` would
+      // run the action after this assertion.
+      await program.parseAsync(
         ['local', 'start-cloudfront', 'Foo', '--from-cfn-stack', 'S', '--stack-region', 'us-east-1'],
         { from: 'user' }
       );

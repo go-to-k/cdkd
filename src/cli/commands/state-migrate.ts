@@ -33,6 +33,7 @@ import { expectedOwnerParam } from '../../utils/expected-bucket-owner.js';
 import { buildDenyExternalAccessPolicy } from '../../utils/deny-external-access-policy.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { LISTING_ENCODING_TYPE, decodeListingKey } from '../../utils/s3-listing-keys.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 interface MigrateOptions {
   region?: string;
@@ -105,7 +106,11 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
     // Probe source existence with a region-agnostic client. 301/403 both mean
     // "exists somewhere" — we resolve the actual region next.
     const probeRegion = 'us-east-1';
-    const probe = new S3Client({ ...ambientClientDefaults(), region: probeRegion });
+    const probe = new S3Client({
+      ...ambientClientDefaults(),
+      ...s3ClientDefaults(),
+      region: probeRegion,
+    });
     let legacyBucket: string;
     let sourceRegionLabel = region;
     let sourceExists: boolean;
@@ -162,7 +167,11 @@ async function stateMigrateCommand(options: MigrateOptions): Promise<void> {
     const legacyRegion = await resolveBucketRegion(legacyBucket);
     logger.info(`  source bucket actual region: ${legacyRegion}`);
 
-    const legacyS3 = new S3Client({ ...ambientClientDefaults(), region: legacyRegion });
+    const legacyS3 = new S3Client({
+      ...ambientClientDefaults(),
+      ...s3ClientDefaults(),
+      region: legacyRegion,
+    });
 
     try {
       await assertNoActiveLocks(legacyS3, legacyBucket);
@@ -373,7 +382,7 @@ async function ensureDestinationBucket(
   logger: Logger
 ): Promise<S3Client> {
   // Probe: if the destination already exists, reuse it (idempotent re-run).
-  const probe = new S3Client({ ...ambientClientDefaults(), region });
+  const probe = new S3Client({ ...ambientClientDefaults(), ...s3ClientDefaults(), region });
   let exists: boolean;
   try {
     exists = await bucketExists(probe, bucketName);
@@ -390,12 +399,12 @@ async function ensureDestinationBucket(
           `Cross-region copy is supported but slower; objects will be replicated to ${actual}.`
       );
     }
-    return new S3Client({ ...ambientClientDefaults(), region: actual });
+    return new S3Client({ ...ambientClientDefaults(), ...s3ClientDefaults(), region: actual });
   }
 
   // Create the destination in the same region as the source for parity.
   logger.info(`Creating destination bucket ${bucketName} in ${region}...`);
-  const s3 = new S3Client({ ...ambientClientDefaults(), region });
+  const s3 = new S3Client({ ...ambientClientDefaults(), ...s3ClientDefaults(), region });
 
   const createParams: {
     Bucket: string;

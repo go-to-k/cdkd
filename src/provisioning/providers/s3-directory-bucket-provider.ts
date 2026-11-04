@@ -82,6 +82,7 @@ import {
 import { withoutServerErrorRetries } from './ambiguous-create.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { s3ClientDefaults } from '../../utils/s3-client-defaults.js';
 
 /**
  * What `delete()` throws for a non-empty bucket with no auto-empty opt-in
@@ -942,7 +943,11 @@ export class S3DirectoryBucketProvider implements ResourceProvider {
     this.createClient ??= this.s3Client.config.region().then(
       (region) =>
         withoutServerErrorRetries(
-          new S3Client({ ...clientDefaultsFor(this.credentialConfig), region })
+          new S3Client({
+            ...clientDefaultsFor(this.credentialConfig),
+            ...s3ClientDefaults(),
+            region,
+          })
         ),
       (error: unknown) => {
         this.createClient = undefined;

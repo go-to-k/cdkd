@@ -40,6 +40,14 @@ for (const name of [
   'all_proxy',
   'NO_PROXY',
   'no_proxy',
+  // ...and the S3 addressing inputs (go-to-k/cdkd#5745): any of them turns
+  // every S3 client path-style, which changes URLs a test may pin. The tests
+  // of that behaviour set them themselves.
+  'AWS_ENDPOINT_URL',
+  'AWS_ENDPOINT_URL_S3',
+  'AWS_IGNORE_CONFIGURED_ENDPOINT_URLS',
+  'CDK_S3_FORCE_PATH_STYLE',
+  'CDKD_CR_S3_ENDPOINT_URL',
 ]) {
   delete process.env[name];
 }

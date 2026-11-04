@@ -352,6 +352,9 @@ importers:
       '@smithy/node-http-handler':
         specifier: ^4.11.3
         version: 4.14.0
+      '@smithy/shared-ini-file-loader':
+        specifier: ^4.4.9
+        version: 4.4.9
       adm-zip:
         specifier: ^0.6.0
         version: 0.6.1
