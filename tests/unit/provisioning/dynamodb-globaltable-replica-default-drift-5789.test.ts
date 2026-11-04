@@ -46,7 +46,8 @@ const templateBag = (): Record<string, unknown> => ({
   TableName: 'T',
   Replicas: [
     { Region: 'us-east-1', Tags: [{ Key: 'k', Value: 'v' }] },
-    { Region: 'eu-west-1', Tags: [] },
+    // Tags omitted too: the read-back's `[]` is the default.
+    { Region: 'eu-west-1' },
   ],
 });
 
@@ -61,6 +62,8 @@ const readback = (
       Tags: [{ Key: 'k', Value: 'v' }],
       TableClass: 'STANDARD',
       DeletionProtectionEnabled: false,
+      ContributorInsightsSpecification: { Enabled: false },
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false },
       ...edits['us-east-1'],
     },
     {
@@ -68,6 +71,8 @@ const readback = (
       Tags: [],
       TableClass: 'STANDARD',
       DeletionProtectionEnabled: false,
+      ContributorInsightsSpecification: { Enabled: false },
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false },
       ...edits['eu-west-1'],
     },
   ],
@@ -99,6 +104,17 @@ describe('replica class / protection defaults on a template-bag baseline (go-to-
     expect(
       await driftPaths(templateBag(), readback({ 'us-east-1': { DeletionProtectionEnabled: true } }))
     ).toEqual(['Replicas']);
+  });
+
+  it('still reports enabled insights, enabled recovery or a live tag the template never declared', async () => {
+    for (const edit of [
+      { ContributorInsightsSpecification: { Enabled: true } },
+      { PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true, RecoveryPeriodInDays: 35 } },
+      { PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: false, RecoveryPeriodInDays: 7 } },
+      { Tags: [{ Key: 'oob', Value: '1' }] },
+    ]) {
+      expect(await driftPaths(templateBag(), readback({ 'eu-west-1': edit }))).toEqual(['Replicas']);
+    }
   });
 
   it('never overrides a declared value, and leaves the AWS side and the input untouched', async () => {
