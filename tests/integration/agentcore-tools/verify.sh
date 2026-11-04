@@ -188,8 +188,10 @@ echo "==> Phase 1: deploy AgentCore tools stack"
 # empty RatingScale, which AWS refuses (measured on 3.1152.0). An
 # access refusal is the account's Bedrock model access, not #5432.
 P1_LOG="$(mktemp)"
+# --verbose: cdkd prints only AWS's exception class without it (#5271), and
+# the classifier below reads AWS's own text.
 if ! env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes 2>&1 | tee "${P1_LOG}"; then
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose 2>&1 | tee "${P1_LOG}"; then
   if grep -q "Failed to create BedrockAgentCore Evaluator JudgeEvaluator" "${P1_LOG}"; then
     if grep -q "RatingScale must contain" "${P1_LOG}"; then
       echo "FAIL: the judge evaluator's MultiDimensional rating scale was dropped by the SDK before CreateEvaluator (#5432): AWS received an empty RatingScale" >&2

@@ -7,7 +7,7 @@
 # file byte-for-byte instead of appending a duplicate row (issue #1112).
 access-key-cloudmap-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	165	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 acm-certificate	2026-10-26T01:33:59Z	PASS	126	verify.sh	rc 0, destroy 0 errors, orphans clean (PR #5289 local run)
-agentcore-tools	2026-10-28T13:19:58Z	PASS	84	verify.sh	91860900d merged tree; multi-dim judge 2->3 dims OK; SDK-3.1152.0 probe RED earlier; orph clean
+agentcore-tools	2026-11-04T09:11:36Z	PASS	75	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy 0 errors, orph clean; own state bucket
 alb	2026-10-20T08:55:09Z	PASS	589	verify.sh	PR #5116 (#1160) 0dbcced66; Phase 3.5 listener Port/Protocol removal warns CFn keep, values kept; probe (src reverted) RED at that assertion; run in own state bucket (peer v13 record blocked shared one); destroy 21 deleted 0 errors, orph clean
 alb-advanced	2026-10-17T17:48:47Z	PASS	160	standard	PR #5034 (#1160) 842d0d385; deploy rc=0, destroy 17 deleted 0 errors, orph clean
 api-cognito	2026-10-18T20:35:59Z	PASS	39	standard	PR #5073: CloudWatch role no longer retained; no ApiCognitoStack-* IAM role left, orph clean
@@ -65,7 +65,7 @@ cognito-custom-attribute-add	2026-10-27T13:14:59Z	PASS	80	verify.sh	rc ok, orph 
 cognito-identity-pool	2026-10-11T15:28:51Z	PASS	57	verify.sh	PR #4796, rc ok, orph clean
 cognito-lambda-triggers	2026-10-11T15:28:51Z	PASS	78	verify.sh	PR #4796, rc ok, orph clean
 cognito-resource-server	2026-10-16T08:15:12Z	PASS	96	verify.sh	rc ok, orph clean (#3341 slice 4995)
-cognito-userpool-user-ref	2026-10-11T15:28:51Z	PASS	104	verify.sh	PR #4796, rc ok, orph clean
+cognito-userpool-user-ref	2026-11-04T09:28:41Z	PASS	85	verify.sh	rc 0, own bucket, orph clean
 composite-stack	2026-11-04T05:26:26Z	PASS	54	standard	batch 3 (rc=0, destroy 17 deleted 0 errors); account clean
 conditions	2026-10-18T11:16:06Z	PASS	35	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 conditions-and-if	2026-10-15T19:32:45Z	PASS	67	verify.sh	16 assertions, clean destroy
@@ -79,26 +79,26 @@ cross-region-state-bucket	2026-11-04T10:48:42Z	PASS	41	verify.sh	rc ok, orph cle
 cross-stack-cfn-fallback	2026-10-18T11:16:06Z	PASS	125	verify.sh	#5043 rebased run; rc 0, destroy 0 errors, orphans clean
 cross-stack-references	2026-10-25T02:23:30Z	PASS	38	standard	rc ok, orph clean
 cross-stack-secret-import	2026-10-23T02:59:31Z	PASS	656	verify.sh	rc ok, orph clean, 0 surviving secret versions (regression net #5193)
-custom-resource-getatt-data	2026-11-04T07:47:19Z	PASS	101	verify.sh	rc ok, orph clean (PR #5742 #5738 CR recycle Description; regression run, recycle not triggerable)
+custom-resource-getatt-data	2026-11-04T08:15:09Z	PASS	80	verify.sh	rc ok, orph clean; 2 leaked /aws/lambda log groups deleted
 custom-resource-masked-service-token	2026-10-15T02:06:45Z	PASS	161	verify.sh	rc ok, orph clean; PR #4908 rebased 635273a85
 custom-resource-noecho-nested	2026-10-23T03:22:35Z	PASS	1358	verify.sh	rc ok, orph clean, 0 surviving versions (regression net #5193)
 custom-resource-provider	2026-11-04T11:03:04Z	PASS	747	verify.sh	rc ok, orph clean; re-run at df595b4db (#5745 PR #5752)
 custom-resource-resolved-secret	2026-10-20T06:06:02Z	PASS	401	verify.sh	deploy+destroy clean, 0 orphans
-custom-resource-service-token-change	2026-10-11T18:48:18Z	PASS	144	verify.sh	PR #4796, rc ok, orph clean
-data-analytics	2026-10-11T09:33:22Z	PASS	121	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+custom-resource-service-token-change	2026-11-04T09:28:41Z	PASS	130	verify.sh	rc 0, own bucket, orph clean
+data-analytics	2026-11-04T09:28:41Z	PASS	90	verify.sh	rc 0, own bucket, orph clean (Kinesis/Firehose/Glue/log groups none)
 data-pipeline	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 7 del 0 err, 0 orph
 deep-getatt-chains	2026-10-25T15:51:57Z	PASS	81	verify.sh	rc ok, orph clean; AccountId-revert probe FAILed at B2
-deletion-ordering-complex	2026-10-11T09:33:22Z	PASS	205	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+deletion-ordering-complex	2026-11-04T09:28:41Z	PASS	191	verify.sh	rc 0, own bucket, orph clean (fixture rebuilt dist itself)
 deletion-policy-retain	2026-10-17T07:24:50Z	PASS	40	verify.sh	rc ok, orph clean (resolver-context refactor #5025)
 deletion-policy-snapshot	2026-10-25T00:07:44Z	PASS	245	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 deletion-policy-snapshot-heavy	2026-10-25T00:07:44Z	PASS	812	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 deployment-events	2026-10-13T02:41:29Z	PASS	35	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
-destroy-data-guard	2026-10-11T09:33:22Z	PASS	110	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+destroy-data-guard	2026-11-04T09:11:36Z	PASS	75	verify.sh	rc 0, guard fired + clean second destroy, orph clean; own state bucket
 destroy-failed-delete-keeps-dependencies	2026-11-02T21:00:04Z	PASS	76	verify.sh	us-east-1, 3 phases ok, orph clean
 destroy-interrupt	2026-10-18T04:10:16Z	PASS	376	verify.sh	rc 0, 0 orphans; #3361 PR 5042 0e89350c
 destroy-nested-cross-region	2026-10-20T08:13:14Z	PASS	216	verify.sh	rc ok, orph clean; #5115 REST API arm
 diff-fail-on-destructive	2026-10-12T13:46:43Z	PASS	85	verify.sh	rc ok, destroy 0 errors, orph clean (PR #4832, #4827 on e6be0d2a9)
-diff-intrinsic-target-change	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+diff-intrinsic-target-change	2026-11-04T09:11:36Z	PASS	50	verify.sh	rc 0, destroy clean, orph clean; own state bucket
 dlm-lifecycle-policy	2026-10-30T06:31:51Z	PASS	106	verify.sh	rc ok, orph clean; #5546 Description removal arm; pre-fix probe red at phase 2b
 docdb-fix-forward-orphan	2026-11-02T01:39:49Z	PASS	1820	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 docdb-global-cluster	2026-11-02T14:05:08Z	PASS	241	verify.sh	rc 0, destroy 0 errors, 0 orphans, detach lines seen (create/update/change refused/removal/re-add refused/destroy)
@@ -114,7 +114,7 @@ dynamodb-autoscaling	2026-11-04T07:57:30Z	PASS	120	verify.sh	rc ok, destroy 0 er
 dynamodb-fix-forward-orphan	2026-10-19T10:52:49Z	PASS	170	verify.sh	rc ok, orph clean
 dynamodb-globaltable	2026-10-30T20:57:28Z	PASS	2090	verify.sh	rc 0, orph clean; PR #5582 161892a57 multi-region; 12e0/16a4 no replica scalable target left; probe red at 12e0
 dynamodb-globaltable-implied-stream	2026-11-03T13:15:53Z	PASS	235	verify.sh	PR #5704 at 3daeca2e5; us-east-1; rc=0, destroy 0 errors, 0 orphans; replica gone at the post-destroy probe
-dynamodb-globaltable-replica-settings	2026-11-02T10:27:52Z	PASS	3928	verify.sh	rc ok, orph clean, #5615 table10 first deploy; pre-fix red Phase 6b
+dynamodb-globaltable-replica-settings	2026-11-04T10:46:14Z	FAIL	4241	verify.sh	phase 1a took branch (a) refused while gsi1 moving (no-send check not reached); phases 1-6e pass; 6f deploy died on local DNS blip getaddrinfo ENOTFOUND dynamodb.us-east-1.amazonaws.com (not a code failure); cleanup ok, orph clean
 dynamodb-gsi-update	2026-11-01T16:00:55Z	PASS	4554	verify.sh	rc ok, orph clean, #5606; pre-fix probes red at V3m and V3w
 dynamodb-ondemand	2026-10-27T17:47:12Z	PASS	560	verify.sh	rc ok, orph clean, KinesisRemovalTable arm (#5423) green, pre-fix probe red at Phase 1.5
 dynamodb-sse	2026-10-29T16:45:21Z	PASS	53	verify.sh	rc ok, orph clean; #5514 table gone straight after destroy, probe without wait RED
@@ -133,7 +133,7 @@ ecr-scanning	2026-10-16T08:15:12Z	PASS	60	verify.sh	rc ok, orph clean (#3341 sli
 ecs-bluegreen	2026-10-30T09:15:32Z	PASS	235	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-fargate	2026-10-30T09:15:32Z	PASS	435	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-gateway-role-propagation	2026-11-02T19:13:25Z	PASS	86	verify.sh	us-east-1; sha c8c1bf2; gateway create retried 1 time on #5661 wordings then succeeded; destroy 0 errors, 0 orphans
-ecs-schedule-targets	2026-10-11T09:33:22Z	PASS	80	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+ecs-schedule-targets	2026-11-04T09:00:37Z	PASS	60	verify.sh	batch 15; rc ok, orph clean
 ecs-service-gateway-connectors	2026-11-02T19:54:59Z	PASS	800	verify.sh	phases 0-5 PASS at 0eff543f; plain destroy waits for service INACTIVE, gateway/association/role/VPC/state gone; 0 orphans; #5634 #5664
 ecs-service-update-props	2026-10-30T09:15:32Z	PASS	866	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
 ecs-taskdef-tags-launch-type	2026-10-30T09:15:32Z	PASS	105	verify.sh	rc ok, destroy clean, orph clean; PR #5573 ECS default steady-state wait (fix-round head)
@@ -148,7 +148,7 @@ emr-instance-configs	2026-10-29T20:43:22Z	PASS	1820	verify.sh	PR #5535 dd4c69bb9
 emr-instance-fleets	2026-10-22T14:41:56Z	PASS	1423	verify.sh	PR#5182/#5179: pre-fix repro'd NOTCOMPARED:readFailed (confirmed), post-fix PASS; rc ok, orph clean, cluster terminated
 event-driven	2026-11-04T05:26:26Z	PASS	52	standard	batch 3 (rc=0, destroy 19 deleted 0 errors); account clean
 eventbridge	2026-10-26T11:08:47Z	PASS	105	verify.sh	rc ok, orph clean
-eventbridge-api-destination	2026-10-11T09:33:22Z	PASS	90	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+eventbridge-api-destination	2026-11-04T09:00:37Z	PASS	80	verify.sh	batch 15; rc ok, orph clean
 eventbridge-archive	2026-11-02T20:49:02Z	PASS	75	verify.sh	PR #5676 here-string smoke; rc 0, destroy 0 errors, orphans clean
 eventbridge-input-transformer	2026-10-14T05:21:01Z	PASS	80	verify.sh	rc ok, orph clean
 eventbridge-pipes	2026-10-29T20:43:22Z	PASS	215	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean
@@ -187,10 +187,10 @@ iam-role-policies-drift-clean	2026-10-12T12:11:04Z	PASS	361	verify.sh	PR #4828, 
 iam-role-prefixed-name-update	2026-10-20T09:27:49Z	PASS	147	verify.sh	#5064 head re-run, clean
 iam-secret-derived-principals	2026-10-22T21:41:33Z	PASS	191	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, no plaintext secret in surviving state versions, 0 orphans
 iam-user-group-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	139	verify.sh	rc ok, orph clean, own bucket, #5665 31f909459
-import-attribute-readback	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
 import-attribute-readback-final	2026-10-15T04:24:59Z	PASS	286	verify.sh	rc ok, orph clean; #2613 step 6b in-place web ACL DefaultAction update
 import-attribute-readback-misc	2026-11-04T06:21:47Z	PASS	261	verify.sh	batch 7; rc ok, orph clean
-import-attribute-readback-network	2026-10-11T09:33:22Z	PASS	306	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+import-attribute-readback-network	2026-11-04T09:00:37Z	PASS	320	verify.sh	batch 15; rc ok, orph clean
 import-attributes	2026-11-04T06:21:47Z	PASS	45	verify.sh	batch 7; rc ok, orph clean
 import-auto-mode	2026-11-04T07:51:26Z	PASS	87	verify.sh	rc ok, orph clean (#4607 PR #4608)
 import-deployed-parameter-secret	2026-10-18T05:20:41Z	PASS	377	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
@@ -201,7 +201,7 @@ import-migrate-vpc	2026-10-19T00:17:40Z	PASS	356	verify.sh	rc ok, orph clean (#5
 import-nested-stack	2026-10-20T04:27:51Z	PASS	155	verify.sh	deploy+destroy clean, 0 orphans
 import-noecho-parameter	2026-10-16T23:38:07Z	PASS	150	verify.sh	rc ok, orph clean (NoEchoRunState refactor #5022)
 import-reimport-masked-attrs	2026-10-18T05:25:05Z	PASS	246	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
-import-retain-destroy	2026-10-11T09:33:22Z	PASS	161	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+import-retain-destroy	2026-11-04T08:44:47Z	PASS	140	verify.sh	rc 0, destroy clean, retained Kept param removed by fixture, orph clean (own state bucket)
 import-secret-observed	2026-10-18T05:14:02Z	PASS	150	verify.sh	PR #5049 (#1940 RedactionContext refactor) @35f2b4561; rc ok, orph clean
 import-value-strong-ref	2026-10-25T02:23:30Z	PASS	133	verify.sh	rc ok, orph clean
 importvalue-chain	2026-10-25T02:23:30Z	PASS	83	verify.sh	rc ok, orph clean
@@ -209,7 +209,7 @@ infra-security	2026-10-22T22:32:36Z	PASS	204	verify.sh	PR #5187 HEAD: destroy 31
 inplace-attr-propagation	2026-11-04T07:36:26Z	PASS	46	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 intrinsic-functions	2026-11-04T05:57:23Z	PASS	32	standard	deploy+destroy rc 0, orph clean
 intrinsics-torture	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
-intrinsics-torture-2	2026-10-11T09:33:22Z	PASS	65	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, destroy clean, orph clean (own state bucket)
 kinesis-esm-filter	2026-10-27T12:08:24Z	PASS	90	verify.sh	rc ok, orph clean; #1160 Bisect removal arm, probe-red on origin/main provider
 kinesis-stream-mode-switch	2026-10-29T20:43:22Z	PASS	181	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean; copy-revert probe RED at Phase 2e
 kms-encryption	2026-10-26T05:02:44Z	PASS	87	verify.sh	destroy 0 errors, orph clean; #5299 KeyUsage refusal + lockout bypass OK; pre-fix probe red at Phase 2b (PR 5304)
@@ -277,21 +277,21 @@ local-start-web-function	2026-10-25T18:43:18Z	PASS	15	verify.sh	rc ok, docker cl
 local-start-web-function-from-state	2026-10-25T18:43:18Z	PASS	95	verify.sh	rc ok, orph clean; rerun @c9cdb4870
 log-pipeline	2026-10-20T06:16:25Z	PASS	185	standard	PASS on retry; 1st attempt hit CWL subscription-filter invoke-permission eventual-consistency (env flake)
 loggroup-class-guard	2026-10-22T07:45:16Z	PASS	135	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
-loggroup-kms-associate	2026-10-11T09:33:22Z	PASS	70	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
-loggroup-never-expire-guard	2026-10-12T00:02:47Z	PASS	122	verify.sh	PR #4820 (#3466) b48362d; rc 0, destroy clean, orph clean
+loggroup-kms-associate	2026-11-04T08:44:47Z	PASS	50	verify.sh	rc 0, destroy clean, orph clean (own state bucket)
+loggroup-never-expire-guard	2026-11-04T08:44:47Z	PASS	105	verify.sh	rc 0, destroy clean, orph clean (own state bucket)
 logs-loggroup-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	96	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
-lost-child-after-failed-deploy	2026-10-11T09:33:22Z	PASS	105	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-04T06:21:47Z	PASS	56	verify.sh	batch 7; rc ok, 0 errors, orph clean (2 Lambda log groups leaked, deleted)
 microservices	2026-10-24T06:41:12Z	PASS	55	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (19 deleted)
 migrate-from-cfn	2026-10-20T06:19:30Z	PASS	376	run.sh	deploy+destroy clean, 0 orphans
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
-multi-region-same-stack	2026-10-11T21:09:57Z	PASS	59	standard	PR #4809, standard flow + us-west-2 arm, orph clean
+multi-region-same-stack	2026-11-04T08:31:11Z	PASS	37	standard	standard flow, us-west-2 + us-east-1 arms, both state keys coexisted, destroy 0 errors each, orph clean both regions
 multi-resource	2026-10-24T06:41:39Z	PASS	85	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (17 deleted)
 multi-stack-deps	2026-10-24T06:42:03Z	PASS	100	standard	final #5242 round (engine default --concurrency 20); all 3 stacks destroyed 0 errors, 0 orphans
 neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 neptune-restore	2026-11-02T17:55:35Z	PASS	1848	verify.sh	rc ok, orph clean; pre-fix probe red at provisionedBy (cc-api vs sdk)
-nested-required-preflight	2026-10-11T09:33:22Z	PASS	55	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+nested-required-preflight	2026-11-04T08:31:11Z	PASS	43	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 nested-stack	2026-10-13T02:41:29Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket (PR #4842, rebased onto #4846)
 nested-stack-3level	2026-10-15T09:24:20Z	PASS	490	verify.sh	PR #4939 (#4929) 504262f2b; own state bucket; rc ok, no seeded secret in any version, orph clean
 nested-stack-deep	2026-10-23T21:03:40Z	PASS	130	verify.sh	rc ok, orph clean; re-run on 62a976c7f after rebase onto main (#5211 merge)
@@ -332,7 +332,7 @@ refactor-move	2026-10-23T23:44:43Z	PASS	160	verify.sh	rc ok, orph clean; re-run 
 remove-protection	2026-10-26T14:03:24Z	PASS	2100	verify.sh	rc ok, orph clean, #5354 2c/2d, pre-fix red at 2c
 remove-protection-compensation	2026-10-24T19:26:15Z	PASS	232	verify.sh	rc ok, orph clean, #5266 tail-c
 remove-protection-journaled-orphan	2026-10-20T10:53:50Z	PASS	675	verify.sh	#5064 head re-run on 2f77a8d84, clean, orph clean
-rename-refactor	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+rename-refactor	2026-11-04T08:31:11Z	PASS	108	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 replace-squatter-refusal	2026-10-20T09:27:02Z	PASS	112	verify.sh	#5064 head re-run, clean
 replaced-delete-failed-rollback	2026-10-29T15:28:06Z	PASS	171	verify.sh	rc ok, orph clean
 replacement-fanout	2026-10-14T12:12:31Z	PASS	95	verify.sh	rc ok, orph clean; PR #4905 final sha 8d5396175
@@ -353,19 +353,19 @@ rollback-replay-effective-props	2026-10-20T10:42:05Z	PASS	264	verify.sh	#5064 he
 rollback-same-id-recreate	2026-10-20T19:58:09Z	PASS	167	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
 route53	2026-11-02T17:29:26Z	PASS	568	verify.sh	PR #5662 c63dba225 rc ok, orph clean
-s3-analytics-inventory	2026-10-11T09:33:22Z	PASS	201	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
 s3-cloudfront	2026-10-27T11:54:53Z	PASS	276	verify.sh	rc ok, orph clean; #5393 Enabled arm: pre-fix MalformedXML at Distribution CREATE, post-fix green
 s3-directory-bucket	2026-11-04T10:48:42Z	PASS	251	verify.sh	rc ok, orph clean (#5745 PR #5752)
 s3-event-notification	2026-11-04T08:38:33Z	PASS	231	verify.sh	us-east-1; PR #5751 776b0358d; cross-stack fromBucketName notification arm; drift clean (1b), revert keeps notifications (1c/1d), destroy 0 errors; rc ok, orph clean
 s3-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	273	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
-s3-lifecycle	2026-10-11T09:33:22Z	PASS	496	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+s3-lifecycle	2026-11-04T08:31:11Z	PASS	413	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-object-lock	2026-10-27T12:13:27Z	PASS	76	verify.sh	rc ok, orph clean; #5395 probe red at Phase 2 warn grep
-s3-replication-and-filter	2026-10-11T09:33:22Z	PASS	120	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+s3-replication-and-filter	2026-11-04T08:15:09Z	PASS	91	verify.sh	rc ok, orph clean
 s3-retry-own-bucket	2026-10-24T14:12:33Z	PASS	70	verify.sh	rc ok, orph clean
 s3-subconfig-removal	2026-11-01T12:46:03Z	PASS	276	verify.sh	rc ok, orph clean, #2762 ABAC+metadata+prefix; pre-fix: CC route refused the prefix at create
 s3-tables	2026-10-30T15:59:00Z	PASS	191	verify.sh	rc 0, orph clean; PR #5578 73dac7708 Phase 1e accepted-drop refusal + import remedy; probe red at Phase 1e (diff exit 0 without #5572 warning needle, pre-fix NO_CHANGE)
-s3-vectors	2026-10-26T02:21:56Z	PASS	55	verify.sh	rc ok, orph clean; #5309 pre-fix RED at nameless-create check
+s3-vectors	2026-11-04T09:11:36Z	PASS	41	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy clean, orph clean; own state bucket
 scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
 scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean; #5228 not-gone mark
 schema-v10-to-v11-migration	2026-10-14T07:59:02Z	PASS	495	verify.sh	rc ok, orph clean; PR #4893 state destroy purges record history (ee330190b), own state bucket; state.json kept only its delete marker
@@ -387,12 +387,12 @@ secrets-rotation-schedule	2026-10-20T06:31:33Z	PASS	90	verify.sh	deploy+destroy 
 secretsmanager-replica-rekey	2026-10-26T03:47:27Z	PASS	111	verify.sh	rc ok, orph clean; rekey-revert probe FAILed at Phase 2
 secretsmanager-update-value-source	2026-10-22T08:54:56Z	PASS	95	verify.sh	rc ok, orph clean (#5168)
 serverless-api	2026-10-18T18:32:28Z	PASS	58	verify.sh	PR #5059 (#2319) S3 Tables/APIGW thrown-error identity; us-east-1; rc ok, orph clean
-servicediscovery	2026-10-26T15:52:49Z	PASS	245	verify.sh	rc ok, orph clean; PinnedDnsService DnsConfig warning (#5373) discriminated
+servicediscovery	2026-11-04T09:11:36Z	PASS	230	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy clean, orph clean; own state bucket
 servicediscovery-namespaces	2026-10-30T06:29:39Z	PASS	135	verify.sh	rc ok, orph clean
 ses-identity	2026-11-04T05:36:33Z	PASS	196	verify.sh	batch 4; all 3 phases clean, 0 err 0 orph
 sg-circular-dependency	2026-10-18T21:41:29Z	PASS	440	verify.sh	rc ok, orph clean (#5071)
 shared-stackname-multi-region	2026-10-23T02:44:18Z	PASS	150	verify.sh	rc ok, orph clean both regions (#5193)
-sns-event-source	2026-10-11T09:33:22Z	PASS	85	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-10-13T05:13:33Z	PASS	90	verify.sh	rc ok, orph clean; PR #4854 in-place SNS subscription update (aa2317d95)
 sns-pending-subscription	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
 sns-sqs-event	2026-10-20T06:36:42Z	PASS	300	verify.sh	deploy+destroy clean, 0 orphans
@@ -411,13 +411,13 @@ stepfunctions	2026-10-20T06:33:25Z	PASS	90	verify.sh	deploy+destroy clean, 0 orp
 stepfunctions-logging	2026-10-14T05:21:01Z	PASS	215	verify.sh	rc ok, orph clean
 stepfunctions-s3-definition	2026-10-26T08:20:06Z	PASS	60	verify.sh	rc ok, orph clean; #5298 inline substitutions create+update (-c phase=2); pre-fix probe red at InlineGreet
 stream-delete-redeploy	2026-11-01T14:08:38Z	PASS	914	verify.sh	rc ok, orph clean
-synthetics-canary	2026-10-11T09:33:22Z	PASS	151	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+synthetics-canary	2026-11-04T08:15:09Z	PASS	130	verify.sh	rc ok, orph clean
 tags-propagation	2026-10-24T19:26:15Z	PASS	167	verify.sh	rc ok, orph clean, #5266 tail-c
 termination-protection	2026-10-24T05:02:39Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 564761a4b after rebase onto main (incl. #5235 delete path) (#5238)
 throttle-wide-dag	2026-10-24T11:08:27Z	PASS	311	verify.sh	rc ok, orph clean
 type-change-replacement	2026-10-20T19:58:09Z	PASS	210	verify.sh	PR #5100 pre-merge run, own state bucket, rc ok, orph clean
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
-update-policy-mutations	2026-10-11T09:33:22Z	PASS	95	verify.sh	PR #4720 (#4705) final c53f78f real-AWS suite; rc 0, destroy clean, orph clean
+update-policy-mutations	2026-11-04T08:15:09Z	PASS	70	verify.sh	rc ok, orph clean
 update-replace	2026-10-17T13:29:07Z	PASS	86	verify.sh	rc ok, orph clean (last-mixins refactor #5028)
 vpc-lambda	2026-10-25T16:18:19Z	PASS	831	standard	us-east-1; rerun on formatting-only head f4b9115ab (#5276); destroy 16 deleted 0 errors; rc ok, orph clean, no Gave up warning
 vpc-lambda-cr-race	2026-10-25T15:55:05Z	PASS	326	standard	us-east-1; final build 8c364cddb (#5276); 21 deleted 0 errors, orph clean, no Gave up warning

@@ -794,8 +794,11 @@ fi
 #   (b) gsi1 already ACTIVE: the retry converges (nothing to send — gsi1 is
 #       what the template declares) and clears the name.
 set +e
+# --verbose: the converging branch's no-send check below reads the
+# provider's `Sending UpdateTable GlobalSecondaryIndexUpdates` line, which
+# is debug-level.
 CDKD_TEST_UPDATE="gsi" node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes >"${LOG_DIR}/phase1a-retry.log" 2>&1
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes --verbose >"${LOG_DIR}/phase1a-retry.log" 2>&1
 P1A_RETRY_EXIT=$?
 set -e
 P1A_CONVERGED_BY_RETRY=false
