@@ -542,7 +542,12 @@ export const CASES_16_EC2: TypeCase[] = [
           CidrBlock: '10.0.1.0/24',
           AvailabilityZone: 'us-east-1a',
           MapPublicIpOnLaunch: true,
+          EnableDns64: true,
+          Ipv6CidrBlock: '2001:db8:1::/64',
           Tags: TAGS,
+        },
+        expectedSilent: {
+          'update-remove:EnableDns64': 'CloudFormation preserves the live DNS64 value on property removal (measured, go-to-k/cdkd#5632)',
         },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
@@ -551,7 +556,41 @@ export const CASES_16_EC2: TypeCase[] = [
         },
       },
     ],
-    { targets: tagTargets() }
+    {
+      targets: tagTargets(),
+      arm: (_id, bag) => {
+        let ipv6 = bag['Ipv6CidrBlock'];
+        let dns64: unknown = bag['EnableDns64'] ?? false;
+        let mapPublicIp: unknown = bag['MapPublicIpOnLaunch'] ?? false;
+        const association = () => ({
+          AssociationId: 'subnet-cidr-assoc-1',
+          Ipv6CidrBlock: ipv6,
+          Ipv6CidrBlockState: { State: 'associated' },
+        });
+        setOutputOverrides({
+          CreateSubnetCommand: (input) => {
+            ipv6 = input['Ipv6CidrBlock'];
+            return { Subnet: { SubnetId: 'subnet-1', AvailabilityZone: 'us-east-1a', Ipv6CidrBlockAssociationSet: ipv6 === undefined ? [] : [association()] } };
+          },
+          DescribeSubnetsCommand: () => ({ Subnets: [{
+            SubnetId: 'subnet-1', MapPublicIpOnLaunch: mapPublicIp, EnableDns64: dns64,
+            Ipv6CidrBlockAssociationSet: ipv6 === undefined ? [] : [association()],
+          }] }),
+          ModifySubnetAttributeCommand: (input) => {
+            const dns = input['EnableDns64'] as { Value?: boolean } | undefined;
+            const pub = input['MapPublicIpOnLaunch'] as { Value?: boolean } | undefined;
+            if (dns !== undefined) dns64 = dns.Value;
+            if (pub !== undefined) mapPublicIp = pub.Value;
+            return {};
+          },
+          DisassociateSubnetCidrBlockCommand: () => { ipv6 = undefined; return {}; },
+          AssociateSubnetCidrBlockCommand: (input) => {
+            ipv6 = input['Ipv6CidrBlock'];
+            return { Ipv6CidrBlockAssociation: association() };
+          },
+        });
+      },
+    }
   ),
   tc(
     'AWS::EC2::InternetGateway',

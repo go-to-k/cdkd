@@ -8,6 +8,7 @@ paths:
 
 `ip-protocol.ts`: [layout-drift.md](layout-drift.md). Index: [code-layout.md](code-layout.md).
 
+- **ipv6-cidr.ts** - `canonicalizeIpv6Cidr`, a comparison-only IPv6 network spelling for Subnet updates, drift and recovery. Malformed values return `undefined`; AWS requests retain the declared spelling.
 - **injected-aws-region.ts** - cdkd's own `AWS_REGION` copy (#2100); a child process gets `withoutInjectedAwsRegion`.
 - **parameter-types.ts** - `isListParameterType(type)`, the ONE answer to "is this Parameter `Type` LIST-shaped?"; an import-free LEAF. **Deliberately NOT `indexOf('List<')`**, which also matches the SSM OUTER form carrying a Parameter Store KEY (#2347).
 - **role-arn.ts** - `isIamRoleArn`, the ONE answer to "may cdkd send this as a role ARN?" (both-ends anchored, printable ASCII, at most 2048 characters, #2348). `sendableAssumeRoleCommand` is the ONLY builder of an `AssumeRoleCommand` under `src/**` and refuses before it constructs; `tests/unit/utils/role-arn-shape.test.ts` refuses any other assume-role construct. Deliberately looser than `parseIamRoleArn`, which must capture an exact 12-digit account; never re-spell either as `startsWith('arn:')`.

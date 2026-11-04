@@ -38,11 +38,9 @@
     "AWS::EC2::Subnet": [
       "AssignIpv6AddressOnCreation",
       "AvailabilityZoneId",
-      "EnableDns64",
       "EnableLniAtDeviceIndex",
       "Ipv4IpamPoolId",
       "Ipv4NetmaskLength",
-      "Ipv6CidrBlock",
       "Ipv6IpamPoolId",
       "Ipv6Native",
       "Ipv6NetmaskLength",

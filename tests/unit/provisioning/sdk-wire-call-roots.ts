@@ -104,6 +104,12 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
       AssociateNatGatewayAddressCommand: PER_ITEM('AvailabilityZoneAddresses', 'address'),
     },
   },
+  'AWS::EC2::Subnet': {
+    repeated: {
+      ModifySubnetAttributeCommand:
+        'one call per attribute (MapPublicIpOnLaunch, EnableDns64), each sending only its own member, which the chain names',
+    },
+  },
   'AWS::EC2::VPC': {
     repeated: {
       ModifyVpcAttributeCommand:

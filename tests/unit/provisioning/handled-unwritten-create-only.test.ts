@@ -232,13 +232,13 @@ describe('the refusal text (unwrittenCreateOnlyRefusal)', () => {
     const msg = unwrittenCreateOnlyRefusal({
       ...base,
       unwritten: ['AvailabilityZoneId', 'CidrBlock'],
-      routeDriving: ['EnableDns64'],
+      routeDriving: ['AssignIpv6AddressOnCreation'],
       nowWritten: ['CidrBlock'],
     });
     expect(msg).toContain('AvailabilityZoneId, CidrBlock are create-only');
-    expect(msg).toContain('--prefer-sdk-route does not cover EnableDns64');
+    expect(msg).toContain('--prefer-sdk-route does not cover AssignIpv6AddressOnCreation');
     expect(msg).toContain(
-      `remove CidrBlock from the template and re-run with --prefer-sdk-route ${TYPE}:AvailabilityZoneId,${TYPE}:EnableDns64.`
+      `remove CidrBlock from the template and re-run with --prefer-sdk-route ${TYPE}:AssignIpv6AddressOnCreation,${TYPE}:AvailabilityZoneId.`
     );
     // The import would erase AvailabilityZoneId's evidence too, which AWS
     // really lacks, so it is not offered here.

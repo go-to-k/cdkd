@@ -60,7 +60,7 @@ vi.mock('../../../src/deployment/resource-deadline.js', () => ({
 describe('DeployEngine — a replacement driven only by an unwritten create-only drop (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
   const CREATE_ONLY = 'AvailabilityZoneId';
-  const PLAIN = 'EnableDns64';
+  const PLAIN = 'AssignIpv6AddressOnCreation';
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
   const DECLARED = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
   const ADDED: PropertyChange = {
@@ -93,7 +93,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     };
   });
 
-  it('PREMISE: AvailabilityZoneId is a create-only drop, EnableDns64 a plain one', () => {
+  it('PREMISE: AvailabilityZoneId is a create-only drop, AssignIpv6AddressOnCreation a plain one', () => {
     const cov = getPropertyCoverage(TYPE);
     if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);
@@ -298,7 +298,7 @@ describe('DeployEngine — a replacement driven only by an unwritten create-only
     const err = await refusal(makeEngine(), { desired: { ...DECLARED, [PLAIN]: true } });
     expect(err!.cause?.code).toBe('CREATE_ONLY_DROP_NEEDS_REPLACEMENT');
     expect(err!.cause?.message).toContain(
-      `--prefer-sdk-route ${TYPE}:${CREATE_ONLY},${TYPE}:${PLAIN}.`
+      `--prefer-sdk-route ${TYPE}:${PLAIN},${TYPE}:${CREATE_ONLY}.`
     );
   });
 
