@@ -16,7 +16,7 @@
  * endpoint rather than rewritten after signing (a rewritten host fails
  * `SignatureDoesNotMatch`). The client counts as having an endpoint override,
  * so it is path-style unless the profile says `addressing_style = virtual`
- * (`src/utils/s3-client-defaults.ts`).
+ * and `CDK_S3_FORCE_PATH_STYLE` is unset (`src/utils/s3-client-defaults.ts`).
  *
  * The presigned URL is a bearer credential for one PUT: never log it, its
  * query string, or anything but the endpoint's origin.

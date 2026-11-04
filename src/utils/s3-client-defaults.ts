@@ -64,7 +64,8 @@
  *
  * A client built before resolution gets an ENVIRONMENT-only approximation
  * instead (no profile `endpoint_url` or `addressing_style`), and one debug line
- * says so.
+ * says so. The result is memoized once per process: a later call with another
+ * profile does not re-resolve.
  *
  * This module sits in the literal-`.ts` import closure
  * `scripts/audit-provider-coverage.ts` resolves (`aws-clients.ts` imports it),

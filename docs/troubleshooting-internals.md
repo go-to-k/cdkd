@@ -306,7 +306,8 @@ every S3 client it builds, plus the AWS CDK CLI's `CDK_S3_FORCE_PATH_STYLE`:
 | `CDK_S3_FORCE_PATH_STYLE` set to any non-empty value | Path-style, even with `addressing_style = virtual` |
 
 `AWS_IGNORE_CONFIGURED_ENDPOINT_URLS=true` turns the override off, and with
-it the path-style switch. The profile is the one `--profile` or `AWS_PROFILE`
+it the override-driven path-style switch (`addressing_style = path` and
+`CDK_S3_FORCE_PATH_STYLE` still apply). The profile is the one `--profile` or `AWS_PROFILE`
 selects. As in the AWS CLI, `addressing_style` is read from the profile's
 `s3` section in the config file, unless the same profile in the shared
 credentials file has an `s3` section, which then replaces it. With
@@ -344,7 +345,7 @@ CDKD_CR_S3_ENDPOINT_URL=http://s3:4566 \
 | `CDKD_CR_S3_ENDPOINT_URL` | Effect |
 | --- | --- |
 | Unset or empty | The response URL uses cdkd's own S3 endpoint |
-| An `http://` or `https://` URL | Only the response URL is signed for it, path-style unless `addressing_style = virtual` |
+| An `http://` or `https://` URL | Only the response URL is signed for it, path-style unless `addressing_style = virtual` without `CDK_S3_FORCE_PATH_STYLE` |
 | Anything else (no scheme, user info, a query) | The custom resource fails before it is invoked, naming the variable |
 
 The URL is signed for that host rather than rewritten afterwards, because the
