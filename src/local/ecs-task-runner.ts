@@ -672,7 +672,7 @@ export async function runEcsTask(
     for (const s of c.secrets) {
       if (overridden.has(s.name)) {
         logger.debug(
-          `Secret ${displayIdent(c.name)}.${displayIdent(s.name)} not fetched: --env-vars gives this key.`
+          safeMsg`Secret ${displayIdent(c.name)}.${displayIdent(s.name)} not fetched: --env-vars gives this key.`
         );
         continue;
       }
