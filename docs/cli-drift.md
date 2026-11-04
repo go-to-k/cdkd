@@ -81,6 +81,15 @@ cdkd state refresh-observed MyStack
 Drift compares only the properties that state records. Fields AWS manages and
 cdkd never stored, such as timestamps and generated identifiers, are ignored.
 
+Drift also skips one property that a CDK custom resource in the same stack
+writes: a bucket's `NotificationConfiguration`, unless your template sets it on
+the bucket itself. CDK's `bucket.addEventNotification(...)` does not set the bucket's
+`NotificationConfiguration`. A `Custom::S3BucketNotifications` resource writes
+it after the bucket is created, so drift does not compare it on that bucket,
+and `--revert` leaves the live notifications alone. CloudFormation's drift
+detection does not compare that property either, because the template does not
+set it on the bucket.
+
 ## Reading the report
 
 A stack with no drift prints one line:
