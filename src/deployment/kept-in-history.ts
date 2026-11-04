@@ -25,6 +25,7 @@
  * one) created no later than it was kept.
  */
 import { shouldRetainResource } from '../types/state.js';
+import { injectiveKey } from '../state/record-keys.js';
 import type { DeploymentEvent } from '../types/deployment-events.js';
 import type { EarlierStateRecord } from '../state/earlier-state-versions.js';
 import type { KeptInHistory } from './generated-name-guard.js';
@@ -141,7 +142,7 @@ export function keptWhenRecordsEnded(records: readonly EarlierStateRecord[]): Ke
       };
       if (typeof r.resourceType !== 'string' || typeof r.physicalId !== 'string') continue;
       if (r.physicalId === '') continue;
-      const key = `${r.resourceType}\0${r.physicalId}`;
+      const key = injectiveKey(r.resourceType, r.physicalId);
       if (seen.has(key)) continue; // a newer record judged it
       seen.add(key);
       const next = newer?.[logicalId] as { physicalId?: unknown } | null | undefined;
@@ -181,21 +182,22 @@ export async function loadKeptForWarning(
   for (const events of runs) {
     for (const e of events) {
       if (e.stackName !== stackName || typeof e.physicalId !== 'string') continue;
+      if (typeof e.resourceType !== 'string') continue;
       if (e.eventType !== 'RESOURCE_SUCCEEDED') continue;
       if (e.operation !== 'CREATE' && e.operation !== 'UPDATE') continue;
       const at = Date.parse(e.timestamp);
-      if (Number.isFinite(at)) lastMadeAt.set(`${e.resourceType}\0${e.physicalId}`, at);
+      if (Number.isFinite(at)) lastMadeAt.set(injectiveKey(e.resourceType, e.physicalId), at);
     }
   }
   const fromEvents = keptInEventHistory(runs, stackName).filter(
     (k) =>
       k.keptAt === undefined ||
-      (lastMadeAt.get(`${k.resourceType}\0${k.physicalId}`) ?? -Infinity) <= k.keptAt
+      (lastMadeAt.get(injectiveKey(k.resourceType, k.physicalId)) ?? -Infinity) <= k.keptAt
   );
   const seen = new Set<string>();
   const out: KeptInHistory[] = [];
   for (const k of [...keptWhenRecordsEnded(records), ...fromEvents]) {
-    const key = `${k.resourceType}\0${k.physicalId}`;
+    const key = injectiveKey(k.resourceType, k.physicalId);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(k);
