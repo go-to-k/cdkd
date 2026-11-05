@@ -22,9 +22,10 @@ run a NEW or edited arm EARLY, to GREEN, once the lane writes it, from a
 fix round waits on it (#2762). It and §8-d's probe set no marker and commit no
 ledger row (`/run-integ` step 11; the final run's row replaces theirs, #5795),
 and it is no §8-d proof (#4618).
-Sequence: reviewers → early run → EVERY finding, nits included → §8-d probe →
-rebase → integ → marker (an hour-long probe stales the base, #5475). A
-UNIT-test-only fix round may overlap the parent's integ in the lane's tree.
+Sequence: reviewers → early run → EVERY finding, nits included → §8-d probe
+(§8-d says when it follows instead) → rebase → integ → marker (an hour-long
+probe stales the base, #5475). A UNIT-test-only fix round may overlap the
+parent's integ in the lane's tree.
 Brief the lane: no build, `/check` or `/verify-pr` there (a build rewrites the
 live fixture's `dist/`), no rebase or install, never the live fixture's
 directory, and stage only its own test files (the integ's ledger row lands
@@ -96,8 +97,9 @@ checks.
 
 ### 8-d. Integ arms owe a discrimination proof (mutation-probe on real AWS)
 
-BEFORE the final integ, and only once the arm AS IT STANDS at the final sha has
-PASSED (§8-b's early run; a red on an unproven fixture is unattributable),
+Once the arm AS IT STANDS at the final sha has PASSED (a red on an unproven
+fixture is unattributable): BEFORE the final integ when §8-b's early run is
+that PASS, else AFTER it, the merge waiting on the probe's RED (#5827) —
 revert the fix, rebuild, run, confirm the arm goes RED
 **at YOUR assertion — read which one fired**. A red
 ELSEWHERE proves nothing: at the CREATE, a refusal of the shape under test
