@@ -464,7 +464,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       );
     }
     // A failed context lookup blocks only the stack it imports into (go-to-k/cdkd#5807).
-    refuseFailedLookups([stackInfo], result.failedLookups);
+    refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
     // An env-agnostic stack takes the run's region, held on state the old
     // us-east-1 default wrote (go-to-k/cdkd#2100) so a re-import does not
     // write a second record beside the existing one.

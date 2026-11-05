@@ -174,6 +174,8 @@ describe('cdkd local run-task and a failed context lookup (go-to-k/cdkd#5807)', 
     }
 
     expect(synthMock.options[0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    // The early refusal precedes the state-provider construction.
+    expect(createLocalStateProviderMock).not.toHaveBeenCalled();
     expect(runEcsTaskMock).not.toHaveBeenCalled();
   });
 

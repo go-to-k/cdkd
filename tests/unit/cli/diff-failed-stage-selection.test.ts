@@ -283,4 +283,19 @@ describe('cdkd diff and a failed context lookup (issue #5807)', () => {
     expect(reported).toContain('Context lookup failed: ssm:account=1:parameterName=/p:region=us-east-1: AccessDenied');
     expect(mockExpandMacros).not.toHaveBeenCalled();
   });
+
+  it('refuses a failure no stack carries even for a stack that did not ask', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('Other'), makeStack('Asking')],
+      failedLookups,
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const reported = await runDiff(['Other']);
+
+    expect(lastExitCode).toBe(1);
+    expect(reported).toContain('Context lookup failed');
+    expect(mockExpandMacros).not.toHaveBeenCalled();
+  });
 });

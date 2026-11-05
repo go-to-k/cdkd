@@ -548,14 +548,11 @@ async function localInvokeAgentCoreCommand(
       ...(options.region && { region: options.region }),
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
-    };
-    // Only this first synthesis checks failed lookups per stack: the watch
-    // loop's re-syntheses reuse `synthOpts` WITHOUT the flag below, so a
-    // failed lookup there still refuses outright.
-    const { stacks, assemblyDir, failedLookups } = await synthesizer.synthesize({
-      ...synthOpts,
+      // Every synthesis below (the first and each watch reload) refuses a
+      // failed context lookup only for the invoked stack (go-to-k/cdkd#5807).
       failedLookupsCheckedByCaller: true,
-    });
+    };
+    const { stacks, assemblyDir, failedLookups } = await synthesizer.synthesize(synthOpts);
 
     const resolvedTarget = await resolveSingleTarget(target, {
       entries: listTargets(stacks).agentCoreRuntimes,
@@ -575,6 +572,8 @@ async function localInvokeAgentCoreCommand(
     // reduces to the deployed image URI. The state load is shared with the
     // env-substitution + role-from-state steps below.
     const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
+    // Before any state read, so an expired credential reports the failed lookup.
+    refuseFailedLookups(candidate ? [candidate] : [], stacks, failedLookups);
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',
@@ -587,7 +586,7 @@ async function localInvokeAgentCoreCommand(
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
     // A failed context lookup blocks only the stack it invokes (go-to-k/cdkd#5807).
-    refuseFailedLookups([resolved.stack], failedLookups);
+    refuseFailedLookups([resolved.stack], stacks, failedLookups);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
     const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;
@@ -806,7 +805,13 @@ async function localInvokeAgentCoreCommand(
             // Re-synth so the caller has the freshly-resolved stacks for the
             // next classifier firing's asset-context lookup; env / image
             // changes are intentionally discarded (soft-reload only swaps source).
-            const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+            const { stacks: newStacks, failedLookups: newFailed } =
+              await synthesizer.synthesize(synthOpts);
+            refuseFailedLookups(
+              newStacks.filter((st) => st.stackName === resolved.stack.stackName),
+              newStacks,
+              newFailed
+            );
             return { stacks: newStacks };
           },
         });
@@ -897,7 +902,13 @@ async function localInvokeAgentCoreCommand(
             );
           }
           await softReloadAgentContainer(containerId, newSourceDir);
-          const { stacks: newStacks } = await synthesizer.synthesize(synthOpts);
+          const { stacks: newStacks, failedLookups: newFailed } =
+            await synthesizer.synthesize(synthOpts);
+          refuseFailedLookups(
+            newStacks.filter((st) => st.stackName === resolved.stack.stackName),
+            newStacks,
+            newFailed
+          );
           return { stacks: newStacks };
         },
       });
@@ -1174,14 +1185,19 @@ export async function rebuildAgentCoreContainer(args: {
 
   await cleanupBefore();
 
-  const { stacks: newStacks, assemblyDir: newAssemblyDir } =
-    await synthesizer.synthesize(synthOpts);
+  const {
+    stacks: newStacks,
+    assemblyDir: newAssemblyDir,
+    failedLookups: newFailed,
+  } = await synthesizer.synthesize(synthOpts);
   const newCandidate = pickAgentCoreCandidateStack(resolvedTarget, newStacks);
+  refuseFailedLookups(newCandidate ? [newCandidate] : [], newStacks, newFailed);
   const { context: newImageContext, loaded: newLoaded } =
     stateProvider && newCandidate
       ? await buildAgentCoreImageContext(newCandidate, stateProvider, options)
       : { context: undefined, loaded: undefined };
   const newResolved = resolveAgentCoreTarget(resolvedTarget, newStacks, newImageContext);
+  refuseFailedLookups([newResolved.stack], newStacks, newFailed);
 
   const boot = await bootAgentCoreContainer({
     resolved: newResolved,

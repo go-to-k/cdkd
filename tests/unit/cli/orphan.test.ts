@@ -1844,6 +1844,7 @@ describe('cdkd orphan: a construct path under a CDK Stage (go-to-k/cdkd#3943)', 
       );
       expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
       expect(reported()).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(mockListStacks).not.toHaveBeenCalled();
       expect(mockGetState).not.toHaveBeenCalled();
       expect(mockSaveState).not.toHaveBeenCalled();
     });

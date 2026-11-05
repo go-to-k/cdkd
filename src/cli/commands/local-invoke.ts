@@ -596,7 +596,7 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
 
     const lambda = resolveLambdaTarget(target, stacks);
     // A failed context lookup blocks only the stack it invokes from (go-to-k/cdkd#5807).
-    refuseFailedLookups([lambda.stack], failedLookups);
+    refuseFailedLookups([lambda.stack], stacks, failedLookups);
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
     logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
 

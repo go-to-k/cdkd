@@ -567,7 +567,7 @@ async function localStartApiCommand(
       );
     }
     // A failed context lookup blocks only the stacks it serves (go-to-k/cdkd#5807).
-    refuseFailedLookups(targetStacks, failedLookups);
+    refuseFailedLookups(targetStacks, stacks, failedLookups);
 
     // Improvement A: when the user passed `--from-cfn-stack <explicit>`
     // AND that value already equals the routed stack's `stackName`, the

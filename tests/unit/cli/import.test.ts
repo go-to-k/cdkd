@@ -7661,6 +7661,9 @@ describe('cdkd import: stack selection (go-to-k/cdkd#3507)', () => {
       });
       expect(errorText()).toContain('Context lookup failed: ssm:k: AccessDenied');
       expectNoStateTouched();
+      // The refusal precedes the region probe on state and the target line.
+      expect(mockGetState).not.toHaveBeenCalled();
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('Target stack:');
     });
 
     it('proceeds for a stack that did not ask', async () => {

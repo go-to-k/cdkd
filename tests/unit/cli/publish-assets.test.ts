@@ -712,6 +712,7 @@ describe('cdkd publish-assets and a failed context lookup (go-to-k/cdkd#5807)', 
     expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
     const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
     expect(reported).toContain('Context lookup failed: ssm:k: AccessDenied');
+    expect(mockStsSend).not.toHaveBeenCalled();
     expect(mockAddAssetsToGraph).not.toHaveBeenCalled();
     expect(mockExecuteNode).not.toHaveBeenCalled();
   });

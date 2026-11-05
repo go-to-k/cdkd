@@ -760,7 +760,7 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
     const { stacks: allStacks, failedLookups } = await synthesizer.synthesize(synthOptions);
     const targetStacks = selectStacks(allStacks, stacks, options);
     // A failed context lookup blocks only the stacks it refactors (go-to-k/cdkd#5807).
-    refuseFailedLookups(targetStacks, failedLookups);
+    refuseFailedLookups(targetStacks, allStacks, failedLookups);
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
 
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };

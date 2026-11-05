@@ -164,7 +164,7 @@ async function publishAssetsCommand(
     throw new Error(renderNoStackMatch(stackPatterns, allStacks));
   }
   // A failed context lookup blocks only the stacks whose assets it publishes (go-to-k/cdkd#5807).
-  refuseFailedLookups(targetStacks, result.failedLookups);
+  refuseFailedLookups(targetStacks, allStacks, result.failedLookups);
 
   // 3. Resolve account id once (asset-publish nodes need it for ECR / S3 paths).
   // go-to-k/cdkd#2100: the profile's region when none is named, not a

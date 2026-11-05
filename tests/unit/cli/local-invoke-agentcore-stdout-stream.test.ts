@@ -69,6 +69,20 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
   };
 });
 
+// Counts the state-provider construction (a pass-through), which the failed
+// lookup refusal must precede.
+const stateProviderCalls = vi.hoisted(() => ({ n: 0 }));
+vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/cli/commands/local-state-source.js')>();
+  return {
+    ...actual,
+    createLocalStateProvider: (...args: Parameters<typeof actual.createLocalStateProvider>) => {
+      stateProviderCalls.n += 1;
+      return actual.createLocalStateProvider(...args);
+    },
+  };
+});
+
 vi.mock('../../../src/cli/config-loader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/cli/config-loader.js')>();
   return { ...actual, resolveApp: (cliApp?: string) => mocks.resolveApp(cliApp) };
@@ -1296,11 +1310,14 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
 
   // go-to-k/cdkd#5807: a failed context lookup blocks only the stack the runtime is in.
   describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    const annotation = [{ level: 'error', path: '/OtherStack', message: 'AccessDenied' }];
+
     async function runWithLookup(
-      messages: Array<{ level: string; path: string; message: string }> | undefined
+      stacks: StackInfo[]
     ): Promise<Streams & { exitCodes: unknown[] }> {
+      stateProviderCalls.n = 0;
       mocks.synthesize.mockImplementation(async () => ({
-        stacks: [{ ...makeAgentStack(), ...(messages && { messages }) }],
+        stacks,
         assemblyDir: 'cdk.out',
         failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
       }));
@@ -1316,23 +1333,50 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       }
     }
 
-    it('refuses a runtime in the stack that asked, before the container starts', async () => {
-      const r = await runWithLookup([{ level: 'error', path: '/AgentStack', message: 'AccessDenied' }]);
+    it('refuses a runtime in the stack that asked, before the state read and the container', async () => {
+      const r = await runWithLookup([{ ...makeAgentStack(), messages: annotation } as StackInfo]);
 
       expect(r.exitCodes).toEqual([1]);
       expect(r.stdout + r.stderr).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(r.stdout + r.stderr).not.toContain('Target:');
       expect(mocks.synthesize.mock.calls[0]![0]).toMatchObject({
         failedLookupsCheckedByCaller: true,
       });
+      expect(stateProviderCalls.n).toBe(0);
       expect(mocks.runDetached).not.toHaveBeenCalled();
     });
 
     it('invokes a runtime in a stack that did not ask', async () => {
-      const r = await runWithLookup(undefined);
+      const other = {
+        ...makeAgentStack(),
+        artifactId: 'OtherStack',
+        stackName: 'OtherStack',
+        displayName: 'OtherStack',
+        messages: annotation,
+      } as StackInfo;
+      const r = await runWithLookup([makeAgentStack(), other]);
 
       expect(r.exitCodes).toEqual([]);
       expect(r.stdout + r.stderr).not.toContain('Context lookup failed');
+      expect(stateProviderCalls.n).toBe(1);
       expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes failedLookupsCheckedByCaller on every synthesis, the --watch rebuild included', async () => {
+      mocks.runDetached
+        .mockResolvedValueOnce('cdkd-agentcore-lane2410')
+        .mockResolvedValueOnce(REBUILT_ID);
+      mocks.runAgentCoreWatchLoop.mockImplementation(
+        async (loop: { rebuild: () => Promise<unknown> }) => {
+          await loop.rebuild();
+        }
+      );
+      await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+
+      expect(mocks.synthesize.mock.calls.length).toBeGreaterThanOrEqual(2);
+      for (const call of mocks.synthesize.mock.calls) {
+        expect(call[0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+      }
     });
   });
 });

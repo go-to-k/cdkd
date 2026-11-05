@@ -365,7 +365,7 @@ async function diffCommand(
       throw new Error(renderNoStackMatch(stackPatterns, allStacks));
     }
     // A failed context lookup blocks the diff only for a stack it diffs (go-to-k/cdkd#5807).
-    refuseFailedLookups(targetStacks, result.failedLookups);
+    refuseFailedLookups(targetStacks, allStacks, result.failedLookups);
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the stacks being diffed, mutating each

@@ -12,6 +12,19 @@ vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ensureDockerAvailable: vi.fn(async () => undefined),
 }));
 
+// A pass-through that records the first step after the failed lookup refusal.
+const discoverRoutesCalls = vi.hoisted(() => ({ n: 0 }));
+vi.mock('../../../src/local/route-discovery.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/route-discovery.js')>();
+  return {
+    ...actual,
+    discoverRoutes: (...args: Parameters<typeof actual.discoverRoutes>) => {
+      discoverRoutesCalls.n += 1;
+      return actual.discoverRoutes(...args);
+    },
+  };
+});
+
 const { createLocalStartApiCommand } = await import('../../../src/cli/commands/local-start-api.js');
 const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
 const { getLogger } = await import('../../../src/utils/logger.js');
@@ -70,6 +83,7 @@ describe('cdkd local start-api and a failed context lookup (go-to-k/cdkd#5807)',
   });
 
   async function runWith(args: string[]): Promise<{ error: string; options: unknown }> {
+    discoverRoutesCalls.n = 0;
     const errorLines: string[] = [];
     vi.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
     vi.spyOn(getLogger(), 'info').mockImplementation(() => undefined);
@@ -100,11 +114,13 @@ describe('cdkd local start-api and a failed context lookup (go-to-k/cdkd#5807)',
 
     expect(error).toContain('Context lookup failed: ssm:k: AccessDenied');
     expect(options).toMatchObject({ failedLookupsCheckedByCaller: true });
+    expect(discoverRoutesCalls.n).toBe(0);
   });
 
   it('goes past the check for a stack that did not ask', async () => {
     const { error } = await runWith(['--stack', 'Other']);
 
     expect(error).not.toContain('Context lookup failed');
+    expect(discoverRoutesCalls.n).toBe(1);
   });
 });

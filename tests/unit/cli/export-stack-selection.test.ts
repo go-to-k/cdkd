@@ -276,6 +276,7 @@ describe('cdkd export: stack selection (go-to-k/cdkd#3507)', () => {
     expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
     expect(errorText()).toContain('Context lookup failed: ssm:k: AccessDenied');
     expect(mockGetState).not.toHaveBeenCalled();
+    expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('Migrating cdkd stack');
   });
 
   it('exports a stack that did not ask for the failed lookup', async () => {

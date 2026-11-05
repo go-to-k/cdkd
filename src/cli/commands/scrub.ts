@@ -1357,7 +1357,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     );
   }
   // A failed context lookup blocks only the stacks it scrubs (go-to-k/cdkd#5807).
-  refuseFailedLookups(targetStacks, result.failedLookups);
+  refuseFailedLookups(targetStacks, allStacks, result.failedLookups);
 
   // MACROS FIRST, then ordering (issue #2133 review). `expandMacrosForStacks`
   // rewrites each target's template IN PLACE, and `orderScrubTargets` decides

@@ -486,6 +486,10 @@ async function destroyCommand(
           // destroyable even when the CFn expansion round-trip would
           // fail (issue #1151).
           deferMacroExpansion: true,
+          // A failed context lookup changes no stack name and no ordering
+          // edge this reads, and `cdk destroy` does not refuse one either
+          // (go-to-k/cdkd#5807).
+          failedLookupsCheckedByCaller: true,
         });
         appStacks = result.stacks.map((s) => ({
           stackName: s.stackName,

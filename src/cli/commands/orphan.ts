@@ -338,7 +338,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     const stackInfo = resolved.stack;
     const orphanLogicalIds = resolved.logicalIds;
     // A failed context lookup blocks only the stack it orphans from (go-to-k/cdkd#5807).
-    refuseFailedLookups([stackInfo], result.failedLookups);
+    refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
 
     const { region: targetRegion, recordRegion } = await pickStackRegion(
       stateBackend,

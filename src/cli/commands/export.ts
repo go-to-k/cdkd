@@ -2867,7 +2867,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         );
       }
       // A failed context lookup blocks only the stack it exports (go-to-k/cdkd#5807).
-      refuseFailedLookups([stackInfo], result.failedLookups);
+      refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
       template = stackInfo.template as unknown as Record<string, unknown>;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;

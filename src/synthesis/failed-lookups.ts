@@ -34,16 +34,23 @@ export function failedLookupsError(failed: readonly FailedLookup[]): SynthesisEr
  * (go-to-k/cdkd#5807). A stack is matched by the error annotation the app adds
  * for the failure, the one place a failed lookup is attributed to a stack:
  * `manifest.missing` entries name none.
+ *
+ * A failure NO stack of the app carries (a construct that reads the context
+ * itself instead of through `ContextProvider.getValue`, or an empty error text)
+ * cannot be placed, so it is refused whatever the selection: running on its
+ * dummy value is the outcome this exists to prevent.
  */
 export function refuseFailedLookups(
-  stacks: readonly StackInfo[],
+  selectedStacks: readonly StackInfo[],
+  allStacks: readonly StackInfo[],
   failedLookups: readonly FailedLookup[] | undefined
 ): void {
   if (!failedLookups || failedLookups.length === 0) return;
-  const hits = failedLookups.filter((f) =>
+  const askedBy = (stacks: readonly StackInfo[], f: FailedLookup): boolean =>
+    f.error !== '' &&
     stacks.some((stack) =>
       stack.messages?.some((m) => m.level === 'error' && m.message.includes(f.error))
-    )
-  );
+    );
+  const hits = failedLookups.filter((f) => askedBy(selectedStacks, f) || !askedBy(allStacks, f));
   if (hits.length > 0) throw failedLookupsError(hits);
 }
