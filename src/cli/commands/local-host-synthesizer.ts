@@ -58,7 +58,9 @@ export function cdkdHostSynthesizer(
         stacks,
         // cdk-local picks the served stacks after synthesis and calls this
         // before it reads state or starts anything: a failed context lookup
-        // blocks only the stacks that asked for it (go-to-k/cdkd#5812).
+        // blocks only the stacks that asked for it (go-to-k/cdkd#5812). The
+        // contract passes names, so two stacks sharing a name in different
+        // regions are both checked: a refusal too many, never a miss.
         checkSelectedStacks: (stackNames) =>
           refuseFailedLookups(
             stacks.filter((stack) => stackNames.includes(stack.stackName)),
