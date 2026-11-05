@@ -10544,7 +10544,12 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
       localRegion,
       completed !== baseline
     );
-    return converted === baseline ? { baseline, aws } : { baseline: converted, aws };
+    // go-to-k/cdkd#5789: the read-back puts each replica's class and deletion
+    // protection on its entry (#5397); a baseline that never declared them
+    // (a template bag, when the record has no `observedProperties`) takes
+    // them at their AWS default only.
+    const defaulted = completeReplicaDefaults(converted, aws);
+    return defaulted === baseline ? { baseline, aws } : { baseline: defaulted, aws };
   }
 
   /**
@@ -11397,6 +11402,69 @@ function readReplicaDisassociationProtection(
   replica: Record<string, unknown> | undefined
 ): boolean | undefined {
   return coerceCfnBoolean(replica?.[DISASSOCIATION_PROTECTION_KEY]);
+}
+
+/**
+ * The `Replicas[]` members `readCurrentState` writes on every entry, and the
+ * exact value each reads as when the replica was left at AWS's default
+ * (go-to-k/cdkd#5789). Any other value -- a key, an enabled flag, a tag -- is
+ * not a default and is never completed.
+ */
+const REPLICA_DRIFT_DEFAULTS: ReadonlyArray<readonly [string, (value: unknown) => boolean]> = [
+  ['TableClass', (v) => v === 'STANDARD'],
+  ['DeletionProtectionEnabled', (v) => v === false],
+  ['ContributorInsightsSpecification', (v) => isExactly(v, { Enabled: false })],
+  ['PointInTimeRecoverySpecification', (v) => isExactly(v, { PointInTimeRecoveryEnabled: false })],
+  ['Tags', (v) => Array.isArray(v) && v.length === 0],
+];
+
+/** A plain object holding exactly `expected`'s keys and values. */
+function isExactly(value: unknown, expected: Record<string, unknown>): boolean {
+  const record = asRecord(value);
+  if (record === undefined) return false;
+  const keys = Object.keys(record).filter((k) => record[k] !== undefined);
+  return (
+    keys.length === Object.keys(expected).length &&
+    Object.entries(expected).every(([k, v]) => record[k] === v)
+  );
+}
+
+/**
+ * go-to-k/cdkd#5789: `readCurrentState` writes every `REPLICA_DRIFT_DEFAULTS`
+ * member into EVERY `Replicas[]` entry (`TableClass` and the protection flag
+ * on each entry since #5397), and arrays compare whole. A baseline entry that
+ * omits one -- a template bag the comparison falls back to when the record has
+ * no `observedProperties` (a rollback's reverse-replacement re-create, a
+ * pre-v3 record) -- takes the AWS side's value ONLY when that value is the
+ * member's AWS default, matched by `Region`. A non-default live value still
+ * differs, and `drift --revert` sends nothing the live table lacks. Identity
+ * when nothing is completed.
+ */
+function completeReplicaDefaults(
+  baseline: Record<string, unknown>,
+  aws: Record<string, unknown>
+): Record<string, unknown> {
+  const key = 'Replicas';
+  const baselineReplicas = baseline[key];
+  const awsReplicas = aws[key];
+  if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) return baseline;
+  let changed = false;
+  const next = baselineReplicas.map((entry) => {
+    const record = asRecord(entry);
+    const region = record?.['Region'];
+    if (record === undefined || typeof region !== 'string') return entry;
+    const live = awsReplicas.map(asRecord).find((r) => r?.['Region'] === region);
+    if (live === undefined) return entry;
+    let out: Record<string, unknown> | undefined;
+    for (const [member, isDefault] of REPLICA_DRIFT_DEFAULTS) {
+      if (record[member] !== undefined || !isDefault(live[member])) continue;
+      out = { ...(out ?? record), [member]: structuredClone(live[member]) };
+    }
+    if (out === undefined) return entry;
+    changed = true;
+    return out;
+  });
+  return changed ? { ...baseline, [key]: next } : baseline;
 }
 
 /**
