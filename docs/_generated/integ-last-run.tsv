@@ -172,7 +172,7 @@ generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+des
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getstackoutput-crossregion	2026-11-04T20:19:14Z	PASS	342	verify.sh	re-run after Phase 6a v12+ lower-bound fix: 6a and all later phases pass; rc ok, orph clean us-east-1+us-west-2
 globaltable-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	165	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, destroy 0 errors, 0 orphans
-globaltable-template-baseline-drift	2026-11-05T02:41:03Z	PASS	72	verify.sh	#5789/#5790 template-bag baseline drift; red-then-green proof (pre-fix binary FAIL Phase 3 [Replicas], fix binary all 5 phases PASS); orph clean
+globaltable-template-baseline-drift	2026-11-05T03:19:21Z	PASS	69	verify.sh	#5789/#5790 template-bag baseline drift; red-then-green proof (pre-fix binary FAIL Phase 3 [Replicas], fix binary all 5 phases PASS); orph clean (re-run after review fix f3c52eda2)
 glue-securityconfig-replace	2026-10-30T00:18:42Z	PASS	60	verify.sh	rc ok, orph clean
 glue-update-hardening	2026-10-26T08:45:57Z	PASS	281	verify.sh	rc ok, orph clean
 guardduty-detector-update	2026-11-04T19:05:12Z	PASS	205	verify.sh	all 6 phases, no pre-existing detector, no detector left, orph clean (own temp state bucket)
