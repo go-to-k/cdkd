@@ -105,9 +105,10 @@
 #
 # go-to-k/cdkd#5639 (DBCluster AssociatedRoles): the SecurityCluster attaches
 # an import role for `s3Import` in phase 1 (asserted live; before #5639 the
-# provisionedBy=sdk guard fails) and swaps it for an export role for
-# `s3Export` in phase 2, which detaches one and attaches the other (asserted
-# live). Both roles are stack resources in every phase.
+# provisionedBy=sdk guard fails), swaps it for an export role for `s3Export`
+# in phase 1b, which detaches one and attaches the other, and drops the
+# property in phase 2, which detaches the export role (each asserted live).
+# Both roles are stack resources in every phase.
 #
 # go-to-k/cdkd#5639 (DBCluster scalars): phase 1 declares
 # AutoMinorVersionUpgrade false, Performance Insights on with 7-day retention,
@@ -779,10 +780,12 @@ fi
 echo "    OK: phase 1: SecurityCluster carries AutoMinorVersionUpgrade false, Performance Insights on (7 days), NetworkType IPV4, the Data API on, Database Insights standard and Extended Support disabled (#5639)"
 
 # go-to-k/cdkd#5639: the associations, as `<role name>:<feature>` sorted (RDS
-# answers in its own order). cdkd returns once each attach reads back.
+# answers in its own order). cdkd returns once each change reads back. An
+# unread cluster or a missing list prints a marker, never the empty string a
+# detached list prints.
 # usage: sec_roles <DescribeDBClusters JSON>
 sec_roles() {
-  echo "${1}" | jq -r '[.AssociatedRoles[]? | ((.RoleArn | split("/") | last) + ":" + (.FeatureName // ""))] | sort | join(" ")'
+  echo "${1}" | jq -r 'if type != "object" then "<no cluster read>" elif .AssociatedRoles == null then "<no AssociatedRoles field>" else ([.AssociatedRoles[] | ((.RoleArn | split("/") | last) + ":" + (.FeatureName // ""))] | sort | join(" ")) end'
 }
 # usage: state_role_name <logical id fragment> -> the IAM role's name from state
 state_role_name() {
@@ -944,6 +947,18 @@ if [ "${ENGINE_5639}" != "7200 on standard" ]; then
   exit 1
 fi
 echo "    OK: phase 1b: EngineCluster BacktrackWindow changed to 7200 s in place (#5639)"
+
+# go-to-k/cdkd#5639: phase 1b swapped the import role (s3Import) for the export
+# role (s3Export). cdkd returns once the detach and the attach read back, so
+# one read decides: a cdkd sending neither call keeps the import role.
+ROLES_1B_JSON=$(aws rds describe-db-clusters --db-cluster-identifier "${DB_CLUSTER_ID}" \
+  --region "${REGION}" --query 'DBClusters[0]' --output json)
+ROLES_1B=$(sec_roles "${ROLES_1B_JSON}")
+if [ "${ROLES_1B}" != "${EXPORT_ROLE_NAME}:s3Export" ]; then
+  echo "FAIL: #5639: phase 1b: SecurityCluster AssociatedRoles is '${ROLES_1B}', want '${EXPORT_ROLE_NAME}:s3Export' (the update must detach the dropped import role and attach the export role)" >&2
+  exit 1
+fi
+echo "    OK: phase 1b: SecurityCluster detached the import role and attached the export role for s3Export (#5639)"
 
 # --- Phase 1c: a cc-api record returns to the SDK provider (issue #4087) --
 echo "==> Phase 1c: seed provisionedBy=cc-api, then redeploy with changed Tags (CDKD_TEST_TG_TAGS=v2)"
@@ -1316,15 +1331,15 @@ if [ "${AFTER_LOGS}" != "iam-db-auth-error pending=null" ]; then
 fi
 echo "    OK: phase 2: SecurityCluster exports iam-db-auth-error only; postgresql was disabled (#5639)"
 
-# go-to-k/cdkd#5639: phase 2 swapped the import role (s3Import) for the export
-# role (s3Export). cdkd returns once the detach and the attach read back, so
-# the same read decides: a cdkd sending neither call keeps the import role.
+# go-to-k/cdkd#5639: phase 2 dropped AssociatedRoles; phase 1b asserted the
+# export role live. cdkd returns once the detach reads back, so the same read
+# decides: a cdkd sending nothing on a removal keeps the export role.
 AFTER_ROLES=$(sec_roles "${AFTER_LOGS_JSON}")
-if [ "${AFTER_ROLES}" != "${EXPORT_ROLE_NAME}:s3Export" ]; then
-  echo "FAIL: #5639: phase 2: SecurityCluster AssociatedRoles is '${AFTER_ROLES}', want '${EXPORT_ROLE_NAME}:s3Export' (the update must detach the dropped import role and attach the export role)" >&2
+if [ "${AFTER_ROLES}" != "" ]; then
+  echo "FAIL: #5639: phase 2: SecurityCluster AssociatedRoles is '${AFTER_ROLES}', want none (a removed AssociatedRoles must detach the recorded export role)" >&2
   exit 1
 fi
-echo "    OK: phase 2: SecurityCluster detached the import role and attached the export role for s3Export (#5639)"
+echo "    OK: phase 2: the removed AssociatedRoles detached the export role (#5639)"
 
 # go-to-k/cdkd#5639: phase 2 flipped AutoMinorVersionUpgrade, raised the
 # Performance Insights retention to 465 days with DatabaseInsightsMode

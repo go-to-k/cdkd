@@ -1683,7 +1683,11 @@ Checklist when writing or reviewing an `update()`:
   `PubliclyAccessible: true` that then failed and rolled back left it true too
   (read after UPDATE_ROLLBACK_COMPLETE and about four minutes later), so a
   rollback sends no reset either. Not measured:
-  `ServerlessScalingConfiguration` and `NetworkType`.
+  `ServerlessScalingConfiguration` and `NetworkType`. An update attaches only
+  the roles the template added, so a declared role detached outside cdkd is
+  not attached again; that follows the RDS handlers' `updateAssociatedRoles`,
+  which the Neptune DBCluster shares through cdkd's role plan, and is not
+  measured on Neptune.
   Real CloudFormation measurement, go-to-k/cdkd#5638 (us-east-1, CloudTrail's
   request parameters of each handler call): a Neptune DBCluster with
   `SourceDBClusterIdentifier` calls `RestoreDBClusterToPointInTime`, winning

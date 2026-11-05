@@ -506,8 +506,10 @@ assert_instance_field() {
 assert_instance_field '.StorageType' 'gp3' 'StorageType' 'phase 1'
 
 # go-to-k/cdkd#5640: the associations, as `<role name>:<feature>` sorted (RDS
-# answers in its own order); cdkd returns once each change reads back.
-ROLES_JQ='[.AssociatedRoles[]? | ((.RoleArn | split("/") | last) + ":" + (.FeatureName // ""))] | sort | join(" ")'
+# answers in its own order); cdkd returns once each change reads back. An
+# unread instance or a missing list prints a marker, never the empty string a
+# detached list prints.
+ROLES_JQ='if type != "object" then "<no instance read>" elif .AssociatedRoles == null then "<no AssociatedRoles field>" else ([.AssociatedRoles[] | ((.RoleArn | split("/") | last) + ":" + (.FeatureName // ""))] | sort | join(" ")) end'
 # usage: state_role_name <logical id prefix> -> the IAM role's name from state
 state_role_name() {
   echo "${STATE}" | jq -r --arg re "^$1" '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role" and (.key | test($re))) | .value.physicalId] | first // ""'
