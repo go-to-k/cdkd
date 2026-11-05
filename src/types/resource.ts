@@ -907,7 +907,7 @@ export interface UpdateContext extends SecretMaskingContext {
    * may also name the items it REMOVED (`AssociatedRoles`,
    * `db-associated-roles.ts`).
    */
-  markAttempted?:((path: string, items: readonly string[]) => void) | undefined;
+  markAttempted?: ((path: string, items: readonly string[]) => void) | undefined;
 
   /**
    * go-to-k/cdkd#5498: the record's attempted names per member path (see
