@@ -53,7 +53,8 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/synthesis/context-store.js', () => ({
+vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/synthesis/context-store.js')>()),
   ContextStore: vi.fn().mockImplementation(() => ({
     load: mockContextStoreLoad,
     save: mockContextStoreSave,
@@ -188,10 +189,11 @@ beforeEach(() => {
 });
 
 describe('Synthesizer renders manifest-derived values display-safe (#3479)', () => {
-  describe('the no-progress refusal names every missing context key', () => {
+  describe('the no-progress debug line names every still-missing context key', () => {
     /**
-     * Two iterations with the SAME missing keys is what trips the refusal, so
-     * the manifest answers the same `missing` list both times.
+     * Two iterations with the SAME missing keys is what ends the loop
+     * (go-to-k/cdkd#5805: no longer a refusal), so the manifest answers the
+     * same `missing` list both times.
      */
     function primeMissing(keys: readonly string[]): void {
       mockReadManifest.mockReturnValue({
@@ -199,28 +201,30 @@ describe('Synthesizer renders manifest-derived values display-safe (#3479)', () 
       });
     }
 
+    async function noProgressLine(): Promise<string> {
+      await new Synthesizer().synthesize({ app: 'node app.js', region: 'us-east-1' });
+      const lines = loggerSpies.debug.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.startsWith('Context resolution made no further progress'));
+      expect(lines).toHaveLength(1);
+      return lines[0]!;
+    }
+
     it('sanitizes each key SEPARATELY, so a mid-list terminator cannot break the line', async () => {
       primeMissing([HOSTILE.contextKeyA.raw, HOSTILE.contextKeyB.raw]);
-      const message = await messageOf(() =>
-        new Synthesizer().synthesize({ app: 'node app.js', region: 'us-east-1' })
+      const line = await noProgressLine();
+      expect(line).toBe(
+        'Context resolution made no further progress; using this synthesis. ' +
+          `Still missing: ${HOSTILE.contextKeyA.clean}, ${HOSTILE.contextKeyB.clean}`
       );
-      expect(message).toBe(
-        'Context resolution made no progress. ' +
-          `Missing context keys: ${HOSTILE.contextKeyA.clean}, ${HOSTILE.contextKeyB.clean}. ` +
-          'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
-      );
-      expect(hasForgingCharacter(message)).toBe(false);
+      expect(hasForgingCharacter(line)).toBe(false);
     });
 
     it('leaves an ordinary key byte-identical', async () => {
       primeMissing(['ssm:account=1:parameterName=/db/host:region=us-east-1']);
-      const message = await messageOf(() =>
-        new Synthesizer().synthesize({ app: 'node app.js', region: 'us-east-1' })
-      );
-      expect(message).toBe(
-        'Context resolution made no progress. ' +
-          'Missing context keys: ssm:account=1:parameterName=/db/host:region=us-east-1. ' +
-          'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
+      expect(await noProgressLine()).toBe(
+        'Context resolution made no further progress; using this synthesis. ' +
+          'Still missing: ssm:account=1:parameterName=/db/host:region=us-east-1'
       );
     });
   });

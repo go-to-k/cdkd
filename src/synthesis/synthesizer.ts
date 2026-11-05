@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { AppExecutor } from './app-executor.js';
 import { AssemblyReader, type StackInfo } from './assembly-reader.js';
-import { ContextStore } from './context-store.js';
+import { ContextStore, isTransientContextValue } from './context-store.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { expandMacros, type ExpandMacrosOptions } from './macro-expander.js';
@@ -13,8 +13,9 @@ import { getLogger } from '../utils/logger.js';
 import { SynthesisError } from '../utils/error-handler.js';
 import { awsClientDefaults } from '../utils/aws-client-defaults.js';
 import { ambientClientDefaults } from '../utils/ambient-client-defaults.js';
-import { displaySafe, displayStackName } from '../utils/display-safe.js';
+import { displaySafe, displayStackName, safeMsg } from '../utils/display-safe.js';
 import { plainOrDescribed } from '../utils/pasteable-command.js';
+import { defineOwnKey, nullPrototypeRecord } from '../utils/own-keys.js';
 
 /**
  * Every manifest- or template-derived value this module RENDERS goes through
@@ -125,6 +126,17 @@ export interface SynthesisOptions {
    * export, publish-assets, local).
    */
   deferMacroExpansion?: boolean;
+
+  /**
+   * The caller runs `processStackMessages` over the stacks it uses, so a
+   * failed context lookup reaches it as the error annotation the app adds
+   * (`synth` / `deploy`, where `--ignore-errors` then decides). Unset, a lookup
+   * that failed and is still missing when resolution stops making progress is
+   * a `SynthesisError` here instead: no other command reads annotations, and
+   * it would otherwise run on the lookup's dummy value
+   * (go-to-k/cdkd#5805).
+   */
+  annotationsCheckedByCaller?: boolean;
 }
 
 /**
@@ -241,6 +253,12 @@ export class Synthesizer {
 
     // Context provider loop
     let previousMissingKeys: Set<string> | undefined;
+    // Lookup results `ContextStore.save` does not persist (a failed lookup's
+    // `$providerError`). They still reach the app's NEXT run, as in the AWS
+    // CDK CLI, where `ContextProvider.getValue` turns one into an error
+    // annotation on the stack that asked; dropped, the app would only report
+    // the key missing again and the failure would vanish (go-to-k/cdkd#5805).
+    const transientContext = nullPrototypeRecord();
     const contextProviderRegistry = new ContextProviderRegistry({
       ...(region && { region }),
       ...(options.profile && { profile: options.profile }),
@@ -251,12 +269,14 @@ export class Synthesizer {
       // Load cdk.context.json (re-read each iteration — providers may have updated it)
       const cdkContextJson = this.contextStore.load();
 
-      // Merge context: defaults < ~/.cdk.json < cdk.json < cdk.context.json < CLI -c (CLI wins)
+      // Merge context: defaults < ~/.cdk.json < cdk.json < cdk.context.json
+      // < this run's unsaved lookup results < CLI -c (CLI wins)
       const mergedContext: Record<string, unknown> = {
         ...cdkDefaults,
         ...userContext,
         ...cdkJsonContext,
         ...cdkContextJson,
+        ...transientContext,
         ...cliContext,
       };
 
@@ -273,52 +293,68 @@ export class Synthesizer {
       // Read manifest
       const manifest = this.assemblyReader.readManifest(outputDir);
 
-      // Check for missing context
-      if (!manifest.missing || manifest.missing.length === 0) {
-        // Synthesis complete — but BEFORE returning, expand any
-        // CloudFormation macros / Fn::Transform via a transient CFn
-        // changeset round-trip so the analyzer / provisioner pipeline
-        // never sees an unexpanded Transform node. See
-        // docs/design/463-cfn-macros.md. Selection-aware callers set
-        // `deferMacroExpansion` and expand after stack selection
-        // instead (issue #1150).
-        const { stacks } = this.assemblyReader.readAssembly(outputDir, manifest);
-        if (!options.deferMacroExpansion) {
-          await this.expandMacrosForStacks(stacks, options, {
-            region: explicitRegion,
-            ...(accountId && { accountId }),
-          });
+      // Missing context: look it up and run the app again, until the app
+      // reports nothing missing OR the same keys as on the previous round. The
+      // second case is not an error (go-to-k/cdkd#5805): it is what an app that
+      // reports a key on EVERY synth looks like (a construct that calls
+      // `reportMissingContextKey` unconditionally so its lookup is never
+      // cached), and a lookup that failed has already been handed back as
+      // `$providerError`, which `ContextProvider.getValue` turns into an error
+      // annotation the app's own stack carries. The AWS CDK CLI does the same:
+      // it logs "Not making progress ... Giving up." at debug level and uses
+      // that assembly.
+      if (manifest.missing && manifest.missing.length > 0) {
+        const missingKeys = new Set(manifest.missing.map((m) => m.key));
+        if (!previousMissingKeys || !setsEqual(missingKeys, previousMissingKeys)) {
+          previousMissingKeys = missingKeys;
+          this.logger.debug(`Missing context: ${manifest.missing.length} value(s)`);
+          this.logger.info('Resolving missing context...');
+          const resolved = await contextProviderRegistry.resolve(manifest.missing);
+          this.contextStore.save(resolved);
+          for (const [key, value] of Object.entries(resolved)) {
+            if (isTransientContextValue(value)) defineOwnKey(transientContext, key, value);
+            else delete transientContext[key];
+          }
+          this.logger.debug('Re-synthesizing with resolved context...');
+          continue;
         }
-        this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
-
-        return { manifest, assemblyDir: outputDir, stacks };
-      }
-
-      // Missing context detected
-      const missingKeys = new Set(manifest.missing.map((m) => m.key));
-      this.logger.debug(`Missing context: ${manifest.missing.length} value(s)`);
-
-      // Check for no progress (same missing keys as last iteration)
-      if (previousMissingKeys && setsEqual(missingKeys, previousMissingKeys)) {
-        throw new SynthesisError(
-          'Context resolution made no progress. ' +
-            // Each key SEPARATELY, so the `, ` separator stays byte-exact — see
-            // the module header for why that, and not safety, is the reason.
-            `Missing context keys: ${[...missingKeys].map((k) => displaySafe(k)).join(', ')}. ` +
-            'Ensure cdk.context.json is correctly configured or required AWS permissions are granted.'
+        const failed = [...missingKeys].filter((k) => providerErrorOf(transientContext[k]));
+        if (failed.length > 0 && !options.annotationsCheckedByCaller) {
+          throw new SynthesisError(
+            'Context lookup failed: ' +
+              failed
+                .map(
+                  (k) => `${displaySafe(k)}: ${displaySafe(providerErrorOf(transientContext[k])!)}`
+                )
+                .join('; ') +
+              '. Grant the permissions the lookup needs or refresh the AWS credentials, ' +
+              'or supply the value in cdk.context.json or with -c <key>=<value>.'
+          );
+        }
+        // Each key SEPARATELY, so the `, ` separator stays byte-exact — see the
+        // module header for why that, and not safety, is the reason.
+        this.logger.debug(
+          safeMsg`Context resolution made no further progress; using this synthesis. Still missing: ${[...missingKeys].map((k) => displaySafe(k)).join(', ')}`
         );
       }
-      previousMissingKeys = missingKeys;
 
-      // Resolve missing context via providers
-      this.logger.info('Resolving missing context...');
-      const resolved = await contextProviderRegistry.resolve(manifest.missing);
+      // Synthesis complete — but BEFORE returning, expand any
+      // CloudFormation macros / Fn::Transform via a transient CFn
+      // changeset round-trip so the analyzer / provisioner pipeline
+      // never sees an unexpanded Transform node. See
+      // docs/design/463-cfn-macros.md. Selection-aware callers set
+      // `deferMacroExpansion` and expand after stack selection
+      // instead (issue #1150).
+      const { stacks } = this.assemblyReader.readAssembly(outputDir, manifest);
+      if (!options.deferMacroExpansion) {
+        await this.expandMacrosForStacks(stacks, options, {
+          region: explicitRegion,
+          ...(accountId && { accountId }),
+        });
+      }
+      this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
 
-      // Save resolved values to cdk.context.json
-      this.contextStore.save(resolved);
-
-      // Loop: re-execute CDK app with updated context
-      this.logger.debug('Re-synthesizing with resolved context...');
+      return { manifest, assemblyDir: outputDir, stacks };
     }
   }
 
@@ -518,4 +554,11 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(item)) return false;
   }
   return true;
+}
+
+/** A failed lookup's `$providerError` text, as `ContextProviderRegistry` stores it. */
+function providerErrorOf(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const error = (value as Record<string, unknown>)['$providerError'];
+  return typeof error === 'string' ? error : undefined;
 }

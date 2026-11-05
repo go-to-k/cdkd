@@ -31,7 +31,8 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/synthesis/context-store.js', () => ({
+vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/synthesis/context-store.js')>()),
   ContextStore: vi.fn().mockImplementation(() => ({
     load: mockContextStoreLoad,
     save: mockContextStoreSave,

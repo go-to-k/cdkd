@@ -6,6 +6,7 @@ const mockReadManifest = vi.fn();
 const mockAssemblyStacks = vi.fn();
 const mockContextStoreLoad = vi.fn();
 const mockContextStoreSave = vi.fn();
+const mockResolve = vi.fn();
 
 // Mock AppExecutor
 vi.mock('../../../src/synthesis/app-executor.js', () => ({
@@ -26,7 +27,8 @@ vi.mock('../../../src/synthesis/assembly-reader.js', () => ({
 }));
 
 // Mock ContextStore
-vi.mock('../../../src/synthesis/context-store.js', () => ({
+vi.mock('../../../src/synthesis/context-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/synthesis/context-store.js')>()),
   ContextStore: vi.fn().mockImplementation(() => ({
     load: mockContextStoreLoad,
     save: mockContextStoreSave,
@@ -36,7 +38,7 @@ vi.mock('../../../src/synthesis/context-store.js', () => ({
 // Mock ContextProviderRegistry
 vi.mock('../../../src/synthesis/context-providers/index.js', () => ({
   ContextProviderRegistry: vi.fn().mockImplementation(() => ({
-    resolve: vi.fn().mockResolvedValue({}),
+    resolve: mockResolve,
   })),
 }));
 
@@ -97,11 +99,137 @@ describe('Synthesizer', () => {
     mockAssemblyStacks.mockReturnValue([]);
     mockExecute.mockResolvedValue(undefined);
     mockContextStoreLoad.mockReturnValue({});
+    mockResolve.mockResolvedValue({});
     mockLoadCdkJson.mockReturnValue(null);
     mockLoadUserCdkJson.mockReturnValue(null);
     // Default: --app is treated as a shell command (no existing directory)
     mockExistsSync.mockReturnValue(false);
     mockStatSync.mockReturnValue({ isDirectory: () => false });
+  });
+
+  describe('missing-context loop (go-to-k/cdkd#5805)', () => {
+    const ssmKey = 'ssm:account=123456789012:parameterName=/ecr/repo/latest-image-tag:region=us-east-1';
+    const manifestMissing = (keys: readonly string[]) => ({
+      version: '38.0.0',
+      artifacts: {},
+      missing: keys.map((key) => ({ key, provider: 'ssm', props: {} })),
+    });
+
+    it('uses the assembly when the app reports the SAME missing key again (AWS CDK CLI parity)', async () => {
+      // A construct that calls `reportMissingContextKey` unconditionally: the
+      // key is in `missing` after every synth, resolved or not.
+      mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+      mockAssemblyStacks.mockReturnValue([{ stackName: 'App' }]);
+
+      const result = await synthesizer.synthesize({ app: 'node app.ts' });
+
+      expect(result.stacks).toEqual([{ stackName: 'App' }]);
+      // One lookup round, then the re-synth that reported the same key.
+      expect(mockExecute).toHaveBeenCalledTimes(2);
+      expect(mockContextStoreSave).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps resolving while the missing keys change', async () => {
+      mockReadManifest
+        .mockReturnValueOnce(manifestMissing(['a']))
+        .mockReturnValueOnce(manifestMissing(['a', 'b']))
+        .mockReturnValueOnce(manifestMissing(['a', 'b']));
+
+      await synthesizer.synthesize({ app: 'node app.ts' });
+
+      expect(mockExecute).toHaveBeenCalledTimes(3);
+      expect(mockContextStoreSave).toHaveBeenCalledTimes(2);
+    });
+
+    it("hands a failed lookup's unsaved $providerError to the app's next run", async () => {
+      // The app turns `$providerError` into an error annotation; dropping it
+      // (it is never written to cdk.context.json) would leave the app only
+      // reporting the key missing again, and the failure would vanish.
+      const failed = { $providerError: 'SSM parameter not found: /p', $dontSaveContext: true };
+      mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+
+      await synthesizer.synthesize({
+        app: 'node app.ts',
+        context: { other: 'cli' },
+        annotationsCheckedByCaller: true,
+      });
+
+      expect(mockExecute).toHaveBeenCalledTimes(2);
+      expect(mockExecute.mock.calls[0]![0].context[ssmKey]).toBeUndefined();
+      expect(mockExecute.mock.calls[1]![0].context[ssmKey]).toEqual(failed);
+      expect(mockExecute.mock.calls[1]![0].context['other']).toBe('cli');
+    });
+
+    it('refuses a failed lookup that stays missing for a caller that does not read annotations', async () => {
+      // diff / import / local-* never read error annotations, so the dummy
+      // value the app falls back to would otherwise be used silently.
+      const failed = { $providerError: 'AccessDenied: ec2:DescribeVpcs', $dontSaveContext: true };
+      mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+
+      await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toThrow(
+        `Context lookup failed: ${ssmKey}: AccessDenied: ec2:DescribeVpcs`
+      );
+    });
+
+    it('leaves a failed lookup to the annotations when the caller checks them (synth / deploy)', async () => {
+      const failed = { $providerError: 'AccessDenied', $dontSaveContext: true };
+      mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+      mockAssemblyStacks.mockReturnValue([{ stackName: 'App' }]);
+
+      const result = await synthesizer.synthesize({
+        app: 'node app.ts',
+        annotationsCheckedByCaller: true,
+      });
+
+      expect(result.stacks).toEqual([{ stackName: 'App' }]);
+    });
+
+    it('lets CLI -c win over an unsaved lookup failure for the same key', async () => {
+      const failed = { $providerError: 'AccessDenied', $dontSaveContext: true };
+      mockReadManifest
+        .mockReturnValueOnce(manifestMissing([ssmKey]))
+        .mockReturnValueOnce({ version: '38.0.0', artifacts: {} });
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+
+      await synthesizer.synthesize({ app: 'node app.ts', context: { [ssmKey]: 'from-cli' } });
+
+      expect(mockExecute.mock.calls[1]![0].context[ssmKey]).toBe('from-cli');
+    });
+
+    it('lets a later successful lookup replace an earlier unsaved failure', async () => {
+      const failed = { $providerError: 'throttled', $dontSaveContext: true };
+      mockReadManifest
+        .mockReturnValueOnce(manifestMissing([ssmKey]))
+        .mockReturnValueOnce(manifestMissing([ssmKey, 'b']))
+        .mockReturnValueOnce({ version: '38.0.0', artifacts: {} });
+      mockResolve
+        .mockResolvedValueOnce({ [ssmKey]: failed })
+        .mockResolvedValueOnce({ [ssmKey]: 'v1', b: 'x' });
+      // What `ContextStore.save` would have written by the third run.
+      mockContextStoreLoad
+        .mockReturnValueOnce({})
+        .mockReturnValueOnce({})
+        .mockReturnValueOnce({ [ssmKey]: 'v1', b: 'x' });
+
+      await synthesizer.synthesize({ app: 'node app.ts' });
+
+      expect(mockExecute).toHaveBeenCalledTimes(3);
+      expect(mockExecute.mock.calls[2]![0].context[ssmKey]).toBe('v1');
+    });
+
+    it('re-runs the app after a lookup round that cleared every key', async () => {
+      mockReadManifest
+        .mockReturnValueOnce(manifestMissing([ssmKey]))
+        .mockReturnValueOnce({ version: '38.0.0', artifacts: {} });
+
+      await synthesizer.synthesize({ app: 'node app.ts' });
+
+      expect(mockExecute).toHaveBeenCalledTimes(2);
+      expect(mockContextStoreSave).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('context merge order', () => {

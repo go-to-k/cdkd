@@ -417,6 +417,23 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
     expectNothingStarted();
   });
 
+  it('tells the synthesizer it checks annotations itself (go-to-k/cdkd#5805)', async () => {
+    // A failed context lookup reaches deploy as the app's error annotation,
+    // which `--ignore-errors` may waive; without the flag the synthesizer
+    // would refuse it first.
+    synthStacks.value = [makeStack('Root')];
+    const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
+    const synthesize = vi.fn(async (_options: unknown) => ({ stacks: synthStacks.value }));
+    vi.mocked(Synthesizer).mockImplementationOnce(
+      () => ({ synthesize, expandMacrosForStacks: expandMacrosSpy }) as never
+    );
+
+    await runDeploy(['--yes', '--dry-run']);
+
+    expect(synthesize).toHaveBeenCalledTimes(1);
+    expect(synthesize.mock.calls[0]![0]).toMatchObject({ annotationsCheckedByCaller: true });
+  });
+
   it('asks for the account id while synthesis runs, not after it (#5200)', async () => {
     synthStacks.value = [makeStack('Root')];
     const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
