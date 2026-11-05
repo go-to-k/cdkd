@@ -204,13 +204,16 @@ export class EmrInstanceFleetsStack extends cdk.Stack {
     taskFleet.node.addDependency(cluster);
 
     new cdk.CfnOutput(this, 'ClusterId', { value: cluster.ref });
-    // Ref / Fn::GetAtt Id of the standalone instance fleet — proves the
+    // Ref / Fn::GetAtt Id / Fn::GetAtt InstanceFleetId of the standalone instance fleet — proves the
     // provider's physicalId + attribute wiring.
     new cdk.CfnOutput(this, 'TaskFleetId', { value: taskFleet.ref });
-    // Both GetAtt spellings: the CFn schema renamed `Id` -> `InstanceFleetId`
-    // (aws-cdk-lib 2.275.0 dropped the `attrId` getter), and templates from
-    // older CDK still carry `Id` (go-to-k/cdkd#5814).
+    // Both GetAtt spellings, via `getAtt()` rather than the L1 getters (whose
+    // names follow the aws-cdk-lib version): the CFn schema renamed `Id` ->
+    // `InstanceFleetId` and aws-cdk-lib 2.275.0 dropped `attrId`, while
+    // templates from older CDK still carry `Id` (go-to-k/cdkd#5814).
     new cdk.CfnOutput(this, 'TaskFleetAttrId', { value: taskFleet.getAtt('Id').toString() });
-    new cdk.CfnOutput(this, 'TaskFleetAttrInstanceFleetId', { value: taskFleet.attrInstanceFleetId });
+    new cdk.CfnOutput(this, 'TaskFleetAttrInstanceFleetId', {
+      value: taskFleet.getAtt('InstanceFleetId').toString(),
+    });
   }
 }

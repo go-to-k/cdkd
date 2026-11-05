@@ -50,7 +50,8 @@ Every fleet carries a per-`InstanceTypeConfig` `Configurations` block with a
 ## Phases (verify.sh)
 
 1. **Deploy** the cluster + standalone `TASK` fleet. Asserts the cluster is
-   `WAITING`/`RUNNING`, the fleet's `Ref` / `Fn::GetAtt Id` outputs both equal
+   `WAITING`/`RUNNING`, the fleet's `Ref` / `Fn::GetAtt Id` / `Fn::GetAtt InstanceFleetId` outputs
+   (deployed with `--strict-getatt`) all equal
    the AWS fleet id (`if-XXXX`), state routes the fleet via the SDK provider
    (`provisionedBy=sdk`), the fleet's `ProvisionedOnDemandCapacity` is `1`, and
    all three fleets' `Configurations` markers reached AWS. (The fleets are read

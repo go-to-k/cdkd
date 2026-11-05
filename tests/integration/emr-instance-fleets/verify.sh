@@ -15,7 +15,8 @@
 # Phases:
 #   1. Deploy the fleet-based cluster (master + core inline fleets) + the
 #      standalone TASK fleet. Assert the cluster is WAITING/RUNNING, the TASK
-#      fleet's Ref/Fn::GetAtt Id outputs match the AWS fleet id, state routes the
+#      fleet's Ref / Fn::GetAtt Id / Fn::GetAtt InstanceFleetId outputs match the
+#      AWS fleet id (deployed with --strict-getatt), state routes the
 #      fleet via the SDK provider (provisionedBy=sdk), the TASK fleet's
 #      provisioned On-Demand capacity is 1, and — the issue #1383 assertion —
 #      that ALL THREE fleets' per-instance-type `Configurations` markers reached
@@ -349,8 +350,14 @@ fleet_ondemand_resize_timeout() { # $1 = fleets json, $2 = fleet id
 
 # --- Phase 1: deploy baseline ------------------------------------------
 echo "==> Phase 1: deploy fleet-based cluster + standalone TASK fleet (this takes ~10-20 min)"
+# `--strict-getatt` makes the two GetAtt-vs-Ref assertions below DISCRIMINATING:
+# this type's attribute value IS its physical id, so without the flag an
+# unrecorded `Id` / `InstanceFleetId` would resolve through the physical-id
+# fallback and still equal the Ref. Safe for this stack: the only other
+# GetAtts are `IAM::Role.Arn` (cached) and `EC2::SecurityGroup.GroupId`
+# (explicit in the ec2 provider's getAttribute).
 env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STACK}" \
-  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --yes
+  --state-bucket "${STATE_BUCKET}" --region "${REGION}" --strict-getatt --yes
 
 CID_P1="$(output_value ClusterId)"
 FID_P1="$(output_value TaskFleetId)"
