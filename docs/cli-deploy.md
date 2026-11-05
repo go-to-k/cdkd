@@ -80,6 +80,7 @@ These six flags are explained on this page.
 | `--skip-assets` | `false` | Skip asset publishing. |
 | `--no-rollback` | rollback on | Leave a failed deploy in place and skip the automatic rollback. See [Roll Back a Failed Deploy](rollback.md). |
 | `--require-approval <level>` | `never` | Ask before `any-change`, `broadening` or `destructive` changes. See [cdkd deploy: safety & compatibility flags](cli-deploy-safety.md). |
+| `-O`, `--outputs-file <path>` | none | Write every deployed stack's outputs to a JSON file. Also read from `outputsFile` in `cdk.json`. See [Write outputs to a file](stack-outputs.md#write-outputs-to-a-file). |
 
 ### Assets
 

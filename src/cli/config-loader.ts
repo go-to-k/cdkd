@@ -22,6 +22,8 @@ export interface CdkConfig {
   context?: Record<string, unknown>;
   /** `cdk deploy --require-approval`'s cdk.json key; validated by `resolveRequireApproval`. */
   requireApproval?: unknown;
+  /** `cdk deploy --outputs-file`'s cdk.json key; validated by `resolveOutputsFile`. */
+  outputsFile?: unknown;
 }
 
 /**

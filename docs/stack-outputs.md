@@ -52,6 +52,33 @@ cdkd state show MyStack          # outputs and resources, human-readable
 cdkd state show MyStack --json   # the whole record, for a script
 ```
 
+## Write outputs to a file
+
+`--outputs-file` (`-O`) writes every deployed stack's outputs to a JSON file,
+as `cdk deploy --outputs-file` does, so a script can read them without parsing
+the console:
+
+```bash
+cdkd deploy --all --outputs-file cdk-outputs.json
+```
+
+```json
+{
+  "MyStack": {
+    "BucketArn": "arn:aws:s3:::actual-bucket-name-xyz"
+  }
+}
+```
+
+| Behavior | Detail |
+| --- | --- |
+| Key | The stack's CloudFormation name. A stack without outputs gets no entry. Two stacks sharing a name in different regions share one key, and the one deployed last wins. |
+| Existing file | Replaced, not merged. Missing parent directories are created. |
+| A stack fails | The file is still written, with the stacks that did deploy. |
+| `--dry-run` | No file is written. |
+| `cdk.json` | `"outputsFile": "cdk-outputs.json"` sets the path; the flag wins. |
+| Masked values | Written as `***`, as printed; the AWS CDK CLI writes the real value. See [Secrets in outputs are masked](#secrets-in-outputs-are-masked). |
+
 ## Differences from CloudFormation
 
 | | CloudFormation | cdkd |

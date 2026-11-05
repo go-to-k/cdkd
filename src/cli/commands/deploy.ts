@@ -47,6 +47,13 @@ import {
   requireApprovalOption,
   resolveRequireApproval,
 } from './require-approval.js';
+import {
+  outputsFileOption,
+  resolveOutputsFile,
+  toOutputValueString,
+  writeStackOutputsFile,
+  type StackOutputsByStack,
+} from './outputs-file.js';
 import type { RequireApprovalLevel } from '../../deployment/deploy-engine/options.js';
 import { findDownstreamConsumers } from './recreate-downstream-consumers.js';
 import {
@@ -190,6 +197,7 @@ async function deployCommand(
     resourceWarnAfter?: ResourceTimeoutOption;
     resourceTimeout?: ResourceTimeoutOption;
     requireApproval?: RequireApprovalLevel;
+    outputsFile?: string;
   }
 ): Promise<void> {
   // go-to-k/cdkd#5200: inert unless CDKD_PHASE_TIMINGS=1. The first lap runs
@@ -243,6 +251,10 @@ async function deployCommand(
     requireApproval !== 'never' && !options.dryRun
       ? createApprovalPrompter({ yes: options.yes ?? false })
       : undefined;
+  // Likewise before synth, so an invalid cdk.json `outputsFile` fails fast,
+  // under a dry run too; a dry run only writes no file (go-to-k/cdkd#5819).
+  const resolvedOutputsFile = resolveOutputsFile(options.outputsFile);
+  const outputsFile = options.dryRun ? undefined : resolvedOutputsFile;
 
   // Issue #2065 - fold `--region` ONCE, here, so no raw spelling reaches an SDK
   // client, an ARN segment or a state key. This command is where the class was
@@ -986,6 +998,10 @@ async function deployCommand(
     // "Deploy left N resource(s) unaddressed" and nothing else actively reads as
     // "everything else was applied".
     let cancelledStacks = 0;
+    // `--outputs-file`: each deployed stack's Outputs, keyed by physical stack
+    // name like the AWS CDK CLI. Stacks finish concurrently, but each writes
+    // only its own key.
+    const stackOutputs: StackOutputsByStack = {};
 
     const runStack = async (stackInfo: (typeof targetStacks)[0]): Promise<void> => {
       // Wrap the entire per-stack deploy body in withSkipPrefix so every
@@ -1498,6 +1514,19 @@ async function deployCommand(
             logger.info(`  ${deployResult.stackName}.${key} = ${String(value)}`);
           }
         }
+        // A stack without outputs gets no key, as in the AWS CDK CLI.
+        if (
+          outputsFile !== undefined &&
+          deployResult.outputs &&
+          Object.keys(deployResult.outputs).length > 0
+        ) {
+          stackOutputs[stackInfo.stackName] = Object.fromEntries(
+            Object.entries(deployResult.outputs ?? {}).map(([key, value]) => [
+              key,
+              toOutputValueString(value),
+            ])
+          );
+        }
 
         if (options.dryRun) {
           logger.info(`\n${green('✓')} ${bold('Dry run completed')} - no actual changes made`);
@@ -1662,33 +1691,45 @@ async function deployCommand(
 
     runClock.lap('work graph build, recreate checks');
     // Execute work graph
-    await workGraph.execute(
-      {
-        'asset-build': options.imageBuildConcurrency,
-        'asset-publish': options.assetPublishConcurrency,
-        stack: options.stackConcurrency,
-      },
-      async (node) => {
-        if (node.type === 'asset-build' || node.type === 'asset-publish') {
-          await timePhase('run', node.type, () => assetPublisher.executeNode(node), node.id);
-        } else {
-          const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };
+    let workGraphCompleted = false;
+    try {
+      await workGraph.execute(
+        {
+          'asset-build': options.imageBuildConcurrency,
+          'asset-publish': options.assetPublishConcurrency,
+          stack: options.stackConcurrency,
+        },
+        async (node) => {
+          if (node.type === 'asset-build' || node.type === 'asset-publish') {
+            await timePhase('run', node.type, () => assetPublisher.executeNode(node), node.id);
+          } else {
+            const { stack: stackInfo } = node.data as { stack: (typeof targetStacks)[0] };
 
-          if (!bufferStackOutput) {
-            await runStack(stackInfo);
-            return;
-          }
+            if (!bufferStackOutput) {
+              await runStack(stackInfo);
+              return;
+            }
 
-          // Multi-stack run: buffer this stack's log lines and flush
-          // them as one atomic block when the deploy finishes.
-          const outcome = await runStackBuffered(() => runStack(stackInfo));
-          if (outcome.lines.length > 0) {
-            process.stdout.write(outcome.lines.join('\n') + '\n');
+            // Multi-stack run: buffer this stack's log lines and flush
+            // them as one atomic block when the deploy finishes.
+            const outcome = await runStackBuffered(() => runStack(stackInfo));
+            if (outcome.lines.length > 0) {
+              process.stdout.write(outcome.lines.join('\n') + '\n');
+            }
+            if (!outcome.ok) throw outcome.error;
           }
-          if (!outcome.ok) throw outcome.error;
         }
+      );
+      workGraphCompleted = true;
+    } finally {
+      // go-to-k/cdkd#5819: written on failure too, carrying the stacks that did
+      // deploy (the AWS CDK CLI's stated intent; its toolkit-lib writes in a
+      // `finally`). Before the unaddressed check below, so an exit-2 run still
+      // writes it.
+      if (outputsFile !== undefined) {
+        writeStackOutputsFile(outputsFile, stackOutputs, { deployFailed: !workGraphCompleted });
       }
-    );
+    }
 
     // Issue #1960: every stack deployed without a resource FAILING, but at
     // least one resource cdkd was responsible for went unaddressed. Exiting 0
@@ -1754,6 +1795,7 @@ export function createDeployCommand(): Command {
     ...deployOptions,
     skipFinalSnapshotOption,
     requireApprovalOption,
+    outputsFileOption,
     ...contextOptions,
     ...annotationMessageOptions,
   ].forEach((opt) => cmd.addOption(opt));

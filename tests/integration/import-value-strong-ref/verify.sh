@@ -76,6 +76,7 @@ cleanup() {
   ${CDKD} destroy ${CONSUMER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   ${CDKD} destroy ${PRODUCER} --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --force >/dev/null 2>&1 || true
   sweep_stack_lambda_log_groups "${PRODUCER}" "${AWS_REGION}"
+  [[ -n "${OUTPUTS_DIR:-}" ]] && rm -rf "${OUTPUTS_DIR}"
   exit ${rc}
 }
 trap cleanup EXIT
@@ -99,7 +100,28 @@ aws s3 ls "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" >/dev/null 2>&1 && {
 
 echo ""
 echo "==> Step 1: Deploy Producer + Consumer"
-${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+# Issue #5819: --outputs-file rides this two-stack deploy. The nested path
+# proves the parent directory is created.
+OUTPUTS_DIR=$(mktemp -d)
+OUTPUTS_FILE="${OUTPUTS_DIR}/nested/outputs.json"
+${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --outputs-file "${OUTPUTS_FILE}"
+
+echo ""
+echo "==> Step 1-outputs: Verify --outputs-file"
+python3 - "${OUTPUTS_FILE}" "${PRODUCER}" "${CONSUMER}" <<'PY'
+import json, sys
+path, producer, consumer = sys.argv[1:4]
+with open(path) as f:
+    data = json.load(f)
+# The consumer declares no outputs, so it gets no key (AWS CDK CLI parity).
+if sorted(data) != [producer]:
+    sys.exit(f"FAIL: outputs file keys {sorted(data)}, expected only {producer} ({consumer} has no outputs)")
+arn = data[producer].get("IntegBucketArnOutput", "")
+if not arn.startswith("arn:aws:s3:::"):
+    sys.exit(f"FAIL: {producer}.IntegBucketArnOutput is {arn!r}, expected a bucket ARN")
+print(f"    outputs file: {producer}.IntegBucketArnOutput = {arn}, no {consumer} key (✓)")
+PY
+rm -rf "${OUTPUTS_DIR}"
 
 echo ""
 echo "==> Step 1a: Verify consumer state.imports[] populated"
