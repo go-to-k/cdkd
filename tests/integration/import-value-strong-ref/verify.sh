@@ -99,7 +99,29 @@ aws s3 ls "s3://${STATE_BUCKET}/${CONSUMER_STATE_KEY}" >/dev/null 2>&1 && {
 
 echo ""
 echo "==> Step 1: Deploy Producer + Consumer"
-${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}"
+# Issue #5819: --outputs-file rides this two-stack deploy. The nested path
+# proves the parent directory is created.
+OUTPUTS_DIR=$(mktemp -d)
+OUTPUTS_FILE="${OUTPUTS_DIR}/nested/outputs.json"
+${CDKD} deploy --all --region "${AWS_REGION}" --state-bucket "${STATE_BUCKET}" --outputs-file "${OUTPUTS_FILE}"
+
+echo ""
+echo "==> Step 1-outputs: Verify --outputs-file"
+python3 - "${OUTPUTS_FILE}" "${PRODUCER}" "${CONSUMER}" <<'PY'
+import json, sys
+path, producer, consumer = sys.argv[1:4]
+with open(path) as f:
+    data = json.load(f)
+if sorted(data) != sorted([producer, consumer]):
+    sys.exit(f"FAIL: outputs file keys {sorted(data)}, expected {sorted([producer, consumer])}")
+arn = data[producer].get("IntegBucketArnOutput", "")
+if not arn.startswith("arn:aws:s3:::"):
+    sys.exit(f"FAIL: {producer}.IntegBucketArnOutput is {arn!r}, expected a bucket ARN")
+if data[consumer] != {}:
+    sys.exit(f"FAIL: {consumer} declares no outputs, got {data[consumer]!r}")
+print(f"    outputs file: {producer}.IntegBucketArnOutput = {arn}, {consumer} = {{}} (✓)")
+PY
+rm -rf "${OUTPUTS_DIR}"
 
 echo ""
 echo "==> Step 1a: Verify consumer state.imports[] populated"

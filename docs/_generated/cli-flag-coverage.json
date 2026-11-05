@@ -2642,6 +2642,7 @@
     "--only-show-errors",
     "--open-id-connect-provider-arn",
     "--open-zfs-configuration",
+    "--outputs-file",
     "--override-file",
     "--overwrite",
     "--owner-ids",
