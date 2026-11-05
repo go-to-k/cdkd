@@ -99,6 +99,21 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
     // Enhanced Monitoring role: RDS assumes monitoring.rds.amazonaws.com and
     // needs the AWS-managed AmazonRDSEnhancedMonitoringRole policy. Required
     // by the MonitoringRoleArn / MonitoringInterval security props below.
+    // go-to-k/cdkd#5640: the instance's AssociatedRoles. Phase 1 attaches the
+    // import role for `s3Import`; phase 2 swaps it for the export role for
+    // `s3Export` (one detach, one attach); phase 2c (CDKD_TEST_LOGS_REMOVED)
+    // DROPS the property, which detaches the export role, as CloudFormation's
+    // handler removes the previous roles the desired list lacks. Before #5640
+    // the declared list routed the instance to Cloud Control (the
+    // provisionedBy=sdk guard in verify.sh catches it). Both roles exist in
+    // every phase; an association needs only the trust policy.
+    const s3ImportRole = new iam.Role(this, 'S3ImportRole', {
+      assumedBy: new iam.ServicePrincipal('rds.amazonaws.com'),
+    });
+    const s3ExportRole = new iam.Role(this, 'S3ExportRole', {
+      assumedBy: new iam.ServicePrincipal('rds.amazonaws.com'),
+    });
+
     const monitoringRole = new iam.Role(this, 'MonitoringRole', {
       assumedBy: new iam.ServicePrincipal('monitoring.rds.amazonaws.com'),
       managedPolicies: [
@@ -250,6 +265,15 @@ export class RdsDbInstanceBackfillStack extends cdk.Stack {
       // `password` is the one type a managed master password allows.
       engineLifecycleSupport: 'open-source-rds-extended-support-disabled',
       masterUserAuthenticationType: 'password',
+      ...(logsRemoved
+        ? {}
+        : {
+            associatedRoles: [
+              isUpdate
+                ? { roleArn: s3ExportRole.roleArn, featureName: 's3Export' }
+                : { roleArn: s3ImportRole.roleArn, featureName: 's3Import' },
+            ],
+          }),
     });
   }
 }
