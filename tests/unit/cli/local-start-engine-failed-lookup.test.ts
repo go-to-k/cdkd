@@ -88,7 +88,8 @@ afterEach(() => {
 });
 
 /** Runs the command; returns what it printed (the engine logs its error there). */
-async function run(target: string): Promise<string> {
+// Both cases serve `Served/Img`; the argv stays a literal for the commander convention fence.
+async function run(): Promise<string> {
   const out: string[] = [];
   for (const m of ['log', 'info', 'warn', 'error', 'debug'] as const) {
     vi.spyOn(console, m).mockImplementation((...a: unknown[]) => {
@@ -97,7 +98,7 @@ async function run(target: string): Promise<string> {
   }
   const exits: number[] = [];
   vi.spyOn(process, 'exit').mockImplementation(((c?: number) => void exits.push(c ?? 0)) as never);
-  await createLocalStartMicrovmCommand().parseAsync([target, '--app', 'x'], { from: 'user' });
+  await createLocalStartMicrovmCommand().parseAsync(['Served/Img', '--app', 'x'], { from: 'user' });
   expect(exits).toEqual([1]);
   return out.join('\n').replace(ANSI, '');
 }
@@ -108,7 +109,7 @@ describe('cdk-local engine calls cdkd checkSelectedStacks (#5812)', () => {
       stacks: [stack('Other', []), stack('Served', asked)],
       failedLookups: [failure],
     };
-    const message = await run(`Served/${IMAGE}`);
+    const message = await run();
     expect(message).toContain('Context lookup failed: ssm:k: ParamFailed: denied');
     expect(message).not.toMatch(PAST_CHECK);
   });
@@ -118,7 +119,7 @@ describe('cdk-local engine calls cdkd checkSelectedStacks (#5812)', () => {
       stacks: [stack('Other', asked), stack('Served', [])],
       failedLookups: [failure],
     };
-    const message = await run(`Served/${IMAGE}`);
+    const message = await run();
     expect(message).not.toContain('Context lookup failed');
     expect(message).toMatch(PAST_CHECK);
   });
