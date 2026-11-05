@@ -49,6 +49,10 @@ import {
 } from '../../../src/provisioning/providers/db-associated-roles.js';
 import { isAuxiliaryFailure } from '../../../src/provisioning/auxiliary-failure.js';
 import { RESOURCE_NOT_FOUND } from '../../../src/types/resource.js';
+import {
+  settleUnsettledPrevious,
+  unsettledAfterUpdate,
+} from '../../../src/deployment/unsettled-convergence.js';
 
 type Input = Record<string, unknown>;
 type Command = { constructor: { name: string }; input: Input };
@@ -99,6 +103,8 @@ function arm(
     onRoleCall?: (name: string, input: Input) => void;
     lag?: number;
     empty?: (describes: number) => boolean;
+    /** When it answers a list, the live roles every Describe reports instead. */
+    rolesNow?: () => Input[] | undefined;
   } = {}
 ): { describes: () => number } {
   let roles: Input[] = (options.roles ?? []).map((role) => ({ ...role, Status: 'ACTIVE' }));
@@ -123,6 +129,7 @@ function arm(
           );
         }
         const status = options.status?.(describes) ?? 'available';
+        const listed = options.rolesNow?.() ?? roles;
         return Promise.resolve(
           name === 'DescribeDBClustersCommand'
             ? {
@@ -131,13 +138,13 @@ function arm(
                     DBClusterIdentifier: 'c-1',
                     Status: status,
                     DBClusterMembers: [],
-                    AssociatedRoles: roles,
+                    AssociatedRoles: listed,
                   },
                 ],
               }
             : {
                 DBInstances: [
-                  { DBInstanceIdentifier: 'i-1', DBInstanceStatus: status, AssociatedRoles: roles },
+                  { DBInstanceIdentifier: 'i-1', DBInstanceStatus: status, AssociatedRoles: listed },
                 ],
               }
         );
@@ -175,6 +182,22 @@ function arm(
     }
   });
   return { describes: () => describes };
+}
+
+/**
+ * Wraps the provider's pre-call `available` wait (cluster or instance) so
+ * `onReturn` runs when it resolves: the live list can then change "across the
+ * wait".
+ */
+function afterWait(provider: unknown, onReturn: () => void): void {
+  const target = provider as Record<string, (...args: unknown[]) => Promise<void>>;
+  for (const name of ['waitForClusterAvailable', 'waitForInstanceAvailable']) {
+    const original = target[name]!.bind(provider);
+    target[name] = async (...args: unknown[]) => {
+      await original(...args);
+      onReturn();
+    };
+  }
 }
 
 /** The Describe and sleep counts once `name` was first sent. */
@@ -234,6 +257,17 @@ describe('db-associated-roles (go-to-k/cdkd#5639 / #5640)', () => {
     expect(associatedRolesNamed([a, b, x], undefined, [b], [`${ROLE_X}\nLambda`])).toEqual([b, x]);
     // A redacted attempted name names nothing.
     expect(associatedRolesNamed([x], undefined, undefined, ['***'])).toEqual([]);
+  });
+
+  it('reports a declared role detached outside cdkd as held, but not one cdkd itself detached', () => {
+    const a = { RoleArn: ROLE_A, FeatureName: 's3Import' };
+    const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
+    // B: in the record and the template, gone from AWS, touched by no attempt.
+    expect(associatedRolesNamed([a], [a, b], [a, b], undefined)).toEqual([a, b]);
+    // An attempt of cdkd's detached it: the convergence must attach it again.
+    expect(associatedRolesNamed([a], [a, b], [a, b], [`${ROLE_B}\ns3Export`])).toEqual([a]);
+    // Only the template declares it: an add still owed, never reported held.
+    expect(associatedRolesNamed([a], [a], [a, b], undefined)).toEqual([a]);
   });
 
   it('folds a repeated entry and an empty FeatureName for drift, leaving a malformed list alone', () => {
@@ -383,6 +417,19 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       expect(result.effectiveProperties).not.toHaveProperty('AssociatedRoles');
     });
 
+    it('a rollback re-create with a well-formed list attaches it', async () => {
+      arm();
+      await provider.create(
+        'L',
+        CLUSTER,
+        { ...CLUSTER_BASE, AssociatedRoles: [{ RoleArn: ROLE_A }] },
+        { replayingState: true }
+      );
+      expect(sent('AddRoleToDBClusterCommand')).toEqual([
+        { DBClusterIdentifier: 'c-1', RoleArn: ROLE_A },
+      ]);
+    });
+
     it("marks a role call's failure auxiliary, so it is never this cluster name's collision", async () => {
       arm({
         onRoleCall: () => {
@@ -486,10 +533,16 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       [CLUSTER, 'c-1'],
       [INSTANCE, 'i-1'],
     ])('%s: a re-run after a partial swap plans against the live list read after the wait', async (type, id) => {
-      // An earlier run already detached A and attached B; the record still says A.
+      // An earlier run already detached A and attached B; the record still says
+      // A. Until the wait returns AWS still lists A (the earlier run's calls
+      // were settling), so only a plan read after the wait sees B.
       const a = { RoleArn: ROLE_A, FeatureName: 's3Import' };
       const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
-      arm({ roles: [b] });
+      let waited = false;
+      arm({ rolesNow: () => (waited ? [b] : [a]) });
+      afterWait(provider, () => {
+        waited = true;
+      });
       const base = type === CLUSTER ? CLUSTER_BASE : INSTANCE_BASE;
       const markUnsettled = vi.fn();
       await provider.update(
@@ -502,6 +555,78 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       );
       expect(names().filter((n) => n.includes('Role'))).toEqual([]);
       expect(markUnsettled).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [CLUSTER, 'c-1', 'AddRoleToDBClusterCommand'],
+      [INSTANCE, 'i-1', 'AddRoleToDBInstanceCommand'],
+    ])(
+      '%s: a role detached outside cdkd beside an added one is neither attached again nor kept unsettled',
+      async (type, id, add) => {
+        const a = { RoleArn: ROLE_A, FeatureName: 's3Import' };
+        const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
+        const c = { RoleArn: ROLE_X, FeatureName: 'Lambda' };
+        // The record and the template declare A and B; B was detached outside cdkd.
+        arm({ roles: [a] });
+        const base = type === CLUSTER ? CLUSTER_BASE : INSTANCE_BASE;
+        const recorded = { ...base, AssociatedRoles: [a, b] };
+        const desired = { ...base, AssociatedRoles: [a, b, c] };
+        const markUnsettled = vi.fn();
+        await provider.update('L', id, type, desired, recorded, { markUnsettled });
+        expect(sent(add).map((input) => input['RoleArn'])).toEqual([ROLE_X]);
+        expect(markUnsettled).toHaveBeenCalledWith('AssociatedRoles');
+        const identity = {
+          provider,
+          logicalId: 'L',
+          physicalId: id,
+          resourceType: type,
+          recordedProperties: recorded,
+        };
+        const names = new Set(['AssociatedRoles']);
+        // The post-update proof does not keep the name unsettled over B...
+        expect(await unsettledAfterUpdate({ ...identity, names, desired })).toEqual([]);
+        // ...and a convergence from it (were it kept) would not attach B again.
+        const previous = await settleUnsettledPrevious({
+          ...identity,
+          names,
+          previous: recorded,
+          desired,
+        });
+        mockSend.mockClear();
+        await provider.update('L', id, type, desired, previous);
+        expect(sent(add)).toEqual([]);
+      }
+    );
+
+    it('a partial failure marks the name, records only the calls that went through, and throws', async () => {
+      const a = { RoleArn: ROLE_A, FeatureName: 's3Import' };
+      const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
+      const c = { RoleArn: ROLE_X, FeatureName: 'Lambda' };
+      arm({
+        roles: [a],
+        onRoleCall: (name, input) => {
+          if (name === 'AddRoleToDBClusterCommand' && input['RoleArn'] === ROLE_X) {
+            throw Object.assign(new Error('Role quota exceeded'), {
+              name: 'DBClusterRoleQuotaExceededFault',
+            });
+          }
+        },
+      });
+      const markUnsettled = vi.fn();
+      const markAttempted = vi.fn();
+      await expect(
+        update(
+          { AssociatedRoles: [b, c] },
+          { AssociatedRoles: [a] },
+          { markUnsettled, markAttempted }
+        )
+      ).rejects.toThrow(/Role quota exceeded/);
+      expect(markUnsettled).toHaveBeenCalledWith('AssociatedRoles');
+      // The detach of A and the attach of B went through; C did not.
+      expect(markAttempted.mock.calls).toEqual([
+        ['AssociatedRoles', [`${ROLE_A}\ns3Import`]],
+        ['AssociatedRoles', [`${ROLE_B}\ns3Export`]],
+      ]);
     });
 
     it('does not re-attach a declared role detached outside cdkd, as CloudFormation does not', async () => {
@@ -667,6 +792,56 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
         INSTANCE_BASE
       );
       expect(sent('AddRoleToDBInstanceCommand')).toHaveLength(2);
+    });
+
+    it('a rollback re-create with a well-formed list attaches it', async () => {
+      arm();
+      await provider.create(
+        'L',
+        INSTANCE,
+        { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+        { replayingState: true }
+      );
+      expect(sent('AddRoleToDBInstanceCommand')).toEqual([
+        { DBInstanceIdentifier: 'i-1', RoleArn: ROLE_A, FeatureName: 's3Import' },
+      ]);
+    });
+
+    it('changes nothing when the Describe after the wait answers no instance', async () => {
+      let planning = false;
+      arm({ empty: () => planning });
+      afterWait(provider, () => {
+        planning = true;
+      });
+      await expect(
+        provider.update(
+          'L',
+          'i-1',
+          INSTANCE,
+          { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+          INSTANCE_BASE
+        )
+      ).rejects.toThrow(/Describe returned no instance while planning its role changes/);
+      expect(names().filter((n) => n.includes('Role'))).toEqual([]);
+    });
+
+    it('refuses to start the role calls when the resource deadline leaves no time', async () => {
+      arm();
+      const { withResourceDeadline } = await import('../../../src/deployment/resource-deadline.js');
+      await expect(
+        withResourceDeadline(
+          () =>
+            provider.update(
+              'L',
+              'i-1',
+              INSTANCE,
+              { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+              INSTANCE_BASE
+            ),
+          { warnAfterMs: 5_000, timeoutMs: 10_000, onTimeout: () => new Error('deadline') }
+        )
+      ).rejects.toThrow(/the resource timeout leaves no more time to change the roles of the instance/);
+      expect(names().filter((n) => n.includes('Role'))).toEqual([]);
     });
 
     it('a rollback re-create warns, attaches none and records none', async () => {

@@ -237,6 +237,65 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(isAuxiliaryFailure(failure)).toBe(true);
     });
 
+    it('does not attach again a declared role detached outside cdkd, as CloudFormation does not', async () => {
+      const wire = armCluster({ roles: [] });
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('a role detached outside cdkd beside an added one is neither attached again nor kept unsettled', async () => {
+      const ROLE_C = 'arn:aws:iam::123456789012:role/c';
+      const wire = armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
+      const recorded = { AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }] };
+      const desired = {
+        AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }, { RoleArn: ROLE_C }],
+      };
+      await update(desired, recorded);
+      expect(wire.sent('AddRoleToDBClusterCommand').map((input) => input['RoleArn'])).toEqual([
+        ROLE_C,
+      ]);
+      const identity = {
+        provider,
+        logicalId: 'L',
+        physicalId: 'cluster-1',
+        resourceType: CLUSTER,
+        recordedProperties: recorded,
+      };
+      const names = new Set(['AssociatedRoles']);
+      expect(await unsettledAfterUpdate({ ...identity, names, desired })).toEqual([]);
+      const previous = await settleUnsettledPrevious({
+        ...identity,
+        names,
+        previous: recorded,
+        desired,
+      });
+      mockSend.mockClear();
+      await update(desired, previous);
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('changes nothing when the Describe after the wait answers no cluster', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      let planning = false;
+      const target = provider as unknown as Record<string, (...args: unknown[]) => Promise<void>>;
+      const wait = target['waitForClusterAvailable']!.bind(provider);
+      target['waitForClusterAvailable'] = async (...args: unknown[]) => {
+        await wait(...args);
+        planning = true;
+      };
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        planning && command.constructor.name === 'DescribeDBClustersCommand'
+          ? Promise.resolve({ DBClusters: [] })
+          : answer(command)
+      );
+      await expect(
+        update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, { AssociatedRoles: [{ RoleArn: ROLE_B }] })
+      ).rejects.toThrow(/returned no cluster while planning its role changes/);
+      const order = mockSend.mock.calls.map(([call]) => (call as object).constructor.name);
+      expect(order.filter((name) => name.includes('Role'))).toEqual([]);
+    });
+
     it('on update, detaches what the template dropped before attaching what it added', async () => {
       const wire = armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
       await update(

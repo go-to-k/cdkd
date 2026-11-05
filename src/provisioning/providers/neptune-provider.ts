@@ -2513,6 +2513,9 @@ export class NeptuneProvider implements ResourceProvider {
           new RemoveRoleFromDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
         )
       );
+      // A detach is an attempt too: `associatedRolesNamed` must not read a
+      // declared role this run detached as one detached outside cdkd.
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
     }
     for (const role of toAdd) {
       await whenAvailable(() =>

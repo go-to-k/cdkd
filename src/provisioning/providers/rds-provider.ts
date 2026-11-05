@@ -4985,8 +4985,12 @@ export class RDSProvider implements ResourceProvider {
    * plan drops what AWS already holds or no longer holds
    * (`planAssociatedRoleChanges`); a Describe answering no resource changes
    * nothing. CloudFormation's handlers stabilize each call once the Describe
-   * lists the attached association, or no longer lists the detached one; so
-   * does the wait here, which `--no-wait` skips.
+   * lists the attached association, whatever its `Status` (`PENDING`
+   * included: `isAssociatedRoleAttached` /
+   * `isDBInstanceRoleAdditionStabilized` match the role and feature only), or
+   * no longer lists the detached one; so does the wait here, which
+   * `--no-wait` skips. A detach is marked attempted too, for
+   * `associatedRolesNamed`.
    */
   private async applyAssociatedRoles(
     target: 'cluster' | 'instance',
@@ -5065,6 +5069,9 @@ export class RDSProvider implements ResourceProvider {
               })
             )
       );
+      // A detach is an attempt too: `associatedRolesNamed` must not read a
+      // declared role this run detached as one detached outside cdkd.
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
     }
     for (const role of toAdd) {
       await whenAvailable(() =>

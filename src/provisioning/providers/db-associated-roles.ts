@@ -101,11 +101,18 @@ export function associatedRolesReadback(
 }
 
 /**
- * go-to-k/cdkd#5487 / #5498: the live associations an unsettled
- * `AssociatedRoles` converges from, kept to those the record, the template or
- * an earlier attempt names. The convergence puts this on the previous side,
- * so a role an out-of-band change added would otherwise read as dropped by
- * the template, and be detached.
+ * go-to-k/cdkd#5487 / #5498: the associations an unsettled `AssociatedRoles`
+ * is compared and converged from. The live ones are kept to those the record,
+ * the template or an earlier attempt names: the convergence puts this on the
+ * previous side, so a role an out-of-band change attached would otherwise read
+ * as dropped by the template, and be detached.
+ *
+ * A role the record AND the template both declare that AWS no longer holds,
+ * and that no attempt of cdkd's touched (attached or detached), was detached
+ * outside cdkd: it is reported as held. CloudFormation does not attach such a
+ * role again (`planAssociatedRoleChanges`), so neither does the convergence,
+ * and the post-update proof does not keep the name unsettled over it. A role
+ * cdkd's own failed update detached is an attempted name, so it is not.
  */
 export function associatedRolesNamed(
   live: unknown,
@@ -113,12 +120,23 @@ export function associatedRolesNamed(
   desired: unknown,
   attempted: Iterable<string> | undefined
 ): AssociatedRole[] {
+  const recordedRoles = associatedRoleList(recorded) ?? [];
+  const desiredKeys = new Set((associatedRoleList(desired) ?? []).map(associatedRoleKey));
+  const attemptedKeys = new Set([...(attempted ?? [])].filter(isUsableAttemptedName));
   const named = new Set([
-    ...(associatedRoleList(recorded) ?? []).map(associatedRoleKey),
-    ...(associatedRoleList(desired) ?? []).map(associatedRoleKey),
-    ...[...(attempted ?? [])].filter(isUsableAttemptedName),
+    ...recordedRoles.map(associatedRoleKey),
+    ...desiredKeys,
+    ...attemptedKeys,
   ]);
-  return (associatedRoleList(live) ?? []).filter((role) => named.has(associatedRoleKey(role)));
+  const held = (associatedRoleList(live) ?? []).filter((role) =>
+    named.has(associatedRoleKey(role))
+  );
+  const heldKeys = new Set(held.map(associatedRoleKey));
+  const detachedOutside = recordedRoles.filter((role) => {
+    const key = associatedRoleKey(role);
+    return desiredKeys.has(key) && !heldKeys.has(key) && !attemptedKeys.has(key);
+  });
+  return [...held, ...detachedOutside];
 }
 
 /**
