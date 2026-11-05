@@ -283,7 +283,7 @@ describe('deploy --outputs-file (#5819)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('writes every stack keyed by physical name, including a stack with no outputs', async () => {
+  it('writes every stack with outputs keyed by physical name, and omits a stack without outputs', async () => {
     engineOutputs.set('StackA', { Url: 'https://a.example', Count: 3 });
     // The display path and artifact id differ from the physical name, so a key
     // taken from either would fail the assertion.
@@ -295,7 +295,6 @@ describe('deploy --outputs-file (#5819)', () => {
     expect(error).toBeUndefined();
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({
       StackA: { Url: 'https://a.example', Count: '3' },
-      StackB: {},
     });
   });
 
@@ -317,6 +316,21 @@ describe('deploy --outputs-file (#5819)', () => {
     expect(existsSync(file)).toBe(false);
   });
 
+  it('refuses an invalid cdk.json outputsFile under --dry-run too', async () => {
+    const { loadCdkJson } = await import('../../../src/cli/config-loader.js');
+    // Not a `*Once` primer: `resolveRequireApproval` reads cdk.json first.
+    vi.mocked(loadCdkJson).mockReturnValue({ outputsFile: 42 });
+    let exitCode: number | undefined;
+    try {
+      ({ exitCode } = await runDeploy(['--all', '--yes', '--dry-run']));
+    } finally {
+      vi.mocked(loadCdkJson).mockReturnValue(null);
+    }
+    expect(exitCode).toBe(1);
+    const logged = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('"outputsFile" must be a non-empty string');
+  });
+
   it('writes nothing when no outputs file is configured', async () => {
     const { loadCdkJson } = await import('../../../src/cli/config-loader.js');
     expect(vi.mocked(loadCdkJson)()).toBeNull();
@@ -331,6 +345,6 @@ describe('deploy --outputs-file (#5819)', () => {
     engineResults.set('StackA', { deleteSkipped: 1, updatePartial: 0 });
     const { exitCode } = await runDeploy(['--all', '--yes', '-O', file]);
     expect(exitCode).toBe(2);
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ StackA: { Url: 'u' }, StackB: {} });
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ StackA: { Url: 'u' } });
   });
 });

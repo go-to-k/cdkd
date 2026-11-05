@@ -72,12 +72,12 @@ cdkd deploy --all --outputs-file cdk-outputs.json
 
 | Behavior | Detail |
 | --- | --- |
-| Key | The stack's CloudFormation name, one entry per deployed stack. A stack without outputs gets `{}`. |
+| Key | The stack's CloudFormation name. A stack without outputs gets no entry. Two stacks sharing a name in different regions share one key, and the one deployed last wins. |
 | Existing file | Replaced, not merged. Missing parent directories are created. |
 | A stack fails | The file is still written, with the stacks that did deploy. |
 | `--dry-run` | No file is written. |
 | `cdk.json` | `"outputsFile": "cdk-outputs.json"` sets the path; the flag wins. |
-| Masked values | Written as `***`, as printed. See [Secrets in outputs are masked](#secrets-in-outputs-are-masked). |
+| Masked values | Written as `***`, as printed; the AWS CDK CLI writes the real value. See [Secrets in outputs are masked](#secrets-in-outputs-are-masked). |
 
 ## Differences from CloudFormation
 
@@ -86,7 +86,6 @@ cdkd deploy --all --outputs-file cdk-outputs.json
 | Where outputs are stored | On the stack | In the stack's state file in S3 |
 | How to read them | `aws cloudformation describe-stacks` | `cdkd state show MyStack` |
 | Printed after a deploy | Yes | Yes |
-| `--outputs-file` | Writes the real value | Writes `***` for a masked value |
 | `Ref`, `Fn::GetAtt` and other intrinsics | Resolved to real values | Resolved to real values |
 | An output fed by a `NoEcho` parameter | Printed in the clear | Stored and printed as `***` |
 

@@ -251,9 +251,10 @@ async function deployCommand(
     requireApproval !== 'never' && !options.dryRun
       ? createApprovalPrompter({ yes: options.yes ?? false })
       : undefined;
-  // Likewise before synth, so an invalid cdk.json `outputsFile` fails fast. A
-  // dry run writes no file (go-to-k/cdkd#5819).
-  const outputsFile = options.dryRun ? undefined : resolveOutputsFile(options.outputsFile);
+  // Likewise before synth, so an invalid cdk.json `outputsFile` fails fast,
+  // under a dry run too; a dry run only writes no file (go-to-k/cdkd#5819).
+  const resolvedOutputsFile = resolveOutputsFile(options.outputsFile);
+  const outputsFile = options.dryRun ? undefined : resolvedOutputsFile;
 
   // Issue #2065 - fold `--region` ONCE, here, so no raw spelling reaches an SDK
   // client, an ARN segment or a state key. This command is where the class was
@@ -1513,7 +1514,12 @@ async function deployCommand(
             logger.info(`  ${deployResult.stackName}.${key} = ${String(value)}`);
           }
         }
-        if (outputsFile !== undefined) {
+        // A stack without outputs gets no key, as in the AWS CDK CLI.
+        if (
+          outputsFile !== undefined &&
+          deployResult.outputs &&
+          Object.keys(deployResult.outputs).length > 0
+        ) {
           stackOutputs[stackInfo.stackName] = Object.fromEntries(
             Object.entries(deployResult.outputs ?? {}).map(([key, value]) => [
               key,

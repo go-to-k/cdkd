@@ -10,7 +10,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { Option } from 'commander';
-import { displayIdent } from '../../utils/display-safe.js';
+import { displayIdent, displaySafe } from '../../utils/display-safe.js';
 import { CdkdError } from '../../utils/error-handler.js';
 import { getLogger } from '../../utils/logger.js';
 import { loadCdkJson } from '../config-loader.js';
@@ -69,7 +69,8 @@ export function writeStackOutputsFile(
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, `${JSON.stringify(outputs, null, 2)}\n`);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    // A Node fs message repeats the raw path, so it is sanitized like the path.
+    const detail = displaySafe(error instanceof Error ? error.message : String(error));
     const message = `Failed to write stack outputs to ${displayIdent(target)}: ${detail}`;
     if (options.deployFailed) {
       getLogger().warn(message);
