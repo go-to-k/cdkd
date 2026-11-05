@@ -96,7 +96,7 @@ function arm(
     onRoleCall?: (name: string, input: Input) => void;
   } = {}
 ): void {
-  let roles = (options.roles ?? []).map((role) => ({ ...role, Status: 'ACTIVE' }));
+  let roles: Input[] = (options.roles ?? []).map((role) => ({ ...role, Status: 'ACTIVE' }));
   let describes = 0;
   mockSend.mockImplementation((command: Command) => {
     const name = command.constructor.name;

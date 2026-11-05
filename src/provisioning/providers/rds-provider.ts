@@ -2557,7 +2557,7 @@ export class RDSProvider implements ResourceProvider {
       logicalId,
       physicalId,
       false
-    ) as AssociatedRole[];
+    );
     // go-to-k/cdkd#5639: refused before any call when malformed; a removal
     // disables what the previous template declared, as CloudFormation does.
     const logExportConfig = logExportsDelta(
@@ -3591,7 +3591,7 @@ export class RDSProvider implements ResourceProvider {
       logicalId,
       physicalId,
       false
-    ) as AssociatedRole[];
+    );
     // go-to-k/cdkd#5640: refused before any call when malformed; a removal
     // disables what the previous template declared, as CloudFormation does.
     const logExportConfig = logExportsDelta(
@@ -4934,6 +4934,20 @@ export class RDSProvider implements ResourceProvider {
    * re-create, which detaches nothing, warns and attaches none instead
    * (`'skipped'`).
    */
+  private desiredAssociatedRoles(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    replayingCreate: false
+  ): AssociatedRole[];
+  private desiredAssociatedRoles(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    replayingCreate: boolean
+  ): AssociatedRole[] | 'skipped';
   private desiredAssociatedRoles(
     properties: Record<string, unknown>,
     resourceType: string,
