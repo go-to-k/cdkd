@@ -427,6 +427,24 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       ]);
     });
 
+    it("marks a role call's failure auxiliary, so it is never this instance name's collision", async () => {
+      arm({
+        onRoleCall: () => {
+          throw Object.assign(new Error('Role already exists'), {
+            name: 'DBInstanceRoleAlreadyExistsFault',
+          });
+        },
+      });
+      const error = await provider
+        .create('L', INSTANCE, {
+          ...INSTANCE_BASE,
+          AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }],
+        })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(isAuxiliaryFailure(error)).toBe(true);
+    });
+
     it('refuses an entry without a FeatureName before CreateDBInstance', async () => {
       arm();
       await expect(
