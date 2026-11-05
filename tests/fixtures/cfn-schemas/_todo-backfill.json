@@ -51,7 +51,6 @@
     ],
     "AWS::RDS::DBCluster": [
       "AllocatedStorage",
-      "AssociatedRoles",
       "AvailabilityZones",
       "DBClusterInstanceClass",
       "DBInstanceParameterGroupName",
@@ -75,7 +74,6 @@
     ],
     "AWS::RDS::DBInstance": [
       "AdditionalStorageVolumes",
-      "AssociatedRoles",
       "AutomaticBackupReplicationKmsKeyId",
       "AutomaticBackupReplicationRegion",
       "AutomaticBackupReplicationRetentionPeriod",

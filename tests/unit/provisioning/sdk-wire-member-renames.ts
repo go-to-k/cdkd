@@ -629,6 +629,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       PerformanceInsightsEnabled: ['EnablePerformanceInsights'],
     },
     containers: {
+      // go-to-k/cdkd#5639: one AddRoleToDBCluster call per entry.
+      AssociatedRoles: ['AddRoleToDBClusterCommand'],
       MasterUserSecret: ['CreateDBClusterCommand', 'ModifyDBClusterCommand'],
     },
     transformed: {
@@ -647,6 +649,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       VPCSecurityGroups: ['VpcSecurityGroupIds'],
     },
     containers: {
+      // go-to-k/cdkd#5640: one AddRoleToDBInstance call per entry.
+      AssociatedRoles: ['AddRoleToDBInstanceCommand'],
       MasterUserSecret: ['CreateDBInstanceCommand', 'ModifyDBInstanceCommand'],
     },
   },

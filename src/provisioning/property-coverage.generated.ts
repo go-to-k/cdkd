@@ -2647,6 +2647,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
     'AWS::RDS::DBCluster',
     {
       handled: new Set<string>([
+        'AssociatedRoles',
         'AutoMinorVersionUpgrade',
         'BacktrackWindow',
         'BackupRetentionPeriod',
@@ -2689,7 +2690,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       ]),
       sdkUnwired: new Map<string, string>([
         ['AllocatedStorage', 'not yet implemented by cdkd'],
-        ['AssociatedRoles', 'not yet implemented by cdkd'],
         ['AvailabilityZones', 'not yet implemented by cdkd'],
         ['DBClusterInstanceClass', 'not yet implemented by cdkd'],
         ['DBInstanceParameterGroupName', 'not yet implemented by cdkd'],
@@ -2744,6 +2744,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'AllocatedStorage',
         'AllowMajorVersionUpgrade',
+        'AssociatedRoles',
         'AutoMinorVersionUpgrade',
         'AvailabilityZone',
         'BackupRetentionPeriod',
@@ -2798,7 +2799,6 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
           'ApplyImmediately',
           'cdkd always applies modifications immediately (rds:ModifyDBInstance.ApplyImmediately=true is hardcoded); users wanting maintenance-window deferral should run aws rds modify-db-instance directly',
         ],
-        ['AssociatedRoles', 'not yet implemented by cdkd'],
         ['AutomaticBackupReplicationKmsKeyId', 'not yet implemented by cdkd'],
         ['AutomaticBackupReplicationRegion', 'not yet implemented by cdkd'],
         ['AutomaticBackupReplicationRetentionPeriod', 'not yet implemented by cdkd'],
