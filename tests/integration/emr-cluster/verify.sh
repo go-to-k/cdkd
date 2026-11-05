@@ -12,6 +12,12 @@
 #      MasterPublicDNS output (Fn::GetAtt) matches AWS, that the baseline
 #      tags / StepConcurrencyLevel / AutoTerminationPolicy reached AWS, and
 #      that state routes it via the SDK provider (provisionedBy=sdk).
+#      The same deploy creates `SessionCluster` (issue #5824), carrying the
+#      create-only `SessionEnabled` and `MonitoringConfiguration`; assert via
+#      `describe-cluster` that both reached AWS with non-default values and
+#      that it routes via the SDK provider. It is identical in every later
+#      phase, so no later deploy touches it, and Phase 4 asserts the destroy
+#      terminated it.
 #   2. Re-deploy with CDKD_TEST_UPDATE=true: StepConcurrencyLevel 1 -> 5
 #      (ModifyCluster) + AutoTerminationPolicy IdleTimeout 3600 -> 7200
 #      (PutAutoTerminationPolicy) + tag value change AND tag removal (AddTags
@@ -114,6 +120,11 @@ STATE_KEY="cdkd/${STACK}/${REGION}/state.json"
 CLUSTER_NAME="cdkd-integ-emr"
 CLEANUP_TAG_KEY="cdkd-integ"
 CLEANUP_TAG_VALUE="emr-cluster"
+# Issue #5824: SessionCluster's configured log group (lib/emr-cluster-stack.ts
+# SESSION_LOG_GROUP_NAME). Not a stack resource, and the instance profile
+# cannot create it; read in Phase 1 and deleted by cleanup in case anything
+# did create it.
+SESSION_LOG_GROUP="/cdkd-integ/emr-cluster/session"
 # Phase 2b (issue #1160): the provider's removal warning. The needle names the
 # removed property; the sentinel is an independent substring of the same line,
 # so a reworded warning fails loudly instead of reading as "not fired".
@@ -382,6 +393,12 @@ cleanup() {
   done
   fi
 
+  # Issue #5824: SessionCluster's log group, once no cluster can write to it.
+  if [ "${cluster_wait_failed}" != "true" ]; then
+    aws logs delete-log-group --log-group-name "${SESSION_LOG_GROUP}" \
+      --region "${REGION}" >/dev/null 2>&1
+  fi
+
   # The lock is always safe to drop — it only blocks the next run.
   if [ -n "${STATE_BUCKET:-}" ]; then
     aws s3 rm "s3://${STATE_BUCKET}/cdkd/${STACK}/${REGION}/lock.json" >/dev/null 2>&1 || true
@@ -453,7 +470,8 @@ output_value() {
 # `st` is the StackState object; the expression's value is printed raw (an
 # `undefined` / `null` result prints as the empty string so callers can test
 # with `[ -z ... ]`). Keeps the Phase 3 assertions readable instead of
-# repeating a 200-char `node -e` per check.
+# repeating a 200-char `node -e` per check. Arguments after the expression
+# reach it as `args`, so a value from AWS is never spliced into the code.
 #
 # A missing / unreadable state payload is reported as an explicit diagnostic
 # rather than a bare JSON parse trace. Callers assign in the `X="$(state_query
@@ -479,16 +497,17 @@ process.stdin.on("data", (d) => (s += d)).on("end", () => {
     process.stderr.write("state_query: could not parse state show output as JSON\n");
     process.exit(1);
   }
-  const v = new Function("st", "return (" + process.argv[1] + ");")(st);
+  const v = new Function("st", "args", "return (" + process.argv[1] + ");")(st, process.argv.slice(2));
   process.stdout.write(v === undefined || v === null ? "" : String(v));
-});' "$1"
+});' "$@"
 }
 
 # Logical id of the EMR cluster row in state. Derived (not hardcoded to
 # `Cluster`) so a future CDK logical-id hashing change does not silently
-# break the phase.
+# break the phase. `SessionCluster` (issue #5824) is the other cluster in
+# every phase, so it is excluded by name.
 cluster_logical_id() {
-  state_query 'Object.keys(st.resources).find((k) => st.resources[k].resourceType === "AWS::EMR::Cluster") || ""'
+  state_query 'Object.keys(st.resources).find((k) => st.resources[k].resourceType === "AWS::EMR::Cluster" && !k.startsWith("SessionCluster")) || ""'
 }
 
 # --- Phase 1: deploy baseline ------------------------------------------
@@ -547,12 +566,54 @@ fi
 echo "    baseline tags reached AWS (env=test, dropme=yes)"
 
 # The cluster must route via the SDK provider (catch a routing flip).
-PROVISIONED_BY="$(state_query 'Object.values(st.resources).find((r) => r.resourceType === "AWS::EMR::Cluster")?.provisionedBy ?? "sdk"')"
+PROVISIONED_BY="$(state_query 'st.resources["'"$(cluster_logical_id)"'"]?.provisionedBy')"
 if [ "${PROVISIONED_BY}" != "sdk" ]; then
   echo "FAIL: expected EMR cluster provisionedBy=sdk, got '${PROVISIONED_BY}'" >&2
   exit 1
 fi
 echo "    cluster routed via SDK provider (provisionedBy=sdk)"
+
+# --- Assertions: issue #5824 SessionEnabled / MonitoringConfiguration ---
+# Both are create-only and were wired into RunJobFlow by #5824; before it
+# the SDK provider did not declare them, and AWS::EMR::Cluster has no Cloud
+# Control route, so the deploy was refused. Every expected value differs from
+# AWS's default, so a value the request did not carry reads back as the
+# default and fails here.
+SESSION_CID="$(output_value SessionClusterId)"
+if [ -z "${SESSION_CID}" ]; then
+  echo "FAIL [5824]: SessionClusterId output missing from cdkd state after Phase 1" >&2
+  exit 1
+fi
+SESSION_LID="$(state_query 'Object.keys(st.resources).find((k) => st.resources[k].physicalId === args[0]) || ""' "${SESSION_CID}")"
+SESSION_PROV="$(state_query 'st.resources["'"${SESSION_LID}"'"]?.provisionedBy')"
+if [ -z "${SESSION_LID}" ] || [ "${SESSION_PROV}" != "sdk" ]; then
+  echo "FAIL [5824]: SessionCluster ${SESSION_CID} expected provisionedBy=sdk, got row '${SESSION_LID}' provisionedBy '${SESSION_PROV}'" >&2
+  exit 1
+fi
+SESSION_JSON="$(aws emr describe-cluster --cluster-id "${SESSION_CID}" --region "${REGION}" \
+  --query 'Cluster.{state: Status.State, session: SessionEnabled, cw: MonitoringConfiguration.CloudWatchLogConfiguration}' \
+  --output json)" || { echo "FAIL [5824]: describe-cluster ${SESSION_CID} failed" >&2; exit 1; }
+echo "    SessionCluster ${SESSION_CID}: ${SESSION_JSON}"
+SESSION_CHECK="$(node -e '
+const c = JSON.parse(process.argv[1]);
+const cw = c.cw || {};
+const lt = cw.LogTypes || {};
+const bad = [];
+if (c.state !== "WAITING" && c.state !== "RUNNING") bad.push(`state ${c.state}`);
+if (c.session !== true) bad.push(`SessionEnabled ${c.session}`);
+if (cw.Enabled !== true) bad.push(`CloudWatchLogConfiguration.Enabled ${cw.Enabled}`);
+if (cw.LogGroupName !== process.argv[2]) bad.push(`LogGroupName ${cw.LogGroupName}`);
+if (cw.LogStreamNamePrefix !== "cdkd-integ") bad.push(`LogStreamNamePrefix ${cw.LogStreamNamePrefix}`);
+const types = Object.keys(lt).sort().join(",");
+const step = (lt.STEP_LOGS || []).slice().sort().join(",");
+if (types !== "STEP_LOGS" || step !== "STDERR") bad.push(`LogTypes ${JSON.stringify(lt)}`);
+process.stdout.write(bad.join("; "));
+' "${SESSION_JSON}" "${SESSION_LOG_GROUP}")" || { echo "FAIL [5824]: could not parse describe-cluster output" >&2; exit 1; }
+if [ -n "${SESSION_CHECK}" ]; then
+  echo "FAIL [5824]: SessionCluster's declared values did not reach AWS: ${SESSION_CHECK}" >&2
+  exit 1
+fi
+echo "    SessionEnabled=true and the CloudWatch log configuration reached AWS; provisionedBy=sdk"
 
 # --- Assertions: issue #1383 nested-key renames reached AWS ------------
 # CFn spells the property bag `ConfigurationProperties` and the step bag
@@ -1374,6 +1435,14 @@ fi
 assert_gone "security group ${EXTRA_SG} (ExtraMasterSg) still exists after destroy" \
   aws ec2 describe-security-groups --group-ids "${EXTRA_SG}" --region "${REGION}"
 echo "    replacement cluster ${CID_P3C} and replaced ${CID_P3C_OLD} terminated, ${EXTRA_SG} deleted"
+# Issue #5824: SessionCluster. Its idle timeout outlasts the run, so a
+# TERMINATED here is the destroy's.
+FINAL_STATE="$(strict_cluster_state "${SESSION_CID}")" || { echo "FAIL: could not read SessionCluster ${SESSION_CID} after destroy (DescribeCluster failed)" >&2; exit 1; }
+if [ "${FINAL_STATE}" != "TERMINATED" ] && [ "${FINAL_STATE}" != "TERMINATED_WITH_ERRORS" ]; then
+  echo "FAIL: SessionCluster ${SESSION_CID} not terminated after destroy (state '${FINAL_STATE}')" >&2
+  exit 1
+fi
+echo "    SessionCluster ${SESSION_CID} terminated"
 
 # Leak assertion — use the STRICT lookup so a throttled `emr list-clusters`
 # cannot masquerade as "no leftover clusters". Retry a few times before
@@ -1417,4 +1486,4 @@ if ! grep -qiE '404|Not Found' <<<"${HEAD_ERR}"; then
 fi
 echo "    cdkd state removed (confirmed via a 404, not an ambiguous error)"
 
-echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + Instances change replaces the cluster (#5418) + core resize / UnhealthyNodeReplacement in place (#5422) + destroy (TERMINATED) all passed"
+echo "[verify] PASS — AWS::EMR::Cluster SDK provider: deploy + in-place update (incl. tag removal) + StepConcurrencyLevel removal warning + import round-trip (orphan -> import -> observedProperties from live AWS) + fix-forward of a failed CREATE (#4606) + Instances change replaces the cluster (#5418) + core resize / UnhealthyNodeReplacement in place (#5422) + SessionEnabled / MonitoringConfiguration on RunJobFlow (#5824) + destroy (TERMINATED) all passed"

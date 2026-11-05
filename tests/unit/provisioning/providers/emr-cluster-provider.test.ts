@@ -183,6 +183,121 @@ describe('EMRClusterProvider create', () => {
     expect(result.attributes).toEqual({ Id: CLUSTER_ID, MasterPublicDNS: DNS });
   });
 
+  it('sends MonitoringConfiguration and SessionEnabled on RunJobFlow (go-to-k/cdkd#5824)', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: [clusterOf('WAITING')],
+    });
+    await newProvider().create('MyCluster', RESOURCE_TYPE, {
+      ...BASE_PROPS,
+      MonitoringConfiguration: {
+        CloudWatchLogConfiguration: {
+          // CloudFormation coerces a scalar; a template string reaches the wire as a boolean.
+          Enabled: 'true',
+          LogGroupName: '/aws/emr/c',
+          LogStreamNamePrefix: 'p',
+          EncryptionKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+          LogTypes: { STEP_LOGS: ['stdout', 'stderr'], SPARK_DRIVER: ['stderr'] },
+        },
+      },
+      SessionEnabled: 'false',
+    });
+    const input = callsOf(RunJobFlowCommand)[0]!.input;
+    expect(input['MonitoringConfiguration']).toEqual({
+      CloudWatchLogConfiguration: {
+        Enabled: true,
+        LogGroupName: '/aws/emr/c',
+        LogStreamNamePrefix: 'p',
+        EncryptionKeyArn: 'arn:aws:kms:us-east-1:123456789012:key/k',
+        LogTypes: { STEP_LOGS: ['stdout', 'stderr'], SPARK_DRIVER: ['stderr'] },
+      },
+    });
+    expect(input['SessionEnabled']).toBe(false);
+  });
+
+  it.each([
+    [
+      'under CloudWatchLogConfiguration',
+      { CloudWatchLogConfiguration: { Enabled: true, LogGroupNmae: '/typo' } },
+      'MonitoringConfiguration.CloudWatchLogConfiguration.LogGroupNmae',
+    ],
+    [
+      'directly under MonitoringConfiguration',
+      { CloudWatchLogConfiguration: { Enabled: true }, S3LoggingConfiguration: {} },
+      'MonitoringConfiguration.S3LoggingConfiguration',
+    ],
+  ])(
+    'refuses a MonitoringConfiguration key %s before any call (go-to-k/cdkd#5824)',
+    async (_where, monitoring, path) => {
+      routeSend({});
+      const err = await newProvider()
+        .create('MyCluster', RESOURCE_TYPE, { ...BASE_PROPS, MonitoringConfiguration: monitoring })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ProvisioningError);
+      expect((err as Error).message).toContain(
+        `${path} is not a CloudFormation property of AWS::EMR::Cluster`
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
+  it('drops an unknown MonitoringConfiguration key with a warning on a state replay (go-to-k/cdkd#5824)', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: [clusterOf('WAITING')],
+    });
+    await newProvider().create(
+      'MyCluster',
+      RESOURCE_TYPE,
+      {
+        ...BASE_PROPS,
+        MonitoringConfiguration: {
+          CloudWatchLogConfiguration: { Enabled: true, LogGroupNmae: '/typo' },
+        },
+      },
+      { replayingState: true }
+    );
+    expect(callsOf(RunJobFlowCommand)[0]!.input['MonitoringConfiguration']).toEqual({
+      CloudWatchLogConfiguration: { Enabled: true },
+    });
+    expect(
+      providerWarn().some(
+        (line) =>
+          line.includes('MonitoringConfiguration.CloudWatchLogConfiguration.LogGroupNmae') &&
+          line.includes("Dropped from the rollback's RunJobFlow")
+      )
+    ).toBe(true);
+  });
+
+  it.each([
+    ['True', true],
+    ['FALSE', false],
+  ] as const)(
+    'reads a SessionEnabled of %s case-insensitively, as CloudFormation does (go-to-k/cdkd#5824)',
+    async (spelled, expected) => {
+      routeSend({
+        RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+        DescribeClusterCommand: [clusterOf('WAITING')],
+      });
+      await newProvider().create('MyCluster', RESOURCE_TYPE, {
+        ...BASE_PROPS,
+        SessionEnabled: spelled,
+      });
+      expect(callsOf(RunJobFlowCommand)[0]!.input['SessionEnabled']).toBe(expected);
+    }
+  );
+
+  it('sends neither MonitoringConfiguration nor SessionEnabled when the template omits them (go-to-k/cdkd#5824)', async () => {
+    routeSend({
+      RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
+      DescribeClusterCommand: [clusterOf('WAITING')],
+    });
+    await newProvider().create('MyCluster', RESOURCE_TYPE, { ...BASE_PROPS });
+    const input = callsOf(RunJobFlowCommand)[0]!.input;
+    expect(input['MonitoringConfiguration']).toBeUndefined();
+    expect(input['SessionEnabled']).toBeUndefined();
+  });
+
   it('accepts RUNNING as a create-ready state', async () => {
     routeSend({
       RunJobFlowCommand: { JobFlowId: CLUSTER_ID },
@@ -1281,6 +1396,30 @@ describe('EMRClusterProvider update', () => {
     expect((err as Error).message).not.toContain('Instances.CoreInstanceGroup');
   });
 
+  it.each([
+    ['SessionEnabled', true, false],
+    [
+      'MonitoringConfiguration',
+      { CloudWatchLogConfiguration: { Enabled: true } },
+      { CloudWatchLogConfiguration: { Enabled: false } },
+    ],
+  ] as const)(
+    'refuses a %s change in place, calling nothing (create-only; go-to-k/cdkd#5824)',
+    async (key, prev, next) => {
+      routeSend({});
+      await expect(
+        newProvider().update(
+          'MyCluster',
+          CLUSTER_ID,
+          RESOURCE_TYPE,
+          { ...BASE_PROPS, [key]: next },
+          { ...BASE_PROPS, [key]: prev }
+        )
+      ).rejects.toThrow(ResourceUpdateNotSupportedError);
+      expect(mockSend).not.toHaveBeenCalled();
+    }
+  );
+
   it('refuses an immutable top-level property change with a --replace pointer', async () => {
     await expect(
       newProvider().update(
@@ -1708,6 +1847,52 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
     expect(callsOf(ListInstanceGroupsCommand)).toHaveLength(0);
   });
 
+  it('reads back SessionEnabled and the CloudWatch log configuration in the CFn shape (go-to-k/cdkd#5824)', async () => {
+    routeSend({
+      DescribeClusterCommand: clusterOf('WAITING', {
+        InstanceCollectionType: 'INSTANCE_GROUP',
+        SessionEnabled: false,
+        MonitoringConfiguration: {
+          CloudWatchLogConfiguration: {
+            Enabled: true,
+            LogGroupName: '/aws/emr/c',
+            LogTypes: { STEP_LOGS: ['stdout'] },
+          },
+          // An SDK-only member CloudFormation does not model: never emitted.
+          S3LoggingConfiguration: { LogTypeUploadPolicy: { SYSTEM_LOGS: 'ON_FAILURE' } },
+        },
+      }),
+      ListInstanceGroupsCommand: { InstanceGroups: [] },
+    });
+    const state = (await newProvider().readCurrentState(
+      CLUSTER_ID,
+      'MyCluster',
+      RESOURCE_TYPE
+    )) as Record<string, unknown>;
+    expect(state['SessionEnabled']).toBe(false);
+    expect(state['MonitoringConfiguration']).toEqual({
+      CloudWatchLogConfiguration: {
+        Enabled: true,
+        LogGroupName: '/aws/emr/c',
+        LogTypes: { STEP_LOGS: ['stdout'] },
+      },
+    });
+  });
+
+  it('emits neither key when DescribeCluster does not report them (go-to-k/cdkd#5824)', async () => {
+    routeSend({
+      DescribeClusterCommand: clusterOf('WAITING', { InstanceCollectionType: 'INSTANCE_GROUP' }),
+      ListInstanceGroupsCommand: { InstanceGroups: [] },
+    });
+    const state = (await newProvider().readCurrentState(
+      CLUSTER_ID,
+      'MyCluster',
+      RESOURCE_TYPE
+    )) as Record<string, unknown>;
+    expect('SessionEnabled' in state).toBe(false);
+    expect('MonitoringConfiguration' in state).toBe(false);
+  });
+
   it('keeps undefined for InvalidRequestException (EMR uses it for more than an unknown id)', async () => {
     routeSend({ DescribeClusterCommand: invalidRequest() });
     const state = await newProvider().readCurrentState(CLUSTER_ID, 'MyCluster', RESOURCE_TYPE);
@@ -1736,7 +1921,9 @@ describe('EMRClusterProvider readCurrentState (reverse-mapping)', () => {
       'Configurations',
       'KerberosAttributes',
       'ManagedScalingPolicy',
+      'MonitoringConfiguration',
       'PlacementGroupConfigs',
+      'SessionEnabled',
       'Steps',
     ]) {
       expect(paths).toContain(p);

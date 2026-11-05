@@ -28,6 +28,8 @@ import {
   type InstanceFleetType,
   type ManagedScalingPolicy,
   type AutoTerminationPolicy,
+  type CloudWatchLogConfiguration,
+  type MonitoringConfiguration,
   type Tag,
   type RunJobFlowCommandOutput,
 } from '@aws-sdk/client-emr';
@@ -101,7 +103,7 @@ import type {
 import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { commandHole } from '../../utils/pasteable-command.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { asIsMessage, safeMsg } from '../../utils/display-safe.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
 
 /**
@@ -188,8 +190,66 @@ const toNumber = (v: unknown): number | undefined => {
 
 const toBoolean = (v: unknown): boolean | undefined => {
   if (v === undefined) return undefined;
-  if (typeof v === 'string') return v === 'true';
+  // Case-insensitive, as `coerceCfnBoolean` reads a CFn boolean: a `"True"`
+  // must not silently become false (go-to-k/cdkd#5824).
+  if (typeof v === 'string') return v.toLowerCase() === 'true';
   return Boolean(v);
+};
+
+/**
+ * CFn `MonitoringConfiguration` -> the SDK shape (go-to-k/cdkd#5824). The CFn
+ * schema declares one member, `CloudWatchLogConfiguration`, whose five members
+ * (`Enabled`, `LogGroupName`, `LogStreamNamePrefix`, `EncryptionKeyArn`,
+ * `LogTypes` — a map of log type to a list of file names) carry the SDK's
+ * spelling and shape, so each is copied by name; the SDK v3 serializer DROPS a
+ * member it does not model. `Enabled` is coerced as CloudFormation coerces a
+ * scalar (`"true"`). A non-object container is passed through for AWS to
+ * reject, as the sibling blobs are.
+ *
+ * A key outside the schema's members, at either level, would be dropped by
+ * the copy (and by the serializer), while CloudFormation rejects the
+ * template: each is handed to `onUnknown` with its path, which refuses on a
+ * template create and warns on a state replay (`create()`).
+ */
+const MONITORING_CONFIGURATION_MEMBERS: ReadonlySet<string> = new Set([
+  'CloudWatchLogConfiguration',
+]);
+const CLOUDWATCH_LOG_CONFIGURATION_MEMBERS: ReadonlySet<string> = new Set([
+  'Enabled',
+  'LogGroupName',
+  'LogStreamNamePrefix',
+  'EncryptionKeyArn',
+  'LogTypes',
+]);
+
+const toSdkMonitoringConfiguration = (
+  value: unknown,
+  onUnknown: (path: string) => void
+): MonitoringConfiguration | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (!isPlainObject(value)) return value as MonitoringConfiguration;
+  for (const key of Object.keys(value)) {
+    if (!MONITORING_CONFIGURATION_MEMBERS.has(key)) onUnknown(`MonitoringConfiguration.${key}`);
+  }
+  const cw = value['CloudWatchLogConfiguration'];
+  if (cw === undefined || cw === null) return {};
+  if (!isPlainObject(cw)) {
+    return { CloudWatchLogConfiguration: cw as CloudWatchLogConfiguration };
+  }
+  for (const key of Object.keys(cw)) {
+    if (!CLOUDWATCH_LOG_CONFIGURATION_MEMBERS.has(key)) {
+      onUnknown(`MonitoringConfiguration.CloudWatchLogConfiguration.${key}`);
+    }
+  }
+  return {
+    CloudWatchLogConfiguration: {
+      Enabled: toBoolean(cw['Enabled']),
+      LogGroupName: cw['LogGroupName'] as string | undefined,
+      LogStreamNamePrefix: cw['LogStreamNamePrefix'] as string | undefined,
+      EncryptionKeyArn: cw['EncryptionKeyArn'] as string | undefined,
+      LogTypes: cw['LogTypes'] as Record<string, string[]> | undefined,
+    },
+  };
 };
 
 const jsonEqual = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -544,6 +604,7 @@ export class EMRClusterProvider implements ResourceProvider {
         'LogEncryptionKmsKeyId',
         'LogUri',
         'ManagedScalingPolicy',
+        'MonitoringConfiguration',
         'Name',
         'OSReleaseLabel',
         'PlacementGroupConfigs',
@@ -551,6 +612,7 @@ export class EMRClusterProvider implements ResourceProvider {
         'ScaleDownBehavior',
         'SecurityConfiguration',
         'ServiceRole',
+        'SessionEnabled',
         'StepConcurrencyLevel',
         'Steps',
         'Tags',
@@ -704,6 +766,31 @@ export class EMRClusterProvider implements ResourceProvider {
         AutoTerminationPolicy: this.toAutoTerminationPolicy(
           properties['AutoTerminationPolicy'] as Record<string, unknown> | undefined
         ),
+        // Both create-only (the registry schema): a change replaces the
+        // cluster, so neither has an update path (go-to-k/cdkd#5824).
+        MonitoringConfiguration: toSdkMonitoringConfiguration(
+          properties['MonitoringConfiguration'],
+          (path) => {
+            // A template key, so it goes through `safeMsg`. A state record
+            // cannot be fixed through the template: warn and drop it
+            // (provider-replay-and-refusals.md).
+            const text = safeMsg`${path} is not a CloudFormation property of AWS::EMR::Cluster, so CloudFormation rejects this template; remove it.`;
+            if (context?.replayingState) {
+              this.logger.warn(
+                safeMsg`${logicalId}: ${asIsMessage(text)} Dropped from the rollback's RunJobFlow.`
+              );
+              return;
+            }
+            throw markNonRetryable(
+              new ProvisioningError(
+                safeMsg`Cannot create EMR Cluster ${logicalId}: ${asIsMessage(text)}`,
+                resourceType,
+                logicalId
+              )
+            );
+          }
+        ),
+        SessionEnabled: toBoolean(properties['SessionEnabled']),
         Tags: tags?.map((t) => ({ Key: t.Key, Value: t.Value })),
         Instances: this.toJobFlowInstancesConfig(
           properties['Instances'] as Record<string, unknown> | undefined
@@ -2227,6 +2314,24 @@ export class EMRClusterProvider implements ResourceProvider {
       Tags: normalizeAwsTagsToCfn(cluster.Tags),
       Instances: this.reverseInstancesToCfn(cluster, instanceGroups, instanceFleets),
     };
+    // go-to-k/cdkd#5824: emitted only when DescribeCluster reports them (a
+    // declared response field is not a populated one), and skipped by the
+    // comparator (`getDriftUnknownPaths`).
+    if (typeof cluster.SessionEnabled === 'boolean') out['SessionEnabled'] = cluster.SessionEnabled;
+    const cw = cluster.MonitoringConfiguration?.CloudWatchLogConfiguration;
+    if (cw) {
+      out['MonitoringConfiguration'] = {
+        CloudWatchLogConfiguration: Object.fromEntries(
+          Object.entries({
+            Enabled: cw.Enabled,
+            LogGroupName: cw.LogGroupName,
+            LogStreamNamePrefix: cw.LogStreamNamePrefix,
+            EncryptionKeyArn: cw.EncryptionKeyArn,
+            LogTypes: cw.LogTypes,
+          }).filter(([, v]) => v !== undefined)
+        ),
+      };
+    }
     return out;
   }
 
@@ -2288,7 +2393,12 @@ export class EMRClusterProvider implements ResourceProvider {
       'Instances.TaskInstanceGroups',
       'KerberosAttributes',
       'ManagedScalingPolicy',
+      // Create-only, and no EMR API changes either after RunJobFlow, so
+      // neither can drift; and AWS may fill members the template omits
+      // (go-to-k/cdkd#5824).
+      'MonitoringConfiguration',
       'PlacementGroupConfigs',
+      'SessionEnabled',
       'Steps',
     ];
   }
