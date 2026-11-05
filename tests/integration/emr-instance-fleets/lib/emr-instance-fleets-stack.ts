@@ -207,6 +207,10 @@ export class EmrInstanceFleetsStack extends cdk.Stack {
     // Ref / Fn::GetAtt Id of the standalone instance fleet — proves the
     // provider's physicalId + attribute wiring.
     new cdk.CfnOutput(this, 'TaskFleetId', { value: taskFleet.ref });
-    new cdk.CfnOutput(this, 'TaskFleetAttrId', { value: taskFleet.attrId });
+    // Both GetAtt spellings: the CFn schema renamed `Id` -> `InstanceFleetId`
+    // (aws-cdk-lib 2.275.0 dropped the `attrId` getter), and templates from
+    // older CDK still carry `Id` (go-to-k/cdkd#5814).
+    new cdk.CfnOutput(this, 'TaskFleetAttrId', { value: taskFleet.getAtt('Id').toString() });
+    new cdk.CfnOutput(this, 'TaskFleetAttrInstanceFleetId', { value: taskFleet.attrInstanceFleetId });
   }
 }

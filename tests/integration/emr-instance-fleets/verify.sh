@@ -355,6 +355,7 @@ env -u CDKD_TEST_UPDATE -u CDKD_TEST_REMOVAL node "${LOCAL_DIST}" deploy "${STAC
 CID_P1="$(output_value ClusterId)"
 FID_P1="$(output_value TaskFleetId)"
 FID_ATTR_P1="$(output_value TaskFleetAttrId)"
+FID_ATTR2_P1="$(output_value TaskFleetAttrInstanceFleetId)"
 if [ -z "${CID_P1}" ] || [ -z "${FID_P1}" ]; then
   echo "FAIL: ClusterId / TaskFleetId output missing from cdkd state after Phase 1" >&2
   exit 1
@@ -364,6 +365,11 @@ echo "    cluster id: ${CID_P1}, task fleet id: ${FID_P1}"
 # Ref and Fn::GetAtt Id must both equal the AWS instance fleet id.
 if [ "${FID_P1}" != "${FID_ATTR_P1}" ]; then
   echo "FAIL: TaskFleet Ref '${FID_P1}' != Fn::GetAtt Id '${FID_ATTR_P1}'" >&2
+  exit 1
+fi
+# ... and so must the renamed spelling, Fn::GetAtt InstanceFleetId (#5814).
+if [ "${FID_P1}" != "${FID_ATTR2_P1}" ]; then
+  echo "FAIL: TaskFleet Ref '${FID_P1}' != Fn::GetAtt InstanceFleetId '${FID_ATTR2_P1}'" >&2
   exit 1
 fi
 
