@@ -47,6 +47,13 @@
       "OutpostArn",
       "PrivateDnsNameOptionsOnLaunch"
     ],
+    "AWS::EMR::Cluster": [
+      "MonitoringConfiguration",
+      "SessionEnabled"
+    ],
+    "AWS::Lambda::MicrovmImage": [
+      "KmsKeyIdentifier"
+    ],
     "AWS::RDS::DBCluster": [
       "AllocatedStorage",
       "AvailabilityZones",

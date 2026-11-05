@@ -1,6 +1,6 @@
 {
   "resourceType": "AWS::Lambda::MicrovmImage",
-  "generatedAt": "2026-09-23",
+  "generatedAt": "2026-11-05",
   "properties": [
     "AdditionalOsCapabilities",
     "BaseImageArn",
@@ -14,6 +14,7 @@
     "EnvironmentVariables",
     "Hooks",
     "ImageArn",
+    "KmsKeyIdentifier",
     "LatestActiveImageVersion",
     "LatestFailedImageVersion",
     "Logging",
@@ -143,6 +144,7 @@
       "AdditionalOsCapabilities": "array",
       "Hooks": "object",
       "EnvironmentVariables": "array",
+      "KmsKeyIdentifier": "scalar",
       "Tags": "array",
       "LatestActiveImageVersion": "scalar",
       "LatestFailedImageVersion": "scalar",
@@ -301,6 +303,7 @@
     "Hooks.MicrovmImageHooks.ValidateTimeoutInSeconds": "integer",
     "Hooks.Port": "integer",
     "ImageArn": "string",
+    "KmsKeyIdentifier": "string",
     "LatestActiveImageVersion": "string",
     "LatestFailedImageVersion": "string",
     "Logging": "object",
@@ -324,7 +327,8 @@
       "ALL"
     ],
     "CpuConfigurations[].Architecture": [
-      "ARM_64"
+      "ARM_64",
+      "X86_64"
     ],
     "Hooks.MicrovmHooks.Resume": [
       "DISABLED",
