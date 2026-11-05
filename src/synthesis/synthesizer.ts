@@ -318,8 +318,6 @@ export class Synthesizer {
           this.logger.debug('Re-synthesizing with resolved context...');
           continue;
         }
-        // Each key SEPARATELY, so the `, ` separator stays byte-exact — see the
-        // module header for why that, and not safety, is the reason.
         const failed = [...missingKeys].filter((k) => providerErrorOf(transientContext[k]));
         if (failed.length > 0 && !options.annotationsCheckedByCaller) {
           throw new SynthesisError(
@@ -328,9 +326,13 @@ export class Synthesizer {
                 .map(
                   (k) => `${displaySafe(k)}: ${displaySafe(providerErrorOf(transientContext[k])!)}`
                 )
-                .join('; ')
+                .join('; ') +
+              '. Grant the permissions the lookup needs or refresh the AWS credentials, ' +
+              'or supply the value in cdk.context.json or with -c <key>=<value>.'
           );
         }
+        // Each key SEPARATELY, so the `, ` separator stays byte-exact — see the
+        // module header for why that, and not safety, is the reason.
         this.logger.debug(
           safeMsg`Context resolution made no further progress; using this synthesis. Still missing: ${[...missingKeys].map((k) => displaySafe(k)).join(', ')}`
         );
