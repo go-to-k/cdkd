@@ -1452,12 +1452,15 @@ describe('Cognito SMS-role sns:Publish propagation (#5809)', () => {
     expect(isRetryableTransientError(new Error(WRAPPED), WRAPPED)).toBe(true);
   });
 
-  it('does not match a different publish denial', () => {
-    const other = 'User is not authorized to perform: SNS:Publish on resource: arn:aws:sns:...';
-    expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.filter((p) => other.includes(p))).not.toContain(
-      'does not have permission to publish with SNS'
-    );
-  });
+  // The neighbouring entries this text must NOT be carried by: the #2901
+  // trust entry and the generic IAM-permission phrasing.
+  it.each(['does not have a trust relationship allowing', 'does not have required permissions'])(
+    'is NOT matched by the neighbour pattern %j',
+    (neighbour) => {
+      expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS).toContain(neighbour);
+      expect(WRAPPED.includes(neighbour)).toBe(false);
+    }
+  );
 });
 
 describe('Cognito SMS-role trust propagation (#2901)', () => {

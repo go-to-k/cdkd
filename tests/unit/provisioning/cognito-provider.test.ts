@@ -547,23 +547,6 @@ describe('CognitoUserPoolProvider', () => {
       SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/UserPoolsmsRole' },
     };
 
-    it('does NOT retry the SMS-role sns:Publish rejection in the inner loop either (#5809)', async () => {
-      const accessPolicyError = new Error('Role does not have permission to publish with SNS');
-      accessPolicyError.name = 'InvalidSmsRoleAccessPolicyException';
-      mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
-      mockSend.mockRejectedValueOnce(accessPolicyError); // SetUserPoolMfaConfig
-      mockSend.mockResolvedValueOnce({}); // the catch's DeleteUserPool cleanup
-
-      const error = await rejectionOf(
-        provider.create('UserIdentityUserPool', 'AWS::Cognito::UserPool', SMS_MFA_PROPS)
-      );
-
-      // CreateUserPool, ONE SetUserPoolMfaConfig, the cleanup: no inner retry.
-      expect(mockSend).toHaveBeenCalledTimes(3);
-      // The engine's outer loop is the one that rides the window out.
-      expect(isRetryableTransientError(error, retryClassificationText(error))).toBe(true);
-    });
-
     it('does NOT retry the SMS-role rejection in the inner control-plane loop', async () => {
       mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
       mockSend.mockRejectedValueOnce(smsRoleError()); // SetUserPoolMfaConfig
@@ -681,6 +664,79 @@ describe('CognitoUserPoolProvider', () => {
       // Explicit, because the mutation this case exists to catch makes the
       // inner loop SLEEP (1s + 2s) rather than return -- under vitest's 5s
       // default that reads as a timeout flake instead of the assertion above.
+    }, 20_000);
+  });
+
+  // go-to-k/cdkd#5809: the race's SECOND stage. The double carries the SDK's
+  // `$fault` / `$metadata`, so the provider treats it as AWS-authored: the
+  // thrown message is the shortened class-name summary (#5271) and AWS's text
+  // survives only in the cause chain, which is what `withRetry` classifies.
+  describe('SMS-role sns:Publish propagation reaches the engine classifier (#5809)', () => {
+    const AWS_TEXT = 'Role does not have permission to publish with SNS';
+    const accessPolicyError = () =>
+      Object.assign(new Error(AWS_TEXT), {
+        name: 'InvalidSmsRoleAccessPolicyException',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 400 },
+      });
+    const SMS_MFA_PROPS = {
+      MfaConfiguration: 'ON',
+      EnabledMfas: ['SMS_MFA'],
+      SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/UserPoolsmsRole' },
+    };
+    const assertClassified = (error: Error) => {
+      expect(error.message).not.toContain(AWS_TEXT);
+      expect(isIamPropagationError(retryClassificationText(error))).toBe(true);
+      expect(isRetryableTransientError(error, retryClassificationText(error))).toBe(true);
+    };
+
+    it.each([
+      ['CreateUserPool', 1, () => mockSend.mockRejectedValueOnce(accessPolicyError())],
+      [
+        'SetUserPoolMfaConfig',
+        3,
+        () => {
+          mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+          mockSend.mockRejectedValueOnce(accessPolicyError());
+          mockSend.mockResolvedValueOnce({}); // the catch's DeleteUserPool cleanup
+        },
+      ],
+    ])('a create rejection from %s is classified, with no inner retry', async (_site, calls, prime) => {
+      prime();
+      const error = await rejectionOf(
+        provider.create('UserIdentityUserPool', 'AWS::Cognito::UserPool', SMS_MFA_PROPS)
+      );
+      assertClassified(error);
+      expect(mockSend).toHaveBeenCalledTimes(calls);
+    });
+
+    it('an UPDATE-path rejection is classified, with one SetUserPoolMfaConfig', async () => {
+      mockSend.mockImplementation((command: { constructor: { name: string } }) => {
+        if (command.constructor.name === 'SetUserPoolMfaConfigCommand') {
+          return Promise.reject(accessPolicyError());
+        }
+        return Promise.resolve({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+      });
+      try {
+        const error = await rejectionOf(
+          provider.update(
+            'UserIdentityUserPool',
+            'us-east-1_abc123',
+            'AWS::Cognito::UserPool',
+            SMS_MFA_PROPS,
+            { MfaConfiguration: 'OFF' }
+          )
+        );
+        assertClassified(error);
+        const mfaSends = mockSend.mock.calls.filter(
+          (c: unknown[]) =>
+            (c[0] as { constructor: { name: string } }).constructor.name ===
+            'SetUserPoolMfaConfigCommand'
+        );
+        expect(mfaSends).toHaveLength(1);
+      } finally {
+        mockSend.mockReset();
+      }
     }, 20_000);
   });
 
