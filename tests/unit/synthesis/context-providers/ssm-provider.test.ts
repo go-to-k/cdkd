@@ -117,6 +117,50 @@ describe('SSMContextProvider', () => {
     ).rejects.toThrow('SSM parameter not found: /nonexistent/param');
   });
 
+  // `GetParameter` THROWS `ParameterNotFound` for an absent parameter; the
+  // empty-response cases above are not what AWS returns (go-to-k/cdkd#5805).
+  function parameterNotFound(): Error {
+    return Object.assign(new Error('ParameterNotFound'), { name: 'ParameterNotFound' });
+  }
+
+  it('returns dummyValue when GetParameter throws ParameterNotFound and ignoreErrorOnMissingContext is set', async () => {
+    mockSend.mockRejectedValueOnce(parameterNotFound());
+
+    const provider = new SSMContextProvider({ region: 'us-east-1' });
+    const result = await provider.resolve({
+      parameterName: '/ecr/repo/latest-image-tag',
+      ignoreErrorOnMissingContext: true,
+      dummyValue: 'latest',
+    });
+
+    expect(result).toBe('latest');
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
+  it('reports ParameterNotFound as not-found when ignoreErrorOnMissingContext is absent', async () => {
+    mockSend.mockRejectedValueOnce(parameterNotFound());
+
+    const provider = new SSMContextProvider({ region: 'us-east-1' });
+    await expect(
+      provider.resolve({ parameterName: '/nonexistent/param', dummyValue: 'latest' })
+    ).rejects.toThrow('SSM parameter not found: /nonexistent/param');
+  });
+
+  it('rethrows any other GetParameter failure even with ignoreErrorOnMissingContext set', async () => {
+    const denied = Object.assign(new Error('not authorized'), { name: 'AccessDeniedException' });
+    mockSend.mockRejectedValueOnce(denied);
+
+    const provider = new SSMContextProvider({ region: 'us-east-1' });
+    await expect(
+      provider.resolve({
+        parameterName: '/p',
+        ignoreErrorOnMissingContext: true,
+        dummyValue: 'latest',
+      })
+    ).rejects.toBe(denied);
+    expect(mockDestroy).toHaveBeenCalled();
+  });
+
   it('should use region from props over awsConfig', async () => {
     mockSend.mockResolvedValue({
       Parameter: { Name: '/p', Value: 'v' },

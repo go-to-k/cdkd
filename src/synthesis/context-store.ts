@@ -95,13 +95,17 @@ export class ContextStore {
     this.logger.debug(`Saved ${Object.keys(updates).length} context value(s) to cdk.context.json`);
   }
 
-  /**
-   * Check if a context value is transient (should not be persisted)
-   *
-   * CDK CLI marks provider errors with $dontSaveContext: true
-   */
   private isTransient(value: unknown): boolean {
-    if (typeof value !== 'object' || value === null) return false;
-    return (value as Record<string, unknown>)['$dontSaveContext'] === true;
+    return isTransientContextValue(value);
   }
+}
+
+/**
+ * Check if a context value is transient (should not be persisted)
+ *
+ * CDK CLI marks provider errors with $dontSaveContext: true
+ */
+export function isTransientContextValue(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  return (value as Record<string, unknown>)['$dontSaveContext'] === true;
 }
