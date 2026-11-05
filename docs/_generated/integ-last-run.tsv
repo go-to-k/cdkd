@@ -126,6 +126,7 @@ ec2-instance	2026-11-04T11:19:17Z	PASS	446	verify.sh	rc ok, orph clean
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
+ec2-subnet-dns64	2026-11-05T10:30:25Z	PASS	200	verify.sh	rc0 orph clean, PR #5778 head 90868a27
 ec2-vpc	2026-11-03T18:37:59Z	PASS	145	verify.sh	PR #5719 0932f5dee rc 0, probe red pre-fix; EncryptedVpc drift-clean, orph clean
 ec2-vpc-ipam	2026-11-03T18:37:59Z	PASS	1185	verify.sh	PR #5719 0932f5dee rc 0, IPAM release wait on delete (measured 1092s), probe red pre-fix; VPC drift-clean, orph clean
 ecr	2026-11-05T03:57:45Z	PASS	40	standard	deploy+destroy clean, 0 orphans
@@ -428,4 +429,3 @@ wafv2	2026-10-29T17:47:25Z	PASS	188	verify.sh	rc ok, orph clean; probe red at as
 wait-condition-handle	2026-11-04T06:31:22Z	PASS	45	verify.sh	rc ok, orph clean
 wide-independent	2026-10-24T07:02:56Z	PASS	1343	verify.sh	final #5242 round, default settings (SDK 10/30, CC 10/20/30); 1 throttling line + retry after ProvisioningError (ThrottlingException) x16 at CC30; destroy 0 errors, orph clean incl SSM docs + Athena wg
 wide-web-functions	2026-10-24T06:46:45Z	PASS	396	verify.sh	final #5242 round, default settings (12 functions, --concurrency 10 20); retry after ProvisioningError (ValidationException) x38 at cc20; destroy 0 errors, orph clean incl log groups
-ec2-subnet-dns64	2026-11-05T10:30:25Z	PASS	200	verify.sh	rc0 orph clean, PR #5778 head 90868a27
