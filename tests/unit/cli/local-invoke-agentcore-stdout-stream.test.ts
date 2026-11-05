@@ -1484,8 +1484,7 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
 
         expect(String((rebuildError as Error).message)).toContain('Context lookup failed');
         expect(mocks.runDetached).toHaveBeenCalledTimes(1);
-        // Refused before the target was resolved again (the first run resolved once);
-        // the later check on the resolved stack would also refuse, only later.
+        // Refused before the target was resolved again (the first run resolved once).
         expect(resolveHook.calls).toBe(1);
       });
 
