@@ -103,8 +103,9 @@ run_drift() { # usage: run_drift <json file>
 }
 
 # Deletion protection off. DynamoDB refuses a protection change within 15s of
-# the last one ("... within the previous 15000 milliseconds"), so retry that
-# refusal alone, bounded; any other failure is returned to the caller.
+# the last one ("... within the previous 15000 milliseconds") and any change
+# while the table is UPDATING (ResourceInUseException), so retry those alone,
+# bounded; any other failure is returned to the caller.
 protection_off() {
   local out i
   for i in $(seq 1 12); do
@@ -112,7 +113,7 @@ protection_off() {
       --no-deletion-protection-enabled 2>&1 >/dev/null)"; then
       return 0
     fi
-    grep -qF "within the previous" <<<"${out}" || { printf '%s\n' "${out}" >&2; return 1; }
+    grep -qE "within the previous|ResourceInUseException" <<<"${out}" || { printf '%s\n' "${out}" >&2; return 1; }
     sleep 5
   done
   printf '%s\n' "${out}" >&2
@@ -171,6 +172,10 @@ echo "    table on KMS SSE"
 
 # --- Phase 2: strip observedProperties ----------------------------------------
 echo "==> Phase 2: strip the table's observedProperties (template-bag baseline)"
+if ! gone_probe aws s3api head-object --bucket "${STATE_BUCKET}" --key "cdkd/${STACK}/${REGION}/lock.json"; then
+  echo "FAIL: Phase 2: a lock is held on ${STACK}; the state rewrite needs none" >&2
+  exit 1
+fi
 aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" "${WORK_DIR}/state.json" >/dev/null
 HAS_OBSERVED="$(jq -r --arg lid "${LOGICAL_ID}" '.resources[$lid] | has("observedProperties")' "${WORK_DIR}/state.json")"
 if [ "${HAS_OBSERVED}" != "true" ]; then
@@ -189,13 +194,25 @@ echo "    observedProperties stripped"
 # --- Phase 3: drift is clean ----------------------------------------------------
 echo "==> Phase 3: cdkd drift on the template-bag baseline reports nothing"
 RC="$(run_drift "${WORK_DIR}/drift3.json")"
-PATHS="$(drift_paths "${WORK_DIR}/drift3.json")"
+PATHS="$(drift_paths "${WORK_DIR}/drift3.json")" || {
+  echo "FAIL: Phase 3: drift --json is not readable (rc ${RC})" >&2
+  cat "${WORK_DIR}/drift3.json" "${WORK_DIR}/drift3.json.err" >&2
+  exit 1
+}
 if [ "${RC}" != "0" ] || [ -n "${PATHS}" ]; then
   echo "FAIL: Phase 3: drift exited ${RC} with drifted paths [${PATHS//$'\n'/, }] on an untouched table (issues #5789 / #5790)" >&2
   cat "${WORK_DIR}/drift3.json" "${WORK_DIR}/drift3.json.err" >&2
   exit 1
 fi
-echo "    drift exit 0, nothing drifted"
+# Not vacuous: the table must be listed as fully compared and clean (an
+# empty or reshaped report, or a skipped table, would also show no paths).
+if ! jq -e --arg lid "${LOGICAL_ID}" 'length > 0 and any(.[]; any(.clean[]?; .logicalId == $lid))' \
+  "${WORK_DIR}/drift3.json" >/dev/null; then
+  echo "FAIL: Phase 3: drift did not report ${LOGICAL_ID} as compared and clean" >&2
+  cat "${WORK_DIR}/drift3.json" "${WORK_DIR}/drift3.json.err" >&2
+  exit 1
+fi
+echo "    drift exit 0, ${LOGICAL_ID} compared and clean"
 
 # --- Phase 4: a real change still drifts ---------------------------------------
 echo "==> Phase 4: deletion protection ON out of band must still drift"
@@ -203,13 +220,24 @@ aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
   --deletion-protection-enabled >/dev/null
 wait_settled
 RC="$(run_drift "${WORK_DIR}/drift4.json")"
-PATHS="$(drift_paths "${WORK_DIR}/drift4.json")"
+PATHS="$(drift_paths "${WORK_DIR}/drift4.json")" || {
+  echo "FAIL: Phase 4: drift --json is not readable (rc ${RC})" >&2
+  cat "${WORK_DIR}/drift4.json" "${WORK_DIR}/drift4.json.err" >&2
+  exit 1
+}
 if [ "${RC}" != "1" ] || ! grep -qx 'Replicas' <<<"${PATHS}"; then
   echo "FAIL: Phase 4: drift exited ${RC} with paths [${PATHS//$'\n'/, }]; expected exit 1 naming Replicas (a completed default hid a real change)" >&2
   cat "${WORK_DIR}/drift4.json" "${WORK_DIR}/drift4.json.err" >&2
   exit 1
 fi
-echo "    drift exit 1, Replicas reported"
+if ! jq -e --arg lid "${LOGICAL_ID}" \
+  'any(.[]; any(.drifted[]?; .logicalId == $lid and any(.changes[]?; .path == "Replicas" and (.awsValue | tostring | test("\"DeletionProtectionEnabled\":true")))))' \
+  "${WORK_DIR}/drift4.json" >/dev/null; then
+  echo "FAIL: Phase 4: the Replicas drift does not carry the live DeletionProtectionEnabled: true" >&2
+  cat "${WORK_DIR}/drift4.json" >&2
+  exit 1
+fi
+echo "    drift exit 1, Replicas reported with the live protection"
 protection_off || { echo "FAIL: Phase 4: could not turn deletion protection back off" >&2; exit 1; }
 wait_settled
 
