@@ -2405,7 +2405,6 @@ export class RDSProvider implements ResourceProvider {
               dbClusterIdentifier,
               roles,
               [],
-              [],
               mask,
               undefined
             );
@@ -2982,7 +2981,6 @@ export class RDSProvider implements ResourceProvider {
         physicalId,
         roles,
         associatedRoleList(previousProperties['AssociatedRoles']) ?? [],
-        described?.AssociatedRoles ?? [],
         context?.maskSecrets,
         context
       );
@@ -3515,7 +3513,6 @@ export class RDSProvider implements ResourceProvider {
             dbInstanceIdentifier,
             roles,
             [],
-            [],
             mask,
             undefined
           );
@@ -3965,7 +3962,6 @@ export class RDSProvider implements ResourceProvider {
         associatedRoleList(previousProperties['AssociatedRoles'], {
           featureNameRequired: true,
         }) ?? [],
-        described?.AssociatedRoles ?? [],
         context?.maskSecrets,
         context
       );
@@ -4980,15 +4976,17 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
-   * go-to-k/cdkd#5639 / #5640: attach the `desired` roles AWS does not hold and
-   * detach the `previous` ones `desired` dropped, planned against the live
-   * list (`planAssociatedRoleChanges`), removals first, as CloudFormation's
-   * handlers do (`updateAssociatedRoles`). RDS takes neither call while the
-   * cluster or instance is busy, so they wait for `available` first, under
-   * `--no-wait` too, and a call refused as busy waits it out and is resent
-   * (#5194's rule). CloudFormation's handlers stabilize each call once the
-   * Describe lists the attached association, or no longer lists the
-   * detached one; so does the wait here, which `--no-wait` skips.
+   * go-to-k/cdkd#5639 / #5640: attach the `desired` roles `previous` lacks and
+   * detach the `previous` ones `desired` dropped, removals first, as
+   * CloudFormation's handlers do (`updateAssociatedRoles`). RDS takes neither
+   * call while the cluster or instance is busy, so they wait for `available`
+   * first, under `--no-wait` too, and a call refused as busy waits it out and
+   * is resent (#5194's rule). The live list is read once `available`, and the
+   * plan drops what AWS already holds or no longer holds
+   * (`planAssociatedRoleChanges`); a Describe answering no resource changes
+   * nothing. CloudFormation's handlers stabilize each call once the Describe
+   * lists the attached association, or no longer lists the detached one; so
+   * does the wait here, which `--no-wait` skips.
    */
   private async applyAssociatedRoles(
     target: 'cluster' | 'instance',
@@ -4996,12 +4994,11 @@ export class RDSProvider implements ResourceProvider {
     physicalId: string,
     desired: readonly AssociatedRole[],
     previous: readonly AssociatedRole[],
-    live: readonly LiveAssociatedRole[],
     mask: ((text: string) => string) | undefined,
     marks: Pick<UpdateContext, 'markUnsettled' | 'markAttempted'> | undefined
   ): Promise<void> {
-    const { toAdd, toRemove } = planAssociatedRoleChanges(desired, previous, live);
-    if (toAdd.length === 0 && toRemove.length === 0) return;
+    const candidates = planAssociatedRoleChanges(desired, previous);
+    if (candidates.toAdd.length === 0 && candidates.toRemove.length === 0) return;
     const label = target === 'cluster' ? 'RDS DBCluster' : 'RDS DBInstance';
     // Bounded by the resource deadline, which does not cancel this operation:
     // a wait that outlives it would attach after the engine gave up.
@@ -5021,6 +5018,21 @@ export class RDSProvider implements ResourceProvider {
         'changing its roles'
       );
     }
+    const resource =
+      target === 'cluster'
+        ? await this.describeDBCluster(physicalId)
+        : await this.describeDBInstance(physicalId);
+    if (resource === undefined) {
+      throw new Error(
+        `Describe returned no ${target} while planning its role changes; no role was attached or detached`
+      );
+    }
+    const { toAdd, toRemove } = planAssociatedRoleChanges(
+      desired,
+      previous,
+      resource.AssociatedRoles ?? []
+    );
+    if (toAdd.length === 0 && toRemove.length === 0) return;
     marks?.markUnsettled?.('AssociatedRoles');
     const readStatus =
       target === 'cluster'

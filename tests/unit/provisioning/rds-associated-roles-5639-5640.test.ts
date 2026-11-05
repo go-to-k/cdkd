@@ -87,23 +87,41 @@ function names(): string[] {
 /**
  * DescribeDBClusters / DescribeDBInstances answer `status` (a function of the
  * call count, `available` by default) and the roles the Add / Remove calls
- * leave; `onRoleCall` may throw instead of applying a call.
+ * leave. An attach shows, and a detach takes effect, only `lag` Describes
+ * after the call (0: at once), as AWS lists a change a moment later;
+ * `onRoleCall` may throw instead of applying a call, and `empty` answers no
+ * resource on the Describes it names.
  */
 function arm(
   options: {
     roles?: Input[];
     status?: (describes: number) => string;
     onRoleCall?: (name: string, input: Input) => void;
+    lag?: number;
+    empty?: (describes: number) => boolean;
   } = {}
-): void {
+): { describes: () => number } {
   let roles: Input[] = (options.roles ?? []).map((role) => ({ ...role, Status: 'ACTIVE' }));
+  let pending: Array<{ after: number; apply: () => void }> = [];
   let describes = 0;
+  const later = (apply: () => void): void => {
+    if ((options.lag ?? 0) === 0) apply();
+    else pending.push({ after: options.lag ?? 0, apply });
+  };
   mockSend.mockImplementation((command: Command) => {
     const name = command.constructor.name;
     switch (name) {
       case 'DescribeDBClustersCommand':
       case 'DescribeDBInstancesCommand': {
         describes += 1;
+        for (const entry of pending) entry.after -= 1;
+        for (const entry of pending.filter((e) => e.after < 0)) entry.apply();
+        pending = pending.filter((e) => e.after >= 0);
+        if (options.empty?.(describes) === true) {
+          return Promise.resolve(
+            name === 'DescribeDBClustersCommand' ? { DBClusters: [] } : { DBInstances: [] }
+          );
+        }
         const status = options.status?.(describes) ?? 'available';
         return Promise.resolve(
           name === 'DescribeDBClustersCommand'
@@ -129,34 +147,42 @@ function arm(
       case 'CreateDBInstanceCommand':
         return Promise.resolve({ DBInstance: { DBInstanceIdentifier: 'i-1' } });
       case 'AddRoleToDBClusterCommand':
-      case 'AddRoleToDBInstanceCommand':
+      case 'AddRoleToDBInstanceCommand': {
         options.onRoleCall?.(name, command.input);
-        roles = [
-          ...roles,
-          {
-            RoleArn: command.input['RoleArn'] as string,
-            FeatureName: command.input['FeatureName'] as string,
-            Status: 'PENDING',
-          },
-        ];
+        const added = {
+          RoleArn: command.input['RoleArn'] as string,
+          FeatureName: command.input['FeatureName'] as string,
+          Status: 'PENDING',
+        };
+        later(() => {
+          roles = [...roles, added];
+        });
         return Promise.resolve({});
+      }
       case 'RemoveRoleFromDBClusterCommand':
-      case 'RemoveRoleFromDBInstanceCommand':
+      case 'RemoveRoleFromDBInstanceCommand': {
         options.onRoleCall?.(name, command.input);
-        roles = roles.filter(
-          (role) =>
-            !(
-              role.RoleArn === command.input['RoleArn'] &&
-              role.FeatureName === command.input['FeatureName']
-            )
-        );
+        const { RoleArn: arn, FeatureName: feature } = command.input;
+        later(() => {
+          roles = roles.filter((role) => !(role['RoleArn'] === arn && role['FeatureName'] === feature));
+        });
         return Promise.resolve({});
+      }
       case 'ListTagsForResourceCommand':
         return Promise.resolve({ TagList: [] });
       default:
         return Promise.resolve({});
     }
   });
+  return { describes: () => describes };
+}
+
+/** The Describe and sleep counts once `name` was first sent. */
+function describesBefore(name: string): number {
+  const order = names();
+  return order
+    .slice(0, order.indexOf(name))
+    .filter((n) => n === 'DescribeDBClustersCommand' || n === 'DescribeDBInstancesCommand').length;
 }
 
 describe('db-associated-roles (go-to-k/cdkd#5639 / #5640)', () => {
@@ -180,15 +206,19 @@ describe('db-associated-roles (go-to-k/cdkd#5639 / #5640)', () => {
     expect(associatedRoleList([{ RoleArn: ROLE_A }], { featureNameRequired: true })).toBeUndefined();
   });
 
-  it('plans against the live list: nothing re-attached, nothing re-detached, nothing unrecorded detached', () => {
+  it('plans as CloudFormation does, minus what the live list shows done', () => {
     const a = { RoleArn: ROLE_A, FeatureName: 's3Import' };
     const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
     const x = { RoleArn: ROLE_X, FeatureName: 'Lambda' };
-    // `a` is already attached (a retry after a partial run), `b` was dropped
-    // and is still live, `x` was attached out of band and is in no record.
-    expect(planAssociatedRoleChanges([a], [a, b], [a, b, x])).toEqual({ toAdd: [], toRemove: [b] });
+    // Without the live list: what the template added and dropped.
+    expect(planAssociatedRoleChanges([a, x], [b, x])).toEqual({ toAdd: [a], toRemove: [b] });
+    // `a` is already attached (a retry after a partial run): not attached again.
+    expect(planAssociatedRoleChanges([a], [b], [a, b])).toEqual({ toAdd: [], toRemove: [b] });
     // A dropped role already gone is not detached again.
-    expect(planAssociatedRoleChanges([a], [a, b], [])).toEqual({ toAdd: [a], toRemove: [] });
+    expect(planAssociatedRoleChanges([a], [b], [])).toEqual({ toAdd: [a], toRemove: [] });
+    // A declared role detached outside cdkd is not attached again by an
+    // unrelated update; a role attached outside cdkd is not detached.
+    expect(planAssociatedRoleChanges([a], [a], [x])).toEqual({ toAdd: [], toRemove: [] });
     // The same role for another feature is another association.
     expect(planAssociatedRoleChanges([{ ...a, FeatureName: 's3Export' }], [a], [a])).toEqual({
       toAdd: [{ ...a, FeatureName: 's3Export' }],
@@ -264,17 +294,64 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
 
     it('waits for available before attaching under --no-wait too, and skips only the settle wait', async () => {
       process.env['CDKD_NO_WAIT'] = 'true';
-      arm({ status: (n) => (n <= 2 ? 'creating' : 'available') });
+      // The attach shows only three Describes later: a settle wait would sleep.
+      arm({ status: (n) => (n <= 2 ? 'creating' : 'available'), lag: 3 });
       await provider.create('L', CLUSTER, {
         ...CLUSTER_BASE,
         AssociatedRoles: [{ RoleArn: ROLE_A }],
       });
       expect(sent('AddRoleToDBClusterCommand')).toHaveLength(1);
-      // The two `creating` reads came before the attach.
-      const order = names();
-      const add = order.indexOf('AddRoleToDBClusterCommand');
-      expect(order.slice(0, add).filter((n) => n === 'DescribeDBClustersCommand')).toHaveLength(3);
+      // Two `creating` reads, the `available` one, then the plan's read.
+      expect(describesBefore('AddRoleToDBClusterCommand')).toBe(4);
+      // Both sleeps came before the attach: nothing waited for it to show.
       expect(sleeps).toBe(2);
+    });
+
+    it.each([
+      [CLUSTER, 'AddRoleToDBClusterCommand', 'c-1'],
+      [INSTANCE, 'AddRoleToDBInstanceCommand', 'i-1'],
+    ])('%s: without --no-wait, returns only once the attached role is listed', async (type, add, id) => {
+      const live = arm({ lag: 3 });
+      const base = type === CLUSTER ? CLUSTER_BASE : INSTANCE_BASE;
+      await provider.update(
+        'L',
+        id,
+        type,
+        { ...base, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+        base
+      );
+      expect(sent(add)).toHaveLength(1);
+      const afterAdd = live.describes() - describesBefore(add);
+      // The lag's three Describes before the one listing it, then the attributes read.
+      expect(afterAdd).toBeGreaterThanOrEqual(4);
+      expect(sleeps).toBeGreaterThanOrEqual(3);
+    });
+
+    it.each([
+      [CLUSTER, 'RemoveRoleFromDBClusterCommand', 'c-1'],
+      [INSTANCE, 'RemoveRoleFromDBInstanceCommand', 'i-1'],
+    ])('%s: without --no-wait, returns only once the detached role is gone', async (type, remove, id) => {
+      const role = { RoleArn: ROLE_A, FeatureName: 's3Import' };
+      const live = arm({ roles: [role], lag: 2 });
+      const base = type === CLUSTER ? CLUSTER_BASE : INSTANCE_BASE;
+      await provider.update('L', id, type, base, { ...base, AssociatedRoles: [role] });
+      expect(sent(remove)).toHaveLength(1);
+      expect(live.describes() - describesBefore(remove)).toBeGreaterThanOrEqual(3);
+      expect(sleeps).toBeGreaterThanOrEqual(2);
+    });
+
+    it('under --no-wait an update returns without waiting for the attach to show', async () => {
+      process.env['CDKD_NO_WAIT'] = 'true';
+      arm({ lag: 3 });
+      await provider.update(
+        'L',
+        'i-1',
+        INSTANCE,
+        { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+        INSTANCE_BASE
+      );
+      expect(sent('AddRoleToDBInstanceCommand')).toHaveLength(1);
+      expect(sleeps).toBe(0);
     });
 
     it('sends no role call for an empty or absent list', async () => {
@@ -405,6 +482,46 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it('does not re-attach a declared role detached outside cdkd, as CloudFormation does not', async () => {
+      // The template and the record both declare ROLE_A; AWS no longer holds it.
+      arm({ roles: [] });
+      const markUnsettled = vi.fn();
+      await update(
+        { AssociatedRoles: [{ RoleArn: ROLE_A }], DeletionProtection: true },
+        { AssociatedRoles: [{ RoleArn: ROLE_A }] },
+        { markUnsettled }
+      );
+      expect(names().filter((n) => n.includes('Role'))).toEqual([]);
+      expect(markUnsettled).not.toHaveBeenCalled();
+    });
+
+    it('changes nothing when the Describe after the wait answers no cluster', async () => {
+      // The update's own reads answer; the role plan's read (after the wait) does not.
+      let planning = false;
+      const live = arm({ empty: () => planning });
+      (provider as unknown as { waitForClusterAvailable: () => Promise<void> }).waitForClusterAvailable =
+        async () => {
+          planning = true;
+        };
+      await expect(
+        update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, { AssociatedRoles: [{ RoleArn: ROLE_B }] })
+      ).rejects.toThrow(/Describe returned no cluster while planning its role changes/);
+      expect(names().filter((n) => n.includes('Role'))).toEqual([]);
+      expect(live.describes()).toBeGreaterThan(0);
+    });
+
+    it('refuses to start the role calls when the resource deadline leaves no time', async () => {
+      arm();
+      const { withResourceDeadline } = await import('../../../src/deployment/resource-deadline.js');
+      await expect(
+        withResourceDeadline(
+          () => update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, {}),
+          { warnAfterMs: 5_000, timeoutMs: 10_000, onTimeout: () => new Error('deadline') }
+        )
+      ).rejects.toThrow(/the resource timeout leaves no more time to change the roles of the cluster/);
+      expect(names().filter((n) => n.includes('Role'))).toEqual([]);
+    });
+
     it('reads a malformed record as nothing to detach, and still attaches what is not live', async () => {
       arm({ roles: [{ RoleArn: ROLE_B }] });
       await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, { AssociatedRoles: 'garbage' });
@@ -470,6 +587,66 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       ]);
     });
 
+    it('an update waits for the instance to read available before the role call', async () => {
+      // A Modify / reboot leaves the instance `modifying` for a few reads.
+      const markUnsettled = vi.fn();
+      const markAttempted = vi.fn();
+      let modified = false;
+      arm({
+        status: () => (modified ? 'modifying' : 'available'),
+        roles: [{ RoleArn: ROLE_B, FeatureName: 's3Export' }],
+      });
+      const original = mockSend.getMockImplementation()!;
+      let reads = 0;
+      mockSend.mockImplementation((command: Command) => {
+        const name = command.constructor.name;
+        if (name === 'ModifyDBInstanceCommand') modified = true;
+        if (name === 'DescribeDBInstancesCommand' && modified && ++reads > 3) modified = false;
+        return original(command);
+      });
+      await provider.update(
+        'L',
+        'i-1',
+        INSTANCE,
+        { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+        { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_B, FeatureName: 's3Export' }] },
+        { markUnsettled, markAttempted }
+      );
+      const order = names();
+      const remove = order.indexOf('RemoveRoleFromDBInstanceCommand');
+      expect(remove).toBeGreaterThan(order.indexOf('ModifyDBInstanceCommand'));
+      expect(remove).toBeLessThan(order.indexOf('AddRoleToDBInstanceCommand'));
+      // The `modifying` reads were waited out (slept on) before the detach.
+      expect(sleeps).toBeGreaterThan(0);
+      expect(markUnsettled).toHaveBeenCalledWith('AssociatedRoles');
+      expect(markAttempted).toHaveBeenCalledWith('AssociatedRoles', [`${ROLE_A}\ns3Import`]);
+    });
+
+    it('waits out a busy refusal of the instance call and resends it', async () => {
+      let refusals = 0;
+      arm({
+        onRoleCall: (name) => {
+          if (name === 'AddRoleToDBInstanceCommand' && refusals === 0) {
+            refusals += 1;
+            throw Object.assign(
+              new Error(
+                'The DB instance i-1 is not available for IAM role association, disassociation, or updates.'
+              ),
+              { name: 'InvalidDBInstanceStateFault' }
+            );
+          }
+        },
+      });
+      await provider.update(
+        'L',
+        'i-1',
+        INSTANCE,
+        { ...INSTANCE_BASE, AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: 's3Import' }] },
+        INSTANCE_BASE
+      );
+      expect(sent('AddRoleToDBInstanceCommand')).toHaveLength(2);
+    });
+
     it('a rollback re-create warns, attaches none and records none', async () => {
       arm();
       const result = await provider.create(
@@ -523,6 +700,28 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
         new Map()
       )) as Input;
       expect(live['AssociatedRoles']).toEqual([{ RoleArn: ROLE_A }]);
+    });
+
+    it('the post-update proof folds both sides like drift', () => {
+      for (const type of [CLUSTER, INSTANCE]) {
+        expect(
+          provider.canonicalizeUnsettledProperties(type, {
+            AssociatedRoles: [{ RoleArn: ROLE_A, FeatureName: '' }, { RoleArn: ROLE_A }],
+          })
+        ).toEqual({ AssociatedRoles: [{ RoleArn: ROLE_A }] });
+      }
+    });
+
+    it('readUnsettled leaves the live roles alone when AssociatedRoles is not unsettled', async () => {
+      arm({ roles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_X }] });
+      const live = (await provider.readUnsettled(
+        'c-1',
+        'L',
+        CLUSTER,
+        new Set(['Port']),
+        { AssociatedRoles: [{ RoleArn: ROLE_A }] }
+      )) as Input;
+      expect(live['AssociatedRoles']).toEqual([{ RoleArn: ROLE_A }, { RoleArn: ROLE_X }]);
     });
 
     it('readUnsettled passes a gone resource through', async () => {

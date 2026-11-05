@@ -53,25 +53,34 @@ export function associatedRoleList(
 }
 
 /**
- * The attaches and detaches taking `live` to `desired`: every desired
- * association AWS does not hold, and every `previous` one `desired` dropped
- * that AWS still holds. Planned against the live list so a retry after a
- * partial run neither re-attaches nor re-detaches (neither call is
- * idempotent: AWS refuses an attached role as already there and a detached
- * one as not found). An association cdkd never recorded is left alone.
+ * The attaches and detaches an update makes, as CloudFormation's handlers
+ * plan them (`updateAssociatedRoles`): every desired association the previous
+ * list lacks, and every previous one the desired list dropped. A role detached
+ * outside cdkd while the template still declares it is therefore not attached
+ * again by an unrelated update. With `live` (read once the resource is
+ * `available`), an attach AWS already holds and a detach AWS no longer holds
+ * are dropped too: neither call is idempotent (AWS refuses an attached role
+ * as already there and a detached one as not found), so a retry after a
+ * partial run neither re-attaches nor re-detaches. Without `live`, the answer
+ * says only whether there may be anything to do. An association neither list
+ * names is left alone.
  */
 export function planAssociatedRoleChanges(
   desired: readonly AssociatedRole[],
   previous: readonly AssociatedRole[],
-  live: readonly LiveAssociatedRole[]
+  live?: readonly LiveAssociatedRole[]
 ): { toAdd: AssociatedRole[]; toRemove: AssociatedRole[] } {
-  const liveKeys = new Set(live.map(associatedRoleKey));
+  const liveKeys = live === undefined ? undefined : new Set(live.map(associatedRoleKey));
   const desiredKeys = new Set(desired.map(associatedRoleKey));
+  const previousKeys = new Set(previous.map(associatedRoleKey));
   return {
-    toAdd: desired.filter((role) => !liveKeys.has(associatedRoleKey(role))),
+    toAdd: desired.filter((role) => {
+      const key = associatedRoleKey(role);
+      return !previousKeys.has(key) && !(liveKeys?.has(key) ?? false);
+    }),
     toRemove: previous.filter((role) => {
       const key = associatedRoleKey(role);
-      return !desiredKeys.has(key) && liveKeys.has(key);
+      return !desiredKeys.has(key) && (liveKeys?.has(key) ?? true);
     }),
   };
 }

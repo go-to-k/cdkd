@@ -201,8 +201,13 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       const wire = armCluster({ statuses: ['creating', 'available'] });
       await provider.create('L', CLUSTER, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
       const order = mockSend.mock.calls.map(([call]) => (call as object).constructor.name);
-      expect(order.indexOf('AddRoleToDBClusterCommand')).toBe(3);
-      expect(order.slice(1, 3)).toEqual(['DescribeDBClustersCommand', 'DescribeDBClustersCommand']);
+      // The wait's two reads, then the role plan's read of the live list.
+      expect(order.indexOf('AddRoleToDBClusterCommand')).toBe(4);
+      expect(order.slice(1, 4)).toEqual([
+        'DescribeDBClustersCommand',
+        'DescribeDBClustersCommand',
+        'DescribeDBClustersCommand',
+      ]);
       expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(1);
     });
 

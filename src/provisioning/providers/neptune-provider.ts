@@ -21,7 +21,6 @@ import {
   RestoreDBClusterToPointInTimeCommand,
   type ModifyDBClusterCommandInput,
   type DBCluster,
-  type DBClusterRole,
 } from '@aws-sdk/client-neptune';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { isDeepStrictEqual } from 'node:util';
@@ -1258,7 +1257,6 @@ export class NeptuneProvider implements ResourceProvider {
           dbClusterIdentifier,
           roles,
           [],
-          [],
           mask,
           undefined
         );
@@ -1566,7 +1564,6 @@ export class NeptuneProvider implements ResourceProvider {
         // A malformed record only misses detaches: `applyClusterRoles` reads
         // what is live, so an attached role is not attached twice.
         associatedRoleList(previousProperties['AssociatedRoles']) ?? [],
-        described?.AssociatedRoles ?? [],
         context?.maskSecrets,
         context
       );
@@ -2459,10 +2456,11 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Attach the `desired` roles that are not `live` and detach the `previous`
-   * ones `desired` dropped, planned against the live list so a retry after a
+   * Attach the `desired` roles `previous` lacks and detach the `previous`
+   * ones `desired` dropped, as CloudFormation plans them, minus what the live
+   * list (read once `available`) already shows done, so a retry after a
    * partial run neither re-attaches nor re-detaches (neither call is
-   * idempotent). A role cdkd never recorded is left alone. Both calls need
+   * idempotent; `planAssociatedRoleChanges`). Both calls need
    * the cluster `available`, whatever `--no-wait` says. A ModifyDBCluster just
    * before can start only after the wait read `available`, so each call also
    * waits out and resends that refusal (#5194's rule).
@@ -2472,12 +2470,11 @@ export class NeptuneProvider implements ResourceProvider {
     physicalId: string,
     desired: readonly AssociatedRole[],
     previous: readonly AssociatedRole[],
-    live: readonly DBClusterRole[],
     mask: ((text: string) => string) | undefined,
     marks: Pick<UpdateContext, 'markUnsettled' | 'markAttempted'> | undefined
   ): Promise<void> {
-    const { toAdd, toRemove } = planAssociatedRoleChanges(desired, previous, live);
-    if (toAdd.length === 0 && toRemove.length === 0) return;
+    const candidates = planAssociatedRoleChanges(desired, previous);
+    if (candidates.toAdd.length === 0 && candidates.toRemove.length === 0) return;
 
     // Bounded by the resource deadline, which does not cancel this operation:
     // a wait that outlives it would attach after the engine gave up.
@@ -2491,6 +2488,18 @@ export class NeptuneProvider implements ResourceProvider {
       );
     }
     await this.waitForClusterAvailable(logicalId, physicalId, 'changing its roles', waitBudgetMs);
+    const cluster = await this.describeDBCluster(physicalId);
+    if (cluster === undefined) {
+      throw new Error(
+        'DescribeDBClusters returned no cluster while planning its role changes; no role was attached or detached'
+      );
+    }
+    const { toAdd, toRemove } = planAssociatedRoleChanges(
+      desired,
+      previous,
+      cluster.AssociatedRoles ?? []
+    );
+    if (toAdd.length === 0 && toRemove.length === 0) return;
     marks?.markUnsettled?.('AssociatedRoles');
     const whenAvailable = (send: () => Promise<unknown>): Promise<void> =>
       modifyDbInstanceWhenAvailable({
