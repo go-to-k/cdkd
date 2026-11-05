@@ -240,6 +240,16 @@ const CLUSTER_TOP: Bag = fresh({
     UtilizationPerformanceIndex: 50,
   },
   AutoTerminationPolicy: { IdleTimeout: 3600 },
+  MonitoringConfiguration: {
+    CloudWatchLogConfiguration: {
+      Enabled: true,
+      LogGroupName: '/aws/emr/cluster',
+      LogStreamNamePrefix: 'prefix',
+      EncryptionKeyArn: KMS,
+      LogTypes: { STEP_LOGS: ['stdout', 'stderr'] },
+    },
+  },
+  SessionEnabled: true,
   Tags: TAG_LIST,
 });
 

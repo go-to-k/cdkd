@@ -4,6 +4,9 @@ import * as emr from 'aws-cdk-lib/aws-emr';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import type { Construct } from 'constructs';
 
+/** go-to-k/cdkd#5824: `SessionCluster`'s configured log group; `verify.sh` reads and sweeps it by this name. */
+const SESSION_LOG_GROUP_NAME = '/cdkd-integ/emr-cluster/session';
+
 /**
  * Minimal single-node EMR-on-EC2 fixture for the AWS::EMR::Cluster SDK
  * provider (issue #1043). The type is ProvisioningType: NON_PROVISIONABLE,
@@ -272,6 +275,63 @@ export class EmrClusterStack extends cdk.Stack {
       });
       orphanCluster.node.addDependency(serviceRole, ec2Role, instanceProfile);
     }
+
+    // go-to-k/cdkd#5824: a second, unchanging cluster carrying the two
+    // create-only properties `Cluster` cannot: `SessionEnabled` (Spark Connect)
+    // needs an `emr-spark-8.0.0`+ release with Spark, and
+    // `MonitoringConfiguration.CloudWatchLogConfiguration` needs `emr-7.11.0`+
+    // with the AmazonCloudWatchAgent application — moving `Cluster` off
+    // `emr-7.9.0` would change every other phase. Created beside `Cluster` in
+    // Phase 1 (no extra wall clock) and identical in every phase, so no later
+    // deploy touches it. Every value differs from AWS's default (sessions off;
+    // log types STEP_LOGS + SPARK_DRIVER with STDOUT + STDERR; group
+    // `/aws/emr/<id>`; empty stream prefix), so a value that did not reach
+    // AWS reads back as the default and fails Phase 1. Same name and fixture
+    // tag as `Cluster`, so every cluster sweep covers it.
+    //
+    // The log group is NOT a stack resource and the instance profile gets no
+    // CloudWatch Logs grant: the fixture asserts the configuration
+    // DescribeCluster reports, not log delivery, and the agent cannot create
+    // the group without `logs:CreateLogGroup`. `verify.sh`'s cleanup still
+    // deletes the name in case anything created it.
+    const sessionCluster = new emr.CfnCluster(this, 'SessionCluster', {
+      name: 'cdkd-integ-emr',
+      releaseLabel: 'emr-spark-8.0.0',
+      applications: [{ name: 'Spark' }, { name: 'AmazonCloudWatchAgent' }],
+      serviceRole: serviceRole.roleArn,
+      jobFlowRole: instanceProfile.ref,
+      // It idles from Phase 1 to Phase 4, longer than `Cluster`'s 1 h cap, so
+      // a shorter timeout would let it terminate itself before the destroy
+      // that Phase 4 asserts terminated it. 4 h still caps an orphan.
+      autoTerminationPolicy: { idleTimeout: 14400 },
+      instances: {
+        ec2SubnetId: vpc.publicSubnets[0].subnetId,
+        emrManagedMasterSecurityGroup: emrSg.securityGroupId,
+        emrManagedSlaveSecurityGroup: emrSg.securityGroupId,
+        keepJobFlowAliveWhenNoSteps: true,
+        terminationProtected: false,
+        masterInstanceGroup: {
+          instanceCount: 1,
+          instanceType: 'm5.xlarge',
+          market: 'ON_DEMAND',
+          name: 'Master',
+        },
+      },
+      tags: [{ key: 'cdkd-integ', value: 'emr-cluster' }],
+    });
+    // aws-cdk-lib's `CfnCluster` (through 2.275.0) models neither property,
+    // so both are written in the CloudFormation spelling.
+    sessionCluster.addPropertyOverride('SessionEnabled', true);
+    sessionCluster.addPropertyOverride('MonitoringConfiguration', {
+      CloudWatchLogConfiguration: {
+        Enabled: true,
+        LogGroupName: SESSION_LOG_GROUP_NAME,
+        LogStreamNamePrefix: 'cdkd-integ',
+        LogTypes: { STEP_LOGS: ['STDERR'] },
+      },
+    });
+    sessionCluster.node.addDependency(serviceRole, ec2Role, instanceProfile);
+    new cdk.CfnOutput(this, 'SessionClusterId', { value: sessionCluster.ref });
 
     new cdk.CfnOutput(this, 'ClusterId', { value: cluster.ref });
     // Fn::GetAtt MasterPublicDNS — proves the provider's attribute wiring.

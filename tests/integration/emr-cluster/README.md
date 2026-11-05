@@ -15,6 +15,13 @@ EMR clusters).
   of 1 hour as a worst-case orphan cap, and `verify.sh` asserts the cluster
   is `TERMINATED` afterwards (by id AND with no active cluster carrying the
   fixture tag).
+- `SessionCluster` (issue #5824) — a second single-node cluster on
+  `emr-spark-8.0.0` (Spark + AmazonCloudWatchAgent) carrying the create-only
+  `SessionEnabled` and `MonitoringConfiguration`, which `emr-7.9.0` cannot
+  take; it is identical in every phase. Its configured log group
+  (`/cdkd-integ/emr-cluster/session`) is not a stack resource and the
+  instance profile cannot create it: the fixture asserts the configuration,
+  not log delivery.
 - `AWS::EC2::VPC` — minimal network (1 AZ, public subnet only, no NAT).
 - `AWS::IAM::Role` + `AWS::IAM::InstanceProfile` — the EMR service role and
   the EC2 (JobFlow) instance profile the cluster runs under.
@@ -26,7 +33,10 @@ EMR clusters).
    templated config (`StepConcurrencyLevel: 1`, `VisibleToAllUsers: true`),
    that the `MasterPublicDNS` output (`Fn::GetAtt`) matches the AWS-side
    value, and that state routes the resource via the SDK provider
-   (`provisionedBy=sdk`).
+   (`provisionedBy=sdk`). The same deploy creates `SessionCluster`; assert
+   `SessionEnabled: true` and the CloudWatch log configuration (group,
+   stream prefix, `STEP_LOGS: [STDERR]` only — every value differs from
+   AWS's default) reached AWS, with `provisionedBy=sdk` (issue #5824).
 2. **Update** (`CDKD_TEST_UPDATE=true`): `StepConcurrencyLevel` `1 -> 5`
    (`ModifyCluster`), `AutoTerminationPolicy.IdleTimeout` `3600 -> 7200`
    (`PutAutoTerminationPolicy`), tag value change AND tag removal (`AddTags`
@@ -140,8 +150,9 @@ EMR clusters).
    1 -> 2 and adds `UnhealthyNodeReplacement: false`, both of which
    CloudFormation applies in place: the ClusterId must not change, the core
    group must read 2/2 `RUNNING` and the flag `False`.
-4. **Destroy** — terminates the Phase 3c replacement. Asserts both cluster
-   ids are `TERMINATED`, the Phase 3c SG and the VPC / state are gone. A leftover
+4. **Destroy** — terminates the Phase 3c replacement and `SessionCluster`.
+   Asserts those cluster ids are `TERMINATED`, the Phase 3c SG and the
+   VPC / state are gone. A leftover
    running EMR cluster is never acceptable (per instance-hour billing) —
    the phase asserts `aws emr list-clusters --active` reports no cluster
    carrying the fixture's constant tag (`cdkd-integ=emr-cluster`; scoped
@@ -194,6 +205,8 @@ Phase 3b launches two more single-node clusters (one fails in bootstrap,
 one reaches `WAITING` and is then terminated): about 25 more minutes.
 Phase 3c launches one more (the replacement, with a core node): about 10-15
 more minutes. Phase 3d adds a second core node to it: about 5 more minutes.
+`SessionCluster` is created beside the baseline cluster in phase 1, so it
+adds instance-hours but no wall clock.
 
 ## Run
 
