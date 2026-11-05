@@ -185,6 +185,7 @@ export async function synthCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    annotationsCheckedByCaller: true,
   };
 
   const result = await synthesizer.synthesize(synthOptions);

@@ -1,4 +1,8 @@
-import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  SSMClient,
+  GetParameterCommand,
+  type GetParameterCommandOutput,
+} from '@aws-sdk/client-ssm';
 import type { ContextProvider, ContextProviderAwsConfig } from './index.js';
 import { getLogger } from '../../utils/logger.js';
 import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
@@ -30,7 +34,18 @@ export class SSMContextProvider implements ContextProvider {
     const client = new SSMClient({ ...ambientClientDefaults(), ...(region && { region }) });
 
     try {
-      const response = await client.send(new GetParameterCommand({ Name: parameterName }));
+      // `GetParameter` reports an absent parameter by THROWING
+      // `ParameterNotFound`, not by an empty response, so it is read as one
+      // here, as the AWS CDK CLI's `getSsmParameterValue` does; otherwise
+      // `ignoreErrorOnMissingContext` + `dummyValue` were never honoured for a
+      // real miss (go-to-k/cdkd#5805). Every other failure still throws.
+      let response: GetParameterCommandOutput;
+      try {
+        response = await client.send(new GetParameterCommand({ Name: parameterName }));
+      } catch (error) {
+        if ((error as { name?: unknown } | null)?.name !== 'ParameterNotFound') throw error;
+        response = { $metadata: {} };
+      }
 
       if (!response.Parameter || response.Parameter.Value === undefined) {
         // Check if we should suppress this error

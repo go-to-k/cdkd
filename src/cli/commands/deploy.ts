@@ -506,6 +506,7 @@ async function deployCommand(
       // macro-carrying stack outside the deploy set can never block or
       // slow this deploy with a CFn round-trip.
       deferMacroExpansion: true,
+      annotationsCheckedByCaller: true,
     };
     runClock.lap('config, region, credentials');
     const [result, statePrep] = await Promise.all([

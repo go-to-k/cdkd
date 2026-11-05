@@ -249,6 +249,15 @@ describe('synth stack selection (issue #3550)', () => {
     expect(stdout).not.toContain('ROther');
   });
 
+  it('tells the synthesizer it checks annotations itself (go-to-k/cdkd#5805)', async () => {
+    // A failed context lookup reaches `synth` as the app's error annotation,
+    // which `--ignore-errors` may waive; without the flag the synthesizer
+    // would refuse it first.
+    await runSynth(['DataStack']);
+    const passed = mockSynthesize.mock.calls[0]![0] as Record<string, unknown>;
+    expect(passed['annotationsCheckedByCaller']).toBe(true);
+  });
+
   it('SYNTHESIZES THE WHOLE APP regardless of the selection', async () => {
     // `cdk` selects after synthesis and resolves context for the whole
     // assembly. "Select by synthesizing less" is the plausible wrong
