@@ -72,6 +72,8 @@ describe('RDSProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeDBInstancesCommand);
     expect(result).toEqual({
       DBInstanceIdentifier: 'my-instance',
+      // go-to-k/cdkd#5639 / #5640: always a list, empty with no role.
+      AssociatedRoles: [],
       DBInstanceClass: 'db.t3.micro',
       Engine: 'aurora-postgresql',
       DBClusterIdentifier: 'my-cluster',
@@ -112,6 +114,8 @@ describe('RDSProvider.readCurrentState', () => {
 
     expect(result).toEqual({
       DBInstanceIdentifier: 'my-instance',
+      // go-to-k/cdkd#5639 / #5640: always a list, empty with no role.
+      AssociatedRoles: [],
       DBInstanceClass: 'db.t3.micro',
       Engine: 'postgres',
       AllocatedStorage: 20,
@@ -203,6 +207,8 @@ describe('RDSProvider.readCurrentState', () => {
     expect(mockSend.mock.calls[0]?.[0]).toBeInstanceOf(DescribeDBClustersCommand);
     expect(result).toEqual({
       DBClusterIdentifier: 'my-cluster',
+      // go-to-k/cdkd#5639 / #5640: always a list, empty with no role.
+      AssociatedRoles: [],
       Engine: 'aurora-postgresql',
       EngineVersion: '15.3',
       MasterUsername: 'admin',
@@ -253,6 +259,8 @@ describe('RDSProvider.readCurrentState', () => {
 
     expect(result).toEqual({
       DBInstanceIdentifier: 'my-instance',
+      // go-to-k/cdkd#5639 / #5640: always a list, empty with no role.
+      AssociatedRoles: [],
       DBInstanceClass: 'db.t3.micro',
       Engine: 'postgres',
       KmsKeyId: 'arn:aws:kms:us-east-1:123:key/storage',

@@ -103,6 +103,12 @@
 # and disables in one call (asserted live). Cleanup deletes the CloudWatch log
 # groups RDS created for the exports.
 #
+# go-to-k/cdkd#5639 (DBCluster AssociatedRoles): the SecurityCluster attaches
+# an import role for `s3Import` in phase 1 (asserted live; before #5639 the
+# provisionedBy=sdk guard fails) and swaps it for an export role for
+# `s3Export` in phase 2, which detaches one and attaches the other (asserted
+# live). Both roles are stack resources in every phase.
+#
 # go-to-k/cdkd#5639 (DBCluster scalars): phase 1 declares
 # AutoMinorVersionUpgrade false, Performance Insights on with 7-day retention,
 # NetworkType IPV4 and EnableHttpEndpoint true (each asserted live; before
@@ -772,6 +778,29 @@ if [ "${BASE_SCALARS}" != "false true 7 IPV4 true standard open-source-rds-exten
 fi
 echo "    OK: phase 1: SecurityCluster carries AutoMinorVersionUpgrade false, Performance Insights on (7 days), NetworkType IPV4, the Data API on, Database Insights standard and Extended Support disabled (#5639)"
 
+# go-to-k/cdkd#5639: the associations, as `<role name>:<feature>` sorted (RDS
+# answers in its own order). cdkd returns once each attach reads back.
+# usage: sec_roles <DescribeDBClusters JSON>
+sec_roles() {
+  echo "${1}" | jq -r '[.AssociatedRoles[]? | ((.RoleArn | split("/") | last) + ":" + (.FeatureName // ""))] | sort | join(" ")'
+}
+# usage: state_role_name <logical id fragment> -> the IAM role's name from state
+state_role_name() {
+  echo "${STATE}" | jq -r --arg frag "$1" '[.resources | to_entries[] | select(.value.resourceType == "AWS::IAM::Role" and (.key | test($frag))) | .value.physicalId] | first // ""'
+}
+IMPORT_ROLE_NAME=$(state_role_name "SecurityS3ImportRole")
+EXPORT_ROLE_NAME=$(state_role_name "SecurityS3ExportRole")
+if [ -z "${IMPORT_ROLE_NAME}" ] || [ -z "${EXPORT_ROLE_NAME}" ]; then
+  echo "FAIL: #5639: could not resolve the SecurityCluster's import / export role names from state (got '${IMPORT_ROLE_NAME}' / '${EXPORT_ROLE_NAME}')" >&2
+  exit 1
+fi
+BASE_ROLES=$(sec_roles "${CLUSTER}")
+if [ "${BASE_ROLES}" != "${IMPORT_ROLE_NAME}:s3Import" ]; then
+  echo "FAIL: #5639: phase 1: SecurityCluster AssociatedRoles is '${BASE_ROLES}', want '${IMPORT_ROLE_NAME}:s3Import' (the create did not attach the declared role)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: SecurityCluster has the import role attached for s3Import (#5639)"
+
 # --- Phase 1a: drift --revert restores a DECLARED Data API (#5707) -----
 # The template declares EnableHttpEndpoint: true. Turn the Data API off out of
 # band; `cdkd drift --revert` must turn it back on, because the template (not
@@ -1286,6 +1315,16 @@ if [ "${AFTER_LOGS}" != "iam-db-auth-error pending=null" ]; then
   exit 1
 fi
 echo "    OK: phase 2: SecurityCluster exports iam-db-auth-error only; postgresql was disabled (#5639)"
+
+# go-to-k/cdkd#5639: phase 2 swapped the import role (s3Import) for the export
+# role (s3Export). cdkd returns once the detach and the attach read back, so
+# the same read decides: a cdkd sending neither call keeps the import role.
+AFTER_ROLES=$(sec_roles "${AFTER_LOGS_JSON}")
+if [ "${AFTER_ROLES}" != "${EXPORT_ROLE_NAME}:s3Export" ]; then
+  echo "FAIL: #5639: phase 2: SecurityCluster AssociatedRoles is '${AFTER_ROLES}', want '${EXPORT_ROLE_NAME}:s3Export' (the update must detach the dropped import role and attach the export role)" >&2
+  exit 1
+fi
+echo "    OK: phase 2: SecurityCluster detached the import role and attached the export role for s3Export (#5639)"
 
 # go-to-k/cdkd#5639: phase 2 flipped AutoMinorVersionUpgrade, raised the
 # Performance Insights retention to 465 days with DatabaseInsightsMode
