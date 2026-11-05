@@ -57,6 +57,7 @@ import { ProvisioningError } from '../../../src/utils/error-handler.js';
 import {
   isIamPropagationError,
   isRetryableTransientError,
+  retryClassificationText,
 } from '../../../src/deployment/retryable-errors.js';
 
 /**
@@ -545,6 +546,23 @@ describe('CognitoUserPoolProvider', () => {
       EnabledMfas: ['SMS_MFA'],
       SmsConfiguration: { SnsCallerArn: 'arn:aws:iam::1:role/UserPoolsmsRole' },
     };
+
+    it('does NOT retry the SMS-role sns:Publish rejection in the inner loop either (#5809)', async () => {
+      const accessPolicyError = new Error('Role does not have permission to publish with SNS');
+      accessPolicyError.name = 'InvalidSmsRoleAccessPolicyException';
+      mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });
+      mockSend.mockRejectedValueOnce(accessPolicyError); // SetUserPoolMfaConfig
+      mockSend.mockResolvedValueOnce({}); // the catch's DeleteUserPool cleanup
+
+      const error = await rejectionOf(
+        provider.create('UserIdentityUserPool', 'AWS::Cognito::UserPool', SMS_MFA_PROPS)
+      );
+
+      // CreateUserPool, ONE SetUserPoolMfaConfig, the cleanup: no inner retry.
+      expect(mockSend).toHaveBeenCalledTimes(3);
+      // The engine's outer loop is the one that rides the window out.
+      expect(isRetryableTransientError(error, retryClassificationText(error))).toBe(true);
+    });
 
     it('does NOT retry the SMS-role rejection in the inner control-plane loop', async () => {
       mockSend.mockResolvedValueOnce({ UserPool: { Id: 'us-east-1_abc123', Arn: 'arn:p' } });

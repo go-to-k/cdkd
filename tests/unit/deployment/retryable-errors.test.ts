@@ -1440,6 +1440,26 @@ describe('isIamPropagationError', () => {
   });
 });
 
+describe('Cognito SMS-role sns:Publish propagation (#5809)', () => {
+  // Measured verbatim on real AWS (us-east-1) against a role without the grant.
+  const AWS_TEXT = 'Role does not have permission to publish with SNS';
+  const WRAPPED = `Failed to create Cognito User Pool RacedUserPool: ${AWS_TEXT}`;
+
+  it('is matched by exactly the sns:Publish pattern', () => {
+    const matching = IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.filter((p) => WRAPPED.includes(p));
+    expect(matching).toEqual(['does not have permission to publish with SNS']);
+    expect(isIamPropagationError(WRAPPED)).toBe(true);
+    expect(isRetryableTransientError(new Error(WRAPPED), WRAPPED)).toBe(true);
+  });
+
+  it('does not match a different publish denial', () => {
+    const other = 'User is not authorized to perform: SNS:Publish on resource: arn:aws:sns:...';
+    expect(IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS.filter((p) => other.includes(p))).not.toContain(
+      'does not have permission to publish with SNS'
+    );
+  });
+});
+
 describe('Cognito SMS-role trust propagation (#2901)', () => {
   // The two strings the reporter captured, verbatim: the raw AWS text and the
   // exception name beside it in the `cdkd events` JSON.
