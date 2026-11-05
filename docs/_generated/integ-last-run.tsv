@@ -241,7 +241,7 @@ legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (de
 list-parameters	2026-11-04T07:56:00Z	PASS	90	verify.sh	rc ok, orph clean (List<...> params reach AWS as lists; Fn::Split refused)
 local-ecs-service-connect	2026-11-05T06:57:20Z	PASS	19	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-engine-role-identity	2026-11-05T06:56:59Z	PASS	68	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-invoke	2026-11-05T06:49:34Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 7/7 passed
+local-invoke	2026-11-05T09:05:23Z	PASS	25	verify.sh	rc=0; docker sweep clean; after cdk-local 0.158.2 bump (#5800)
 local-invoke-agentcore	2026-11-05T07:11:59Z	PASS	81	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-invoke-agentcore-from-state	2026-11-05T07:10:35Z	PASS	57	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted); fixture 'vp run build' stubbed via PATH shim (dist prebuilt)
 local-invoke-buildkit	2026-11-05T06:49:09Z	PASS	15	verify.sh	rc ok, docker sweep clean, no AWS; BuildKit features all fired
@@ -256,15 +256,15 @@ local-invoke-provided	2026-11-05T06:47:49Z	PASS	20	verify.sh	rc ok, docker sweep
 local-invoke-python	2026-11-05T06:47:29Z	PASS	25	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 invokes passed
 local-invoke-ruby	2026-11-05T06:47:04Z	PASS	20	verify.sh	rc ok, docker sweep clean, no AWS; 4/4 invokes passed
 local-invoke-stage	2026-11-05T07:06:46Z	PASS	24	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-run-task	2026-11-04T12:59:43Z	PASS	20	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
+local-run-task	2026-11-05T09:05:43Z	PASS	20	verify.sh	rc=0; docker sweep clean; after cdk-local 0.158.2 bump (#5800)
 local-run-task-awsvpc	2026-11-04T12:59:43Z	PASS	10	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-run-task-cdkd-assets	2026-11-04T12:59:43Z	PASS	15	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-run-task-from-state	2026-11-04T12:59:43Z	PASS	261	verify.sh	PR #5775 run-task --image-override; new step 10a (uncovered same-stack ECR refuses before boot) + 10b (--image-override + --image-context build served), both red pre-fix; DOCKER_HOST set; destroy 0 errors, docker + override image sweep clean
 local-run-task-multi-container	2026-11-04T12:59:43Z	PASS	11	verify.sh	PR #5775 run-task --image-override regression; rc ok, docker sweep clean
 local-start-agentcore	2026-11-05T07:06:18Z	PASS	11	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-start-alb	2026-11-05T06:47:52Z	PASS	20	verify.sh	cdk-local 0.158.2 bump (#5797); rc ok, docker sweep clean
-local-start-alb-from-state	2026-11-05T07:06:05Z	PASS	303	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
-local-start-api	2026-11-05T06:45:25Z	PASS	26	verify.sh	rc ok, docker sweep clean
+local-start-alb	2026-11-05T08:59:22Z	PASS	20	verify.sh	rc=0; docker sweep clean; after cdk-local 0.158.2 bump (#5800)
+local-start-alb-from-state	2026-11-05T09:04:33Z	PASS	311	verify.sh	rc=0; own temp state bucket; destroy 0 errors, state+AWS orphan-clean, docker clean; after cdk-local 0.158.2 bump (#5800)
+local-start-api	2026-11-05T09:04:58Z	PASS	25	verify.sh	rc=0; docker sweep clean; after cdk-local 0.158.2 bump (#5800)
 local-start-api-container	2026-11-05T06:44:58Z	PASS	10	verify.sh	rc ok, docker sweep clean
 local-start-api-rest-v1-non-proxy	2026-11-05T06:44:46Z	PASS	10	verify.sh	rc ok, docker sweep clean
 local-start-api-websocket	2026-11-05T06:44:34Z	PASS	105	verify.sh	rc ok, docker sweep clean
@@ -272,7 +272,7 @@ local-start-cloudfront	2026-10-29T15:35:22Z	PASS	8	verify.sh	PR #5533 cdk-local 
 local-start-cloudfront-from-state	2026-11-05T07:01:01Z	PASS	220	verify.sh	rc ok, docker sweep clean, orph clean (no CFn/state/log-group leftovers); run on own temp state bucket (deleted)
 local-start-microvm	2026-10-26T04:59:45Z	PASS	25	verify.sh	rc ok, docker clean; rerun @5999c0499
 local-start-microvm-from-state	2026-10-26T06:19:33Z	PASS	301	verify.sh	rc ok, orph clean; state versions remain (history); @c6949c3bd
-local-start-service	2026-11-04T11:52:52Z	PASS	90	verify.sh	PR #5769 cdk-local 0.158.1 bump; rc ok, docker sweep clean, orph clean
+local-start-service	2026-11-05T09:07:08Z	PASS	85	verify.sh	rc=0; own temp state bucket; ECR repo stack destroyed 0 errors, orphan-clean, docker clean; after cdk-local 0.158.2 bump (#5800)
 local-start-service-watch-fast	2026-11-05T06:42:48Z	PASS	45	verify.sh	rc ok, docker sweep clean
 local-start-web-function	2026-10-25T18:43:18Z	PASS	15	verify.sh	rc ok, docker clean; rerun @c9cdb4870
 local-start-web-function-from-state	2026-10-25T18:43:18Z	PASS	95	verify.sh	rc ok, orph clean; rerun @c9cdb4870
