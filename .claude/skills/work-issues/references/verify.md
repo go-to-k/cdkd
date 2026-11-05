@@ -19,7 +19,8 @@ throwaway CFn change set itself: never brief it down to read-only probes,
 #5401), so only the parent finds an integ-time AWS-side rejection:
 run a NEW or edited arm EARLY, to GREEN, once the lane writes it, from a
 `--detach` sibling at the pushed sha (§8-d's `worktree add`, no revert), so no
-fix round waits on it (#2762). It sets no marker and is no §8-d proof (#4618).
+fix round waits on it (#2762). It sets no marker, commits no ledger row (the
+final run's row replaces it; so does §8-d's probe, #5795) and is no §8-d proof (#4618).
 Sequence: reviewers → early run → EVERY finding, nits included → §8-d probe →
 rebase → integ → marker (an hour-long probe stales the base, #5475). A
 UNIT-test-only fix round may overlap the parent's integ in the lane's tree.

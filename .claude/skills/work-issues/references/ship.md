@@ -279,4 +279,5 @@ done
 Every `OPEN` needs a comment saying the issue is now UNCLAIMED, what the merged
 PR closed, and what remains and why, carrying forward anything expensive the
 lane measured. **Write it AFTER the merge, or state the PR's ACTUAL state.**
-Then go on to §10.
+A `backfill-type` body is rewritten by the coverage sync at merge, so its
+classification lines need no hand restore (#5795). Then go on to §10.
