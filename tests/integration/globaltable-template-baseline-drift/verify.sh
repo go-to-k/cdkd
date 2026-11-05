@@ -102,11 +102,27 @@ run_drift() { # usage: run_drift <json file>
   echo "${rc}"
 }
 
+# Deletion protection off. DynamoDB refuses a protection change within 15s of
+# the last one ("... within the previous 15000 milliseconds"), so retry that
+# refusal alone, bounded; any other failure is returned to the caller.
+protection_off() {
+  local out i
+  for i in $(seq 1 12); do
+    if out="$(aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
+      --no-deletion-protection-enabled 2>&1 >/dev/null)"; then
+      return 0
+    fi
+    grep -qF "within the previous" <<<"${out}" || { printf '%s\n' "${out}" >&2; return 1; }
+    sleep 5
+  done
+  printf '%s\n' "${out}" >&2
+  return 1
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
-  aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
-    --no-deletion-protection-enabled >/dev/null 2>&1
+  protection_off >/dev/null 2>&1
   if [ -f "${LOCAL_DIST}" ]; then
     node "${LOCAL_DIST}" state destroy "${STACK}" --state-bucket "${STATE_BUCKET:-}" --region "${REGION}" --yes >/dev/null 2>&1
   fi
@@ -194,8 +210,7 @@ if [ "${RC}" != "1" ] || ! grep -qx 'Replicas' <<<"${PATHS}"; then
   exit 1
 fi
 echo "    drift exit 1, Replicas reported"
-aws dynamodb update-table --table-name "${TABLE}" --region "${REGION}" \
-  --no-deletion-protection-enabled >/dev/null
+protection_off || { echo "FAIL: Phase 4: could not turn deletion protection back off" >&2; exit 1; }
 wait_settled
 
 # --- Phase 5: destroy ----------------------------------------------------------
