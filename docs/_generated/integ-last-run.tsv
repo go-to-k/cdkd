@@ -52,7 +52,7 @@ cc-to-sdk-reroute-mount-target	2026-11-03T04:12:32Z	PASS	296	verify.sh	rc ok, or
 cc-write-only-create-only	2026-11-04T18:09:46Z	PASS	150	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
 cdk-cross-account-lookup-role	2026-10-24T01:12:39Z	PASS	171	verify.sh	PR 5227 rc0 on shared bucket (own-bucket first try failed: lookup role reads default bucket), b1 prefix ok, orph clean
 ci-cd	2026-11-04T18:07:14Z	PASS	55	verify.sh	rc 0 in us-east-1, destroy clean, orph clean
-cloudfront-function-url	2026-10-23T23:55:45Z	PASS	225	verify.sh	rc ok, orph clean, stmt-id fixture fixed
+cloudfront-function-url	2026-11-05T11:24:43Z	PASS	226	verify.sh	rc ok, orph clean
 cloudtrail-trail	2026-10-30T21:13:31Z	PASS	311	verify.sh	rc ok, phase-2 no trail removal warning (#5541), orph clean
 cloudwatch	2026-10-29T22:28:12Z	PASS	185	verify.sh	rc ok, orph clean; alarm EvaluationWindow/PromQL on SDK route
 cloudwatch-anomaly-detector	2026-10-26T05:42:10Z	PASS	61	verify.sh	rc ok, orph clean; TZ=Asia/Tokyo offset-less range read as UTC (5311)
@@ -107,7 +107,7 @@ docdb-restore	2026-11-03T02:25:22Z	PASS	387	verify.sh	rc 0, destroy 0 errors, 0 
 docker-image-asset	2026-11-04T20:19:14Z	PASS	75	verify.sh	rc ok, orph clean (no new ECR image pushed)
 drift-revert	2026-10-25T02:23:30Z	PASS	291	verify.sh	rc ok, orph clean
 drift-revert-arrays	2026-11-04T19:35:08Z	PASS	165	verify.sh	rc ok, orph clean; fixture swept its own Lambda log group
-drift-revert-vpc	2026-10-24T05:58:14Z	PASS	366	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); 22 deleted 0 errors, orph clean
+drift-revert-vpc	2026-11-05T11:30:20Z	PASS	333	verify.sh	rc ok, VPC/NAT/EIP gone, orph clean
 dsql	2026-11-04T06:43:31Z	PASS	180	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamic-ref-cross-region	2026-11-04T21:18:15Z	PASS	175	verify.sh	rc 0, us-east-1+us-west-2, orphans clean in both
 dynamodb-autoscaling	2026-11-04T07:57:30Z	PASS	120	verify.sh	rc ok, destroy 0 errors, 0 orphans (4 phases incl. #4701 rename; no leaked scalable targets)
@@ -155,7 +155,7 @@ eventbridge-pipes	2026-10-29T20:43:22Z	PASS	215	verify.sh	PR #5535 dd4c69bb9; rc
 eventbridge-scheduler	2026-11-05T09:31:41Z	PASS	51	verify.sh	rc 0; destroy 0 errors, 0 orphans; own temp state bucket
 eventbus-policy	2026-10-25T00:07:44Z	PASS	60	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 eventsourcemapping-race	2026-11-05T03:56:10Z	PASS	75	verify.sh	rc ok, orph clean; 2 leaked /aws/lambda log groups deleted
-export	2026-10-24T06:38:32Z	PASS	226	verify.sh	final #5242 round after 7a30f8edb; rebuilt dist (building fixture, ran alone); CFn stack deleted, orph clean
+export	2026-11-05T11:34:13Z	PASS	231	verify.sh	rc ok, orph clean
 export-nested-stack	2026-11-05T03:54:55Z	PASS	186	verify.sh	rc ok, orph clean; fixture ran vp run build, CFn stacks gone
 fallback-recreate-children	2026-11-04T20:04:01Z	PASS	100	verify.sh	rc ok, orph clean
 fifo-sqs-event-source	2026-11-04T10:39:18Z	PASS	180	verify.sh	rc ok, orph clean, Phase 1c #5749 OK
@@ -209,7 +209,7 @@ importvalue-chain	2026-10-25T02:23:30Z	PASS	83	verify.sh	rc ok, orph clean
 infra-security	2026-11-05T09:19:56Z	PASS	213	verify.sh	us-east-1; rc 0, own temp state bucket (deleted), prebuilt dist (cdk-local 0.158.2, no rebuild); destroy clean, 0 orphans
 inplace-attr-propagation	2026-11-04T07:36:26Z	PASS	46	verify.sh	rc ok, orph clean (own state bucket, wrasse)
 intrinsic-functions	2026-11-04T05:57:23Z	PASS	32	standard	deploy+destroy rc 0, orph clean
-intrinsics-torture	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
+intrinsics-torture	2026-11-05T11:20:56Z	PASS	41	verify.sh	rc ok, orph clean
 intrinsics-torture-2	2026-11-04T08:44:47Z	PASS	45	verify.sh	rc 0, 14/14 checks, destroy clean, orph clean (own state bucket)
 kinesis-esm-filter	2026-10-27T12:08:24Z	PASS	90	verify.sh	rc ok, orph clean; #1160 Bisect removal arm, probe-red on origin/main provider
 kinesis-stream-mode-switch	2026-10-29T20:43:22Z	PASS	181	verify.sh	PR #5535 dd4c69bb9; rc 0, destroy 0 errors, orph clean; copy-revert probe RED at Phase 2e
@@ -283,7 +283,7 @@ loggroup-never-expire-guard	2026-11-04T08:44:47Z	PASS	105	verify.sh	rc 0, destro
 logs-loggroup-fix-forward-orphan	2026-10-25T00:07:44Z	PASS	96	verify.sh	rc 0, destroy 0 errors, orph clean (#5270)
 lost-child-after-failed-deploy	2026-11-04T10:46:14Z	PASS	90	verify.sh	rc 0; phase-2 premise matches 'Sibling: ParameterPatternMismatchException', #4443 assertions pass; destroy 0 errors, orph clean
 macro-expansion	2026-11-04T06:21:47Z	PASS	56	verify.sh	batch 7; rc ok, 0 errors, orph clean (2 Lambda log groups leaked, deleted)
-microservices	2026-10-24T06:41:12Z	PASS	55	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (19 deleted)
+microservices	2026-11-05T11:20:14Z	PASS	40	standard	destroy 0 errors, orph clean
 migrate-from-cfn	2026-11-04T23:39:52Z	PASS	367	run.sh	ALL CHECKS PASSED (small+large); ran scratch copy of run.sh without build step, on own temp state bucket via CDKD_STATE_BUCKET; CFn stacks gone; orph clean
 monitoring	2026-11-04T05:45:58Z	PASS	60	standard	1104 sweep b5; 7 del 0 err, 0 orph
 multi-asset	2026-11-04T06:01:56Z	PASS	95	verify.sh	rc 0, orph: 4 Lambda log groups leaked (deleted); #5747 fix: default docker credential store (expired cached ECR token), lazy re-login
@@ -291,6 +291,9 @@ multi-region-same-stack	2026-11-04T08:31:11Z	PASS	37	standard	standard flow, us-
 multi-resource	2026-10-24T06:41:39Z	PASS	85	standard	final #5242 round (engine default --concurrency 20); destroy 0 errors, 0 orphans (17 deleted)
 multi-stack-deps	2026-11-05T11:14:52Z	PASS	74	standard	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
 neptune-fix-forward-orphan	2026-11-05T11:13:38Z	PASS	2301	verify.sh	rc 0, destroy 0 errors, orph clean (sweep N4, own bucket)
+multi-resource	2026-11-05T11:19:34Z	PASS	70	standard	destroy 17 deleted 0 errors; 2 Lambda runtime-created log groups remain (not in template)
+multi-stack-deps	2026-10-24T06:42:03Z	PASS	100	standard	final #5242 round (engine default --concurrency 20); all 3 stacks destroyed 0 errors, 0 orphans
+neptune-fix-forward-orphan	2026-10-23T19:10:51Z	PASS	2280	verify.sh	PR #5205 (#2319) e41c5f73b; us-east-1; own state bucket; probe with src reverted went RED at class-only check; rc ok, destroy clean, orph clean
 neptune-restore	2026-11-02T17:55:35Z	PASS	1848	verify.sh	rc ok, orph clean; pre-fix probe red at provisionedBy (cc-api vs sdk)
 nested-required-preflight	2026-11-04T08:31:11Z	PASS	43	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 nested-stack	2026-11-04T17:48:59Z	PASS	70	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
