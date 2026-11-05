@@ -1910,6 +1910,7 @@
       "flag": "--strict-getatt",
       "integs": [
         "cloudwatch-anomaly-detector",
+        "emr-instance-fleets",
         "getatt-fallback-guard",
         "sns-subscription-update"
       ]
