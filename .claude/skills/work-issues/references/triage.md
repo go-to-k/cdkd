@@ -125,9 +125,9 @@ reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
 reason it (#5107). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
 what they accept; MEASURE a CDK CLI premise by running the inputs through its
 parser from `node_modules`, never by reading its source (#2221). Before
-ranking a backfill row, grep its member in the installed SDK request type
-(`dist-types/models`; the serializer drops a missing one, #5825) and the
-provider's `unhandledByDesign` map.
+ranking an SDK-routed backfill row, grep its member in the installed SDK
+request type (`dist-types/models`; the serializer drops a missing one, #5825)
+and the provider's `unhandledByDesign` map.
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
