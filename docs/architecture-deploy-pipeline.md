@@ -114,10 +114,7 @@ saved, and the app turns it into an error annotation that fails `synth` and
 ...) fail with `Context lookup failed` when a stack they use asked for the
 failed lookup, or when no stack can be matched to it, instead of running on its
 default value; a failure in another stack does not block them, as with the AWS
-CDK CLI. `cdkd list` and `cdkd destroy` go ahead either way. The `local start-*`
-commands that pick their stack after synthesis (`start-service`, `start-alb`,
-`start-cloudfront`, `start-agentcore`, `start-web-function`, `start-microvm`)
-still fail on a failed lookup in any stack.
+CDK CLI. `cdkd list` and `cdkd destroy` go ahead either way.
 
 ```text diagram=synthesizer-loop
 1. Execute CDK app (AppExecutor)

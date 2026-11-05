@@ -131,7 +131,7 @@ describe.each([
     expect(seen.factoryOptions).toHaveLength(1);
     const synthesizer = seen.factoryOptions[0]!['synthesizer'] as Synth;
     await synthesizer.synthesize({ app: 'node app.js' });
-    expect(synthesize).toHaveBeenCalledWith({ app: 'node app.js' });
+    expect(synthesize).toHaveBeenCalledWith({ app: 'node app.js', failedLookupsCheckedByCaller: true });
   });
 
   it("passes the command's --state-bucket to the synthesizer (#2600)", async () => {
@@ -139,7 +139,11 @@ describe.each([
     cmd.setOptionValue('stateBucket', 'my-bucket');
     const synthesizer = seen.factoryOptions[0]!['synthesizer'] as Synth;
     await synthesizer.synthesize({ app: 'node app.js' });
-    expect(synthesize).toHaveBeenCalledWith({ app: 'node app.js', stateBucket: 'my-bucket' });
+    expect(synthesize).toHaveBeenCalledWith({
+      app: 'node app.js',
+      stateBucket: 'my-bucket',
+      failedLookupsCheckedByCaller: true,
+    });
   });
 });
 
@@ -161,6 +165,10 @@ describe.each([
     expect(seen.emulatorArgs).toHaveLength(1);
     const synthesizer = seen.emulatorArgs[0]![4] as Synth;
     await synthesizer.synthesize({ app: 'node app.js' });
-    expect(synthesize).toHaveBeenCalledWith({ app: 'node app.js', stateBucket: 'my-bucket' });
+    expect(synthesize).toHaveBeenCalledWith({
+      app: 'node app.js',
+      stateBucket: 'my-bucket',
+      failedLookupsCheckedByCaller: true,
+    });
   });
 });
