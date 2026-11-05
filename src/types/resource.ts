@@ -1747,8 +1747,11 @@ export interface ResourceProvider {
    * docs/provider-rules.md).
    *
    * MUST be NON-MUTATING, and return BOTH inputs by identity when nothing
-   * applies. Async only so a provider can resolve the same client region its
-   * own `readCurrentState` used; it must issue no AWS call.
+   * applies. Async so a provider can resolve the same client region its own
+   * `readCurrentState` used. It issues no AWS call, except a READ-ONLY lookup
+   * that decides what an AWS value means and whose failure completes
+   * NOTHING, leaving the difference visible: the GlobalTable provider's KMS
+   * `DescribeKey` for a replica key on the AWS managed key (issue #5790).
    *
    * @param resourceType e.g. `AWS::DynamoDB::GlobalTable`
    * @param baseline the drift baseline (`observedProperties`, else `properties`)
