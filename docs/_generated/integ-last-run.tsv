@@ -428,3 +428,4 @@ wafv2	2026-10-29T17:47:25Z	PASS	188	verify.sh	rc ok, orph clean; probe red at as
 wait-condition-handle	2026-11-04T06:31:22Z	PASS	45	verify.sh	rc ok, orph clean
 wide-independent	2026-10-24T07:02:56Z	PASS	1343	verify.sh	final #5242 round, default settings (SDK 10/30, CC 10/20/30); 1 throttling line + retry after ProvisioningError (ThrottlingException) x16 at CC30; destroy 0 errors, orph clean incl SSM docs + Athena wg
 wide-web-functions	2026-10-24T06:46:45Z	PASS	396	verify.sh	final #5242 round, default settings (12 functions, --concurrency 10 20); retry after ProvisioningError (ValidationException) x38 at cc20; destroy 0 errors, orph clean incl log groups
+ec2-subnet-dns64	2026-11-05T10:30:25Z	PASS	200	verify.sh	rc0 orph clean, PR #5778 head 90868a27
