@@ -13,7 +13,7 @@ alb-advanced	2026-11-04T20:19:14Z	PASS	153	standard	deploy rc=0, destroy 17 dele
 api-cognito	2026-11-04T21:34:09Z	PASS	34	standard	us-east-1; own temp state bucket; rc ok, orph clean
 apigateway	2026-10-27T17:38:45Z	PASS	175	verify.sh	rc ok, orph clean; #5408 authorizer ProviderARNs + method scopes arms
 apigatewayv2-update-removal	2026-10-30T07:35:38Z	PASS	207	verify.sh	rc ok, orph clean; #5548 route ApiKeyRequired kept
-apigw-cloudwatch-role-redeploy	2026-10-20T02:29:40Z	PASS	335	verify.sh	deploy+destroy clean, 0 orphans
+apigw-cloudwatch-role-redeploy	2026-11-05T02:49:54Z	PASS	316	verify.sh	rc 0, phases A-C ok, kept roles deleted, account cloudwatchRoleArn restored; orph clean
 apigw-gateway-response	2026-11-04T21:33:33Z	PASS	60	verify.sh	us-east-1; own temp state bucket; rc ok, orph clean
 apigw-stage-props	2026-10-23T16:22:09Z	PASS	139	verify.sh	rc ok, orph clean, #5204 retracted-wiring head e776973
 apigw-stage-throttling	2026-10-21T05:40:40Z	PASS	150	verify.sh	rc ok, orph clean, phase3 REPLACE_FN (#5137) on #5139 2e10ff2da
@@ -167,8 +167,8 @@ fsx-openzfs	2026-10-28T02:59:23Z	PASS	1488	verify.sh	rc ok, destroy 0 errors, or
 fsx-windows	2026-10-28T19:20:50Z	PASS	4833	verify.sh	#5469 PR #5475; Aliases in-place update; rc ok, orph clean, no final backup
 full-stack-demo	2026-11-04T05:17:34Z	PASS	51	standard	deploy 16 res, destroy 16 deleted 0 errors, orph clean
 gc-custom-asset-names	2026-11-04T07:51:26Z	PASS	163	verify.sh	rc ok, orph clean; us-east-2, run alone (a parallel batch's locks make gc refuse) (#2624 PR #4573)
-generated-name-lifecycle	2026-10-20T19:58:09Z	PASS	1040	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
-generated-name-security-group	2026-10-20T06:06:16Z	PASS	120	verify.sh	deploy+destroy clean, 0 orphans
+generated-name-lifecycle	2026-11-05T03:45:05Z	PASS	946	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
+generated-name-security-group	2026-11-05T03:29:19Z	PASS	95	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 getatt-fallback-guard	2026-11-04T21:15:18Z	PASS	140	verify.sh	rc 0, orphans clean (state+AWS, us-east-1)
 getstackoutput-crossregion	2026-11-04T20:19:14Z	PASS	342	verify.sh	re-run after Phase 6a v12+ lower-bound fix: 6a and all later phases pass; rc ok, orph clean us-east-1+us-west-2
 globaltable-fix-forward-orphan	2026-10-24T22:46:19Z	PASS	165	verify.sh	PR #5268 at 947d06203 (rebased onto #5266); us-east-1; own state bucket; rc=0, destroy 0 errors, 0 orphans
@@ -185,7 +185,7 @@ iam-propagation-stress	2026-10-22T10:03:45Z	PASS	75	verify.sh	PR #5170 redaction
 iam-recreate-reattach	2026-10-22T21:41:33Z	PASS	235	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, destroy clean 0 errors, 0 orphans
 iam-role-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	102	verify.sh	rc ok, orph clean, own bucket, #5665 31f909459
 iam-role-policies-drift-clean	2026-11-04T17:48:59Z	PASS	341	verify.sh	rc ok, destroy 0 errors, orph clean, own state bucket
-iam-role-prefixed-name-update	2026-10-20T09:27:49Z	PASS	147	verify.sh	#5064 head re-run, clean
+iam-role-prefixed-name-update	2026-11-05T03:27:44Z	PASS	120	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 iam-secret-derived-principals	2026-10-22T21:41:33Z	PASS	191	verify.sh	PR #5187; parallel batch of 4, shared state bucket; rc ok, no plaintext secret in surviving state versions, 0 orphans
 iam-user-group-fix-forward-orphan	2026-11-02T17:10:26Z	PASS	139	verify.sh	rc ok, orph clean, own bucket, #5665 31f909459
 import-attribute-readback	2026-11-04T09:00:37Z	PASS	161	verify.sh	batch 15; rc ok, orph clean
@@ -199,7 +199,7 @@ import-heal-prefix-record	2026-11-04T20:04:01Z	PASS	170	verify.sh	rc ok, orph cl
 import-lambda-url-attributes	2026-11-04T06:43:31Z	PASS	115	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 import-migrate-appsync	2026-10-30T05:02:32Z	PASS	115	verify.sh	#5540 outputs = CFn (KeyArn/KeyRef/SchemaRef); rc ok, orph clean, versions swept
 import-migrate-vpc	2026-11-04T22:03:16Z	PASS	356	verify.sh	rc ok, orph clean; VPC confirmed gone; us-east-1; own temp state bucket
-import-nested-stack	2026-10-20T04:27:51Z	PASS	155	verify.sh	deploy+destroy clean, 0 orphans
+import-nested-stack	2026-11-05T03:25:44Z	PASS	151	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 import-noecho-parameter	2026-11-04T20:04:01Z	PASS	126	verify.sh	rc ok, orph clean
 import-reimport-masked-attrs	2026-11-04T21:03:16Z	PASS	174	verify.sh	rc 0, destroy 0 errors, 0 surviving state versions, orph clean (state keys, live resources, no leaked log groups); own temp state bucket
 import-retain-destroy	2026-11-04T08:44:47Z	PASS	140	verify.sh	rc 0, destroy clean, retained Kept param removed by fixture, orph clean (own state bucket)
@@ -220,7 +220,7 @@ lambda-arch-switch	2026-11-04T06:31:22Z	PASS	60	verify.sh	rc ok, orph clean
 lambda-capacity-provider-default-name	2026-11-02T16:01:45Z	PASS	616	verify.sh	rc ok, orph clean (#5649)
 lambda-config-field-removal	2026-11-04T06:43:31Z	PASS	100	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 lambda-destinations	2026-10-24T14:12:33Z	PASS	71	verify.sh	rc ok, orph clean
-lambda-durable-replacement	2026-10-20T06:12:01Z	PASS	170	verify.sh	deploy+destroy clean, 0 orphans
+lambda-durable-replacement	2026-11-05T03:23:13Z	PASS	125	verify.sh	rc=0, own temp bucket, destroy clean, orphan scan clean (state+iam+lambda+logs+sg+ddb)
 lambda-env-removal	2026-11-04T06:31:22Z	PASS	60	verify.sh	rc ok, orph clean
 lambda-esm-documentdb	2026-11-02T01:39:49Z	PASS	897	verify.sh	#5611 final @77ac0cf: rc ok, 0 orphans, watchdog 0
 lambda-esm-self-managed-kafka	2026-11-01T00:07:49Z	PASS	201	verify.sh	rc ok, orph clean; #3850 Queue create/update, mode refusal, collision, --replace
@@ -228,13 +228,13 @@ lambda-event-invoke-config-update	2026-10-24T14:12:33Z	PASS	136	verify.sh	rc ok,
 lambda-fix-forward-orphan	2026-10-29T15:53:44Z	PASS	142	verify.sh	rc 0, 0 orphans; #5511 at ef3ea089e (src same as 230a2ce27)
 lambda-layer-version-update	2026-10-26T11:08:47Z	PASS	126	verify.sh	rc ok, orph clean
 lambda-log-retention	2026-11-04T05:45:58Z	PASS	91	verify.sh	1104 sweep b5; rc ok, 0 orph
-lambda-microvm-image	2026-10-20T05:07:15Z	PASS	862	verify.sh	rc ok, orph clean; #5105
+lambda-microvm-image	2026-11-05T03:14:59Z	PASS	827	verify.sh	rc 0, all phases ok; deleted leftover log group /aws/lambda-microvms/cdkd-integ-microvm-image; orph clean
 lambda-network-connector	2026-10-30T10:53:30Z	PASS	979	verify.sh	rc 0, orph clean; PR #5123 e1e18f02a ElasticIpConfiguration refusal; probe red at 'deploy declaring ElasticIpConfiguration SUCCEEDED'
 lambda-reserved-concurrency	2026-11-04T06:31:22Z	PASS	50	verify.sh	rc ok, orph clean
 lambda-snapstart	2026-11-04T06:31:22Z	PASS	190	verify.sh	rc ok, orph clean
-lambda-url-authtype-replay	2026-10-20T05:07:15Z	PASS	150	verify.sh	rc ok, orph clean; #5105
+lambda-url-authtype-replay	2026-11-05T03:01:10Z	PASS	130	verify.sh	rc 0, live URL stayed IAM-guarded in all phases; orph clean
 lambda-versioning	2026-11-04T05:45:58Z	PASS	65	standard	1104 sweep b5; 4 del 0 err, 0 orph
-lambda-web-function-revision-replace	2026-10-20T19:58:09Z	PASS	452	verify.sh	PR #5100 pre-merge run, rc ok, orph clean
+lambda-web-function-revision-replace	2026-11-05T02:58:59Z	PASS	442	verify.sh	rc 0, old revisions deleted after endpoint moved; orph clean
 launchtemplate-asg-inplace	2026-11-01T07:58:39Z	PASS	195	verify.sh	rc ok, orph clean; #2762 ASG PlacementGroup/InstanceLifecyclePolicy/AvailabilityZoneIds, PR 5595
 legacy-bucket-name-fallback	2026-11-04T05:26:26Z	PASS	22	standard	standard flow only; legacy-name fallback scenario not exercised (manual scaffold per README); explicit --state-bucket, destroy 1 deleted 0 errors; account clean
 legacy-state-migration	2026-11-04T05:17:34Z	PASS	25	standard	own temp bucket (deleted); legacy v1 key migrated to region key, destroy clean; orph clean
@@ -276,7 +276,7 @@ local-start-service	2026-11-04T11:52:52Z	PASS	90	verify.sh	PR #5769 cdk-local 0.
 local-start-service-watch-fast	2026-10-22T05:48:49Z	PASS	62	verify.sh	PR #5159 cdk-local 0.153.2 bump (toolkit-lib 1.44); rc ok, docker sweep clean, orph clean
 local-start-web-function	2026-10-25T18:43:18Z	PASS	15	verify.sh	rc ok, docker clean; rerun @c9cdb4870
 local-start-web-function-from-state	2026-10-25T18:43:18Z	PASS	95	verify.sh	rc ok, orph clean; rerun @c9cdb4870
-log-pipeline	2026-10-20T06:16:25Z	PASS	185	standard	PASS on retry; 1st attempt hit CWL subscription-filter invoke-permission eventual-consistency (env flake)
+log-pipeline	2026-11-05T02:51:36Z	PASS	100	standard	deploy+destroy ok (12 deleted, 0 errors); orph clean
 loggroup-class-guard	2026-10-22T07:45:16Z	PASS	135	verify.sh	PR #5161 (#2319) @405935760; us-east-1; rc ok, orph clean; own state bucket
 loggroup-kms-associate	2026-11-04T08:44:47Z	PASS	50	verify.sh	rc 0, destroy clean, orph clean (own state bucket)
 loggroup-never-expire-guard	2026-11-04T08:44:47Z	PASS	105	verify.sh	rc 0, destroy clean, orph clean (own state bucket)
