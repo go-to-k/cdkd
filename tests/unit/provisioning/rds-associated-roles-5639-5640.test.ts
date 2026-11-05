@@ -482,6 +482,28 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
+    it.each([
+      [CLUSTER, 'c-1'],
+      [INSTANCE, 'i-1'],
+    ])('%s: a re-run after a partial swap plans against the live list read after the wait', async (type, id) => {
+      // An earlier run already detached A and attached B; the record still says A.
+      const a = { RoleArn: ROLE_A, FeatureName: 's3Import' };
+      const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
+      arm({ roles: [b] });
+      const base = type === CLUSTER ? CLUSTER_BASE : INSTANCE_BASE;
+      const markUnsettled = vi.fn();
+      await provider.update(
+        'L',
+        id,
+        type,
+        { ...base, AssociatedRoles: [b] },
+        { ...base, AssociatedRoles: [a] },
+        { markUnsettled }
+      );
+      expect(names().filter((n) => n.includes('Role'))).toEqual([]);
+      expect(markUnsettled).not.toHaveBeenCalled();
+    });
+
     it('does not re-attach a declared role detached outside cdkd, as CloudFormation does not', async () => {
       // The template and the record both declare ROLE_A; AWS no longer holds it.
       arm({ roles: [] });
