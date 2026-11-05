@@ -1,4 +1,5 @@
 import type { CdkAppSynthesizer } from 'cdk-local';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { Synthesizer } from '../../synthesis/synthesizer.js';
 import {
   getAssumedRoleCredentials,
@@ -47,11 +48,26 @@ export function cdkdHostSynthesizer(
       if ((roleArn || process.env['CDKD_ROLE_ARN']) && getAssumedRoleCredentials() === undefined) {
         publishAssumedRoleFromEnv();
       }
-      return new Synthesizer().synthesize({
+      const { stacks, failedLookups } = await new Synthesizer().synthesize({
         ...opts,
         ...(stateBucket !== undefined && { stateBucket }),
         ...(opts.profile !== undefined && { macroExpandS3ClientOpts: { profile: opts.profile } }),
+        failedLookupsCheckedByCaller: true,
       });
+      return {
+        stacks,
+        // cdk-local picks the served stacks after synthesis and calls this
+        // before it reads state or starts anything: a failed context lookup
+        // blocks only the stacks that asked for it (go-to-k/cdkd#5812). The
+        // contract passes names, so two stacks sharing a name in different
+        // regions are both checked: a refusal too many, never a miss.
+        checkSelectedStacks: (stackNames) =>
+          refuseFailedLookups(
+            stacks.filter((stack) => stackNames.includes(stack.stackName)),
+            stacks,
+            failedLookups
+          ),
+      };
     },
   };
 }

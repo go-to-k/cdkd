@@ -30,6 +30,7 @@ describe('cdkdHostSynthesizer', () => {
       output: 'out',
       region: 'us-west-2',
       context: { k: 'v' },
+      failedLookupsCheckedByCaller: true,
     });
   });
 
@@ -38,7 +39,7 @@ describe('cdkdHostSynthesizer', () => {
     const synthesizer = cdkdHostSynthesizer(() => ({ stateBucket: bucket }));
     bucket = 'my-bucket';
     await synthesizer.synthesize({ app: 'a' });
-    expect(synthesize).toHaveBeenCalledWith({ app: 'a', stateBucket: 'my-bucket' });
+    expect(synthesize).toHaveBeenCalledWith({ app: 'a', stateBucket: 'my-bucket', failedLookupsCheckedByCaller: true });
   });
 
   it('passes the profile to the macro-expansion upload', async () => {
@@ -47,6 +48,7 @@ describe('cdkdHostSynthesizer', () => {
       app: 'a',
       profile: 'dev',
       macroExpandS3ClientOpts: { profile: 'dev' },
+      failedLookupsCheckedByCaller: true,
     });
   });
 
@@ -61,6 +63,53 @@ describe('cdkdHostSynthesizer', () => {
     } finally {
       setLevel.mockRestore();
     }
+  });
+
+  // go-to-k/cdkd#5812: cdk-local picks the served stacks after synthesis, so a
+  // failed context lookup is refused through the hook it calls with them.
+  describe('a failed context lookup', () => {
+    const stacks = [
+      { stackName: 'StackA', messages: [] },
+      {
+        stackName: 'StackB',
+        messages: [{ level: 'error', path: '/StackB', message: 'ParamFailed: denied' }],
+      },
+    ];
+    const failedLookups = [{ key: 'ssm:k', error: 'ParamFailed: denied' }];
+
+    it('blocks only a command serving the stack that asked for it', async () => {
+      synthesize.mockResolvedValueOnce({ stacks, failedLookups } as never);
+      const result = await cdkdHostSynthesizer(() => ({})).synthesize({ app: 'a' });
+
+      expect(result.stacks).toBe(stacks);
+      expect(() => result.checkSelectedStacks?.(['StackA'])).not.toThrow();
+      expect(() => result.checkSelectedStacks?.(['StackB'])).toThrow(
+        'Context lookup failed: ssm:k: ParamFailed: denied'
+      );
+      expect(() => result.checkSelectedStacks?.(['StackA', 'StackB'])).toThrow(
+        'Context lookup failed'
+      );
+    });
+
+    it('blocks every command when no stack can be matched to the failure', async () => {
+      synthesize.mockResolvedValueOnce({
+        stacks,
+        failedLookups: [{ key: 'ssm:other', error: 'Unmatched failure' }],
+      } as never);
+      const result = await cdkdHostSynthesizer(() => ({})).synthesize({ app: 'a' });
+
+      expect(() => result.checkSelectedStacks?.(['StackA'])).toThrow(
+        'Context lookup failed: ssm:other: Unmatched failure'
+      );
+    });
+
+    it('passes every selection when no lookup failed', async () => {
+      synthesize.mockResolvedValueOnce({ stacks } as never);
+      const result = await cdkdHostSynthesizer(() => ({})).synthesize({ app: 'a' });
+
+      expect(result.checkSelectedStacks).toBeTypeOf('function');
+      expect(() => result.checkSelectedStacks?.(['StackA', 'StackB'])).not.toThrow();
+    });
   });
 
   describe('--role-arn', () => {
