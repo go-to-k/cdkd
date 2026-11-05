@@ -1714,7 +1714,7 @@ describe('cdkd destroy: a Stage that failed to load fails synthesis (go-to-k/cdk
 
   // go-to-k/cdkd#5807: destroy never refuses a failed context lookup, so its
   // synthesis tells the Synthesizer the caller owns that check.
-  it('synthesizes with failedLookupsCheckedByCaller and destroys despite a failed lookup', async () => {
+  it('synthesizes with failedLookupsCheckedByCaller and destroys despite an unattributable failed lookup', async () => {
     mockSynthesize.mockResolvedValue({
       manifest: {},
       assemblyDir: '/tmp/cdk.out',

@@ -258,6 +258,38 @@ describe('synth stack selection (issue #3550)', () => {
     expect(passed['failedLookupsCheckedByCaller']).toBe(true);
   });
 
+  // go-to-k/cdkd#5807: `synth` waives annotations with --ignore-errors, but a
+  // lookup failure no stack carries has no annotation to waive.
+  it('refuses a failed lookup no stack carries, whatever the selection', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: THREE.map((n) => makeStack(n)),
+      assemblyDir: '/tmp/cdk.out',
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    });
+    const { stdout, stderr } = await runSynth(['DataStack', '--ignore-errors']);
+
+    expect(stderr).toContain('Context lookup failed: ssm:k: AccessDenied');
+    expect(stdout).not.toContain('Resources:');
+  });
+
+  it('does not refuse a failed lookup an unselected stack carries', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        makeStack('DataStack'),
+        {
+          ...makeStack('AppStack'),
+          messages: [{ level: 'error', path: '/AppStack', message: 'AccessDenied' }],
+        },
+      ],
+      assemblyDir: '/tmp/cdk.out',
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    });
+    const { stdout, stderr } = await runSynth(['DataStack']);
+
+    expect(stderr).not.toContain('Context lookup failed');
+    expect(stdout).toContain('RDataStack');
+  });
+
   it('SYNTHESIZES THE WHOLE APP regardless of the selection', async () => {
     // `cdk` selects after synthesis and resolves context for the whole
     // assembly. "Select by synthesizing less" is the plausible wrong

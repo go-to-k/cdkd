@@ -19,6 +19,8 @@ const runEcsTaskMock = vi.fn();
 const synthMock = vi.hoisted(() => ({
   failedLookups: undefined as Array<{ key: string; error: string }> | undefined,
   options: [] as unknown[],
+  stacks: undefined as Array<Record<string, unknown>> | undefined,
+  resolveOverride: undefined as (() => unknown) | undefined,
 }));
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
@@ -67,7 +69,7 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
     synthesize: vi.fn().mockImplementation((opts: unknown) => {
       synthMock.options.push(opts);
-      return Promise.resolve({ stacks, failedLookups: synthMock.failedLookups });
+      return Promise.resolve({ stacks: synthMock.stacks ?? stacks, failedLookups: synthMock.failedLookups });
     }),
   })),
 }));
@@ -75,6 +77,14 @@ vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal
   ...(await importOriginal<object>()),
   createLocalStateProvider: createLocalStateProviderMock,
 }));
+vi.mock('../../../src/local/ecs-task-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/ecs-task-resolver.js')>();
+  return {
+    ...actual,
+    resolveEcsTaskTarget: (...args: Parameters<typeof actual.resolveEcsTaskTarget>) =>
+      synthMock.resolveOverride ? synthMock.resolveOverride() : actual.resolveEcsTaskTarget(...args),
+  };
+});
 vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   createEcsRunState: vi.fn().mockReturnValue({ containers: [], entries: new Map() }),
@@ -155,6 +165,8 @@ describe('cdkd local run-task and a failed context lookup (go-to-k/cdkd#5807)', 
 
   afterEach(() => {
     synthMock.failedLookups = undefined;
+    synthMock.stacks = undefined;
+    synthMock.resolveOverride = undefined;
     asking['messages'] = savedMessages;
   });
 
@@ -184,4 +196,9 @@ describe('cdkd local run-task and a failed context lookup (go-to-k/cdkd#5807)', 
 
     expect(runEcsTaskMock).toHaveBeenCalledTimes(1);
   });
+
+  // The early check has no candidate for a bare id over several stacks, so the
+  // check after resolution is the one that places the failure. The real
+  // resolver refuses such a target itself, so it is stood in for here with a
+  // task resolved to the asking stack.
 });

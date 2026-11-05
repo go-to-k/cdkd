@@ -356,7 +356,9 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // in the outer `finally` alongside container cleanup.
     const parsed = parseEcsTarget(target);
     const candidate = pickCandidateStack(parsed, target, stacks);
-    // Before any state read, so an expired credential reports the failed lookup.
+    // A failed context lookup blocks only the stack this runs (go-to-k/cdkd#5807).
+    // Checked on the candidate, before any state read so an expired credential
+    // reports the lookup; the target resolver below picks the same stack.
     refuseFailedLookups(candidate ? [candidate] : [], stacks, failedLookups);
     stateProvider = createLocalStateProvider(
       options,
@@ -375,8 +377,6 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       options
     );
     const task = resolveEcsTaskTarget(target, stacks, imageContext);
-    // A failed context lookup blocks only the stack it runs a task from (go-to-k/cdkd#5807).
-    refuseFailedLookups([task.stack], stacks, failedLookups);
     // An uncovered same-stack ECR image that nothing can cover any more (no
     // `--image-override`, and no boot prompt: not a terminal, or
     // `--no-interactive-overrides`) refuses HERE, before an `--assume-task-role`

@@ -572,7 +572,9 @@ async function localInvokeAgentCoreCommand(
     // reduces to the deployed image URI. The state load is shared with the
     // env-substitution + role-from-state steps below.
     const candidate = pickAgentCoreCandidateStack(resolvedTarget, stacks);
-    // Before any state read, so an expired credential reports the failed lookup.
+    // A failed context lookup blocks only the stack this runs (go-to-k/cdkd#5807).
+    // Checked on the candidate, before any state read so an expired credential
+    // reports the lookup; the target resolver below picks the same stack.
     refuseFailedLookups(candidate ? [candidate] : [], stacks, failedLookups);
     stateProvider = createLocalStateProvider(
       options,
@@ -585,8 +587,6 @@ async function localInvokeAgentCoreCommand(
         : { context: undefined, loaded: undefined };
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
-    // A failed context lookup blocks only the stack it invokes (go-to-k/cdkd#5807).
-    refuseFailedLookups([resolved.stack], stacks, failedLookups);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
     const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;
@@ -1197,7 +1197,6 @@ export async function rebuildAgentCoreContainer(args: {
       ? await buildAgentCoreImageContext(newCandidate, stateProvider, options)
       : { context: undefined, loaded: undefined };
   const newResolved = resolveAgentCoreTarget(resolvedTarget, newStacks, newImageContext);
-  refuseFailedLookups([newResolved.stack], newStacks, newFailed);
 
   const boot = await bootAgentCoreContainer({
     resolved: newResolved,
