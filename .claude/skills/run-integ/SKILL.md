@@ -319,7 +319,8 @@ verify, clean up.
 11. **Record the run in the integ ledger (MANDATORY — every run, pass OR fail)**:
     `docs/_generated/integ-last-run.tsv` is a COMMITTED update-type ledger (one
     row per test) feeding `/pick-integ`. Write it on EVERY invocation, right
-    after step 9 (or right after a failure).
+    after step 9 (or right after a failure) — except a `/work-issues` EARLY run
+    or §8-d probe, which commits none: the final run's row replaces it (#5795).
 
     Columns (TAB): `test  last_run_iso  result  duration_s  flow  note`. `result`
     is `PASS` only at the same bar as step 9's marker (destroy 0 errors / 0
