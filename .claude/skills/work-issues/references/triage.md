@@ -27,8 +27,7 @@ slice's `created_at` moves with the coverage map, so §3-0 misreads it.
 
 To WORK the campaign, take a type's own issue (`gh issue list --label
 backfill-type`) and read its comments, which hold the claims and measurements —
-REQUIRED before returning an empty pick, since this query hides them
-(2026-11-02: a "0 picks" left four unclaimed type issues unread);
+REQUIRED before returning an empty pick, since this query hides them;
 §4's claim comment goes there, and `filing.md` §5-f says when to write `Closes`.
 A row no live run can prove (AWS-removed preview, third-party account)
 CLOSES via `unhandledByDesign` plus the measured reason: still a silent-drop
@@ -125,7 +124,10 @@ BEFORE design (#3769): measure a removal ALONE and BESIDE another change, poll
 reads for minutes (lag reads as "CFn ignores it"), and measure an ORDER, never
 reason it (#5107). cdkd may refuse what CFn or the AWS CDK CLI rejects, never
 what they accept; MEASURE a CDK CLI premise by running the inputs through its
-parser from `node_modules`, never by reading its source (#2221).
+parser from `node_modules`, never by reading its source (#2221). Before
+ranking a backfill row, grep its member in the installed SDK request type
+(`dist-types/models`; the serializer drops a missing one, #5825) and the
+provider's `unhandledByDesign` map.
 
 **An issue one maintainer answer unblocks is a candidate, not "blocked"** — a
 design choice, a go-ahead (a re-measure, a sibling repo's release, a
