@@ -431,7 +431,42 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
     await runDeploy(['--yes', '--dry-run']);
 
     expect(synthesize).toHaveBeenCalledTimes(1);
-    expect(synthesize.mock.calls[0]![0]).toMatchObject({ annotationsCheckedByCaller: true });
+    expect(synthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+  });
+
+  async function runWithLookups(stacks: unknown[], argv: string[]): Promise<number | undefined> {
+    const { Synthesizer } = await import('../../../src/synthesis/synthesizer.js');
+    const synthesize = vi.fn(async () => ({
+      stacks,
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    }));
+    vi.mocked(Synthesizer).mockImplementationOnce(
+      () => ({ synthesize, expandMacrosForStacks: expandMacrosSpy }) as never
+    );
+    return runDeploy(argv);
+  }
+
+  it('refuses a failed lookup no stack carries, before any deploy side effect (go-to-k/cdkd#5807)', async () => {
+    const code = await runWithLookups([makeStack('Root')], ['--yes']);
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      'Context lookup failed: ssm:k: AccessDenied'
+    );
+    expectNothingStarted();
+  });
+
+  it('does not refuse a failed lookup an unselected stack carries (go-to-k/cdkd#5807)', async () => {
+    const asking = makeStack('Asking', {
+      messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
+    });
+    const code = await runWithLookups([makeStack('Root'), asking], ['Root', '--yes', '--dry-run']);
+
+    expect(code).toBeUndefined();
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+      'Context lookup failed'
+    );
+    expect(expandMacrosSpy).toHaveBeenCalled();
   });
 
   it('asks for the account id while synthesis runs, not after it (#5200)', async () => {

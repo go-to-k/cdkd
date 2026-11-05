@@ -216,6 +216,9 @@ async function listCommand(
     // so a macro app lists without an AWS region or CloudFormation
     // access.
     deferMacroExpansion: true,
+    // A failed context lookup does not change which stacks exist, and `cdk
+    // list` does not refuse one either (go-to-k/cdkd#5807).
+    failedLookupsCheckedByCaller: true,
   };
 
   const result = await synthesizer.synthesize(synthOptions);

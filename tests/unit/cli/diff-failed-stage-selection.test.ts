@@ -235,3 +235,67 @@ describe('cdkd diff of a stackName two regions share (issue #5176)', () => {
     expect(info).toContain('Calculating diff for stack: Shared (UsWest/Api)');
   });
 });
+
+// go-to-k/cdkd#5807: a failed context lookup blocks the diff only for a stack
+// that asked for it, as the AWS CDK CLI validates only the selected stacks.
+describe('cdkd diff and a failed context lookup (issue #5807)', () => {
+  beforeEach(() => {
+    mockSynthesize.mockReset();
+    mockLoggerError.mockReset();
+    mockExpandMacros.mockClear();
+  });
+
+  const failedLookups = [{ key: 'ssm:account=1:parameterName=/p:region=us-east-1', error: 'AccessDenied' }];
+  const asking = {
+    ...makeStack('Asking'),
+    messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
+  };
+
+  it('diffs a stack that did not ask for the failed lookup', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('Other'), asking],
+      failedLookups,
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    await runDiff(['Other']);
+
+    expect(lastExitCode).toBeUndefined();
+    expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    expect(mockExpandMacros).toHaveBeenCalledWith(
+      [expect.objectContaining({ stackName: 'Other' })],
+      expect.anything()
+    );
+  });
+
+  it('refuses the stack that asked for it, before anything is diffed', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('Other'), asking],
+      failedLookups,
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const reported = await runDiff(['Asking']);
+
+    expect(lastExitCode).toBe(1);
+    expect(reported).toContain('Context lookup failed: ssm:account=1:parameterName=/p:region=us-east-1: AccessDenied');
+    expect(mockExpandMacros).not.toHaveBeenCalled();
+  });
+
+  it('refuses a failure no stack carries even for a stack that did not ask', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [makeStack('Other'), makeStack('Asking')],
+      failedLookups,
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+    });
+
+    const reported = await runDiff(['Other']);
+
+    expect(lastExitCode).toBe(1);
+    expect(reported).toContain('Context lookup failed');
+    expect(mockExpandMacros).not.toHaveBeenCalled();
+  });
+});

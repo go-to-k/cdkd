@@ -16,6 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test'
 
 const createLocalStateProviderMock = vi.fn().mockReturnValue(undefined);
 const runEcsTaskMock = vi.fn();
+const synthMock = vi.hoisted(() => ({
+  failedLookups: undefined as Array<{ key: string; error: string }> | undefined,
+  options: [] as unknown[],
+}));
 
 vi.mock('../../../src/local/docker-runner.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -39,7 +43,7 @@ const taskDef = (cdkPath: string) => ({
   Properties: { Family: 'fam', ContainerDefinitions: [{ Name: 'app', Image: 'nginx' }] },
   Metadata: { 'aws:cdk:path': cdkPath },
 });
-const stacks = [
+const stacks: Array<Record<string, unknown>> = [
   {
     stackName: 'Top',
     displayName: 'Top',
@@ -61,7 +65,10 @@ const stacks = [
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   Synthesizer: vi.fn().mockImplementation(() => ({
-    synthesize: vi.fn().mockResolvedValue({ stacks }),
+    synthesize: vi.fn().mockImplementation((opts: unknown) => {
+      synthMock.options.push(opts);
+      return Promise.resolve({ stacks, failedLookups: synthMock.failedLookups });
+    }),
   })),
 }));
 vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => ({
@@ -75,6 +82,7 @@ vi.mock('../../../src/local/ecs-task-runner.js', async (importOriginal) => ({
   runEcsTask: runEcsTaskMock,
 }));
 
+const { getLogger } = await import('../../../src/utils/logger.js');
 const { createLocalRunTaskCommand } = await import(
   '../../../src/cli/commands/local-run-task.js'
 );
@@ -123,5 +131,57 @@ describe('cdkd local run-task: the state source follows a Stage target (go-to-k/
     await runTask('Top/TD');
 
     expect(createLocalStateProviderMock.mock.calls[0]?.slice(1)).toEqual(['Top', 'us-east-1']);
+  });
+});
+
+// go-to-k/cdkd#5807: a failed context lookup blocks only the stack the task runs from.
+describe('cdkd local run-task and a failed context lookup (go-to-k/cdkd#5807)', () => {
+  const asking = stacks[1]!;
+  const savedMessages = asking['messages'];
+
+  beforeEach(() => {
+    createLocalStateProviderMock.mockClear();
+    runEcsTaskMock.mockReset();
+    runEcsTaskMock.mockResolvedValue({
+      state: { network: { networkName: 'cdkd-unit-net' } },
+      exitCode: 0,
+      essentialContainerName: undefined,
+    });
+    process.env['CDKD_APP'] = 'node app.js';
+    synthMock.options = [];
+    synthMock.failedLookups = [{ key: 'ssm:k', error: 'AccessDenied' }];
+    asking['messages'] = [{ level: 'error', path: '/MyStage/Api', message: 'AccessDenied' }];
+  });
+
+  afterEach(() => {
+    synthMock.failedLookups = undefined;
+    asking['messages'] = savedMessages;
+  });
+
+  it('refuses a task in the stack that asked, before the run', async () => {
+    const errorSpy = vi.spyOn(getLogger(), 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit-mock');
+    }) as never);
+    try {
+      await expect(runTask('MyStage/Api/TD')).rejects.toThrow('process.exit-mock');
+      expect(errorSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+        'Context lookup failed: ssm:k: AccessDenied'
+      );
+    } finally {
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(synthMock.options[0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    // The early refusal precedes the state-provider construction.
+    expect(createLocalStateProviderMock).not.toHaveBeenCalled();
+    expect(runEcsTaskMock).not.toHaveBeenCalled();
+  });
+
+  it('runs a task in a stack that did not ask', async () => {
+    await runTask('Top/TD');
+
+    expect(runEcsTaskMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,6 +4,7 @@ import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import { AppExecutor } from './app-executor.js';
 import { AssemblyReader, type StackInfo } from './assembly-reader.js';
 import { ContextStore, isTransientContextValue } from './context-store.js';
+import { failedLookupsError, type FailedLookup } from './failed-lookups.js';
 import { ContextProviderRegistry } from './context-providers/index.js';
 import { containsMacro, enumerateMacros } from './macro-detector.js';
 import { expandMacros, type ExpandMacrosOptions } from './macro-expander.js';
@@ -128,15 +129,17 @@ export interface SynthesisOptions {
   deferMacroExpansion?: boolean;
 
   /**
-   * The caller runs `processStackMessages` over the stacks it uses, so a
-   * failed context lookup reaches it as the error annotation the app adds
-   * (`synth` / `deploy`, where `--ignore-errors` then decides). Unset, a lookup
-   * that failed and is still missing when resolution stops making progress is
-   * a `SynthesisError` here instead: no other command reads annotations, and
-   * it would otherwise run on the lookup's dummy value
+   * The caller refuses a failed context lookup itself, for the stacks it
+   * selected: `synth` / `deploy` through the error annotation the app adds
+   * (`processStackMessages`, where `--ignore-errors` then decides), every other
+   * selecting command through `refuseFailedLookups` with the result's
+   * `failedLookups`, and `list` not at all, as in the AWS CDK CLI (go-to-k/cdkd#5807).
+   * Unset, a lookup that failed and is still missing when resolution stops
+   * making progress is a `SynthesisError` here, so a caller that cannot tell
+   * which stacks it uses never runs on the lookup's dummy value
    * (go-to-k/cdkd#5805).
    */
-  annotationsCheckedByCaller?: boolean;
+  failedLookupsCheckedByCaller?: boolean;
 }
 
 /**
@@ -155,6 +158,14 @@ export interface SynthesisResult {
    * [#3507](https://github.com/go-to-k/cdkd/issues/3507)).
    */
   stacks: StackInfo[];
+
+  /**
+   * Lookups that failed and were still missing when context resolution stopped.
+   * Non-empty only for a caller that set `failedLookupsCheckedByCaller`; it
+   * passes its selected stacks and this list to `refuseFailedLookups`. Absent
+   * is equivalent to empty.
+   */
+  failedLookups?: FailedLookup[];
 }
 
 /**
@@ -200,7 +211,7 @@ export class Synthesizer {
         await this.expandMacrosForStacks(stacks, options);
       }
       this.logger.debug(`Loaded ${stacks.length} stack(s) from pre-synthesized assembly`);
-      return { manifest, assemblyDir: appPath, stacks };
+      return { manifest, assemblyDir: appPath, stacks, failedLookups: [] };
     }
 
     const outputDir = resolve(options.output || 'cdk.out');
@@ -259,6 +270,7 @@ export class Synthesizer {
     // annotation on the stack that asked; dropped, the app would only report
     // the key missing again and the failure would vanish (go-to-k/cdkd#5805).
     const transientContext = nullPrototypeRecord();
+    let failedLookups: FailedLookup[] = [];
     const contextProviderRegistry = new ContextProviderRegistry({
       ...(region && { region }),
       ...(options.profile && { profile: options.profile }),
@@ -318,18 +330,12 @@ export class Synthesizer {
           this.logger.debug('Re-synthesizing with resolved context...');
           continue;
         }
-        const failed = [...missingKeys].filter((k) => providerErrorOf(transientContext[k]));
-        if (failed.length > 0 && !options.annotationsCheckedByCaller) {
-          throw new SynthesisError(
-            'Context lookup failed: ' +
-              failed
-                .map(
-                  (k) => `${displaySafe(k)}: ${displaySafe(providerErrorOf(transientContext[k])!)}`
-                )
-                .join('; ') +
-              '. Grant the permissions the lookup needs or refresh the AWS credentials, ' +
-              'or supply the value in cdk.context.json or with -c <key>=<value>.'
-          );
+        failedLookups = [...missingKeys].flatMap((key) => {
+          const error = providerErrorOf(transientContext[key]);
+          return error === undefined ? [] : [{ key, error }];
+        });
+        if (failedLookups.length > 0 && !options.failedLookupsCheckedByCaller) {
+          throw failedLookupsError(failedLookups);
         }
         // Each key SEPARATELY, so the `, ` separator stays byte-exact — see the
         // module header for why that, and not safety, is the reason.
@@ -354,7 +360,7 @@ export class Synthesizer {
       }
       this.logger.debug(`Synthesis complete: ${stacks.length} stack(s)`);
 
-      return { manifest, assemblyDir: outputDir, stacks };
+      return { manifest, assemblyDir: outputDir, stacks, failedLookups };
     }
   }
 

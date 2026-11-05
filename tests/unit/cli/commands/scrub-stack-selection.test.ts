@@ -29,19 +29,28 @@ const synthResult = vi.hoisted(() => ({
     displayName?: string;
     stagePath?: string;
     template: object;
+    messages?: Array<{ level: string; path: string; message: string }>;
   }>,
   error: undefined as Error | undefined,
+  failedLookups: undefined as Array<{ key: string; error: string }> | undefined,
+  options: [] as unknown[],
 }));
 const expandMacros = vi.hoisted(() => ({ calls: [] as string[][] }));
 const REACHED_EXPANSION = 'reached-macro-expansion';
 
 vi.mock('../../../../src/synthesis/synthesizer.js', () => ({
   Synthesizer: vi.fn().mockImplementation(() => ({
-    synthesize: vi.fn().mockImplementation(() =>
-      synthResult.error
+    synthesize: vi.fn().mockImplementation((opts: unknown) => {
+      synthResult.options.push(opts);
+      return synthResult.error
         ? Promise.reject(synthResult.error)
-        : Promise.resolve({ manifest: {}, assemblyDir: '/tmp/cdk.out', stacks: synthResult.stacks })
-    ),
+        : Promise.resolve({
+            manifest: {},
+            assemblyDir: '/tmp/cdk.out',
+            stacks: synthResult.stacks,
+            failedLookups: synthResult.failedLookups,
+          });
+    }),
     expandMacrosForStacks: vi.fn().mockImplementation((stacks: Array<{ stackName: string }>) => {
       expandMacros.calls.push(stacks.map((s) => s.stackName));
       return Promise.reject(new Error(REACHED_EXPANSION));
@@ -190,5 +199,30 @@ describe('cdkd scrub --all keeps every stack (go-to-k/cdkd#4474)', () => {
     expect(await scrubError(['*'])).toBe(REACHED_EXPANSION);
     expect(await scrubError(['**'])).toBe(REACHED_EXPANSION);
     expect(expandMacros.calls).toEqual([['Other'], ['Other', 'Prod-Api']]);
+  });
+});
+
+// go-to-k/cdkd#5807: a failed context lookup blocks only the stacks it scrubs.
+describe('cdkd scrub and a failed context lookup (go-to-k/cdkd#5807)', () => {
+  beforeEach(() => {
+    synthResult.error = undefined;
+    synthResult.options = [];
+    expandMacros.calls = [];
+    synthResult.failedLookups = [{ key: 'ssm:k', error: 'AccessDenied' }];
+    synthResult.stacks = [
+      stack('Other'),
+      { ...stack('Asking'), messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }] },
+    ];
+  });
+
+  it('refuses a selection holding the stack that asked, before macro expansion', async () => {
+    expect(await scrubError(['Asking'])).toContain('Context lookup failed: ssm:k: AccessDenied');
+    expect(synthResult.options[0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    expect(expandMacros.calls).toEqual([]);
+  });
+
+  it('proceeds for a stack that did not ask', async () => {
+    expect(await scrubError(['Other'])).toBe(REACHED_EXPANSION);
+    expect(expandMacros.calls).toEqual([['Other']]);
   });
 });

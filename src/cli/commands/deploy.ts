@@ -54,6 +54,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { processStackMessages } from '../../synthesis/stack-messages.js';
 import { AssetPublisher } from '../../assets/asset-publisher.js';
 import { AssetModeResolver } from '../../assets/asset-storage.js';
@@ -506,7 +507,7 @@ async function deployCommand(
       // macro-carrying stack outside the deploy set can never block or
       // slow this deploy with a CFn round-trip.
       deferMacroExpansion: true,
-      annotationsCheckedByCaller: true,
+      failedLookupsCheckedByCaller: true,
     };
     runClock.lap('config, region, credentials');
     const [result, statePrep] = await Promise.all([
@@ -701,6 +702,10 @@ async function deployCommand(
       strict: options.strict === true,
       ignoreErrors: options.ignoreErrors === true,
     });
+    // A failed lookup no stack carries as an annotation (a construct reading the
+    // context itself) is invisible to the check above: refuse it here, whatever
+    // the selection (go-to-k/cdkd#5807).
+    refuseFailedLookups([], allStacks, result.failedLookups);
 
     // Issue #3449: a cyclic / malformed nested-template tree is refused HERE,
     // for the final deploy set, before macro expansion, asset publishing, any

@@ -126,11 +126,11 @@ const PRODUCER_REF = '{{resolve:secretsmanager:producer-secret:SecretString:pass
 let workDir: string;
 let env: Record<string, unknown>;
 
-function makeStack(): StackInfo {
+function makeStack(name = 'ConsumerStack'): StackInfo {
   return {
-    artifactId: 'ConsumerStack',
-    stackName: 'ConsumerStack',
-    displayName: 'ConsumerStack',
+    artifactId: name,
+    stackName: name,
+    displayName: name,
     template: { Resources: {} },
     dependencyNames: [],
     region: SYNTH_REGION,
@@ -138,10 +138,10 @@ function makeStack(): StackInfo {
   } as unknown as StackInfo;
 }
 
-function makeZipLambda(): ResolvedZipLambda {
+function makeZipLambda(stack: StackInfo = makeStack()): ResolvedZipLambda {
   return {
     kind: 'zip',
-    stack: makeStack(),
+    stack,
     logicalId: 'Consumer',
     resource: {
       Type: 'AWS::Lambda::Function',
@@ -458,5 +458,43 @@ describe('local invoke resolves CloudFormation dynamic references (#2056)', () =
     // The debug channel did run (so the absence below is not a muted logger).
     expect(r.output).toContain('substituted env var IMPORTED');
     expect(r.output).not.toContain(PLAINTEXT);
+  });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack the Lambda is in.
+  describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    const failedLookups = [{ key: 'ssm:k', error: 'AccessDenied' }];
+    const annotation = [{ level: 'error', path: '/OtherStack', message: 'AccessDenied' }];
+
+    it('refuses a Lambda in the stack that asked, before the container starts', async () => {
+      const asking = { ...makeStack(), messages: annotation } as StackInfo;
+      mocks.synthesize.mockResolvedValue({ stacks: [asking], assemblyDir: 'cdk.out', failedLookups });
+      mocks.resolveLambdaTarget.mockImplementation(() => makeZipLambda(asking));
+      const r = await invoke([]);
+
+      expect(r.exitCode).toBe(1);
+      expect(r.output).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(r.output).not.toContain('Target:');
+      expect(mocks.synthesize.mock.calls[0]![0]).toMatchObject({
+        failedLookupsCheckedByCaller: true,
+      });
+      expect(mocks.pickFreePort).not.toHaveBeenCalled();
+      expect(mocks.runDetached).not.toHaveBeenCalled();
+    });
+
+    it('invokes a Lambda in a stack that did not ask', async () => {
+      const consumer = makeStack();
+      const asking = { ...makeStack('OtherStack'), messages: annotation } as StackInfo;
+      mocks.synthesize.mockResolvedValue({
+        stacks: [consumer, asking],
+        assemblyDir: 'cdk.out',
+        failedLookups,
+      });
+      mocks.resolveLambdaTarget.mockImplementation(() => makeZipLambda(consumer));
+      const r = await invoke([]);
+
+      expect(r.exitCode).toBeUndefined();
+      expect(r.output).not.toContain('Context lookup failed');
+      expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+    });
   });
 });

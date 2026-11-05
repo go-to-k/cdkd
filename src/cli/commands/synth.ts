@@ -20,6 +20,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { AssemblyReader } from '../../synthesis/assembly-reader.js';
 import { processStackMessages } from '../../synthesis/stack-messages.js';
 import { resolveApp } from '../config-loader.js';
@@ -185,7 +186,7 @@ export async function synthCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
-    annotationsCheckedByCaller: true,
+    failedLookupsCheckedByCaller: true,
   };
 
   const result = await synthesizer.synthesize(synthOptions);
@@ -218,6 +219,10 @@ export async function synthCommand(
     strict: options.strict === true,
     ignoreErrors: options.ignoreErrors === true,
   });
+  // A failed lookup no stack carries as an annotation (a construct reading the
+  // context itself) is invisible to the check above: refuse it here, whatever
+  // the selection (go-to-k/cdkd#5807).
+  refuseFailedLookups([], allStacks, result.failedLookups);
 
   // Print the template to stdout when the SELECTION is one stack — not when
   // the assembly happens to hold one. That distinction is the whole of

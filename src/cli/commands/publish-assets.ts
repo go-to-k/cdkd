@@ -35,6 +35,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { WorkGraph } from '../../deployment/work-graph.js';
 import { AwsClients } from '../../utils/aws-clients.js';
@@ -128,6 +129,7 @@ async function publishAssetsCommand(
     ...(options.region && { region: options.region }),
     ...(options.profile && { profile: options.profile }),
     ...(Object.keys(context).length > 0 && { context }),
+    failedLookupsCheckedByCaller: true,
   };
   const result = await synthesizer.synthesize(synthOptions);
   const { stacks: allStacks } = result;
@@ -161,6 +163,8 @@ async function publishAssetsCommand(
   if (targetStacks.length === 0) {
     throw new Error(renderNoStackMatch(stackPatterns, allStacks));
   }
+  // A failed context lookup blocks only the stacks whose assets it publishes (go-to-k/cdkd#5807).
+  refuseFailedLookups(targetStacks, allStacks, result.failedLookups);
 
   // 3. Resolve account id once (asset-publish nodes need it for ECR / S3 paths).
   // go-to-k/cdkd#2100: the profile's region when none is named, not a

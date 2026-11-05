@@ -38,6 +38,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { resolveApp } from '../config-loader.js';
 import { ensureDockerAvailable, flushStdio } from '../../local/docker-runner.js';
 import { resolveHostGatewayExtraHosts } from '../../local/docker-version.js';
@@ -343,8 +344,9 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
       // CloudFormation macro (Issue #463).
       ...(options.stateBucket && { stateBucket: options.stateBucket }),
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+      failedLookupsCheckedByCaller: true,
     };
-    const { stacks } = await synthesizer.synthesize(synthOpts);
+    const { stacks, failedLookups } = await synthesizer.synthesize(synthOpts);
 
     // Issue #606: pick a LocalStateProvider for whichever flag the user
     // passed (--from-state OR --from-cfn-stack). Constructed BEFORE the
@@ -354,6 +356,10 @@ async function localRunTaskCommand(target: string, options: LocalRunTaskOptions)
     // in the outer `finally` alongside container cleanup.
     const parsed = parseEcsTarget(target);
     const candidate = pickCandidateStack(parsed, target, stacks);
+    // A failed context lookup blocks only the stack this runs (go-to-k/cdkd#5807).
+    // Checked on the candidate, before any state read so an expired credential
+    // reports the lookup; the target resolver below picks the same stack.
+    refuseFailedLookups(candidate ? [candidate] : [], stacks, failedLookups);
     stateProvider = createLocalStateProvider(
       options,
       candidate?.stackName ?? '',

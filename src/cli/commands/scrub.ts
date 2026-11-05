@@ -44,6 +44,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { StageLoadError } from '../../synthesis/failed-stages.js';
 import { withSharedDrainBudget } from '../../deployment/drain-budget.js';
 import { isAmbiguousOutcomeError } from '../../deployment/retryable-errors.js';
@@ -1296,6 +1297,7 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
     ...(Object.keys(context).length > 0 && { context }),
     stateBucket,
     deferMacroExpansion: true,
+    failedLookupsCheckedByCaller: true,
   };
   // A CDK Stage that failed to load leaves the app partly unreadable, so the
   // run DECLINES TO LOOK: a refusal (exit 2), never a plain error, whose exit 1
@@ -1354,6 +1356,8 @@ export async function scrubCommand(stacks: string[], options: ScrubOptions): Pro
       safeMsg`${unmatchedNested.map((p) => displayStackName(p)).join(', ')} matched no stack and was NOT scrubbed. ${nestedStackPatternHint(unmatchedNested)}`
     );
   }
+  // A failed context lookup blocks only the stacks it scrubs (go-to-k/cdkd#5807).
+  refuseFailedLookups(targetStacks, allStacks, result.failedLookups);
 
   // MACROS FIRST, then ordering (issue #2133 review). `expandMacrosForStacks`
   // rewrites each target's template IN PLACE, and `orderScrubTargets` decides

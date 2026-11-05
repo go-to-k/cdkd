@@ -486,6 +486,10 @@ async function destroyCommand(
           // destroyable even when the CFn expansion round-trip would
           // fail (issue #1151).
           deferMacroExpansion: true,
+          // A failed context lookup is not refused here, as `cdk destroy`
+          // does not refuse one (go-to-k/cdkd#5807); a stack or import that
+          // depends on the lookup's value is read with its dummy value.
+          failedLookupsCheckedByCaller: true,
         });
         appStacks = result.stacks.map((s) => ({
           stackName: s.stackName,

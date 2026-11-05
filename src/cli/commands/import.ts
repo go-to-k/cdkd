@@ -35,6 +35,7 @@ import {
 } from '../region-options.js';
 import { AccountIdUnavailableError, withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
@@ -425,6 +426,7 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
       // the > 51,200-byte template upload path (Issue #463).
       stateBucket,
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+      failedLookupsCheckedByCaller: true,
     });
 
     // Stack selection: prefer explicit positional, otherwise auto-pick a single
@@ -461,6 +463,8 @@ async function importCommand(stackArg: string | undefined, options: ImportOption
           `Specify the stack name as a positional argument.`
       );
     }
+    // A failed context lookup blocks only the stack it imports into (go-to-k/cdkd#5807).
+    refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
     // An env-agnostic stack takes the run's region, held on state the old
     // us-east-1 default wrote (go-to-k/cdkd#2100) so a re-import does not
     // write a second record beside the existing one.

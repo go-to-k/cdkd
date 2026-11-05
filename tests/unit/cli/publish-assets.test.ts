@@ -682,3 +682,46 @@ describe('cdkd publish-assets', () => {
     });
   });
 });
+
+// go-to-k/cdkd#5807: a failed context lookup blocks only the stacks it publishes.
+describe('cdkd publish-assets and a failed context lookup (go-to-k/cdkd#5807)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveApp.mockReset();
+    mockResolveApp.mockReturnValue('node app.ts');
+    mockStsSend.mockResolvedValue({ Account: '111111111111' });
+    mockExecuteNode.mockResolvedValue(undefined);
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        makeStack({ stackName: 'Other' }),
+        makeStack({
+          stackName: 'Asking',
+          messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
+        }),
+      ],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    });
+  });
+
+  it('refuses a selection holding the stack that asked, before publishing', async () => {
+    const { exitCode } = await runCmd(['Asking']);
+
+    expect(exitCode).toBe(1);
+    expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    const reported = mockLoggerError.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(reported).toContain('Context lookup failed: ssm:k: AccessDenied');
+    expect(mockStsSend).not.toHaveBeenCalled();
+    expect(mockAddAssetsToGraph).not.toHaveBeenCalled();
+    expect(mockExecuteNode).not.toHaveBeenCalled();
+  });
+
+  it('publishes a stack that did not ask', async () => {
+    const { error, exitCode } = await runCmd(['Other']);
+
+    expect(error).toBeUndefined();
+    expect(exitCode).toBeUndefined();
+    expect(mockAddAssetsToGraph).toHaveBeenCalled();
+  });
+});

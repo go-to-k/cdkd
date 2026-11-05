@@ -15,6 +15,7 @@ import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import { confirmOrRefuse } from './confirm-prompt.js';
 import { withErrorHandling } from '../../utils/error-handler.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import { buildLockContentionMessage } from '../../state/lock-contention-message.js';
@@ -328,6 +329,7 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
       // the > 51,200-byte template upload path (Issue #463).
       stateBucket,
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+      failedLookupsCheckedByCaller: true,
     });
 
     // Resolve each path to (stack, logicalId). Every path must reference the
@@ -335,6 +337,8 @@ async function orphanCommand(pathArgs: string[], options: OrphanOptions): Promis
     const resolved = resolveConstructPaths(pathArgs, result.stacks);
     const stackInfo = resolved.stack;
     const orphanLogicalIds = resolved.logicalIds;
+    // A failed context lookup blocks only the stack it orphans from (go-to-k/cdkd#5807).
+    refuseFailedLookups([stackInfo], result.stacks, result.failedLookups);
 
     const { region: targetRegion, recordRegion } = await pickStackRegion(
       stateBackend,

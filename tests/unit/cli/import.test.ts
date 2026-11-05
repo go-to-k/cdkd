@@ -7635,4 +7635,46 @@ describe('cdkd import: stack selection (go-to-k/cdkd#3507)', () => {
     expect(infoSpy.mock.calls.map((c) => String(c[0]))).toContain('Target stack: Other (us-east-1)');
     expect(errorText()).not.toContain('found in assembly');
   });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack imported into.
+  describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    const arrange = (): void => {
+      mockSynthesize.mockResolvedValue({
+        stacks: [
+          other(),
+          {
+            ...stackInfo('Asking', template({})),
+            messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
+          },
+        ],
+        failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+      });
+    };
+
+    it('refuses the stack that asked, before the lock', async () => {
+      arrange();
+
+      await expect(runImport(['import', 'Asking', '--yes'])).rejects.toThrow('process.exit-mock');
+
+      expect((mockSynthesize.mock.calls[0] as unknown[])[0]).toMatchObject({
+        failedLookupsCheckedByCaller: true,
+      });
+      expect(errorText()).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expectNoStateTouched();
+      // The refusal precedes the region probe on state and the target line.
+      expect(mockGetState).not.toHaveBeenCalled();
+      expect(infoSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('Target stack:');
+    });
+
+    it('proceeds for a stack that did not ask', async () => {
+      arrange();
+
+      await runImport(['import', 'Other', '--yes']).catch(() => undefined);
+
+      expect(infoSpy.mock.calls.map((c) => String(c[0]))).toContain(
+        'Target stack: Other (us-east-1)'
+      );
+      expect(errorText()).not.toContain('Context lookup failed');
+    });
+  });
 });

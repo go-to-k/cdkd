@@ -59,6 +59,13 @@ const mocks = vi.hoisted(() => ({
   mcpInvokeOnce: vi.fn(),
   a2aInvokeOnce: vi.fn(),
   stsSend: vi.fn(),
+  softReloadAgentContainer: vi.fn(),
+}));
+
+// Lets one test stand in for the target resolution (calls are 1-based).
+const resolveHook = vi.hoisted(() => ({
+  fn: undefined as ((call: number) => unknown | undefined) | undefined,
+  calls: 0,
 }));
 
 vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
@@ -66,6 +73,32 @@ vi.mock('../../../src/synthesis/synthesizer.js', async (importOriginal) => {
   return {
     ...actual,
     Synthesizer: vi.fn().mockImplementation(() => ({ synthesize: mocks.synthesize })),
+  };
+});
+
+vi.mock('../../../src/local/agentcore-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/local/agentcore-resolver.js')>();
+  return {
+    ...actual,
+    resolveAgentCoreTarget: (...args: Parameters<typeof actual.resolveAgentCoreTarget>) => {
+      resolveHook.calls += 1;
+      const stood = resolveHook.fn?.(resolveHook.calls);
+      return stood ?? actual.resolveAgentCoreTarget(...args);
+    },
+  };
+});
+
+// Counts the state-provider construction (a pass-through), which the failed
+// lookup refusal must precede.
+const stateProviderCalls = vi.hoisted(() => ({ n: 0 }));
+vi.mock('../../../src/cli/commands/local-state-source.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/cli/commands/local-state-source.js')>();
+  return {
+    ...actual,
+    createLocalStateProvider: (...args: Parameters<typeof actual.createLocalStateProvider>) => {
+      stateProviderCalls.n += 1;
+      return actual.createLocalStateProvider(...args);
+    },
   };
 });
 
@@ -123,7 +156,11 @@ vi.mock('../../../src/local/agentcore-ws-client.js', async (importOriginal) => {
 vi.mock('../../../src/local/invoke-agentcore-watch-loop.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../../src/local/invoke-agentcore-watch-loop.js')>();
-  return { ...actual, runAgentCoreWatchLoop: mocks.runAgentCoreWatchLoop };
+  return {
+    ...actual,
+    runAgentCoreWatchLoop: mocks.runAgentCoreWatchLoop,
+    softReloadAgentContainer: mocks.softReloadAgentContainer,
+  };
 });
 
 // Only the CLIENT is stubbed; `AssumeRoleCommand` and friends stay REAL, so a
@@ -1291,6 +1328,166 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       );
       expect(transcript).not.toContain('cleanup failed:');
       expect(lastSeq).toContain('flush');
+    });
+  });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack the runtime is in.
+  describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    const annotation = [{ level: 'error', path: '/OtherStack', message: 'AccessDenied' }];
+
+    async function runWithLookup(
+      stacks: StackInfo[]
+    ): Promise<Streams & { exitCodes: unknown[] }> {
+      stateProviderCalls.n = 0;
+      mocks.synthesize.mockImplementation(async () => ({
+        stacks,
+        assemblyDir: 'cdk.out',
+        failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+      }));
+      const exitCodes: unknown[] = [];
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        exitCodes.push(code);
+        return undefined as never;
+      }) as typeof process.exit);
+      try {
+        return { ...(await runAgentCore(['AgentStack:EchoAgent', '--no-pull'])), exitCodes };
+      } finally {
+        exitSpy.mockRestore();
+      }
+    }
+
+    it('refuses a runtime in the stack that asked, before the state read and the container', async () => {
+      const r = await runWithLookup([{ ...makeAgentStack(), messages: annotation } as StackInfo]);
+
+      expect(r.exitCodes).toEqual([1]);
+      expect(r.stdout + r.stderr).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(r.stdout + r.stderr).not.toContain('Target:');
+      expect(mocks.synthesize.mock.calls[0]![0]).toMatchObject({
+        failedLookupsCheckedByCaller: true,
+      });
+      expect(stateProviderCalls.n).toBe(0);
+      expect(mocks.runDetached).not.toHaveBeenCalled();
+    });
+
+    it('invokes a runtime in a stack that did not ask', async () => {
+      const other = {
+        ...makeAgentStack(),
+        artifactId: 'OtherStack',
+        stackName: 'OtherStack',
+        displayName: 'OtherStack',
+        messages: annotation,
+      } as StackInfo;
+      const r = await runWithLookup([makeAgentStack(), other]);
+
+      expect(r.exitCodes).toEqual([]);
+      expect(r.stdout + r.stderr).not.toContain('Context lookup failed');
+      expect(stateProviderCalls.n).toBe(1);
+      expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes failedLookupsCheckedByCaller on every synthesis, the --watch rebuild included', async () => {
+      mocks.runDetached
+        .mockResolvedValueOnce('cdkd-agentcore-lane2410')
+        .mockResolvedValueOnce(REBUILT_ID);
+      mocks.runAgentCoreWatchLoop.mockImplementation(
+        async (loop: { rebuild: () => Promise<unknown> }) => {
+          await loop.rebuild();
+        }
+      );
+      await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+
+      expect(mocks.synthesize.mock.calls.length).toBeGreaterThanOrEqual(2);
+      for (const call of mocks.synthesize.mock.calls) {
+        expect(call[0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+      }
+    });
+
+    describe('after the first synthesis', () => {
+      const asking = (name = 'AgentStack'): StackInfo =>
+        ({
+          ...makeAgentStack(),
+          artifactId: name,
+          stackName: name,
+          displayName: name,
+          messages: annotation,
+        }) as StackInfo;
+      const failedLookups = [{ key: 'ssm:k', error: 'AccessDenied' }];
+
+      /** The first synthesis is clean; every later one fails the lookup. */
+      function synthThen(later: StackInfo[]): void {
+        let n = 0;
+        mocks.synthesize.mockImplementation(async () => {
+          n += 1;
+          return n === 1
+            ? { stacks: [makeAgentStack()], assemblyDir: 'cdk.out' }
+            : { stacks: later, assemblyDir: 'cdk.out', failedLookups };
+        });
+      }
+
+      beforeEach(() => {
+        resolveHook.fn = undefined;
+        resolveHook.calls = 0;
+      });
+      afterEach(() => {
+        resolveHook.fn = undefined;
+      });
+
+      it.each([
+        ['soft reload (HTTP)', ['--watch']],
+        ['soft reload (--ws)', ['--ws', '--watch']],
+      ])('refuses a %s whose re-synthesis failed a lookup the invoked stack asked for', async (_n, args) => {
+        synthThen([asking()]);
+        let outcome: unknown;
+        mocks.runAgentCoreWatchLoop.mockImplementation(
+          async (loop: { softReload: (dir: string) => Promise<unknown> }) => {
+            outcome = await loop.softReload('/tmp/new-src').catch((e: Error) => e);
+          }
+        );
+        await runAgentCore(['AgentStack:EchoAgent', '--no-pull', ...args]);
+
+        expect(mocks.softReloadAgentContainer).toHaveBeenCalledTimes(1);
+        expect(String((outcome as Error).message)).toContain('Context lookup failed');
+      });
+
+      it.each([
+        ['soft reload (HTTP)', ['--watch']],
+        ['soft reload (--ws)', ['--ws', '--watch']],
+      ])('lets a %s through when only another stack asked', async (_n, args) => {
+        synthThen([makeAgentStack(), asking('OtherStack')]);
+        let outcome: unknown;
+        mocks.runAgentCoreWatchLoop.mockImplementation(
+          async (loop: { softReload: (dir: string) => Promise<unknown> }) => {
+            outcome = await loop.softReload('/tmp/new-src');
+          }
+        );
+        await runAgentCore(['AgentStack:EchoAgent', '--no-pull', ...args]);
+
+        expect(outcome).toMatchObject({ stacks: expect.any(Array) });
+      });
+
+      function driveRebuild(): void {
+        mocks.runAgentCoreWatchLoop.mockImplementation(
+          async (loop: { rebuild: () => Promise<unknown> }) => {
+            await loop.rebuild().catch((e: Error) => {
+              rebuildError = e;
+            });
+          }
+        );
+      }
+      let rebuildError: unknown;
+
+      it('refuses a --watch rebuild whose candidate stack asked, before booting a container', async () => {
+        rebuildError = undefined;
+        synthThen([asking()]);
+        driveRebuild();
+        await runAgentCore(['AgentStack:EchoAgent', '--no-pull', '--watch']);
+
+        expect(String((rebuildError as Error).message)).toContain('Context lookup failed');
+        expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+        // Refused before the target was resolved again (the first run resolved once).
+        expect(resolveHook.calls).toBe(1);
+      });
+
     });
   });
 });

@@ -152,7 +152,7 @@ describe('Synthesizer', () => {
       await synthesizer.synthesize({
         app: 'node app.ts',
         context: { other: 'cli' },
-        annotationsCheckedByCaller: true,
+        failedLookupsCheckedByCaller: true,
       });
 
       expect(mockExecute).toHaveBeenCalledTimes(2);
@@ -181,10 +181,12 @@ describe('Synthesizer', () => {
 
       const result = await synthesizer.synthesize({
         app: 'node app.ts',
-        annotationsCheckedByCaller: true,
+        failedLookupsCheckedByCaller: true,
       });
 
       expect(result.stacks).toEqual([{ stackName: 'App' }]);
+      // The caller refuses it for the stacks it selects (go-to-k/cdkd#5807).
+      expect(result.failedLookups).toEqual([{ key: ssmKey, error: 'AccessDenied' }]);
     });
 
     it('lets CLI -c win over an unsaved lookup failure for the same key', async () => {
