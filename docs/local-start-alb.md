@@ -172,7 +172,8 @@ value naming the load balancer's own DNS name
 `Host`, because every request that reaches the local front door is addressed
 to it. On AWS a request by IP misses that rule and gets the default action;
 locally it matches. Any other value cdkd cannot resolve locally (a `Ref` to a
-parameter, another load balancer's DNS name, `Fn::Join`, `Fn::ImportValue`)
+parameter, another load balancer's DNS name, `Fn::Join`, `Fn::ImportValue`,
+a `Fn::Split` value list)
 skips the whole rule with a warning.
 
 A `forward` action can send to one target group or split requests across
