@@ -21,6 +21,10 @@ import {
   ListTagsForResourceCommand,
   AddTagsToResourceCommand,
   RemoveTagsFromResourceCommand,
+  AddRoleToDBClusterCommand,
+  RemoveRoleFromDBClusterCommand,
+  AddRoleToDBInstanceCommand,
+  RemoveRoleFromDBInstanceCommand,
   type CloudwatchLogsExportConfiguration,
   type DBCluster,
   type DBInstance,
@@ -54,7 +58,7 @@ import {
 } from '../../utils/error-handler.js';
 import { markDeleteStarted, type DeleteProgress } from '../delete-started.js';
 import { markNotGone } from '../not-gone.js';
-import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
+import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
 import { assertRegionMatch, type DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
@@ -96,6 +100,18 @@ import {
   modifyDbInstanceWhenAvailable,
 } from './db-instance-modify-retry.js';
 import { withoutServerErrorRetries } from './ambiguous-create.js';
+import {
+  associatedRoleArns,
+  associatedRoleKey,
+  associatedRoleList,
+  associatedRolesNamed,
+  associatedRolesReadback,
+  canonicalAssociatedRoles,
+  isRoleCallNotAvailableRefusal,
+  planAssociatedRoleChanges,
+  type AssociatedRole,
+  type LiveAssociatedRole,
+} from './db-associated-roles.js';
 import { dbInstanceEngineChangeIsInPlace } from '../../analyzer/replacement-rules.js';
 import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
 
@@ -1624,6 +1640,10 @@ export class RDSProvider implements ResourceProvider {
         'BacktrackWindow',
         'EnableLocalWriteForwarding',
         'ClusterScalabilityType',
+        // go-to-k/cdkd#5639: AddRoleToDBCluster / RemoveRoleFromDBCluster once
+        // the cluster is `available`, planned against the live list
+        // (`applyAssociatedRoles`).
+        'AssociatedRoles',
       ]),
     ],
     [
@@ -1719,6 +1739,9 @@ export class RDSProvider implements ResourceProvider {
         // ModifyDBInstance under the same names (`instanceModifyBackfillMembers`).
         'EngineLifecycleSupport',
         'MasterUserAuthenticationType',
+        // go-to-k/cdkd#5640: AddRoleToDBInstance / RemoveRoleFromDBInstance
+        // once the instance is `available` (`applyAssociatedRoles`).
+        'AssociatedRoles',
       ]),
     ],
   ]);
@@ -1830,7 +1853,13 @@ export class RDSProvider implements ResourceProvider {
           context?.replayingState === true
         );
       case 'AWS::RDS::DBInstance':
-        return this.createDBInstance(logicalId, resourceType, properties, mask);
+        return this.createDBInstance(
+          logicalId,
+          resourceType,
+          properties,
+          mask,
+          context?.replayingState === true
+        );
       default:
         throw new ProvisioningError(
           `Unsupported resource type: ${resourceType}`,
@@ -2207,9 +2236,18 @@ export class RDSProvider implements ResourceProvider {
         safeMsg`DBCluster ${logicalId}: the replayed ${key} is not ${expected}; the cluster is created with ${created}`
       );
     }
+    // go-to-k/cdkd#5639: refused before any call when malformed.
+    const roles = this.desiredAssociatedRoles(
+      properties,
+      resourceType,
+      logicalId,
+      undefined,
+      replaying
+    );
     // What the call sent: a record without a skipped key
     // (provider-property-fidelity: a replay-create that skipped drops the key).
     const skippedKeys = [
+      ...(roles === 'skipped' ? ['AssociatedRoles'] : []),
       ...(properties['EnableHttpEndpoint'] != null && httpEndpoint === undefined
         ? ['EnableHttpEndpoint']
         : []),
@@ -2356,6 +2394,26 @@ export class RDSProvider implements ResourceProvider {
           }
         }
 
+        // go-to-k/cdkd#5639: once the cluster is available, as CloudFormation's
+        // create handler attaches them (`addAssociatedRoles`). A role's failure
+        // is not this cluster name's collision (#3826).
+        if (roles !== 'skipped') {
+          try {
+            await this.applyAssociatedRoles(
+              'cluster',
+              logicalId,
+              dbClusterIdentifier,
+              roles,
+              [],
+              mask,
+              undefined
+            );
+          } catch (roleError) {
+            markAuxiliaryFailure(roleError, logicalId);
+            throw roleError;
+          }
+        }
+
         // Describe to get final attributes
         const described = await this.describeDBCluster(dbClusterIdentifier);
 
@@ -2491,6 +2549,14 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBCluster ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#5639: likewise a malformed AssociatedRoles, on every path.
+    const roles = this.desiredAssociatedRoles(
+      properties,
+      resourceType,
+      logicalId,
+      physicalId,
+      false
+    );
     // go-to-k/cdkd#5639: refused before any call when malformed; a removal
     // disables what the previous template declared, as CloudFormation does.
     const logExportConfig = logExportsDelta(
@@ -2906,6 +2972,19 @@ export class RDSProvider implements ResourceProvider {
         }
       }
 
+      // go-to-k/cdkd#5639: after the ModifyDBCluster, as CloudFormation's
+      // update handler changes them. A malformed record only misses detaches:
+      // the plan reads what is live, so an attached role is not attached twice.
+      await this.applyAssociatedRoles(
+        'cluster',
+        logicalId,
+        physicalId,
+        roles,
+        associatedRoleList(previousProperties['AssociatedRoles']) ?? [],
+        context?.maskSecrets,
+        context
+      );
+
       // Apply tag diff using the cluster ARN.
       if (described?.DBClusterArn) {
         await this.applyTagDiff(
@@ -3208,11 +3287,20 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
-    mask: ((text: string) => string) | undefined
+    mask: ((text: string) => string) | undefined,
+    replaying = false
   ): Promise<ResourceCreateResult> {
     this.logger.debug(`Creating DBInstance ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    // go-to-k/cdkd#5640: likewise a malformed AssociatedRoles.
+    const roles = this.desiredAssociatedRoles(
+      properties,
+      resourceType,
+      logicalId,
+      undefined,
+      replaying
+    );
     const logExports = desiredLogExports(properties, resourceType, logicalId);
 
     const dbInstanceIdentifier =
@@ -3414,6 +3502,26 @@ export class RDSProvider implements ResourceProvider {
         await this.waitForInstanceAvailable(logicalId, dbInstanceIdentifier);
       }
 
+      // go-to-k/cdkd#5640: once the instance is available, as CloudFormation's
+      // create handler attaches them (`updateAssociatedRoles`). A role's
+      // failure is not this instance name's collision (#3826).
+      if (roles !== 'skipped') {
+        try {
+          await this.applyAssociatedRoles(
+            'instance',
+            logicalId,
+            dbInstanceIdentifier,
+            roles,
+            [],
+            mask,
+            undefined
+          );
+        } catch (roleError) {
+          markAuxiliaryFailure(roleError, logicalId);
+          throw roleError;
+        }
+      }
+
       // Describe to get final attributes
       const described = await this.describeDBInstance(dbInstanceIdentifier);
 
@@ -3423,6 +3531,12 @@ export class RDSProvider implements ResourceProvider {
           'Endpoint.Address': described?.Endpoint?.Address,
           'Endpoint.Port': stringifyIfAssigned(described?.Endpoint?.Port),
           Arn: described?.DBInstanceArn,
+        }),
+        // A replayed create that attached no role records none.
+        ...(roles === 'skipped' && {
+          effectiveProperties: Object.fromEntries(
+            Object.entries(properties).filter(([key]) => key !== 'AssociatedRoles')
+          ),
         }),
       };
     } catch (error) {
@@ -3467,6 +3581,14 @@ export class RDSProvider implements ResourceProvider {
     this.logger.debug(`Updating DBInstance ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    // go-to-k/cdkd#5640: likewise a malformed AssociatedRoles, on every path.
+    const roles = this.desiredAssociatedRoles(
+      properties,
+      resourceType,
+      logicalId,
+      physicalId,
+      false
+    );
     // go-to-k/cdkd#5640: refused before any call when malformed; a removal
     // disables what the previous template declared, as CloudFormation does.
     const logExportConfig = logExportsDelta(
@@ -3828,6 +3950,21 @@ export class RDSProvider implements ResourceProvider {
           String(properties['CertificateRotationRestart']) === 'true'
         );
       }
+
+      // go-to-k/cdkd#5640: after the ModifyDBInstance and its reboot, as
+      // CloudFormation's update handler changes them. A malformed record only
+      // misses detaches: the plan reads what is live.
+      await this.applyAssociatedRoles(
+        'instance',
+        logicalId,
+        physicalId,
+        roles,
+        associatedRoleList(previousProperties['AssociatedRoles'], {
+          featureNameRequired: true,
+        }) ?? [],
+        context?.maskSecrets,
+        context
+      );
 
       // Apply tag diff using the instance ARN.
       if (described?.DBInstanceArn) {
@@ -4784,6 +4921,206 @@ export class RDSProvider implements ResourceProvider {
   }
 
   /**
+   * go-to-k/cdkd#5639 / #5640: the template's `AssociatedRoles`, refused
+   * before any call when malformed. Its gap to the record is what gets
+   * DETACHED, so a malformed list never reads as empty, on an update replayed
+   * from state too (`.claude/rules/provider-aws-response-reads.md`, the list
+   * rule). A DB instance's entry needs a `FeatureName`: its schema requires
+   * one, and AddRoleToDBInstance cannot be sent without it. Only a rollback's
+   * re-create, which detaches nothing, warns and attaches none instead
+   * (`'skipped'`).
+   */
+  private desiredAssociatedRoles(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    replayingCreate: false
+  ): AssociatedRole[];
+  private desiredAssociatedRoles(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    replayingCreate: boolean
+  ): AssociatedRole[] | 'skipped';
+  private desiredAssociatedRoles(
+    properties: Record<string, unknown>,
+    resourceType: string,
+    logicalId: string,
+    physicalId: string | undefined,
+    replayingCreate: boolean
+  ): AssociatedRole[] | 'skipped' {
+    const instance = resourceType === 'AWS::RDS::DBInstance';
+    const roles = associatedRoleList(properties['AssociatedRoles'], {
+      featureNameRequired: instance,
+    });
+    if (roles !== undefined) return roles;
+    const expected = instance
+      ? 'a list of objects with a RoleArn and a FeatureName'
+      : 'a list of objects with a RoleArn';
+    if (!replayingCreate) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${resourceType} ${logicalId}: AssociatedRoles must be ${expected}; nothing was changed`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the replayed AssociatedRoles is not ${expected}, so no role is attached`
+    );
+    return 'skipped';
+  }
+
+  /**
+   * go-to-k/cdkd#5639 / #5640: attach the `desired` roles `previous` lacks and
+   * detach the `previous` ones `desired` dropped, removals first, as
+   * CloudFormation's handlers do (`updateAssociatedRoles`). RDS takes neither
+   * call while the cluster or instance is busy, so they wait for `available`
+   * first, under `--no-wait` too, and a call refused as busy waits it out and
+   * is resent (#5194's rule). The live list is read once `available`, and the
+   * plan drops what AWS already holds or no longer holds
+   * (`planAssociatedRoleChanges`); a Describe answering no resource changes
+   * nothing. CloudFormation's handlers stabilize each call once the Describe
+   * lists the attached association, whatever its `Status` (`PENDING`
+   * included: `isAssociatedRoleAttached` /
+   * `isDBInstanceRoleAdditionStabilized` match the role and feature only), or
+   * no longer lists the detached one; so does the wait here, which
+   * `--no-wait` skips. CloudFormation's instance removal predicate
+   * (`isDBInstanceRoleRemovalStabilized`) matches the RoleArn alone; cdkd
+   * matches the role and the feature, so the same role kept for another
+   * feature does not hold the wait open. A detach is marked attempted too, for
+   * `associatedRolesNamed`.
+   */
+  private async applyAssociatedRoles(
+    target: 'cluster' | 'instance',
+    logicalId: string,
+    physicalId: string,
+    desired: readonly AssociatedRole[],
+    previous: readonly AssociatedRole[],
+    mask: ((text: string) => string) | undefined,
+    marks: Pick<UpdateContext, 'markUnsettled' | 'markAttempted'> | undefined
+  ): Promise<void> {
+    const candidates = planAssociatedRoleChanges(desired, previous);
+    if (candidates.toAdd.length === 0 && candidates.toRemove.length === 0) return;
+    const label = target === 'cluster' ? 'RDS DBCluster' : 'RDS DBInstance';
+    // Bounded by the resource deadline, which does not cancel this operation:
+    // a wait that outlives it would attach after the engine gave up.
+    const waitBudgetMs = Math.min(1_800_000, enclosingDeadlineRemainingMs() - 30_000);
+    if (waitBudgetMs <= 0) {
+      throw new Error(
+        `the resource timeout leaves no more time to change the roles of the ${target}; re-run the deploy, or with a longer --resource-timeout`
+      );
+    }
+    if (target === 'cluster') {
+      await this.waitForClusterAvailable(logicalId, physicalId, waitBudgetMs, 'changing its roles');
+    } else {
+      await this.waitForInstanceAvailable(
+        logicalId,
+        physicalId,
+        waitBudgetMs,
+        'changing its roles'
+      );
+    }
+    const resource =
+      target === 'cluster'
+        ? await this.describeDBCluster(physicalId)
+        : await this.describeDBInstance(physicalId);
+    if (resource === undefined) {
+      throw new Error(
+        `Describe returned no ${target} while planning its role changes; no role was attached or detached`
+      );
+    }
+    const { toAdd, toRemove } = planAssociatedRoleChanges(
+      desired,
+      previous,
+      resource.AssociatedRoles ?? []
+    );
+    if (toAdd.length === 0 && toRemove.length === 0) return;
+    marks?.markUnsettled?.('AssociatedRoles');
+    const readStatus =
+      target === 'cluster'
+        ? async () => (await this.describeDBCluster(physicalId))?.Status
+        : async () => (await this.describeDBInstance(physicalId))?.DBInstanceStatus;
+    const whenAvailable = (send: () => Promise<unknown>): Promise<void> =>
+      modifyDbInstanceWhenAvailable({
+        send,
+        readStatus,
+        sleep: (ms) => this.sleep(ms),
+        logger: this.logger,
+        label,
+        subject: target,
+        isRefusal: (error) =>
+          isRoleCallNotAvailableRefusal(error) || isModifyNotAvailableRefusal(error),
+        logicalId,
+        remainingMs: enclosingDeadlineRemainingMs(),
+      });
+    for (const role of toRemove) {
+      // A detach is an attempt too, so `associatedRolesNamed` never reads a
+      // role this run detached as detached outside cdkd. Marked BEFORE the
+      // call, unlike an attach (#5498): a detach AWS applied can still throw
+      // (a lost response, a replay's not-found), and the mark only matters
+      // for a role AWS no longer lists, so a detach that did nothing is inert.
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
+      await whenAvailable(() =>
+        target === 'cluster'
+          ? this.getClient().send(
+              new RemoveRoleFromDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
+            )
+          : this.getClient().send(
+              new RemoveRoleFromDBInstanceCommand({
+                DBInstanceIdentifier: physicalId,
+                RoleArn: role.RoleArn,
+                FeatureName: role.FeatureName,
+              })
+            )
+      );
+    }
+    for (const role of toAdd) {
+      await whenAvailable(() =>
+        target === 'cluster'
+          ? this.getClient().send(
+              new AddRoleToDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
+            )
+          : this.getClient().send(
+              new AddRoleToDBInstanceCommand({
+                DBInstanceIdentifier: physicalId,
+                RoleArn: role.RoleArn,
+                FeatureName: role.FeatureName,
+              })
+            )
+      );
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
+    }
+    if (process.env['CDKD_NO_WAIT'] === 'true') return;
+    const attached = toAdd.map(associatedRoleKey);
+    const detached = toRemove.map(associatedRoleKey);
+    const settled = (roles: readonly LiveAssociatedRole[] | undefined): boolean => {
+      const held = new Set((roles ?? []).map(associatedRoleKey));
+      return attached.every((key) => held.has(key)) && detached.every((key) => !held.has(key));
+    };
+    const change = `IAM role associations (${maskerOrIdentity(mask)(associatedRoleArns([...attached, ...detached]))})`;
+    if (target === 'cluster') {
+      await this.waitForClusterState(
+        logicalId,
+        physicalId,
+        (cluster) => settled(cluster.AssociatedRoles),
+        change
+      );
+    } else {
+      await this.waitForInstanceState(
+        logicalId,
+        physicalId,
+        (instance) => settled(instance.AssociatedRoles),
+        change
+      );
+    }
+  }
+
+  /**
    * Wait for a DBCluster to become available. A terminal status
    * (`isTerminalDbWaitStatus`) fails at once rather than after the
    * 30-minute budget (issue #5426).
@@ -4791,7 +5128,8 @@ export class RDSProvider implements ResourceProvider {
   private async waitForClusterAvailable(
     logicalId: string,
     dbClusterIdentifier: string,
-    maxWaitMs = 1_800_000
+    maxWaitMs = 1_800_000,
+    doing = 'being created'
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 5_000;
@@ -4806,7 +5144,7 @@ export class RDSProvider implements ResourceProvider {
       // Issue #5426: a terminal status never becomes 'available'.
       if (isTerminalDbWaitStatus(status)) {
         throw new Error(
-          safeMsg`DBCluster ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+          safeMsg`DBCluster ${logicalId} entered status ${status ?? ''} while ${doing}, which it does not leave on its own`
         );
       }
 
@@ -4935,7 +5273,8 @@ export class RDSProvider implements ResourceProvider {
   private async waitForInstanceAvailable(
     logicalId: string,
     dbInstanceIdentifier: string,
-    maxWaitMs = 1_800_000
+    maxWaitMs = 1_800_000,
+    doing = 'being created'
   ): Promise<void> {
     const startTime = Date.now();
     let delay = 10_000;
@@ -4950,7 +5289,7 @@ export class RDSProvider implements ResourceProvider {
       // Issue #5426: a terminal status never becomes 'available'.
       if (isTerminalDbWaitStatus(status)) {
         throw new Error(
-          safeMsg`DBInstance ${logicalId} entered status ${status ?? ''} while being created, which it does not leave on its own`
+          safeMsg`DBInstance ${logicalId} entered status ${status ?? ''} while ${doing}, which it does not leave on its own`
         );
       }
 
@@ -5023,11 +5362,12 @@ export class RDSProvider implements ResourceProvider {
 
   /**
    * go-to-k/cdkd#5639 / #5640: RDS answers the exported log types in its own
-   * order, and the template's order means nothing to it.
+   * order, and the template's order means nothing to it; likewise the
+   * associated IAM roles. Also what `unsettledAfterUpdate` compares by.
    */
   getDriftUnorderedPaths(resourceType: string): string[] {
     return resourceType === 'AWS::RDS::DBCluster' || resourceType === 'AWS::RDS::DBInstance'
-      ? ['EnableCloudwatchLogsExports']
+      ? ['EnableCloudwatchLogsExports', 'AssociatedRoles']
       : [];
   }
 
@@ -5065,17 +5405,27 @@ export class RDSProvider implements ResourceProvider {
    * from the recorded `properties` (no `observedProperties`) the two would
    * read as drift; both sides fold to the readback's type. Anything else is
    * left as it is.
+   *
+   * go-to-k/cdkd#5639 / #5640: on both types, `AssociatedRoles` folds a
+   * repeated entry and an empty `FeatureName`, which AWS never holds
+   * (`canonicalAssociatedRoles`).
    */
   canonicalizeDriftProperties(
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    if (resourceType !== 'AWS::RDS::DBCluster') return properties;
+    if (resourceType !== 'AWS::RDS::DBCluster' && resourceType !== 'AWS::RDS::DBInstance') {
+      return properties;
+    }
     let out: Record<string, unknown> | undefined;
     const set = (key: string, value: unknown): void => {
       out ??= { ...properties };
       out[key] = value;
     };
+    if (Array.isArray(properties['AssociatedRoles'])) {
+      set('AssociatedRoles', canonicalAssociatedRoles(properties['AssociatedRoles']));
+    }
+    if (resourceType !== 'AWS::RDS::DBCluster') return out ?? properties;
     for (const key of CLUSTER_BOOLEAN_SCALARS) {
       const value = properties[key];
       if (value === 'true' || value === 'false') set(key, value === 'true');
@@ -5088,6 +5438,45 @@ export class RDSProvider implements ResourceProvider {
       }
     }
     return out ?? properties;
+  }
+
+  /** The post-update proof (#5380) compares through the same normalization. */
+  canonicalizeUnsettledProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    return this.canonicalizeDriftProperties(resourceType, properties);
+  }
+
+  /**
+   * go-to-k/cdkd#5487: the live values of a record's unsettled names. Only
+   * `AssociatedRoles` is ever marked (`applyAssociatedRoles`), and it keeps
+   * only the associations the record, the template or an earlier attempt
+   * (#5498) names: the convergence puts this on the previous side, so a role
+   * an out-of-band change attached would otherwise read as dropped by the
+   * template, and be detached.
+   */
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>,
+    desiredProperties?: Record<string, unknown>,
+    attemptedItems?: ReadonlyMap<string, ReadonlySet<string>>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    const live = await this.readCurrentState(physicalId, logicalId, resourceType);
+    if (live === undefined || live === RESOURCE_NOT_FOUND) return live;
+    if (!names.has('AssociatedRoles')) return live;
+    return {
+      ...live,
+      AssociatedRoles: associatedRolesNamed(
+        live['AssociatedRoles'],
+        recordedProperties?.['AssociatedRoles'],
+        desiredProperties?.['AssociatedRoles'],
+        attemptedItems?.get('AssociatedRoles')
+      ),
+    };
   }
 
   /**
@@ -5400,6 +5789,9 @@ export class RDSProvider implements ResourceProvider {
     if (inst.EngineLifecycleSupport !== undefined && inst.DBClusterIdentifier === undefined) {
       result['EngineLifecycleSupport'] = inst.EngineLifecycleSupport;
     }
+    // go-to-k/cdkd#5640: always a list, so a role lost out of band reads as a
+    // change against the recorded list (`Status` is not a template member).
+    result['AssociatedRoles'] = associatedRolesReadback(inst.AssociatedRoles);
     if (inst.DBInstanceArn) await this.attachTags(result, inst.DBInstanceArn);
     return result;
   }
@@ -5564,6 +5956,8 @@ export class RDSProvider implements ResourceProvider {
         cluster.LocalWriteForwardingStatus === 'requested' ||
         cluster.LocalWriteForwardingStatus === 'enabled';
     }
+    // go-to-k/cdkd#5639: as for a DB instance.
+    result['AssociatedRoles'] = associatedRolesReadback(cluster.AssociatedRoles);
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
   }

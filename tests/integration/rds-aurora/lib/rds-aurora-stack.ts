@@ -178,6 +178,24 @@ export class RdsAuroraStack extends cdk.Stack {
       ],
     });
 
+    // go-to-k/cdkd#5639: the SecurityCluster's AssociatedRoles. Phase 1
+    // attaches the import role for `s3Import`; phases 1b / 1c (keyed on
+    // CDKD_TEST_TG_TAGS, set only there) swap it for the export role for
+    // `s3Export`, so the update both detaches and attaches; phase 2 DROPS the
+    // property, which detaches the export role, as CloudFormation's handler
+    // removes the previous roles the desired list lacks. Before
+    // #5639 the declared list routed the SecurityCluster to Cloud Control (the
+    // provisionedBy=sdk guard in verify.sh catches it); verify.sh asserts the
+    // live associations after each phase. Both roles exist in every phase, so
+    // only the association changes. RDS assumes neither here: an association
+    // needs only the trust policy.
+    const s3ImportRole = new iam.Role(this, 'SecurityS3ImportRole', {
+      assumedBy: new iam.ServicePrincipal('rds.amazonaws.com'),
+    });
+    const s3ExportRole = new iam.Role(this, 'SecurityS3ExportRole', {
+      assumedBy: new iam.ServicePrincipal('rds.amazonaws.com'),
+    });
+
     // Aurora PostgreSQL Serverless v2 cluster — NO cluster instance: the
     // cluster-level create accepts and reflects every security prop, and
     // skipping the instance keeps the fixture cheap. Each #609 security prop
@@ -322,6 +340,15 @@ export class RdsAuroraStack extends cdk.Stack {
       // and CloudFormation fails the same template the same way (measured
       // us-east-1, 2026-11-04). The EngineCluster below carries it.
       engineLifecycleSupport: 'open-source-rds-extended-support-disabled',
+      ...(isUpdate
+        ? {}
+        : {
+            associatedRoles: [
+              process.env.CDKD_TEST_TG_TAGS
+                ? { roleArn: s3ExportRole.roleArn, featureName: 's3Export' }
+                : { roleArn: s3ImportRole.roleArn, featureName: 's3Import' },
+            ],
+          }),
     });
     // Issue #1160: once phase 2 drops the Ref, this keeps the security group
     // deleted AFTER the cluster that may still hold it.

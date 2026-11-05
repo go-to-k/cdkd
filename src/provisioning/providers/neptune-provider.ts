@@ -21,7 +21,6 @@ import {
   RestoreDBClusterToPointInTimeCommand,
   type ModifyDBClusterCommandInput,
   type DBCluster,
-  type DBClusterRole,
 } from '@aws-sdk/client-neptune';
 import { DescribeSecurityGroupsCommand, EC2Client } from '@aws-sdk/client-ec2';
 import { isDeepStrictEqual } from 'node:util';
@@ -79,6 +78,17 @@ import {
 import { maskerOrIdentity } from '../masked-retry-logger.js';
 import { coerceCfnBoolean, configBooleanRefusal } from '../config-shape.js';
 import { isUsableAttemptedName } from '../../state/unsettled-properties.js';
+import {
+  associatedRoleArns,
+  associatedRoleKey,
+  associatedRoleList,
+  associatedRolesNamed,
+  associatedRolesReadback,
+  canonicalAssociatedRoles,
+  isRoleCallNotAvailableRefusal,
+  planAssociatedRoleChanges,
+  type AssociatedRole,
+} from './db-associated-roles.js';
 
 /**
  * The attribute map a Neptune DB cluster records (issue #3650), under
@@ -188,42 +198,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** A `DBClusterRole` entry of the template's `AssociatedRoles`. */
-interface ClusterRole {
-  RoleArn: string;
-  FeatureName?: string;
-}
-
-/** One association's identity: AWS keys an association on the role AND the feature. */
-function clusterRoleKey(role: {
-  RoleArn?: string | undefined;
-  FeatureName?: string | undefined;
-}): string {
-  return `${role.RoleArn ?? ''}\n${role.FeatureName ?? ''}`;
-}
-
-/**
- * `AssociatedRoles` as a list, or `undefined` when it is unusable: the gap
- * between the two sides is what gets DETACHED, so a malformed desired value
- * must never read as empty (`.claude/rules/provider-aws-response-reads.md`).
- * Absent or `null` is the empty list. A repeated entry collapses: AWS would
- * refuse the second attach as already there.
- */
-function clusterRoleList(value: unknown): ClusterRole[] | undefined {
-  if (value == null) return [];
-  if (!Array.isArray(value)) return undefined;
-  const roles = new Map<string, ClusterRole>();
-  for (const entry of value as unknown[]) {
-    if (!isPlainObject(entry)) return undefined;
-    const { RoleArn: roleArn, FeatureName: featureName } = entry;
-    if (typeof roleArn !== 'string' || roleArn === '') return undefined;
-    if (featureName != null && typeof featureName !== 'string') return undefined;
-    const role = { RoleArn: roleArn, ...(featureName ? { FeatureName: featureName } : {}) };
-    roles.set(clusterRoleKey(role), role);
-  }
-  return [...roles.values()];
-}
-
 /** A list of strings, or `undefined` when unusable; absent or `null` is empty. */
 function stringList(value: unknown): string[] | undefined {
   if (value == null) return [];
@@ -300,22 +274,6 @@ function holdsPendingValue(value: unknown): boolean {
  */
 function isUnmovingDbStatus(status: string | undefined): boolean {
   return isProceedDbStatus(status) || status === 'backing-up';
-}
-
-/**
- * Whether `error` is AWS refusing AddRoleToDBCluster / RemoveRoleFromDBCluster
- * because the cluster is busy: a cluster that read `available` can go back to
- * `modifying` a moment later (measured, go-to-k/cdkd#2762). The wording is
- * these calls' own, so the shared not-`available` match does not cover it, and
- * the role calls take both. The class alone is not enough: anything else it
- * carries stays terminal.
- */
-function isRoleCallNotAvailableRefusal(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.name === 'InvalidDBClusterStateFault' &&
-    /is not available for IAM role association, disassociation, or updates/i.test(error.message)
-  );
 }
 
 /** How long an accepted change (a role, a log type, ...) is waited on before a warning. */
@@ -1294,15 +1252,7 @@ export class NeptuneProvider implements ResourceProvider {
             mask
           );
         }
-        await this.applyClusterRoles(
-          logicalId,
-          dbClusterIdentifier,
-          roles,
-          [],
-          [],
-          mask,
-          undefined
-        );
+        await this.applyClusterRoles(logicalId, dbClusterIdentifier, roles, [], mask, undefined);
       } catch (error) {
         // The cluster itself was created: a follow-up's or a role's "already
         // exists" is not this name's collision (#3826).
@@ -1606,8 +1556,7 @@ export class NeptuneProvider implements ResourceProvider {
         roles,
         // A malformed record only misses detaches: `applyClusterRoles` reads
         // what is live, so an attached role is not attached twice.
-        clusterRoleList(previousProperties['AssociatedRoles']) ?? [],
-        described?.AssociatedRoles ?? [],
+        associatedRoleList(previousProperties['AssociatedRoles']) ?? [],
         context?.maskSecrets,
         context
       );
@@ -2456,7 +2405,7 @@ export class NeptuneProvider implements ResourceProvider {
     logicalId: string,
     origin: { creating: boolean; stateBorne: boolean; physicalId?: string }
   ): {
-    roles: ClusterRole[];
+    roles: AssociatedRole[];
     logTypes: string[];
     scaling: { MinCapacity: number; MaxCapacity: number } | null | undefined;
   } {
@@ -2475,13 +2424,13 @@ export class NeptuneProvider implements ResourceProvider {
         safeMsg`${logicalId} (${resourceType}): the recorded ${key} is unusable, so it is not sent.`
       );
     };
-    const unusableList = (key: string, expected: string): string[] & ClusterRole[] => {
+    const unusableList = (key: string, expected: string): string[] & AssociatedRole[] => {
       if (!(origin.creating && origin.stateBorne)) return refuse(key, expected);
       leaveOut(key);
       return [];
     };
     const roles =
-      clusterRoleList(properties['AssociatedRoles']) ??
+      associatedRoleList(properties['AssociatedRoles']) ??
       unusableList('AssociatedRoles', 'a list of objects with a RoleArn');
     const logTypes =
       stringList(properties['EnableCloudwatchLogsExports']) ??
@@ -2500,10 +2449,11 @@ export class NeptuneProvider implements ResourceProvider {
   }
 
   /**
-   * Attach the `desired` roles that are not `live` and detach the `previous`
-   * ones `desired` dropped, planned against the live list so a retry after a
+   * Attach the `desired` roles `previous` lacks and detach the `previous`
+   * ones `desired` dropped, as CloudFormation plans them, minus what the live
+   * list (read once `available`) already shows done, so a retry after a
    * partial run neither re-attaches nor re-detaches (neither call is
-   * idempotent). A role cdkd never recorded is left alone. Both calls need
+   * idempotent; `planAssociatedRoleChanges`). Both calls need
    * the cluster `available`, whatever `--no-wait` says. A ModifyDBCluster just
    * before can start only after the wait read `available`, so each call also
    * waits out and resends that refusal (#5194's rule).
@@ -2511,20 +2461,13 @@ export class NeptuneProvider implements ResourceProvider {
   private async applyClusterRoles(
     logicalId: string,
     physicalId: string,
-    desired: readonly ClusterRole[],
-    previous: readonly ClusterRole[],
-    live: readonly DBClusterRole[],
+    desired: readonly AssociatedRole[],
+    previous: readonly AssociatedRole[],
     mask: ((text: string) => string) | undefined,
     marks: Pick<UpdateContext, 'markUnsettled' | 'markAttempted'> | undefined
   ): Promise<void> {
-    const liveKeys = new Set(live.map(clusterRoleKey));
-    const desiredKeys = new Set(desired.map(clusterRoleKey));
-    const toAdd = desired.filter((role) => !liveKeys.has(clusterRoleKey(role)));
-    const toRemove = previous.filter((role) => {
-      const key = clusterRoleKey(role);
-      return !desiredKeys.has(key) && liveKeys.has(key);
-    });
-    if (toAdd.length === 0 && toRemove.length === 0) return;
+    const candidates = planAssociatedRoleChanges(desired, previous);
+    if (candidates.toAdd.length === 0 && candidates.toRemove.length === 0) return;
 
     // Bounded by the resource deadline, which does not cancel this operation:
     // a wait that outlives it would attach after the engine gave up.
@@ -2538,6 +2481,18 @@ export class NeptuneProvider implements ResourceProvider {
       );
     }
     await this.waitForClusterAvailable(logicalId, physicalId, 'changing its roles', waitBudgetMs);
+    const cluster = await this.describeDBCluster(physicalId);
+    if (cluster === undefined) {
+      throw new Error(
+        'DescribeDBClusters returned no cluster while planning its role changes; no role was attached or detached'
+      );
+    }
+    const { toAdd, toRemove } = planAssociatedRoleChanges(
+      desired,
+      previous,
+      cluster.AssociatedRoles ?? []
+    );
+    if (toAdd.length === 0 && toRemove.length === 0) return;
     marks?.markUnsettled?.('AssociatedRoles');
     const whenAvailable = (send: () => Promise<unknown>): Promise<void> =>
       modifyDbInstanceWhenAvailable({
@@ -2553,6 +2508,12 @@ export class NeptuneProvider implements ResourceProvider {
         remainingMs: enclosingDeadlineRemainingMs(),
       });
     for (const role of toRemove) {
+      // A detach is an attempt too, so `associatedRolesNamed` never reads a
+      // role this run detached as detached outside cdkd. Marked BEFORE the
+      // call, unlike an attach (#5498): a detach AWS applied can still throw
+      // (a lost response, a replay's not-found), and the mark only matters
+      // for a role AWS no longer lists, so a detach that did nothing is inert.
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
       await whenAvailable(() =>
         this.getClient().send(
           new RemoveRoleFromDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
@@ -2565,14 +2526,14 @@ export class NeptuneProvider implements ResourceProvider {
           new AddRoleToDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
         )
       );
-      marks?.markAttempted?.('AssociatedRoles', [clusterRoleKey(role)]);
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
     }
     if (process.env['CDKD_NO_WAIT'] !== 'true') {
       await this.waitForClusterRolesSettled(
         logicalId,
         physicalId,
-        new Set(toAdd.map(clusterRoleKey)),
-        new Set(toRemove.map(clusterRoleKey)),
+        new Set(toAdd.map(associatedRoleKey)),
+        new Set(toRemove.map(associatedRoleKey)),
         mask
       );
     }
@@ -2592,11 +2553,11 @@ export class NeptuneProvider implements ResourceProvider {
     mask: ((text: string) => string) | undefined
   ): Promise<void> {
     const shown = (keys: readonly string[]): string =>
-      maskerOrIdentity(mask)(keys.map((key) => key.split('\n')[0] ?? '').join(', '));
+      maskerOrIdentity(mask)(associatedRoleArns(keys));
     let unsettled: string[] = [];
     const settled = await this.pollUntilSettled(async () => {
       const roles = (await this.describeDBCluster(physicalId))?.AssociatedRoles ?? [];
-      const byKey = new Map(roles.map((role) => [clusterRoleKey(role), role]));
+      const byKey = new Map(roles.map((role) => [associatedRoleKey(role), role]));
       unsettled = [
         ...[...attached].filter((key) => (byKey.get(key)?.Status ?? 'PENDING') === 'PENDING'),
         ...[...detached].filter((key) => byKey.has(key)),
@@ -3172,7 +3133,7 @@ export class NeptuneProvider implements ResourceProvider {
     if (resourceType !== 'AWS::Neptune::DBCluster') return properties;
     const out = { ...properties };
     if (Array.isArray(out['AssociatedRoles'])) {
-      out['AssociatedRoles'] = clusterRoleList(out['AssociatedRoles']) ?? out['AssociatedRoles'];
+      out['AssociatedRoles'] = canonicalAssociatedRoles(out['AssociatedRoles']);
     }
     const logs = out['EnableCloudwatchLogsExports'];
     if (Array.isArray(logs) && stringList(logs) !== undefined) {
@@ -3212,13 +3173,11 @@ export class NeptuneProvider implements ResourceProvider {
       [...(attemptedItems?.get(key) ?? [])].filter(isUsableAttemptedName);
     const out = { ...live };
     if (names.has('AssociatedRoles')) {
-      const named = new Set([
-        ...(clusterRoleList(recordedProperties?.['AssociatedRoles']) ?? []).map(clusterRoleKey),
-        ...(clusterRoleList(desiredProperties?.['AssociatedRoles']) ?? []).map(clusterRoleKey),
-        ...attempted('AssociatedRoles'),
-      ]);
-      out['AssociatedRoles'] = ((live['AssociatedRoles'] ?? []) as ClusterRole[]).filter((role) =>
-        named.has(clusterRoleKey(role))
+      out['AssociatedRoles'] = associatedRolesNamed(
+        live['AssociatedRoles'],
+        recordedProperties?.['AssociatedRoles'],
+        desiredProperties?.['AssociatedRoles'],
+        attemptedItems?.get('AssociatedRoles')
       );
     }
     if (names.has('EnableCloudwatchLogsExports')) {
@@ -3430,10 +3389,7 @@ export class NeptuneProvider implements ResourceProvider {
     // Always a list, as VpcSecurityGroupIds: a role or log type lost out of
     // band must read as a change against the recorded list.
     result['EnableCloudwatchLogsExports'] = cluster.EnabledCloudwatchLogsExports ?? [];
-    result['AssociatedRoles'] = (cluster.AssociatedRoles ?? []).map((role) => ({
-      RoleArn: role.RoleArn,
-      ...(role.FeatureName ? { FeatureName: role.FeatureName } : {}),
-    }));
+    result['AssociatedRoles'] = associatedRolesReadback(cluster.AssociatedRoles);
     if (cluster.DBClusterArn) await this.attachTags(result, cluster.DBClusterArn);
     return result;
   }

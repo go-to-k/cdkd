@@ -902,7 +902,10 @@ export interface UpdateContext extends SecretMaskingContext {
    * metric the response did not list as current, a tag key the record
    * lacked). If the update then fails, the record keeps them as
    * `ResourceState.unsettledItems`, and the next convergence may remove an
-   * item it names that neither the record nor the template declares.
+   * item it names that neither the record nor the template declares. A
+   * provider whose own `readUnsettled` reads the names as "touched by cdkd"
+   * may also name the items it REMOVED (`AssociatedRoles`,
+   * `db-associated-roles.ts`).
    */
   markAttempted?: ((path: string, items: readonly string[]) => void) | undefined;
 

@@ -36,7 +36,7 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **not-gone.ts** - `markNotGone`: a delete failure not the resource's own not-found; the already-deleted classifiers refuse it, retries untouched (#5228). A LEAF.
 
-- **ec2-instance-state.ts** - `isSettledInstanceState(stateName)`: only `pending` and NO state are unsettled. A LEAF.
+- **ec2-instance-state.ts** - `isSettledInstanceState`: only `pending` and NO state are unsettled. A LEAF.
 
 - **changed-properties-consumers.ts** - `changedProperties` readers (#5112) whose readback returns the keys read get its NoEcho readback. A LEAF.
 
@@ -73,20 +73,20 @@ Provider contract: [providers.md](providers.md). Deletes: [provider-delete-path.
 
 - **remove-protection-types.ts** - The ONE list every `--remove-protection` help string renders from (SDK types, then the CC registry), bound by `remove-protection-types.test.ts` to the provider files reading `removeProtection` both ways (#2660) and to **protection-flags.ts**: the ONE table of where each type's flag lives and which values are ON, read by the destroy prompt and by **recorded-protection.ts**, the deploy engine's stateful-replacement refusals (#2610). Those NARROW it (an ASG blocks a non-forced delete only at `prevent-all-deletion`), never widen it.
 
-- **providers/ambiguous-create.ts** - For a CREATE with no idempotency token (#2080): `withoutServerErrorRetries` stops the SDK replaying a 5xx on the create client, and `AmbiguousCreateLatch` arms only on an AMBIGUOUS create failure, so the next attempt looks first. A lookup only REPORTS: a name is not attribution (the stack lock is per state location, names per account+region). `orphan-report.ts` is the shared lookup-and-report step; `{iam,lambda}-create-client.ts` build IAM / Lambda create clients. Rules: [docs/provider-rules.md](../../docs/provider-rules.md).
+- **providers/ambiguous-create.ts** - For a CREATE with no idempotency token (#2080): `withoutServerErrorRetries` stops the SDK replaying a 5xx on the create client, and `AmbiguousCreateLatch` arms only on an AMBIGUOUS create failure, so the next attempt looks first. A lookup only REPORTS: a name is not attribution (the stack lock is per state location, names per account+region). `orphan-report.ts` is the shared lookup-and-report step; `{iam,lambda}-create-client.ts` build IAM / Lambda create clients.
 
 - **providers/create-token-ledger.ts** - A create token the service binds for the resource's LIFETIME (EFS `CreationToken`, FSx `ClientRequestToken`, OAI `CallerReference`) comes from `reserveStackCreateToken`, which folds in the stack's ledger nonce (`src/state/create-token-ledger.ts`, #4438); add a new such type to `LEDGER_TOKEN_RESOURCE_TYPES`. Any path that lets such a resource go while it still exists must replace the nonce and drop that logical id's `sent` entry (`deleteState` deletes the ledger; `cdkd orphan` and `noteRetainedResource` from every Retain arm, deploy and rollback, rotate it), or the stack's next create is handed it back or refused. A `sent` entry is kept until the deploy that wrote it succeeds (`forgetRecordedCreateTokens` after the final save): dropping it when the create returns reopens the interrupted-deploy refusal, and keeping it past that turns a let-go whose rotation failed into an adoption. A ledger that cannot be read or written REFUSES the create; never fall back to the nonce-free token, which a re-run would not send again.
 
 - **providers/deletion-protection-compensation.ts** - Undoes a `--remove-protection` flip whose delete then failed TERMINALLY (#2204). A new flip site wraps its delete in `deleteWithProtectionCompensation`, flips through `observeThenDisableProtection` (a pre-flip readback, never state) and sets `flip.deleteAccepted` once AWS takes the delete (on Cloud Control, per attempt, once the handler may be deleting: an abandoned wait, an ambiguous handler code, or a conflict after such an attempt); otherwise a failed destroy leaves the guard silently stripped.
 
-- **providers/db-instance-modify-retry.ts** - Resends a `ModifyDBInstance` or Neptune role call refused as not `available`; a succeeded one only on an SDK replay (#5194).
+- **providers/db-instance-modify-retry.ts** - Resends a `ModifyDBInstance` or role call refused as not `available`; a succeeded one only on an SDK replay (#5194); roles: **db-associated-roles.ts**.
 
 - **ec2-termination-protection.ts** - Shared `--remove-protection` helper for `AWS::EC2::Instance`: the modify WRITE lags the delete READ, so both routes flip protection off AND retry the delete. The FIRST flip goes through `observeThenDisableInstanceApiTermination`, or the compensation (#2204) records nothing. A CC-routed protected ASG is delegated to `ASGProvider.delete`.
 
 - **ec2-volume-delete.ts** - `CloudControlProvider.delete` deletes EVERY `AWS::EC2::Volume` with EC2 `DeleteVolume`, never `DeleteResource`: the registry handler can snapshot the volume itself and then hang (#3455). Its region check runs OUTSIDE the delete `try`, and its timeout is a marked abandoned wait, because already-deleted classifiers match logical-id substrings.
 
-- **guardduty-detector-patch.ts** - a GuardDuty detector's Cloud Control update patch (#4910).
-- **apigwv2-body-import-patch.ts** - an imported HTTP API's definition updates via `ReimportApi` (#5260).
+- **guardduty-detector-patch.ts** - GuardDuty detector's Cloud Control update patch (#4910).
+- **apigwv2-body-import-patch.ts** - imported HTTP API's definition updates via `ReimportApi` (#5260).
 
 - **delete-gone-wait.ts** - The post-delete wait for a service that holds a NAME while `DELETING` and refuses a same-name create with its live-resource error (Kinesis, Firehose; #3872; DynamoDB `Table`, #5514). The delete was ACCEPTED, so a cap, Ctrl-C or unreadable status warns and RETURNS; only a caller-named TERMINAL status (Firehose `DELETING_FAILED`) throws (marked abandoned, keeping the state record) — never on a first read alone.
 

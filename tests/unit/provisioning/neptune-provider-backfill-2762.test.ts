@@ -201,8 +201,13 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       const wire = armCluster({ statuses: ['creating', 'available'] });
       await provider.create('L', CLUSTER, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
       const order = mockSend.mock.calls.map(([call]) => (call as object).constructor.name);
-      expect(order.indexOf('AddRoleToDBClusterCommand')).toBe(3);
-      expect(order.slice(1, 3)).toEqual(['DescribeDBClustersCommand', 'DescribeDBClustersCommand']);
+      // The wait's two reads, then the role plan's read of the live list.
+      expect(order.indexOf('AddRoleToDBClusterCommand')).toBe(4);
+      expect(order.slice(1, 4)).toEqual([
+        'DescribeDBClustersCommand',
+        'DescribeDBClustersCommand',
+        'DescribeDBClustersCommand',
+      ]);
       expect(wire.sent('AddRoleToDBClusterCommand')).toHaveLength(1);
     });
 
@@ -230,6 +235,118 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(createdBeforeFailure(failure, 'L', CLUSTER)).toBe('cluster-1');
       // A role's "already exists" must not read as this cluster's name collision.
       expect(isAuxiliaryFailure(failure)).toBe(true);
+    });
+
+    it('does not attach again a declared role detached outside cdkd, as CloudFormation does not', async () => {
+      const wire = armCluster({ roles: [] });
+      await update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, { AssociatedRoles: [{ RoleArn: ROLE_A }] });
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('a role detached outside cdkd beside an added one is neither attached again nor kept unsettled', async () => {
+      const ROLE_C = 'arn:aws:iam::123456789012:role/c';
+      const wire = armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
+      const recorded = { AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }] };
+      const desired = {
+        AssociatedRoles: [{ RoleArn: ROLE_A }, { RoleArn: ROLE_B }, { RoleArn: ROLE_C }],
+      };
+      await update(desired, recorded);
+      expect(wire.sent('AddRoleToDBClusterCommand').map((input) => input['RoleArn'])).toEqual([
+        ROLE_C,
+      ]);
+      const identity = {
+        provider,
+        logicalId: 'L',
+        physicalId: 'cluster-1',
+        resourceType: CLUSTER,
+        recordedProperties: recorded,
+      };
+      const names = new Set(['AssociatedRoles']);
+      expect(await unsettledAfterUpdate({ ...identity, names, desired })).toEqual([]);
+      const previous = await settleUnsettledPrevious({
+        ...identity,
+        names,
+        previous: recorded,
+        desired,
+      });
+      mockSend.mockClear();
+      await update(desired, previous);
+      expect(wire.sent('AddRoleToDBClusterCommand')).toEqual([]);
+    });
+
+    it('changes nothing when the Describe after the wait answers no cluster', async () => {
+      armCluster();
+      const answer = mockSend.getMockImplementation()!;
+      let planning = false;
+      const target = provider as unknown as Record<string, (...args: unknown[]) => Promise<void>>;
+      const wait = target['waitForClusterAvailable']!.bind(provider);
+      target['waitForClusterAvailable'] = async (...args: unknown[]) => {
+        await wait(...args);
+        planning = true;
+      };
+      mockSend.mockImplementation((command: { constructor: { name: string } }) =>
+        planning && command.constructor.name === 'DescribeDBClustersCommand'
+          ? Promise.resolve({ DBClusters: [] })
+          : answer(command)
+      );
+      await expect(
+        update({ AssociatedRoles: [{ RoleArn: ROLE_A }] }, { AssociatedRoles: [{ RoleArn: ROLE_B }] })
+      ).rejects.toThrow(/returned no cluster while planning its role changes/);
+      const order = mockSend.mock.calls.map(([call]) => (call as object).constructor.name);
+      expect(order.filter((name) => name.includes('Role'))).toEqual([]);
+    });
+
+    it('a detach AWS applied but that still threw is attached again by the convergence', async () => {
+      const wire = armCluster({ roles: [{ RoleArn: ROLE_B, Status: 'ACTIVE' }] });
+      const answer = mockSend.getMockImplementation()!;
+      // AWS removed B, then the call failed (a replayed request reads not found).
+      mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+        const result = await answer(command);
+        if (command.constructor.name === 'RemoveRoleFromDBClusterCommand') {
+          throw Object.assign(new Error('Role not found'), { name: 'DBClusterRoleNotFoundFault' });
+        }
+        return result;
+      });
+      const before = { AssociatedRoles: [{ RoleArn: ROLE_B }] };
+      const markAttempted = vi.fn();
+      await expect(
+        update({}, before, CLUSTER, { markUnsettled: vi.fn(), markAttempted })
+      ).rejects.toThrow(/Role not found/);
+      const attempted = new Map([
+        ['AssociatedRoles', new Set(markAttempted.mock.calls.flatMap(([, items]) => items))],
+      ]);
+      const previous = await settleUnsettledPrevious({
+        provider,
+        logicalId: 'L',
+        physicalId: 'cluster-1',
+        resourceType: CLUSTER,
+        recordedProperties: before,
+        names: new Set(['AssociatedRoles']),
+        previous: {},
+        desired: before,
+        attemptedItems: attempted,
+      });
+      mockSend.mockImplementation(answer);
+      mockSend.mockClear();
+      await update(before, previous);
+      expect(wire.sent('AddRoleToDBClusterCommand').map((input) => input['RoleArn'])).toEqual([
+        ROLE_B,
+      ]);
+    });
+
+    it('marks the detach as attempted beside the attach', async () => {
+      armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
+      const markAttempted = vi.fn();
+      await update(
+        { AssociatedRoles: [{ RoleArn: ROLE_B }] },
+        { AssociatedRoles: [{ RoleArn: ROLE_A }] },
+        CLUSTER,
+        { markAttempted }
+      );
+      expect(markAttempted.mock.calls).toEqual([
+        ['AssociatedRoles', [`${ROLE_A}\n`]],
+        ['AssociatedRoles', [`${ROLE_B}\n`]],
+      ]);
     });
 
     it('on update, detaches what the template dropped before attaching what it added', async () => {

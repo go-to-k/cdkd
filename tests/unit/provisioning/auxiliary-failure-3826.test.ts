@@ -93,6 +93,7 @@ import { KMSProvider } from '../../../src/provisioning/providers/kms-provider.js
 import { LambdaFunctionProvider } from '../../../src/provisioning/providers/lambda-function-provider.js';
 import { LogsLogGroupProvider } from '../../../src/provisioning/providers/logs-loggroup-provider.js';
 import { RDSDBProxyTargetGroupProvider } from '../../../src/provisioning/providers/rds-dbproxy-targetgroup-provider.js';
+import { RDSProvider } from '../../../src/provisioning/providers/rds-provider.js';
 import { Route53Provider } from '../../../src/provisioning/providers/route53-provider.js';
 import { S3BucketProvider } from '../../../src/provisioning/providers/s3-bucket-provider.js';
 import { ServiceDiscoveryProvider } from '../../../src/provisioning/providers/servicediscovery-provider.js';
@@ -464,6 +465,51 @@ const CASES: Case[] = [
     responses: {
       CreateDBClusterCommand: { DBCluster: {} },
       DescribeDBClustersCommand: { DBClusters: [{ Status: 'available' }] },
+    },
+  },
+  {
+    // go-to-k/cdkd#5639: a role is attached after CreateDBCluster returned.
+    name: 'rds AWS::RDS::DBCluster',
+    provider: () => new RDSProvider(),
+    resourceType: 'AWS::RDS::DBCluster',
+    properties: {
+      DBClusterIdentifier: 'cluster',
+      Engine: 'aurora-postgresql',
+      AssociatedRoles: [{ RoleArn: 'arn:aws:iam::123456789012:role/r', FeatureName: 's3Import' }],
+    },
+    clients: [RDSClient],
+    main: 'CreateDBClusterCommand',
+    mainAwsError: {
+      name: 'DBClusterAlreadyExistsFault',
+      message: 'DB Cluster already exists',
+    },
+    aux: 'AddRoleToDBClusterCommand',
+    responses: {
+      CreateDBClusterCommand: { DBCluster: { DBClusterIdentifier: 'cluster' } },
+      DescribeDBClustersCommand: { DBClusters: [{ Status: 'available' }] },
+    },
+  },
+  {
+    // go-to-k/cdkd#5640: a role is attached after CreateDBInstance returned.
+    name: 'rds AWS::RDS::DBInstance',
+    provider: () => new RDSProvider(),
+    resourceType: 'AWS::RDS::DBInstance',
+    properties: {
+      DBInstanceIdentifier: 'instance',
+      DBInstanceClass: 'db.t4g.micro',
+      Engine: 'postgres',
+      AssociatedRoles: [{ RoleArn: 'arn:aws:iam::123456789012:role/r', FeatureName: 's3Import' }],
+    },
+    clients: [RDSClient],
+    main: 'CreateDBInstanceCommand',
+    mainAwsError: {
+      name: 'DBInstanceAlreadyExistsFault',
+      message: 'DB instance already exists',
+    },
+    aux: 'AddRoleToDBInstanceCommand',
+    responses: {
+      CreateDBInstanceCommand: { DBInstance: { DBInstanceIdentifier: 'instance' } },
+      DescribeDBInstancesCommand: { DBInstances: [{ DBInstanceStatus: 'available' }] },
     },
   },
   {

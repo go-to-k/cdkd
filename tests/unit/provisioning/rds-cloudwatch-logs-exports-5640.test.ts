@@ -170,7 +170,7 @@ describe.each(SIDES)('RDSProvider $type EnableCloudwatchLogsExports', (side) => 
   });
 
   it('is compared order-insensitively by drift', () => {
-    expect(provider.getDriftUnorderedPaths(side.type)).toEqual(['EnableCloudwatchLogsExports']);
+    expect(provider.getDriftUnorderedPaths(side.type)).toContain('EnableCloudwatchLogsExports');
   });
 
   describe('create', () => {
