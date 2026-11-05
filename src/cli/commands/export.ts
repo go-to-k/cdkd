@@ -99,6 +99,7 @@ import {
 import { CdkdError, withErrorHandling } from '../../utils/error-handler.js';
 import { nullPrototypeRecord } from '../../utils/own-keys.js';
 import { Synthesizer, synthesisStatusMessage } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
 import {
@@ -2831,6 +2832,7 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
         // the > 51,200-byte template upload path (Issue #463).
         stateBucket,
         ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+        failedLookupsCheckedByCaller: true,
       });
 
       // Both refusals go through the shared `renderNoStackMatch`, as in
@@ -2864,6 +2866,8 @@ async function exportCommand(stackArg: string | undefined, options: ExportOption
             `Specify the stack name as a positional argument.`
         );
       }
+      // A failed context lookup blocks only the stack it exports (go-to-k/cdkd#5807).
+      refuseFailedLookups([stackInfo], result.failedLookups);
       template = stackInfo.template as unknown as Record<string, unknown>;
       resolvedStackName = stackInfo.stackName;
       synthedRegion = stackInfo.region;

@@ -21,6 +21,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import type { StackInfo } from '../../synthesis/assembly-reader.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import { LockManager } from '../../state/lock-manager.js';
@@ -754,9 +755,12 @@ async function refactorCommand(stacks: string[], options: RefactorOptions): Prom
       stateBucket,
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
       deferMacroExpansion: true,
+      failedLookupsCheckedByCaller: true,
     };
-    const { stacks: allStacks } = await synthesizer.synthesize(synthOptions);
+    const { stacks: allStacks, failedLookups } = await synthesizer.synthesize(synthOptions);
     const targetStacks = selectStacks(allStacks, stacks, options);
+    // A failed context lookup blocks only the stacks it refactors (go-to-k/cdkd#5807).
+    refuseFailedLookups(targetStacks, failedLookups);
     await synthesizer.expandMacrosForStacks(targetStacks, synthOptions);
 
     const stateConfig = { bucket: stateBucket, prefix: options.statePrefix };

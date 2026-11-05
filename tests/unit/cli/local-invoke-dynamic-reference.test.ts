@@ -459,4 +459,39 @@ describe('local invoke resolves CloudFormation dynamic references (#2056)', () =
     expect(r.output).toContain('substituted env var IMPORTED');
     expect(r.output).not.toContain(PLAINTEXT);
   });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack the Lambda is in.
+  describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    beforeEach(() => {
+      mocks.synthesize.mockResolvedValue({
+        stacks: [makeStack()],
+        assemblyDir: 'cdk.out',
+        failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+      });
+    });
+
+    it('refuses a Lambda in the stack that asked, before the container starts', async () => {
+      mocks.resolveLambdaTarget.mockImplementation(() => {
+        const lambda = makeZipLambda();
+        lambda.stack.messages = [{ level: 'error', path: '/ConsumerStack', message: 'AccessDenied' }];
+        return lambda;
+      });
+      const r = await invoke([]);
+
+      expect(r.exitCode).toBe(1);
+      expect(r.output).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(mocks.synthesize.mock.calls[0]![0]).toMatchObject({
+        failedLookupsCheckedByCaller: true,
+      });
+      expect(mocks.runDetached).not.toHaveBeenCalled();
+    });
+
+    it('invokes a Lambda in a stack that did not ask', async () => {
+      const r = await invoke([]);
+
+      expect(r.exitCode).toBeUndefined();
+      expect(r.output).not.toContain('Context lookup failed');
+      expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+    });
+  });
 });

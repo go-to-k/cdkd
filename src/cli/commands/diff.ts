@@ -23,6 +23,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { S3StateBackend } from '../../state/s3-state-backend.js';
 import type { LockRecoveryContext } from '../../state/lock-contention-message.js';
 import { DiffCalculator } from '../../analyzer/diff-calculator.js';
@@ -321,6 +322,7 @@ async function diffCommand(
       // macro-carrying stack outside the diff set can never block or
       // slow this diff with a CFn round-trip.
       deferMacroExpansion: true,
+      failedLookupsCheckedByCaller: true,
     };
     const result = await synthesizer.synthesize(synthOptions);
 
@@ -362,6 +364,8 @@ async function diffCommand(
     if (targetStacks.length === 0) {
       throw new Error(renderNoStackMatch(stackPatterns, allStacks));
     }
+    // A failed context lookup blocks the diff only for a stack it diffs (go-to-k/cdkd#5807).
+    refuseFailedLookups(targetStacks, result.failedLookups);
 
     // Issue #1150: macro expansion was deferred at synthesize() time —
     // expand now for exactly the stacks being diffed, mutating each

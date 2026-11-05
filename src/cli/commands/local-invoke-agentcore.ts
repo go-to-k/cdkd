@@ -46,6 +46,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider, resolveCfnFallbackRegion } from './local-state-source.js';
@@ -548,7 +549,13 @@ async function localInvokeAgentCoreCommand(
       ...(options.profile && { profile: options.profile }),
       ...(Object.keys(context).length > 0 && { context }),
     };
-    const { stacks, assemblyDir } = await synthesizer.synthesize(synthOpts);
+    // Only this first synthesis checks failed lookups per stack: the watch
+    // loop's re-syntheses reuse `synthOpts` WITHOUT the flag below, so a
+    // failed lookup there still refuses outright.
+    const { stacks, assemblyDir, failedLookups } = await synthesizer.synthesize({
+      ...synthOpts,
+      failedLookupsCheckedByCaller: true,
+    });
 
     const resolvedTarget = await resolveSingleTarget(target, {
       entries: listTargets(stacks).agentCoreRuntimes,
@@ -579,6 +586,8 @@ async function localInvokeAgentCoreCommand(
         : { context: undefined, loaded: undefined };
 
     const resolved = resolveAgentCoreTarget(resolvedTarget, stacks, imageContext);
+    // A failed context lookup blocks only the stack it invokes (go-to-k/cdkd#5807).
+    refuseFailedLookups([resolved.stack], failedLookups);
     logger.info(`Target: ${resolved.stack.stackName}/${resolved.logicalId} (${resolved.protocol})`);
     const isMcp = resolved.protocol === AGENTCORE_MCP_PROTOCOL;
     const isA2a = resolved.protocol === AGENTCORE_A2A_PROTOCOL;

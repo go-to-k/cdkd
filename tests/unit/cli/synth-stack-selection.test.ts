@@ -255,7 +255,7 @@ describe('synth stack selection (issue #3550)', () => {
     // would refuse it first.
     await runSynth(['DataStack']);
     const passed = mockSynthesize.mock.calls[0]![0] as Record<string, unknown>;
-    expect(passed['annotationsCheckedByCaller']).toBe(true);
+    expect(passed['failedLookupsCheckedByCaller']).toBe(true);
   });
 
   it('SYNTHESIZES THE WHOLE APP regardless of the selection', async () => {

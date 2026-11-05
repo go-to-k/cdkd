@@ -43,6 +43,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined, stackForConstructPath } from '../cdk-path.js';
 import {
@@ -535,8 +536,9 @@ async function localStartApiCommand(
       // CloudFormation macro (Issue #463).
       ...(options.stateBucket && { stateBucket: options.stateBucket }),
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+      failedLookupsCheckedByCaller: true,
     };
-    const { stacks } = await synthesizer.synthesize(synthOpts);
+    const { stacks, failedLookups } = await synthesizer.synthesize(synthOpts);
 
     // When the user passes an explicit `--from-cfn-stack <name>` AND has
     // not also passed `--stack`, infer the synth target from the CFn
@@ -564,6 +566,8 @@ async function localStartApiCommand(
         "No stacks matched. Pass --stack '<name>' (or --from-cfn-stack '<name>') or run from a single-stack app."
       );
     }
+    // A failed context lookup blocks only the stacks it serves (go-to-k/cdkd#5807).
+    refuseFailedLookups(targetStacks, failedLookups);
 
     // Improvement A: when the user passed `--from-cfn-stack <explicit>`
     // AND that value already equals the routed stack's `stackName`, the

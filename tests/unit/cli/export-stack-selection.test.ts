@@ -259,4 +259,38 @@ describe('cdkd export: stack selection (go-to-k/cdkd#3507)', () => {
       expect.stringContaining("Migrating cdkd stack 'Other'")
     );
   });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack it exports.
+  it('refuses the stack that asked for a failed lookup, before any state read', async () => {
+    const asking = {
+      ...other(),
+      messages: [{ level: 'error', path: '/Other', message: 'AccessDenied' }],
+    };
+    mockSynthesize.mockResolvedValue({
+      stacks: [asking],
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    });
+
+    await runExport(['Other', '--yes']);
+
+    expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    expect(errorText()).toContain('Context lookup failed: ssm:k: AccessDenied');
+    expect(mockGetState).not.toHaveBeenCalled();
+  });
+
+  it('exports a stack that did not ask for the failed lookup', async () => {
+    const asking = {
+      ...stack('Asking'),
+      messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
+    };
+    mockSynthesize.mockResolvedValue({
+      stacks: [other(), asking],
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    });
+
+    await runExport(['Other', '--yes']);
+
+    expect(errorText()).not.toContain('Context lookup failed');
+    expect(mockGetState).toHaveBeenCalled();
+  });
 });

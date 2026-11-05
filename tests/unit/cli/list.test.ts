@@ -423,4 +423,26 @@ describe('cdkd list', () => {
     const { stderr } = await runList([]);
     expect(stderr).not.toMatch(/--region is deprecated/);
   });
+
+  // go-to-k/cdkd#5807: a failed context lookup does not change which stacks exist.
+  it('hands the failed-lookup check to the caller and still lists when a lookup failed', async () => {
+    mockSynthesize.mockResolvedValue({
+      stacks: [
+        makeStack({
+          stackName: 'StackA',
+          displayName: 'StackA',
+          messages: [{ level: 'error', path: '/StackA', message: 'AccessDenied' }],
+        }),
+      ],
+      manifest: {},
+      assemblyDir: '/tmp/cdk.out',
+      failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+    });
+
+    const { stdout, error } = await runList([]);
+
+    expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+    expect(error).toBeUndefined();
+    expect(stdout).toBe('StackA\n');
+  });
 });

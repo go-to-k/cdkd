@@ -1293,4 +1293,46 @@ describe('local invoke-agentcore keeps stdout to the agent response (issue #2410
       expect(lastSeq).toContain('flush');
     });
   });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack the runtime is in.
+  describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    async function runWithLookup(
+      messages: Array<{ level: string; path: string; message: string }> | undefined
+    ): Promise<Streams & { exitCodes: unknown[] }> {
+      mocks.synthesize.mockImplementation(async () => ({
+        stacks: [{ ...makeAgentStack(), ...(messages && { messages }) }],
+        assemblyDir: 'cdk.out',
+        failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+      }));
+      const exitCodes: unknown[] = [];
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        exitCodes.push(code);
+        return undefined as never;
+      }) as typeof process.exit);
+      try {
+        return { ...(await runAgentCore(['AgentStack:EchoAgent', '--no-pull'])), exitCodes };
+      } finally {
+        exitSpy.mockRestore();
+      }
+    }
+
+    it('refuses a runtime in the stack that asked, before the container starts', async () => {
+      const r = await runWithLookup([{ level: 'error', path: '/AgentStack', message: 'AccessDenied' }]);
+
+      expect(r.exitCodes).toEqual([1]);
+      expect(r.stdout + r.stderr).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(mocks.synthesize.mock.calls[0]![0]).toMatchObject({
+        failedLookupsCheckedByCaller: true,
+      });
+      expect(mocks.runDetached).not.toHaveBeenCalled();
+    });
+
+    it('invokes a runtime in a stack that did not ask', async () => {
+      const r = await runWithLookup(undefined);
+
+      expect(r.exitCodes).toEqual([]);
+      expect(r.stdout + r.stderr).not.toContain('Context lookup failed');
+      expect(mocks.runDetached).toHaveBeenCalledTimes(1);
+    });
+  });
 });

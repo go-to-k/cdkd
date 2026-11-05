@@ -1818,4 +1818,44 @@ describe('cdkd orphan: a construct path under a CDK Stage (go-to-k/cdkd#3943)', 
         'in the synthesized app. The assembly has no stacks'
     );
   });
+
+  // go-to-k/cdkd#5807: a failed context lookup blocks only the stack orphaned from.
+  describe('a failed context lookup (go-to-k/cdkd#5807)', () => {
+    function arrange(): void {
+      mockSynthesize.mockResolvedValue({
+        stacks: ['Asking', 'Other'].map((name) => ({
+          stackName: name,
+          displayName: name,
+          template: templateWith({ Bucket: `${name}/Bucket` }),
+          region: 'us-east-1',
+          ...(name === 'Asking' && {
+            messages: [{ level: 'error', path: '/Asking', message: 'AccessDenied' }],
+          }),
+        })),
+        failedLookups: [{ key: 'ssm:k', error: 'AccessDenied' }],
+      });
+    }
+
+    it('refuses the stack that asked, before any state read', async () => {
+      arrange();
+
+      await expect(runOrphan(['Asking/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
+        'process.exit-mock'
+      );
+      expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
+      expect(reported()).toContain('Context lookup failed: ssm:k: AccessDenied');
+      expect(mockGetState).not.toHaveBeenCalled();
+      expect(mockSaveState).not.toHaveBeenCalled();
+    });
+
+    it('proceeds for a stack that did not ask', async () => {
+      arrange();
+
+      await expect(runOrphan(['Other/Bucket', '--app', 'noop', '--yes'])).rejects.toThrow(
+        'process.exit-mock'
+      );
+      expect(reported()).not.toContain('Context lookup failed');
+      expect(mockListStacks).toHaveBeenCalled();
+    });
+  });
 });

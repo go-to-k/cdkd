@@ -431,7 +431,7 @@ describe('cdkd deploy refuses a malformed nested-template tree pre-flight (issue
     await runDeploy(['--yes', '--dry-run']);
 
     expect(synthesize).toHaveBeenCalledTimes(1);
-    expect(synthesize.mock.calls[0]![0]).toMatchObject({ annotationsCheckedByCaller: true });
+    expect(synthesize.mock.calls[0]![0]).toMatchObject({ failedLookupsCheckedByCaller: true });
   });
 
   it('asks for the account id while synthesis runs, not after it (#5200)', async () => {

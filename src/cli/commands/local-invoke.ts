@@ -46,6 +46,7 @@ import {
   synthesisStatusMessage,
   type SynthesisOptions,
 } from '../../synthesis/synthesizer.js';
+import { refuseFailedLookups } from '../../synthesis/failed-lookups.js';
 import { resolveApp } from '../config-loader.js';
 import { readCdkPathOrUndefined } from '../cdk-path.js';
 import { createLocalStateProvider } from './local-state-source.js';
@@ -589,10 +590,13 @@ async function localInvokeCommand(target: string, options: LocalInvokeOptions): 
       // CloudFormation macro (Issue #463).
       ...(options.stateBucket && { stateBucket: options.stateBucket }),
       ...(options.profile && { macroExpandS3ClientOpts: { profile: options.profile } }),
+      failedLookupsCheckedByCaller: true,
     };
-    const { stacks } = await synthesizer.synthesize(synthOpts);
+    const { stacks, failedLookups } = await synthesizer.synthesize(synthOpts);
 
     const lambda = resolveLambdaTarget(target, stacks);
+    // A failed context lookup blocks only the stack it invokes from (go-to-k/cdkd#5807).
+    refuseFailedLookups([lambda.stack], failedLookups);
     const targetLabel = lambda.kind === 'zip' ? lambda.runtime : 'container image';
     logger.info(`Target: ${lambda.stack.stackName}/${lambda.logicalId} (${targetLabel})`);
 
