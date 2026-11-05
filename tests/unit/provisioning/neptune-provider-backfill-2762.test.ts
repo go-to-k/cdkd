@@ -296,6 +296,21 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(order.filter((name) => name.includes('Role'))).toEqual([]);
     });
 
+    it('marks the detach as attempted beside the attach', async () => {
+      armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
+      const markAttempted = vi.fn();
+      await update(
+        { AssociatedRoles: [{ RoleArn: ROLE_B }] },
+        { AssociatedRoles: [{ RoleArn: ROLE_A }] },
+        CLUSTER,
+        { markAttempted }
+      );
+      expect(markAttempted.mock.calls).toEqual([
+        ['AssociatedRoles', [`${ROLE_A}\n`]],
+        ['AssociatedRoles', [`${ROLE_B}\n`]],
+      ]);
+    });
+
     it('on update, detaches what the template dropped before attaching what it added', async () => {
       const wire = armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
       await update(
