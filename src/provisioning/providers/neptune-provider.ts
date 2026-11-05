@@ -1252,14 +1252,7 @@ export class NeptuneProvider implements ResourceProvider {
             mask
           );
         }
-        await this.applyClusterRoles(
-          logicalId,
-          dbClusterIdentifier,
-          roles,
-          [],
-          mask,
-          undefined
-        );
+        await this.applyClusterRoles(logicalId, dbClusterIdentifier, roles, [], mask, undefined);
       } catch (error) {
         // The cluster itself was created: a follow-up's or a role's "already
         // exists" is not this name's collision (#3826).
