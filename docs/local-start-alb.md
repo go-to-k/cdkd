@@ -166,6 +166,15 @@ of the load balancer.
 | Authentication actions | `authenticate-cognito`, `authenticate-oidc` |
 | Target groups | ECS services, Lambda functions |
 
+Condition values must be literal strings, with one exception: a `host-header`
+value naming the load balancer's own DNS name
+(`ListenerCondition.hostHeaders([alb.loadBalancerDnsName])`) matches any
+`Host`, because every request that reaches the local front door is addressed
+to it. On AWS a request by IP misses that rule and gets the default action;
+locally it matches. Any other value cdkd cannot resolve locally (a `Ref` to a
+parameter, another load balancer's DNS name, `Fn::Join`, `Fn::ImportValue`)
+skips the whole rule with a warning.
+
 A `forward` action can send to one target group or split requests across
 several by weight. `TCP`, `UDP` and `TLS` listeners belong to Network Load
 Balancers and are skipped.
