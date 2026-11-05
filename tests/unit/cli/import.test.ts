@@ -7656,7 +7656,7 @@ describe('cdkd import: stack selection (go-to-k/cdkd#3507)', () => {
 
       await expect(runImport(['import', 'Asking', '--yes'])).rejects.toThrow('process.exit-mock');
 
-      expect(mockSynthesize.mock.calls[0]![0]).toMatchObject({
+      expect((mockSynthesize.mock.calls[0] as unknown[])[0]).toMatchObject({
         failedLookupsCheckedByCaller: true,
       });
       expect(errorText()).toContain('Context lookup failed: ssm:k: AccessDenied');
