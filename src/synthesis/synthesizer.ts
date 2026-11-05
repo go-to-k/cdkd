@@ -126,6 +126,17 @@ export interface SynthesisOptions {
    * export, publish-assets, local).
    */
   deferMacroExpansion?: boolean;
+
+  /**
+   * The caller runs `processStackMessages` over the stacks it uses, so a
+   * failed context lookup reaches it as the error annotation the app adds
+   * (`synth` / `deploy`, where `--ignore-errors` then decides). Unset, a lookup
+   * that failed and is still missing when resolution stops making progress is
+   * a `SynthesisError` here instead: no other command reads annotations, and
+   * it would otherwise run on the lookup's dummy value
+   * (go-to-k/cdkd#5805).
+   */
+  annotationsCheckedByCaller?: boolean;
 }
 
 /**
@@ -309,6 +320,17 @@ export class Synthesizer {
         }
         // Each key SEPARATELY, so the `, ` separator stays byte-exact — see the
         // module header for why that, and not safety, is the reason.
+        const failed = [...missingKeys].filter((k) => providerErrorOf(transientContext[k]));
+        if (failed.length > 0 && !options.annotationsCheckedByCaller) {
+          throw new SynthesisError(
+            'Context lookup failed: ' +
+              failed
+                .map(
+                  (k) => `${displaySafe(k)}: ${displaySafe(providerErrorOf(transientContext[k])!)}`
+                )
+                .join('; ')
+          );
+        }
         this.logger.debug(
           safeMsg`Context resolution made no further progress; using this synthesis. Still missing: ${[...missingKeys].map((k) => displaySafe(k)).join(', ')}`
         );
@@ -530,4 +552,11 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(item)) return false;
   }
   return true;
+}
+
+/** A failed lookup's `$providerError` text, as `ContextProviderRegistry` stores it. */
+function providerErrorOf(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const error = (value as Record<string, unknown>)['$providerError'];
+  return typeof error === 'string' ? error : undefined;
 }

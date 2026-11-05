@@ -110,7 +110,8 @@ reports the same keys as on the previous run: the app has then had its
 looked-up (or default) values once, and that synthesis is used, as the AWS CDK
 CLI does. A lookup that failed is handed to the app's next run without being
 saved, and the app turns it into an error annotation that fails `synth` and
-`deploy`.
+`deploy`. Every other command, which does not read annotations, fails with
+`Context lookup failed` instead of running on the lookup's default value.
 
 ```text diagram=synthesizer-loop
 1. Execute CDK app (AppExecutor)

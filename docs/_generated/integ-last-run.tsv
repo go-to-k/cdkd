@@ -422,7 +422,7 @@ update-policy-mutations	2026-11-04T08:15:09Z	PASS	70	verify.sh	rc ok, orph clean
 update-replace	2026-11-04T19:35:08Z	PASS	70	verify.sh	rc ok, orph clean
 vpc-lambda	2026-10-25T16:18:19Z	PASS	831	standard	us-east-1; rerun on formatting-only head f4b9115ab (#5276); destroy 16 deleted 0 errors; rc ok, orph clean, no Gave up warning
 vpc-lambda-cr-race	2026-10-25T15:55:05Z	PASS	326	standard	us-east-1; final build 8c364cddb (#5276); 21 deleted 0 errors, orph clean, no Gave up warning
-vpc-lookup	2026-11-04T05:36:33Z	PASS	34	standard	batch 4; context-provider loop ok, 0 err 0 orph
+vpc-lookup	2026-11-05T08:30:16Z	PASS	32	standard	rc ok, orph clean, AlwaysMissingLookup=latest
 vpc-nat-gateway	2026-10-26T12:39:04Z	PASS	2098	verify.sh	rc ok, orph clean, #2762 regional NAT; 1h/1i wait exercised
 wafv2	2026-10-29T17:47:25Z	PASS	188	verify.sh	rc ok, orph clean; probe red at assert_sdk_route (cc-api routing)
 wait-condition-handle	2026-11-04T06:31:22Z	PASS	45	verify.sh	rc ok, orph clean

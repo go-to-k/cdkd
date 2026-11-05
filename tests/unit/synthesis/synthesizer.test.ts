@@ -149,12 +149,54 @@ describe('Synthesizer', () => {
       mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
       mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
 
-      await synthesizer.synthesize({ app: 'node app.ts', context: { other: 'cli' } });
+      await synthesizer.synthesize({
+        app: 'node app.ts',
+        context: { other: 'cli' },
+        annotationsCheckedByCaller: true,
+      });
 
       expect(mockExecute).toHaveBeenCalledTimes(2);
       expect(mockExecute.mock.calls[0]![0].context[ssmKey]).toBeUndefined();
       expect(mockExecute.mock.calls[1]![0].context[ssmKey]).toEqual(failed);
       expect(mockExecute.mock.calls[1]![0].context['other']).toBe('cli');
+    });
+
+    it('refuses a failed lookup that stays missing for a caller that does not read annotations', async () => {
+      // diff / import / local-* never read error annotations, so the dummy
+      // value the app falls back to would otherwise be used silently.
+      const failed = { $providerError: 'AccessDenied: ec2:DescribeVpcs', $dontSaveContext: true };
+      mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+
+      await expect(synthesizer.synthesize({ app: 'node app.ts' })).rejects.toThrow(
+        `Context lookup failed: ${ssmKey}: AccessDenied: ec2:DescribeVpcs`
+      );
+    });
+
+    it('leaves a failed lookup to the annotations when the caller checks them (synth / deploy)', async () => {
+      const failed = { $providerError: 'AccessDenied', $dontSaveContext: true };
+      mockReadManifest.mockReturnValue(manifestMissing([ssmKey]));
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+      mockAssemblyStacks.mockReturnValue([{ stackName: 'App' }]);
+
+      const result = await synthesizer.synthesize({
+        app: 'node app.ts',
+        annotationsCheckedByCaller: true,
+      });
+
+      expect(result.stacks).toEqual([{ stackName: 'App' }]);
+    });
+
+    it('lets CLI -c win over an unsaved lookup failure for the same key', async () => {
+      const failed = { $providerError: 'AccessDenied', $dontSaveContext: true };
+      mockReadManifest
+        .mockReturnValueOnce(manifestMissing([ssmKey]))
+        .mockReturnValueOnce({ version: '38.0.0', artifacts: {} });
+      mockResolve.mockResolvedValueOnce({ [ssmKey]: failed });
+
+      await synthesizer.synthesize({ app: 'node app.ts', context: { [ssmKey]: 'from-cli' } });
+
+      expect(mockExecute.mock.calls[1]![0].context[ssmKey]).toBe('from-cli');
     });
 
     it('lets a later successful lookup replace an earlier unsaved failure', async () => {
