@@ -1320,6 +1320,11 @@
       "scenarios": []
     },
     {
+      "name": "globaltable-template-baseline-drift",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "glue-securityconfig-replace",
       "annotated": false,
       "scenarios": []
@@ -3653,6 +3658,7 @@
     "generated-name-security-group",
     "getatt-fallback-guard",
     "globaltable-fix-forward-orphan",
+    "globaltable-template-baseline-drift",
     "glue-securityconfig-replace",
     "guardduty-detector-update",
     "healthimaging-stateful-update-fallback",

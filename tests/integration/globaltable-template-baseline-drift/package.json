@@ -1,0 +1,20 @@
+{
+  "name": "cdkd-integ-globaltable-template-baseline-drift",
+  "version": "1.0.0",
+  "private": true,
+  "description": "cdkd drift on a GlobalTable compared through its template bag: AWS-default replica members and the AWS managed key read as no drift (#5789, #5790)",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "aws-cdk": "^2.1112.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.260.0",
+    "constructs": "^10.0.0"
+  },
+  "type": "module"
+}
