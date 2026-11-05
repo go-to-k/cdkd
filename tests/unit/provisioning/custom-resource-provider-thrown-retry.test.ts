@@ -1093,6 +1093,7 @@ describe('the shared pattern list this classifier consumes (#3174 M5)', () => {
       "One or more security group IDs are invalid",
       "permissions required to assume the role",
       "does not have a trust relationship allowing",
+      "does not have permission to publish with SNS",
       "authorized to assume the provided role",
       "not authorized to access the Log Destination",
       "Cannot access stream",
