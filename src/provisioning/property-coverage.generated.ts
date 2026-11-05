@@ -1774,8 +1774,11 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Tags',
         'VisibleToAllUsers',
       ]),
-      sdkUnwired: new Map<string, string>(),
-      createOnlyDrops: new Set<string>(),
+      sdkUnwired: new Map<string, string>([
+        ['MonitoringConfiguration', 'not yet implemented by cdkd'],
+        ['SessionEnabled', 'not yet implemented by cdkd'],
+      ]),
+      createOnlyDrops: new Set<string>(['MonitoringConfiguration', 'SessionEnabled']),
       readOnly: new Set<string>(['Id', 'MasterPublicDNS']),
       ccRouteUnavailable: true,
     },
@@ -2389,7 +2392,7 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
         'Resources',
         'Tags',
       ]),
-      sdkUnwired: new Map<string, string>(),
+      sdkUnwired: new Map<string, string>([['KmsKeyIdentifier', 'not yet implemented by cdkd']]),
       createOnlyDrops: new Set<string>(),
       readOnly: new Set<string>([
         'CreatedAt',

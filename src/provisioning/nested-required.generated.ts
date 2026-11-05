@@ -781,6 +781,7 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
         'ManagedScalingPolicy.ComputeLimits',
         ['MaximumCapacityUnits', 'MinimumCapacityUnits', 'UnitType'],
       ],
+      ['MonitoringConfiguration.CloudWatchLogConfiguration', ['Enabled']],
       ['PlacementGroupConfigs', ['InstanceRole']],
       ['Steps', ['HadoopJarStep', 'Name']],
       ['Steps.HadoopJarStep', ['Jar']],
