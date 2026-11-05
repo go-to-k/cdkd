@@ -80,7 +80,9 @@ beforeEach(() => {
   provider = new DynamoDBGlobalTableProvider();
 });
 
-const templateBag = (sse: Record<string, unknown> = { SSEEnabled: true, SSEType: 'KMS' }) => ({
+const templateBag = (
+  sse: Record<string, unknown> = { SSEEnabled: true, SSEType: 'KMS' }
+): { TableName: string; SSESpecification: Record<string, unknown>; Replicas: Record<string, unknown>[] } => ({
   TableName: 'T',
   SSESpecification: sse,
   Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }],
@@ -118,22 +120,71 @@ describe('AWS managed replica keys on a template-bag baseline (go-to-k/cdkd#5790
     expect(await driftPaths(templateBag(), readback())).toEqual(['Replicas']);
   });
 
-  it('asks nothing for a baseline not on the AWS managed key, or one naming a replica key', async () => {
+  it('asks nothing and returns both inputs by identity off the AWS managed key', async () => {
     for (const baseline of [
       templateBag({ SSEEnabled: false }),
       templateBag({ SSEEnabled: true, SSEType: 'KMS', KMSMasterKeyId: 'alias/mine' }),
       { TableName: 'T', Replicas: [{ Region: 'us-east-1' }, { Region: 'eu-west-1' }] },
     ]) {
-      await provider.canonicalizeDriftPair(TYPE, baseline, readback());
+      const aws = readback();
+      const paired = await provider.canonicalizeDriftPair(TYPE, baseline, aws);
+      expect(paired.baseline).toBe(baseline);
+      expect(paired.aws).toBe(aws);
     }
+    expect(kmsSend).not.toHaveBeenCalled();
+  });
+
+  it('asks KMS nothing when every baseline replica already names its key', async () => {
     const declared = templateBag();
-    declared.Replicas[1] = {
-      Region: 'eu-west-1',
-      SSESpecification: { KMSMasterKeyId: CMK_WEST },
-    } as never;
-    expect(await driftPaths(declared, readback())).toEqual(['Replicas']);
-    expect(kmsSend.mock.calls.map(([, cmd]) => (cmd as DescribeKeyCommand).input.KeyId)).toEqual([
-      AWS_KEY_EAST,
+    declared.Replicas = [
+      { Region: 'us-east-1', SSESpecification: { KMSMasterKeyId: AWS_KEY_EAST } },
+      { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: AWS_KEY_WEST } },
+    ];
+    const paired = await provider.canonicalizeDriftPair(TYPE, declared, readback());
+    expect(paired.baseline).toBe(declared);
+    expect(kmsSend).not.toHaveBeenCalled();
+  });
+
+  it('a mixed table (one replica on a customer managed key) completes nothing', async () => {
+    const declared = templateBag();
+    declared.Replicas[1] = { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: CMK_WEST } };
+    // The local replica alone lacks a key, but the table is not wholly on the
+    // AWS managed key: drift shows it, and `--revert` keeps re-sending it.
+    expect(await driftPaths(declared, readback(CMK_WEST))).toEqual(['Replicas']);
+    const paired = await provider.canonicalizeDriftPair(TYPE, declared, readback(CMK_WEST));
+    expect(paired.baseline).toBe(declared);
+  });
+
+  it('accepts an omitted SSEType (KMS is its only value)', async () => {
+    // The top level differs on its own (`SSEType`); the replicas no longer do.
+    expect(await driftPaths(templateBag({ SSEEnabled: true }), readback())).not.toContain('Replicas');
+  });
+
+  it('asks KMS once per key and per region client, also for concurrent drifts', async () => {
+    await Promise.all([
+      provider.canonicalizeDriftPair(TYPE, templateBag(), readback()),
+      provider.canonicalizeDriftPair(TYPE, templateBag(), readback()),
+    ]);
+    expect(kmsSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a key in its own partition region', async () => {
+    const cn = 'arn:aws-cn:kms:cn-north-1:123456789012:key/aws-managed-cn';
+    const gov = 'arn:aws-us-gov:kms:us-gov-west-1:123456789012:key/aws-managed-gov';
+    managers[cn] = 'AWS';
+    managers[gov] = 'AWS';
+    const aws = {
+      TableName: 'T',
+      SSESpecification: { SSEEnabled: true, SSEType: 'KMS' },
+      Replicas: [
+        { Region: 'us-east-1', SSESpecification: { KMSMasterKeyId: cn } },
+        { Region: 'eu-west-1', SSESpecification: { KMSMasterKeyId: gov } },
+      ],
+    };
+    expect(await driftPaths(templateBag(), aws)).toEqual([]);
+    expect(kmsSend.mock.calls.map(([region]) => region).sort()).toEqual([
+      'cn-north-1',
+      'us-gov-west-1',
     ]);
   });
 });

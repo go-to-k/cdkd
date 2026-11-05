@@ -606,6 +606,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * `undefined` = could not be read. One lookup per key per provider instance.
    */
   private kmsKeyManagerCache = new Map<string, Promise<string | undefined>>();
+  private kmsClientCache = new Map<string, KMSClient>();
   /**
    * Caches per-region `ApplicationAutoScalingClient` instances for
    * per-replica `ReadCapacityAutoScalingSettings` reverse-mapping in
@@ -10568,6 +10569,15 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
    * the ARN's own region; `undefined` when it cannot be read, so the caller
    * completes nothing and the drift stays visible (go-to-k/cdkd#5790).
    */
+  private kmsClientFor(region: string): KMSClient {
+    let client = this.kmsClientCache.get(region);
+    if (client === undefined) {
+      client = new KMSClient({ ...clientDefaultsFor(this.credentialConfig), region });
+      this.kmsClientCache.set(region, client);
+    }
+    return client;
+  }
+
   private kmsKeyManager(arn: string): Promise<string | undefined> {
     const cached = this.kmsKeyManagerCache.get(arn);
     if (cached !== undefined) return cached;
@@ -10575,7 +10585,7 @@ export class DynamoDBGlobalTableProvider implements ResourceProvider {
     const lookup =
       region === undefined
         ? Promise.resolve(undefined)
-        : new KMSClient({ ...clientDefaultsFor(this.credentialConfig), region })
+        : this.kmsClientFor(region)
             .send(new DescribeKeyCommand({ KeyId: arn }))
             .then(
               (out) => out.KeyMetadata?.KeyManager,
@@ -11511,8 +11521,9 @@ function completeReplicaDefaults(
  * what CDK renders for `TableEncryptionV2.awsManagedKey()` -- declares no
  * per-replica key, while the read-back writes each replica's
  * `SSESpecification: { KMSMasterKeyId: <arn> }`. A baseline replica entry
- * with no `SSESpecification` takes the live one ONLY when KMS reports that
- * key AWS managed; a customer managed key, an unreadable key, or a baseline
+ * with no `SSESpecification` takes the live one ONLY when KMS reports EVERY
+ * live replica's key AWS managed (`SSEType` may be omitted: KMS is its one
+ * value); a customer managed key, an unreadable key, or a baseline
  * naming any key completes nothing. Identity when nothing is completed.
  */
 async function completeAwsManagedReplicaKeys(
@@ -11524,7 +11535,7 @@ async function completeAwsManagedReplicaKeys(
   if (
     sse === undefined ||
     sse['SSEEnabled'] !== true ||
-    sse['SSEType'] !== 'KMS' ||
+    (sse['SSEType'] !== undefined && sse['SSEType'] !== 'KMS') ||
     sse['KMSMasterKeyId'] !== undefined
   ) {
     return baseline;
@@ -11532,24 +11543,44 @@ async function completeAwsManagedReplicaKeys(
   const baselineReplicas = baseline['Replicas'];
   const awsReplicas = aws['Replicas'];
   if (!Array.isArray(baselineReplicas) || !Array.isArray(awsReplicas)) return baseline;
+  // Every live replica must be on an AWS managed key: a mixed table (one
+  // replica moved to a customer managed key) completes nothing, so drift
+  // shows it and `drift --revert`'s desired bag still names no local key,
+  // which `update()` answers by re-sending the AWS managed key to every
+  // replica (security review of #5790).
+  const wantsKey = baselineReplicas.some((entry) => {
+    const record = asRecord(entry);
+    return record !== undefined && record['SSESpecification'] === undefined;
+  });
+  if (!wantsKey) return baseline;
+  const liveKeys = new Map<string, string>();
+  for (const live of awsReplicas.map(asRecord)) {
+    const region = live?.['Region'];
+    const liveSse = asRecord(live?.['SSESpecification']);
+    const arn = liveSse?.['KMSMasterKeyId'];
+    if (
+      typeof region !== 'string' ||
+      liveSse === undefined ||
+      typeof arn !== 'string' ||
+      Object.keys(liveSse).length !== 1
+    ) {
+      return baseline;
+    }
+    liveKeys.set(region, arn);
+  }
+  const managers = await Promise.all([...liveKeys.values()].map((arn) => keyManager(arn)));
+  if (managers.some((m) => m !== 'AWS')) return baseline;
   let changed = false;
-  const next = await Promise.all(
-    baselineReplicas.map(async (entry) => {
-      const record = asRecord(entry);
-      const region = record?.['Region'];
-      if (record === undefined || typeof region !== 'string') return entry;
-      if (record['SSESpecification'] !== undefined) return entry;
-      const live = awsReplicas.map(asRecord).find((r) => r?.['Region'] === region);
-      const liveSse = asRecord(live?.['SSESpecification']);
-      const arn = liveSse?.['KMSMasterKeyId'];
-      if (liveSse === undefined || typeof arn !== 'string' || Object.keys(liveSse).length !== 1) {
-        return entry;
-      }
-      if ((await keyManager(arn)) !== 'AWS') return entry;
-      changed = true;
-      return { ...record, SSESpecification: { KMSMasterKeyId: arn } };
-    })
-  );
+  const next = baselineReplicas.map((entry) => {
+    const record = asRecord(entry);
+    const region = record?.['Region'];
+    if (record === undefined || typeof region !== 'string') return entry;
+    if (record['SSESpecification'] !== undefined) return entry;
+    const arn = liveKeys.get(region);
+    if (arn === undefined) return entry;
+    changed = true;
+    return { ...record, SSESpecification: { KMSMasterKeyId: arn } };
+  });
   return changed ? { ...baseline, Replicas: next } : baseline;
 }
 
