@@ -352,7 +352,7 @@ rollback-replacement-retain	2026-10-29T20:43:22Z	PASS	72	verify.sh	PR #5535 PASS
 rollback-replay-cc-generated-name	2026-11-04T22:37:42Z	PASS	151	verify.sh	rc ok, orph clean, own temp state bucket
 rollback-replay-effective-props	2026-11-04T23:10:23Z	PASS	230	verify.sh	#5789 fix (final head a48765369): phase 5 drift converges, orph clean
 rollback-same-id-recreate	2026-11-04T22:28:17Z	PASS	175	verify.sh	own state bucket, rc ok, orph clean
-rollback-sqs-cooldown	2026-10-24T07:04:10Z	PASS	154	verify.sh	rc ok, orph clean
+rollback-sqs-cooldown	2026-11-05T10:23:01Z	PASS	150	verify.sh	rc ok, orph clean
 route53	2026-11-02T17:29:26Z	PASS	568	verify.sh	PR #5662 c63dba225 rc ok, orph clean
 s3-analytics-inventory	2026-11-04T08:31:11Z	PASS	135	verify.sh	verify.sh rc 0, destroy clean, orph clean (own state bucket)
 s3-asset-deploy	2026-10-30T00:18:42Z	PASS	65	verify.sh	rc ok, orph clean
@@ -368,7 +368,7 @@ s3-subconfig-removal	2026-11-01T12:46:03Z	PASS	276	verify.sh	rc ok, orph clean, 
 s3-tables	2026-10-30T15:59:00Z	PASS	191	verify.sh	rc 0, orph clean; PR #5578 73dac7708 Phase 1e accepted-drop refusal + import remedy; probe red at Phase 1e (diff exit 0 without #5572 warning needle, pre-fix NO_CHANGE)
 s3-vectors	2026-11-04T09:11:36Z	PASS	41	verify.sh	phase-1 deploy --verbose OK (no assertion tripped on debug output); rc 0, destroy clean, orph clean; own state bucket
 scheduled-task	2026-11-04T05:01:38Z	PASS	44	standard	deploy+destroy 0 errors, orph clean
-scheduler-custom-group	2026-10-24T03:41:38Z	PASS	105	verify.sh	rc ok, orph clean; #5228 not-gone mark
+scheduler-custom-group	2026-11-05T10:20:27Z	PASS	101	verify.sh	rc ok, orph clean
 schema-v10-to-v11-migration	2026-11-04T18:46:30Z	PASS	436	verify.sh	rc ok, destroy 0 errors, orph clean; own state bucket
 schema-v11-to-v12-migration	2026-11-04T19:21:11Z	PASS	125	verify.sh	rc ok, orph clean
 schema-v12-to-v13-migration	2026-10-23T16:21:31Z	PASS	159	verify.sh	v12->v13 transparent auto-migration verified, 46 assertions; integ-schema-migration marker set
@@ -395,10 +395,10 @@ sg-circular-dependency	2026-11-04T21:40:26Z	PASS	376	verify.sh	us-east-1; own te
 shared-stackname-multi-region	2026-11-05T07:40:12Z	PASS	105	verify.sh	rc ok, us-east-1+us-west-2, orph clean both regions (own temp state bucket)
 sns-event-source	2026-11-04T08:15:09Z	PASS	65	verify.sh	rc ok, orph clean
 sns-inline-subscription	2026-11-04T18:01:46Z	PASS	45	verify.sh	rc ok, orph clean (state keys + live resources, us-east-1/us-west-2/us-east-2; no Lambda log groups), own temp state bucket deleted; sweep batch 19 on test/integ-sweep-1104e
-sns-pending-subscription	2026-10-24T03:05:49Z	PASS	50	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
+sns-pending-subscription	2026-11-05T10:18:42Z	PASS	40	verify.sh	rc ok, orph clean
 sns-sqs-event	2026-11-04T22:19:15Z	PASS	255	verify.sh	own state bucket, rc ok, orph clean
-sns-subscription-filter	2026-10-24T03:05:49Z	PASS	275	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
-sns-subscription-update	2026-10-24T03:05:49Z	PASS	115	verify.sh	PR 5234 rc0, destroy 0 errors, orph clean (2457d0149)
+sns-subscription-filter	2026-11-05T10:17:57Z	PASS	291	verify.sh	rc ok, orph clean
+sns-subscription-update	2026-11-05T10:13:00Z	PASS	110	verify.sh	rc ok, orph clean
 sqs-cloudwatch	2026-11-04T05:57:23Z	PASS	65	standard	deploy+destroy rc 0, orph clean
 sqs-esm-max-concurrency	2026-10-27T17:54:34Z	PASS	85	verify.sh	rc ok, orph clean; #1160 ESM removal audit
 ssm-secure-dynamic-ref	2026-11-04T20:24:16Z	PASS	95	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket; 0 surviving versions
@@ -414,7 +414,7 @@ stepfunctions-s3-definition	2026-10-26T08:20:06Z	PASS	60	verify.sh	rc ok, orph c
 stream-delete-redeploy	2026-11-01T14:08:38Z	PASS	914	verify.sh	rc ok, orph clean
 synthetics-canary	2026-11-04T08:15:09Z	PASS	130	verify.sh	rc ok, orph clean
 tags-propagation	2026-10-24T19:26:15Z	PASS	167	verify.sh	rc ok, orph clean, #5266 tail-c
-termination-protection	2026-10-24T05:02:39Z	PASS	60	verify.sh	rc ok, orph clean; re-run on 564761a4b after rebase onto main (incl. #5235 delete path) (#5238)
+termination-protection	2026-11-05T10:11:05Z	PASS	60	verify.sh	rc ok, orph clean
 throttle-wide-dag	2026-10-24T11:08:27Z	PASS	311	verify.sh	rc ok, orph clean
 type-change-replacement	2026-11-04T22:10:47Z	PASS	210	verify.sh	rc ok, orph clean; us-east-1; own temp state bucket
 unrecognized-key-autoroute	2026-11-03T14:15:44Z	PASS	90	verify.sh	rc ok, orph clean; #5695 sdkUnwired rename
