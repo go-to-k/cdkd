@@ -2508,14 +2508,17 @@ export class NeptuneProvider implements ResourceProvider {
         remainingMs: enclosingDeadlineRemainingMs(),
       });
     for (const role of toRemove) {
+      // A detach is an attempt too, so `associatedRolesNamed` never reads a
+      // role this run detached as detached outside cdkd. Marked BEFORE the
+      // call, unlike an attach (#5498): a detach AWS applied can still throw
+      // (a lost response, a replay's not-found), and the mark only matters
+      // for a role AWS no longer lists, so a detach that did nothing is inert.
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
       await whenAvailable(() =>
         this.getClient().send(
           new RemoveRoleFromDBClusterCommand({ DBClusterIdentifier: physicalId, ...role })
         )
       );
-      // A detach is an attempt too: `associatedRolesNamed` must not read a
-      // declared role this run detached as one detached outside cdkd.
-      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
     }
     for (const role of toAdd) {
       await whenAvailable(() =>

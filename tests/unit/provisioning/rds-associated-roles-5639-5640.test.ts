@@ -105,6 +105,8 @@ function arm(
     empty?: (describes: number) => boolean;
     /** When it answers a list, the live roles every Describe reports instead. */
     rolesNow?: () => Input[] | undefined;
+    /** Thrown by a Remove* call AFTER the detach took effect (a lost response). */
+    failAfterRemove?: Error;
   } = {}
 ): { describes: () => number } {
   let roles: Input[] = (options.roles ?? []).map((role) => ({ ...role, Status: 'ACTIVE' }));
@@ -173,6 +175,7 @@ function arm(
         later(() => {
           roles = roles.filter((role) => !(role['RoleArn'] === arn && role['FeatureName'] === feature));
         });
+        if (options.failAfterRemove !== undefined) return Promise.reject(options.failAfterRemove);
         return Promise.resolve({});
       }
       case 'ListTagsForResourceCommand':
@@ -595,6 +598,49 @@ describe('RDSProvider AssociatedRoles (go-to-k/cdkd#5639 / #5640)', () => {
         mockSend.mockClear();
         await provider.update('L', id, type, desired, previous);
         expect(sent(add)).toEqual([]);
+      }
+    );
+
+    it.each([
+      [CLUSTER, 'c-1', 'AddRoleToDBClusterCommand', 'DBClusterRoleNotFoundFault'],
+      [INSTANCE, 'i-1', 'AddRoleToDBInstanceCommand', 'DBInstanceRoleNotFoundFault'],
+    ])(
+      '%s: a detach AWS applied but that still threw is attached again by the convergence',
+      async (type, id, add, fault) => {
+        const b = { RoleArn: ROLE_B, FeatureName: 's3Export' };
+        // AWS removed B, then the call failed (a replayed request reads not found).
+        arm({
+          roles: [b],
+          failAfterRemove: Object.assign(new Error('Role not found'), { name: fault }),
+        });
+        const base = type === CLUSTER ? CLUSTER_BASE : INSTANCE_BASE;
+        const before = { ...base, AssociatedRoles: [b] };
+        const markAttempted = vi.fn();
+        await expect(
+          provider.update('L', id, type, base, before, { markUnsettled: vi.fn(), markAttempted })
+        ).rejects.toThrow(/Role not found/);
+        const attempted = new Map([
+          ['AssociatedRoles', new Set(markAttempted.mock.calls.flatMap(([, items]) => items))],
+        ]);
+        // The rollback reverts to the record [B]: B is gone, and the run touched it.
+        const identity = {
+          provider,
+          logicalId: 'L',
+          physicalId: id,
+          resourceType: type,
+          recordedProperties: before,
+        };
+        const names = new Set(['AssociatedRoles']);
+        const previous = await settleUnsettledPrevious({
+          ...identity,
+          names,
+          previous: base,
+          desired: before,
+          attemptedItems: attempted,
+        });
+        mockSend.mockClear();
+        await provider.update('L', id, type, before, previous);
+        expect(sent(add).map((input) => input['RoleArn'])).toEqual([ROLE_B]);
       }
     );
 

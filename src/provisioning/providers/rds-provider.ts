@@ -4989,7 +4989,10 @@ export class RDSProvider implements ResourceProvider {
    * included: `isAssociatedRoleAttached` /
    * `isDBInstanceRoleAdditionStabilized` match the role and feature only), or
    * no longer lists the detached one; so does the wait here, which
-   * `--no-wait` skips. A detach is marked attempted too, for
+   * `--no-wait` skips. CloudFormation's instance removal predicate
+   * (`isDBInstanceRoleRemovalStabilized`) matches the RoleArn alone; cdkd
+   * matches the role and the feature, so the same role kept for another
+   * feature does not hold the wait open. A detach is marked attempted too, for
    * `associatedRolesNamed`.
    */
   private async applyAssociatedRoles(
@@ -5056,6 +5059,12 @@ export class RDSProvider implements ResourceProvider {
         remainingMs: enclosingDeadlineRemainingMs(),
       });
     for (const role of toRemove) {
+      // A detach is an attempt too, so `associatedRolesNamed` never reads a
+      // role this run detached as detached outside cdkd. Marked BEFORE the
+      // call, unlike an attach (#5498): a detach AWS applied can still throw
+      // (a lost response, a replay's not-found), and the mark only matters
+      // for a role AWS no longer lists, so a detach that did nothing is inert.
+      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
       await whenAvailable(() =>
         target === 'cluster'
           ? this.getClient().send(
@@ -5069,9 +5078,6 @@ export class RDSProvider implements ResourceProvider {
               })
             )
       );
-      // A detach is an attempt too: `associatedRolesNamed` must not read a
-      // declared role this run detached as one detached outside cdkd.
-      marks?.markAttempted?.('AssociatedRoles', [associatedRoleKey(role)]);
     }
     for (const role of toAdd) {
       await whenAvailable(() =>

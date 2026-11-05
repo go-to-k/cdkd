@@ -296,6 +296,44 @@ describe('NeptuneProvider backfilled properties (go-to-k/cdkd#2762)', () => {
       expect(order.filter((name) => name.includes('Role'))).toEqual([]);
     });
 
+    it('a detach AWS applied but that still threw is attached again by the convergence', async () => {
+      const wire = armCluster({ roles: [{ RoleArn: ROLE_B, Status: 'ACTIVE' }] });
+      const answer = mockSend.getMockImplementation()!;
+      // AWS removed B, then the call failed (a replayed request reads not found).
+      mockSend.mockImplementation(async (command: { constructor: { name: string } }) => {
+        const result = await answer(command);
+        if (command.constructor.name === 'RemoveRoleFromDBClusterCommand') {
+          throw Object.assign(new Error('Role not found'), { name: 'DBClusterRoleNotFoundFault' });
+        }
+        return result;
+      });
+      const before = { AssociatedRoles: [{ RoleArn: ROLE_B }] };
+      const markAttempted = vi.fn();
+      await expect(
+        update({}, before, CLUSTER, { markUnsettled: vi.fn(), markAttempted })
+      ).rejects.toThrow(/Role not found/);
+      const attempted = new Map([
+        ['AssociatedRoles', new Set(markAttempted.mock.calls.flatMap(([, items]) => items))],
+      ]);
+      const previous = await settleUnsettledPrevious({
+        provider,
+        logicalId: 'L',
+        physicalId: 'cluster-1',
+        resourceType: CLUSTER,
+        recordedProperties: before,
+        names: new Set(['AssociatedRoles']),
+        previous: {},
+        desired: before,
+        attemptedItems: attempted,
+      });
+      mockSend.mockImplementation(answer);
+      mockSend.mockClear();
+      await update(before, previous);
+      expect(wire.sent('AddRoleToDBClusterCommand').map((input) => input['RoleArn'])).toEqual([
+        ROLE_B,
+      ]);
+    });
+
     it('marks the detach as attempted beside the attach', async () => {
       armCluster({ roles: [{ RoleArn: ROLE_A, Status: 'ACTIVE' }] });
       const markAttempted = vi.fn();
