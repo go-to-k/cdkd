@@ -354,6 +354,15 @@ export const IAM_PROPAGATION_ERROR_MESSAGE_PATTERNS: readonly string[] = [
   // tests/integration/propagation-races-2, which also reports the measured
   // producer→consumer gap so a green run cannot be mistaken for a raced one.
   'does not have a trust relationship allowing',
+  // The SECOND stage of the same race (go-to-k/cdkd#5809): once the trust
+  // policy is visible, `CreateUserPool` / `SetUserPoolMfaConfig` answer
+  // `InvalidSmsRoleAccessPolicyException` until the role's inline
+  // `sns:Publish` grant propagates. Measured on real AWS (us-east-1): "Role
+  // does not have permission to publish with SNS". Without this entry the
+  // outer loop rode stage 1 out and gave up the moment stage 2 appeared. AWS
+  // sends the same text for a role that truly lacks the grant; that case
+  // spends the bounded schedule first, the trade-off the entry above takes.
+  'does not have permission to publish with SNS',
   // Step Functions CreateStateMachine / UpdateStateMachine validates that the
   // states.amazonaws.com service principal can assume the same-stack IAM role
   // at create time. cdkd's fast SDK path issues the create only ~1s after the
