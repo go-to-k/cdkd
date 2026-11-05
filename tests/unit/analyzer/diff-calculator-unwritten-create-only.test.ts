@@ -42,12 +42,12 @@ import type { StackState } from '../../../src/types/state.js';
 describe('DiffCalculator — an unwritten create-only drop (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
   const CREATE_ONLY = 'AvailabilityZoneId';
-  const PLAIN = 'EnableDns64';
+  const PLAIN = 'AssignIpv6AddressOnCreation';
   const ALLOW = new Set([`${TYPE}:${CREATE_ONLY}`]);
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
   const DECLARED = { ...WRITTEN, [CREATE_ONLY]: 'use1-az1' };
 
-  it('PREMISE: AvailabilityZoneId is a create-only drop, EnableDns64 a plain one', () => {
+  it('PREMISE: AvailabilityZoneId is a create-only drop, AssignIpv6AddressOnCreation a plain one', () => {
     const cov = getPropertyCoverage(TYPE);
     if (!cov) throw new Error(`${TYPE} lost its property-coverage record`);
     expect(cov.createOnlyDrops.has(CREATE_ONLY)).toBe(true);

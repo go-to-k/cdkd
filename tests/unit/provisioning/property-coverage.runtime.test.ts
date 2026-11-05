@@ -508,12 +508,13 @@ describe('unrecognized keys and the narrowings (issue #3713)', () => {
 /**
  * go-to-k/cdkd#2790. `AWS::EC2::Subnet` is the pair
  * `tests/integration/sdk-to-cc-autoroute/` deploys: `AvailabilityZoneId` is a
- * CREATE-ONLY SDK-unwired property, `EnableDns64` a plain one.
+ * CREATE-ONLY SDK-unwired property. The unit cases pair it with the still-unwired
+ * `AssignIpv6AddressOnCreation` as a plain property.
  */
 describe('the record COMPARISON side and its create-only drops (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
   const CREATE_ONLY = 'AvailabilityZoneId';
-  const PLAIN = 'EnableDns64';
+  const PLAIN = 'AssignIpv6AddressOnCreation';
   const ALLOW = new Set([`${TYPE}:${CREATE_ONLY}`]);
   const NONE = new Set<string>();
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };

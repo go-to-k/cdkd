@@ -1337,6 +1337,8 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       handled: new Set<string>([
         'AvailabilityZone',
         'CidrBlock',
+        'EnableDns64',
+        'Ipv6CidrBlock',
         'MapPublicIpOnLaunch',
         'Tags',
         'VpcId',
@@ -1344,11 +1346,9 @@ export const PROPERTY_COVERAGE_BY_TYPE: ReadonlyMap<string, PropertyCoverage> = 
       sdkUnwired: new Map<string, string>([
         ['AssignIpv6AddressOnCreation', 'not yet implemented by cdkd'],
         ['AvailabilityZoneId', 'not yet implemented by cdkd'],
-        ['EnableDns64', 'not yet implemented by cdkd'],
         ['EnableLniAtDeviceIndex', 'not yet implemented by cdkd'],
         ['Ipv4IpamPoolId', 'not yet implemented by cdkd'],
         ['Ipv4NetmaskLength', 'not yet implemented by cdkd'],
-        ['Ipv6CidrBlock', 'not yet implemented by cdkd'],
         ['Ipv6IpamPoolId', 'not yet implemented by cdkd'],
         ['Ipv6Native', 'not yet implemented by cdkd'],
         ['Ipv6NetmaskLength', 'not yet implemented by cdkd'],

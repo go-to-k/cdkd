@@ -63,6 +63,17 @@ function stubSdkProvider(): ResourceProvider {
 }
 
 describe('ProviderRegistry.getProviderFor', () => {
+  it('keeps a recorded Cloud Control subnet sticky when IPv6 and DNS64 become handled (#5778)', () => {
+    const registry = new ProviderRegistry();
+    const sdk = stubSdkProvider();
+    registry.register('AWS::EC2::Subnet', sdk);
+    const properties = { VpcId: 'vpc-test', CidrBlock: '10.0.0.0/24', Ipv6CidrBlock: '2001:db8:1234:1::/64', EnableDns64: true };
+    expect(registry.getProviderFor({ resourceType: 'AWS::EC2::Subnet', properties }).provider).toBe(sdk);
+    const recorded = registry.getProviderFor({ resourceType: 'AWS::EC2::Subnet', properties, provisionedBy: 'cc-api' });
+    expect(recorded.provisionedBy).toBe('cc-api');
+    expect(recorded.provider).toBe(registry.getCloudControlProvider());
+  });
+
   it('routes Custom Resources via the Custom Resource provider, recorded as sdk', () => {
     const registry = new ProviderRegistry();
     const decision = registry.getProviderFor({

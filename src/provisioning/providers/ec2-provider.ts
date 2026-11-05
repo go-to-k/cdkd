@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import type { Subnet } from '@aws-sdk/client-ec2';
 import {
   EC2Client,
   CreateVpcCommand,
@@ -11,6 +12,8 @@ import {
   DescribeInternetGatewaysCommand,
   DescribeRouteTablesCommand,
   CreateSubnetCommand,
+  AssociateSubnetCidrBlockCommand,
+  DisassociateSubnetCidrBlockCommand,
   DeleteSubnetCommand,
   CreateInternetGatewayCommand,
   DeleteInternetGatewayCommand,
@@ -127,6 +130,7 @@ import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-red
 import { getLogger } from '../../utils/logger.js';
 import { canonicalizeRegion } from '../../utils/aws-partition.js';
 import { canonicalizeIpv4Cidr } from '../../utils/ipv4-cidr.js';
+import { canonicalizeIpv6Cidr } from '../../utils/ipv6-cidr.js';
 import { describeAwsFailure, type AwsFailureText } from '../../utils/aws-failure-text.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
 import {
@@ -1393,7 +1397,15 @@ export class EC2Provider implements ResourceProvider {
     ],
     [
       'AWS::EC2::Subnet',
-      new Set(['VpcId', 'CidrBlock', 'AvailabilityZone', 'MapPublicIpOnLaunch', 'Tags']),
+      new Set([
+        'VpcId',
+        'CidrBlock',
+        'AvailabilityZone',
+        'MapPublicIpOnLaunch',
+        'EnableDns64',
+        'Ipv6CidrBlock',
+        'Tags',
+      ]),
     ],
     ['AWS::EC2::InternetGateway', new Set(['Tags'])],
     [
@@ -3211,6 +3223,53 @@ export class EC2Provider implements ResourceProvider {
 
   // ─── AWS::EC2::Subnet ─────────────────────────────────────────────
 
+  /** Refuse malformed template values; a state replay keeps the last usable value. */
+  private async prepareSubnetProperties(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    context?: CreateContext | UpdateContext,
+    physicalId?: string,
+    previousProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    let prepared = properties;
+    for (const key of ['EnableDns64', 'Ipv6CidrBlock']) {
+      const refusal = (bag: Record<string, unknown>) =>
+        key === 'EnableDns64'
+          ? configBooleanRefusal(bag, key, 'Subnet')
+          : configStringRefusal(bag, key, '<unset>', 'Subnet');
+      const message = refusal(properties);
+      if (message === undefined) continue;
+      if (context?.replayingState !== true) {
+        throw new ProvisioningError(message, resourceType, logicalId, physicalId);
+      }
+      this.logger.warn(
+        safeMsg`${logicalId}: ${message}; leaving ${key} unchanged during state replay`
+      );
+      prepared = { ...prepared };
+      delete prepared[key];
+      if (previousProperties?.[key] !== undefined) {
+        // An absent previous value stays absent. A corrupt recorded value
+        // needs the live baseline rather than a default on an existing subnet.
+        const baseline =
+          refusal(previousProperties) === undefined
+            ? previousProperties
+            : await this.readSubnetCurrentState(physicalId!);
+        if (baseline && baseline !== RESOURCE_NOT_FOUND && baseline[key] !== undefined) {
+          prepared[key] = baseline[key];
+        } else if (baseline === undefined || baseline === RESOURCE_NOT_FOUND) {
+          throw new ProvisioningError(
+            `Cannot read ${key} for Subnet ${logicalId}; retry after DescribeSubnets succeeds`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+      }
+    }
+    return prepared;
+  }
+
   private async createSubnet(
     logicalId: string,
     resourceType: string,
@@ -3220,6 +3279,12 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Creating Subnet ${logicalId}`);
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
+    const prepared = await this.prepareSubnetProperties(
+      logicalId,
+      resourceType,
+      properties,
+      context
+    );
 
     const vpcId = properties['VpcId'] as string;
     const cidrBlock = properties['CidrBlock'] as string;
@@ -3264,6 +3329,7 @@ export class EC2Provider implements ResourceProvider {
               new CreateSubnetCommand({
                 VpcId: vpcId,
                 CidrBlock: cidrBlock,
+                Ipv6CidrBlock: prepared['Ipv6CidrBlock'] as string | undefined,
                 AvailabilityZone: (properties['AvailabilityZone'] as string) ?? undefined,
                 ...(TagSpecifications && { TagSpecifications }),
               })
@@ -3312,6 +3378,27 @@ export class EC2Provider implements ResourceProvider {
             maskerOrIdentity(context?.maskSecrets)
           );
 
+        // The observed-state capture must not record an associating block as
+        // absent, and DNS64 wiring needs the IPv6 association ready (#5778).
+        if (prepared['Ipv6CidrBlock'] !== undefined) {
+          const associationId = response.Subnet?.Ipv6CidrBlockAssociationSet?.[0]?.AssociationId;
+          if (!associationId) {
+            throw new ProvisioningError(
+              `CreateSubnet returned no IPv6 association ID for ${logicalId}`,
+              resourceType,
+              logicalId,
+              subnetId
+            );
+          }
+          await this.waitForSubnetIpv6Association(
+            logicalId,
+            subnetId,
+            resourceType,
+            associationId,
+            'associated'
+          );
+        }
+
         // Set MapPublicIpOnLaunch if specified
         const mapPublicIp = properties['MapPublicIpOnLaunch'];
         if (mapPublicIp === true || mapPublicIp === 'true') {
@@ -3325,7 +3412,17 @@ export class EC2Provider implements ResourceProvider {
           // deploy engine's async observed-state capture races this modify
           // and would otherwise persist the stale `false` as the drift
           // baseline (phantom drift on every later `cdkd drift`).
-          await this.waitForSubnetMapPublicIp(subnetId, true);
+          await this.waitForSubnetAttribute(subnetId, true);
+        }
+        const dns64 = coerceCfnBoolean(prepared['EnableDns64']);
+        if (dns64 !== undefined) {
+          await this.ec2Client.send(
+            new ModifySubnetAttributeCommand({
+              SubnetId: subnetId,
+              EnableDns64: { Value: dns64 },
+            })
+          );
+          await this.waitForSubnetAttribute(subnetId, dns64, 'EnableDns64');
         }
       } catch (innerError) {
         try {
@@ -3350,6 +3447,7 @@ export class EC2Provider implements ResourceProvider {
 
       return {
         physicalId: subnetId,
+        ...(prepared !== properties && { effectiveProperties: prepared }),
         attributes: {
           SubnetId: subnetId,
           AvailabilityZone: availabilityZone,
@@ -3387,6 +3485,14 @@ export class EC2Provider implements ResourceProvider {
     this.logger.debug(`Updating Subnet ${logicalId}: ${physicalId}`);
     // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
     refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
+    const prepared = await this.prepareSubnetProperties(
+      logicalId,
+      resourceType,
+      properties,
+      context,
+      physicalId,
+      previousProperties
+    );
 
     try {
       // VpcId / CidrBlock / AvailabilityZone are CREATE-only. The diff layer
@@ -3421,8 +3527,53 @@ export class EC2Provider implements ResourceProvider {
             MapPublicIpOnLaunch: { Value: newMapPublicIp },
           })
         );
-        await this.waitForSubnetMapPublicIp(physicalId, newMapPublicIp);
+        await this.waitForSubnetAttribute(physicalId, newMapPublicIp);
       }
+
+      // CloudFormation preserves DNS64 when the property is removed (#5632).
+      const dns64 = coerceCfnBoolean(prepared['EnableDns64']);
+      const keptDns64 = prepared['EnableDns64'] !== properties['EnableDns64'];
+      let previousDns64 = coerceCfnBoolean(previousProperties['EnableDns64']);
+      if (!keptDns64 && dns64 !== undefined && context?.unsettledProperties?.has('EnableDns64')) {
+        const live = await this.readSubnetCurrentState(physicalId, new Set(['EnableDns64']));
+        if (live === RESOURCE_NOT_FOUND || live === undefined) {
+          throw new ProvisioningError(
+            'Subnet was not returned by DescribeSubnets; retry the subnet read',
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        previousDns64 = live['EnableDns64'] as boolean;
+      }
+      const changedDns64 = !keptDns64 && dns64 !== undefined && dns64 !== previousDns64;
+      const applyDns64 = async (value: boolean): Promise<void> => {
+        context?.markUnsettled?.('EnableDns64');
+        await this.ec2Client.send(
+          new ModifySubnetAttributeCommand({ SubnetId: physicalId, EnableDns64: { Value: value } })
+        );
+        await this.waitForSubnetAttribute(physicalId, value, 'EnableDns64');
+      };
+      // Disable first; enabling requires the new IPv6 association ready.
+      if (changedDns64 && dns64 === false) await applyDns64(false);
+
+      // A replay-skipped field retains its baseline without issuing a write.
+      const keptIpv6 = prepared['Ipv6CidrBlock'] !== properties['Ipv6CidrBlock'];
+      if (
+        !keptIpv6 &&
+        (prepared['Ipv6CidrBlock'] !== previousProperties['Ipv6CidrBlock'] ||
+          context?.unsettledProperties?.has('Ipv6CidrBlock'))
+      ) {
+        await this.updateSubnetIpv6CidrBlock(
+          logicalId,
+          physicalId,
+          resourceType,
+          prepared['Ipv6CidrBlock'] as string | undefined,
+          true,
+          context?.markUnsettled
+        );
+      }
+      if (changedDns64 && dns64 === true) await applyDns64(true);
 
       // Update tags (diff add/remove against previousProperties)
       await this.applyTagDiff(
@@ -3443,6 +3594,7 @@ export class EC2Provider implements ResourceProvider {
       return {
         physicalId,
         wasReplaced: false,
+        ...(prepared !== properties && { effectiveProperties: prepared }),
       };
     } catch (error) {
       if (error instanceof CdkdError) throw error;
@@ -3462,8 +3614,185 @@ export class EC2Provider implements ResourceProvider {
     }
   }
 
+  private async updateSubnetIpv6CidrBlock(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    desired: string | undefined,
+    recoverOnFailure = true,
+    markUnsettled?: UpdateContext['markUnsettled']
+  ): Promise<void> {
+    let response = await this.ec2Client.send(
+      new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+    );
+    let subnet = response.Subnets?.[0];
+    // A previous attempt may have stopped while AWS was still changing the
+    // association. Settle that attempt before choosing what to detach/attach.
+    for (const pending of subnet?.Ipv6CidrBlockAssociationSet ?? []) {
+      const state = pending.Ipv6CidrBlockState?.State;
+      if (pending.AssociationId && (state === 'associating' || state === 'disassociating')) {
+        await this.waitForSubnetIpv6Association(
+          logicalId,
+          physicalId,
+          resourceType,
+          pending.AssociationId,
+          state === 'associating' ? 'associated' : 'disassociated'
+        );
+        response = await this.ec2Client.send(
+          new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+        );
+        subnet = response.Subnets?.[0];
+      }
+    }
+    if (!subnet) {
+      throw new ProvisioningError(
+        `Subnet ${logicalId} was not returned by DescribeSubnets`,
+        resourceType,
+        logicalId,
+        physicalId
+      );
+    }
+    // Old disassociated entries remain in this array. Never use its first item.
+    const current = subnet.Ipv6CidrBlockAssociationSet?.find(
+      (association) => association.Ipv6CidrBlockState?.State === 'associated'
+    );
+    if (current?.Ipv6CidrBlock === desired) return;
+    const currentCidr = current?.Ipv6CidrBlock;
+    const canonicalCurrent =
+      currentCidr === undefined ? undefined : canonicalizeIpv6Cidr(currentCidr);
+    if (
+      canonicalCurrent !== undefined &&
+      desired !== undefined &&
+      canonicalCurrent === canonicalizeIpv6Cidr(desired)
+    )
+      return;
+    try {
+      if (current) {
+        if (!current.AssociationId) {
+          throw new ProvisioningError(
+            `Subnet ${logicalId} has no IPv6 association ID; retry DescribeSubnets`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        markUnsettled?.('Ipv6CidrBlock');
+        await this.ec2Client.send(
+          new DisassociateSubnetCidrBlockCommand({ AssociationId: current.AssociationId })
+        );
+        await this.waitForSubnetIpv6Association(
+          logicalId,
+          physicalId,
+          resourceType,
+          current.AssociationId,
+          'disassociated'
+        );
+      }
+      if (desired !== undefined) {
+        markUnsettled?.('Ipv6CidrBlock');
+        const associated = await this.ec2Client.send(
+          new AssociateSubnetCidrBlockCommand({
+            SubnetId: physicalId,
+            Ipv6CidrBlock: desired,
+          })
+        );
+        const associationId = associated.Ipv6CidrBlockAssociation?.AssociationId;
+        if (!associationId) {
+          throw new ProvisioningError(
+            `AssociateSubnetCidrBlock returned no association ID for ${logicalId}`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        await this.waitForSubnetIpv6Association(
+          logicalId,
+          physicalId,
+          resourceType,
+          associationId,
+          'associated'
+        );
+      }
+    } catch (error) {
+      // A failed attach must not silently leave the old record on a subnet
+      // with no IPv6 block. Recover only the live block this call detached.
+      if (
+        current?.Ipv6CidrBlock !== undefined &&
+        recoverOnFailure &&
+        !isInterruptedWaitError(error) &&
+        !enclosingDeadlineExpired()
+      ) {
+        try {
+          await this.updateSubnetIpv6CidrBlock(
+            logicalId,
+            physicalId,
+            resourceType,
+            current.Ipv6CidrBlock,
+            false,
+            markUnsettled
+          );
+        } catch {
+          this.logger.warn(
+            safeMsg`Subnet ${logicalId}: IPv6 association recovery failed; inspect DescribeSubnets and redeploy before using the subnet`
+          );
+        }
+      }
+      throw error;
+    }
+  }
+
+  /** Association changes are asynchronous; a new block cannot overlap the old one. */
+  private async waitForSubnetIpv6Association(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    associationId: string,
+    target: 'associated' | 'disassociated'
+  ): Promise<void> {
+    const watch = startInterruptWatch(`Subnet ${logicalId} IPv6 association wait`);
+    try {
+      for (let attempt = 0; attempt < 30; attempt++) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        if (enclosingDeadlineExpired()) break;
+        const response = await this.ec2Client.send(
+          new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+        );
+        const subnet = response.Subnets?.[0];
+        const association = subnet?.Ipv6CidrBlockAssociationSet?.find(
+          (item) => item.AssociationId === associationId
+        );
+        const state = association?.Ipv6CidrBlockState?.State;
+        if (
+          subnet &&
+          (state === target || (target === 'disassociated' && association === undefined))
+        )
+          return;
+        if (state === 'failed' || state === 'failing') {
+          throw new ProvisioningError(
+            `IPv6 association change failed for Subnet ${logicalId}; inspect DescribeSubnets`,
+            resourceType,
+            logicalId,
+            physicalId
+          );
+        }
+        if (attempt < 29)
+          await this.sleep(Math.max(0, Math.min(1000, enclosingDeadlineRemainingMs())));
+      }
+      throw markNonRetryable(
+        new ProvisioningError(
+          `Timed out waiting for Subnet ${logicalId} IPv6 association to be ${target}; inspect DescribeSubnets before retrying`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    } finally {
+      watch.dispose();
+    }
+  }
+
   /**
-   * Read back `MapPublicIpOnLaunch` until AWS reflects the value a
+   * Read back a subnet attribute until AWS reflects the value a
    * `ModifySubnetAttribute` just wrote (issue #1299). EC2 `Describe*` is
    * eventually consistent, so the deploy engine's async observed-state
    * capture (`kickOffObservedCapture` → `readCurrentState` →
@@ -3477,17 +3806,21 @@ export class EC2Provider implements ResourceProvider {
    * exhaustion we log and return — behavior then degrades to the pre-fix
    * race instead of failing a deploy over a read-side consistency lag.
    */
-  private async waitForSubnetMapPublicIp(subnetId: string, expected: boolean): Promise<void> {
+  private async waitForSubnetAttribute(
+    subnetId: string,
+    expected: boolean,
+    attribute: 'MapPublicIpOnLaunch' | 'EnableDns64' = 'MapPublicIpOnLaunch'
+  ): Promise<void> {
     const maxAttempts = 6;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const resp = await this.ec2Client.send(
           new DescribeSubnetsCommand({ SubnetIds: [subnetId] })
         );
-        if (resp.Subnets?.[0]?.MapPublicIpOnLaunch === expected) return;
+        if (resp.Subnets?.[0]?.[attribute] === expected) return;
       } catch (error) {
         this.logger.debug(
-          `MapPublicIpOnLaunch read-back for ${subnetId} failed (attempt ${attempt}/${maxAttempts}): ${describeAwsFailure(error).detail}`
+          `${attribute} read-back for ${subnetId} failed (attempt ${attempt}/${maxAttempts}): ${describeAwsFailure(error).detail}`
         );
         return;
       }
@@ -3496,7 +3829,7 @@ export class EC2Provider implements ResourceProvider {
       }
     }
     this.logger.debug(
-      `MapPublicIpOnLaunch=${expected} not yet visible on ${subnetId} after ${maxAttempts} reads — the observed-state capture may record the stale value`
+      `${attribute} update not yet visible on ${subnetId} after ${maxAttempts} reads — the observed-state capture may record the stale value`
     );
   }
 
@@ -11597,6 +11930,86 @@ export class EC2Provider implements ResourceProvider {
     return null;
   }
 
+  /** Recovery must not mistake an in-flight IPv6 association for absence. */
+  private subnetIpv6InTransition(subnet: Subnet): boolean {
+    return (subnet.Ipv6CidrBlockAssociationSet ?? []).some((association) => {
+      const state = association.Ipv6CidrBlockState?.State;
+      return (
+        state === undefined ||
+        state === 'associating' ||
+        state === 'disassociating' ||
+        state === 'failing'
+      );
+    });
+  }
+
+  async unsettledInTransition(
+    physicalId: string,
+    _logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>
+  ): Promise<ReadonlySet<string>> {
+    if (resourceType !== 'AWS::EC2::Subnet' || !names.has('Ipv6CidrBlock')) return new Set();
+    try {
+      const response = await this.ec2Client.send(
+        new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
+      );
+      const subnet = response.Subnets?.[0];
+      return !subnet || this.subnetIpv6InTransition(subnet)
+        ? new Set(['Ipv6CidrBlock'])
+        : new Set();
+    } catch {
+      return new Set(['Ipv6CidrBlock']);
+    }
+  }
+
+  async readUnsettled(
+    physicalId: string,
+    logicalId: string,
+    resourceType: string,
+    names: ReadonlySet<string>,
+    recordedProperties?: Record<string, unknown>
+  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    // Bypass the ordinary read's not-found-message downgrade: recovery needs a
+    // failed read to refuse the update, never to manufacture a removal.
+    if (resourceType === 'AWS::EC2::Subnet') return this.readSubnetCurrentState(physicalId, names);
+    return this.readCurrentState(physicalId, logicalId, resourceType, recordedProperties);
+  }
+
+  /** Collapse only proven spelling equivalents; preserve the AWS bag for drift accept. */
+  async canonicalizeDriftPair(
+    resourceType: string,
+    baseline: Record<string, unknown>,
+    aws: Record<string, unknown>
+  ): Promise<{ baseline: Record<string, unknown>; aws: Record<string, unknown> }> {
+    const key = 'Ipv6CidrBlock';
+    if (resourceType === 'AWS::EC2::Subnet') {
+      const old = baseline[key];
+      const live = aws[key];
+      const canonical = typeof old === 'string' ? canonicalizeIpv6Cidr(old) : undefined;
+      if (
+        canonical !== undefined &&
+        typeof live === 'string' &&
+        canonical === canonicalizeIpv6Cidr(live)
+      ) {
+        return { baseline: { ...baseline, [key]: live }, aws };
+      }
+    }
+    return { baseline, aws };
+  }
+
+  canonicalizeUnsettledProperties(
+    resourceType: string,
+    properties: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (resourceType !== 'AWS::EC2::Subnet') return properties;
+    const out = this.canonicalizeDesiredProperties(resourceType, properties);
+    const key = 'Ipv6CidrBlock';
+    const cidr = out[key];
+    const canonical = typeof cidr === 'string' ? canonicalizeIpv6Cidr(cidr) : undefined;
+    return canonical === undefined ? out : { ...out, [key]: canonical };
+  }
+
   /**
    * Read the AWS-current EC2 networking resource configuration in
    * CFn-property shape.
@@ -11874,6 +12287,11 @@ export class EC2Provider implements ResourceProvider {
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
+    if (resourceType === 'AWS::EC2::Subnet') {
+      const dnsKey = 'EnableDns64';
+      const dns64 = coerceCfnBoolean(properties[dnsKey]);
+      return dns64 === undefined ? properties : { ...properties, [dnsKey]: dns64 };
+    }
     if (resourceType === 'AWS::EC2::SecurityGroupIngress') {
       // A no-op `onUnusable` rather than the logger: a diff must not throw, and
       // must not warn either — the provisioning path announces the identical
@@ -11984,11 +12402,18 @@ export class EC2Provider implements ResourceProvider {
   }
 
   private async readSubnetCurrentState(
-    physicalId: string
+    physicalId: string,
+    unsettledNames?: ReadonlySet<string>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
     const resp = await this.ec2Client.send(new DescribeSubnetsCommand({ SubnetIds: [physicalId] }));
     const subnet = resp.Subnets?.[0];
     if (!subnet) return RESOURCE_NOT_FOUND;
+    if (unsettledNames?.has('Ipv6CidrBlock') && this.subnetIpv6InTransition(subnet)) {
+      throw new Error('Subnet IPv6 association is still in transition; retry after it has settled');
+    }
+    if (unsettledNames?.has('EnableDns64') && typeof subnet.EnableDns64 !== 'boolean') {
+      throw new Error('DescribeSubnets did not return EnableDns64; retry the subnet read');
+    }
 
     const result: Record<string, unknown> = {};
     if (subnet.VpcId !== undefined) result['VpcId'] = subnet.VpcId;
@@ -11999,6 +12424,11 @@ export class EC2Provider implements ResourceProvider {
     if (subnet.MapPublicIpOnLaunch !== undefined) {
       result['MapPublicIpOnLaunch'] = subnet.MapPublicIpOnLaunch;
     }
+    if (subnet.EnableDns64 !== undefined) result['EnableDns64'] = subnet.EnableDns64;
+    const ipv6 = subnet.Ipv6CidrBlockAssociationSet?.find(
+      (association) => association.Ipv6CidrBlockState?.State === 'associated'
+    );
+    if (ipv6?.Ipv6CidrBlock !== undefined) result['Ipv6CidrBlock'] = ipv6.Ipv6CidrBlock;
 
     return result;
   }

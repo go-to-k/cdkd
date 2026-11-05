@@ -2865,6 +2865,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-route-targets",
+        "ec2-subnet-dns64",
         "ec2-vpc",
         "ecs-bluegreen",
         "ecs-fargate",
@@ -2989,6 +2990,10 @@
         ],
         "ec2-route-targets": [
           "l1"
+        ],
+        "ec2-subnet-dns64": [
+          "l1",
+          "literal"
         ],
         "ec2-vpc": [
           "l2"
@@ -3463,6 +3468,7 @@
         "ec2-instance",
         "ec2-instance-fanout",
         "ec2-route-targets",
+        "ec2-subnet-dns64",
         "ec2-vpc",
         "ec2-vpc-ipam",
         "ecs-bluegreen",
@@ -3590,6 +3596,9 @@
           "l2"
         ],
         "ec2-route-targets": [
+          "l1"
+        ],
+        "ec2-subnet-dns64": [
           "l1"
         ],
         "ec2-vpc": [

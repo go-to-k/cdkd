@@ -63,10 +63,10 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
   it('names every route-driving key in the keep list, an un-allowed sibling drop included', () => {
     const row: ResourceChange = {
       ...ROW,
-      desiredProperties: { ...DECLARED, EnableDns64: true },
+      desiredProperties: { ...DECLARED, AssignIpv6AddressOnCreation: true },
       propertyChanges: [
         ...ROW.propertyChanges!,
-        { path: 'EnableDns64', oldValue: undefined, newValue: true, requiresReplacement: false },
+        { path: 'AssignIpv6AddressOnCreation', oldValue: undefined, newValue: true, requiresReplacement: false },
       ],
     };
     const reasons = findUnwrittenCreateOnlyRefusals(new Map([['MySubnet', row]]), {
@@ -74,7 +74,7 @@ describe('findUnwrittenCreateOnlyRefusals', () => {
     });
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain(
-      '--prefer-sdk-route AWS::EC2::Subnet:AvailabilityZoneId,AWS::EC2::Subnet:EnableDns64 changes nothing'
+      '--prefer-sdk-route AWS::EC2::Subnet:AssignIpv6AddressOnCreation,AWS::EC2::Subnet:AvailabilityZoneId changes nothing'
     );
   });
 

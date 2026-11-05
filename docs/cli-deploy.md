@@ -193,6 +193,11 @@ return leaves unfinished, and what `--full-wait` does when a wait runs out.
 
 ### Edge cases
 
+- A subnet with `Ipv6CidrBlock` waits for its IPv6 association in every mode,
+  before DNS64 wiring and observed-state capture. In-place CIDR changes also
+  wait for disassociation and association. See
+  [wait mode details](cli-deploy-waits.md).
+
 - **Types that are not in the table can still wait.** A DynamoDB table, an EFS
   file system and an EMR cluster, among others, wait for their own readiness
   on create in every mode, because cdkd needs the result.
