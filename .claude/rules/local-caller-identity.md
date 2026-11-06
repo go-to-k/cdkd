@@ -5,6 +5,7 @@ paths:
   - 'src/utils/role-arn.ts'
   - 'src/cli/commands/local-invoke.ts'
   - 'src/cli/commands/local-start-api.ts'
+  - 'src/cli/commands/local-start-api/**'
   - 'src/cli/commands/local-invoke-agentcore.ts'
   - 'src/cli/commands/local-profile-credentials-file.ts'
   - 'src/cli/commands/local-run-task.ts'

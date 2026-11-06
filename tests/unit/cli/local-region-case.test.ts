@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vite-plus/test';
@@ -66,6 +66,25 @@ const { buildEcsImageResolutionContext, resolveEcsConsumerRegion } = await impor
 const { applyAgentCoreCredentialEnv } = await import(
   '../../../src/cli/commands/local-invoke-agentcore.js'
 );
+
+/**
+ * A command's files, relative to `src/cli/commands`: `<cmd>.ts`, plus every
+ * `.ts` under a sibling `<cmd>/` directory, recursively. A split command keeps
+ * its factory in `<cmd>.ts` and its handler under `<cmd>/` (go-to-k/cdkd#5835),
+ * so a pin that read `<cmd>.ts` alone would see neither the folds nor the reads.
+ */
+function commandFamily(commandsDir: string, file: string): string[] {
+  const stem = file.replace(/\.ts$/, '');
+  const dir = join(commandsDir, stem);
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [file];
+  return [
+    file,
+    ...readdirSync(dir, { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${stem}/${name.split('\\').join('/')}`)
+      .sort(),
+  ];
+}
 
 /**
  * A stack whose only ECS container image is an `Fn::Sub` over the AWS pseudo
@@ -694,9 +713,41 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
    * (Measured 2026-08-13: exactly four do. `local-start-{cloudfront,service,alb}.ts`
    * read it zero times.)
    */
+  const family = (file: string): string[] => commandFamily(commandsDir, file);
+  /** The family's live lines, for PRESENCE checks only: the join order is not run order. */
+  const familyLiveLines = (file: string): string[] => family(file).flatMap(liveLinesOf);
+  /**
+   * The ONE family member holding `needle`, where an ORDER check runs: the
+   * order between two files is the order they are listed in, not the order they
+   * run in, so a fold in one module cannot vouch for a read in another.
+   */
+  const memberHolding = (file: string, needle: string): string => {
+    const holders = family(file).filter((m) => liveLinesOf(m).some((l) => l.includes(needle)));
+    expect(holders, `${file}: expected exactly one family member holding '${needle}'`).toHaveLength(1);
+    return holders[0]!;
+  };
+  /**
+   * Every live `<field>` read in the family members OTHER than `holder`, with
+   * comments stripped. Such a read runs inside a helper the handler calls, so
+   * no line order can place it relative to the fold; it must fold itself.
+   */
+  const siblingReads = (file: string, holder: string, field: string): string[] => {
+    const out: string[] = [];
+    for (const member of family(file)) {
+      if (member === holder) continue;
+      const code = liveLinesOf(member).join('\n');
+      for (const m of code.matchAll(new RegExp(`\\b${field.replace('.', '\\.')}\\b`, 'g'))) {
+        const before = code.slice(Math.max(0, m.index - 40), m.index);
+        if (before.includes('canonicalizeRegion(')) continue;
+        out.push(`${member}:${code.slice(0, m.index).split('\n').length}`);
+      }
+    }
+    return out;
+  };
+
   const commands = readdirSync(commandsDir)
     .filter((f) => f.startsWith('local-') && f.endsWith('.ts'))
-    .filter((f) => liveLinesOf(f).some((line) => line.includes('options.region')));
+    .filter((f) => familyLiveLines(f).some((line) => line.includes('options.region')));
 
   it('the sweep found the commands it is supposed to check', () => {
     // Without a floor, a glob that matched nothing would pass every row below
@@ -706,9 +757,18 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   });
 
   it.each(commands)('%s canonicalizes options.region before using it', (file) => {
-    const lines = liveLinesOf(file);
     // `foldRegionOption(options)` is the shared helper's spelling of the same
     // fold (plus the env half — issue #2103), so either satisfies the pin.
+    const holders = family(file).filter((m) =>
+      liveLinesOf(m).some((line) => line.includes(FOLD) || line.includes(SHARED_FOLD))
+    );
+    expect(holders, `${file}: live options.region canonicalization not found`).toHaveLength(1);
+    const holder = holders[0]!;
+    expect(
+      siblingReads(file, holder, 'options.region'),
+      `${file}: options.region is read unfolded outside ${holder}, the module that folds it`
+    ).toEqual([]);
+    const lines = liveLinesOf(holder);
     const foldAt = lines.findIndex(
       (line) => line.includes(FOLD) || line.includes(SHARED_FOLD)
     );
@@ -748,7 +808,7 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   const STACK_REGION_FOLD = 'options.stackRegion = canonicalizeRegion(options.stackRegion)';
   const stackRegionCommands = readdirSync(commandsDir)
     .filter((f) => f.startsWith('local-') && f.endsWith('.ts'))
-    .filter((f) => liveLinesOf(f).some((line) => line.includes("'--stack-region <region>'")));
+    .filter((f) => familyLiveLines(f).some((line) => line.includes("'--stack-region <region>'")));
 
   it('the sweep found every command that DECLARES --stack-region', () => {
     // Measured 2026-08-13: the four commands with their own handler. The engine
@@ -783,7 +843,7 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     'local-run-task.ts',
     'local-invoke-agentcore.ts',
   ])('%s folds the ENV half at its handler entry (issues #2103, #3622)', (file) => {
-    const lines = liveLinesOf(file);
+    const lines = liveLinesOf(memberHolding(file, SHARED_FOLD));
     const foldAt = lines.findIndex((line) => line.includes(SHARED_FOLD));
     const roleArnAt = lines.findIndex((line) => line.includes('await applyRoleArnForLocal('));
 
@@ -838,7 +898,8 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
     // Statement granularity: the chains span several lines, so the live text is
     // re-joined and split on `;`. Every statement that READS an ambient region
     // env var must carry the fold.
-    const statements = liveLinesOf(file as string)
+    // Presence per statement, so the whole family is read.
+    const statements = familyLiveLines(file as string)
       .join('\n')
       .split(';');
     // The deliberate unfolded capture for the bootstrap-marker probe (issue
@@ -864,7 +925,9 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   });
 
   it.each(stackRegionCommands)('%s canonicalizes options.stackRegion at entry', (file) => {
-    const lines = liveLinesOf(file);
+    // The order check runs in the module that folds. A read in a sibling module
+    // sits in a helper the handler calls after it, which no line order shows.
+    const lines = liveLinesOf(memberHolding(file, STACK_REGION_FOLD));
     const foldAt = lines.findIndex((line) => line.includes(STACK_REGION_FOLD));
 
     expect(
@@ -919,7 +982,7 @@ describe('cdkd local *: --region is folded at the handler entry (source-level pi
   const RAW_STACK_REGION_CAPTURE = 'options.rawStackRegion = options.stackRegion;';
 
   it.each(stackRegionCommands)('%s captures the RAW --stack-region before folding', (file) => {
-    const lines = liveLinesOf(file);
+    const lines = liveLinesOf(memberHolding(file, STACK_REGION_FOLD));
     const captureAt = lines.findIndex((line) => line.trim() === RAW_STACK_REGION_CAPTURE);
     const foldAt = lines.findIndex((line) => line.includes(STACK_REGION_FOLD));
 
@@ -960,8 +1023,22 @@ describe('cdkd local: the rawStackRegion doc matches its real consumers (issue #
    * prose happens to wrap, so a reflow would fail the pin while the claim it
    * checks is unchanged.
    */
+  /** A command's whole source: `<cmd>.ts` plus its `<cmd>/` directory, if any. */
+  const familySource = (file: string): string =>
+    commandFamily(commandsDir, file)
+      .map((member) => readFileSync(join(commandsDir, member), 'utf8'))
+      .join('\n');
+
   const rawStackRegionDoc = (file: string): string => {
-    const lines = readFileSync(join(commandsDir, file), 'utf8').split('\n');
+    // The declaration is searched in each family member in turn, so the JSDoc
+    // read above it always comes from the same file.
+    const member =
+      commandFamily(commandsDir, file).find((m) =>
+        readFileSync(join(commandsDir, m), 'utf8')
+          .split('\n')
+          .some((line) => line.trim() === 'rawStackRegion?: string;')
+      ) ?? file;
+    const lines = readFileSync(join(commandsDir, member), 'utf8').split('\n');
     const declAt = lines.findIndex((line) => line.trim() === 'rawStackRegion?: string;');
     expect(declAt, `${file}: no rawStackRegion declaration found`).toBeGreaterThan(-1);
     let start = declAt - 1;
@@ -989,12 +1066,12 @@ describe('cdkd local: the rawStackRegion doc matches its real consumers (issue #
   const declaringFiles = readdirSync(commandsDir)
     .filter((f) => f.startsWith('local-') && f.endsWith('.ts'))
     .filter((f) => {
-      const src = readFileSync(join(commandsDir, f), 'utf8');
+      const src = familySource(f);
       return src.includes('rawStackRegion?: string;') && src.includes("'--stack-region <region>'");
     });
 
   const callsMarkerProbe = (file: string): boolean =>
-    readFileSync(join(commandsDir, file), 'utf8').includes('loadBootstrapContainerRepo(');
+    familySource(file).includes('loadBootstrapContainerRepo(');
 
   it('the sweep found the files it is supposed to check', () => {
     // Floor first: a glob that matched nothing would pass every row below

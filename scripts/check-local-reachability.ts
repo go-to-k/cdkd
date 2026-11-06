@@ -31,8 +31,8 @@
  * A module-level rule ("every file has a live importer") does NOT catch #2203,
  * and measuring that is the whole reason this critic is shaped the way it is.
  * `vtl-engine.ts` HAD a live importer: `rest-v1-integrations.ts` imported
- * `evaluateVtl` from it, and `local-start-api.ts` imports `warnSsrfRiskyUri`
- * from `rest-v1-integrations.ts`. Under ESM that import chain LOADED
+ * `evaluateVtl` from it, and `local-start-api/servers.ts` imports
+ * `warnSsrfRiskyUri` from `rest-v1-integrations.ts`. Under ESM that import chain LOADED
  * `vtl-engine.ts` at runtime — the module was evaluated, so "unreferenced" was
  * false of it — while every function it exported was called only from
  * functions that were themselves never called. Three states, not two:

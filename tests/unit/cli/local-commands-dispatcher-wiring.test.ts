@@ -38,6 +38,7 @@
 import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readLocalStartApiSource } from './_local-start-api-source.js';
 import {
   createLocalStateProvider,
   LocalStateSourceError,
@@ -48,18 +49,27 @@ interface LocalCommand {
   name: string;
   /** Path to the command's source file, relative to the repo root. */
   path: string;
+  /**
+   * Reads the whole command when it is split across `<cmd>.ts` and a sibling
+   * `<cmd>/` directory (go-to-k/cdkd#5835).
+   */
+  read?: () => string;
 }
 
 const COMMANDS: LocalCommand[] = [
   { name: 'local-invoke', path: 'src/cli/commands/local-invoke.ts' },
-  { name: 'local-start-api', path: 'src/cli/commands/local-start-api.ts' },
+  {
+    name: 'local-start-api',
+    path: 'src/cli/commands/local-start-api.ts',
+    read: readLocalStartApiSource,
+  },
   { name: 'local-run-task', path: 'src/cli/commands/local-run-task.ts' },
 ];
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 
 function readCommandSource(cmd: LocalCommand): string {
-  return readFileSync(resolve(REPO_ROOT, cmd.path), 'utf-8');
+  return cmd.read ? cmd.read() : readFileSync(resolve(REPO_ROOT, cmd.path), 'utf-8');
 }
 
 describe.each(COMMANDS)('$name dispatcher wiring (Issue #611)', (cmd) => {
@@ -68,9 +78,11 @@ describe.each(COMMANDS)('$name dispatcher wiring (Issue #611)', (cmd) => {
   it('imports createLocalStateProvider from ./local-state-source.js', () => {
     // Must import the helper. Either named import or aliased — the
     // regex matches the canonical "createLocalStateProvider" identifier
-    // appearing anywhere in an import line from the dispatcher module.
+    // appearing anywhere in an import line from the dispatcher module. A
+    // module under a split command's `<cmd>/` directory reaches it as
+    // `../local-state-source.js`.
     const importRegex =
-      /import\s*\{[^}]*\bcreateLocalStateProvider\b[^}]*\}\s*from\s*['"]\.\/local-state-source\.js['"]/s;
+      /import\s*\{[^}]*\bcreateLocalStateProvider\b[^}]*\}\s*from\s*['"]\.\.?\/local-state-source\.js['"]/s;
     expect(source).toMatch(importRegex);
   });
 

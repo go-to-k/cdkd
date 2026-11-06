@@ -36,7 +36,7 @@
  * member), so the fence cannot go quietly empty.
  */
 import { describe, expect, it } from 'vite-plus/test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 
@@ -45,8 +45,25 @@ import { forceExitShutdownWarning } from '../../../src/cli/commands/local-start-
 
 const COMMANDS_DIR = fileURLToPath(new URL('../../../src/cli/commands/', import.meta.url));
 
+/**
+ * A command's source: `<name>`, plus every `.ts` under a sibling `<stem>/`
+ * directory, recursively. A split command keeps its factory in `<name>` and its
+ * handler under `<stem>/` (go-to-k/cdkd#5835), so reading `<name>` alone would
+ * drop the command out of every population below.
+ */
 function fileAt(name: string): string {
-  return readFileSync(path.join(COMMANDS_DIR, name), 'utf8');
+  const dir = path.join(COMMANDS_DIR, name.replace(/\.ts$/, ''));
+  const members =
+    existsSync(dir) && statSync(dir).isDirectory()
+      ? readdirSync(dir, { recursive: true, encoding: 'utf8' })
+          .filter((member) => member.endsWith('.ts'))
+          .map((member) => member.split('\\').join('/'))
+          .sort()
+          .map((member) => path.join(dir, member))
+      : [];
+  return [path.join(COMMANDS_DIR, name), ...members]
+    .map((file) => readFileSync(file, 'utf8'))
+    .join('\n');
 }
 
 describe('strandedProfileCredentialsNotice (go-to-k/cdkd#3410)', () => {
@@ -204,7 +221,10 @@ describe('every force-exit arm that can strand the file consults the builder', (
       // import is stripped first rather than the call pattern narrowed, so a
       // future `strandedProfileCredentialsNotice(` appearing inside a multi-line
       // import cannot re-open it either.
-      const withoutImports = fileAt(name).replace(/import[\s\S]*?from '[^']*';/g, '');
+      // Anchored at a line start: unanchored, a dynamic `await import('...')`
+      // opened a match that ran on to the next file's import header and took
+      // the call site with it.
+      const withoutImports = fileAt(name).replace(/^import\s[\s\S]*?from '[^']*';/gm, '');
       expect(
         /strandedProfileCredentialsNotice\(/.test(withoutImports),
         `${name} has a force-exit arm but never builds the stranded-credentials notice. ` +

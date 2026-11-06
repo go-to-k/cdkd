@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
 import { importSourceFiles } from './_import-source.js';
+import { localStartApiSourceRelPaths } from './_local-start-api-source.js';
 
 /**
  * Issue [#3361](https://github.com/go-to-k/cdkd/issues/3361), the CLI
@@ -203,7 +204,6 @@ describe('docker push auth classification (#3361)', () => {
 describe('no handler in the slice stringifies its caught value with String() (#3361)', () => {
   /** File -> the floor of handlers the scan must see, so a parse that saw nothing cannot pass. */
   const FILES: Readonly<Record<string, number>> = {
-    'src/cli/commands/local-start-api.ts': 10,
     'src/analyzer/orphan-rewriter.ts': 1,
     'src/assets/docker-asset-publisher.ts': 1,
     'src/cli/config-loader.ts': 1,
@@ -328,5 +328,23 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     expect(IMPORT_FILES.length).toBeGreaterThanOrEqual(13);
     const handlers = IMPORT_FILES.reduce((sum, file) => sum + scan(file).handlers, 0);
     expect(handlers).toBeGreaterThanOrEqual(5);
+  });
+
+  /**
+   * `cdkd local start-api` likewise: `local-start-api.ts` plus its
+   * `local-start-api/*.ts` modules, every one scanned, their handlers together
+   * keeping the floor of 10 the single file had.
+   */
+  const LOCAL_START_API_FILES = localStartApiSourceRelPaths();
+
+  it.each(LOCAL_START_API_FILES)('%s', (file) => {
+    expect(scan(file).offenders).toEqual([]);
+  });
+
+  it('the cdkd local start-api modules together hold at least 10 handlers', () => {
+    // local-start-api.ts plus the 15 modules it was split into.
+    expect(LOCAL_START_API_FILES.length).toBeGreaterThanOrEqual(16);
+    const handlers = LOCAL_START_API_FILES.reduce((sum, file) => sum + scan(file).handlers, 0);
+    expect(handlers).toBeGreaterThanOrEqual(10);
   });
 });

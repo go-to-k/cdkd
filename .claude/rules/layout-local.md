@@ -45,7 +45,7 @@ the manifest's directory and every Stage asset is refused as "hand-modified".
   cannot tell that value from a planted one, and the mount is read-only on a
   local command against an assembly the user named. `resolveAssetCodeDirectory`
   in `lambda-resolver.ts` is THE one spelling, shared with
-  `local-start-api.ts`'s resolver through a `wrapError` callback so each keeps
+  `cli/commands/local-start-api/lambda-resolver.ts`'s resolver through a `wrapError` callback so each keeps
   its own error class and command name. **It takes EVERY value in an
   `AssetCodeResolveOptions` bag**
   ([#3549](https://github.com/go-to-k/cdkd/issues/3549)): positionals left four

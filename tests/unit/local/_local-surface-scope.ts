@@ -47,15 +47,17 @@ export const EXTRA_SURFACE_FILES = ['src/cli/commands/ecs-service-emulator.ts'];
  * files PLUS anything under a `local/` subdirectory. The nested arm matters
  * because the original pattern forbade `/` outright, so a future
  * `src/cli/commands/local/foo.ts` would have been silently out of scope — the
- * one direction a fence must never fail in. Backslashes are normalised first so
- * a Windows-shaped path is judged by the same rule.
+ * one direction a fence must never fail in. A split command's `local-<cmd>/`
+ * directory (`local-start-api/`, go-to-k/cdkd#5835) is in scope for the same
+ * reason: its handler moved there. Backslashes are normalised first so a
+ * Windows-shaped path is judged by the same rule.
  */
 export function isInSurface(relPath: string): boolean {
   const path = relPath.split('\\').join('/');
   if (!path.endsWith('.ts')) return false;
   if (path.startsWith('src/local/')) return true;
   if (EXTRA_SURFACE_FILES.includes(path)) return true;
-  return /^src\/cli\/commands\/local(-[A-Za-z0-9_-]*|\/.+)\.ts$/.test(path);
+  return /^src\/cli\/commands\/local(-[A-Za-z0-9_-]*(\/.+)?|\/.+)\.ts$/.test(path);
 }
 
 /**
