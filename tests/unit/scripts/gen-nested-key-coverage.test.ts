@@ -3401,9 +3401,52 @@ export function toOuter(this: FakeProvider, cfg: unknown): unknown {
       `toOuter(cfg: unknown, extra: unknown): unknown {
     return toOuter.call(this, extra, cfg);
   }`,
+      // bound to something other than `this`
+      `toOuter(cfg: unknown): unknown {
+    return toOuter.call(other, cfg);
+  }`,
+      // a rest parameter passed on as one array, not spread
+      `toOuter(...cfg: unknown[]): unknown {
+    return toOuter.call(this, cfg);
+  }`,
+      // the delegating return first, then another statement
+      `toOuter(cfg: unknown): unknown {
+    return toOuter.call(this, cfg);
+    log(cfg);
+  }`,
+      // a default-valued parameter: its default, not the function's, fills an omitted argument
+      `toOuter(cfg: unknown = {}): unknown {
+    return toOuter.call(this, cfg);
+  }`,
+      // a generator: it returns an iterator, not the function's result
+      `*toOuter(cfg: unknown): unknown {
+    return toOuter.call(this, cfg);
+  }`,
     ]) {
       expect(handoffs(source(notDelegating)), notDelegating).toEqual([]);
     }
+  });
+
+  it('keeps a delegator whose target the text does not declare indexed as itself', () => {
+    // `missing` is declared nowhere, so `toOuter` must stay a callable of its
+    // own. Dropped from the index, the method would leave only the imported
+    // generic `toOuter` under that name, and its `missing.call` would be
+    // credited as a whole-blob hand-off.
+    const text = `import { toOuter } from './outer.js';
+export class FakeProvider {
+  async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+    await this.client.send(new CreateThingCommand({ outer: this.toOuter(properties['Outer']) }));
+  }
+  toOuter(cfg: unknown): unknown {
+    return missing.call(this, cfg);
+  }
+}
+`;
+    const outer = `export function toOuter(v: unknown): unknown { return v; }`;
+    const evidence = collectWriteEvidence(text, 'fake-provider.ts', [], (specifier) =>
+      specifier === './outer.js' ? outer : undefined
+    );
+    expect([...evidence.handoffScopes]).toEqual([]);
   });
 });
 

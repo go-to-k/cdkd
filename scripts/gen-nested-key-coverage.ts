@@ -1583,9 +1583,12 @@ export function rebaseRelativeImports(source: string, file: string, toDir: strin
  * A delegator's whole body is `return f.call(this, a, b)` (or `(f<T>).call`),
  * passing its own parameters on in order (`...rest` spread as itself), so its
  * result is exactly `f`'s. Any other body, extra argument, reordered argument
- * or dropped one is not a delegator.
+ * or dropped one is not a delegator. Neither is a generator method (it returns
+ * an iterator over `f`'s result, not the result) nor a method with a
+ * default-valued parameter (its default, not `f`'s, fills an omitted argument).
  */
 export function delegateOf(method: ts.MethodDeclaration): string | undefined {
+  if (method.asteriskToken !== undefined) return undefined;
   const statements = method.body?.statements;
   if (statements === undefined || statements.length !== 1) return undefined;
   const ret = statements[0]!;
@@ -1606,7 +1609,7 @@ export function delegateOf(method: ts.MethodDeclaration): string | undefined {
   if (args.length !== params.length) return undefined;
   const passesOwn = params.every((p, i) => {
     const arg = args[i]!;
-    if (!ts.isIdentifier(p.name)) return false;
+    if (!ts.isIdentifier(p.name) || p.initializer !== undefined) return false;
     const inner = p.dotDotDotToken !== undefined && ts.isSpreadElement(arg) ? arg.expression : arg;
     if (p.dotDotDotToken !== undefined && inner === arg) return false;
     return ts.isIdentifier(inner) && inner.text === p.name.text;
