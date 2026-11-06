@@ -367,7 +367,7 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
  * An allowlist of error classes is the one thing in a checker like this that
  * fails SILENTLY: a class missing from it is not reported as unknown, it is
  * simply never analyzed. That is not hypothetical — `HostedZoneNameNotFoundError`
- * (declared inside `route53-provider.ts`, extending `ProvisioningError` with the
+ * (declared inside `route53/shared.ts`, extending `ProvisioningError` with the
  * same cause index) was invisible to the hardcoded table, and a catch-sited
  * construction of it that dropped its cause passed with counts unchanged.
  *
