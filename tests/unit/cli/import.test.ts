@@ -270,6 +270,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
 import { AwsClients } from '../../../src/utils/aws-clients.js';
+import { registerAllProviders } from '../../../src/provisioning/register-providers.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -2298,6 +2299,30 @@ describe('cdkd import', () => {
         },
       })
     );
+  });
+
+  // The dispatch reads the ONE registry `registerAllProviders` filled:
+  // `runLockedImport` receives it from `importCommand` (#5835 split), and an
+  // unregistered instance would answer `hasProvider` false for every type.
+  it('dispatches through the registry registerAllProviders populated', async () => {
+    const tmpl = template({
+      Queue: { Type: 'AWS::SQS::Queue', Properties: {}, Metadata: { 'aws:cdk:path': 'S/Queue' } },
+    });
+    mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', tmpl)] });
+    mockHasProvider.mockReturnValue(true);
+    const importSpy = vi.fn(async () => ({ physicalId: 'q', attributes: {} }));
+    mockGetProvider.mockReturnValue({ import: importSpy });
+    vi.mocked(registerAllProviders).mockClear();
+
+    await runImport(['import', '--app', 'x', '--dry-run']);
+
+    expect(importSpy).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registerAllProviders)).toHaveBeenCalledTimes(1);
+    const registered = vi.mocked(registerAllProviders).mock.calls[0]![0];
+    expect(mockHasProvider.mock.contexts.length).toBeGreaterThan(0);
+    for (const used of [...mockHasProvider.mock.contexts, ...mockGetProviderFor.mock.contexts]) {
+      expect(used).toBe(registered);
+    }
   });
 
   // A template `__proto__` key must reach the provider as an OWN key: rebuilt

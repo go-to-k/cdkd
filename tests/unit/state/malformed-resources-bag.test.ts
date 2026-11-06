@@ -128,9 +128,9 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  */
 function code(relPath: string): string {
   // `cdkd import` is `import.ts` plus its `import/**/*.ts` modules, so its key
-  // reads the whole set. `importSourceFiles()` lists `import/command.ts` (whose
-  // `importCommand` runs every guard before it hands off) ahead of every module
-  // the hand-off reaches, so a dominance check reads the family in that order.
+  // reads the whole set, in FILE order. That is not execution order, so the
+  // guards' place above the hand-off is pinned separately (the
+  // "guards a malformed record before it hands off" fence).
   if (relPath === IMPORT_COMMAND) return importSourceFiles().map(strippedFile).join('\n');
   return strippedFile(relPath);
 }
@@ -3718,6 +3718,44 @@ describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
  * read-only one repairs — and these cases pin each site to the right side of
  * it.
  */
+/**
+ * `cdkd import` refuses a malformed record in `importCommand`
+ * (`import/command.ts`), then hands off to `runLockedImport`, which reads the
+ * bags and saves. The dominance fences in this file read the import family as
+ * one text in FILE order, which is not execution order, so this pins the
+ * order that matters: every guard call sits in `import/command.ts` above the
+ * hand-off, and in no other module of the family.
+ */
+describe('cdkd import guards a malformed record before it hands off (#5835 split)', () => {
+  const COMMAND = 'src/cli/commands/import/command.ts';
+  const GUARDS = [
+    'refuseMalformedState(',
+    'refuseMalformedResourceEntriesForImport(',
+    'refuseMalformedOutputs(',
+    'refuseMalformedOrphans(',
+    'refuseMalformedOrphanRecords(',
+  ];
+  const offsets = (src: string, needle: string): number[] => {
+    const out: number[] = [];
+    for (let i = src.indexOf(needle); i !== -1; i = src.indexOf(needle, i + 1)) out.push(i);
+    return out;
+  };
+
+  it.each(GUARDS)('%s runs in importCommand, above runLockedImport(', (guard) => {
+    const src = strippedFile(COMMAND);
+    const handoff = offsets(src, 'runLockedImport(');
+    expect(handoff, 'import/command.ts no longer hands off through runLockedImport(').toHaveLength(1);
+    const calls = offsets(src, guard);
+    expect(calls.length, `${guard} is no longer called in ${COMMAND}`).toBeGreaterThan(0);
+    for (const at of calls) {
+      expect(at, `${guard} sits below the runLockedImport hand-off`).toBeLessThan(handoff[0]!);
+    }
+    for (const file of importSourceFiles().filter((f) => f !== COMMAND)) {
+      expect(strippedFile(file).includes(guard), `${guard} is called in ${file}`).toBe(false);
+    }
+  });
+});
+
 describe('write-capable commands refuse; read-only ones repair', () => {
   const REFUSE = [
     'src/cli/commands/scrub.ts',
