@@ -184,16 +184,17 @@ describe('RDSProvider DBCluster SecondsUntilAutoPause (issue #5466)', () => {
       provider.getDriftUnknownPaths(TYPE, {
         ServerlessV2ScalingConfiguration: { MinCapacity: 0, MaxCapacity: 1, SecondsUntilAutoPause: 600 },
       })
-    ).toEqual([]);
+    ).not.toContain(path);
     expect(
       provider.getDriftUnknownPaths(TYPE, {
         ServerlessV2ScalingConfiguration: { MinCapacity: 0.5, MaxCapacity: 1 },
       })
-    ).toEqual([path]);
-    expect(provider.getDriftUnknownPaths(TYPE, { Engine: 'aurora-postgresql' })).toEqual([path]);
+    ).toContain(path);
+    expect(provider.getDriftUnknownPaths(TYPE, { Engine: 'aurora-postgresql' })).toContain(path);
     // An absent or empty bag records nothing to scope by: the path is compared.
-    expect(provider.getDriftUnknownPaths(TYPE, {})).toEqual([]);
-    expect(provider.getDriftUnknownPaths(TYPE)).toEqual([]);
+    // (go-to-k/cdkd#5639's never-read keys are listed on every bag.)
+    expect(provider.getDriftUnknownPaths(TYPE, {})).not.toContain(path);
+    expect(provider.getDriftUnknownPaths(TYPE)).not.toContain(path);
     // The cluster path never reaches a DB instance (whose own unreadable flags
     // are go-to-k/cdkd#2762's).
     expect(provider.getDriftUnknownPaths('AWS::RDS::DBInstance', {})).not.toContain(path);
