@@ -58,14 +58,11 @@ src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/acm-certificate-provider.ts
 src/provisioning/providers/agentcore-runtime-provider.ts
-src/provisioning/providers/cloudtrail-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/provisioning/providers/elasticache-provider.ts
 src/provisioning/providers/emr-instance-fleet-config-provider.ts
 src/provisioning/providers/eventbridge-rule-provider.ts
 src/provisioning/providers/iam-managed-policy-provider.ts
 src/provisioning/providers/iam-policy-provider.ts
-src/provisioning/providers/iam-role-provider.ts
 src/provisioning/providers/kms-provider.ts
 src/provisioning/providers/nested-stack-provider.ts
 src/provisioning/providers/pipes-provider.ts
@@ -73,7 +70,6 @@ src/provisioning/providers/rds-dbproxy-provider.ts
 src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts
 src/provisioning/providers/scheduler-schedule-provider.ts
 src/provisioning/providers/secretsmanager-secret-provider.ts
-src/provisioning/providers/sns-topic-provider.ts
 src/provisioning/providers/ssm-parameter-provider.ts
 src/provisioning/providers/stepfunctions-provider.ts
 src/provisioning/providers/wafv2-provider.ts

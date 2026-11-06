@@ -821,9 +821,9 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // the file STILL contains two `maskLeaf(` wraps, so a whole-file predicate
     // would stay green while four handlers lost their only mask.
     const dir = copyTree();
-    mutateAll(dir, 'sns-topic-provider.ts', 'JSON.stringify(maskLeaf(logging))', 'JSON.stringify(logging)', 2);
-    mutateAll(dir, 'sns-topic-provider.ts', 'JSON.stringify(maskLeaf(entry))', 'JSON.stringify(entry)', 2);
-    expect(readFileSync(join(dir, 'sns-topic-provider.ts'), 'utf8')).toContain('maskLeaf(config[');
+    mutateAll(dir, 'sns-topic/shared.ts', 'JSON.stringify(maskLeaf(logging))', 'JSON.stringify(logging)', 2);
+    mutateAll(dir, 'sns-topic/shared.ts', 'JSON.stringify(maskLeaf(entry))', 'JSON.stringify(entry)', 2);
+    expect(readFileSync(join(dir, 'sns-topic/shared.ts'), 'utf8')).toContain('maskLeaf(config[');
 
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
@@ -859,7 +859,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     const dir = copyTree();
     mutate(
       dir,
-      'sns-topic-provider.ts',
+      'sns-topic/shared.ts',
       "normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId, maskLeaf)",
       "normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId)"
     );

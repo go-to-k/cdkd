@@ -1,37 +1,16 @@
-import {
-  SNSClient,
-  CreateTopicCommand,
-  DeleteTopicCommand,
-  GetTopicAttributesCommand,
-  ListTopicsCommand,
-  ListTagsForResourceCommand,
-  ListSubscriptionsByTopicCommand,
-  SetTopicAttributesCommand,
-  SubscribeCommand,
-  UnsubscribeCommand,
-  TagResourceCommand,
-  UntagResourceCommand,
-  NotFoundException,
-  type CreateTopicCommandInput,
-  type SubscribeCommandInput,
-  type Tag,
-} from '@aws-sdk/client-sns';
-import { getLogger } from '../../utils/logger.js';
+import { SNSClient, GetTopicAttributesCommand, NotFoundException } from '@aws-sdk/client-sns';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
 import { describeAwsFailure } from '../../utils/aws-failure-text.js';
 import {
   markRedactedCause,
   relayedNameCollision,
   wrapMaskedAwsError,
 } from '../../deployment/retryable-errors.js';
-import { markNotGone } from '../not-gone.js';
 import { getAwsClients } from '../../utils/aws-clients.js';
-import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
-import { stringifyValue } from '../../utils/stringify.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeleteContext } from '../region-check.js';
 import { generatedNameFor } from '../resource-name.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { maskDeep, maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -43,40 +22,25 @@ import type {
   SecretMasker,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
-import {
-  isAuxiliaryFailure,
-  markAuxiliaryFailure,
-  markCreatedBeforeFailure,
-} from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
+import { isAuxiliaryFailure } from '../auxiliary-failure.js';
 import { GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+import { hasErrorName, nameHeldBefore, type NameHeldBefore } from './create-ownership.js';
+import { create } from './sns-topic/create.js';
 import {
-  hasErrorName,
-  nameHeldBefore,
-  skippedCleanupText,
-  type NameHeldBefore,
-} from './create-ownership.js';
+  update,
+  applyUpdate,
+  subscribeInline,
+  reconcileInlineSubscriptions,
+} from './sns-topic/update.js';
+import { deleteImpl } from './sns-topic/delete.js';
+import { readCurrentState, importImpl } from './sns-topic/read-state.js';
 
-/**
- * The value SNS enforces for a topic that never set `MaximumMessageSize`
- * (256 KiB, the standard maximum), and therefore what a template REMOVAL of
- * the member resets the attribute to — SNS refuses the `''` the other
- * `SetTopicAttributes` removals send (`MaximumMessageSize:  is not an integer
- * between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18). A fresh
- * topic REPORTS no value at all, which `readCurrentState` folds to this value;
- * see there. Exported for the unit tests that pin both halves (issue #3413).
- */
-export const SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT = '262144';
-
-/**
- * The attribute map `create()` records, from the topic ARN (the physical id).
- * `import()` returns it too (issue #3627).
- */
-function snsTopicAttributes(topicArn: string): Record<string, unknown> {
-  return { TopicArn: topicArn, TopicName: topicArn.split(':').pop() };
-}
+export {
+  SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT,
+  buildSubscriptionAttributes,
+  buildDeliveryStatusAttributeMap,
+  normalizeDeliveryStatusProtocol,
+} from './sns-topic/shared.js';
 
 /**
  * AWS SNS Topic Provider
@@ -87,8 +51,8 @@ function snsTopicAttributes(topicArn: string): Record<string, unknown> {
  * This SDK provider eliminates that polling and returns instantly.
  */
 export class SNSTopicProvider implements ResourceProvider {
-  private snsClient: SNSClient;
-  private logger = getLogger().child('SNSTopicProvider');
+  snsClient: SNSClient;
+  logger: ConsoleLogger = getLogger().child('SNSTopicProvider');
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
       'AWS::SNS::Topic',
@@ -112,7 +76,7 @@ export class SNSTopicProvider implements ResourceProvider {
   ]);
 
   /** See {@link callerAccount}. */
-  private callerIdentity: { account: string; partition: string } | undefined;
+  callerIdentity: { account: string; partition: string } | undefined;
 
   constructor() {
     const awsClients = getAwsClients();
@@ -124,7 +88,7 @@ export class SNSTopicProvider implements ResourceProvider {
    * maps to. Memoized on the instance only once a VALIDATED answer arrived:
    * a failure is retried by the next lookup, never cached.
    */
-  private async callerAccount(): Promise<{ account: string; partition: string }> {
+  async callerAccount(): Promise<{ account: string; partition: string }> {
     if (this.callerIdentity !== undefined) return this.callerIdentity;
     const identity = await getAwsClients().sts.send(new GetCallerIdentityCommand({}));
     const partition = identity.Arn?.split(':')[1];
@@ -142,7 +106,7 @@ export class SNSTopicProvider implements ResourceProvider {
    * read. Only SNS's own `NotFoundException` is `free`; a failed STS call, an
    * unreadable identity or any other error is `unknown`.
    */
-  private async topicHeldBefore(topicName: string): Promise<NameHeldBefore> {
+  async topicHeldBefore(topicName: string): Promise<NameHeldBefore> {
     return nameHeldBefore(
       async () => {
         const region = await this.snsClient.config.region();
@@ -159,298 +123,16 @@ export class SNSTopicProvider implements ResourceProvider {
     );
   }
 
-  /**
-   * Create an SNS topic
-   *
-   * `context.replayingState` (issue #1551) downgrades this method's one
-   * template-shape refusal — `buildDeliveryStatusAttributeMap`'s `'throw'`
-   * mode — to a warning. The rollback executor's
-   * reverse-replacement arm revives the OLD topic with
-   * `create(..., previousState.properties, REPLAYING_STATE_CREATE_CONTEXT)`,
-   * so the properties bag can be a historical cdkd STATE record carrying a
-   * shape this provider now refuses — and the user has no template-side
-   * remedy for a state record. The parameter was previously absent, so that
-   * 4th argument was silently ignored and `buildDeliveryStatusAttributeMap`'s
-   * `'throw'` mode stranded the replay; issue #1538 fixed the update side
-   * only.
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // ONE masked sink for this method's own lines (issue #1997). `topicArn` is
-    // derived from `properties['TopicName']`, so the partial-create cleanup
-    // warning below names a resolved property value.
-    const maskSecrets: SecretMasker = context?.maskSecrets ?? ((text) => text);
-    const warn = (message: string): void => this.logger.warn(maskSecrets(message));
-    this.logger.debug(`Creating SNS topic ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-
-    const topicName =
-      (properties['TopicName'] as string | undefined) ||
-      (this.generatedCreateName(resourceType, logicalId, properties) as string);
-    // go-to-k/cdkd#4583: the ARN of a topic this create made and failed to clean
-    // up; a topic that held the name before (`heldBefore`) is never set here.
-    let leftBehindArn: string | undefined;
-
-    try {
-      // Build attributes map for topic configuration
-      const topicAttributes: Record<string, string> = {};
-
-      if (properties['FifoTopic']) {
-        topicAttributes['FifoTopic'] = stringifyValue(properties['FifoTopic']);
-      }
-      if (properties['ContentBasedDeduplication']) {
-        topicAttributes['ContentBasedDeduplication'] = stringifyValue(
-          properties['ContentBasedDeduplication']
-        );
-      }
-      if (properties['DisplayName']) {
-        topicAttributes['DisplayName'] = properties['DisplayName'] as string;
-      }
-      if (properties['KmsMasterKeyId']) {
-        topicAttributes['KmsMasterKeyId'] = properties['KmsMasterKeyId'] as string;
-      }
-      if (properties['TracingConfig']) {
-        topicAttributes['TracingConfig'] = properties['TracingConfig'] as string;
-      }
-      if (properties['SignatureVersion']) {
-        topicAttributes['SignatureVersion'] = stringifyValue(properties['SignatureVersion']);
-      }
-      if (properties['FifoThroughputScope']) {
-        topicAttributes['FifoThroughputScope'] = properties['FifoThroughputScope'] as string;
-      }
-      // Issue #3413. `!= null`, not truthiness: the value is a byte count
-      // (1024..1048576 measured live, us-east-1 2026-09-18), never a legitimate
-      // 0, but a numeric member must not ride a string-shaped gate. CreateTopic
-      // accepts it in `Attributes` (measured), so no follow-up call is needed.
-      if (properties['MaximumMessageSize'] != null) {
-        topicAttributes['MaximumMessageSize'] = stringifyValue(properties['MaximumMessageSize']);
-      }
-
-      // Build tags (the list read above; `Tags: []` is sent as declared)
-      let tags: Tag[] | undefined;
-      if (properties['Tags'] != null) {
-        tags = desiredTags;
-      }
-
-      // Whether the cleanup below may delete what CreateTopic returns: it hands
-      // back a topic that already held the name (go-to-k/cdkd#4403). Asked
-      // only when a wiring step can fail.
-      const wiringDeclared =
-        Boolean(properties['ArchivePolicy']) ||
-        Boolean(properties['DataProtectionPolicy']) ||
-        properties['DeliveryStatusLogging'] != null ||
-        Array.isArray(properties['Subscription']);
-      const heldBefore: NameHeldBefore = wiringDeclared
-        ? await this.topicHeldBefore(topicName)
-        : 'free';
-
-      const createParams: CreateTopicCommandInput = {
-        Name: topicName,
-        ...(Object.keys(topicAttributes).length > 0 && { Attributes: topicAttributes }),
-        ...(tags && { Tags: tags }),
-      };
-
-      const response = await this.snsClient.send(new CreateTopicCommand(createParams));
-
-      const topicArn = response.TopicArn;
-      if (!topicArn) {
-        // Theoretical AWS SDK contract violation: CreateTopic returned
-        // success but with no TopicArn. Cannot clean up — we have no
-        // ARN to delete. Has never been observed in practice.
-        throw new Error('CreateTopic did not return TopicArn');
-      }
-      // go-to-k/cdkd#5511: only a topic the name was free for is this create's.
-      if (wiringDeclared && heldBefore === 'free')
-        reportCreatedResource(logicalId, resourceType, topicArn);
-
-      // CreateTopicCommand has succeeded — AWS has now committed the
-      // Topic (and any inline Tags + Attributes). If a subsequent
-      // SetTopicAttributesCommand throws (ArchivePolicy on FIFO,
-      // DataProtectionPolicy, per-protocol DeliveryStatusLogging), the
-      // topic exists on AWS but cdkd state will NOT (the throw aborts
-      // before the success-return). CreateTopic is idempotent on Name
-      // — re-deploy would adopt the orphan rather than fail (under a
-      // GENERATED name; an explicit one is refused by the create arm's name
-      // lookup, go-to-k/cdkd#4180) — so the
-      // partial-policy state could persist silently across redeploys.
-      // Wrap the wiring in an inner try/catch that issues a best-effort
-      // `DeleteTopicCommand` before re-throwing the original error.
-      // CreateTopic does NOT throw on a pre-existing topic (unlike S3 / Logs,
-      // which raise BucketAlreadyOwnedByYou / ResourceAlreadyExists), so the
-      // delete runs only when the lookup before the create found the name
-      // free (`heldBefore`, go-to-k/cdkd#4403); otherwise the topic stays and
-      // the warning says why.
-      try {
-        // Apply ArchivePolicy (FIFO topics only, must be set after creation)
-        if (properties['ArchivePolicy']) {
-          const archivePolicy =
-            typeof properties['ArchivePolicy'] === 'string'
-              ? properties['ArchivePolicy']
-              : JSON.stringify(properties['ArchivePolicy']);
-          await this.snsClient.send(
-            new SetTopicAttributesCommand({
-              TopicArn: topicArn,
-              AttributeName: 'ArchivePolicy',
-              AttributeValue: archivePolicy,
-            })
-          );
-        }
-
-        // Apply DataProtectionPolicy
-        if (properties['DataProtectionPolicy']) {
-          const dataProtectionPolicy =
-            typeof properties['DataProtectionPolicy'] === 'string'
-              ? properties['DataProtectionPolicy']
-              : JSON.stringify(properties['DataProtectionPolicy']);
-          await this.snsClient.send(
-            new SetTopicAttributesCommand({
-              TopicArn: topicArn,
-              AttributeName: 'DataProtectionPolicy',
-              AttributeValue: dataProtectionPolicy,
-            })
-          );
-        }
-
-        // Apply DeliveryStatusLogging — every per-protocol attribute name AWS
-        // accepts is PascalCase-prefixed (`LambdaSuccessFeedbackRoleArn`,
-        // `SQSSuccessFeedbackRoleArn`, ...). CDK templates emit the
-        // `Protocol` value lowercase (`'lambda'` / `'sqs'` / `'http'`), so
-        // the raw `${protocol}<Suffix>` concatenation produces invalid
-        // attribute names that AWS rejects with `InvalidParameter: Invalid
-        // parameter: AttributeName`. `buildDeliveryStatusAttributeMap`
-        // normalizes every entry's protocol; an unknown / unsupported
-        // protocol throws a clear error rather than letting AWS produce
-        // the cryptic generic rejection.
-        // `'warn'` on a STATE REPLAY (issue #1551): the desired bag is then a
-        // cdkd state record, not a template, so a refusal would leave the old
-        // topic unrestorable with only a hand-edit of `state.json` as a
-        // remedy. A template-path create keeps `'throw'`.
-        const deliveryStatusAttributes = buildDeliveryStatusAttributeMap(
-          properties['DeliveryStatusLogging'],
-          logicalId,
-          context?.replayingState === true ? 'warn' : 'throw',
-          // Issue #1997: the warnings this may emit name RESOLVED property
-          // values. `maskSecrets` above already applied the defensive default,
-          // so create() has ONE masker rather than two reads that could drift.
-          maskSecrets
-        );
-        for (const [attributeName, attributeValue] of deliveryStatusAttributes) {
-          await this.snsClient.send(
-            new SetTopicAttributesCommand({
-              TopicArn: topicArn,
-              AttributeName: attributeName,
-              AttributeValue: attributeValue,
-            })
-          );
-        }
-
-        // Inline Subscription property - matches CloudFormation, which creates
-        // (and later updates) subscriptions declared inline on the Topic. CDK's
-        // L2 `topic.addSubscription()` emits separate `AWS::SNS::Subscription`
-        // resources (handled by their own provider), but L1 `CfnTopic` with a
-        // `subscription: [...]` list AND migrated CloudFormation templates carry
-        // the subscriptions inline on the Topic - those were previously dropped
-        // silently (issue #980). Subscribe for each entry. This runs INSIDE the
-        // wiring try/catch so a mid-subscribe failure best-effort-deletes the
-        // topic rather than orphaning it with a partial subscription set (which
-        // the idempotent CreateTopic would silently adopt on the next deploy).
-        if (Array.isArray(properties['Subscription'])) {
-          const subscriptions = properties['Subscription'] as Array<Record<string, unknown>>;
-          for (const sub of subscriptions) {
-            await this.subscribeInline(topicArn, sub, logicalId, maskSecrets);
-          }
-        }
-      } catch (innerError) {
-        if (heldBefore !== 'free') {
-          warn(
-            skippedCleanupText(
-              heldBefore,
-              `SNS topic ${logicalId} (${topicArn})`,
-              pasteableAwsCommand(
-                maskSecrets
-              )`aws sns delete-topic --topic-arn ${topicArn}`.render()
-            )
-          );
-        } else {
-          try {
-            await this.snsClient.send(new DeleteTopicCommand({ TopicArn: topicArn }));
-            retractCreatedResource(logicalId, resourceType, topicArn);
-            this.logger.debug(
-              `Cleaned up partially-created SNS topic ${logicalId} (${topicArn}) after wiring failure`
-            );
-          } catch (cleanupError) {
-            leftBehindArn = topicArn;
-            // The class at warn, AWS's text at debug (go-to-k/cdkd#2319): a
-            // denied DeleteTopic names the caller's assumed-role ARN.
-            const cleanupFailure = describeAwsFailure(cleanupError);
-            const cleanupHead = `Failed to clean up partially-created SNS topic ${logicalId} (${topicArn}): `;
-            if (cleanupFailure.redacted) {
-              this.logger.debug(maskSecrets(`${cleanupHead}${cleanupFailure.detail}`));
-            }
-            warn(
-              `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself before the next deploy: ${pasteableAwsCommand(maskSecrets)`aws sns delete-topic --topic-arn ${topicArn}`.render()}`
-            );
-          }
-        }
-        // The topic itself was created: an "already exists" from its wiring is an
-        // auxiliary object's, not this topic's name collision (#3826).
-        throw markAuxiliaryFailure(innerError, logicalId);
-      }
-
-      this.logger.debug(`Successfully created SNS topic ${logicalId}: ${topicArn}`);
-
-      // Extract topic name from ARN (last segment after :)
-      const extractedName = topicArn.split(':').pop() || topicName;
-
-      return {
-        physicalId: topicArn,
-        attributes: {
-          TopicArn: topicArn,
-          TopicName: extractedName,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create SNS topic ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            topicName,
-            cause
-          )
-      );
-      if (leftBehindArn) markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindArn);
-      throw thrown;
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update an SNS topic
-   *
-   * SNS topics have limited mutable properties (DisplayName, KmsMasterKeyId, etc.).
-   * TopicName is immutable and requires replacement (handled by deployment layer).
-   *
-   * Thin wrapper that maps any AWS SDK failure onto {@link ProvisioningError}
-   * the same way {@link create} and {@link delete} do, so an update failure
-   * carries cdkd's typed error formatting and exit-code handling instead of
-   * surfacing raw (issue #1267). This provider issues many separate `send`
-   * calls across attributes / policies / subscriptions, so the wrap lives at
-   * the boundary and the body stays in {@link applyUpdate}.
-   *
-   * A typed control-flow error is re-thrown untouched: the deploy engine
-   * matches those by class to decide its fallback, so swallowing one into a
-   * ProvisioningError would silently disable that path.
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -458,43 +140,18 @@ export class SNSTopicProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
-    // (read as empty, it would untag every recorded key).
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    try {
-      return await this.applyUpdate(
-        logicalId,
-        physicalId,
-        resourceType,
-        properties,
-        previousProperties,
-        // Issue #1997: only `maskSecrets` is read off the context here, and it
-        // is forwarded rather than the whole bag so `applyUpdate` cannot grow a
-        // dependence on a field the update path does not carry.
-        context?.maskSecrets
-      );
-    } catch (error) {
-      // Pass through every cdkd-typed error untouched: ResourceUpdateNotSupportedError
-      // is control flow the deploy engine matches BY CLASS, and a ProvisioningError
-      // raised deeper in the body already carries better context than a re-wrap.
-      if (error instanceof CdkdError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update SNS topic ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
   }
 
-  private async applyUpdate(
+  applyUpdate(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -502,291 +159,34 @@ export class SNSTopicProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating SNS topic ${logicalId}: ${physicalId}`);
-
-    // Update mutable topic attributes via SetTopicAttributes.
-    //
-    // `resetValue` is what a REMOVED member is reset to. The default arm sends
-    // `''`, which SNS reads as "clear" for the string / policy attributes; a
-    // NUMERIC attribute refuses it (`MaximumMessageSize: '' is not an integer
-    // between 1024 and 1048576 bytes`, measured us-east-1 2026-09-18), so a
-    // removal has to send the service default explicitly — the same shape
-    // `SQS_ATTRIBUTE_REMOVAL_RESET` carries for the queue's numeric members.
-    const mutableAttributes: Array<{
-      name: string;
-      prop: string;
-      serialize?: boolean;
-      resetValue?: string;
-    }> = [
-      { name: 'DisplayName', prop: 'DisplayName' },
-      { name: 'KmsMasterKeyId', prop: 'KmsMasterKeyId' },
-      { name: 'ContentBasedDeduplication', prop: 'ContentBasedDeduplication' },
-      { name: 'TracingConfig', prop: 'TracingConfig' },
-      { name: 'SignatureVersion', prop: 'SignatureVersion' },
-      { name: 'FifoThroughputScope', prop: 'FifoThroughputScope' },
-      { name: 'ArchivePolicy', prop: 'ArchivePolicy', serialize: true },
-      { name: 'DataProtectionPolicy', prop: 'DataProtectionPolicy', serialize: true },
-      // Issue #3413. 262144 (256 KiB) is SNS's standard maximum and what a
-      // topic that never set the attribute enforces; a fresh topic REPORTS no
-      // value at all, so the reset makes the attribute appear at the default
-      // rather than disappear — `readCurrentState` folds that (see there).
-      {
-        name: 'MaximumMessageSize',
-        prop: 'MaximumMessageSize',
-        resetValue: SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT,
-      },
-    ];
-
-    for (const attr of mutableAttributes) {
-      const newVal = properties[attr.prop];
-      const oldVal = previousProperties[attr.prop];
-      if (JSON.stringify(newVal) !== JSON.stringify(oldVal)) {
-        let value: string;
-        if (newVal === undefined || newVal === null) {
-          value = attr.resetValue ?? '';
-        } else if (attr.serialize && typeof newVal !== 'string') {
-          value = JSON.stringify(newVal);
-        } else {
-          value = stringifyValue(newVal);
-        }
-        await this.snsClient.send(
-          new SetTopicAttributesCommand({
-            TopicArn: physicalId,
-            AttributeName: attr.name,
-            AttributeValue: value,
-          })
-        );
-        this.logger.debug(`Updated ${attr.name} for topic ${physicalId}`);
-      }
-    }
-
-    // Update DeliveryStatusLogging if changed — same lowercase-rejection
-    // pitfall as create(); `buildDeliveryStatusAttributeMap` normalizes
-    // every entry's `Protocol` before building attribute names.
-    //
-    // Removal semantics (issue #1160): SetTopicAttributes is per-attribute
-    // merge — an attribute we never send keeps its live value, so both a
-    // whole `DeliveryStatusLogging` removal and a dropped sub-field /
-    // protocol entry must be reset EXPLICITLY. The desired side is walked
-    // in 'warn' mode (issue #1538): it is NOT always template-borne — the
-    // rollback executor's revert arm and `cdkd drift --revert` both put a
-    // state-derived bag here, so a malformed value warns-and-skips instead
-    // of failing the update permanently (create() still throws, where the
-    // value is always template-borne). The previous side comes from cdkd
-    // state too, so it is walked in silent 'skip' mode — a state record an
-    // older binary wrote must never make the stack permanently
-    // undeployable (guard-the-desired-side-only rule).
-    if (
-      JSON.stringify(properties['DeliveryStatusLogging']) !==
-      JSON.stringify(previousProperties['DeliveryStatusLogging'])
-    ) {
-      const desiredAttributes = buildDeliveryStatusAttributeMap(
-        properties['DeliveryStatusLogging'],
-        logicalId,
-        'warn',
-        // Issue #1997: the desired side is the one that warns, and the values it
-        // names arrive RESOLVED. The previous side below is walked in silent
-        // 'skip' mode and emits nothing, so it needs no masker.
-        maskSecrets
-      );
-      const previousAttributes = buildDeliveryStatusAttributeMap(
-        previousProperties['DeliveryStatusLogging'],
-        logicalId,
-        'skip'
-      );
-      for (const [attributeName, attributeValue] of desiredAttributes) {
-        if (previousAttributes.get(attributeName) === attributeValue) continue;
-        await this.snsClient.send(
-          new SetTopicAttributesCommand({
-            TopicArn: physicalId,
-            AttributeName: attributeName,
-            AttributeValue: attributeValue,
-          })
-        );
-      }
-      for (const attributeName of previousAttributes.keys()) {
-        if (desiredAttributes.has(attributeName)) continue;
-        await this.snsClient.send(
-          new SetTopicAttributesCommand({
-            TopicArn: physicalId,
-            AttributeName: attributeName,
-            AttributeValue: deliveryStatusRemovalResetValue(attributeName),
-          })
-        );
-        this.logger.debug(
-          `Reset removed delivery status attribute ${attributeName} for topic ${physicalId}`
-        );
-      }
-    }
-
-    // Update inline Subscription list if changed (issue #980). CloudFormation
-    // adds newly-declared inline subscriptions and removes dropped ones on an
-    // UPDATE; mirror that. Matching is on (Protocol, Endpoint) — the identity
-    // AWS uses when listing a topic's subscriptions.
-    if (
-      JSON.stringify(properties['Subscription']) !==
-      JSON.stringify(previousProperties['Subscription'])
-    ) {
-      await this.reconcileInlineSubscriptions(
-        physicalId,
-        (previousProperties['Subscription'] as Array<Record<string, unknown>>) || [],
-        (properties['Subscription'] as Array<Record<string, unknown>>) || [],
-        logicalId,
-        // Issue #2178: the refusal in `subscribeInline` quotes the whole
-        // inline entry, which is RESOLVED template content. Absent means
-        // unmasked, per the SecretMaskingContext contract.
-        maskerOrIdentity(maskSecrets)
-      );
-    }
-
-    // Update Tags: untag the recorded keys the desired side no longer names,
-    // then tag the new / changed ones. Both sides are read through
-    // `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags nothing.
-    const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
-    const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
-    }
-    if (tagPlan.remove.length > 0) {
-      await this.snsClient.send(
-        new UntagResourceCommand({
-          ResourceArn: physicalId,
-          TagKeys: tagPlan.remove,
-        })
-      );
-    }
-    if (tagPlan.set.size > 0) {
-      await this.snsClient.send(
-        new TagResourceCommand({
-          ResourceArn: physicalId,
-          Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
-        })
-      );
-    }
-    if (tagPlan.remove.length > 0 || tagPlan.set.size > 0) {
-      this.logger.debug(`Updated tags for topic ${physicalId}`);
-    }
-
-    const topicName = physicalId.split(':').pop() || logicalId;
-
-    return {
+    return applyUpdate.call(
+      this,
+      logicalId,
       physicalId,
-      wasReplaced: false,
-      attributes: {
-        TopicArn: physicalId,
-        TopicName: topicName,
-      },
-    };
+      resourceType,
+      properties,
+      previousProperties,
+      maskSecrets
+    );
   }
 
-  /**
-   * Subscribe a single inline `Subscription` entry to the topic.
-   *
-   * Each entry carries at least `Protocol` + `Endpoint` (the two required CFn
-   * fields). Documented optional subscription attributes that are settable at
-   * subscribe time are passed through the `Subscribe` `Attributes` map
-   * (`RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`,
-   * `DeliveryPolicy`, `ReplayPolicy`, `SubscriptionRoleArn`). Object-valued
-   * attributes (policies) are JSON-stringified; everything else is stringified
-   * verbatim — AWS's `SubscribeCommand` accepts `Attributes` as a
-   * `Record<string,string>`.
-   */
-  private async subscribeInline(
+  subscribeInline(
     topicArn: string,
     sub: Record<string, unknown>,
     logicalId: string,
     mask: MaskerFn
   ): Promise<void> {
-    const protocol = sub['Protocol'];
-    const endpoint = sub['Endpoint'];
-    if (typeof protocol !== 'string' || typeof endpoint !== 'string') {
-      throw new Error(
-        `SNS topic ${logicalId}: inline Subscription entry requires string Protocol and ` +
-          `Endpoint, got ${JSON.stringify(maskDeep(sub, mask))}`
-      );
-    }
-
-    const attributes = buildSubscriptionAttributes(sub);
-    const input: SubscribeCommandInput = {
-      TopicArn: topicArn,
-      Protocol: protocol,
-      Endpoint: endpoint,
-      ReturnSubscriptionArn: true,
-      ...(Object.keys(attributes).length > 0 && { Attributes: attributes }),
-    };
-    await this.snsClient.send(new SubscribeCommand(input));
-    this.logger.debug(`Subscribed ${protocol}:${endpoint} to topic ${topicArn} for ${logicalId}`);
+    return subscribeInline.call(this, topicArn, sub, logicalId, mask);
   }
 
-  /**
-   * Reconcile the inline `Subscription` list on an UPDATE: add entries present
-   * in the new list but not the old, and unsubscribe entries present in the
-   * old list but not the new. Identity is `(Protocol, Endpoint)`.
-   *
-   * Removals need the live `SubscriptionArn`, which the template does not
-   * carry — resolve it via `ListSubscriptionsByTopic` (paginated). A removed
-   * entry whose subscription is still `PendingConfirmation` (never confirmed)
-   * has no ARN to unsubscribe and is skipped with a debug log.
-   *
-   * KNOWN LIMITATION: identity is `(Protocol, Endpoint)` only, so an
-   * attribute-only change on an UNCHANGED endpoint (e.g. editing `FilterPolicy`
-   * / `RawMessageDelivery` while keeping the same protocol+endpoint) is neither
-   * an add nor a remove and is therefore NOT re-applied here — it would need a
-   * `SetSubscriptionAttributes` pass. CloudFormation updates those in place.
-   * The primary #980 silent-drop (create / add / remove / drift) is fixed; the
-   * attribute-only in-place update is a deliberately-scoped follow-up.
-   */
-  private async reconcileInlineSubscriptions(
+  reconcileInlineSubscriptions(
     topicArn: string,
     oldSubs: Array<Record<string, unknown>>,
     newSubs: Array<Record<string, unknown>>,
     logicalId: string,
     mask: MaskerFn
   ): Promise<void> {
-    const key = (protocol: unknown, endpoint: unknown): string =>
-      `${String(protocol)}${String(endpoint)}`;
-
-    const oldKeys = new Set(oldSubs.map((s) => key(s['Protocol'], s['Endpoint'])));
-    const newKeys = new Set(newSubs.map((s) => key(s['Protocol'], s['Endpoint'])));
-
-    // Additions: in new, not in old.
-    for (const sub of newSubs) {
-      if (!oldKeys.has(key(sub['Protocol'], sub['Endpoint']))) {
-        await this.subscribeInline(topicArn, sub, logicalId, mask);
-      }
-    }
-
-    // Removals: in old, not in new. Resolve ARNs from AWS.
-    const removed = oldSubs.filter((s) => !newKeys.has(key(s['Protocol'], s['Endpoint'])));
-    if (removed.length === 0) return;
-
-    const arnByKey = new Map<string, string>();
-    let nextToken: string | undefined;
-    do {
-      const resp = await this.snsClient.send(
-        new ListSubscriptionsByTopicCommand({
-          TopicArn: topicArn,
-          ...(nextToken && { NextToken: nextToken }),
-        })
-      );
-      for (const s of resp.Subscriptions ?? []) {
-        if (!s.SubscriptionArn || s.SubscriptionArn === 'PendingConfirmation') continue;
-        arnByKey.set(key(s.Protocol, s.Endpoint), s.SubscriptionArn);
-      }
-      nextToken = resp.NextToken;
-    } while (nextToken);
-
-    for (const sub of removed) {
-      const arn = arnByKey.get(key(sub['Protocol'], sub['Endpoint']));
-      if (!arn) {
-        this.logger.debug(
-          `No confirmed SubscriptionArn for ${String(sub['Protocol'])}:${String(sub['Endpoint'])} on topic ${topicArn} — skipping unsubscribe`
-        );
-        continue;
-      }
-      await this.snsClient.send(new UnsubscribeCommand({ SubscriptionArn: arn }));
-      this.logger.debug(`Unsubscribed ${arn} from topic ${topicArn} for ${logicalId}`);
-    }
+    return reconcileInlineSubscriptions.call(this, topicArn, oldSubs, newSubs, logicalId, mask);
   }
 
   /**
@@ -810,7 +210,7 @@ export class SNSTopicProvider implements ResourceProvider {
    * `build` must thread `error` as `cause`, and runs twice, so it must stay a
    * side-effect-free constructor call.
    */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (text: string) => ProvisioningError
@@ -823,54 +223,14 @@ export class SNSTopicProvider implements ResourceProvider {
     return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
   }
 
-  /**
-   * Delete an SNS topic
-   */
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
-    _properties?: Record<string, unknown>,
+    properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting SNS topic ${logicalId}: ${physicalId}`);
-
-    try {
-      await this.snsClient.send(new DeleteTopicCommand({ TopicArn: physicalId }));
-      this.logger.debug(`Successfully deleted SNS topic ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        const clientRegion = await this.snsClient.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`SNS topic ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(context?.maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete SNS topic ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, and the delete classifiers
-      // read `NotFoundException` in a message as "already deleted": only the
-      // typed not-found above means this resource is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
   /**
@@ -900,198 +260,13 @@ export class SNSTopicProvider implements ResourceProvider {
     }
   }
 
-  /**
-   * Read the AWS-current SNS topic configuration in CFn-property shape.
-   *
-   * Issues `GetTopicAttributes` for the topic-level configuration. AWS
-   * returns ALL attribute values as strings; we type-coerce booleans back
-   * to booleans and parse `ArchivePolicy` / `DataProtectionPolicy` from
-   * JSON strings so the comparator matches cdkd state's typed values.
-   *
-   * `TopicName` is derived from the ARN tail (the `physicalId` is the
-   * topic ARN).
-   *
-   * `Tags` is surfaced via a follow-up `ListTagsForResource` call. CDK's
-   * `aws:*` auto-tags are filtered out by `normalizeAwsTagsToCfn`; the
-   * result key is omitted entirely when AWS reports no user tags (matches
-   * `create()`'s behavior of only sending Tags when the template carries
-   * them).
-   *
-   * `DeliveryStatusLogging` is reverse-mapped from per-protocol flat
-   * attributes (`{Protocol}SuccessFeedbackRoleArn` etc.) back to the CFn
-   * array shape `[{Protocol, SuccessFeedbackRoleArn?, SuccessFeedbackSampleRate?,
-   * FailureFeedbackRoleArn?}]`. Walks the known protocol prefix list
-   * (`HTTP` / `SQS` / `Lambda` / `Firehose` / `Application`); a
-   * protocol is included in the result iff at least one of its three
-   * sub-attributes is set on the topic. Entries are sorted by canonical
-   * PascalCase `Protocol` for stable positional compare (AWS does not
-   * preserve template order across `GetTopicAttributes` calls).
-   *
-   * The emitted `Protocol` value preserves state's case when known
-   * (CDK templates emit lowercase `'lambda'` / `'sqs'` / ...; AWS's
-   * attribute prefix is PascalCase). Without case preservation the
-   * comparator would fire false drift on every clean run for any
-   * lowercase-`Protocol` template.
-   *
-   * `Subscription` is reverse-mapped from `ListSubscriptionsByTopic` ONLY
-   * when the passed-in `properties` recorded an inline `Subscription` list
-   * (issue #980) — L1 `CfnTopic` / migrated CloudFormation. A Topic whose
-   * subscriptions are separate `AWS::SNS::Subscription` resources (CDK L2
-   * `addSubscription()`) has no inline list in state, so its subscriptions
-   * are not surfaced here (they belong to sibling resources).
-   *
-   * Returns `RESOURCE_NOT_FOUND` when the topic is gone (`NotFoundException`).
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
-    _logicalId: string,
-    _resourceType: string,
+    logicalId: string,
+    resourceType: string,
     properties?: Record<string, unknown>
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let attrs: Record<string, string> | undefined;
-    try {
-      const resp = await this.snsClient.send(
-        new GetTopicAttributesCommand({ TopicArn: physicalId })
-      );
-      attrs = resp.Attributes;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    if (!attrs) return undefined;
-
-    const result: Record<string, unknown> = {};
-
-    // TopicName from ARN tail.
-    const tail = physicalId.substring(physicalId.lastIndexOf(':') + 1);
-    if (tail) result['TopicName'] = tail;
-
-    // Boolean attributes — AWS returns "true" / "false" strings.
-    const bool: string[] = ['FifoTopic', 'ContentBasedDeduplication'];
-    for (const key of bool) {
-      const v = attrs[key];
-      if (v !== undefined) result[key] = v === 'true';
-    }
-
-    // String attributes valid for any topic type — emit unconditionally so a
-    // console-side ADD surfaces as drift.
-    const str: string[] = ['DisplayName', 'KmsMasterKeyId', 'TracingConfig', 'SignatureVersion'];
-    for (const key of str) {
-      result[key] = attrs[key] ?? '';
-    }
-
-    // FifoThroughputScope is FIFO-only — emitting `''` as a placeholder on
-    // a standard topic would have `cdkd drift --revert` push the empty
-    // value back to AWS, which `SetTopicAttributes` rejects. Same
-    // type-discriminator-tagged pattern as the SQS DeduplicationScope /
-    // FifoThroughputLimit guards.
-    const isFifo = attrs['FifoTopic'] === 'true';
-    if (isFifo) {
-      result['FifoThroughputScope'] = attrs['FifoThroughputScope'] ?? '';
-    }
-
-    // MaximumMessageSize (issue #3413) — emitted UNCONDITIONALLY, folding an
-    // absent attribute to the default, for the same reason the string members
-    // above emit `''`: the drift comparator's top-level walk visits the keys
-    // of the BASELINE (`observedProperties`, this method's own answer at
-    // deploy time), so a key this method omits is a key no console-side
-    // change can ever surface under. AWS reports the attribute only once it
-    // has been SET (a fresh topic carries no value; measured us-east-1
-    // 2026-09-18) and a template REMOVAL resets it to the default rather than
-    // unsetting it (SNS refuses `''`) — so absent and 262144 are the same
-    // live fact, and folding them makes every baseline carry the key: a
-    // reset-to-default compares equal to itself (no phantom drift), a
-    // console-side ADD compares unequal (drift, and `--revert` sends the
-    // default back, which SNS accepts). A number, like the SQS sibling, so a
-    // template's integer compares equal to the readback. "Every baseline"
-    // means every baseline THIS binary captured: an `observedProperties` bag
-    // written by an older cdkd has no key and is refreshed only on the
-    // resource's next real update or by `cdkd state refresh-observed` — the
-    // same transition the `''` string members above went through.
-    // `||`, not `??`: SNS refuses `''` on write, so it should never be
-    // reported, but `Number('')` is a finite 0 and would surface as drift
-    // against 262144 if it ever were.
-    const liveMaxSize = attrs['MaximumMessageSize'] || SNS_MAXIMUM_MESSAGE_SIZE_DEFAULT;
-    const maxSizeNumber = Number(liveMaxSize);
-    result['MaximumMessageSize'] = Number.isFinite(maxSizeNumber) ? maxSizeNumber : liveMaxSize;
-
-    // JSON-document attributes — AWS returns a JSON string; cdkd state
-    // typically holds the parsed object after intrinsic resolution.
-    for (const key of ['ArchivePolicy', 'DataProtectionPolicy']) {
-      const v = attrs[key];
-      if (v) {
-        try {
-          result[key] = JSON.parse(v) as unknown;
-        } catch {
-          result[key] = v;
-        }
-      }
-    }
-
-    // DeliveryStatusLogging: reverse-map from per-protocol flat attributes
-    // back to the CFn array shape. Walks the known protocol prefix list
-    // (HTTP / SQS / Lambda / Firehose / Application) and emits a
-    // CFn entry whenever any of the three sub-attributes is set.
-    //
-    // CDK templates emit `Protocol` lowercase (`'lambda'` / `'sqs'` / ...),
-    // but AWS's per-protocol attribute prefix is PascalCase. To keep the
-    // positional comparator from firing false drift on case alone, surface
-    // each AWS-current entry using the SAME case the state holds for that
-    // protocol — `stateProtocolCaseMap` extracts state's casing per
-    // canonical PascalCase prefix.
-    result['DeliveryStatusLogging'] = mapDeliveryStatusLogging(
-      attrs,
-      stateProtocolCaseMap(properties?.['DeliveryStatusLogging'])
-    );
-
-    // Tags via ListTagsForResource.
-    try {
-      const tagsResp = await this.snsClient.send(
-        new ListTagsForResourceCommand({ ResourceArn: physicalId })
-      );
-      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-      result['Tags'] = tags;
-    } catch (err) {
-      if (err instanceof NotFoundException) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-
-    // Inline Subscription list — only surfaced for drift when the state
-    // actually recorded inline subscriptions (issue #980). CDK's L2
-    // `addSubscription()` manages subscriptions as separate
-    // `AWS::SNS::Subscription` resources, so a Topic deployed that way has
-    // `Subscription` absent from state; emitting AWS's subscriptions there
-    // would produce guaranteed false drift (the subscriptions belong to
-    // sibling resources, not the Topic property). When state DOES carry
-    // inline subscriptions (L1 `CfnTopic` / migrated CFn), reverse-map the
-    // live `(Protocol, Endpoint)` pairs so drift can compare them.
-    if (Array.isArray(properties?.['Subscription'])) {
-      const subs: Array<Record<string, unknown>> = [];
-      let nextToken: string | undefined;
-      do {
-        const resp = await this.snsClient.send(
-          new ListSubscriptionsByTopicCommand({
-            TopicArn: physicalId,
-            ...(nextToken && { NextToken: nextToken }),
-          })
-        );
-        for (const s of resp.Subscriptions ?? []) {
-          if (!s.Protocol || !s.Endpoint) continue;
-          subs.push({ Protocol: s.Protocol, Endpoint: s.Endpoint });
-        }
-        nextToken = resp.NextToken;
-      } while (nextToken);
-      // Stable positional order for the comparator (AWS does not preserve
-      // template order across reads).
-      subs.sort((a, b) =>
-        `${String(a['Protocol'])} ${String(a['Endpoint'])}`.localeCompare(
-          `${String(b['Protocol'])} ${String(b['Endpoint'])}`
-        )
-      );
-      result['Subscription'] = subs;
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, logicalId, resourceType, properties);
   }
 
   /**
@@ -1106,23 +281,6 @@ export class SNSTopicProvider implements ResourceProvider {
     return [];
   }
 
-  /**
-   * Adopt an existing SNS topic into cdkd state.
-   *
-   * SNS physical IDs are full ARNs (`arn:aws:sns:...:TopicName`). The
-   * `--resource` override is expected to receive an ARN; bare topic names
-   * trigger a `ListTopics` walk that resolves to the ARN.
-   *
-   * Lookup order:
-   *  1. `--resource` override → trust as ARN, verify via `GetTopicAttributes`.
-   *  2. `Properties.TopicName` → `ListTopics` to find the matching ARN.
-   *
-   * The `aws:cdk:path` tag match that used to ride the same `ListTopics` walk
-   * is gone (issue #1134): AWS rejects `aws:`-prefixed tag writes, so that tag
-   * never exists on a real resource and the walk could not match. Auto-mode
-   * import resolves ids from CloudFormation's `DescribeStackResources` or the
-   * template's physical name; without a `TopicName` there is nothing to match.
-   */
   /** go-to-k/cdkd#4705: the name `create()` sends when the template names none. */
   generatedCreateName(
     _resourceType: string,
@@ -1133,523 +291,7 @@ export class SNSTopicProvider implements ResourceProvider {
     return generatedNameFor('AWS::SNS::Topic', logicalId);
   }
 
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      try {
-        await this.snsClient.send(
-          new GetTopicAttributesCommand({ TopicArn: input.knownPhysicalId })
-        );
-        // Issue #3627: the same map `create()` records. The resolver's
-        // `TopicArn` / `TopicName` arms read the physical id as a NAME, but it
-        // is the ARN, so without these an imported topic served a doubled ARN
-        // and an ARN as its name, silently.
-        return {
-          physicalId: input.knownPhysicalId,
-          attributes: snsTopicAttributes(input.knownPhysicalId),
-        };
-      } catch (err) {
-        if (err instanceof NotFoundException) return null;
-        throw err;
-      }
-    }
-
-    const desiredName =
-      typeof input.properties?.['TopicName'] === 'string'
-        ? input.properties['TopicName']
-        : undefined;
-    if (!desiredName) return null;
-
-    // Match the template's TopicName against each topic's ARN tail
-    // (arn:aws:sns:...:NAME).
-    let marker: string | undefined;
-    do {
-      const list = await this.snsClient.send(
-        new ListTopicsCommand({ ...(marker && { NextToken: marker }) })
-      );
-      for (const t of list.Topics ?? []) {
-        if (!t.TopicArn) continue;
-        const arnTail = t.TopicArn.substring(t.TopicArn.lastIndexOf(':') + 1);
-        if (arnTail === desiredName) {
-          return { physicalId: t.TopicArn, attributes: snsTopicAttributes(t.TopicArn) };
-        }
-      }
-      marker = list.NextToken;
-    } while (marker);
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
-}
-
-// ─── DeliveryStatusLogging reverse-mapping ─────────────────────────────
-//
-// CFn input shape:
-//   DeliveryStatusLogging: [
-//     { Protocol: 'http/s'|'sqs'|'lambda'|'firehose'|'application',
-//       SuccessFeedbackRoleArn?, SuccessFeedbackSampleRate?, FailureFeedbackRoleArn? }
-//   ]
-// AWS GetTopicAttributes flat attribute shape (one per protocol):
-//   <Protocol>SuccessFeedbackRoleArn  (e.g. HTTPSuccessFeedbackRoleArn)
-//   <Protocol>SuccessFeedbackSampleRate
-//   <Protocol>FailureFeedbackRoleArn
-// where <Protocol> is the canonical PascalCase prefix.
-//
-// Wire-format note: AWS's attribute prefix is always PascalCase
-// (`Lambda`, `SQS`, `HTTP`, ...) regardless of how `Protocol` was
-// spelled in the template. CDK emits lowercase (`'lambda'` / `'sqs'`
-// / `'http/s'`) — passing those through directly to
-// `${protocol}SuccessFeedbackRoleArn` produces invalid attribute names
-// AWS rejects with `InvalidParameter: Invalid parameter:
-// AttributeName`. `normalizeDeliveryStatusProtocol` is the single
-// chokepoint mapping any-case input to the canonical PascalCase prefix.
-//
-// The template spelling set and the prefix set are NOT the same set, and
-// conflating them was issue #1529: the canonical HTTP-family template
-// value is `http/s` (`sns.LoggingProtocol.HTTP`), while the ONLY
-// HTTP-family attribute prefix AWS accepts is `HTTP`. There is no `HTTPS`
-// prefix — `SetTopicAttributes` rejects `HTTPSSuccessFeedbackRoleArn`
-// outright (live-verified 2026-08-11).
-
-// ─── Inline Subscription attribute mapping (issue #980) ────────────────
-//
-// The documented optional attributes of an inline `AWS::SNS::Topic`
-// `Subscription` entry that are settable at `Subscribe` time. `Protocol`
-// and `Endpoint` are the two required fields (handled separately); every
-// other key here maps 1:1 to an SNS subscription attribute name. Object-
-// valued policies are JSON-stringified; scalar values are stringified
-// verbatim (AWS's Subscribe `Attributes` map is `Record<string,string>`).
-const SNS_SUBSCRIPTION_ATTRIBUTE_KEYS = [
-  'RawMessageDelivery',
-  'FilterPolicy',
-  'FilterPolicyScope',
-  'RedrivePolicy',
-  'DeliveryPolicy',
-  'ReplayPolicy',
-  'SubscriptionRoleArn',
-] as const;
-
-/**
- * Build the SNS `Subscribe` `Attributes` map from an inline `Subscription`
- * entry, skipping the required `Protocol` / `Endpoint` fields. Undefined /
- * null values are omitted; object values (policy documents) are
- * JSON-stringified; scalars are `String()`-coerced.
- */
-export function buildSubscriptionAttributes(sub: Record<string, unknown>): Record<string, string> {
-  const attributes: Record<string, string> = {};
-  for (const key of SNS_SUBSCRIPTION_ATTRIBUTE_KEYS) {
-    const value = sub[key];
-    if (value === undefined || value === null) continue;
-    attributes[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
-  }
-  return attributes;
-}
-
-// The canonical AWS attribute PREFIXES, NOT the template spellings. There is
-// exactly one HTTP-family prefix (`HTTP`) — see the header note above and
-// `SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS` for the accepted template values.
-const SNS_DELIVERY_STATUS_PROTOCOLS = ['Application', 'Firehose', 'HTTP', 'Lambda', 'SQS'] as const;
-
-type SnsDeliveryStatusProtocol = (typeof SNS_DELIVERY_STATUS_PROTOCOLS)[number];
-
-/**
- * The template-side `Protocol` spellings `normalizeDeliveryStatusProtocol`
- * accepts, for the fail-fast error message. This is deliberately NOT
- * `SNS_DELIVERY_STATUS_PROTOCOLS` (the AWS attribute prefixes): the canonical
- * CFn / CDK spelling of the HTTP-family protocol is `http/s`, which is not a
- * prefix, and `https` is accepted only as a tolerated legacy alias. Listing
- * the prefixes would tell a user to write `HTTP`, which is not what the CFn
- * schema's allowed-value list nor `sns.LoggingProtocol` says.
- */
-const SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS = [
-  'application',
-  'firehose',
-  'http/s',
-  'lambda',
-  'sqs',
-] as const;
-
-/**
- * The per-protocol attribute suffixes an inline `DeliveryStatusLogging`
- * entry maps to (`<Protocol><Suffix>` flat attribute names on the topic).
- */
-const SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES = [
-  'SuccessFeedbackRoleArn',
-  'SuccessFeedbackSampleRate',
-  'FailureFeedbackRoleArn',
-] as const;
-
-/**
- * Flatten a CFn `DeliveryStatusLogging` array into the AWS flat attribute
- * map (`{LambdaSuccessFeedbackRoleArn: '...', ...}`) that
- * `SetTopicAttributes` consumes one entry at a time.
- *
- * Field presence is `!= null`, NOT truthiness, so
- * `SuccessFeedbackSampleRate: 0` is sent as `'0'` instead of being
- * silently skipped (the pre-#1160 truthiness gates dropped a 0 sample
- * rate on create and update alike).
- *
- * `onMalformed` picks the failure mode for a malformed container / entry
- * / unknown protocol, and encodes the create-vs-update distinction
- * (issue #1538):
- *
- * - `'throw'` — a TEMPLATE-borne desired side: an ordinary `create()`, where a
- *   template error must fail fast, naming the offending value.
- * - `'warn'` — a desired side that is NOT template-borne. That is every
- *   `update()`, and — since issue #1551 — a `create()` whose
- *   `CreateContext.replayingState` is set (the rollback executor's
- *   reverse-replacement arm, which revives the old topic from a state record).
- *   The wording below is therefore operation-neutral: on a create there is no
- *   previously-set attribute to reset, only one that is never applied. Same
- *   reason as before:
- *   the rollback executor's revert arm and `cdkd drift --revert` both call
- *   `update()` with a state-derived bag as the DESIRED properties, so a
- *   state record carrying an unsupported protocol / malformed shape (a
- *   hand-written imported template, or a record an older binary wrote)
- *   must warn-and-skip rather than fail the update permanently — there is
- *   no template-side remedy. Skip semantics are well-defined: an entry
- *   whose protocol cannot be canonicalized maps to no attribute names, a
- *   non-array container yields an empty map, and a non-object entry is
- *   skipped. Each warning names the logicalId and the offending value.
- * - `'skip'` — the PREVIOUS side (cdkd state): same tolerance, silently —
- *   warning on every update about a value the user cannot act on from the
- *   template would be pure noise (guard-the-desired-side-only rule).
- *
- * Two entries whose `Protocol` values canonicalize to the SAME prefix
- * (`http/s` + `https`, say) collapse onto one set of attribute names. The
- * collapse is a PER-FIELD merge, not a per-entry overwrite: a later entry
- * overwrites only the sub-fields it declares, because the loop below skips
- * an absent field (`value == null`) rather than clearing it. So
- * `[{http/s, RoleArn: A, SampleRate: 10}, {https, RoleArn: B}]` yields
- * `RoleArn: B` AND `SampleRate: 10`. The warning says exactly that.
- * The case became reachable only with issue #1529, which folded the whole
- * HTTP family onto the single `HTTP` prefix — before it, the `https` arm
- * produced `HTTPS*` names AWS rejected outright, so no such template ever
- * deployed.
- *
- * The collision WARNS rather than throws for the same reason `'warn'` mode
- * exists: the update desired side is also fed by the rollback executor's
- * `update()` replay of a cdkd STATE record, where the user has no
- * template-side remedy. The three malformed-value sites below (unsupported
- * protocol, non-array container, non-object entry) used to throw on that
- * side too, which made such a state record permanently unreplayable —
- * fixed by issue #1538, which moved `update()`'s desired side to `'warn'`
- * while `create()` kept `'throw'`; issue #1551 then extended the downgrade to
- * a create that DECLARES a state replay, leaving the template-path create
- * strict (#1529 / #1536 deliberately left that contract unchanged).
- *
- * `maskSecrets` is the caller's secret masker (issue #1932 item 3, adopted here
- * by issue #1997), threaded from `CreateContext` / `UpdateContext` — see
- * `SecretMaskingContext` in `src/types/resource.ts`. Every warning below names a
- * RESOLVED property value: `DeliveryStatusLogging` reaches this function already
- * resolved, so a `{{resolve:secretsmanager:...}}` scalar inside it is plaintext,
- * and cdkd's other masking boundaries (the deploy engine's error / reason text
- * and the resolver's debug line) do not cover a provider's own `logger.warn`.
- * It defaults to IDENTITY so every existing caller — the diff / import paths and
- * the unit tests — keeps working unchanged.
- *
- * The `'throw'` arm is masked too, and the reason is worth stating because the
- * first cut of this change got it backwards. It claimed a thrown message travels
- * to the deploy engine "which already runs it through `maskSecretsInText`" —
- * FALSE. The engine masks an error message on ONE path only, the events store
- * (`deploy-engine.ts`'s per-event masker); its CLI path logs `error.message`
- * RAW to `logger.error`. So an unmasked throw here printed the resolved bag
- * straight to the terminal at default verbosity, which is a worse exposure than
- * the warn arms this change was written for, not a covered one. Both throw sites
- * therefore run their interpolated value through the same `maskLeaf` walk.
- */
-export function buildDeliveryStatusAttributeMap(
-  logging: unknown,
-  logicalId: string,
-  onMalformed: 'throw' | 'warn' | 'skip',
-  maskSecrets: SecretMasker = (text) => text
-): Map<string, string> {
-  const map = new Map<string, string>();
-  if (logging == null) return map;
-  // ONE masked sink for every warning in this function (issue #1997), rather
-  // than a `maskSecrets(...)` at each call: a warning added later is masked by
-  // construction instead of by the author remembering. This is the OUTER of two
-  // layers — a finished message is always longer than the value inside it, so it
-  // can only reach `maskSecretsInText`'s SUBSTRING arm, which ignores needles
-  // below `MIN_NEEDLE_LENGTH` (4). `maskLeaf` below is the inner layer: it hands
-  // the masker each raw string leaf, which reaches the WHOLE-VALUE arm at any
-  // length. The mask is idempotent, so applying both is free.
-  const warn = (message: string): void => {
-    getLogger().child('SNSTopicProvider').warn(maskSecrets(message));
-  };
-  // Mask every string leaf (and key) of a value before it is stringified into a
-  // warning. `JSON.stringify` escapes `"` / `\` / newlines, so a secret carrying
-  // any of them no longer OCCURS in the finished line and the outer sink alone
-  // would miss it — which is every Secrets Manager JSON document.
-  //
-  // Issue #2176 hoisted the walk itself into `../masked-retry-logger.js`. This
-  // file's private copy was the THIRD, which is the trigger `elbv2-provider.ts`
-  // had recorded for converging them — and it had already DIVERGED: it carried
-  // no depth cap, so a self-referential bag recursed until the stack overflowed
-  // instead of being bounded at `MASK_WALK_MAX_DEPTH` like the other two.
-  const maskLeaf = (value: unknown): unknown => maskDeep(value, maskSecrets);
-  const seenProtocols = new Set<SnsDeliveryStatusProtocol>();
-  if (!Array.isArray(logging)) {
-    if (onMalformed === 'throw') {
-      throw new Error(
-        `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
-          `{Protocol, ...} objects, got ${JSON.stringify(maskLeaf(logging))}`
-      );
-    }
-    if (onMalformed === 'warn') {
-      warn(
-        `SNS topic ${logicalId}: DeliveryStatusLogging must be an array of ` +
-          `{Protocol, ...} objects, got ${JSON.stringify(maskLeaf(logging))} — treating it ` +
-          `as empty, so no delivery-status attribute is applied (on an update, any ` +
-          `previously set one is reset). The desired properties can come from a cdkd ` +
-          `state record (rollback replay / drift --revert), so this does not fail the ` +
-          `operation; fix the template (or the state record on a replay) to clear ` +
-          `this warning.`
-      );
-    }
-    return map;
-  }
-  for (const entry of logging) {
-    if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
-      if (onMalformed === 'throw') {
-        throw new Error(
-          `SNS topic ${logicalId}: DeliveryStatusLogging entries must be ` +
-            `{Protocol, ...} objects, got ${JSON.stringify(maskLeaf(entry))}`
-        );
-      }
-      if (onMalformed === 'warn') {
-        warn(
-          `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry ` +
-            `${JSON.stringify(maskLeaf(entry))} — entries must be {Protocol, ...} objects. ` +
-            `Attributes previously set for the skipped entry's protocol are reset, ` +
-            `as if the entry had been removed.`
-        );
-      }
-      continue;
-    }
-    const config = entry as Record<string, unknown>;
-    let protocol: SnsDeliveryStatusProtocol;
-    if (onMalformed === 'throw') {
-      protocol = normalizeDeliveryStatusProtocolOrThrow(config['Protocol'], logicalId, maskLeaf);
-    } else {
-      const normalized = normalizeDeliveryStatusProtocol(config['Protocol']);
-      if (normalized === undefined) {
-        if (onMalformed === 'warn') {
-          warn(
-            `SNS topic ${logicalId}: skipping DeliveryStatusLogging entry with ` +
-              `unsupported protocol ${JSON.stringify(maskLeaf(config['Protocol']))}. Expected ` +
-              `one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} ` +
-              `(case-insensitive). Attributes previously set for the skipped ` +
-              `entry's protocol are reset, as if the entry had been removed.`
-          );
-        }
-        continue;
-      }
-      protocol = normalized;
-    }
-    // Desired side only ('throw' = create, 'warn' = update), per this
-    // function's guard-the-desired-side rule: on the PREVIOUS side the
-    // entries come from a cdkd state record, where "declare a single entry
-    // per protocol" is advice the user cannot act on.
-    if (onMalformed !== 'skip' && seenProtocols.has(protocol)) {
-      warn(
-        `SNS topic ${logicalId}: DeliveryStatusLogging declares more than one entry ` +
-          `for the "${protocol}" attribute prefix (${JSON.stringify(maskLeaf(config['Protocol']))} ` +
-          `canonicalizes to it). AWS has one attribute set per prefix, so these are ` +
-          `merged per field — a later entry overwrites only the sub-fields it ` +
-          `declares, and a field it omits keeps the earlier entry's value. ` +
-          `Declare a single entry per protocol.`
-      );
-    }
-    seenProtocols.add(protocol);
-    for (const suffix of SNS_DELIVERY_STATUS_ATTRIBUTE_SUFFIXES) {
-      const value = config[suffix];
-      if (value == null) continue;
-      map.set(`${protocol}${suffix}`, stringifyValue(value));
-    }
-  }
-  return map;
-}
-
-/**
- * The `SetTopicAttributes` value that resets a REMOVED per-protocol
- * delivery status attribute to its CloudFormation-removal state.
- *
- * Live CFn A/B (2026-08-10, issue #1160): removing `DeliveryStatusLogging`
- * from a template clears both RoleArn attributes (AWS accepts `''` as the
- * clear sentinel — the attribute disappears from `GetTopicAttributes`) and
- * explicitly resets `SuccessFeedbackSampleRate` to `'0'`. The `''`
- * sentinel is REJECTED for the sample rate ("value provided is not an
- * integer between 0-100"), so the numeric reset is the only wire shape
- * that clears it — the `'0'` attribute itself remains visible on the
- * topic afterwards, exactly as it does after a CloudFormation removal.
- */
-function deliveryStatusRemovalResetValue(attributeName: string): string {
-  return attributeName.endsWith('SuccessFeedbackSampleRate') ? '0' : '';
-}
-
-/**
- * Map a (possibly-mixed-case) protocol string from a CFn template to the
- * canonical PascalCase prefix AWS expects on `${Protocol}<Suffix>`
- * attribute names.
- *
- * Returns `undefined` for unknown / unsupported protocols — callers must
- * handle this case explicitly. Accepting an arbitrary string would
- * defer the failure to AWS, which produces the unhelpful generic
- * `InvalidParameter: Invalid parameter: AttributeName` message; failing
- * fast in cdkd lets us name the offending value.
- *
- * The whole HTTP family collapses onto the single `HTTP` prefix, which is
- * the ONLY HTTP-family prefix AWS accepts (issue #1529, live-verified
- * 2026-08-11 against CloudFormation + `SetTopicAttributes`):
- *
- * - A CFn template carrying the canonical `Protocol: http/s` produces
- *   `HTTPSuccessFeedbackRoleArn` / `HTTPFailureFeedbackRoleArn` /
- *   `HTTPSuccessFeedbackSampleRate` on the live topic. `http/s` is what
- *   `sns.LoggingProtocol.HTTP` and the CFn schema's allowed-value list both
- *   spell, so it is the spelling most real templates carry — and it used to
- *   throw `unsupported DeliveryStatusLogging protocol "http/s"`.
- * - `HTTPS*` attribute names do NOT exist: `SetTopicAttributes` rejects
- *   `HTTPSSuccessFeedbackRoleArn` with `InvalidParameter: Invalid parameter:
- *   AttributeName`. Mapping `https` to a `HTTPS` prefix (the pre-#1529
- *   behavior) therefore produced a hard AWS failure on write and a
- *   permanently-absent attribute on read.
- *
- * Case map (lowercase input → PascalCase prefix):
- *   application → Application
- *   firehose    → Firehose
- *   http/s      → HTTP   (the canonical CFn / CDK L2 spelling)
- *   http        → HTTP   (tolerated alias)
- *   https       → HTTP   (tolerated alias; NOT a distinct prefix)
- *   lambda      → Lambda
- *   sqs         → SQS
- */
-export function normalizeDeliveryStatusProtocol(
-  input: unknown
-): SnsDeliveryStatusProtocol | undefined {
-  if (typeof input !== 'string') return undefined;
-  const lower = input.toLowerCase();
-  switch (lower) {
-    case 'application':
-      return 'Application';
-    case 'firehose':
-      return 'Firehose';
-    case 'http/s':
-    case 'http':
-    case 'https':
-      return 'HTTP';
-    case 'lambda':
-      return 'Lambda';
-    case 'sqs':
-      return 'SQS';
-    default:
-      return undefined;
-  }
-}
-
-/**
- * Variant used by `create()` (the `'throw'` mode of
- * `buildDeliveryStatusAttributeMap`) to fail fast when a template carries
- * an unknown protocol. Throws a clear error naming the offending value so
- * the user sees what to fix instead of AWS's generic `InvalidParameter`
- * rejection. `update()`'s desired side warns-and-skips instead (issue
- * #1538) because its bag can be a cdkd state record on a rollback replay
- * or `drift --revert`.
- */
-function normalizeDeliveryStatusProtocolOrThrow(
-  input: unknown,
-  logicalId: string,
-  // The caller's secret masker (issue #1997), defaulting to IDENTITY so the
-  // existing single caller's behavior is unchanged when none is supplied. This
-  // is the THIRD throw site in this module that names a resolved property
-  // value, and it is reached from the SAME `'throw'` arm as the other two — the
-  // engine's CLI path logs `error.message` raw, so leaving it unmasked would
-  // have re-opened the exposure the sibling fixes just closed.
-  maskValue: (value: unknown) => unknown = (value) => value
-): SnsDeliveryStatusProtocol {
-  const normalized = normalizeDeliveryStatusProtocol(input);
-  if (normalized === undefined) {
-    throw new Error(
-      `SNS topic ${logicalId}: unsupported DeliveryStatusLogging protocol ${JSON.stringify(
-        maskValue(input)
-      )}. Expected one of ${SNS_DELIVERY_STATUS_PROTOCOL_SPELLINGS.join(', ')} (case-insensitive).`
-    );
-  }
-  return normalized;
-}
-
-/**
- * Build a `{canonicalPascalCase: stateRecordedCase}` lookup from state's
- * recorded `DeliveryStatusLogging[]`. Used by `mapDeliveryStatusLogging`
- * to surface AWS-current entries in the same case the state holds, so
- * the positional comparator does not fire false drift on case alone.
- *
- * Unrecognized state-side protocols are silently dropped; the
- * comparator falls back to the canonical PascalCase prefix for those
- * (worst case: a one-time drift entry that disappears once the user
- * re-records the state).
- */
-function stateProtocolCaseMap(stateLogging: unknown): Map<SnsDeliveryStatusProtocol, string> {
-  const map = new Map<SnsDeliveryStatusProtocol, string>();
-  if (!Array.isArray(stateLogging)) return map;
-  for (const entry of stateLogging) {
-    if (!entry || typeof entry !== 'object') continue;
-    const raw = (entry as Record<string, unknown>)['Protocol'];
-    if (typeof raw !== 'string') continue;
-    const normalized = normalizeDeliveryStatusProtocol(raw);
-    if (!normalized) continue;
-    // First state entry per canonical protocol wins. Since issue #1529
-    // folded the HTTP family onto one prefix, two entries CAN legitimately
-    // normalize to the same key (`http/s` + `https`) — that template warns
-    // but deploys, so state really can hold both. First-wins just picks
-    // which spelling the reverse map echoes back; either choice matches one
-    // of the recorded entries. Note the resulting array is shorter than the
-    // recorded one (two entries in, one out), so a resource whose drift
-    // baseline falls back to template `properties` rather than
-    // `observedProperties` would see a positional length mismatch — an
-    // argument for the "declare a single entry per protocol" warning, not a
-    // reason to synthesize a duplicate entry here.
-    if (!map.has(normalized)) map.set(normalized, raw);
-  }
-  return map;
-}
-
-/**
- * Reverse-map per-protocol flat attributes returned by GetTopicAttributes
- * back to the CFn `DeliveryStatusLogging` array shape. Always emits an
- * array (even `[]`) so the v3 `observedProperties` baseline catches a
- * console-side enable on a previously-default topic (PR #145 always-emit
- * pattern).
- *
- * Entries are sorted by canonical PascalCase `Protocol` (alphabetical) for
- * stable positional compare since AWS does not preserve template order.
- * State-driven order reconciliation is unnecessary here — every entry's
- * identity is fully determined by `Protocol` (no two entries share a
- * protocol).
- *
- * The `Protocol` value emitted in each entry uses the case the state
- * recorded for that protocol (when known via `stateCaseMap`); falls back
- * to the canonical PascalCase prefix otherwise. This keeps the comparator
- * from firing false drift when state holds CDK's `'lambda'` and AWS's
- * attribute prefix is `Lambda`.
- *
- * `SuccessFeedbackSampleRate` is surfaced as the AWS-returned string
- * (`'0'`-`'100'`) to match the CFn shape (`String` per the docs).
- */
-function mapDeliveryStatusLogging(
-  attrs: Record<string, string>,
-  stateCaseMap: Map<SnsDeliveryStatusProtocol, string> = new Map()
-): Array<Record<string, unknown>> {
-  const result: Array<Record<string, unknown>> = [];
-  for (const protocol of SNS_DELIVERY_STATUS_PROTOCOLS) {
-    const success = attrs[`${protocol}SuccessFeedbackRoleArn`];
-    const sample = attrs[`${protocol}SuccessFeedbackSampleRate`];
-    const failure = attrs[`${protocol}FailureFeedbackRoleArn`];
-    if (success === undefined && sample === undefined && failure === undefined) continue;
-    const entry: Record<string, unknown> = {
-      Protocol: stateCaseMap.get(protocol) ?? protocol,
-    };
-    if (success !== undefined) entry['SuccessFeedbackRoleArn'] = success;
-    if (sample !== undefined) entry['SuccessFeedbackSampleRate'] = sample;
-    if (failure !== undefined) entry['FailureFeedbackRoleArn'] = failure;
-    result.push(entry);
-  }
-  return result;
 }
