@@ -387,6 +387,16 @@ export class RdsAuroraStack extends cdk.Stack {
       // Both are aurora-mysql features; phase 2c's Engine swap is an update
       // phase, so neither is declared there.
       clusterScalabilityType: 'standard',
+      // go-to-k/cdkd#5639: before #5639 each routed the EngineCluster to Cloud
+      // Control (the provisionedBy=sdk guard in verify.sh catches it).
+      //   * EngineMode `provisioned` in every phase (create-only, AWS's
+      //     default for Serverless v2): only the routing guard discriminates it.
+      //   * AvailabilityZones: the VPC's zones in phases 1-1c, DROPPED in
+      //     phase 2. ModifyDBCluster has no member for it and CloudFormation's
+      //     update sends none, so the drop completes in place: verify.sh
+      //     asserts the same cluster with the same live zones afterwards.
+      engineMode: 'provisioned',
+      ...(isUpdate ? {} : { availabilityZones: vpc.availabilityZones }),
       ...(isUpdate
         ? {}
         : {

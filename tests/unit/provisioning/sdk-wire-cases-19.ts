@@ -492,6 +492,31 @@ const CLUSTER_CASE: TypeCase = {
       },
     },
     {
+      name: 'engine mode and Availability Zones (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        MasterUsername: 'admin',
+        EngineMode: 'provisioned',
+        AvailabilityZones: ['us-east-1a', 'us-east-1b'],
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_MASTER_USERNAME_SILENT,
+        ...Object.fromEntries(
+          [
+            'update-add:AvailabilityZones',
+            'update-remove:AvailabilityZones',
+            ...['update-add', 'update-remove', 'update-vary'].flatMap((d) =>
+              [0, 1].map((i) => `${d}:AvailabilityZones.${i}`)
+            ),
+          ].map((key) => [
+            key,
+            `ModifyDBCluster has no AvailabilityZones member, and CloudFormation's update handler sends none (Translator.modifyDbClusterRequest; read from the handler source, not measured), so a change completes in place keeping the live zones (${SRC})`,
+          ])
+        ),
+      },
+    },
+    {
       name: 'Multi-AZ DB cluster (mysql), a declared Port',
       bag: { Engine: 'mysql', Port: 3307 },
       // A removed Port sends 3306, as CloudFormation does; RDS refuses it on a

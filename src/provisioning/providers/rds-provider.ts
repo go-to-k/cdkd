@@ -1394,6 +1394,13 @@ const usableBacktrackWindow = (value: unknown): boolean =>
   typeof backtrackWindowValue(value) === 'number';
 const usableLocalWriteForwarding = (value: unknown): boolean =>
   typeof localWriteForwardingFlag(value) === 'boolean';
+/**
+ * go-to-k/cdkd#5639: absent, or a DBCluster `AvailabilityZones` list of names
+ * (each a non-blank string; an empty name would fail only at RDS).
+ */
+const usableAvailabilityZones = (value: unknown): boolean =>
+  value == null ||
+  (Array.isArray(value) && value.every((zone) => typeof zone === 'string' && zone.trim() !== ''));
 
 /**
  * go-to-k/cdkd#2762: whether this cluster update changes `EngineVersion`, the
@@ -1644,6 +1651,16 @@ export class RDSProvider implements ResourceProvider {
         // the cluster is `available`, planned against the live list
         // (`applyAssociatedRoles`).
         'AssociatedRoles',
+        // go-to-k/cdkd#5639: CreateDBCluster alone. `EngineMode` is create-only
+        // (a change replaces the cluster). `AvailabilityZones` is schema-mutable,
+        // but ModifyDBCluster has no member for it and CloudFormation's update
+        // handler sends none (`Translator.modifyDbClusterRequest`), so a change
+        // or removal completes in place keeping the live zones. Neither is read
+        // back: no API changes them after the create, and RDS reports an
+        // `EngineMode` on every cluster, which a record that never declared one
+        // would read as a create-only removal.
+        'EngineMode',
+        'AvailabilityZones',
       ]),
     ],
     [
@@ -1753,6 +1770,10 @@ export class RDSProvider implements ResourceProvider {
         [
           'DeleteAutomatedBackups',
           'delete-time flag, sent on the delete when the record carries it; kept unhandled so a template declaring it keeps its Cloud Control route. Final snapshots are governed by DeletionPolicy: Snapshot, which this flag does not control',
+        ],
+        [
+          'ScalingConfiguration',
+          'Aurora Serverless v1 only (EngineMode serverless), retired by AWS: no aurora-mysql or aurora-postgresql engine version supports the serverless engine mode (DescribeDBEngineVersions, us-east-1, 2026-11-06). Aurora Serverless v2 uses ServerlessV2ScalingConfiguration',
         ],
       ]),
     ],
@@ -2218,9 +2239,23 @@ export class RDSProvider implements ResourceProvider {
     const backtrackSkipped = backtrackWindowValue(properties['BacktrackWindow']) === 'malformed';
     const forwardingSkipped =
       localWriteForwardingFlag(properties['EnableLocalWriteForwarding']) === 'malformed';
+    // go-to-k/cdkd#5639: likewise the Availability Zones, which must be a list
+    // of names; a rollback re-create sends none (RDS picks the zones).
+    const rawAvailabilityZones = properties['AvailabilityZones'];
+    const availabilityZonesSkipped = !usableAvailabilityZones(rawAvailabilityZones);
+    const availabilityZones =
+      rawAvailabilityZones != null && !availabilityZonesSkipped
+        ? (rawAvailabilityZones as string[])
+        : undefined;
     for (const [skipped, key, expected, created] of [
       [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
       [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
+      [
+        availabilityZonesSkipped,
+        'AvailabilityZones',
+        'a list of Availability Zone names',
+        'the Availability Zones RDS picks',
+      ],
     ] as const) {
       if (!skipped) continue;
       if (!replaying) {
@@ -2254,6 +2289,7 @@ export class RDSProvider implements ResourceProvider {
       ...(retentionSkipped ? ['PerformanceInsightsRetentionPeriod'] : []),
       ...(backtrackSkipped ? ['BacktrackWindow'] : []),
       ...(forwardingSkipped ? ['EnableLocalWriteForwarding'] : []),
+      ...(availabilityZonesSkipped ? ['AvailabilityZones'] : []),
     ];
     const effectiveProperties =
       skippedKeys.length > 0
@@ -2343,6 +2379,15 @@ export class RDSProvider implements ResourceProvider {
               'ClusterScalabilityType'
             ] as CreateDBClusterCommandInput['ClusterScalabilityType'],
           }),
+          // go-to-k/cdkd#5639: create-only (a change replaces the cluster).
+          ...(properties['EngineMode'] != null && {
+            EngineMode: properties['EngineMode'] as string,
+          }),
+          // go-to-k/cdkd#5639: CreateDBCluster alone, as CloudFormation's create
+          // sends it; ModifyDBCluster has no member for it.
+          // An empty list leaves the choice to RDS, as an absent one does.
+          ...(availabilityZones !== undefined &&
+            availabilityZones.length > 0 && { AvailabilityZones: availabilityZones }),
           ...(tags.length > 0 && { Tags: tags }),
         })
       );
@@ -2602,6 +2647,27 @@ export class RDSProvider implements ResourceProvider {
         safeMsg`DBCluster ${logicalId}: the replayed PerformanceInsightsRetentionPeriod is not a whole number of days; the retention period is left as it is`
       );
       skippedKeys.push(['PerformanceInsightsRetentionPeriod', usableRetentionPeriod]);
+    }
+    // go-to-k/cdkd#5639: an update sends no AvailabilityZones (ModifyDBCluster
+    // has no member; CloudFormation's update keeps the live zones), but a
+    // malformed list is refused as the create refuses it, so the record never
+    // carries one a later re-create would refuse. A state-borne one records the
+    // previous list instead.
+    if (!usableAvailabilityZones(properties['AvailabilityZones'])) {
+      if (context?.replayingState !== true && context?.desiredFromAwsReadback !== true) {
+        throw markNonRetryable(
+          new ProvisioningError(
+            `${resourceType} ${logicalId}: AvailabilityZones must be a list of Availability Zone names`,
+            resourceType,
+            logicalId,
+            physicalId
+          )
+        );
+      }
+      this.logger.warn(
+        safeMsg`DBCluster ${logicalId}: the replayed AvailabilityZones is not a list of Availability Zone names; the record keeps the previous list`
+      );
+      skippedKeys.push(['AvailabilityZones', usableAvailabilityZones]);
     }
     // go-to-k/cdkd#5639: likewise the backtrack window and the write-forwarding
     // flag, which would go out as NaN or read as "not true".
@@ -5388,14 +5454,23 @@ export class RDSProvider implements ResourceProvider {
       return ['AllowMajorVersionUpgrade', 'CertificateRotationRestart'];
     }
     if (resourceType !== 'AWS::RDS::DBCluster') return [];
+    // go-to-k/cdkd#5639: keys `readCurrentState` never reads back, so a
+    // baseline taken from the recorded `properties` (an import whose readback
+    // failed) would compare them against nothing.
+    const neverRead = [
+      'EngineMode',
+      'AvailabilityZones',
+      'ClusterScalabilityType',
+      'MasterUserAuthenticationType',
+    ];
     // An absent or empty bag records nothing to scope by: compare.
-    if (properties === undefined || Object.keys(properties).length === 0) return [];
+    if (properties === undefined || Object.keys(properties).length === 0) return neverRead;
     const scaling = properties?.['ServerlessV2ScalingConfiguration'] as
       | ServerlessV2ScalingProps
       | undefined;
     return scaling?.SecondsUntilAutoPause === undefined
-      ? ['ServerlessV2ScalingConfiguration.SecondsUntilAutoPause']
-      : [];
+      ? [...neverRead, 'ServerlessV2ScalingConfiguration.SecondsUntilAutoPause']
+      : neverRead;
   }
 
   /**

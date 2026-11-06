@@ -130,6 +130,10 @@
 # provisionedBy=sdk check fails), BacktrackWindow 7200 in phases 1b / 1c
 # (asserted live), and DROPS both in phase 2: the live window stays 7200 and
 # forwarding turns off, as CloudFormation's handler does (both asserted live).
+# go-to-k/cdkd#5639 (EngineMode, AvailabilityZones): the EngineCluster also
+# declares EngineMode provisioned in every phase and the VPC's zones in phases
+# 1-1c (route, record and live values asserted), and DROPS the zones in phase
+# 2, which completes in place keeping the live zones (asserted).
 #
 # The SecurityCluster is also asserted to carry `provisionedBy=sdk` in cdkd
 # state — a routing guard proving none of the set props flipped the resource
@@ -559,6 +563,45 @@ if [ "${CLUSTER_PROVISIONED_BY}" != "sdk" ]; then
   exit 1
 fi
 echo "    OK: SecurityCluster provisionedBy=sdk (no SDK-unwired CC-API flip)"
+
+# go-to-k/cdkd#5639 (EngineMode, AvailabilityZones): the EngineCluster
+# declares EngineMode `provisioned` and the VPC's zones. Before #5639 either
+# routed the cluster to Cloud Control, so the record line below fails a
+# pre-fix cdkd. Neither is read back by cdkd; the live DescribeDBClusters
+# must report the engine mode and every declared zone (RDS may list more).
+ENGINE_AZ_RECORD=$(echo "${STATE}" | jq -r '.resources.EngineCluster | "\(.provisionedBy // "sdk") \(.properties.EngineMode // "absent") \((.properties.AvailabilityZones // []) | length)"')
+if [ "${ENGINE_AZ_RECORD}" != "sdk provisioned 2" ]; then
+  echo "FAIL: #5639: EngineCluster record [provisionedBy, EngineMode, declared zone count] is '${ENGINE_AZ_RECORD}', want 'sdk provisioned 2' (EngineMode / AvailabilityZones still SDK-unwired, so the cluster routed via Cloud Control)" >&2
+  exit 1
+fi
+ENGINE_AZ_DECLARED=$(echo "${STATE}" | jq -r '.resources.EngineCluster.properties.AvailabilityZones | sort | join(",")')
+ENGINE_AZ_CLUSTER_ID=$(echo "${STATE}" | jq -r '.resources.EngineCluster.physicalId // ""')
+# usage: engine_cluster_azs -> "<EngineMode> <sorted live zones, comma-joined>"
+engine_cluster_azs() {
+  local out
+  out=$(aws rds describe-db-clusters --db-cluster-identifier "${ENGINE_AZ_CLUSTER_ID}" \
+    --region "${REGION}" --output json) || return 1
+  echo "${out}" | jq -r '.DBClusters[0] | "\(.EngineMode // "absent") \((.AvailabilityZones // []) | sort | join(","))"'
+}
+if [ -z "${ENGINE_AZ_CLUSTER_ID}" ]; then
+  echo "FAIL: #5639: could not resolve the EngineCluster identifier from state" >&2
+  exit 1
+fi
+ENGINE_AZ_LIVE=$(engine_cluster_azs) || { echo "FAIL: #5639: DescribeDBClusters on the EngineCluster failed" >&2; exit 1; }
+if [ "${ENGINE_AZ_LIVE%% *}" != "provisioned" ]; then
+  echo "FAIL: #5639: EngineCluster live EngineMode is '${ENGINE_AZ_LIVE%% *}', want 'provisioned'" >&2
+  exit 1
+fi
+for zone in $(echo "${ENGINE_AZ_DECLARED}" | tr ',' ' '); do
+  case ",${ENGINE_AZ_LIVE#* }," in
+    *",${zone},"*) ;;
+    *)
+      echo "FAIL: #5639: declared zone ${zone} is not among the EngineCluster's live zones '${ENGINE_AZ_LIVE#* }'" >&2
+      exit 1
+      ;;
+  esac
+done
+echo "    OK: EngineCluster provisionedBy=sdk, EngineMode provisioned, zones ${ENGINE_AZ_DECLARED} live (#5639)"
 
 # go-to-k/cdkd#5639: the EngineCluster declares MasterUserAuthenticationType
 # `password` (the SecurityCluster cannot: CreateDBCluster refuses any declared
@@ -1156,6 +1199,23 @@ if [ "${ENGINE_5639_RECORD}" != "sdk absent absent" ]; then
   exit 1
 fi
 echo "    OK: phase 2: dropping BacktrackWindow kept 7200 s, dropping EnableLocalWriteForwarding turned forwarding off (#5639)"
+
+# go-to-k/cdkd#5639: phase 2 also DROPS the EngineCluster's AvailabilityZones.
+# ModifyDBCluster has no member for it and CloudFormation's update sends none,
+# so the drop completes in place: the same cluster, the same live zones, and a
+# record without the list. The forwarding disable above proves this deploy
+# reached the cluster, so the kept zones are not vacuous.
+ENGINE_AZ_RECORD_2=$(echo "${ENGINE_5639_STATE}" | jq -r '.resources.EngineCluster | "\(.physicalId // "") \(.provisionedBy // "sdk") \(.properties.EngineMode // "absent") \(if .properties | has("AvailabilityZones") then "declared" else "absent" end)"')
+if [ "${ENGINE_AZ_RECORD_2}" != "${ENGINE_AZ_CLUSTER_ID} sdk provisioned absent" ]; then
+  echo "FAIL: #5639: phase 2: EngineCluster record [physicalId, provisionedBy, EngineMode, AvailabilityZones] is '${ENGINE_AZ_RECORD_2}', want '${ENGINE_AZ_CLUSTER_ID} sdk provisioned absent' (dropping AvailabilityZones must update in place, not replace)" >&2
+  exit 1
+fi
+ENGINE_AZ_LIVE_2=$(engine_cluster_azs) || { echo "FAIL: #5639: DescribeDBClusters on the EngineCluster failed" >&2; exit 1; }
+if [ "${ENGINE_AZ_LIVE_2}" != "${ENGINE_AZ_LIVE}" ]; then
+  echo "FAIL: #5639: phase 2: EngineCluster [EngineMode, live zones] is '${ENGINE_AZ_LIVE_2}', want '${ENGINE_AZ_LIVE}' (a dropped AvailabilityZones keeps the live zones)" >&2
+  exit 1
+fi
+echo "    OK: phase 2: dropping AvailabilityZones kept ${ENGINE_AZ_CLUSTER_ID} and its zones in place (#5639)"
 
 # --- #1160 DBProxy removal: kept on AWS, and warned about -------------
 if ! grep -qF "${PROXY_LOGICAL} (AWS::RDS::DBProxy): property DebugLogging was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyDBProxy keeps a setting it is not sent" <<<"${DEPLOY_2_PLAIN}"; then
