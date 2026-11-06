@@ -144,6 +144,7 @@ import { redactOutputs as redactOutputsFn } from '../../../src/deployment/deploy
 import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { RESOLVER_FAMILY } from '../_resolver-family.js';
+import { exportSourceFiles } from '../cli/_export-source.js';
 
 /** A promise the test body opens by hand. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -1861,7 +1862,8 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     ['src/deployment/deploy-engine/deploy-flow.ts', 'resolveOutputs', 1],
     ['src/deployment/deploy-engine/execute.ts', 'resolveOutputs', 1],
     ['src/cli/commands/import.ts', 'resolveImportedProperties', 2],
-    ['src/cli/commands/export/per-stack-loop.ts', 'buildResolvedParametersPerStack', 1],
+    // `cdkd export` is `export.ts` plus `export/**/*.ts`; the whole set is scanned.
+    ['src/cli/commands/export{,/**}.ts', 'buildResolvedParametersPerStack', 1],
     ['src/cli/commands/scrub.ts', 'resolveCrossStackReads', 3],
   ])('every %s call to %s is inside a shared drain budget', (file, callee, atLeast) => {
     // The wraps are this round's whole deliverable and nothing held them:
@@ -1905,36 +1907,40 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     // Syntactic, like the fences above, and with the same limits: it asks
     // whether the call sits lexically inside a `withSharedDrainBudget(...)`
     // argument, not whether it runs inside one.
-    const abs = join(import.meta.dirname, '../../..', file);
-    const sf = ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true);
+    const files = file.includes('{')
+      ? exportSourceFiles()
+      : [join(import.meta.dirname, '../../..', file)];
 
-    const calls: { line: number; wrapped: boolean }[] = [];
-    const walk = (node: ts.Node): void => {
-      const isTarget =
-        ts.isCallExpression(node) &&
-        ((ts.isIdentifier(node.expression) && node.expression.text === callee) ||
-          (ts.isPropertyAccessExpression(node.expression) &&
-            node.expression.name.getText() === callee));
-      if (isTarget) {
-        let wrapped = false;
-        for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
-          if (
-            ts.isCallExpression(n) &&
-            ts.isIdentifier(n.expression) &&
-            n.expression.text === 'withSharedDrainBudget'
-          ) {
-            wrapped = true;
-            break;
+    const calls: { line: string; wrapped: boolean }[] = [];
+    for (const abs of files) {
+      const sf = ts.createSourceFile(abs, readFileSync(abs, 'utf8'), ts.ScriptTarget.Latest, true);
+      const walk = (node: ts.Node): void => {
+        const isTarget =
+          ts.isCallExpression(node) &&
+          ((ts.isIdentifier(node.expression) && node.expression.text === callee) ||
+            (ts.isPropertyAccessExpression(node.expression) &&
+              node.expression.name.getText() === callee));
+        if (isTarget) {
+          let wrapped = false;
+          for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+            if (
+              ts.isCallExpression(n) &&
+              ts.isIdentifier(n.expression) &&
+              n.expression.text === 'withSharedDrainBudget'
+            ) {
+              wrapped = true;
+              break;
+            }
           }
+          calls.push({
+            line: `${abs.slice(abs.lastIndexOf('/src/') + 1)}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}`,
+            wrapped,
+          });
         }
-        calls.push({
-          line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
-          wrapped,
-        });
-      }
-      ts.forEachChild(node, walk);
-    };
-    walk(sf);
+        ts.forEachChild(node, walk);
+      };
+      walk(sf);
+    }
 
     // A floor per file, so a walk that matched nothing fails here rather than
     // leaving the verdict below vacuously true over an empty list.

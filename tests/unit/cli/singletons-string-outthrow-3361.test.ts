@@ -295,7 +295,7 @@ describe('no handler in the slice stringifies its caught value with String() (#3
    */
   const EXPORT_FILES = [
     'src/cli/commands/export.ts',
-    ...readdirSync(join(process.cwd(), 'src/cli/commands/export'))
+    ...readdirSync(join(process.cwd(), 'src/cli/commands/export'), { recursive: true, encoding: 'utf8' })
       .filter((name) => name.endsWith('.ts'))
       .sort()
       .map((name) => `src/cli/commands/export/${name}`),
@@ -306,7 +306,8 @@ describe('no handler in the slice stringifies its caught value with String() (#3
   });
 
   it('the cdkd export modules together hold at least 20 handlers', () => {
-    expect(EXPORT_FILES.length).toBeGreaterThan(1);
+    // export.ts plus the 18 modules it was split into.
+    expect(EXPORT_FILES.length).toBeGreaterThanOrEqual(19);
     const handlers = EXPORT_FILES.reduce((sum, file) => sum + scan(file).handlers, 0);
     expect(handlers).toBeGreaterThanOrEqual(20);
   });
