@@ -531,6 +531,11 @@ const FSX_CASE: TypeCase = {
  */
 
 const NEPTUNE_SRC = 'neptune-provider.ts';
+const NEPTUNE_SHARED_SRC = 'neptune/shared.ts';
+const NEPTUNE_SUBNET_GROUP_SRC = 'neptune/subnet-group.ts';
+const NEPTUNE_CLUSTER_CREATE_SRC = 'neptune/cluster-create.ts';
+const NEPTUNE_CLUSTER_UPDATE_SRC = 'neptune/cluster-update.ts';
+const NEPTUNE_INSTANCE_SRC = 'neptune/instance.ts';
 const ALL_DIRECTIONS = ['create', 'update-add', 'update-remove'];
 const NEPTUNE_TAGS = [
   { Key: 'k1', Value: 'v1' },
@@ -547,11 +552,11 @@ const DEFAULT_SG = 'sg-default';
 
 /** A Modify* call that only sends what `next` declares: a removal sends nothing. */
 const KEPT_5004 = (key: string): string =>
-  `left in place on removal: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5004) measured a removed ${key} KEPT (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL / INSTANCE_KEPT_ON_REMOVAL)`;
+  `left in place on removal: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5004) measured a removed ${key} KEPT (${NEPTUNE_SHARED_SRC}, CLUSTER_KEPT_ON_REMOVAL / INSTANCE_KEPT_ON_REMOVAL)`;
 
 /** As {@link KEPT_5004}, measured by the #5544 A/B; update() also names it in a warning. */
 const KEPT_5544 = (key: string): string =>
-  `left in place on removal and warned about: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5544) measured a removed ${key} KEPT (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL / INSTANCE_KEPT_ON_REMOVAL)`;
+  `left in place on removal and warned about: Modify* treats an absent member as "no change", and a CloudFormation A/B (#5544) measured a removed ${key} KEPT (${NEPTUNE_SHARED_SRC}, CLUSTER_KEPT_ON_REMOVAL / INSTANCE_KEPT_ON_REMOVAL)`;
 
 // --- AWS::Neptune::DBSubnetGroup -----------------------------------------------
 
@@ -593,11 +598,11 @@ const NEPTUNE_SUBNET_GROUP_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:SubnetIds':
-          `SubnetIds is required by the schema (#top required), so no deployable template removes it; update() sends only a declared non-empty list (${NEPTUNE_SRC}:437-442, 456)`,
+          `SubnetIds is required by the schema (#top required), so no deployable template removes it; update() sends only a declared non-empty list (${NEPTUNE_SUBNET_GROUP_SRC}, updateDBSubnetGroup)`,
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:SubnetIds.${i}`,
-            `ModifyDBSubnetGroup sends the WHOLE desired list from next, never reading prev, so an element removal is delivered by next alone (update-add observes it; ${NEPTUNE_SRC}:441-456)`,
+            `ModifyDBSubnetGroup sends the WHOLE desired list from next, never reading prev, so an element removal is delivered by next alone (update-add observes it; ${NEPTUNE_SUBNET_GROUP_SRC}, updateDBSubnetGroup)`,
           ])
         ),
       },
@@ -671,13 +676,13 @@ function neptuneArmCluster(_physicalId: string, bag: Bag): void {
 /**
  * `Port` is read-only in the schema (`readOnlyProperties`), but older CDK
  * emits it; both create and update send `DBPort` when declared and fall back
- * to `Port` only without it (${NEPTUNE_SRC}:572-580, 722-727). Beside `DBPort`,
+ * to `Port` only without it (${NEPTUNE_CLUSTER_CREATE_SRC} and ${NEPTUNE_CLUSTER_UPDATE_SRC}). Beside `DBPort`,
  * `Port` therefore never reaches the wire, by design.
  */
-const PORT_SHADOWED = `DBPort wins when both are declared: Port is read-only in the schema and only a fallback for older CDK output (${NEPTUNE_SRC}:572-580, 722-727)`;
+const PORT_SHADOWED = `DBPort wins when both are declared: Port is read-only in the schema and only a fallback for older CDK output (${NEPTUNE_CLUSTER_CREATE_SRC} and ${NEPTUNE_CLUSTER_UPDATE_SRC})`;
 
 /** A port removal sends nothing: CloudFormation keeps the live port (#1160 A/B, 8183 stayed 8183). */
-const PORT_KEPT = `left in place on removal: a CloudFormation A/B (#1160) showed a removed DBPort KEEPS the live port, so update() sends no reset and warns (${NEPTUNE_SRC}, CLUSTER_KEPT_ON_REMOVAL)`;
+const PORT_KEPT = `left in place on removal: a CloudFormation A/B (#1160) showed a removed DBPort KEEPS the live port, so update() sends no reset and warns (${NEPTUNE_SHARED_SRC}, CLUSTER_KEPT_ON_REMOVAL)`;
 
 /** An entry without its RoleArn is refused before any call: the gap is what gets detached. */
 const ROLES_REFUSED: Throw = {
@@ -693,17 +698,17 @@ const SCALING_REFUSED: Throw = {
 
 /** As {@link KEPT_5004}, measured by the #2762 A/B; update() also names it in a warning. */
 const KEPT_2762 = (key: string): string =>
-  `left in place on removal and warned about: Modify* treats an absent member as "no change", and a CloudFormation A/B (#2762) measured a removed ${key} KEPT (${NEPTUNE_SRC})`;
+  `left in place on removal and warned about: Modify* treats an absent member as "no change", and a CloudFormation A/B (#2762) measured a removed ${key} KEPT (${NEPTUNE_SHARED_SRC})`;
 
 /** Kept by ModifyDBCluster / ModifyDBInstance, and named in update()'s own warning. */
 const KEPT_UNMEASURED = (key: string): string =>
-  `left in place on removal and warned about: Modify* treats an absent member as "no change", and no CloudFormation A/B has measured ${key} yet (#2762), so the warning claims no parity (${NEPTUNE_SRC}, CLUSTER_UNMEASURED_ON_REMOVAL / INSTANCE_UNMEASURED_ON_REMOVAL)`;
+  `left in place on removal and warned about: Modify* treats an absent member as "no change", and no CloudFormation A/B has measured ${key} yet (#2762), so the warning claims no parity (${NEPTUNE_SHARED_SRC}, CLUSTER_UNMEASURED_ON_REMOVAL / INSTANCE_UNMEASURED_ON_REMOVAL)`;
 
 /** Valid only beside AllowMajorVersionUpgrade, on a major EngineVersion change. */
-const MAJOR_UPGRADE_ONLY = `sent only with a major EngineVersion change, which no bag spells; neptune-provider-backfill-2762.test.ts covers that arm. CreateDBCluster has no such member (${NEPTUNE_SRC}, updateDBCluster)`;
+const MAJOR_UPGRADE_ONLY = `sent only with a major EngineVersion change, which no bag spells; neptune-provider-backfill-2762.test.ts covers that arm. CreateDBCluster has no such member (${NEPTUNE_CLUSTER_UPDATE_SRC}, updateDBCluster)`;
 
 /** No create member, and no live value to reset: ModifyDBInstance takes it per call. */
-const INSTANCE_MODIFY_ONLY = `CreateDBInstance has no such member, and the schema calls it write-only: it only reaches ModifyDBInstance (${NEPTUNE_SRC}, updateDBInstance)`;
+const INSTANCE_MODIFY_ONLY = `CreateDBInstance has no such member, and the schema calls it write-only: it only reaches ModifyDBInstance (${NEPTUNE_INSTANCE_SRC}, updateDBInstance)`;
 
 /** What a restore bag's update removals keep, as the full bag's do. */
 const RESTORE_KEPT: Record<string, string> = {
@@ -712,7 +717,7 @@ const RESTORE_KEPT: Record<string, string> = {
   'update-remove:DBClusterParameterGroupName': KEPT_5544('DBClusterParameterGroupName'),
   'update-remove:NetworkType': KEPT_UNMEASURED('NetworkType'),
   'update-remove:ServerlessScalingConfiguration': KEPT_UNMEASURED('ServerlessScalingConfiguration'),
-  'update-remove:VpcSecurityGroupIds.0': `ModifyDBCluster sends the WHOLE desired list from next (${NEPTUNE_SRC}), so only a whole-list removal reads prev`,
+  'update-remove:VpcSecurityGroupIds.0': `ModifyDBCluster sends the WHOLE desired list from next (${NEPTUNE_CLUSTER_UPDATE_SRC}), so only a whole-list removal reads prev`,
 };
 
 /** The refusals of a restore bag's one-tag list and scaling block. */
@@ -820,7 +825,7 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VpcSecurityGroupIds.${i}`,
-            `ModifyDBCluster sends the WHOLE desired list from next (${NEPTUNE_SRC}:1535-1536), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, :1537-1605)`,
+            `ModifyDBCluster sends the WHOLE desired list from next (${NEPTUNE_CLUSTER_UPDATE_SRC}, updateDBCluster), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, dbClusterSecurityGroupsToSend)`,
           ])
         ),
       },
@@ -851,7 +856,7 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
         'update-add:Port': PORT_SHADOWED,
         'update-remove:Port': PORT_SHADOWED,
         'update-vary:Port': PORT_SHADOWED,
-        'update-remove:DBPort': `removing DBPort falls back to the declared Port, which update() sends from next (${NEPTUNE_SRC}:722-727), so no DBPort reset is due`,
+        'update-remove:DBPort': `removing DBPort falls back to the declared Port, which update() sends from next (${NEPTUNE_CLUSTER_UPDATE_SRC}, updateDBCluster), so no DBPort reset is due`,
       },
     },
     {
@@ -925,7 +930,7 @@ const NEPTUNE_CLUSTER_CASE: TypeCase = {
         RestoreToTime: '2026-11-02T07:50:50Z',
       },
       expectedSilent: {
-        'create-vary:RestoreToTime': `the harness's varied value is no timestamp, so it is refused before any call; neptune-provider-backfill-2762.test.ts pins the refusal and the Date a real one sends (${NEPTUNE_SRC}, readClusterRestore)`,
+        'create-vary:RestoreToTime': `the harness's varied value is no timestamp, so it is refused before any call; neptune-provider-backfill-2762.test.ts pins the refusal and the Date a real one sends (${NEPTUNE_SHARED_SRC}, readClusterRestore)`,
       },
     },
   ],
@@ -983,7 +988,7 @@ const NEPTUNE_INSTANCE_CASE: TypeCase = {
         AllowMajorVersionUpgrade: true,
       },
       expectedSilent: {
-        'update-remove:DBInstanceClass': `DBInstanceClass is required by the schema (#top required), so no deployable template removes it; update() sends only a declared value (${NEPTUNE_SRC}, updateDBInstance)`,
+        'update-remove:DBInstanceClass': `DBInstanceClass is required by the schema (#top required), so no deployable template removes it; update() sends only a declared value (${NEPTUNE_INSTANCE_SRC}, updateDBInstance)`,
         'update-remove:AutoMinorVersionUpgrade': KEPT_5004('AutoMinorVersionUpgrade'),
         'update-remove:DeletionProtection': `not a CloudFormation property of AWS::Neptune::DBInstance (#5004), so never reset on removal; the pass-through is kept as is (${NEPTUNE_SRC}, removalHandledInUpdate)`,
         'update-remove:DBParameterGroupName': KEPT_5544('DBParameterGroupName'),
