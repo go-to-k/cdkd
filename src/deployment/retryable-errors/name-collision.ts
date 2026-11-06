@@ -61,7 +61,7 @@ const ALREADY_EXISTS_CODE = /(?<![-:/])\b[A-Za-z0-9]*AlreadyExists(?:Exception|F
  * Classification stays MESSAGE-based rather than moving to the exception
  * NAME, and that is load-bearing here rather than inherited: Lambda raises
  * `ResourceConflictException` for a function in a PENDING state too (see
- * `lambda-function-provider.ts`), so keying on the name would classify a
+ * `lambda-function/create.ts`), so keying on the name would classify a
  * transient state conflict as a collision and delete a live function under
  * `--replace`.
  */

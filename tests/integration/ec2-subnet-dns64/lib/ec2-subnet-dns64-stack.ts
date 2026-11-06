@@ -78,7 +78,32 @@ export class Ec2SubnetDns64Stack extends cdk.Stack {
     });
     nativeSubnet.addDependency(ipv6);
 
+    // go-to-k/cdkd#5843: a subnet whose template never declares Ipv6CidrBlock;
+    // its block comes from an AWS::EC2::SubnetCidrBlock added in the SAME
+    // deploy that declares auto-assign, DNS64 and the AAAA record true. The
+    // SubnetCidrBlock depends on the subnet, so the subnet update runs first,
+    // with no block. `cidr-block-off` turns all three off again, since EC2
+    // refuses to detach the block (the destroy) while any is on.
+    const blockPhase = ['cidr-block-on', 'cidr-block-off'].includes(phase);
+    const blockOn = phase === 'cidr-block-on';
+    const blockSubnet = new ec2.CfnSubnet(this, 'BlockSubnet', {
+      vpcId: vpc.ref, cidrBlock: '10.62.3.0/24',
+      ...(blockPhase && {
+        assignIpv6AddressOnCreation: blockOn,
+        enableDns64: blockOn,
+        privateDnsNameOptionsOnLaunch: { EnableResourceNameDnsAAAARecord: blockOn },
+      }),
+    });
+    blockSubnet.addDependency(ipv6);
+    if (blockPhase) {
+      const blockCidr = new ec2.CfnSubnetCidrBlock(this, 'BlockSubnetCidr', {
+        subnetId: blockSubnet.ref, ipv6CidrBlock: cdk.Fn.select(5, blocks),
+      });
+      blockCidr.addDependency(ipv6);
+    }
+
     new cdk.CfnOutput(this, 'SubnetId', { value: subnet.ref });
+    new cdk.CfnOutput(this, 'BlockSubnetId', { value: blockSubnet.ref });
     new cdk.CfnOutput(this, 'DnsSubnetId', { value: dnsSubnet.ref });
     new cdk.CfnOutput(this, 'DnsExpectedCidr', { value: dnsBlock });
     new cdk.CfnOutput(this, 'NativeSubnetId', { value: nativeSubnet.ref });

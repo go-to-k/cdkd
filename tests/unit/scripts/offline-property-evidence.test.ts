@@ -323,7 +323,12 @@ describe('providerWiresProperty', () => {
     // none is the `.X` shape.
     const wired = providerWiresProperty('GeoProximityLocation', ROUTE53, REPO_ROOT);
     expect(
-      /[^'[]\.GeoProximityLocation\b/.test(readFileSync(join(REPO_ROOT, ROUTE53), 'utf8')),
+      // The provider's text includes its companion files (`route53/`).
+      /[^'[]\.GeoProximityLocation\b/.test(
+        [join(REPO_ROOT, ROUTE53), ...companionFiles(join(REPO_ROOT, ROUTE53))]
+          .map((f) => readFileSync(f, 'utf8'))
+          .join('\n')
+      ),
       'the anchor provider no longer contains a property access, so this half is vacuous'
     ).toBe(true);
     for (const site of wired!.sites) {
@@ -348,10 +353,16 @@ describe('providerWiresProperty', () => {
       wired!.sites.some((s) => /\bresult\['GeoProximityLocation'\]/.test(lineAt(s))),
       'the read-back element access is no longer credited — retire this bound'
     ).toBe(true);
-    // Every site is a `relPath:line` on the file that was asked about, unique
-    // and sorted — a site set naming another file would be the cross-provider
-    // misattribution this module's sibling was rewritten to close.
-    for (const site of wired!.sites) expect(site.startsWith(`${ROUTE53}:`)).toBe(true);
+    // Every site is a `relPath:line` on the file that was asked about or one of
+    // its companion files (`route53/`), unique and sorted — a site set naming
+    // another provider's file would be the cross-provider misattribution this
+    // module's sibling was rewritten to close.
+    for (const site of wired!.sites) {
+      expect(
+        site.startsWith(`${ROUTE53}:`) || site.startsWith('src/provisioning/providers/route53/'),
+        site
+      ).toBe(true);
+    }
     expect(new Set(wired!.sites).size).toBe(wired!.sites.length);
     expect([...wired!.sites]).toEqual([...wired!.sites].sort());
   });
