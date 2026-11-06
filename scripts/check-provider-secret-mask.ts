@@ -169,7 +169,11 @@
  *  (4) A no-op DECLARED to be the capability is believed. This critic is
  *      syntactic: the declaration is the only evidence it has, so
  *      `const M: MaskerFn = someNoOp` and `{ maskSecrets: (t) => t }` are both
- *      accepted in the masker-ARGUMENT position. MEASURED, not assumed — both
+ *      accepted in the masker-ARGUMENT position. NARROWED: a `someNoOp` that is
+ *      a function DECLARATION, at any scope, returning its own first parameter
+ *      unchanged is now refused as an identity, like an identity `const` (a
+ *      `SecretMasker`-typed parameter of the same NAME used to keep it in the
+ *      pool); a no-op the syntax cannot see through is still believed. MEASURED, not assumed — both
  *      run green today and are pinned as self-probes expecting `masked`, so
  *      closing the bound fails here and forces this paragraph to change with
  *      it. What the argument allow-list buys is that the DEFAULT flipped: an
@@ -923,10 +927,20 @@ export interface IdentityInfo {
   readonly defaulters: ReadonlySet<string>;
 }
 
-/** Is `node` a function that returns its own first parameter unchanged? */
+/**
+ * Is `node` a function that returns its own first parameter unchanged? A
+ * `function` DECLARATION counts too (see the module-scope refusal in
+ * {@link maskerRoots}).
+ */
 function isIdentityFunction(node: ts.Node): boolean {
-  const inner = unwrap(node);
-  if (!ts.isArrowFunction(inner) && !ts.isFunctionExpression(inner)) return false;
+  const inner = ts.isFunctionDeclaration(node) ? node : unwrap(node);
+  if (
+    !ts.isArrowFunction(inner) &&
+    !ts.isFunctionExpression(inner) &&
+    !(ts.isFunctionDeclaration(inner) && inner.body !== undefined)
+  ) {
+    return false;
+  }
   const parameter = inner.parameters[0];
   if (parameter === undefined || !ts.isIdentifier(parameter.name)) return false;
   const first = parameter.name.text;
@@ -1091,6 +1105,20 @@ function maskerRoots(source: ts.SourceFile): {
         const callee = ts.isCallExpression(init) ? calleeName(init) : undefined;
         if (callee !== undefined && defaulters.has(callee)) names.add(node.name.text);
         else if (readsContextMasker(node.initializer)) names.add(node.name.text);
+      }
+    } else if (ts.isFunctionDeclaration(node) && node.name !== undefined && isIdentityFunction(node)) {
+      // An identity `function maskSecrets(v) { return v; }` DECLARATION is
+      // refused like an identity `const`, at whatever scope it is declared: a
+      // `SecretMasker`-typed PARAMETER of the same name elsewhere in the file
+      // puts the NAME in the file-wide pool, and a wrapper calling the function
+      // (`return maskSecrets(v)`) would then be credited as a masker — in this
+      // file, or in another one through {@link companionImportedMaskers}.
+      // Recorded with the function that OWNS it, as the const path does, so a
+      // NESTED one is refused inside its enclosing function only.
+      const bindingName = node.name.text;
+      const owner = enclosingFunction(node);
+      if (!refused.some((record) => record.owner === owner && record.name === bindingName)) {
+        refused.push({ owner, name: bindingName });
       }
     } else if (
       ts.isBindingElement(node) &&
@@ -2447,9 +2475,21 @@ const SELF_PROBES: readonly SelfProbe[] = [
   // believed. These probes exist so that closing the bound fails here and
   // forces the header's claim to be updated with it.
   {
-    name: 'KNOWN BOUND: a no-op ANNOTATED MaskerFn is believed',
+    // NARROWED bound: an IDENTITY function declaration is refused at the root,
+    // so the annotated binding initialised from it is refused too.
+    name: 'an ANNOTATED MaskerFn bound to an identity function declaration is refused',
     source: `${MASK_IMPORT}
     function noMask(value: unknown): unknown { return value; }
+    const FAKE: MaskerFn = noMask;
+    function f(p: Record<string, unknown>) {
+      return \`got \${JSON.stringify(maskDeep(p, FAKE))}\`;
+    }`,
+    expected: ['raw'],
+  },
+  {
+    name: 'KNOWN BOUND: a no-op ANNOTATED MaskerFn is believed',
+    source: `${MASK_IMPORT}
+    function noMask(value: unknown): unknown { return structuredClone(value); }
     const FAKE: MaskerFn = noMask;
     function f(p: Record<string, unknown>) {
       return \`got \${JSON.stringify(maskDeep(p, FAKE))}\`;
@@ -3168,10 +3208,23 @@ function listSourceFiles(dir: string): string[] {
  * another file of the group derives and EXPORTS, grown to a fixpoint (a
  * wrapper around an imported masker is a masker too).
  *
+ * Credited only when ALL hold: the import resolves to a file of the SAME group
+ * (the provider file or its own companion directory — never another provider,
+ * never a shared helper); the exported name is a top-level `function`
+ * DECLARATION there (an exported `const` binding is not credited: its value
+ * can be reassigned or built from a refused identity elsewhere); that
+ * function's OWN BODY wraps its first parameter in a known masker on every
+ * return (`wrapsFirstParameter`, judged against that file's derivation) —
+ * membership in the file-wide pool is NOT enough, since the pool also holds
+ * every `SecretMasker`-typed parameter NAME; and the name is in that pool. A
+ * file the scan does not list credits nothing.
+ *
  * BOUND: a seeded name is believed FILE-WIDE, so a local of the same name that
  * shadows the import (and is not a masker) is believed too.
  */
-function companionImportedMaskers(files: readonly string[]): Map<string, Set<string>> {
+export function companionImportedMaskers(input: readonly string[]): Map<string, Set<string>> {
+  // Absolute, so a relative providers dir resolves imports the same way.
+  const files = input.map((f) => resolve(f));
   const imported = new Map<string, Set<string>>();
   const fileSet = new Set(files);
   for (const provider of files) {
@@ -3196,15 +3249,16 @@ function companionImportedMaskers(files: readonly string[]): Map<string, Set<str
           }
         }
         imported.set(file, seeds);
-        const { names } = buildMaskerSet(source, seeds);
+        const { names, identities, defaulters } = buildMaskerSet(source, seeds);
         const mine = exported.get(file) ?? new Set<string>();
         for (const stmt of source.statements) {
-          const declared = ts.isFunctionDeclaration(stmt)
-            ? stmt.name && [stmt.name.text]
-            : ts.isVariableStatement(stmt)
-              ? stmt.declarationList.declarations.flatMap((d) => (ts.isIdentifier(d.name) ? [d.name.text] : []))
-              : undefined;
+          const declared = ts.isFunctionDeclaration(stmt) ? stmt.name && [stmt.name.text] : undefined;
           if (!declared || !isExportedDeclaration(stmt)) continue;
+          // Judged by its OWN BODY, never by pool membership alone: the pool
+          // also holds every `x: SecretMasker` PARAMETER name, so an exported
+          // identity `function maskSecrets(v) { return v; }` is IN it, and
+          // crediting it would launder a raw value through another file.
+          if (!ts.isFunctionDeclaration(stmt) || !wrapsFirstParameter(stmt, names, { identities, defaulters })) continue;
           for (const name of declared) {
             if (names.has(name) && !mine.has(name)) {
               mine.add(name);
@@ -3250,7 +3304,7 @@ export function buildReport(providersDir: string): MaskReport {
     const rel = isInsideDirectory(REPO_ROOT, file)
       ? relative(REPO_ROOT, file)
       : join(PROVIDERS_ROOT_REL, relative(providersDir, file));
-    const analyzed = analyzeFile(rel, readFileSync(file, 'utf8'), imported.get(file));
+    const analyzed = analyzeFile(rel, readFileSync(file, 'utf8'), imported.get(resolve(file)));
     maskerNames += analyzed.maskerNames;
     concatSites += analyzed.concatSites;
     bareSinkFiles.push(...analyzed.bareSinkLocations);

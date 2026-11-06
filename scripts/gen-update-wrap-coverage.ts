@@ -251,16 +251,25 @@ export function companionFunctions(sources: readonly string[]): Map<string, ts.F
   return out;
 }
 
+/**
+ * `fn.call(this, ...)` -> `fn`, else null. A generic delegator instantiates
+ * first, `(fn<T>).call(this, ...)`, since `.call` drops a type parameter.
+ */
+function callThisTarget(node: ts.Node): string | null {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return null;
+  if (node.expression.name.text !== 'call') return null;
+  if (node.arguments[0]?.kind !== ts.SyntaxKind.ThisKeyword) return null;
+  let target: ts.Expression = node.expression.expression;
+  if (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (ts.isExpressionWithTypeArguments(target)) target = target.expression;
+  return ts.isIdentifier(target) ? target.text : null;
+}
+
 /** `return fn.call(this, ...)` as a method's whole body -> `fn`, else null. */
 function delegatedFunctionName(body: ts.Block): string | null {
   const only = body.statements.length === 1 ? body.statements[0] : undefined;
   if (!only || !ts.isReturnStatement(only) || !only.expression) return null;
-  const call = only.expression;
-  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) return null;
-  const target = call.expression;
-  if (target.name.text !== 'call' || !ts.isIdentifier(target.expression)) return null;
-  if (call.arguments[0]?.kind !== ts.SyntaxKind.ThisKeyword) return null;
-  return target.expression.text;
+  return callThisTarget(only.expression);
 }
 
 /** Is this node a nested function boundary we must NOT descend through? */
@@ -645,14 +654,8 @@ function thisMethodCallName(
   if (!ts.isCallExpression(node)) return null;
   const callee = node.expression;
   if (!ts.isPropertyAccessExpression(callee)) return null;
-  if (
-    callee.name.text === 'call' &&
-    ts.isIdentifier(callee.expression) &&
-    node.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword &&
-    methods?.get(callee.expression.text)?.companion === true
-  ) {
-    return callee.expression.text;
-  }
+  const target = callThisTarget(node);
+  if (target !== null && methods?.get(target)?.companion === true) return target;
   if (callee.expression.kind !== ts.SyntaxKind.ThisKeyword) return null;
   return callee.name.text;
 }

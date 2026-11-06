@@ -33,14 +33,16 @@
  * identity arrangement x use site) rather than a hand-written list, so a cell
  * cannot be quietly tuned one at a time.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 
 import ts from 'typescript-v6';
 
 import {
   analyzeFile as analyzeLive,
+  companionImportedMaskers,
   isErrorFactoryName,
   isInsideDirectory,
   isTransparentWrapper,
@@ -1197,5 +1199,150 @@ ${declarations.join('\n')}
     expect(status).toBe(1);
     expect(text).toContain('provider secret-mask check FAILED');
     expect(text).toContain('no-such-providers-dir-2269');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A split provider's companion files (scripts/provider-companion-files.ts)
+// ---------------------------------------------------------------------------
+
+describe('a masker wrapper imported from a companion sibling', () => {
+  const helper = (body: string, decl = 'function'): string =>
+    `import { maskDeep } from '../../masked-retry-logger.js';\n` +
+    (decl === 'function'
+      ? `export function maskLeafValue(value: unknown, maskSecrets: SecretMasker): unknown {\n${body}\n}\n`
+      : `export const maskLeafValue = (value: unknown, maskSecrets: SecretMasker): unknown => {\n${body}\n};\n`);
+  const caller = (from: string): string =>
+    `import { maskLeafValue } from '${from}';\n` +
+    `export function warnBad(this: FakeProvider, raw: unknown, maskSecrets: SecretMasker): void {\n` +
+    '  this.logger.warn(`bad value ${JSON.stringify(maskLeafValue(raw, maskSecrets))}`);\n' +
+    `}\n`;
+
+  /** Lays out `files` under a scratch providers dir; returns the caller's verdicts. */
+  const verdicts = (files: Record<string, string>, callerPath: string): SiteVerdict[] => {
+    const providers = join(mkdtempSync(join(tmpdir(), 'cdkd-mask-companion-')), 'providers');
+    const all: string[] = [];
+    for (const [rel, text] of Object.entries(files)) {
+      const full = join(providers, rel);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, text);
+      all.push(full);
+    }
+    const target = join(providers, callerPath);
+    const seeds = companionImportedMaskers(all).get(target);
+    return analyzeLive(target, readFileSync(target, 'utf8'), seeds).sites.map((s) => s.verdict);
+  };
+  const provider = 'export class FakeProvider {}\n';
+
+  it('is credited when it is a wrapper in the SAME companion directory', () => {
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts': helper('  return maskDeep(value, maskSecrets);'),
+      'fake-table/warn.ts': caller('./helpers.js'),
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['masked']);
+  });
+
+  it('is judged from its own body: a wrapper that stops masking is not credited', () => {
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts': helper('  return value;'),
+      'fake-table/warn.ts': caller('./helpers.js'),
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
+  });
+
+  it('is not credited from another provider\'s companion directory', () => {
+    const files = {
+      'fake-table-provider.ts': provider,
+      'other-provider.ts': provider,
+      'other/helpers.ts': helper('  return maskDeep(value, maskSecrets);'),
+      'fake-table/warn.ts': caller('../other/helpers.js'),
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
+  });
+
+  it('is not credited for an exported const binding, only a top-level function', () => {
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts': helper('  return maskDeep(value, maskSecrets);', 'const'),
+      'fake-table/warn.ts': caller('./helpers.js'),
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
+  });
+
+  it('is not credited for an exported identity named after a masker-typed parameter', () => {
+    // The pool holds every `x: SecretMasker` PARAMETER name, so membership
+    // alone would credit this identity function across files.
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts':
+        helper('  return maskDeep(value, maskSecrets);') +
+        'export function maskSecrets(value: unknown): unknown {\n  return value;\n}\n',
+      'fake-table/warn.ts':
+        `import { maskSecrets as leak } from './helpers.js';\n` +
+        `export function warnBad(this: FakeProvider, raw: unknown): void {\n` +
+        '  this.logger.warn(`probe ${JSON.stringify(leak(raw))}`);\n' +
+        `}\n`,
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
+  });
+
+  it('is not credited for a NON-identity no-op named after a masker-typed parameter', () => {
+    // Not an identity, so the root refusal does not catch it; only the
+    // credit's own-body check does (the pool holds the parameter NAME).
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts':
+        helper('  return maskDeep(value, maskSecrets);') +
+        'export function maskSecrets(value: unknown): unknown {\n  return structuredClone(value);\n}\n',
+      'fake-table/warn.ts':
+        `import { maskSecrets as leak } from './helpers.js';\n` +
+        `export function warnBad(this: FakeProvider, raw: unknown): void {\n` +
+        '  this.logger.warn(`probe ${JSON.stringify(leak(raw))}`);\n' +
+        `}\n`,
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
+  });
+
+  it('is not credited through ONE HOP: a wrapper calling a module-scope identity function', () => {
+    // helpers.ts: an identity `function maskSecrets`, a wrapper that calls it,
+    // and a `SecretMasker`-typed parameter of the same NAME (which puts the
+    // name in the pool). The wrapper must not be credited across files.
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts':
+        'export function maskSecrets(v: unknown): unknown {\n  return v;\n}\n' +
+        'export function maskLeafValue(value: unknown, _m: SecretMasker): unknown {\n  return maskSecrets(value);\n}\n' +
+        'export function other(x: unknown, maskSecrets: SecretMasker): unknown {\n  return maskSecrets(String(x));\n}\n',
+      'fake-table/warn.ts': caller('./helpers.js'),
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
+  });
+
+  it('resolves a RELATIVE file list the same way as an absolute one', () => {
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/helpers.ts': helper('  return maskDeep(value, maskSecrets);'),
+      'fake-table/warn.ts': caller('./helpers.js'),
+    };
+    const providers = join(mkdtempSync(join(tmpdir(), 'cdkd-mask-companion-')), 'providers');
+    const rel: string[] = [];
+    for (const [p, text] of Object.entries(files)) {
+      const full = join(providers, p);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, text);
+      rel.push(relative(process.cwd(), full));
+    }
+    const seeds = companionImportedMaskers(rel).get(join(providers, 'fake-table/warn.ts'));
+    expect([...(seeds ?? [])]).toEqual(['maskLeafValue']);
+  });
+
+  it('credits nothing when the sibling is not in the scanned set', () => {
+    const files = {
+      'fake-table-provider.ts': provider,
+      'fake-table/warn.ts': caller('./helpers.js'),
+    };
+    expect(verdicts(files, 'fake-table/warn.ts')).toEqual(['raw']);
   });
 });
