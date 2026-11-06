@@ -337,7 +337,7 @@ describe('every StackState builder carries stackInstanceId (go-to-k/cdkd#5064)',
       'src/deployment/deploy-engine/deploy-flow.ts',
       'src/deployment/deploy-engine/execute.ts',
       'src/deployment/nested-child-journal.ts',
-      'src/cli/commands/import.ts',
+      'src/cli/commands/import/stack-state.ts',
       'src/cli/commands/rollback.ts',
       'src/cli/commands/drift/accept.ts',
       'src/cli/commands/drift/revert.ts',
@@ -415,7 +415,7 @@ describe('every field-by-field ResourceState writer states the name generation (
       'src/deployment/deploy-engine/create.ts',
       'src/deployment/deploy-engine/update-replace.ts',
       'src/deployment/deploy-engine/update-in-place.ts',
-      'src/cli/commands/import.ts',
+      'src/cli/commands/import/stack-state.ts',
     ]) {
       expect(files).toContain(file);
     }

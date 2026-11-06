@@ -145,6 +145,7 @@ import type { CloudFormationTemplate } from '../../../src/types/resource.js';
 import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { RESOLVER_FAMILY } from '../_resolver-family.js';
 import { exportSourceFiles } from '../cli/_export-source.js';
+import { importSourceFiles } from '../cli/_import-source.js';
 
 /** A promise the test body opens by hand. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -1861,8 +1862,9 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
   it.each([
     ['src/deployment/deploy-engine/deploy-flow.ts', 'resolveOutputs', 1],
     ['src/deployment/deploy-engine/execute.ts', 'resolveOutputs', 1],
-    ['src/cli/commands/import.ts', 'resolveImportedProperties', 2],
-    // `cdkd export` is `export.ts` plus `export/**/*.ts`; the whole set is scanned.
+    // `cdkd import` and `cdkd export` are `<name>.ts` plus `<name>/**/*.ts`;
+    // the whole set is scanned.
+    ['src/cli/commands/import{,/**}.ts', 'resolveImportedProperties', 2],
     ['src/cli/commands/export{,/**}.ts', 'buildResolvedParametersPerStack', 1],
     ['src/cli/commands/scrub.ts', 'resolveCrossStackReads', 3],
   ])('every %s call to %s is inside a shared drain budget', (file, callee, atLeast) => {
@@ -1907,9 +1909,11 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     // Syntactic, like the fences above, and with the same limits: it asks
     // whether the call sits lexically inside a `withSharedDrainBudget(...)`
     // argument, not whether it runs inside one.
-    const files = file.includes('{')
+    const files = file.startsWith('src/cli/commands/export{')
       ? exportSourceFiles()
-      : [join(import.meta.dirname, '../../..', file)];
+      : file.startsWith('src/cli/commands/import{')
+        ? importSourceFiles().map((rel) => join(import.meta.dirname, '../../..', rel))
+        : [join(import.meta.dirname, '../../..', file)];
 
     const calls: { line: string; wrapped: boolean }[] = [];
     for (const abs of files) {

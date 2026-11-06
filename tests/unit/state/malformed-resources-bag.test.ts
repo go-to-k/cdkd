@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { importSourceFiles } from '../cli/_import-source.js';
 import { SHELL_ACTIVE_WHY, shellQuote } from '../../../src/utils/pasteable-command.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -126,10 +127,22 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * not that the code DOES anything.
  */
 function code(relPath: string): string {
+  // `cdkd import` is `import.ts` plus its `import/**/*.ts` modules, so its key
+  // reads the whole set. `importSourceFiles()` lists `import/command.ts` (whose
+  // `importCommand` runs every guard before it hands off) ahead of every module
+  // the hand-off reaches, so a dominance check reads the family in that order.
+  if (relPath === IMPORT_COMMAND) return importSourceFiles().map(strippedFile).join('\n');
+  return strippedFile(relPath);
+}
+
+function strippedFile(relPath: string): string {
   return readFileSync(join(repoRoot, relPath), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
+
+/** The key the fences below use for the whole `cdkd import` family. */
+const IMPORT_COMMAND = 'src/cli/commands/import.ts';
 
 /**
  * The value on one of the orphan refusal's labelled trailing lines
@@ -3174,7 +3187,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       if (file === 'src/state/logical-id-rename.ts') return false;
       return /[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
-    expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
+    // A reader inside the `cdkd import` family is anchored under the family's key.
+    const importFamily = new Set(importSourceFiles());
+    const readerKeys = new Set(readers.map((file) => (importFamily.has(file) ? IMPORT_COMMAND : file)));
+    expect([...readerKeys].sort()).toEqual(Object.keys(ANCHORS).sort());
     // ...and the shared population is that same set, so the ROW fence under
     // this one inherits this tree-derived check instead of re-deriving it.
     expect(Object.keys(ANCHORS).sort()).toEqual([...ORPHAN_READER_FILES].sort());

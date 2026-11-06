@@ -2,6 +2,7 @@
 description: cdkd import / export layout (modes, CFn migration, identifier resolution, YAML codec)
 paths:
   - 'src/cli/commands/import.ts'
+  - 'src/cli/commands/import/**'
   - 'src/cli/commands/export.ts'
   - 'src/cli/commands/export/**'
   - 'src/cli/yaml-cfn.ts'
@@ -13,6 +14,7 @@ Rest of the CLI: [layout-cli.md](layout-cli.md). Index: [code-layout.md](code-la
 
 ## `cdkd import`
 
+- **Module layout.** `import.ts` holds `createImportCommand` and re-exports every public symbol; the code lives in `import/*.ts`: `command.ts` (`importCommand` up to the lock), `locked-import.ts` (`runLockedImport`, the lock-held body), `types.ts`, `overrides.ts`, `pseudo-parameters.ts`, `import-one.ts`, `stack-state.ts`, `resolve-properties.ts`, `noecho-position.ts`, `discarded-subtree.ts`, `observed-capture.ts` and `nested.ts`. Source fences read the whole set through `tests/unit/cli/_import-source.ts`.
 - **Three modes.** AUTO (no flags) resolves each resource from its physical-name property, then a same-named CloudFormation stack. SELECTIVE, the default whenever a `--resource` / `--resource-mapping` flag is given, imports only listed resources and marks the rest `out of scope`. HYBRID is `--auto` plus overrides.
 - **There is deliberately NO `aws:cdk:path` tag lookup**: AWS reserves the `aws:` prefix, so that tag can never exist. The CloudFormation fallback is best-effort, flat, and skipped in selective mode.
 - **`--force` does not mean what upstream's does**: it is required only where the import would LOSE data — an auto rebuild over existing state, or a selective override of a resource already in state. Selective mode is otherwise a non-destructive merge.

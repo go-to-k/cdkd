@@ -269,6 +269,7 @@ vi.mock('@aws-sdk/client-elastic-load-balancing-v2', async () => {
 });
 
 import { createImportCommand } from '../../../src/cli/commands/import.js';
+import { AwsClients } from '../../../src/utils/aws-clients.js';
 import { stageLoadError } from '../../../src/synthesis/failed-stages.js';
 import { ELBv2Provider } from '../../../src/provisioning/providers/elbv2-provider.js';
 import { resetAccountInfoCache } from '../../../src/deployment/intrinsic-function-resolver.js';
@@ -5100,8 +5101,46 @@ describe('cdkd import', () => {
       };
       expect(arg.cfnStackName).toBe('S');
       expect(arg.yes).toBe(true);
-      expect(arg.stateBucket).toBeDefined();
-      expect(arg.stateBucket.length).toBeGreaterThan(0);
+      // The bucket the run resolved, not merely a non-empty one: the
+      // retirement runs in `runLockedImport`, which receives it from
+      // `importCommand` (#5835 split).
+      expect(arg.stateBucket).toBe('test-bucket');
+    });
+
+    // `runLockedImport` receives the region's clients from `importCommand`
+    // (#5835 split): a stack living outside the CLI region must be retired
+    // through the client built for ITS region, not the base one.
+    it('retires through the stack region CloudFormation client, not the CLI region one', async () => {
+      setupHappyPath();
+      mockSynthesize.mockResolvedValue({ stacks: [stackInfo('S', oneResource(), 'ap-southeast-2')] });
+      const restore = vi.mocked(AwsClients).getMockImplementation();
+      vi.mocked(AwsClients).mockImplementation(
+        (opts?: { region?: string }) =>
+          ({
+            s3: {},
+            cloudFormation: { send: cfnSend, clientRegion: opts?.region },
+            sts: { send: stsSend },
+            destroy: vi.fn(),
+          }) as never
+      );
+      try {
+        await runImport([
+          'import',
+          '--app',
+          'x',
+          '--yes',
+          '--migrate-from-cloudformation',
+        ]);
+      } finally {
+        vi.mocked(AwsClients).mockImplementation(restore!);
+      }
+
+      const retireArg = mockPrepareRetirement.mock.calls[0]![0] as {
+        cfnClient: { clientRegion?: string };
+      };
+      expect(retireArg.cfnClient.clientRegion).toBe('ap-southeast-2');
+      const deleteClient = mockDeleteRetiredStack.mock.calls[0]![1] as { clientRegion?: string };
+      expect(deleteClient.clientRegion).toBe('ap-southeast-2');
     });
 
     it('uses the explicit value when --migrate-from-cloudformation <name> is given', async () => {
@@ -5359,6 +5398,49 @@ describe('cdkd import', () => {
         expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
           'CloudFormation replaced'
         );
+      });
+
+      // The root row of a nested stack is never adopted as replaced: its id is
+      // cdkd's synthesized ARN. The filter reads the template `runLockedImport`
+      // receives from `importCommand` (#5835 split).
+      it('does not report a root nested-stack row as replaced when its stack id changes', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'cdkd-import-nested-replaced-'));
+        try {
+          const childTemplatePath = join(dir, 'Child.nested.template.json');
+          writeFileSync(childTemplatePath, JSON.stringify({ Resources: {} }));
+          const tmpl = template({
+            Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'x' } },
+          });
+          mockSynthesize.mockResolvedValue({
+            stacks: [{ ...stackInfo('P', tmpl), nestedTemplates: { Child: childTemplatePath } }],
+          });
+          mockHasProvider.mockImplementation((t: string) => t !== 'AWS::CloudFormation::Stack');
+          mockGetProvider.mockReturnValue({ import: echoImport() });
+          const nestedTree = (childArn: string): CfnStackResourceTree => ({
+            stackName: 'P',
+            physicalId: 'P',
+            resources: new Map([['Child', childArn]]),
+            nested: new Map([
+              [
+                'Child',
+                { stackName: childArn, physicalId: childArn, resources: new Map(), nested: new Map() },
+              ],
+            ]),
+          });
+          mockGetCfnResourceTree
+            .mockResolvedValueOnce(nestedTree('arn:aws:cloudformation:us-east-1:123:stack/Child/old'))
+            .mockResolvedValueOnce(nestedTree('arn:aws:cloudformation:us-east-1:123:stack/Child/new'));
+          mockPrepareRetirement.mockResolvedValue({ outcome: 'ready', templateUpdated: true });
+
+          await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          expect(mockGetCfnResourceTree).toHaveBeenCalledTimes(2);
+          expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain(
+            'CloudFormation replaced'
+          );
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
       });
 
       it('does not re-read when no update ran (CloudFormation cannot have replaced anything)', async () => {
@@ -6123,6 +6205,14 @@ describe('cdkd import', () => {
           });
 
           await runImport(['import', 'P', '--app', 'x', '--yes', '--migrate-from-cloudformation']);
+
+          // The child lock is taken under the ROOT's owner string, which
+          // `runLockedImport` receives from `importCommand` (#5835 split).
+          const lockCalls = mockAcquireLock.mock.calls as unknown as unknown[][];
+          const rootLock = lockCalls.find((c) => c[0] === 'P');
+          const childLock = lockCalls.find((c) => c[0] === 'P~Child');
+          expect(rootLock?.[2]).toEqual(expect.stringMatching(/@.+:\d+$/));
+          expect(childLock?.[2]).toBe(rootLock?.[2]);
 
           // Child state save: keyed by `P~Child`, carries parent-link fields.
           const childSave = mockSaveState.mock.calls.find(

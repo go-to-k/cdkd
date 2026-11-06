@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
@@ -7,19 +7,51 @@ import {
   namedCliRegion,
   rawCliRegion,
 } from '../../../src/cli/region-options.js';
-import { readStateSource } from './_state-source.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const COMMANDS_DIR = join(REPO_ROOT, 'src', 'cli', 'commands');
 
 /**
- * One command file's source. `state.ts` keeps only the command factory since
- * its handlers moved into `state/` (go-to-k/cdkd#5835), so its row reads the
- * whole `cdkd state` family -- `state.ts` plus `state/**` -- and every count
- * and order fence below keeps the population it had as one file.
+ * The files a command is read from: `<cmd>.ts`, plus every `.ts` under a
+ * sibling `<cmd>/` directory, recursively. A split command keeps its factory
+ * in `<cmd>.ts` and its handler under `<cmd>/`, so reading the factory alone
+ * would see no fold and no AWS call, and every case below would pass over it.
  */
-const readCommandSource = (file: string): string =>
-  file === 'state.ts' ? readStateSource() : readFileSync(join(COMMANDS_DIR, file), 'utf8');
+const commandFamily = (file: string): string[] => {
+  const dir = join(COMMANDS_DIR, file.replace(/\.ts$/, ''));
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) return [join(COMMANDS_DIR, file)];
+  return [
+    join(COMMANDS_DIR, file),
+    ...readdirSync(dir, { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => name.split('\\').join('/'))
+      .sort()
+      .map((name) => join(dir, name)),
+  ];
+};
+
+/** A command's source: its {@link commandFamily}, joined in that order. */
+const commandSource = (file: string): string =>
+  commandFamily(file)
+    .map((f) => readFileSync(f, 'utf8'))
+    .join('\n');
+
+describe('a split command is read with its directory', () => {
+  const families = readdirSync(COMMANDS_DIR)
+    .filter((f) => f.endsWith('.ts'))
+    .filter((f) => commandFamily(f).length > 1);
+
+  it('finds the split commands — floor, so a derivation that matched nothing cannot pass', () => {
+    expect(families).toEqual(expect.arrayContaining(['drift.ts', 'export.ts', 'import.ts', 'state.ts']));
+  });
+
+  it.each(families)('%s: the family read holds its fold and its first AWS call', (file) => {
+    // Per command: a family read that lost its directory would hold neither.
+    const source = commandSource(file);
+    expect(source).toContain('foldRegionOption(options)');
+    expect(source).toContain('await applyRoleArnIfSet(');
+  });
+});
 
 describe('foldRegionOption', () => {
   const saved = { region: process.env['AWS_REGION'], def: process.env['AWS_DEFAULT_REGION'] };
@@ -250,7 +282,7 @@ describe('no CLI command resolves a region without folding it', () => {
   };
 
   const files = readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'));
-  const sources = new Map(files.map((f) => [f, readCommandSource(f)]));
+  const sources = new Map(files.map((f) => [f, commandSource(f)]));
   const totals = [...sources.values()].reduce(
     (acc, src) => {
       const r = scan(src);
@@ -348,7 +380,7 @@ const stripComments = (source: string): string =>
 
 describe('every handler that accepts --region folds it', () => {
   const files = readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts'));
-  const sources = new Map(files.map((f) => [f, readCommandSource(f)]));
+  const sources = new Map(files.map((f) => [f, commandSource(f)]));
 
   /** Files that actually take a `--region` flag from the user. */
   const regionTaking = files.filter((f) => {
@@ -438,18 +470,24 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
   it.each(readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.ts')))(
     '%s folds before every AWS call it makes',
     (file) => {
-      const source = readCommandSource(file);
-      const folds = offsets(source, 'foldRegionOption(options)');
-      if (folds.length === 0) return; // covered by the coverage fence above
-      const roleArns = offsets(source, 'await applyRoleArnIfSet(');
-      // Each `applyRoleArnIfSet` must have a fold before it. Handlers with two
-      // of each (`state.ts`, `events.ts`) are the reason this pairs them off
-      // rather than comparing first-to-first.
-      for (const [i, at] of roleArns.entries()) {
-        expect(
-          folds.filter((f) => f < at).length,
-          `${file}: applyRoleArnIfSet #${i + 1} has no fold above it`
-        ).toBeGreaterThanOrEqual(i + 1);
+      if (!commandSource(file).includes('foldRegionOption(options)')) return; // covered by the coverage fence above
+      // Per FILE of the family: the order between two files is the order they
+      // are listed in, not the order they run in, so a fold in one module
+      // cannot vouch for an `applyRoleArnIfSet` in another.
+      for (const member of commandFamily(file)) {
+        const source = readFileSync(member, 'utf8');
+        const name = member.slice(COMMANDS_DIR.length + 1);
+        const folds = offsets(source, 'foldRegionOption(options)');
+        const roleArns = offsets(source, 'await applyRoleArnIfSet(');
+        // Each `applyRoleArnIfSet` must have a fold before it. Handlers with two
+        // of each (`state.ts`, `events.ts`) are the reason this pairs them off
+        // rather than comparing first-to-first.
+        for (const [i, at] of roleArns.entries()) {
+          expect(
+            folds.filter((f) => f < at).length,
+            `${name}: applyRoleArnIfSet #${i + 1} has no fold above it in the same file`
+          ).toBeGreaterThanOrEqual(i + 1);
+        }
       }
     }
   );
