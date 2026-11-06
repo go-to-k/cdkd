@@ -65,6 +65,7 @@ vi.mock('../../../src/utils/logger.js', () => {
 });
 
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 import { DynamoDBTableProvider } from '../../../src/provisioning/providers/dynamodb-table-provider.js';
 import { ASGProvider } from '../../../src/provisioning/providers/asg-provider.js';
 import { CognitoUserPoolProvider } from '../../../src/provisioning/providers/cognito-provider.js';
@@ -473,10 +474,14 @@ describe('tail-c provider wraps withhold AWS text (#2319)', () => {
     // the delete-then-create Route / SecurityGroupIngress updates' own wraps,
     // which no single rejection reaches (the latter two pass the inner delete
     // wrap through, which the two update rows here reach instead).
-    const ec2Source = readFileSync(
-      fileURLToPath(new URL('../../../src/provisioning/providers/ec2-provider.ts', import.meta.url)),
-      'utf8'
+    // The provider file and its companion files (scripts/provider-companion-files.ts),
+    // where the wrap sites now live.
+    const ec2Path = fileURLToPath(
+      new URL('../../../src/provisioning/providers/ec2-provider.ts', import.meta.url)
     );
+    const ec2Source = [ec2Path, ...companionFiles(ec2Path)]
+      .map((p) => readFileSync(p, 'utf8'))
+      .join('\n');
     // Minus one: `wrapDeleteError`'s own call into `wrapCaughtError`.
     const ec2Wraps = (ec2Source.match(/this\.wrap(Caught|Delete)Error\(/g) ?? []).length - 1;
     expect(ec2Wraps).toBe(40);

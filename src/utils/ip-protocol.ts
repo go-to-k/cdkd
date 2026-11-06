@@ -10,7 +10,7 @@
  *
  * This lives in `src/utils/` rather than beside either consumer because it has
  * TWO, in different layers: `src/analyzer/drift-protocol-normalize.ts` (the
- * drift comparator) and `src/provisioning/providers/ec2-provider.ts` (rule
+ * drift comparator) and `src/provisioning/providers/ec2/*.ts` (rule
  * IDENTITY — the standalone-rule lookup, the inline-rule reconcile, and the
  * write-side revoke/authorize diff). Hosting it in the analyzer made the
  * provider carry the tree's only `src/provisioning/**` -> `src/analyzer/**`
@@ -69,7 +69,7 @@ const CANONICAL_PROTOCOL_NAMES: ReadonlySet<string> = new Set(PROTOCOL_NUMBER_TO
  *
  * EVERY number is stringified, not only an integer one: an unquoted YAML
  * `IpProtocol: 47` parses to a number while AWS always reads back a string, and
- * `ec2-provider.ts`'s rule-identity key has stringified every number since
+ * `ec2/sg-support.ts`'s rule-identity key has stringified every number since
  * #1633 specifically so a legacy record holding the NUMBER `-1` still matches
  * AWS's `'-1'`. Narrowing that to integers would have silently regressed a
  * malformed `6.5` from `'6.5'` to the number `6.5`, and collapsed `NaN` /

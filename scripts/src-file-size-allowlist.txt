@@ -70,7 +70,6 @@ src/provisioning/providers/codecommit-repository-provider.ts
 src/provisioning/providers/custom-resource-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/provisioning/providers/docdb-provider.ts
-src/provisioning/providers/ec2-provider.ts
 src/provisioning/providers/efs-provider.ts
 src/provisioning/providers/elasticache-provider.ts
 src/provisioning/providers/elbv2-provider.ts
