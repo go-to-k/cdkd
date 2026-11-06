@@ -504,7 +504,7 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
         fallback: /Name: trailName \?\? generatedNameFor\('AWS::CloudTrail::Trail', logicalId\)/,
       },
       'AWS::KinesisFirehose::DeliveryStream': {
-        file: 'firehose-provider.ts',
+        file: 'firehose/create.ts',
         read: /const deliveryStreamName = properties\['DeliveryStreamName'\] as string \| undefined;/,
         fallback:
           /DeliveryStreamName:\s+deliveryStreamName \|\| generatedNameFor\('AWS::KinesisFirehose::DeliveryStream', logicalId\)/,
