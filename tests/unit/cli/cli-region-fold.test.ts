@@ -475,7 +475,7 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
       // are listed in, not the order they run in, so a fold in one module
       // cannot vouch for an `applyRoleArnIfSet` in another.
       for (const member of commandFamily(file)) {
-        const source = readFileSync(member, 'utf8');
+        const source = stripComments(readFileSync(member, 'utf8'));
         const name = member.slice(COMMANDS_DIR.length + 1);
         const folds = offsets(source, 'foldRegionOption(options)');
         const roleArns = offsets(source, 'await applyRoleArnIfSet(');
