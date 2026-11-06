@@ -107,7 +107,7 @@ describe('the doc pointer every #2610 message prints', () => {
   it('resolves to a real heading in docs/cli-deploy-safety.md', async () => {
     // `replacement-protection-advice.ts` sends five providers' users to this
     // section by name. A heading rename would dangle all five silently; the
-    // only pre-existing heading fence reads `logs-loggroup-provider.ts` alone.
+    // only pre-existing heading fence reads the logs-loggroup provider alone.
     const { readFileSync } = await import('node:fs');
     const doc = readFileSync('docs/cli-deploy-safety.md', 'utf8');
     const quoted = DELETION_PROTECTION_DOC_POINTER.match(/^"(.+)" at (.+)$/);
@@ -239,7 +239,7 @@ describe('the disable-command contract: only the ID is untrusted', () => {
   });
 
   it('REJECTS a widened `before` at the DIRECT `renderDisableCommand` entry too (#2669)', () => {
-    // The function is exported for `logs-loggroup-provider.ts`, which renders
+    // The function is exported for `logs-loggroup/update.ts`, which renders
     // the command inside its own sentence. An export typed over the discharged
     // shape would have accepted a widened `before` here while every
     // `protectedReplacementAdvice` caller stayed fenced — the one place a

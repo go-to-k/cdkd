@@ -90,6 +90,22 @@ function emptyTree(padFiles: number): string {
   return providers;
 }
 
+/**
+ * The Kinesis probes ride `kinesis/shared.ts`, the companion holding the
+ * provider's masked sites since the split (go-to-k/cdkd#5835). It imports
+ * `maskDeep` but not `maskerOrIdentity`, which the unsplit provider file
+ * imported too; a probe whose identity masker is that import's call needs it,
+ * or the call is not the import's and the probe proves nothing.
+ */
+function addMaskerOrIdentityImport(dir: string): void {
+  mutate(
+    dir,
+    'kinesis/shared.ts',
+    `import { maskDeep, type MaskerFn } from '../../masked-retry-logger.js';`,
+    `import { maskDeep, maskerOrIdentity, type MaskerFn } from '../../masked-retry-logger.js';`
+  );
+}
+
 function mutate(dir: string, file: string, from: string, to: string): void {
   const path = join(dir, file);
   const text = readFileSync(path, 'utf8');
@@ -745,7 +761,8 @@ describe('provider secret-mask critic — the real tree', () => {
     const upstream = report.siteList.filter(
       (site) =>
         (site.file.endsWith('asg-provider.ts') && site.expression.endsWith('Sorted')) ||
-        (site.file.endsWith('cloudfront-distribution-provider.ts') &&
+        // `orphanSearchHint`, moved to the provider's companion directory.
+        (site.file === 'src/provisioning/providers/cloudfront-distribution/core.ts' &&
           site.expression === 'comment')
     );
     expect(upstream.length).toBe(3);
@@ -855,13 +872,13 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     const dir = copyTree();
     mutate(
       dir,
-      'kinesis-provider.ts',
+      'kinesis/shared.ts',
       '`strings, got ${JSON.stringify(maskDeep(value, mask))}`',
       '`strings, got ${JSON.stringify(value)}`'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('kinesis-provider.ts');
+    expect(stderr).toContain('kinesis/shared.ts');
     expect(stderr).toContain('JSON.stringify(value)');
   }, SPAWN_TIMEOUT_MS);
 
@@ -933,7 +950,8 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // from 40 sites / 28 masked to 41 / 29 at exit 0, with the site counting
     // toward MIN_MASKED_SITES on top.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    addMaskerOrIdentityImport(dir);
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
     writeFileSync(
       path,
@@ -943,7 +961,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('kinesis-provider.ts');
+    expect(stderr).toContain('kinesis/shared.ts');
     expect(stderr).toContain('JSON.stringify(PROBE_IDENTITY(secret))');
   }, SPAWN_TIMEOUT_MS);
 
@@ -956,9 +974,10 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // refused the name as a derivation ROOT and the callee `maskDeep` is a root
     // on its own.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    addMaskerOrIdentityImport(dir);
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
-    const anchor = 'export class KinesisStreamProvider implements ResourceProvider {';
+    const anchor = 'export function isKmsEncryption(';
     expect(text.split(anchor).length - 1, 'probe anchor is not unique').toBe(1);
     writeFileSync(
       path,
@@ -972,7 +991,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('kinesis-provider.ts');
+    expect(stderr).toContain('kinesis/shared.ts');
     expect(stderr).toContain('JSON.stringify(maskDeep(properties, __PROBE_IDENTITY))');
   }, SPAWN_TIMEOUT_MS);
 
@@ -981,7 +1000,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // run: the `+` spelling reaches the same sinks and is NOT classified, so
     // anything above zero fails instead of quietly leaving the site unfenced.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
     writeFileSync(
       path,
@@ -1000,7 +1019,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // suite green, which is a recorded value with no consumer -- inert by
     // construction, and the same gap the self-probe channel itself had.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
     writeFileSync(
       path,
@@ -1013,7 +1032,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // The failure must LOCATE the site and name the FORM. A bare count over an
     // 83-file corpus points at nothing, and after the factory arm landed it
     // could point at a spelling the author never wrote.
-    expect(stderr).toContain('kinesis-provider.ts');
+    expect(stderr).toContain('kinesis/shared.ts');
     expect(stderr).toContain('(logger call)');
   }, SPAWN_TIMEOUT_MS);
 
@@ -1021,7 +1040,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // The counter-direction of the same widening: correct code must stay green,
     // or the remedy the next author reaches for is to work AROUND the fence.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
     writeFileSync(
       path,
@@ -1041,7 +1060,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // than a synthetic source, since the point is that the corpus spells it
     // this way 33 times.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
     writeFileSync(
       path,
@@ -1061,7 +1080,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // rather than a bare count -- a truncated file's sites can still read
     // `masked`, so nothing else in the run points at it.
     const dir = copyTree();
-    const path = join(dir, 'kinesis-provider.ts');
+    const path = join(dir, 'kinesis/shared.ts');
     const text = readFileSync(path, 'utf8');
     const links = Array.from(
       { length: 10 },
@@ -1085,7 +1104,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
       .split('\n')
       .find((line) => line.includes('masker-set') && line.includes('growth cap'));
     expect(truncationLine, 'no truncation failure line in stderr').toBeDefined();
-    expect(truncationLine).toContain('kinesis-provider.ts');
+    expect(truncationLine).toContain('kinesis/shared.ts');
   }, SPAWN_TIMEOUT_MS);
 
   it('FAILS when a SECOND site appears with an exempt expression', () => {

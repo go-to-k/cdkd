@@ -60,7 +60,7 @@
  * the tagged-template {@link pasteableAwsCommand} (same gate) for a command
  * naming several values or one mid-command, which is how the provider sites
  * of issue #3136's second half render.
- * `efs-provider.ts`'s `aws efs describe-access-points --query
+ * `efs/access-point.ts`'s `aws efs describe-access-points --query
  * "AccessPoints[?ClientToken=='<token>']"` is the recorded counter-example and
  * deliberately does NOT route through this: the token comes from
  * `acquireIdempotencyToken`, which mints `cdkd-<sha256 hex>` and nothing else,
@@ -338,7 +338,7 @@ export function renderDisableCommand<
   Caveat extends string = string,
 >(disable: ProtectedReplacementDisableCommand<Before, After, Caveat>): string {
   // EXPORTED since issue [#2669] for the one caller that owns its own sentence
-  // (`logs-loggroup-provider.ts`), and exported OVER THE CONSTRAINED shape:
+  // (`logs-loggroup/update.ts`), and exported OVER THE CONSTRAINED shape:
   // the generic signature keeps `CdkdAuthoredLiteral` in force for a direct
   // caller exactly as {@link protectedReplacementAdvice} keeps it for the
   // five, so a template-derived `before` / `after` is a COMPILE error at both

@@ -27,7 +27,6 @@ const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 // EFSProvider
 // =============================================================================
 
-const EFS_SRC = 'efs-provider.ts';
 const FS_ID = 'fs-12345678';
 const MT_ID = 'fsmt-12345678';
 const AP_ID = 'fsap-12345678';
@@ -61,7 +60,7 @@ const armEfs = (): void =>
  * so its create probes reach the wire.
  */
 const efsTagsRefused = (top: string): Throw => ({
-  why: `an ${top} entry without its Key or Value is refused before any call (${EFS_SRC}, refuseMalformedDesiredTags)`,
+  why: `an ${top} entry without its Key or Value is refused before any call (efs/file-system.ts and efs/access-point.ts, refuseMalformedDesiredTags)`,
   says: new RegExp(`desired ${top} of AWS::EFS::\\w+ L is not a list of tags`),
 });
 
@@ -149,8 +148,8 @@ const FILE_SYSTEM_CASE: TypeCase = {
         'FileSystemProtection.ReplicationOverwriteProtection': 'ENABLED',
       },
       expectedSilent: {
-        'update-remove:BackupPolicy.Status': `BackupPolicy.Status is required by the CloudFormation schema (nestedRequired), so no template drops it; a Status-less block is skipped before any call (${EFS_SRC}, applyBackupPolicy)`,
-        'update-remove:FileSystemProtection.ReplicationOverwriteProtection': `CloudFormation refuses an emptied FileSystemProtection block (the update fails, live CFn A/B, go-to-k/cdkd#1160), so there is no reset to send; the apply helper skips it before any call (${EFS_SRC}, applyFileSystemProtection)`,
+        'update-remove:BackupPolicy.Status': `BackupPolicy.Status is required by the CloudFormation schema (nestedRequired), so no template drops it; a Status-less block is skipped before any call (efs/file-system.ts, applyBackupPolicy)`,
+        'update-remove:FileSystemProtection.ReplicationOverwriteProtection': `CloudFormation refuses an emptied FileSystemProtection block (the update fails, live CFn A/B, go-to-k/cdkd#1160), so there is no reset to send; the apply helper skips it before any call (efs/file-system.ts, applyFileSystemProtection)`,
         'update-remove:ThroughputMode': `CFn parity: CloudFormation RETAINS a provisioned mode when only ThroughputMode is removed and ProvisionedThroughputInMibps stays (live CFn A/B, go-to-k/cdkd#5464), so nothing is sent`,
       },
       // The file system checks its desired tags only when they changed, so
@@ -158,7 +157,7 @@ const FILE_SYSTEM_CASE: TypeCase = {
       expectedRemovalThrows: {
         ...efsTagThrows('FileSystemTags', ['update-remove']),
         'update-remove:ProvisionedThroughputInMibps': {
-          why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (${EFS_SRC}, updateFileSystem)`,
+          why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (efs/file-system.ts, updateFileSystem)`,
           says: /Throughput value must be specified for provisioned throughput mode/,
         },
       },
@@ -186,7 +185,7 @@ const MOUNT_TARGET_BAG: Bag = {
 };
 
 const MT_REQUIRED = (member: string): Throw => ({
-  why: `${member} is required: create() refuses a mount target without it before any call (${EFS_SRC}, createMountTarget)`,
+  why: `${member} is required: create() refuses a mount target without it before any call (efs/mount-target.ts, createMountTarget)`,
   says: new RegExp(`${member} is required for EFS MountTarget`),
 });
 
@@ -198,7 +197,7 @@ const MOUNT_TARGET_CASE: TypeCase = {
   arm: armEfs,
   wholeFromNext: {
     keys: (key) => key === 'SecurityGroups',
-    reason: `update() sends SecurityGroups whole from the desired bag on every update (${EFS_SRC}, updateMountTarget) and never reads prev`,
+    reason: `update() sends SecurityGroups whole from the desired bag on every update (efs/mount-target.ts, updateMountTarget) and never reads prev`,
   },
   exempt: {},
   // ModifyMountTargetSecurityGroups replaces the whole list; no per-key call.
@@ -209,7 +208,7 @@ const MOUNT_TARGET_CASE: TypeCase = {
       bag: fresh(MOUNT_TARGET_BAG),
       variants: { IpAddressType: 'IPV4_ONLY' },
       expectedSilent: {
-        'update-remove:SecurityGroups': `SecurityGroups is required by the CloudFormation schema, so no template drops it; an update with none declared is a no-op (${EFS_SRC}, updateMountTarget)`,
+        'update-remove:SecurityGroups': `SecurityGroups is required by the CloudFormation schema, so no template drops it; an update with none declared is a no-op (efs/mount-target.ts, updateMountTarget)`,
       },
       expectedRemovalThrows: {
         'create:FileSystemId': MT_REQUIRED('FileSystemId'),
@@ -252,7 +251,7 @@ const ACCESS_POINT_CASE: TypeCase = {
       bag: fresh(ACCESS_POINT_BAG),
       expectedRemovalThrows: {
         'create:FileSystemId': {
-          why: `FileSystemId is required: create() refuses an access point without it before any call (${EFS_SRC}, createAccessPoint)`,
+          why: `FileSystemId is required: create() refuses an access point without it before any call (efs/access-point.ts, createAccessPoint)`,
           says: /FileSystemId is required for EFS AccessPoint/,
         },
         // The access point checks its desired tags on every update, so

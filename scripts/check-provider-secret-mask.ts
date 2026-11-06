@@ -35,7 +35,7 @@
  *   - `asg-provider.ts` builds `const expectedSorted = [...expected].sort()
  *     .map((a) => maskSecrets(a))` one line above the interpolation. Every
  *     element is already masked.
- *   - `cloudfront-distribution-provider.ts` assigns
+ *   - `cloudfront-distribution/core.ts` assigns
  *     `const comment = typeof config['Comment'] === 'string'
  *       ? maskSecrets(config['Comment']) : ''` and interpolates `comment`.
  *
@@ -165,7 +165,7 @@
  *      and over-crediting are both possible; the shape does not occur today.
  *  (3) A constant is accepted as masked. A string literal cannot carry a
  *      resolved secret, and refusing it would red the `: ''` arm of the real
- *      `cloudfront-distribution-provider.ts` binding.
+ *      `cloudfront-distribution/core.ts` binding.
  *  (4) A no-op DECLARED to be the capability is believed. This critic is
  *      syntactic: the declaration is the only evidence it has, so
  *      `const M: MaskerFn = someNoOp` and `{ maskSecrets: (t) => t }` are both

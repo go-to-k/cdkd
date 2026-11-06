@@ -44,7 +44,7 @@ const beneath = (bag: Bag, keys: string[], why: string): Record<string, string> 
 
 // --- AWS::Kinesis::Stream ------------------------------------------------------
 
-const KINESIS_SRC = 'kinesis-provider.ts';
+const KINESIS_SRC = 'kinesis/shared.ts';
 const STREAM = 'stream';
 const STREAM_ARN = `arn:aws:kinesis:us-east-1:${ACCOUNT}:stream/${STREAM}`;
 const KMS_KEY = `arn:aws:kms:us-east-1:${ACCOUNT}:key/k`;
