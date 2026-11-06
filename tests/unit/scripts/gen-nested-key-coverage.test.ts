@@ -49,6 +49,7 @@ import {
   extractNestedPropertyPaths,
 } from '../../../scripts/refresh-cfn-schemas.mjs';
 import { CONTENDED_CASE_TIMEOUT_MS } from '../../contended-case-timeout.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.js';
 
 // Vitest's 5s default does not fit this file. Many of its tests parse the WHOLE
 // real `src/provisioning/providers` tree through the TypeScript compiler API —
@@ -114,6 +115,11 @@ vi.setConfig({ testTimeout: CONTENDED_CASE_TIMEOUT_MS });
 
 const repoRoot = process.cwd();
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
+/** A provider file's text followed by its companion files' (the generator reads it so). */
+const providerWithCompanions = (file: string): string =>
+  [join(PROVIDERS_DIR, file), ...companionFiles(join(PROVIDERS_DIR, file))]
+    .map((path) => readFileSync(path, 'utf8'))
+    .join('\n');
 
 const exactTarget: NestedKeyTarget = {
   resourceType: 'AWS::Fake::Thing',
@@ -3477,10 +3483,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     // write of `SseKmsEncryptedObjects` stripped, a reverse read-back must not
     // stand in for it in the write index (whose scopes the hand-off mapping and
     // the `segmentRenames` staleness fence read).
-    const source = readFileSync(
-      join(PROVIDERS_DIR, 's3-bucket-provider.ts'),
-      'utf8'
-    );
+    const source = providerWithCompanions('s3-bucket-provider.ts');
     // Only the FORWARD write is stripped (single occurrence): the reverse
     // read-back in `readReplication` keeps its spelling, which is exactly
     // what used to falsely vouch under the prefix-only exclusion.
@@ -3517,7 +3520,7 @@ describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
     // the `LifecycleConfiguration.Rules` scope, and the unregressed source must
     // carry it — the
     // credit comes from the real mutation write, not from anywhere looser.
-    const source = readFileSync(join(PROVIDERS_DIR, 's3-bucket-provider.ts'), 'utf8');
+    const source = providerWithCompanions('s3-bucket-provider.ts');
     const regressed = source.replace(
       /^\s*sdkRule\.AbortIncompleteMultipartUpload = \{\n[^}]*\};\n/m,
       ''
@@ -3643,10 +3646,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
 
   // Real-code anchors for the write COLLECTOR — the scope index the hand-off
   // mapping and the `segmentRenames` staleness fence read.
-  const s3Source = readFileSync(
-    resolve(repoRoot, 'src/provisioning/providers/s3-bucket-provider.ts'),
-    'utf8'
-  );
+  const s3Source = providerWithCompanions('s3-bucket-provider.ts');
   const cbSource = readFileSync(
     resolve(repoRoot, 'src/provisioning/providers/codebuild-provider.ts'),
     'utf8'
@@ -3950,7 +3950,7 @@ describe('target-table hygiene', { timeout: CONTENDED_CASE_TIMEOUT_MS }, () => {
     );
     expect(declared.length, 'no target declares a walk floor').toBeGreaterThan(0);
     for (const target of declared) {
-      const source = readFileSync(join(PROVIDERS_DIR, target.providerFile), 'utf8');
+      const source = providerWithCompanions(target.providerFile);
       const evidence = collectWriteEvidence(
         source,
         target.providerFile,

@@ -152,6 +152,7 @@ import { join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript-v6';
+import { companionFiles } from './provider-companion-files.ts';
 
 const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
@@ -723,14 +724,17 @@ interface FunctionLike {
   readonly parameters: readonly string[];
 }
 
-/** Every named function-like in a file, keyed by the name a caller would use. */
-function collectFunctions(source: ts.SourceFile): Map<string, FunctionLike[]> {
+/** Every named function-like in the files, keyed by the name a caller would use. */
+function collectFunctions(sources: readonly ts.SourceFile[]): Map<string, FunctionLike[]> {
   const functions = new Map<string, FunctionLike[]>();
 
   const record = (name: string, node: ts.Node, parameters: ts.NodeArray<ts.ParameterDeclaration>) => {
     const names = parameters.map((parameter) =>
       ts.isIdentifier(parameter.name) ? parameter.name.text : ''
     );
+    // A leading `this:` parameter takes no argument (a split provider's method
+    // body; `provider-companion-files.ts`), so argument N is parameter N + 1.
+    if (names[0] === 'this') names.shift();
     const existing = functions.get(name) ?? [];
     existing.push({ node, parameters: names });
     functions.set(name, existing);
@@ -747,7 +751,7 @@ function collectFunctions(source: ts.SourceFile): Map<string, FunctionLike[]> {
     }
     ts.forEachChild(node, visit);
   };
-  visit(source);
+  for (const source of sources) visit(source);
   return functions;
 }
 
@@ -767,7 +771,7 @@ function calleeName(call: ts.CallExpression): string | undefined {
  * makes that one a caught-value parameter too.
  */
 function resolveHelperBindings(
-  source: ts.SourceFile,
+  sources: readonly ts.SourceFile[],
   functions: ReadonlyMap<string, FunctionLike[]>,
   context: ThreadingContext
 ): Map<ts.Node, Set<string>> {
@@ -816,7 +820,7 @@ function resolveHelperBindings(
       }
       ts.forEachChild(node, visit);
     };
-    visit(source);
+    for (const source of sources) visit(source);
   }
   return helperTargets;
 }
@@ -840,15 +844,22 @@ export function analyzeFile(
   fileName: string,
   sourceText: string,
   table: ErrorClassTable = baseTable(),
-  moduleId: string = fileName
+  moduleId: string = fileName,
+  familyTexts: readonly string[] = []
 ): CauseSite[] {
   const source = parseSource(fileName, sourceText);
   // Provider-LOCAL error classes (route53's HostedZoneNameNotFoundError) are
   // declared in the same file they are constructed in.
   const classes = collectErrorClasses(source, new Map(table));
-  const functions = collectFunctions(source);
+  // A split provider's files (`provider-companion-files.ts`) are ONE family: a
+  // catch in one file can hand its caught value to a helper in another.
+  const family = [
+    source,
+    ...familyTexts.map((text, index) => parseSource(`${fileName}#family${index}`, text)),
+  ];
+  const functions = collectFunctions(family);
   const context: ThreadingContext = { composers: importedComposers(source, moduleId) };
-  const helperTargets = resolveHelperBindings(source, functions, context);
+  const helperTargets = resolveHelperBindings(family, functions, context);
   const sites: CauseSite[] = [];
 
   const visit = (node: ts.Node): void => {
@@ -1173,11 +1184,22 @@ export function buildReport(
   const sites: CauseSite[] = [];
   const moduleIds = new Map<string, string>();
 
+  // A split provider's family: the provider file plus its companion files.
+  const familyOf = new Map<string, readonly string[]>();
+  for (const file of files) {
+    const companions = companionFiles(file);
+    if (companions.length === 0) continue;
+    const family = [file, ...companions];
+    for (const member of family) familyOf.set(member, family);
+  }
   for (const file of files) {
     const rel = relative(REPO_ROOT, file);
     const moduleId = rootRelative(root, file);
     moduleIds.set(rel, moduleId);
-    sites.push(...analyzeFile(rel, readFileSync(file, 'utf8'), table, moduleId));
+    const familyTexts = (familyOf.get(file) ?? [])
+      .filter((member) => member !== file)
+      .map((member) => readFileSync(member, 'utf8'));
+    sites.push(...analyzeFile(rel, readFileSync(file, 'utf8'), table, moduleId, familyTexts));
   }
 
   // Exemptions apply to `dropped` sites only, and must match EXACTLY.

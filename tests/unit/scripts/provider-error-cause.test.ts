@@ -166,6 +166,18 @@ describe('provider error-cause critic — the real tree', () => {
     expect(reference.some((s) => s.viaComposer)).toBe(false);
   });
 
+  it('follows a caught value into a helper in ANOTHER file of a split provider', () => {
+    // `refuseForeignRegionAdopt` (s3-bucket/adopt.ts) is handed its caught
+    // value from catches in s3-bucket/create.ts: only the split provider's
+    // family analysis (provider-companion-files.ts) sees that site as a helper.
+    const site = report.sites.find(
+      (s) =>
+        s.file.endsWith('providers/s3-bucket/adopt.ts') && s.within === 'refuseForeignRegionAdopt'
+    );
+    expect(site?.context).toBe('helper');
+    expect(site?.verdict).toBe('threaded');
+  });
+
   it('classifies the reference site (sqs-queue-policy-provider) as threaded', () => {
     const sites = report.sites.filter((s) => s.file.endsWith('sqs-queue-policy-provider.ts'));
     expect(sites.length).toBeGreaterThan(0);

@@ -465,7 +465,7 @@ describe('S3BucketProvider us-east-1 create pre-flight (issue #2241)', () => {
     it('re-throws a ProvisioningError before classifying, as the catch of last resort', async () => {
       const { readFileSync } = await import('node:fs');
       const src = readFileSync(
-        new URL('../../../src/provisioning/providers/s3-bucket-provider.ts', import.meta.url),
+        new URL('../../../src/provisioning/providers/s3-bucket/create.ts', import.meta.url),
         'utf-8'
       );
 

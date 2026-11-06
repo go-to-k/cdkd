@@ -2973,7 +2973,7 @@ export class CloudControlProvider implements ResourceProvider {
       // `cdkd destroy` deliberately does not sweep. Making the guard DURABLE
       // must not make the caller durable: the attacker sets the policy, so they
       // choose when that record is written. The SDK-routed twin of this guard
-      // reached the same answer at `s3-bucket-provider.ts`'s `probeFailedCause`.
+      // reached the same answer at `s3-bucket/create-identity.ts`'s `probeFailedCause`.
       // Both halves are emitted, per that helper's contract -- the class in the
       // persisted `reason`, AWS's wording at `debug`, because the wording is
       // what separates a missing IAM grant from a bucket-policy `Deny` and that

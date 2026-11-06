@@ -384,7 +384,7 @@ describe('custom-resource response purge is SHARED, not copied (issue #2340)', (
     for (const rel of [
       'src/cli/commands/bootstrap-destroy.ts',
       'src/cli/commands/state-migrate.ts',
-      'src/provisioning/providers/s3-bucket-provider.ts',
+      'src/provisioning/providers/s3-bucket/update-delete.ts',
     ]) {
       const src = parsed.get(rel)!;
       expect(namesIdentifier(src, LISTING_COMMAND)).toBe(true);

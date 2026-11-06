@@ -15,6 +15,7 @@ import * as finalSnapshot from '../../../src/provisioning/final-snapshot.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { companionFiles } from '../../../scripts/provider-companion-files.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -340,9 +341,21 @@ describe('STATEFUL_TYPES (#615)', () => {
         return entry.name.endsWith('.ts') ? [rel] : [];
       });
     }
-    const consumingFiles = tsFilesUnder(providersDir).filter((f) =>
-      readFileSync(join(providersDir, f), 'utf8').includes('forceDataDelete')
-    );
+    // A split provider's companion file (`<stem>/...`) stands for its provider
+    // file, which declares the class.
+    const owningFile = (f: string): string => {
+      const owner = `${f.split('/')[0]}-provider.ts`;
+      return f.includes('/') && companionFiles(join(providersDir, owner)).includes(join(providersDir, f))
+        ? owner
+        : f;
+    };
+    const consumingFiles = [
+      ...new Set(
+        tsFilesUnder(providersDir)
+          .filter((f) => readFileSync(join(providersDir, f), 'utf8').includes('forceDataDelete'))
+          .map(owningFile)
+      ),
+    ];
 
     /**
      * Exported class names declared in one module. `export default class` and

@@ -160,6 +160,7 @@ import ts from 'typescript-v6';
 // literally when run via `node scripts/gen-nested-key-coverage.ts`.
 import { parseProviderSource } from './gen-property-coverage.ts';
 import { escapeCell } from './markdown-table.ts';
+import { companionFiles } from './provider-companion-files.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1547,6 +1548,23 @@ const ARRAY_ELEMENT_CALLBACK_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A callable's CALL-SITE parameters, index-aligned with a call's arguments. A
+ * leading `this:` parameter takes no argument (a split provider's method body,
+ * `function applyTags(this: S3BucketProvider, ...)`; see
+ * `provider-companion-files.ts`), so it is dropped.
+ */
+function callParameters(fn: ts.Node): readonly ts.ParameterDeclaration[] | undefined {
+  const params = (fn as ts.SignatureDeclaration).parameters as
+    | ts.NodeArray<ts.ParameterDeclaration>
+    | undefined;
+  if (params === undefined) return undefined;
+  const first = params[0];
+  return first !== undefined && ts.isIdentifier(first.name) && first.name.text === 'this'
+    ? params.slice(1)
+    : params;
+}
+
+/**
  * Collect PATH-SCOPED write evidence, AST-level.
  *
  * A write is an object-literal property name (`batchReportMode: value`), a
@@ -2090,7 +2108,7 @@ export function collectWriteEvidence(
     collectRoots(sf);
 
     const taintParameter = (fn: ts.Node, index: number): boolean => {
-      const params = (fn as ts.SignatureDeclaration).parameters;
+      const params = callParameters(fn);
       const parameter = params?.[index];
       if (parameter === undefined || tainted.has(parameter)) return false;
       tainted.add(parameter);
@@ -2269,7 +2287,7 @@ export function collectWriteEvidence(
     if (cached !== undefined) return cached;
     if (seen.has(fn)) return true; // a recursive converter: judged by its other arms
     seen.add(fn);
-    const params = (fn as ts.SignatureDeclaration).parameters;
+    const params = callParameters(fn);
     // (a) is cached on its own: it depends only on the function and the callable
     // index, so unlike the composite verdict it is order-INDEPENDENT.
     let names = namesMemberCache.get(fn);
@@ -4291,7 +4309,11 @@ export function loadReport(
     let written = writtenByFile.get(target.providerFile);
     let handled = handledByFile.get(target.providerFile);
     if (!literals || !written || !handled) {
-      const source = readFileSync(providerPath, 'utf8');
+      // The file plus its companion files (`provider-companion-files.ts`), as
+      // one text: a write can sit in a moved method body.
+      const source = [providerPath, ...companionFiles(providerPath)]
+        .map((f) => readFileSync(f, 'utf8'))
+        .join('\n');
       literals = collectStringLiterals(source, target.providerFile);
       written = collectWriteEvidence(
         source,
