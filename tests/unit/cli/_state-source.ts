@@ -47,10 +47,17 @@ export function readStateSourceWithoutWiring(): string {
   return stripModuleWiring(readStateSource());
 }
 
-/** Removes `import ... from '...';` and `export { ... } from '...';` statements. */
+/**
+ * Removes `import ... from '...';` and `export { ... } from '...';` statements.
+ *
+ * A statement that renames anything (`import { x as y }`) is KEPT: the alias
+ * is a new name for the helper, so its calls would otherwise escape a fence
+ * that counts the helper's bare name. Kept, the `x` in it counts as one more
+ * reference, and the fence goes red.
+ */
 export function stripModuleWiring(source: string): string {
   return source.replace(
     /^(?:import\s|export\s+(?:type\s+)?\{)[^;]*?\sfrom\s+'[^'\n]+';[ \t]*\n/gm,
-    ''
+    (statement) => (/\bas\b/.test(statement) ? statement : '')
   );
 }

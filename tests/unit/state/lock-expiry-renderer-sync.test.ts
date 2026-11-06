@@ -72,7 +72,15 @@ describe('lock-expiry renderer sync (issue #3085)', () => {
   });
 
   it('every consumer CALLS formatLockExpiry with the RAW expiresAt', () => {
-    for (const rel of CONSUMERS) {
+    // The listed consumers MUST call it; every OTHER file under src/ that
+    // calls it is held to the same raw-argument rule. Derived rather than
+    // listed, so a caller in a module split out of a consumer (`cdkd state`'s
+    // `state/**`, go-to-k/cdkd#5835) cannot sit outside the check.
+    const callers = walk(join(ROOT, 'src'))
+      .map((p) => relative(ROOT, p).split('\\').join('/'))
+      .filter((rel) => rel !== OWNER && /formatLockExpiry\(/.test(code(read(rel))));
+    for (const rel of CONSUMERS) expect(callers, `${rel} must call formatLockExpiry`).toContain(rel);
+    for (const rel of new Set([...CONSUMERS, ...callers])) {
       const body = code(read(rel));
       expect(body, `${rel} must call formatLockExpiry`).toMatch(/formatLockExpiry\(/);
       // Never a difference — subtracting first is the coercion that split the
