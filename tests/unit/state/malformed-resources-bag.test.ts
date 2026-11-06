@@ -62,6 +62,7 @@ import {
   refuseMalformedOrphans,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphanRecordsForDestroy,
+  refuseDivergentRecordRegionForDestroy,
   refuseMalformedOrphansForDestroy,
   refuseMalformedOrphansForOrphan,
   refuseMalformedOutputs,
@@ -3760,8 +3761,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * Every helper in this module that REFUSES on the `resources` container.
    *
    * Derived by grep rather than by recall:
-   *   grep -n "^export function refuseMalformed" \
-   *     src/state/malformed-resources-bag.ts
+   *   grep -rn "^export function refuseMalformed" \
+   *     src/state/malformed-resources-bag/
    * then subtracting the `Outputs`, `ResourceProperties` and `ResourceEntries`
    * families, which the partition case below re-derives so another cannot be
    * added unnoticed.
@@ -4205,8 +4206,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * `hasReadableOutputs`, so the VERDICT stays singular.
    *
    * Derived by grep rather than by recall:
-   *   grep -n "^export function refuseMalformed.*Outputs" \
-   *     src/state/malformed-resources-bag.ts
+   *   grep -rn "^export function refuseMalformed.*Outputs" \
+   *     src/state/malformed-resources-bag/
    */
   const REFUSAL_SPELLINGS = [
     'refuseMalformedOutputs(',
@@ -4648,6 +4649,10 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     // one unusable row, which is the shape the container arm above cannot reach.
     ['orphan rows', () => refuseMalformedOrphanRecords({ orphans: [5] as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphan rows', () => refuseMalformedOrphanRecordsForDestroy({ orphans: [5] as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
+    // Not a container refusal, but a refusal all the same: a destroy over a
+    // resource-bearing record whose body region diverged from its key. Same
+    // persisted-record verdict, so the same marker.
+    ['divergent record region', () => refuseDivergentRecordRegionForDestroy(state({ A: { physicalId: 'p', resourceType: 'T' } }), 'S', 'us-east-1', 'eu-west-1')],
   ] as const;
 
   /**
@@ -4713,10 +4718,14 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
 
   it('every refusal the module exports is either marked or a NAMED exception', () => {
     const moduleSrc = familyCode();
-    const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
+    // Every `refuse*` export, not only `refuseMalformed*`: the marker is owed by
+    // every refusal the module raises, and `refuseDivergentRecordRegionForDestroy`
+    // is one whose name the narrower pattern misses.
+    const exported = [...moduleSrc.matchAll(/export function (refuse[A-Z]\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(24);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(25);
+    expect(exported).toContain('refuseDivergentRecordRegionForDestroy(');
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
