@@ -891,6 +891,29 @@ describe('ECS Service wait semantics (go-to-k/cdkd#5571)', () => {
         expect(warning).toContain('continuing');
       });
 
+      it(`${label}: the warning offers no wait flags, even where the command declares them`, async () => {
+        // The replay arms pass `offerNoWait = false` to `wrapSteadyStateError`
+        // (through the class's delegator since the companion split): a warning
+        // the deploy continues past has nothing to retry with a flag.
+        process.env['CDKD_WAIT_FLAGS_AVAILABLE'] = 'true';
+        mockUpdateOk();
+        waitUntilServicesStableMock.mockRejectedValueOnce(new Error('services stable timed out'));
+
+        await new ECSProvider().update(
+          'MySvc',
+          SERVICE_ARN,
+          'AWS::ECS::Service',
+          { ...CREATE_PROPS, DesiredCount: 2 },
+          CREATE_PROPS,
+          context
+        );
+
+        const warning = warnSpy.mock.calls.map((c) => String(c[0])).find((m) => m.includes('steady state'));
+        expect(warning).toContain('services stable timed out');
+        expect(warning).not.toContain('--no-wait');
+        expect(warning).not.toContain('--resource-timeout');
+      });
+
       it(`${label}: a breaker rollback warns instead of failing`, async () => {
         mockUpdateStartingRollout();
         mockSettledOn('ecs-svc/1111', TD_V1);

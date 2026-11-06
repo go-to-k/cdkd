@@ -32,6 +32,7 @@ import {
   lowerFirst,
   nestedKeyPathsForTarget,
   reachableSdkMemberNames,
+  rebaseRelativeImports,
   inputReachableInterfaces,
   resolveDefinitionInterface,
   wholeDeliveredPathsFor,
@@ -115,10 +116,13 @@ vi.setConfig({ testTimeout: CONTENDED_CASE_TIMEOUT_MS });
 
 const repoRoot = process.cwd();
 const PROVIDERS_DIR = resolve(repoRoot, 'src/provisioning/providers');
-/** A provider file's text followed by its companion files' (the generator reads it so). */
+/**
+ * A provider file's text followed by its companion files', each companion's
+ * relative imports rebased onto the providers directory (the generator reads it so).
+ */
 const providerWithCompanions = (file: string): string =>
   [join(PROVIDERS_DIR, file), ...companionFiles(join(PROVIDERS_DIR, file))]
-    .map((path) => readFileSync(path, 'utf8'))
+    .map((path) => rebaseRelativeImports(readFileSync(path, 'utf8'), path, PROVIDERS_DIR))
     .join('\n');
 
 const exactTarget: NestedKeyTarget = {
@@ -3325,9 +3329,86 @@ describe('real-repo audit (regression floors)', () => {
   });
 });
 
+describe('split provider text (companion files)', () => {
+  const converter = `export function pascalToCamelCaseKeys(v: unknown): unknown { return v; }`;
+  const resolveSibling = (specifier: string): string | undefined =>
+    specifier === './case.js' ? converter : undefined;
+  // The provider file and one companion, as the generator concatenates them.
+  const provider = (delegator: string): string => `
+export class FakeProvider {
+  async create(logicalId: string, resourceType: string, properties: Record<string, unknown>) {
+    await this.client.send(new CreateThingCommand({ outer: this.toOuter(properties['Outer']) }));
+  }
+  ${delegator}
+}
+`;
+  const companion = `import { pascalToCamelCaseKeys } from '../case.js';
+export function toOuter(this: FakeProvider, cfg: unknown): unknown {
+  return pascalToCamelCaseKeys(cfg);
+}
+`;
+  const source = (delegator: string): string =>
+    provider(delegator) +
+    '\n' +
+    rebaseRelativeImports(companion, join(PROVIDERS_DIR, 'fake/to-outer.ts'), PROVIDERS_DIR);
+  const handoffs = (text: string): string[] =>
+    [...collectWriteEvidence(text, 'fake-provider.ts', [], resolveSibling).handoffScopes].sort();
+
+  it('rebases a companion import onto the provider directory, and leaves the provider as is', () => {
+    expect(
+      rebaseRelativeImports(companion, join(PROVIDERS_DIR, 'fake/to-outer.ts'), PROVIDERS_DIR)
+    ).toContain("from './case.js'");
+    expect(
+      rebaseRelativeImports(
+        "import { a } from '../../../utils/a.js';\nexport { b } from './b.js';\n",
+        join(PROVIDERS_DIR, 'fake/deep/x.ts'),
+        PROVIDERS_DIR
+      )
+    ).toBe("import { a } from '../utils/a.js';\nexport { b } from './fake/deep/b.js';\n");
+    const own = "import { x } from '../tag-list.js';\n";
+    expect(rebaseRelativeImports(own, join(PROVIDERS_DIR, 'fake-provider.ts'), PROVIDERS_DIR)).toBe(
+      own
+    );
+  });
+
+  it('follows `this.x()` through a delegating method into the moved body', () => {
+    const delegating = `toOuter(cfg: unknown): unknown {
+    return toOuter.call(this, cfg);
+  }`;
+    // The write path, plus its CFn-spelled alias.
+    expect(handoffs(source(delegating))).toEqual(['Outer', 'outer']);
+    // Unrebased, the companion's `../case.js` resolves nowhere: no hand-off.
+    const unrebased = provider(delegating) + '\n' + companion;
+    expect(handoffs(unrebased)).toEqual([]);
+  });
+
+  it('does not treat a method that changes its arguments as a delegator', () => {
+    for (const notDelegating of [
+      // an argument the method did not receive
+      `toOuter(cfg: unknown): unknown {
+    return toOuter.call(this, {});
+  }`,
+      // more than the delegating return
+      `toOuter(cfg: unknown): unknown {
+    log(cfg);
+    return toOuter.call(this, cfg);
+  }`,
+      // an argument dropped
+      `toOuter(cfg: unknown, extra: unknown): unknown {
+    return toOuter.call(this, cfg);
+  }`,
+      // arguments reordered
+      `toOuter(cfg: unknown, extra: unknown): unknown {
+    return toOuter.call(this, extra, cfg);
+  }`,
+    ]) {
+      expect(handoffs(source(notDelegating)), notDelegating).toEqual([]);
+    }
+  });
+});
+
 describe('whole-blob hand-off walk (real repo, issue #1445)', () => {
-  const providerSource = (file: string): string =>
-    readFileSync(join(PROVIDERS_DIR, file), 'utf8');
+  const providerSource = (file: string): string => providerWithCompanions(file);
   const evidenceFor = (file: string): ProviderWriteEvidence =>
     collectWriteEvidence(providerSource(file), file, ['readCurrentState'], resolveCaseConvert);
   const ecsInterfaces = collectSdkInterfaces(
@@ -3777,10 +3858,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
     // `ecs-provider.ts` splits its reverse map into `readCurrentStateService` /
     // `readCurrentStateTaskDefinition`, which an EXACT-name match reached not
     // at all (it withdrew 0).
-    const ecsSource = readFileSync(
-      resolve(repoRoot, 'src/provisioning/providers/ecs-provider.ts'),
-      'utf8'
-    );
+    const ecsSource = providerWithCompanions('ecs-provider.ts');
     const ecsWithdrawn =
       writtenNames(collectWriteEvidence(ecsSource, 'ecs-provider.ts', [])).size -
       writtenNames(collectWriteEvidence(ecsSource)).size;
