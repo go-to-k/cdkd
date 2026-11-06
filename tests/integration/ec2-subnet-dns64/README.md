@@ -25,6 +25,14 @@ the new block and the three values are live. `NativeSubnet` is an IPv6-only subn
 block) that must keep its ID through every phase. Every subnet must stay on the
 SDK route and be drift-clean.
 
+`BlockSubnet` (#5843) never declares `Ipv6CidrBlock`. Its `cidr-block-on` phase
+adds an `AWS::EC2::SubnetCidrBlock` in the same deploy that declares
+auto-assign, DNS64 and the AAAA record `true`. The subnet update runs before the
+block attaches, so the phase first requires cdkd's three "no IPv6 block"
+warnings, then redeploys the same template and requires all three live `true`
+and the subnet drift-clean. `cidr-block-off` turns them off again so the
+destroy can detach the block.
+
 Build the repository first. CIDR comparisons require `python3` and its standard
 library `ipaddress` module. The maintainer runs this fixture via `/run-integ
 ec2-subnet-dns64`, with `STATE_BUCKET` and `AWS_REGION` set. It deploys real AWS

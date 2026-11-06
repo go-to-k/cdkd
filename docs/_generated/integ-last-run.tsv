@@ -126,7 +126,7 @@ ec2-instance	2026-11-06T16:47:02Z	PASS	742	verify.sh	rc ok, orph clean, us-east-
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
-ec2-subnet-dns64	2026-11-06T05:50:39Z	PASS	246	verify.sh	rc0 orph clean, PR #5830 head 3c61b2b2; mutation probe RED at DnsSubnet route cc-api expected sdk
+ec2-subnet-dns64	2026-11-06T19:11:23Z	PASS	332	verify.sh	rc ok, orph clean (#5892)
 ec2-vpc	2026-11-03T18:37:59Z	PASS	145	verify.sh	PR #5719 0932f5dee rc 0, probe red pre-fix; EncryptedVpc drift-clean, orph clean
 ec2-vpc-ipam	2026-11-03T18:37:59Z	PASS	1185	verify.sh	PR #5719 0932f5dee rc 0, IPAM release wait on delete (measured 1092s), probe red pre-fix; VPC drift-clean, orph clean
 ecr	2026-11-05T03:57:45Z	PASS	40	standard	deploy+destroy clean, 0 orphans
