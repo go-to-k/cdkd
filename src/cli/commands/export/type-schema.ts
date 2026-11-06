@@ -103,7 +103,8 @@ export async function resolveResourceIdentifier(
         `${resourceType} is registered in COMPOSITE_PHYSICAL_ID_IDENTIFIERS as identified by ` +
           `'${compositeIdentifier.field}', but CloudFormation now reports primaryIdentifier ` +
           `[${entry.fields.join(', ')}]. The registry schema changed under cdkd — update the ` +
-          `entry in src/cli/commands/export.ts (or move the type to COMPOSITE_ID_SPLITTERS if ` +
+          `entry in src/cli/commands/export/composite-physical-id.ts (or move the type to ` +
+          `COMPOSITE_ID_SPLITTERS in src/cli/commands/export/composite-id-splitters.ts if ` +
           `its identifier is now composite too)`
       );
     }
@@ -138,7 +139,7 @@ export async function resolveResourceIdentifier(
     throw new Error(
       `resource type uses a composite primary identifier ` +
         `(${entry.fields.length} fields: ${entry.fields.join(', ')}); ` +
-        `add an entry to COMPOSITE_ID_SPLITTERS in src/cli/commands/export.ts ` +
+        `add an entry to COMPOSITE_ID_SPLITTERS in src/cli/commands/export/composite-id-splitters.ts ` +
         `that parses cdkd's physicalId for this type, or destroy the resource ` +
         `first and let CFn create it fresh`
     );
