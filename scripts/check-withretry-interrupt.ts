@@ -20,7 +20,8 @@
  * one site in eleven honors is not a convention; it teaches the next author the
  * wrong pattern. This critic is what makes it one.
  *
- * The reference shape is `custom-resource-provider.ts`:
+ * The reference shape is `custom-resource/invoke-retry.ts`
+ * (`invokeCustomResourceWithRetry`, split out of `custom-resource-provider.ts`):
  *
  *   const watch = startInterruptWatch(`... ${logicalId}`);
  *   try {
@@ -881,7 +882,7 @@ function main(argv: readonly string[]): number {
           `issuing writes behind a run the user was told had ended. Install one watch per ` +
           `WAIT (never on \`this\` — providers are singletons serving concurrent resources), ` +
           `pass \`isInterrupted\` / \`onInterrupted\`, and \`dispose()\` it in a \`finally\`. ` +
-          `Reference: src/provisioning/providers/custom-resource-provider.ts.`
+          `Reference: src/provisioning/providers/custom-resource/invoke-retry.ts.`
       );
     }
   }

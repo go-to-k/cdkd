@@ -730,7 +730,7 @@ describe('provider secret-mask critic — the real tree', () => {
     expect(exempt).toEqual([
       // Delete path: the arm for a direct caller passing no
       // `DeleteContext.maskSecrets` (go-to-k/cdkd#2007).
-      'custom-resource-provider.ts parsed',
+      'custom-resource/lambda-payload.ts parsed',
       // Import path: `resolvePhysicalId` reads an UNRESOLVED template.
       's3-bucket-policy-provider.ts bucket',
       'sns-topic-policy-provider.ts topics',
@@ -837,14 +837,14 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     const dir = copyTree();
     mutate(
       dir,
-      'custom-resource-provider.ts',
+      'custom-resource/lambda-payload.ts',
       'JSON.stringify(parsed)',
       'JSON.stringify(maskDeep(parsed, mask))'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
     expect(stderr).toContain('exempt site');
-    expect(stderr).toContain('custom-resource-provider.ts');
+    expect(stderr).toContain('custom-resource/lambda-payload.ts');
     expect(stderr).toContain('no longer exists');
   }, SPAWN_TIMEOUT_MS);
 
@@ -860,18 +860,26 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     const dir = copyTree();
     mutate(
       dir,
-      'custom-resource-provider.ts',
+      'custom-resource/lambda-payload.ts',
       'const parsed: unknown = JSON.parse(payloadString);',
       'const parsed: unknown = maskDeep(JSON.parse(payloadString), maskerOrIdentity(mask));'
     );
+    // The split file imports only `maskDeep`; the upstream mask needs its
+    // `maskerOrIdentity` import too, as it had in the unsplit provider file.
+    mutate(
+      dir,
+      'custom-resource/lambda-payload.ts',
+      `import { maskDeep, type MaskerFn } from '../../masked-retry-logger.js';`,
+      `import { maskDeep, maskerOrIdentity, type MaskerFn } from '../../masked-retry-logger.js';`
+    );
     // RECEIPT: the site text the entry keys on is untouched by the mutation.
-    expect(readFileSync(join(dir, 'custom-resource-provider.ts'), 'utf8')).toContain(
+    expect(readFileSync(join(dir, 'custom-resource/lambda-payload.ts'), 'utf8')).toContain(
       'JSON.stringify(parsed)'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
     expect(stderr).toContain('exempt site');
-    expect(stderr).toContain('custom-resource-provider.ts');
+    expect(stderr).toContain('custom-resource/lambda-payload.ts');
     expect(stderr).toContain('is now MASKED');
     expect(stderr).toContain('drop the entry');
   }, SPAWN_TIMEOUT_MS);
