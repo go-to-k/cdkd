@@ -1325,9 +1325,10 @@ export async function resolveContainerImagePlan(
   const logger = getLogger();
   const platform = architectureToPlatform(lambda.architecture);
 
-  // Asset manifest lookup. The stack's `assetManifestPath` is at
-  // `<cdk.out>/<stack>.assets.json`; we strip the filename to get the
-  // assembly directory the build context lives under.
+  // Asset manifest lookup. The stack's `assetManifestPath` is
+  // `<cdk.out>/<stack>.assets.json`, or `<assembly-dir>/<artifactId>.assets.json`
+  // for a Stage stack; we strip the filename to get the assembly directory the
+  // build context lives under.
   const localBuild = await resolveLocalBuildPlan(lambda);
   let imageRef: string;
   if (localBuild) {

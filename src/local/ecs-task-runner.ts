@@ -1234,7 +1234,7 @@ async function prepareOneImage(
       const manifest = await loader.loadStackManifest(task.stack, cdkOutDir);
       if (!manifest) {
         throw new EcsTaskRunnerError(
-          `No asset manifest at ${cdkOutDir} for stack ${task.stack.stackName}.`
+          `No asset manifest at ${task.stack.assetManifestPath} for stack ${task.stack.stackName}.`
         );
       }
       const dockerImages = manifest.dockerImages ?? {};
