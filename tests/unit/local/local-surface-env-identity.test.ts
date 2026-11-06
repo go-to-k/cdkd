@@ -392,7 +392,9 @@ function annotationGovernsRead(lines: string[], index: number): boolean {
  * `if (...)` openers, comments and blank lines, then asks `hasAnnotationAbove`
  * from the top of that run. Two stops keep it from borrowing a reason:
  *
- *   - any other statement — a call in an `if` condition included — ends it;
+ *   - any other statement — a call in an `if` condition included — ends it,
+ *     and so does a bare `}`: a block that closed above this line is not
+ *     this line's decision;
  *   - a key it has already passed ends it, as in `annotationGovernsRead`, so
  *     a write AFTER a decided triple is a new decision. The two arms of an
  *     `if` / `else` are alternatives, so each arm is checked against the keys
@@ -400,8 +402,9 @@ function annotationGovernsRead(lines: string[], index: number): boolean {
  */
 function annotationGovernsKeyLine(lines: string[], index: number): boolean {
   let seen = credentialKeysNamed(stripComments(lines[index] ?? ''));
-  // One frame per `if` / `else` construct the climb is inside: `base` is what
-  // the construct's arms are checked against, `union` what they wrote.
+  // One frame per `if` / `else` construct the climb is inside (entered from an
+  // `else` arm): `base` is what its arms are checked against, `union` what
+  // they wrote.
   const frames: { base: Set<string>; union: Set<string> }[] = [];
   const opener = /^(?:if\s*\([^()]*\)\s*)?\{$/;
   const elseLine = /^\}\s*else\s*(?:if\s*\([^()]*\)\s*)?\{$/;
@@ -416,9 +419,10 @@ function annotationGovernsKeyLine(lines: string[], index: number): boolean {
     }
     const code = stripComments(raw).trim();
     if (code === '') continue;
-    if (code === '}') {
-      frames.push({ base: new Set(seen), union: new Set(seen) });
-    } else if (elseLine.test(code)) {
+    // A bare `}` closes a block ABOVE this line: climbing into it would hand
+    // that block's inner reason to a key written after it, so it ends here.
+    if (code === '}') break;
+    if (elseLine.test(code)) {
       const frame = frames.at(-1) ?? { base: new Set<string>(), union: new Set<string>() };
       if (frames.length === 0) frames.push(frame);
       for (const k of seen) frame.union.add(k);
@@ -902,6 +906,15 @@ describe('every identity reaching an emulated workload through process env or a 
     ]) {
       expect(siteAt([...written, late], written.length)?.verdict, late).toBe('undeclared');
     }
+    // A reason INSIDE a block that closed above does not reach past it.
+    const closedBlock = [
+      '  if (x) {',
+      '    // cdkd-local-env-identity: reason for the key id alone',
+      "    env['AWS_ACCESS_KEY_ID'] = k;",
+      '  }',
+      "  env['AWS_SECRET_ACCESS_KEY'] = leak;",
+    ];
+    expect(siteAt(closedBlock, 4)?.verdict).toBe('undeclared');
     const callInCondition = [
       ...written.slice(0, 3),
       '  if (leak(env)) {',
