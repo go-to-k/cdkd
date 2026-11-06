@@ -51,7 +51,6 @@
       "Domain",
       "DomainIAMRoleName",
       "EnableGlobalWriteForwarding",
-      "GlobalClusterIdentifier",
       "Iops",
       "ReplicationSourceIdentifier",
       "RestoreToTime",

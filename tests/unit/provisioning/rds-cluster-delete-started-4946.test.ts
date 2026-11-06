@@ -108,8 +108,10 @@ describe('RDSProvider DBCluster delete marks a refusal after a global-cluster de
 
   it('marks the failure of the wait that confirms an accepted detach', async () => {
     const base = rdsSend.getMockImplementation()!;
+    // The pre-detach read (go-to-k/cdkd#5853) answers; the confirming poll fails.
+    let reads = 0;
     rdsSend.mockImplementation((cmd: { constructor: { name: string } }) =>
-      cmd.constructor.name === 'DescribeGlobalClustersCommand'
+      cmd.constructor.name === 'DescribeGlobalClustersCommand' && reads++ > 0
         ? Promise.reject(awsError('AccessDenied', 'not authorized: rds:DescribeGlobalClusters'))
         : base(cmd)
     );

@@ -176,7 +176,7 @@ export async function deleteDBClusterOnce(
         logicalId,
         physicalId,
         globalClusterId,
-        context?.removeProtection === true,
+        { beforeDelete: true, removeProtection: context?.removeProtection === true },
         progress,
         maskerOrIdentity(context?.maskSecrets)
       ))
@@ -321,10 +321,17 @@ export function wrapGlobalClusterDetachError(
  * CloudFormation handler does before its delete (issue #4029). Returns
  * whether a detach was issued, for the caller's failure message.
  *
- * The detach is IRREVERSIBLE (a secondary becomes a standalone writer), so a
- * cluster whose deletion protection is still on is refused BEFORE it: the
- * delete could only fail after it. Under `--remove-protection` the flip just
- * made gets a short grace to show.
+ * The PRIMARY of a global cluster that still has other members is refused
+ * at once, naming them (go-to-k/cdkd#5853): AWS refuses its detach, as a
+ * busy fault no wait clears.
+ *
+ * The detach is IRREVERSIBLE (a secondary becomes a standalone writer), so
+ * `beforeDelete`, a cluster whose deletion protection is still on is refused
+ * BEFORE it: the delete could only fail after it. Under `--remove-protection`
+ * the flip just made gets a short grace to show. An update's detach (a
+ * removed `GlobalClusterIdentifier`, go-to-k/cdkd#5639) is the change
+ * itself, and deletion protection guards only a delete, so it is not
+ * consulted there.
  *
  * A cluster that is gone surfaces as the describe's `DBClusterNotFoundFault`
  * or an empty answer, both left to the caller's region-checked not-found
@@ -338,7 +345,7 @@ export async function detachFromGlobalCluster(
   logicalId: string,
   physicalId: string,
   globalClusterId: string,
-  removeProtection: boolean,
+  { beforeDelete, removeProtection }: { beforeDelete: boolean; removeProtection: boolean },
   progress: DeleteProgress,
   mask: (text: string) => string
 ): Promise<boolean> {
@@ -348,7 +355,7 @@ export async function detachFromGlobalCluster(
     cluster = await this.describeDBCluster(physicalId);
   }
   if (cluster === undefined) return false;
-  if (cluster.DeletionProtection === true) {
+  if (beforeDelete && cluster.DeletionProtection === true) {
     throw new GlobalClusterDetachError(
       safeMsg`${physicalId} has deletion protection on, so cdkd did not detach it from global cluster ${globalClusterId}; turn it off (cdkd destroy --remove-protection does) and re-run`
     );
@@ -372,6 +379,56 @@ export async function detachFromGlobalCluster(
     delay = Math.min(delay * 2, 10_000);
   };
 
+  // go-to-k/cdkd#5853: AWS refuses to detach the primary while secondaries
+  // remain, as `InvalidGlobalClusterStateFault`, which the loop below waits
+  // through as busy. No wait changes that, so name them and fail at once, as
+  // the DocDB detach does. A busy or throttled read is waited through; a
+  // global cluster that is gone has no members to check.
+  for (;;) {
+    let members:
+      | Array<{ DBClusterArn?: string | undefined; IsWriter?: boolean | undefined }>
+      | undefined;
+    try {
+      const response = await this.getClient().send(
+        new DescribeGlobalClustersCommand({ GlobalClusterIdentifier: globalClusterId })
+      );
+      members = response.GlobalClusters?.[0]?.GlobalClusterMembers ?? [];
+    } catch (error) {
+      const name = awsErrorName(error);
+      if (name === 'GlobalClusterNotFoundFault') {
+        members = [];
+      } else if (!TRANSIENT_DETACH_FAULTS.has(name)) {
+        throw this.wrapGlobalClusterDetachError(
+          error,
+          mask,
+          (text) =>
+            safeMsg`could not read the members of global cluster ${globalClusterId} to detach ${physicalId} (${text})`
+        );
+      }
+    }
+    if (members === undefined) {
+      await backOff();
+      continue;
+    }
+    const own = members.find((member) => member.DBClusterArn === clusterArn);
+    // The identifier, not the ARN: the ARN carries the account id.
+    const others = members
+      .filter((member) => member.DBClusterArn !== clusterArn)
+      .map(
+        (member) =>
+          /^arn:[^:]*:rds:[^:]*:[^:]*:cluster:(.+)$/.exec(member.DBClusterArn ?? '')?.[1] ??
+          '(unnamed)'
+      );
+    if (own?.IsWriter === true && others.length > 0) {
+      throw new GlobalClusterDetachError(
+        mask(
+          safeMsg`${physicalId} is the primary of global cluster ${globalClusterId}, which still has other members (${others.join(', ')}); detach or delete them first, then re-run`
+        )
+      );
+    }
+    break;
+  }
+
   for (;;) {
     try {
       await this.getClient().send(
@@ -382,7 +439,11 @@ export async function detachFromGlobalCluster(
       );
       progress.stripped = true;
       this.logger.info(
-        safeMsg`Detaching DBCluster ${logicalId} from global cluster ${globalClusterId} before the delete`
+        mask(
+          beforeDelete
+            ? safeMsg`Detaching DBCluster ${logicalId} from global cluster ${globalClusterId} before the delete`
+            : safeMsg`Detaching DBCluster ${logicalId} from global cluster ${globalClusterId}: GlobalClusterIdentifier was removed`
+        )
       );
       break;
     } catch (error) {

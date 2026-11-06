@@ -195,6 +195,10 @@ STATE_PREFIX="$(s3_stack_prefix "${STACK}" "${REGION}")"
 # Issue #5467: tagged onto the EngineCluster, so cleanup's sweep for an
 # unrecorded replacement matches only THIS run's clusters, never a peer's.
 export CDKD_TEST_RUN_ID="rds-aurora-$(date +%s)-$$"
+# go-to-k/cdkd#5639: the GlobalCluster's name, as lib/ derives it from the run id.
+GLOBAL_CLUSTER_NAME="rdsaurorastack-${CDKD_TEST_RUN_ID}"
+# The GlobalMemberCluster's generated identifier, resolved from state after phase 1.
+GLOBAL_MEMBER_ID=""
 
 EXPECTED_MONITORING_INTERVAL=60
 EXPECTED_IAM_AUTH="true"
@@ -416,6 +420,62 @@ cleanup() {
       --region "${REGION}" \
       --skip-final-snapshot >/dev/null 2>&1 || true
   done
+  # go-to-k/cdkd#5639: this run's GlobalMemberCluster and global cluster; a
+  # no-op once destroyed. A member must leave before either delete is accepted.
+  # The members are read from this run's global cluster too, so a member whose
+  # create returned before its state record was saved is still swept.
+  GLOBAL_MEMBER_ARNS_CLEAN=$(aws rds describe-global-clusters --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" \
+    --region "${REGION}" --query "join(' ', GlobalClusters[0].GlobalClusterMembers[].DBClusterArn || \`[]\`)" --output text 2>/dev/null)
+  if [ -n "${GLOBAL_MEMBER_ID}" ]; then
+    GLOBAL_MEMBER_ARN_CLEAN=$(aws rds describe-db-clusters --db-cluster-identifier "${GLOBAL_MEMBER_ID}" \
+      --region "${REGION}" --query 'DBClusters[0].DBClusterArn' --output text 2>/dev/null)
+    case " ${GLOBAL_MEMBER_ARNS_CLEAN} " in
+      *" ${GLOBAL_MEMBER_ARN_CLEAN} "*) ;;
+      *) [ -n "${GLOBAL_MEMBER_ARN_CLEAN}" ] && [ "${GLOBAL_MEMBER_ARN_CLEAN}" != "None" ] \
+        && GLOBAL_MEMBER_ARNS_CLEAN="${GLOBAL_MEMBER_ARNS_CLEAN} ${GLOBAL_MEMBER_ARN_CLEAN}" ;;
+    esac
+  fi
+  [ "${GLOBAL_MEMBER_ARNS_CLEAN}" = "None" ] && GLOBAL_MEMBER_ARNS_CLEAN=""
+  for member_arn in ${GLOBAL_MEMBER_ARNS_CLEAN}; do
+    # Only a cluster ARN: an unexpected `None` or other text never reaches a call.
+    case "${member_arn}" in arn:*:cluster:?*) ;; *) continue ;; esac
+    aws rds remove-from-global-cluster --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" \
+      --db-cluster-identifier "${member_arn}" --region "${REGION}" >/dev/null 2>&1 || true
+  done
+  if [ -n "${GLOBAL_MEMBER_ARNS_CLEAN}" ]; then
+    # The detach is asynchronous, and RDS refuses either delete until the
+    # member list is empty: wait up to 10 minutes for it.
+    for _ in $(seq 1 60); do
+      GLOBAL_MEMBERS_CLEAN=$(aws rds describe-global-clusters --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" \
+        --region "${REGION}" --query "length(GlobalClusters[0].GlobalClusterMembers || \`[]\`)" --output text 2>&1)
+      [ "${GLOBAL_MEMBERS_CLEAN}" = "0" ] && break
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${GLOBAL_MEMBERS_CLEAN}" && break
+      sleep 10
+    done
+  fi
+  for member_arn in ${GLOBAL_MEMBER_ARNS_CLEAN}; do
+    case "${member_arn}" in arn:*:cluster:?*) ;; *) continue ;; esac
+    member_id="${member_arn##*:cluster:}"
+    # A just-detached cluster is `modifying` for a while: wait up to 10
+    # minutes for `available` (or gone) before the delete.
+    for _ in $(seq 1 60); do
+      MEMBER_STATUS_CLEAN=$(aws rds describe-db-clusters --db-cluster-identifier "${member_id}" \
+        --region "${REGION}" --query 'DBClusters[0].Status' --output text 2>&1)
+      [ "${MEMBER_STATUS_CLEAN}" = "available" ] && break
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${MEMBER_STATUS_CLEAN}" && break
+      sleep 10
+    done
+    if ! MEMBER_DELETE_OUT=$(aws rds delete-db-cluster --db-cluster-identifier "${member_id}" \
+      --region "${REGION}" --skip-final-snapshot 2>&1); then
+      grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${MEMBER_DELETE_OUT}" \
+        || echo "WARN: cleanup could not delete the #5639 global-cluster member ${member_id}; delete it by hand: ${MEMBER_DELETE_OUT}" >&2
+    fi
+  done
+  if ! GLOBAL_DELETE_OUT=$(aws rds delete-global-cluster \
+    --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" --region "${REGION}" 2>&1); then
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${GLOBAL_DELETE_OUT}" \
+      || echo "WARN: cleanup could not delete the #5639 global cluster ${GLOBAL_CLUSTER_NAME}; delete it by hand: ${GLOBAL_DELETE_OUT}" >&2
+  fi
   # Issue #4030: the SecurityCluster's final snapshot from this run's destroy.
   # Older ones are not this run's to delete.
   if [ -n "${DB_CLUSTER_ID}" ] && [ -n "${RUN_START}" ]; then
@@ -642,6 +702,44 @@ if [ "${ENGINE_5639}" != "3600 on standard" ]; then
   exit 1
 fi
 echo "    OK: phase 1: EngineCluster backtracks 3600 s, forwards writes, scalability standard (#5639)"
+
+# go-to-k/cdkd#5639 (DBCluster GlobalClusterIdentifier): the GlobalMemberCluster
+# joins this run's empty global cluster on create. Before #5639 the declared
+# GlobalClusterIdentifier routed it to Cloud Control, which the route check
+# fails; the global cluster's member list proves the join reached AWS.
+GLOBAL_MEMBER_RECORD=$(echo "${STATE}" | jq -r '.resources.GlobalMemberCluster | "\(.provisionedBy // "sdk") \(.properties.GlobalClusterIdentifier // "absent")"')
+if [ "${GLOBAL_MEMBER_RECORD}" != "sdk ${GLOBAL_CLUSTER_NAME}" ]; then
+  echo "FAIL: #5639: phase 1: GlobalMemberCluster record [provisionedBy, GlobalClusterIdentifier] is '${GLOBAL_MEMBER_RECORD}', want 'sdk ${GLOBAL_CLUSTER_NAME}' (GlobalClusterIdentifier is still SDK-unwired, so the cluster routed via Cloud Control)" >&2
+  exit 1
+fi
+GLOBAL_MEMBER_ID=$(echo "${STATE}" | jq -r '.resources.GlobalMemberCluster.physicalId // ""')
+if [ -z "${GLOBAL_MEMBER_ID}" ]; then
+  echo "FAIL: #5639: could not resolve the GlobalMemberCluster identifier from state" >&2
+  exit 1
+fi
+# usage: global_member_arn -> the GlobalMemberCluster's ARN
+global_member_arn() {
+  aws rds describe-db-clusters --db-cluster-identifier "${GLOBAL_MEMBER_ID}" \
+    --region "${REGION}" --query 'DBClusters[0].DBClusterArn' --output text
+}
+# usage: global_cluster_members -> the global cluster's member ARNs, sorted, space-joined
+global_cluster_members() {
+  aws rds describe-global-clusters --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" \
+    --region "${REGION}" \
+    --query "join(' ', sort(GlobalClusters[0].GlobalClusterMembers[].DBClusterArn || \`[]\`))" \
+    --output text
+}
+GLOBAL_MEMBER_ARN=$(global_member_arn) || { echo "FAIL: #5639: DescribeDBClusters on the GlobalMemberCluster failed" >&2; exit 1; }
+if [ -z "${GLOBAL_MEMBER_ARN}" ] || [ "${GLOBAL_MEMBER_ARN}" = "None" ]; then
+  echo "FAIL: #5639: could not read the GlobalMemberCluster ARN" >&2
+  exit 1
+fi
+GLOBAL_MEMBERS=$(global_cluster_members) || { echo "FAIL: #5639: DescribeGlobalClusters on ${GLOBAL_CLUSTER_NAME} failed" >&2; exit 1; }
+if [ "${GLOBAL_MEMBERS}" != "${GLOBAL_MEMBER_ARN}" ]; then
+  echo "FAIL: #5639: phase 1: global cluster ${GLOBAL_CLUSTER_NAME} lists members '${GLOBAL_MEMBERS}', want '${GLOBAL_MEMBER_ARN}' (CreateDBCluster did not send GlobalClusterIdentifier)" >&2
+  exit 1
+fi
+echo "    OK: phase 1: GlobalMemberCluster provisionedBy=sdk and the only member of ${GLOBAL_CLUSTER_NAME} (#5639)"
 
 # Issue #4030 premise: the L1 SecurityCluster declares NO DeletionPolicy, so
 # its destroy applies CloudFormation's default for a DBCluster, Snapshot.
@@ -1217,6 +1315,32 @@ if [ "${ENGINE_AZ_LIVE_2}" != "${ENGINE_AZ_LIVE}" ]; then
 fi
 echo "    OK: phase 2: dropping AvailabilityZones kept ${ENGINE_AZ_CLUSTER_ID} and its zones in place (#5639)"
 
+# go-to-k/cdkd#5639: phase 2 DROPS the GlobalMemberCluster's
+# GlobalClusterIdentifier, which detaches it in place, as CloudFormation's
+# update handler does: the same cluster, on the SDK route, a record without the
+# key, an empty member list, and the cluster `available` (standalone).
+GLOBAL_MEMBER_RECORD_2=$(echo "${ENGINE_5639_STATE}" | jq -r '.resources.GlobalMemberCluster | "\(.physicalId // "") \(.provisionedBy // "sdk") \(if .properties | has("GlobalClusterIdentifier") then "declared" else "absent" end)"')
+if [ "${GLOBAL_MEMBER_RECORD_2}" != "${GLOBAL_MEMBER_ID} sdk absent" ]; then
+  echo "FAIL: #5639: phase 2: GlobalMemberCluster record [physicalId, provisionedBy, GlobalClusterIdentifier] is '${GLOBAL_MEMBER_RECORD_2}', want '${GLOBAL_MEMBER_ID} sdk absent' (dropping GlobalClusterIdentifier must detach in place, not replace)" >&2
+  exit 1
+fi
+GLOBAL_MEMBERS_2=$(global_cluster_members) || { echo "FAIL: #5639: DescribeGlobalClusters on ${GLOBAL_CLUSTER_NAME} failed" >&2; exit 1; }
+if [ -n "${GLOBAL_MEMBERS_2}" ]; then
+  echo "FAIL: #5639: phase 2: global cluster ${GLOBAL_CLUSTER_NAME} still lists '${GLOBAL_MEMBERS_2}' (a dropped GlobalClusterIdentifier must detach the cluster)" >&2
+  exit 1
+fi
+GLOBAL_MEMBER_STATUS_2=$(aws rds describe-db-clusters --db-cluster-identifier "${GLOBAL_MEMBER_ID}" \
+  --region "${REGION}" --query 'DBClusters[0].Status' --output text) \
+  || { echo "FAIL: #5639: DescribeDBClusters on the GlobalMemberCluster failed" >&2; exit 1; }
+case "${GLOBAL_MEMBER_STATUS_2}" in
+  available | modifying) ;;
+  *)
+    echo "FAIL: #5639: phase 2: GlobalMemberCluster is '${GLOBAL_MEMBER_STATUS_2}' after the detach, want it standing (available, or modifying from the update's ModifyDBCluster)" >&2
+    exit 1
+    ;;
+esac
+echo "    OK: phase 2: dropping GlobalClusterIdentifier detached ${GLOBAL_MEMBER_ID} from ${GLOBAL_CLUSTER_NAME} in place (#5639)"
+
 # --- #1160 DBProxy removal: kept on AWS, and warned about -------------
 if ! grep -qF "${PROXY_LOGICAL} (AWS::RDS::DBProxy): property DebugLogging was removed from the template and keeps its current AWS value, as CloudFormation leaves it; ModifyDBProxy keeps a setting it is not sent" <<<"${DEPLOY_2_PLAIN}"; then
   echo "FAIL: #1160: phase 2 dropped DebugLogging from ${PROXY_LOGICAL}, but the deploy printed no warning naming it as left in place" >&2
@@ -1784,6 +1908,10 @@ if [ "${ENGINE_STATUS}" != "gone" ] && [ "${ENGINE_STATUS}" != "deleting" ]; the
   exit 1
 fi
 echo "    OK: EngineCluster ${ENGINE_CLUSTER_NEW} is gone or deleting (status: ${ENGINE_STATUS})"
+
+# go-to-k/cdkd#5639: the destroy deleted this run's global cluster.
+assert_gone "global cluster ${GLOBAL_CLUSTER_NAME} still exists after destroy (#5639)" aws rds describe-global-clusters --global-cluster-identifier "${GLOBAL_CLUSTER_NAME}" --region "${REGION}"
+echo "    OK: global cluster ${GLOBAL_CLUSTER_NAME} is gone (#5639)"
 
 # Issue #4030: the phase-3 destroy of the policy-less SecurityCluster took
 # exactly one cdkd final snapshot (CloudFormation's default is Snapshot).

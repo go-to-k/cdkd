@@ -12,9 +12,10 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
  * each routed through Cloud Control and each declaring `DeletionPolicy: Delete`:
  *
  *   - An Aurora PostgreSQL `AWS::RDS::DBCluster` that is a member of an
- *     `AWS::RDS::GlobalCluster` (`GlobalClusterIdentifier` is SDK-unwired for
- *     cdkd's SDK provider, so the cluster is Cloud Control-routed). cdkd must
- *     detach it from the global cluster and delete it without a snapshot.
+ *     `AWS::RDS::GlobalCluster` (created on the SDK route since
+ *     go-to-k/cdkd#5639 wired `GlobalClusterIdentifier`; verify.sh seeds its
+ *     record to Cloud Control after phase 1). cdkd must detach it from the
+ *     global cluster and delete it without a snapshot.
  *   - An `AWS::Neptune::DBCluster` (moved onto Cloud Control by verify.sh's
  *     `--recreate-via-cc-api` phase).
  *   - A Redis `AWS::ElastiCache::CacheCluster` (moved onto Cloud Control by

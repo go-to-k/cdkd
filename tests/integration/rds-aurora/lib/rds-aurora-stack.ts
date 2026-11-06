@@ -414,6 +414,45 @@ export class RdsAuroraStack extends cdk.Stack {
     engineCluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
     engineCluster.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
 
+    // go-to-k/cdkd#5639: DBCluster GlobalClusterIdentifier, single-region. An
+    // empty global cluster (named per run, so cleanup can address it) and a
+    // cluster with NO instance that joins it on create as its primary. Before
+    // #5639 the declared GlobalClusterIdentifier routed the cluster to Cloud
+    // Control (verify.sh's provisionedBy=sdk check catches it). Phase 2
+    // (CDKD_TEST_UPDATE=true) DROPS it, which detaches the cluster in place,
+    // as CloudFormation's update handler does (RemoveFromGlobalCluster): the
+    // same cluster stays, standalone, and the global cluster lists no member.
+    // Neither existing cluster can join: the EngineCluster backtracks (no
+    // global database supports it), the SecurityCluster auto-pauses at 0 ACU.
+    // The password is the L2 cluster's generated one, as the SecurityCluster's
+    // phase 2 reuses it.
+    const globalClusterName = `rdsaurorastack-${process.env.CDKD_TEST_RUN_ID ?? 'global'}`;
+    const globalCluster = new rds.CfnGlobalCluster(this, 'GlobalCluster', {
+      globalClusterIdentifier: globalClusterName,
+      engine: 'aurora-postgresql',
+      engineVersion: '17.9',
+      deletionProtection: false,
+    });
+    globalCluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    const globalMemberCluster = new rds.CfnDBCluster(this, 'GlobalMemberCluster', {
+      engine: 'aurora-postgresql',
+      engineVersion: '17.9',
+      masterUsername: 'postgres',
+      masterUserPassword: cluster.secret!.secretValueFromJson('password').unsafeUnwrap(),
+      backupRetentionPeriod: 1,
+      dbSubnetGroupName: securitySubnetGroup.subnetGroupName,
+      serverlessV2ScalingConfiguration: { minCapacity: 0.5, maxCapacity: 1 },
+      ...(isUpdate ? {} : { globalClusterIdentifier: globalCluster.ref }),
+      ...(process.env.CDKD_TEST_RUN_ID
+        ? { tags: [{ key: 'cdkd-integ-run', value: process.env.CDKD_TEST_RUN_ID }] }
+        : {}),
+    });
+    globalMemberCluster.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE;
+    globalMemberCluster.cfnOptions.updateReplacePolicy = cdk.CfnDeletionPolicy.DELETE;
+    // Once phase 2 drops the Ref, this keeps the global cluster deleted AFTER
+    // the cluster, should a later edit leave it a member.
+    globalMemberCluster.node.addDependency(globalCluster);
+
     // Outputs
     new cdk.CfnOutput(this, 'ProxyEndpoint', {
       value: proxy.endpoint,

@@ -46,6 +46,9 @@ export function getDriftUnknownPaths(
     'AvailabilityZones',
     'ClusterScalabilityType',
     'MasterUserAuthenticationType',
+    // Not read back: a cluster a CDK `GlobalCluster` adopted through its
+    // `SourceDBClusterIdentifier` is a member its template never names.
+    'GlobalClusterIdentifier',
   ];
   // An absent or empty bag records nothing to scope by: compare.
   if (properties === undefined || Object.keys(properties).length === 0) return neverRead;
