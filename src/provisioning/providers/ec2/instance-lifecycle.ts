@@ -49,6 +49,7 @@ import {
   instanceSsmAssociationEntries,
   instanceSsmAssociationsRefusal,
   refusedBeforeApplying,
+  staleSsmAssociationRemedy,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -394,10 +395,15 @@ export async function deleteInstance(
   // touches only their associations, and a record declaring none (or an
   // unreadable one) pays no Systems Manager call.
   const ssm = properties?.['SsmAssociations'];
-  const ssmDocumentNames =
-    instanceSsmAssociationsRefusal(ssm, resourceType) === undefined
-      ? instanceSsmAssociationEntries(ssm).map((e) => e.DocumentName)
-      : [];
+  const ssmReadable = instanceSsmAssociationsRefusal(ssm, resourceType) === undefined;
+  const ssmDocumentNames = ssmReadable
+    ? instanceSsmAssociationEntries(ssm).map((e) => e.DocumentName)
+    : [];
+  if (!ssmReadable) {
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and skips the association cleanup. ${staleSsmAssociationRemedy(physicalId, context?.maskSecrets)}.`
+    );
+  }
   // The region the compensation's commands name: the state's, else the
   // client's own (a pre-v2 state record carries none), so a pasted command
   // never falls back to the operator's default region. Resolved only under

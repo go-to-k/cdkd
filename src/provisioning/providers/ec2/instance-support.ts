@@ -10,6 +10,7 @@ import { definedAttributes } from '../../attribute-map.js';
 import { isSettledInstanceState } from '../../ec2-instance-state.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { markRefusedBeforeApplying } from '../../../deployment/prior-attempt-scope.js';
+import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 
 /**
  * Issue #5446: the stop / start waits of an in-place InstanceType / UserData
@@ -112,6 +113,8 @@ export interface InstanceMemberPlan {
    */
   ssmAssociation?: {
     documentNames: string[];
+    /** The previous record was unreadable, so no old association was deleted. */
+    recordUnreadable: boolean;
     create: InstanceSsmAssociation | undefined;
   };
 }
@@ -450,6 +453,20 @@ export function sameSsmAssociations(a: unknown, b: unknown, resourceType: string
 
 function sameOrderedStrings(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * go-to-k/cdkd#5630: how to find and remove a stale SSM association of
+ * `instanceId` by hand, for a message where cdkd could not tell which
+ * association is the resource's (an unreadable record). Names no parameter
+ * value.
+ */
+export function staleSsmAssociationRemedy(
+  instanceId: string,
+  maskSecrets?: (text: string) => string
+): string {
+  const aws = pasteableAwsCommand(maskSecrets);
+  return `List its associations with: ${aws`aws ssm list-associations --association-filter-list key=InstanceId,value=${instanceId}`.render()} and delete a stale one with: ${aws`aws ssm delete-association --association-id <id>`.render()}`;
 }
 
 /**

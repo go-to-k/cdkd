@@ -450,10 +450,15 @@ describe('AWS::EC2::Instance SsmAssociations create (#5630)', () => {
 
   it('gives up after the 5-minute cap when there is no resource deadline (T5)', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
+    let sleeps = 0;
     try {
       vi.mocked(
         (EC2Provider.prototype as unknown as { sleep: (ms: number) => Promise<void> }).sleep
       ).mockImplementation((ms: number) => {
+        // A fence, not the subject: with the cap gone the retry would spin
+        // forever, so the sleep gives up well past it and the count below
+        // reports the failure.
+        if (++sleeps > 150) return Promise.reject(new Error('retry outlived the cap'));
         vi.setSystemTime(Date.now() + ms);
         return Promise.resolve();
       });
@@ -461,6 +466,7 @@ describe('AWS::EC2::Instance SsmAssociations create (#5630)', () => {
       const error = await new EC2Provider()
         .create('Inst', TYPE, { ...BASE, SsmAssociations: [SHELL] })
         .catch((e: unknown) => e);
+      expect(String(error)).not.toMatch(/retry outlived the cap/);
       expect(String(error)).toMatch(/Failed to create EC2 Instance Inst/);
       // 5 min of 3 s polls: about 100 attempts, then the create fails.
       const attempts = ssmSent(CreateAssociationCommand).length;
@@ -726,9 +732,47 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
     expect(ssmWrites()).toEqual(['Create AWS-RunShellScript']);
     expect(ssmSent(ListAssociationsCommand)).toHaveLength(0);
     expect(held.map((a) => a.AssociationId)).toEqual(['assoc-old', 'assoc-1']);
-    expect(warn.mock.calls.flat().join('\n')).toMatch(
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(
       /previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of i-new is this resource's; it deletes none/
     );
+    expect(warned).toContain(
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new'
+    );
+    expect(warned).toContain('aws ssm delete-association --association-id <id>');
+  });
+
+  it('warns with the remedy when an unreadable record meets a template declaring no association (R2-3)', async () => {
+    seed();
+    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
+      ...BASE,
+      SsmAssociations: 'garbage',
+    });
+    expect(ssmSend).not.toHaveBeenCalled();
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/SsmAssociations is unreadable, .* of i-new is this resource's and deletes none/);
+    expect(warned).toContain(
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new'
+    );
+  });
+
+  it('points a create failure after an unreadable record back to the association it did not remove (R2-1)', async () => {
+    seed('Whatever-Doc');
+    createFailures = [new Error('Currently, multiple documents cannot be associated with one instance')];
+    const error = await new EC2Provider()
+      .update(
+        'Inst',
+        'i-new',
+        TYPE,
+        { ...BASE, SsmAssociations: [SHELL] },
+        { ...BASE, SsmAssociations: 'garbage' }
+      )
+      .catch((e: unknown) => e);
+    expect(String(error)).toMatch(
+      /the previous record's SsmAssociations was unreadable, so cdkd did not remove the old SSM association of i-new/
+    );
+    expect(String(error)).toContain('aws ssm delete-association --association-id <id>');
+    expect(String(error)).toMatch(/multiple documents cannot be associated/);
   });
 
   it('applies an IamInstanceProfile change before the association it needs (T2)', async () => {
@@ -931,9 +975,14 @@ describe('AWS::EC2::Instance SsmAssociations delete (#5630)', () => {
     expect(warned).not.toContain(SECRET);
   });
 
-  it('makes no Systems Manager call for an unreadable recorded SsmAssociations', async () => {
+  it('warns, with the remedy, and makes no Systems Manager call for an unreadable recorded SsmAssociations (R2-2)', async () => {
     await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [null] });
     expect(ssmSend).not.toHaveBeenCalled();
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/record's SsmAssociations is unreadable, .* skips the association cleanup/);
+    expect(warned).toContain(
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new'
+    );
   });
 
   it('makes no Systems Manager call for a record without SsmAssociations', async () => {

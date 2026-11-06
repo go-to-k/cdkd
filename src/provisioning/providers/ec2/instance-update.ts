@@ -42,6 +42,7 @@ import {
   sameSsmAssociations,
   sameStringSet,
   ssmAssociationsAwsRefusal,
+  staleSsmAssociationRemedy,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -725,7 +726,8 @@ export function planInstanceMemberUpdates(
     previousProperties,
     plan,
     changed,
-    standInSkips
+    standInSkips,
+    context?.maskSecrets
   );
 
   return plan;
@@ -754,7 +756,8 @@ export function planInstanceSsmAssociations(
   previousProperties: Record<string, unknown>,
   plan: InstanceMemberPlan,
   changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean,
-  standInSkips: (key: string) => boolean
+  standInSkips: (key: string) => boolean,
+  maskSecrets?: (text: string) => string
 ): void {
   const refusal =
     instanceSsmAssociationsRefusal(properties['SsmAssociations'], resourceType) ??
@@ -780,15 +783,16 @@ export function planInstanceSsmAssociations(
     // deleted: an instance takes one document, and Systems Manager's own
     // refusal then names a leftover one.
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's; it deletes none and creates the declared one.`
+      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's; it deletes none and creates the declared one. ${staleSsmAssociationRemedy(physicalId, maskSecrets)}.`
     );
   } else if (!recordedUsable) {
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and deletes none.`
+      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and deletes none. ${staleSsmAssociationRemedy(physicalId, maskSecrets)}.`
     );
   }
   plan.ssmAssociation = {
     documentNames: previous.map((e) => e.DocumentName),
+    recordUnreadable: !recordedUsable,
     create: desired[0],
   };
 }

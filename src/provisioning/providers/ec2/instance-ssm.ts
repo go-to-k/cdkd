@@ -18,6 +18,7 @@ import {
   SSM_ASSOCIATION_ROLE_POLL_MS,
   SSM_ASSOCIATION_ROLE_WAIT_CAP_MS,
   ssmDocumentName,
+  staleSsmAssociationRemedy,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -165,7 +166,7 @@ export async function applyInstanceSsmAssociationChange(
   try {
     await this.createInstanceSsmAssociation(logicalId, physicalId, plan.create, mask);
   } catch (error) {
-    if (deleted.length === 0) throw error;
+    if (deleted.length === 0 && !plan.recordUnreadable) throw error;
     const cause = error instanceof Error ? error : undefined;
     const failure = describeAwsFailure(error);
     // Stamped as wrapCaughtError stamps its wrap: an AWS-authored text is
@@ -175,7 +176,10 @@ export async function applyInstanceSsmAssociationChange(
     // AWS-authored text is named by its class here (its own words go to
     // debug, masked), as the other EC2 wraps do; the rest of the message is
     // cdkd's.
-    const head = `Failed to update EC2 Instance ${logicalId}: cdkd deleted its SSM association (document ${deleted.join(', ')}) and then could not create the new one, so the instance ${physicalId} now has NO SSM association. Fix the cause and deploy again to create it: `;
+    const head =
+      deleted.length > 0
+        ? `Failed to update EC2 Instance ${logicalId}: cdkd deleted its SSM association (document ${deleted.join(', ')}) and then could not create the new one, so the instance ${physicalId} now has NO SSM association. Fix the cause and deploy again to create it: `
+        : `Failed to update EC2 Instance ${logicalId}: the previous record's SsmAssociations was unreadable, so cdkd did not remove the old SSM association of ${physicalId}, which may be what refuses this one. ${staleSsmAssociationRemedy(physicalId, mask)}. The create failed with: `;
     const thrown = new ProvisioningError(
       mask(`${head}${this.warnFailureText(head, error, mask)}`),
       resourceType,
