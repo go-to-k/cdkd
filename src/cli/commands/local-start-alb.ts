@@ -19,7 +19,7 @@ import { adoptDeprecatedRegionFlag } from '../region-options.js';
  * cdkd's `fromStateFactory` (registered via `cdkdExtraStateProviders`) when
  * the engine calls `createLocalStateProvider` internally. `--from-cfn-stack`
  * + `--stack-region` are inherited from `addCommonEcsServiceOptions`; the
- * ALB-specific flags (`--lb-port` / `--tls` / `--tls-cert` / `--tls-key` /
+ * ALB-specific flags (`--lb-port` / `--assume-host` / `--tls` / `--tls-cert` / `--tls-key` /
  * `--no-verify-auth` / `--bearer-token`) ride through via
  * `EcsServiceEmulatorOptions`'s upstream declarations + `addAlbSpecificOptions`.
  */
