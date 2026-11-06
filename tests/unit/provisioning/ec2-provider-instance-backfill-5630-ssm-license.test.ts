@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vite-plus/test'
 import {
   DescribeInstancesCommand,
   DescribeIamInstanceProfileAssociationsCommand,
+  AssociateIamInstanceProfileCommand,
+  ReplaceIamInstanceProfileAssociationCommand,
   RunInstancesCommand,
   TerminateInstancesCommand,
   waitUntilInstanceRunning,
@@ -79,7 +81,10 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
-import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
+import {
+  hasRedactedCause,
+  isMarkedNonRetryable,
+} from '../../../src/deployment/retryable-errors/marks.js';
 import {
   disarmInterruptWatchForTests,
   interruptWatchTestSeam,
@@ -124,6 +129,10 @@ let createFailures: Error[];
 let createAlwaysFails: Error | undefined;
 let failDelete: Error | undefined;
 let failList: Error | undefined;
+/** Associations ListAssociations still names but that are already gone. */
+let ghosts: Held[];
+/** When set, ListAssociations answers pages of this many entries. */
+let pageSize: number | undefined;
 /** When set, the post-association DescribeInstances fails (a wiring failure after the association). */
 let failDescribeAfterAssociation: Error | undefined;
 /** When set, TerminateInstances fails with it. */
@@ -173,6 +182,8 @@ beforeEach(() => {
   createAlwaysFails = undefined;
   failDelete = undefined;
   failList = undefined;
+  ghosts = [];
+  pageSize = undefined;
   failDescribeAfterAssociation = undefined;
   failTerminate = undefined;
   vi.spyOn(
@@ -238,15 +249,26 @@ beforeEach(() => {
     }
     if (cmd instanceof ListAssociationsCommand) {
       if (failList) return Promise.reject(failList);
-      const filter = (input['AssociationFilterList'] as Array<{ key: string; value: string }>)[0]!;
+      // Every association, unfiltered: the provider's own InstanceId and
+      // document filters are what the cases exercise.
+      const all = [...held, ...ghosts].map(({ AssociationId, InstanceId, Name }) => ({
+        AssociationId,
+        InstanceId,
+        Name,
+      }));
+      if (pageSize === undefined) return Promise.resolve({ Associations: all });
+      const start = Number(input['NextToken'] ?? 0);
+      const end = start + pageSize;
       return Promise.resolve({
-        Associations: held
-          .filter((a) => filter.key !== 'InstanceId' || a.InstanceId === filter.value)
-          .map(({ AssociationId, InstanceId, Name }) => ({ AssociationId, InstanceId, Name })),
+        Associations: all.slice(start, end),
+        ...(end < all.length && { NextToken: String(end) }),
       });
     }
     if (cmd instanceof DescribeAssociationCommand) {
       const a = held.find((x) => x.AssociationId === input['AssociationId']);
+      if (a === undefined) {
+        return Promise.reject(awsError('AssociationDoesNotExist', 'The association does not exist'));
+      }
       return Promise.resolve({
         AssociationDescription: { Name: a?.Name, Parameters: a?.Parameters },
       });
@@ -424,6 +446,51 @@ describe('AWS::EC2::Instance SsmAssociations create (#5630)', () => {
     expect(String(error)).toMatch(/Failed to create EC2 Instance Inst/);
     expect(ssmSent(CreateAssociationCommand).length).toBeGreaterThan(1);
     expect(ec2Sent(TerminateInstancesCommand)).toEqual([{ InstanceIds: ['i-new'] }]);
+  });
+
+  it('gives up after the 5-minute cap when there is no resource deadline (T5)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.mocked(
+        (EC2Provider.prototype as unknown as { sleep: (ms: number) => Promise<void> }).sleep
+      ).mockImplementation((ms: number) => {
+        vi.setSystemTime(Date.now() + ms);
+        return Promise.resolve();
+      });
+      createAlwaysFails = roleNotSeen();
+      const error = await new EC2Provider()
+        .create('Inst', TYPE, { ...BASE, SsmAssociations: [SHELL] })
+        .catch((e: unknown) => e);
+      expect(String(error)).toMatch(/Failed to create EC2 Instance Inst/);
+      // 5 min of 3 s polls: about 100 attempts, then the create fails.
+      const attempts = ssmSent(CreateAssociationCommand).length;
+      expect(attempts).toBeGreaterThan(90);
+      expect(attempts).toBeLessThan(110);
+      expect(ec2Sent(TerminateInstancesCommand)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not refuse a missing IamInstanceProfile beside a LaunchTemplate (the template can carry one) (C1)', async () => {
+    await new EC2Provider().create('Inst', TYPE, {
+      LaunchTemplate: { LaunchTemplateId: 'lt-1', Version: '1' },
+      SubnetId: 'subnet-1',
+      SsmAssociations: [SHELL],
+    });
+    expect(ec2Sent(RunInstancesCommand)).toHaveLength(1);
+    expect(ssmSent(CreateAssociationCommand)).toHaveLength(1);
+  });
+
+  it('masks a secret in the create-cleanup association warning (T6)', async () => {
+    failDescribeAfterAssociation = new Error('socket hang up');
+    failDelete = new Error(`denied while deleting echo ${SECRET}`);
+    await new EC2Provider()
+      .create('Inst', TYPE, { ...BASE, SsmAssociations: [SHELL_SECRET] }, { maskSecrets: mask })
+      .catch(() => undefined);
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/Could not delete the SSM association assoc-1 of the partially-created/);
+    expect(warned).not.toContain(SECRET);
   });
 
   it('does not retry another CreateAssociation failure', async () => {
@@ -647,7 +714,7 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
     expect(String(error)).not.toMatch(/NO SSM association/);
   });
 
-  it('an unreadable previous record deletes any instance-id association first, with a warning', async () => {
+  it('an unreadable previous record deletes no association (none is known to be this one), with a warning', async () => {
     seed('Whatever-Doc');
     await new EC2Provider().update(
       'Inst',
@@ -656,10 +723,101 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
       { ...BASE, SsmAssociations: [SHELL] },
       { ...BASE, SsmAssociations: 'garbage' }
     );
-    expect(ssmWrites()).toEqual(['Delete assoc-old', 'Create AWS-RunShellScript']);
+    expect(ssmWrites()).toEqual(['Create AWS-RunShellScript']);
+    expect(ssmSent(ListAssociationsCommand)).toHaveLength(0);
+    expect(held.map((a) => a.AssociationId)).toEqual(['assoc-old', 'assoc-1']);
     expect(warn.mock.calls.flat().join('\n')).toMatch(
-      /previous record's SsmAssociations is unreadable/
+      /previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of i-new is this resource's; it deletes none/
     );
+  });
+
+  it('applies an IamInstanceProfile change before the association it needs (T2)', async () => {
+    await new EC2Provider().update(
+      'Inst',
+      'i-new',
+      TYPE,
+      { ...BASE, IamInstanceProfile: 'profile-2', SsmAssociations: [SHELL] },
+      { ...BASE }
+    );
+    const profileCall = mockSend.mock.calls.findIndex(
+      (c) =>
+        c[0] instanceof ReplaceIamInstanceProfileAssociationCommand ||
+        c[0] instanceof AssociateIamInstanceProfileCommand
+    );
+    expect(profileCall).toBeGreaterThanOrEqual(0);
+    const create = ssmSend.mock.calls.findIndex((c) => c[0] instanceof CreateAssociationCommand);
+    expect(create).toBeGreaterThanOrEqual(0);
+    expect(ssmSend.mock.invocationCallOrder[create]!).toBeGreaterThan(
+      mockSend.mock.invocationCallOrder[profileCall]!
+    );
+  });
+
+  it('follows ListAssociations pages to find the recorded association (T3)', async () => {
+    pageSize = 1;
+    held.push({ AssociationId: 'assoc-other-instance', InstanceId: 'i-other', Name: 'AWS-RunShellScript' });
+    held.push({ AssociationId: 'assoc-target', Name: 'AWS-RunShellScript' });
+    seed();
+    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
+      ...BASE,
+      SsmAssociations: [SHELL],
+    });
+    expect(ssmWrites()).toEqual(['Delete assoc-old']);
+    expect(ssmSent(ListAssociationsCommand).map((i) => i['NextToken'])).toEqual([undefined, '1', '2']);
+  });
+
+  it('treats an association gone between the list and the delete as deleted (T7)', async () => {
+    ghosts.push({ AssociationId: 'assoc-ghost', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+    await new EC2Provider().update(
+      'Inst',
+      'i-new',
+      TYPE,
+      { ...BASE, SsmAssociations: [{ DocumentName: 'Custom-Doc' }] },
+      { ...BASE, SsmAssociations: [SHELL] }
+    );
+    expect(ssmWrites()).toEqual(['Delete assoc-ghost', 'Create Custom-Doc']);
+  });
+
+  it('matches an ARN-declared document to the listed name (T4)', async () => {
+    const ARN_DOC = { DocumentName: 'arn:aws:ssm:us-east-1:123456789012:document/Custom-Doc' };
+    held.push({ AssociationId: 'assoc-custom', InstanceId: 'i-new', Name: 'Custom-Doc' });
+    held.push({ AssociationId: 'assoc-shell', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+    // The same document by name and by ARN is no change.
+    await new EC2Provider().update(
+      'Inst',
+      'i-new',
+      TYPE,
+      { ...BASE, SsmAssociations: [ARN_DOC] },
+      { ...BASE, SsmAssociations: [{ DocumentName: 'Custom-Doc' }] }
+    );
+    expect(ssmSend).not.toHaveBeenCalled();
+    // The readback keeps the declared ARN spelling, so it compares equal.
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [ARN_DOC],
+    })) as Record<string, unknown>;
+    expect(read['SsmAssociations']).toEqual([ARN_DOC]);
+    // A removal deletes only that document's association.
+    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
+      ...BASE,
+      SsmAssociations: [ARN_DOC],
+    });
+    expect(ssmWrites()).toEqual(['Delete assoc-custom']);
+  });
+
+  it('marks the no-association error so the retry classifiers read the withheld AWS text (S1)', async () => {
+    seed();
+    createFailures = [awsError('ThrottlingException', 'Rate exceeded')];
+    const error = await new EC2Provider()
+      .update(
+        'Inst',
+        'i-new',
+        TYPE,
+        { ...BASE, SsmAssociations: [{ DocumentName: 'Custom-Doc' }] },
+        { ...BASE, SsmAssociations: [SHELL] }
+      )
+      .catch((e: unknown) => e);
+    expect(String(error)).toMatch(/now has NO SSM association/);
+    expect(hasRedactedCause(error)).toBe(true);
   });
 
   it.each([
@@ -743,6 +901,41 @@ describe('AWS::EC2::Instance SsmAssociations delete (#5630)', () => {
     expect(warn.mock.calls.flat().join('\n')).toMatch(/Could not delete the SSM association/);
   });
 
+  it("deletes only this instance's association of the recorded document, across pages (T1, T3)", async () => {
+    pageSize = 1;
+    held.push({ AssociationId: 'assoc-target', Name: 'AWS-RunShellScript' }); // Targets-based: no InstanceId
+    held.push({ AssociationId: 'assoc-other-doc', InstanceId: 'i-new', Name: 'Other-Doc' });
+    held.push({ AssociationId: 'assoc-other-instance', InstanceId: 'i-other', Name: 'AWS-RunShellScript' });
+    held.push({ AssociationId: 'assoc-1', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+    await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [SHELL] });
+    expect(ssmWrites()).toEqual(['Delete assoc-1']);
+    expect(held.map((a) => a.AssociationId)).toEqual([
+      'assoc-target',
+      'assoc-other-doc',
+      'assoc-other-instance',
+    ]);
+  });
+
+  it('masks a secret in the delete warning (T6)', async () => {
+    held.push({ AssociationId: 'assoc-1', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+    failDelete = new Error(`denied while deleting echo ${SECRET}`);
+    await new EC2Provider().delete(
+      'Inst',
+      'i-new',
+      TYPE,
+      { ...BASE, SsmAssociations: [SHELL_SECRET] },
+      { maskSecrets: mask }
+    );
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/Could not delete the SSM association of EC2 Instance Inst/);
+    expect(warned).not.toContain(SECRET);
+  });
+
+  it('makes no Systems Manager call for an unreadable recorded SsmAssociations', async () => {
+    await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [null] });
+    expect(ssmSend).not.toHaveBeenCalled();
+  });
+
   it('makes no Systems Manager call for a record without SsmAssociations', async () => {
     await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE });
     await new EC2Provider().delete('Inst', 'i-new', TYPE);
@@ -807,6 +1000,48 @@ describe('AWS::EC2::Instance SsmAssociations drift readback (#5630)', () => {
       SsmAssociations: [SHELL],
     })) as Record<string, unknown>;
     expect(gone['SsmAssociations']).toEqual([]);
+  });
+
+  it("reads only the declared document's association of this instance, across pages, skipping one gone since the list (T1, T3, C4)", async () => {
+    pageSize = 1;
+    held.push({ AssociationId: 'assoc-target', Name: 'AWS-RunShellScript' });
+    held.push({ AssociationId: 'assoc-other-doc', InstanceId: 'i-new', Name: 'Other-Doc' });
+    ghosts.push({ AssociationId: 'assoc-ghost', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+    held.push({
+      AssociationId: 'assoc-1',
+      InstanceId: 'i-new',
+      Name: 'AWS-RunShellScript',
+      Parameters: { commands: ['echo one', 'echo two'], workingDirectory: ['/tmp'] },
+    });
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [SHELL],
+    })) as Record<string, unknown>;
+    expect(read['SsmAssociations']).toEqual([SHELL]);
+  });
+
+  it('reads a declared empty parameter list back as [] (T8)', async () => {
+    held.push({ AssociationId: 'assoc-1', InstanceId: 'i-new', Name: 'AWS-RunShellScript' });
+    const declared = { DocumentName: 'AWS-RunShellScript', AssociationParameters: [] };
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [declared],
+    })) as Record<string, unknown>;
+    expect(read['SsmAssociations']).toEqual([declared]);
+    const bare = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [{ DocumentName: 'AWS-RunShellScript' }],
+    })) as Record<string, unknown>;
+    expect(bare['SsmAssociations']).toEqual([{ DocumentName: 'AWS-RunShellScript' }]);
+  });
+
+  it('reads nothing, and does not throw, for a malformed declared bag (T8)', async () => {
+    const read = (await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      SsmAssociations: [null],
+    })) as Record<string, unknown>;
+    expect('SsmAssociations' in read).toBe(false);
+    expect(ssmSend).not.toHaveBeenCalled();
   });
 
   it('omits the key when Systems Manager cannot be read, and reads nothing for a bag without it', async () => {

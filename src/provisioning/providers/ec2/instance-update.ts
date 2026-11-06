@@ -775,9 +775,20 @@ export function planInstanceSsmAssociations(
   const recorded = previousProperties['SsmAssociations'];
   const recordedUsable = instanceSsmAssociationsRefusal(recorded, resourceType) === undefined;
   const previous = recordedUsable ? instanceSsmAssociationEntries(recorded) : [];
+  if (!recordedUsable && desired.length > 0) {
+    // Which association is this resource's is unknowable, so none is
+    // deleted: an instance takes one document, and Systems Manager's own
+    // refusal then names a leftover one.
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's; it deletes none and creates the declared one.`
+    );
+  } else if (!recordedUsable) {
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and deletes none.`
+    );
+  }
   plan.ssmAssociation = {
-    deleteExisting: !recordedUsable || previous.length > 0,
-    documentNames: recordedUsable ? previous.map((e) => e.DocumentName) : undefined,
+    documentNames: previous.map((e) => e.DocumentName),
     create: desired[0],
   };
 }

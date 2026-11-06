@@ -46,6 +46,8 @@ import {
   VOLUME_ATTACHMENT_POLL_MS,
   VOLUME_ATTACHMENT_WAIT_CAP_MS,
   VOLUME_NOT_FOUND_NAMES,
+  instanceSsmAssociationEntries,
+  instanceSsmAssociationsRefusal,
   refusedBeforeApplying,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
@@ -388,10 +390,14 @@ export async function deleteInstance(
   context?: DeleteContext,
   properties?: Record<string, unknown>
 ): Promise<void> {
-  // go-to-k/cdkd#5630: only a record declaring SsmAssociations pays the
-  // Systems Manager reads of the association cleanup.
+  // go-to-k/cdkd#5630: the recorded documents. The association cleanup
+  // touches only their associations, and a record declaring none (or an
+  // unreadable one) pays no Systems Manager call.
   const ssm = properties?.['SsmAssociations'];
-  const declaresSsmAssociations = Array.isArray(ssm) && ssm.length > 0;
+  const ssmDocumentNames =
+    instanceSsmAssociationsRefusal(ssm, resourceType) === undefined
+      ? instanceSsmAssociationEntries(ssm).map((e) => e.DocumentName)
+      : [];
   // The region the compensation's commands name: the state's, else the
   // client's own (a pre-v2 state record carries none), so a pasted command
   // never falls back to the operator's default region. Resolved only under
@@ -409,14 +415,7 @@ export async function deleteInstance(
     registry: this.protectionFlips,
     key: protectionFlipKey(resourceType, physicalId, context?.expectedRegion),
     run: (flip) =>
-      this.terminateInstance(
-        logicalId,
-        physicalId,
-        resourceType,
-        context,
-        flip,
-        declaresSsmAssociations
-      ),
+      this.terminateInstance(logicalId, physicalId, resourceType, context, flip, ssmDocumentNames),
     compensation: {
       logicalId,
       physicalId,
@@ -435,7 +434,7 @@ export async function terminateInstance(
   resourceType: string,
   context: DeleteContext | undefined,
   flip: ProtectionFlipRecord,
-  declaresSsmAssociations = false
+  ssmDocumentNames: readonly string[] = []
 ): Promise<void> {
   this.logger.debug(`Terminating EC2 Instance ${logicalId}: ${physicalId}`);
 
@@ -472,10 +471,11 @@ export async function terminateInstance(
       // the instance and its association), delete the instance's SSM
       // association, best effort. CloudFormation leaves it on the terminated
       // instance; a warning here never blocks the delete.
-      if (declaresSsmAssociations) {
+      if (ssmDocumentNames.length > 0) {
         await this.deleteInstanceSsmAssociationsBestEffort(
           logicalId,
           physicalId,
+          ssmDocumentNames,
           maskerOrIdentity(context?.maskSecrets)
         );
       }

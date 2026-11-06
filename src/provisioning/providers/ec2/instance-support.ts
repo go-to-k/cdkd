@@ -28,8 +28,8 @@ export const VOLUME_ATTACHMENT_POLL_MS = 2000;
 /**
  * go-to-k/cdkd#5630: how long CreateAssociation is retried while Systems
  * Manager does not yet see the instance's IAM role (cdkd launches and
- * associates the profile faster than CloudFormation does). The resource
- * deadline bounds it first; this cap applies only outside one.
+ * associates the profile faster than CloudFormation does). It is bounded
+ * by whichever ends first: this cap or the enclosing resource deadline.
  */
 export const SSM_ASSOCIATION_ROLE_WAIT_CAP_MS = 5 * 60 * 1000;
 export const SSM_ASSOCIATION_ROLE_POLL_MS = 3000;
@@ -107,12 +107,11 @@ export interface InstanceMemberPlan {
    * go-to-k/cdkd#5630: an `SsmAssociations` change, applied in place by
    * `applyInstanceSsmAssociationChange`: the instance's association is
    * deleted when the record held one, then the desired one is created.
-   * `documentNames` narrows the delete to the recorded documents; `undefined`
-   * (an unusable record) deletes any instance-id association of the instance.
+   * `documentNames` are the recorded documents, the only associations the
+   * delete touches (none for an unusable record).
    */
   ssmAssociation?: {
-    deleteExisting: boolean;
-    documentNames: string[] | undefined;
+    documentNames: string[];
     create: InstanceSsmAssociation | undefined;
   };
 }
@@ -458,7 +457,9 @@ function sameOrderedStrings(a: readonly string[], b: readonly string[]): boolean
  * every time, so CloudFormation fails the create before RunInstances
  * (measured us-east-1): two or more entries, or an entry on an instance with
  * no `IamInstanceProfile`. Refused before any call on every path, a rollback
- * replay included, since the replay could not succeed either.
+ * replay included, since the replay could not succeed either. An instance
+ * declaring a `LaunchTemplate` is not refused for a missing profile: the
+ * template can carry one.
  */
 export function ssmAssociationsAwsRefusal(
   properties: Record<string, unknown>,
@@ -472,7 +473,11 @@ export function ssmAssociationsAwsRefusal(
   const hasProfile =
     (typeof profile === 'string' && profile.trim() !== '') ||
     (profile !== null && typeof profile === 'object');
-  if (entries.length === 1 && !hasProfile) {
+  // A LaunchTemplate can carry the instance profile, which only the launch
+  // reveals: the association's bounded retry then surfaces Systems
+  // Manager's own answer instead.
+  const fromLaunchTemplate = properties['LaunchTemplate'] != null;
+  if (entries.length === 1 && !hasProfile && !fromLaunchTemplate) {
     return `${resourceType}.SsmAssociations needs an IamInstanceProfile: Systems Manager associates a document only with an instance that has an IAM role ("Before you can associate a document with the instance, you must associate an IAM role", which CloudFormation refuses too). Declare an IamInstanceProfile`;
   }
   return undefined;

@@ -6,6 +6,7 @@ import {
 } from '@aws-sdk/client-ssm';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { markRedactedCause } from '../../../deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { safeMsg } from '../../../utils/display-safe.js';
 import { startInterruptWatch } from '../../interrupt-watch.js';
@@ -44,9 +45,10 @@ export interface ListedSsmAssociation {
 /**
  * Create `entry` on `instanceId` and return its association id. The "must
  * associate an IAM role" refusal is retried: the profile cdkd just associated
- * can take a moment to reach Systems Manager. The retry is bounded by the
- * resource deadline (else {@link SSM_ASSOCIATION_ROLE_WAIT_CAP_MS}) and ends
- * on Ctrl-C with an `InterruptedWaitError`; any other failure is thrown as is.
+ * can take a moment to reach Systems Manager. The retry ends at whichever
+ * comes first, the resource deadline or {@link SSM_ASSOCIATION_ROLE_WAIT_CAP_MS},
+ * and on Ctrl-C with an `InterruptedWaitError`; any other failure is thrown
+ * as is.
  */
 export async function createInstanceSsmAssociation(
   this: EC2Provider,
@@ -90,7 +92,7 @@ export async function createInstanceSsmAssociation(
 
 /**
  * The instance-id associations of `instanceId` (`ListAssociations`, every
- * page), narrowed to the documents named in `documentNames` when given. An
+ * page), narrowed to the documents named in `documentNames`. An
  * association that targets the instance some other way (an
  * `AWS::SSM::Association` with `Targets`) carries no `InstanceId` and is left
  * out: it is not this property's.
@@ -98,10 +100,9 @@ export async function createInstanceSsmAssociation(
 export async function listInstanceSsmAssociations(
   this: EC2Provider,
   instanceId: string,
-  documentNames?: readonly string[]
+  documentNames: readonly string[]
 ): Promise<ListedSsmAssociation[]> {
-  const wanted =
-    documentNames === undefined ? undefined : new Set(documentNames.map(ssmDocumentName));
+  const wanted = new Set(documentNames.map(ssmDocumentName));
   const out: ListedSsmAssociation[] = [];
   let nextToken: string | undefined;
   do {
@@ -114,7 +115,7 @@ export async function listInstanceSsmAssociations(
     for (const a of resp.Associations ?? []) {
       if (a.InstanceId !== instanceId || typeof a.AssociationId !== 'string') continue;
       const name = typeof a.Name === 'string' ? a.Name : '';
-      if (wanted !== undefined && !wanted.has(ssmDocumentName(name))) continue;
+      if (!wanted.has(ssmDocumentName(name))) continue;
       out.push({ AssociationId: a.AssociationId, Name: name });
     }
     nextToken = resp.NextToken || undefined;
@@ -154,12 +155,7 @@ export async function applyInstanceSsmAssociationChange(
   mask: MaskerFn
 ): Promise<void> {
   const deleted: string[] = [];
-  if (plan.deleteExisting) {
-    if (plan.documentNames === undefined) {
-      this.logger.warn(
-        safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd deletes every instance-id SSM association of ${physicalId} before creating the declared one.`
-      );
-    }
+  if (plan.documentNames.length > 0) {
     for (const a of await this.listInstanceSsmAssociations(physicalId, plan.documentNames)) {
       await this.deleteSsmAssociationById(a.AssociationId);
       deleted.push(a.Name);
@@ -171,34 +167,43 @@ export async function applyInstanceSsmAssociationChange(
   } catch (error) {
     if (deleted.length === 0) throw error;
     const cause = error instanceof Error ? error : undefined;
+    const failure = describeAwsFailure(error);
+    // Stamped as wrapCaughtError stamps its wrap: an AWS-authored text is
+    // withheld, and a cdkd-authored one is stamped when the mask changed it,
+    // so the retry classifiers read the original text on the cause chain.
+    const stamp = failure.redacted || mask(failure.detail) !== failure.detail;
     // AWS-authored text is named by its class here (its own words go to
     // debug, masked), as the other EC2 wraps do; the rest of the message is
     // cdkd's.
     const head = `Failed to update EC2 Instance ${logicalId}: cdkd deleted its SSM association (document ${deleted.join(', ')}) and then could not create the new one, so the instance ${physicalId} now has NO SSM association. Fix the cause and deploy again to create it: `;
-    throw new ProvisioningError(
+    const thrown = new ProvisioningError(
       mask(`${head}${this.warnFailureText(head, error, mask)}`),
       resourceType,
       logicalId,
       physicalId,
       cause
     );
+    throw stamp && cause !== undefined ? markRedactedCause(thrown) : thrown;
   }
 }
 
 /**
- * Delete the instance-id associations of a terminated instance, best effort.
- * CloudFormation never deletes them (they stay "Associated" on the
- * terminated instance, measured); cdkd does, so a destroy leaves nothing of
- * the stack behind. A failure is a warning: it never blocks the delete.
+ * Delete the terminated instance's associations of the recorded documents,
+ * best effort. CloudFormation never deletes them (they stay "Associated" on
+ * the terminated instance, measured); cdkd does, so a destroy leaves nothing
+ * of the stack behind. An association of another document is not this
+ * resource's and is left alone. A failure is a warning: it never blocks the
+ * delete.
  */
 export async function deleteInstanceSsmAssociationsBestEffort(
   this: EC2Provider,
   logicalId: string,
   instanceId: string,
+  documentNames: readonly string[],
   mask: MaskerFn
 ): Promise<void> {
   try {
-    for (const a of await this.listInstanceSsmAssociations(instanceId)) {
+    for (const a of await this.listInstanceSsmAssociations(instanceId, documentNames)) {
       await this.deleteSsmAssociationById(a.AssociationId);
     }
   } catch (error) {
@@ -210,8 +215,9 @@ export async function deleteInstanceSsmAssociationsBestEffort(
 }
 
 /**
- * The drift readback of `SsmAssociations`: each instance-id association,
- * its `DescribeAssociation` parameters in the CloudFormation shape, the
+ * The drift readback of `SsmAssociations`: each instance-id association of
+ * a declared document (another document's is not this resource's), its
+ * `DescribeAssociation` parameters in the CloudFormation shape, the
  * declared parameter order kept (keys the template does not declare follow,
  * sorted) so the comparison and the secret masking line up with the
  * template. `undefined` when Systems Manager could not be read.
@@ -222,12 +228,22 @@ export async function readInstanceSsmAssociations(
   declared: readonly InstanceSsmAssociation[]
 ): Promise<Array<Record<string, unknown>> | undefined> {
   try {
-    const listed = await this.listInstanceSsmAssociations(instanceId);
+    const listed = await this.listInstanceSsmAssociations(
+      instanceId,
+      declared.map((d) => d.DocumentName)
+    );
     const out: Array<Record<string, unknown>> = [];
     for (const a of listed) {
-      const resp = await this.awsClients.ssm.send(
-        new DescribeAssociationCommand({ AssociationId: a.AssociationId })
-      );
+      let resp;
+      try {
+        resp = await this.awsClients.ssm.send(
+          new DescribeAssociationCommand({ AssociationId: a.AssociationId })
+        );
+      } catch (error) {
+        // Deleted between the list and this read: it is not there.
+        if (isNamedError(error, ASSOCIATION_GONE_NAMES)) continue;
+        throw error;
+      }
       const description = resp.AssociationDescription;
       const name = description?.Name ?? a.Name;
       const match = declared.find((d) => ssmDocumentName(d.DocumentName) === ssmDocumentName(name));

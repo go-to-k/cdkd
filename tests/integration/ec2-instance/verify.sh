@@ -2139,13 +2139,22 @@ assert_ssm_instance() {
 }
 # `$1` = instance id, `$2` = wanted ARN list ('' for none), `$3` = phase.
 # License Manager can lag the launch, so a mismatch is re-read for 2 minutes.
+# For an expected EMPTY list an empty read proves nothing on its own (the
+# lag reads empty too), so every read of the window must stay empty.
 assert_licenses() {
   local got="" _
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     got=$(licenses_of "$1") || got="<read error>"
-    [ "${got}" = "$2" ] && return 0
+    if [ -n "$2" ]; then
+      [ "${got}" = "$2" ] && return 0
+    elif [ -n "${got}" ]; then
+      break
+    fi
     sleep 10
   done
+  if [ -z "$2" ] && [ -z "${got}" ]; then
+    return 0
+  fi
   echo "FAIL: issue #5630 ($3) -- License Manager lists '${got}' for $1, expected '$2'" >&2
   exit 1
 }
@@ -2216,9 +2225,24 @@ echo "    OK: #5630 Phase 1n associated ${P1N_ASSOC} (commands c) with the same 
 # it on the terminated instance).
 echo "==> Phase 1o: LicenseSpecifications removed, which replaces the instance (issue #5630)"
 removal_deploy P1O_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed CDKD_TEST_SSM_5630=unlicensed
+# Handed to the trap BEFORE any assertion, so a failing one still sweeps it.
+P1O_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5630 -- could not read the state after Phase 1o: $(sanitize_aws_output "${P1O_STATE}")" >&2
+  exit 1
+}
+P1O_INSTANCE_ID=$(echo "${P1O_STATE}" | jq -r '.resources.SsmInstance5630.physicalId // ""')
+[ -n "${P1O_INSTANCE_ID}" ] && SSM_INSTANCE_IDS="${SSM_INSTANCE_IDS} ${P1O_INSTANCE_ID}"
+# The state record must not declare a license either.
+P1O_LICENSE_RECORDED=$(echo "${P1O_STATE}" | jq -r '.resources.SsmInstance5630.properties | has("LicenseSpecifications") | tostring')
+if [ "${P1O_LICENSE_RECORDED}" != "false" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1o the SsmInstance5630 record still declares LicenseSpecifications (${P1O_LICENSE_RECORDED})" >&2
+  exit 1
+fi
 assert_ssm_instance "Phase 1o" '["echo cdkd-5630-c"]'
-P1O_INSTANCE_ID="${SSM_RECORD%%|*}"
-SSM_INSTANCE_IDS="${SSM_INSTANCE_IDS} ${P1O_INSTANCE_ID}"
+if [ "${SSM_RECORD%%|*}" != "${P1O_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- Phase 1o record changed between two reads (${P1O_INSTANCE_ID} -> ${SSM_RECORD%%|*})" >&2
+  exit 1
+fi
 if [ "${P1O_INSTANCE_ID}" = "${SSM_INSTANCE_ID}" ]; then
   echo "FAIL: issue #5630 -- Phase 1o kept SsmInstance5630 ${SSM_INSTANCE_ID}; removing LicenseSpecifications must replace it" >&2
   exit 1
