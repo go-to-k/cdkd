@@ -40,7 +40,7 @@ import { describe, expect, it } from 'vite-plus/test';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 
-const DRIFT_SOURCE = 'src/cli/commands/drift.ts';
+const DRIFT_SOURCE = 'src/cli/commands/drift/secret-resolution.ts';
 const REPLAY_SOURCE = 'src/deployment/rollback-executor/replay-secrets.ts';
 
 /**

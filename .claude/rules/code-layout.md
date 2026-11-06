@@ -14,7 +14,7 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/cli/commands/diff{,-recursive}.ts` | [layout-cli-diff.md](layout-cli-diff.md) | `cdkd diff`, its nested-stack walk and renderers |
 | `src/cli/commands/state{,-list-tree}.ts`, `orphan.ts` | [layout-cli-state.md](layout-cli-state.md) | `cdkd state` subcommands, `cdkd orphan` |
 | `src/cli/commands/{import,export}.ts`, `src/cli/yaml-cfn.ts` | [layout-cli-import-export.md](layout-cli-import-export.md) | `cdkd import` modes + upstream parity, `cdkd export`, CFn migration |
-| `src/cli/commands/drift.ts`, `src/analyzer/drift-*.ts`, `src/utils/ip-protocol.ts` | [layout-drift.md](layout-drift.md) | `cdkd drift` and every normalizer it compares through |
+| `src/cli/commands/drift.ts` + `drift/**`, `src/analyzer/drift-*.ts`, `src/utils/ip-protocol.ts` | [layout-drift.md](layout-drift.md) | `cdkd drift` and every normalizer it compares through |
 | `src/deployment/**` | [layout-deployment.md](layout-deployment.md) | DeployEngine, WorkGraph, DAG executor, retry, rollback executor |
 | `src/deployment/secret-redaction.ts` and siblings | [layout-deployment-secrets.md](layout-deployment-secrets.md) | dynamic-reference secret redaction, masking retry loggers, the mask-only channel |
 | `src/cli/commands/scrub.ts` | [layout-scrub.md](layout-scrub.md) | `cdkd scrub` — the state secret-hygiene command |

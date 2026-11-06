@@ -2,6 +2,7 @@
 description: cdkd drift command layout plus the normalizers it compares through
 paths:
   - 'src/cli/commands/drift.ts'
+  - 'src/cli/commands/drift/**'
   - 'src/analyzer/drift-*.ts'
   - 'src/utils/ip-protocol.ts'
 ---
@@ -12,7 +13,7 @@ Analyzer: [layout-analyzer.md](layout-analyzer.md). CLI: [layout-cli.md](layout-
 
 ## Important Files
 
-- **src/cli/commands/drift.ts** - `cdkd drift [<stack>...]`. State-driven, no synth: reads S3 state, asks each provider's optional `readCurrentState`, compares through `drift-calculator.ts`. A `RESOURCE_NOT_FOUND` read is the `deleted` outcome, never `unsupported` (#4283). Exit: 0 clean; 1 drift or error; 2 clean but a comparison was INCOMPLETE, or a partly failed `--revert`.
+- **src/cli/commands/drift.ts** - `cdkd drift [<stack>...]`: the factory, re-exporting `drift/*.ts` (`detect` / `compare`, `secret-resolution`, `redaction`, `accept`, `revert*`, `plan`, `report*`). State-driven, no synth: reads S3 state, asks each provider's optional `readCurrentState`, compares through `drift-calculator.ts`. A `RESOURCE_NOT_FOUND` read is the `deleted` outcome, never `unsupported` (#4283). Exit: 0 clean; 1 drift or error; 2 clean but a comparison was INCOMPLETE, or a partly failed `--revert`.
   - The baseline holds unresolved `{{resolve:...}}` and the readback plaintext, so `resolveStateSecretExpressions` re-resolves it to COMPARE only, and again in `runRevert` before `provider.update` ([#2108](https://github.com/go-to-k/cdkd/issues/2108)).
   - A reference routes to the region that must ANSWER it, not the stack's: `resolveDriftLeafByRegion` classifies the WHOLE leaf before any fetch via `classifyReplaySecretRegion`, re-exported by `rollback-executor.ts` so the two commands cannot disagree, then routes `named-region` through a per-STACK `DriftSecretResolvers`.
   - `logicalId` / `consumerRegion` / `producerRegions` are REQUIRED; a default silently verdicts `local` or refuses everywhere. A nested child's `producerRegions` includes every ancestor's, read from state (`driftProducerRegionEvidence`, #4213); an unreadable ancestor is INCOMPLETE and refuses every region-less reference. On `ambiguous`, detection falls back to the UNRESOLVED baseline and clears the `secrets` map; revert returns BEFORE `provider.update`.

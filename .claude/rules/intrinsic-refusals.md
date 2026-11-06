@@ -7,6 +7,7 @@ paths:
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'
   - 'src/cli/commands/drift.ts'
+  - 'src/cli/commands/drift/**'
 ---
 
 # Intrinsic-resolution refusals
