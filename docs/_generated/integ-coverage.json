@@ -9116,6 +9116,7 @@
     "AWS::EC2::PlacementGroup",
     "AWS::EC2::PrefixList",
     "AWS::EC2::SecurityGroupEgress",
+    "AWS::EC2::SubnetCidrBlock",
     "AWS::EC2::TransitGateway",
     "AWS::EC2::TransitGatewayAttachment",
     "AWS::EC2::VPCCidrBlock",
