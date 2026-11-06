@@ -119,17 +119,27 @@ const DESTRUCTURE_FROM_PROCESS_ENV = /\}\s*(?::[^=]*)?=\s*process\.env\b(?!\s*(?
  * passed on, a copy restored under another name — takes the annotation. None
  * exists on the surface today, so it has unit cases and no floor.
  *
+ * The `process` MODULE bound under another name (`import * as p`, a default
+ * import, `const p = process`, a `...rest` of it) is a site too: its `.env` is
+ * then read under a name this model cannot follow.
+ *
  * What remains unseeable in this line model (no AST: the repo's `typescript`
- * ships no JS parser API, and both fences share one line model): an `env`
- * binding read back under its new name (`penv.X` — the BINDING is the site,
- * its uses are not), and a computed key — `process.env[key]` over
- * `AWS_CREDENTIAL_ENV_KEYS` is the constant's shape, above.
+ * ships no JS parser API, and both fences share one line model): a binding
+ * read back under its new name (`penv.X` — the BINDING is the site, its uses
+ * are not), a computed key — `process.env[key]` over `AWS_CREDENTIAL_ENV_KEYS`
+ * is the constant's shape, above — and ORDER: `restores` is credited for a
+ * restore anywhere later in the function, even after the copy was handed on.
  */
 const PROCESS_ENV_WHOLE = new RegExp(
   [
     String.raw`\bprocess\.env\b(?!\s*(?:\?\.|\.|\[))`,
     String.raw`\bprocess\s*(?:\?\.\s*)?\[\s*['"\x60]env['"\x60]\s*\]`,
     String.raw`\brequire\s*\(\s*['"](?:node:)?process['"]\s*\)\s*(?:\?\.|\.)\s*env\b`,
+    // The MODULE taken as a value — an alias (`const p = process`), or the
+    // module required whole — reaches `.env` under a name this model cannot
+    // follow, so the binding is the site.
+    String.raw`(?:[=:(,]|\breturn)\s*process\s*(?:[;,)}]|$)`,
+    String.raw`=\s*require\s*\(\s*['"](?:node:)?process['"]\s*\)\s*(?:[;,)]|$)`,
   ].join('|')
 );
 /** A destructuring whose right-hand side is the `process` module itself. */
@@ -309,13 +319,23 @@ function destructuringPattern(lines: string[], index: number, closingRe: RegExp)
 function processEnvBinding(lines: string[], index: number, imports: Set<number>): boolean {
   const code = stripComments(lines[index] ?? '');
   const pattern = destructuringPattern(lines, index, DESTRUCTURE_FROM_PROCESS);
-  if (pattern !== undefined) return pattern === UNBALANCED || /\benv\b/.test(pattern);
+  if (pattern !== undefined) {
+    // `...rest` carries `env` without naming it.
+    return pattern === UNBALANCED || /\benv\b/.test(pattern) || pattern.includes('...');
+  }
   if (!imports.has(index) || !IMPORT_FROM_PROCESS.test(code)) return false;
   let statement = code;
   for (let i = index - 1; i >= 0 && imports.has(i) && !/;\s*$/.test(stripComments(lines[i] ?? '')); i--) {
     statement = `${stripComments(lines[i] ?? '')}\n${statement}`;
   }
-  return /\benv\b/.test(statement.replace(IMPORT_FROM_PROCESS, ''));
+  // `env` by name, or the whole module (`import * as p` / a default import),
+  // whose `.env` is then read under a name this model cannot follow.
+  // Bound as `process` itself, every later `process.env` is seen as usual.
+  const head = statement.replace(IMPORT_FROM_PROCESS, '');
+  const moduleName =
+    /\*\s*as\s+([A-Za-z_$][\w$]*)/.exec(head)?.[1] ??
+    /\bimport\s+(?!type\b)([A-Za-z_$][\w$]*)\s*(?:[,;]|$)/.exec(head.trim())?.[1];
+  return /\benv\b/.test(head) || (moduleName !== undefined && moduleName !== 'process');
 }
 
 /** The credential keys a line reads out of `process.env`. */
@@ -379,6 +399,11 @@ function shapeAt(
   const code = stripComments(lines[index] ?? '');
   if (processEnvBinding(lines, index, imports)) return 'process-env-whole';
   if (imports.has(index)) return undefined;
+  if (DESTRUCTURE_FROM_PROCESS.test(code)) {
+    // Judged above on its pattern: taking neither `env` nor a rest, it is no
+    // alias of the module, so only the rest of the line is classified.
+    return shapeOf(code.replace(DESTRUCTURE_FROM_PROCESS, '} = DESTRUCTURED;'));
+  }
   if (DESTRUCTURE_FROM_PROCESS_ENV.test(code)) {
     if (destructuresCredentialFromProcessEnv(lines, index)) return 'process-env-read';
     // Only THIS destructuring's right-hand side is judged; the rest of the
@@ -716,6 +741,16 @@ describe('every identity reaching an emulated workload through process env or a 
     expect(at(['import {', '  argv,', '  env as penv,', "} from 'node:process';"], 3)).toBe(
       'process-env-whole'
     );
+    // The MODULE under another name, or a rest of it, carries `.env` too.
+    expect(at(["import * as proc from 'node:process';"])).toBe('process-env-whole');
+    expect(at(["import proc from 'node:process';"])).toBe('process-env-whole');
+    expect(at(['  const pr = process;'])).toBe('process-env-whole');
+    expect(at(["  const pr = require('node:process');"])).toBe('process-env-whole');
+    expect(at(['  const { platform: pf, ...restp } = process;'])).toBe('process-env-whole');
+    // Bound as `process` itself, its `process.env` uses are seen as usual.
+    expect(at(["import process from 'node:process';"])).toBeUndefined();
+    expect(at(["import * as process from 'node:process';"])).toBeUndefined();
+    expect(at(["import type { ProcessEnv } from 'node:process';"])).toBeUndefined();
     // Other exports of `process`, and `env` from another module, are not.
     expect(at(['  const { argv, platform } = process;'])).toBeUndefined();
     expect(at(["import { argv } from 'node:process';"])).toBeUndefined();
