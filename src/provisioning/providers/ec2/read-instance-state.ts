@@ -11,7 +11,12 @@ import { normalizeAwsTagsToCfn } from '../../import-helpers.js';
 import type { ResourceNotFound } from '../../../types/resource.js';
 import { RESOURCE_NOT_FOUND } from '../../../types/resource.js';
 import { safeMsg } from '../../../utils/display-safe.js';
-import { instanceVolumeEntries, instanceVolumesRefusal } from './instance-support.js';
+import {
+  instanceSsmAssociationEntries,
+  instanceSsmAssociationsRefusal,
+  instanceVolumeEntries,
+  instanceVolumesRefusal,
+} from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 export async function readInstanceCurrentState(
@@ -264,6 +269,22 @@ export async function readInstanceCurrentState(
     result['Volumes'] = attached
       .sort((a, b) => declaredIds.indexOf(a.Ebs!.VolumeId!) - declaredIds.indexOf(b.Ebs!.VolumeId!))
       .map((m) => ({ Device: m.DeviceName!, VolumeId: m.Ebs!.VolumeId! }));
+  }
+
+  // SsmAssociations (go-to-k/cdkd#5630): read for a bag that declares them,
+  // as CloudFormation reads them (ListAssociations + DescribeAssociation),
+  // in the template's shape and parameter order. Best-effort: an unreadable
+  // Systems Manager omits the key.
+  if (
+    Array.isArray(properties?.['SsmAssociations']) &&
+    instanceSsmAssociationsRefusal(properties['SsmAssociations'], 'AWS::EC2::Instance') ===
+      undefined
+  ) {
+    const read = await this.readInstanceSsmAssociations(
+      physicalId,
+      instanceSsmAssociationEntries(properties['SsmAssociations'])
+    );
+    if (read !== undefined) result['SsmAssociations'] = read;
   }
 
   // Tags: filter aws:* (CDK-internal metadata) and always emit (even as

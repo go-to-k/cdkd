@@ -451,7 +451,7 @@ describe('ASGProvider update — removal reset to CFn defaults (issue #1160)', (
 
   // Issue #1225 — sub-field removal inside a KEPT config object (the #1160
   // bug class one level down). These pins record the DELIBERATE pass-through
-  // classification (see the comment block in asg-provider.ts update()):
+  // classification (see the comment block in asg/update.ts update()):
   // a kept-but-partial object goes to AWS verbatim, never normalized.
   it('passes a kept-but-partial InstanceMaintenancePolicy through verbatim (AWS loud-rejects — CFn parity, issue #1225)', async () => {
     const provider = new ASGProvider();

@@ -1,6 +1,6 @@
 import { EC2Client } from '@aws-sdk/client-ec2';
 import { getLogger } from '../../utils/logger.js';
-import { getAwsClients } from '../../utils/aws-clients.js';
+import { getAwsClients, type AwsClients } from '../../utils/aws-clients.js';
 import { CdkdError, ProvisioningError } from '../../utils/error-handler.js';
 import { type DeleteContext } from '../region-check.js';
 import { ProtectionFlipRegistry } from './deletion-protection-compensation.js';
@@ -44,6 +44,7 @@ import { instanceUpdateMethods } from './ec2/instance-update.js';
 import { instanceApplyMethods } from './ec2/instance-apply.js';
 import { instanceLifecycleMethods } from './ec2/instance-lifecycle.js';
 import { instanceBuildMethods } from './ec2/instance-build.js';
+import { instanceSsmMethods } from './ec2/instance-ssm.js';
 import { networkAclMethods } from './ec2/network-acl.js';
 import { tagsErrorsMethods } from './ec2/tags-errors.js';
 import { driftMethods } from './ec2/drift.js';
@@ -100,6 +101,7 @@ type EC2ProviderMixins = typeof orphansMethods &
   typeof instanceApplyMethods &
   typeof instanceLifecycleMethods &
   typeof instanceBuildMethods &
+  typeof instanceSsmMethods &
   typeof networkAclMethods &
   typeof tagsErrorsMethods &
   typeof driftMethods &
@@ -284,6 +286,12 @@ export class EC2Provider implements ResourceProvider {
         // attached / detached in place on update (AttachVolume / DetachVolume).
         'LaunchTemplate',
         'Volumes',
+        // go-to-k/cdkd#5630: `LicenseSpecifications` is a RunInstances input
+        // (create-only); `SsmAssociations` is a Systems Manager
+        // CreateAssociation after the launch, deleted and re-created in place
+        // on update (instance-ssm.ts).
+        'LicenseSpecifications',
+        'SsmAssociations',
       ]),
     ],
     ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],
@@ -427,8 +435,15 @@ export class EC2Provider implements ResourceProvider {
     ],
   ]);
 
+  /**
+   * go-to-k/cdkd#5630: the `AWS::EC2::Instance SsmAssociations` calls read
+   * `awsClients.ssm` on use, so an instance with none builds no SSM client.
+   */
+  readonly awsClients: AwsClients;
+
   constructor() {
     const awsClients = getAwsClients();
+    this.awsClients = awsClients;
     this.ec2Client = awsClients.ec2;
     // `?? ec2` only for a test double that provides no `ec2SingleSend`;
     // `AwsClients` always does.
@@ -590,7 +605,7 @@ export class EC2Provider implements ResourceProvider {
           context
         );
       case 'AWS::EC2::Instance':
-        return this.deleteInstance(logicalId, physicalId, resourceType, context);
+        return this.deleteInstance(logicalId, physicalId, resourceType, context, properties);
       case 'AWS::EC2::NetworkAcl':
         return this.deleteNetworkAcl(logicalId, physicalId, resourceType, context);
       case 'AWS::EC2::NetworkAclEntry':
@@ -787,6 +802,7 @@ for (const methods of [
   instanceApplyMethods,
   instanceLifecycleMethods,
   instanceBuildMethods,
+  instanceSsmMethods,
   networkAclMethods,
   tagsErrorsMethods,
   driftMethods,

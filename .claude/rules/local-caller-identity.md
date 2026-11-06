@@ -45,7 +45,8 @@ session token.
 ## The fence
 
 `tests/unit/local/local-surface-env-identity.test.ts` derives its population
-from the CHANNELS (env keys plus the INI writer in
+from the CHANNELS (env keys, any `process.env` credential read or whole-env
+capture, plus the INI writer in
 `local-profile-credentials-file.ts`) and demands per site RESTORES,
 READS-CALLER, or a `cdkd-local-env-identity: <reason>` comment. An annotation is
 a CLAIM the fence cannot check.

@@ -52,7 +52,6 @@ const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
  * the Api / Stage `Tags` (`UntagResource`, go-to-k/cdkd#5390).
  */
 
-const APIGWV2_SRC = 'apigatewayv2-provider.ts';
 const APIGWV2_REQUIRED = (why: string, says: RegExp): Throw => ({ why, says });
 const APIGWV2_TAG_MAP = { k1: 'v1', k2: 'v2' };
 const APIGWV2_API_ID = 'api-1';
@@ -60,11 +59,11 @@ const APIGWV2_API_ID = 'api-1';
 
 /** A property CloudFormation KEEPS on removal: `update()` sends nothing for it. */
 const apigwv2Kept = (at: string, ab: string): string =>
-  `left in place on removal: CloudFormation keeps the live value (real CloudFormation A/B, ${ab}), and an omitted Update member is "unchanged" (${APIGWV2_SRC}:${at})`;
+  `left in place on removal: CloudFormation keeps the live value (real CloudFormation A/B, ${ab}), and an omitted Update member is "unchanged" (${at})`;
 
 /** A CloudFormation-required property: no deployable template removes it. */
 const apigwv2Required = (prop: string, at: string): string =>
-  `${prop} is CloudFormation-required, so no deployable template removes it; create() refuses a resource without it (${APIGWV2_SRC}:${at})`;
+  `${prop} is CloudFormation-required, so no deployable template removes it; create() refuses a resource without it (${at})`;
 
 /**
  * A member of a keyed map: carried under its key (`RequestParameters.<key>.Required`),
@@ -123,21 +122,21 @@ const API_CASE: TypeCase = {
       },
       variants: { IpAddressType: 'dualstack' },
       expectedSilent: {
-        'update-remove:Name': apigwv2Required('Name', '694-703'),
-        'update-remove:Description': apigwv2Kept('2135-2144', '#5004'),
-        'update-remove:DisableExecuteApiEndpoint': apigwv2Kept('2161-2170', '#5004'),
-        'update-remove:Version': apigwv2Kept('2171-2180', '#5004'),
-        'update-remove:RouteSelectionExpression': apigwv2Kept('2181-2190', '#1160'),
-        'update-remove:ApiKeySelectionExpression': apigwv2Kept('2191-2200', '#5004'),
-        'update-remove:IpAddressType': apigwv2Kept('2201-2210', '#5004'),
+        'update-remove:Name': apigwv2Required('Name', 'apigatewayv2/api.ts'),
+        'update-remove:Description': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:DisableExecuteApiEndpoint': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:Version': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:RouteSelectionExpression': apigwv2Kept('apigatewayv2/api.ts', '#1160'),
+        'update-remove:ApiKeySelectionExpression': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:IpAddressType': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
       },
       expectedRemovalThrows: {
         'create:Name': APIGWV2_REQUIRED(
-          'Name is required: create() refuses an API without it before any call (apigatewayv2-provider.ts:694-703)',
+          'Name is required: create() refuses an API without it before any call (apigatewayv2/api.ts)',
           /Name and ProtocolType are required/
         ),
         'create:ProtocolType': APIGWV2_REQUIRED(
-          'ProtocolType is required: create() refuses an API without it before any call (apigatewayv2-provider.ts:694-703)',
+          'ProtocolType is required: create() refuses an API without it before any call (apigatewayv2/api.ts)',
           /Name and ProtocolType are required/
         ),
       },
@@ -205,28 +204,28 @@ const STAGE_CASE: TypeCase = {
       },
       variants: { 'DefaultRouteSettings.LoggingLevel': 'ERROR' },
       expectedSilent: {
-        'update-remove:Description': apigwv2Kept('2387-2396', '#1160'),
+        'update-remove:Description': apigwv2Kept('apigatewayv2/stage.ts', '#1160'),
         ...Object.fromEntries(
           ['StageVariables', 'StageVariables.a', 'StageVariables.b'].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '2397-2420',
+              'apigatewayv2/stage.ts',
               '#5004; StageVariables merges per key, and a dropped key stays live'
             ),
           ])
         ),
-        'update-remove:DefaultRouteSettings': apigwv2Kept('2421-2433', '#1160'),
-        'update-remove:ClientCertificateId': apigwv2Kept('2464-2473', '#5004'),
+        'update-remove:DefaultRouteSettings': apigwv2Kept('apigatewayv2/stage.ts', '#1160'),
+        'update-remove:ClientCertificateId': apigwv2Kept('apigatewayv2/stage.ts', '#5004'),
         'update-remove:DeploymentId':
-          'DeploymentId has no "no deployment" sentinel, so a removed one is passed through and the live deployment stays (apigatewayv2-provider.ts:2474-2483); an API constraint, not a CloudFormation A/B measurement',
+          'DeploymentId has no "no deployment" sentinel, so a removed one is passed through and the live deployment stays (apigatewayv2/stage.ts); an API constraint, not a CloudFormation A/B measurement',
       },
       expectedRemovalThrows: {
         'create:ApiId': APIGWV2_REQUIRED(
-          'ApiId is required: create() refuses a stage without it before any call (apigatewayv2-provider.ts:963-972)',
+          'ApiId is required: create() refuses a stage without it before any call (apigatewayv2/stage.ts)',
           /ApiId and StageName are required/
         ),
         'create:StageName': APIGWV2_REQUIRED(
-          'StageName is required: create() refuses a stage without it before any call (apigatewayv2-provider.ts:963-972)',
+          'StageName is required: create() refuses a stage without it before any call (apigatewayv2/stage.ts)',
           /ApiId and StageName are required/
         ),
       },
@@ -238,16 +237,16 @@ const STAGE_CASE: TypeCase = {
 
 const INTEGRATION_REQUIRED: Record<string, Throw> = {
   'create:ApiId': APIGWV2_REQUIRED(
-    'ApiId is required: create() refuses an integration without it before any call (apigatewayv2-provider.ts:1089-1098)',
+    'ApiId is required: create() refuses an integration without it before any call (apigatewayv2/integration.ts)',
     /ApiId and IntegrationType are required/
   ),
   'create:IntegrationType': APIGWV2_REQUIRED(
-    'IntegrationType is required: create() refuses an integration without it before any call (apigatewayv2-provider.ts:1089-1098)',
+    'IntegrationType is required: create() refuses an integration without it before any call (apigatewayv2/integration.ts)',
     /ApiId and IntegrationType are required/
   ),
 };
 
-const INTEGRATION_TYPE_SILENT = apigwv2Required('IntegrationType', '1089-1098');
+const INTEGRATION_TYPE_SILENT = apigwv2Required('IntegrationType', 'apigatewayv2/integration.ts');
 
 const INTEGRATION_CASE: TypeCase = {
   resourceType: 'AWS::ApiGatewayV2::Integration',
@@ -297,7 +296,7 @@ const INTEGRATION_CASE: TypeCase = {
         'update-remove:IntegrationType': INTEGRATION_TYPE_SILENT,
         ...Object.fromEntries(
           ['IntegrationUri', 'IntegrationMethod', 'PayloadFormatVersion', 'TimeoutInMillis'].map(
-            (key) => [`update-remove:${key}`, apigwv2Kept('2622-2626', '#1160')]
+            (key) => [`update-remove:${key}`, apigwv2Kept('apigatewayv2/integration.ts', '#1160')]
           )
         ),
         ...Object.fromEntries(
@@ -308,12 +307,12 @@ const INTEGRATION_CASE: TypeCase = {
           ].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '2627-2649',
+              'apigatewayv2/integration.ts',
               '#5004; RequestParameters merges per key, and a dropped key stays live'
             ),
           ])
         ),
-        'update-remove:Description': apigwv2Kept('2650-2659', '#5004'),
+        'update-remove:Description': apigwv2Kept('apigatewayv2/integration.ts', '#5004'),
         ...Object.fromEntries(
           [
             'ConnectionId',
@@ -325,7 +324,7 @@ const INTEGRATION_CASE: TypeCase = {
             'ResponseParameters',
             'TemplateSelectionExpression',
             'TlsConfig',
-          ].map((key) => [`update-remove:${key}`, apigwv2Kept('2665-2670', '#1160')])
+          ].map((key) => [`update-remove:${key}`, apigwv2Kept('apigatewayv2/integration.ts', '#1160')])
         ),
       },
       expectedRemovalThrows: INTEGRATION_REQUIRED,
@@ -346,8 +345,8 @@ const INTEGRATION_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:IntegrationType': INTEGRATION_TYPE_SILENT,
-        'update-remove:PayloadFormatVersion': apigwv2Kept('2622-2626', '#1160'),
-        'update-remove:CredentialsArn': apigwv2Kept('2665-2670', '#1160'),
+        'update-remove:PayloadFormatVersion': apigwv2Kept('apigatewayv2/integration.ts', '#1160'),
+        'update-remove:CredentialsArn': apigwv2Kept('apigatewayv2/integration.ts', '#1160'),
         ...Object.fromEntries(
           [
             'RequestParameters',
@@ -357,7 +356,7 @@ const INTEGRATION_CASE: TypeCase = {
           ].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '2627-2649',
+              'apigatewayv2/integration.ts',
               '#5004; a dropped key alone is no change, and CloudFormation fails an update that drops a required one beside another change (3284-3287)'
             ),
           ])
@@ -366,7 +365,7 @@ const INTEGRATION_CASE: TypeCase = {
       expectedRemovalThrows: {
         ...INTEGRATION_REQUIRED,
         'update-remove:IntegrationSubtype': APIGWV2_REQUIRED(
-          'a removed IntegrationSubtype without a declared IntegrationUri is refused before any call, as CloudFormation fails that update (real CloudFormation A/B, #1160; apigatewayv2-provider.ts:2726-2761)',
+          'a removed IntegrationSubtype without a declared IntegrationUri is refused before any call, as CloudFormation fails that update (real CloudFormation A/B, #1160; apigatewayv2/integration.ts)',
           /previous deploy recorded IntegrationSubtype/
         ),
       },
@@ -405,18 +404,18 @@ const ROUTE_CASE: TypeCase = {
         RouteResponseSelectionExpression: '$default',
       },
       expectedSilent: {
-        'update-remove:RouteKey': apigwv2Required('RouteKey', '1291-1300'),
-        'update-remove:Target': apigwv2Kept('2935-2952', '#1160'),
-        'update-remove:AuthorizationType': apigwv2Kept('2953-2962', '#5004'),
-        'update-remove:AuthorizerId': apigwv2Kept('2963-2972', '#5004'),
-        'update-remove:OperationName': apigwv2Kept('2986-2995', '#5004'),
-        'update-remove:ApiKeyRequired': apigwv2Kept('2996-3018', '#5548'),
+        'update-remove:RouteKey': apigwv2Required('RouteKey', 'apigatewayv2/route.ts'),
+        'update-remove:Target': apigwv2Kept('apigatewayv2/route.ts', '#1160'),
+        'update-remove:AuthorizationType': apigwv2Kept('apigatewayv2/route.ts', '#5004'),
+        'update-remove:AuthorizerId': apigwv2Kept('apigatewayv2/route.ts', '#5004'),
+        'update-remove:OperationName': apigwv2Kept('apigatewayv2/route.ts', '#5004'),
+        'update-remove:ApiKeyRequired': apigwv2Kept('apigatewayv2/route.ts', '#5548'),
         ...Object.fromEntries(
           ['RequestModels', 'RequestModels.application/json', 'RequestModels.text/plain'].map(
             (label) => [
               `update-remove:${label}`,
               apigwv2Kept(
-                '3019-3037',
+                'apigatewayv2/route.ts',
                 '#5004; RequestModels merges per key, and a dropped key stays live'
               ),
             ]
@@ -430,21 +429,21 @@ const ROUTE_CASE: TypeCase = {
           ].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '3038-3059',
+              'apigatewayv2/route.ts',
               '#5004; RequestParameters merges per key, and a dropped key stays live'
             ),
           ])
         ),
-        'update-remove:ModelSelectionExpression': apigwv2Kept('3060-3070', '#1160'),
-        'update-remove:RouteResponseSelectionExpression': apigwv2Kept('3071-3080', '#1160'),
+        'update-remove:ModelSelectionExpression': apigwv2Kept('apigatewayv2/route.ts', '#1160'),
+        'update-remove:RouteResponseSelectionExpression': apigwv2Kept('apigatewayv2/route.ts', '#1160'),
       },
       expectedRemovalThrows: {
         'create:ApiId': APIGWV2_REQUIRED(
-          'ApiId is required: create() refuses a route without it before any call (apigatewayv2-provider.ts:1291-1300)',
+          'ApiId is required: create() refuses a route without it before any call (apigatewayv2/route.ts)',
           /ApiId and RouteKey are required/
         ),
         'create:RouteKey': APIGWV2_REQUIRED(
-          'RouteKey is required: create() refuses a route without it before any call (apigatewayv2-provider.ts:1291-1300)',
+          'RouteKey is required: create() refuses a route without it before any call (apigatewayv2/route.ts)',
           /ApiId and RouteKey are required/
         ),
       },
@@ -455,18 +454,18 @@ const ROUTE_CASE: TypeCase = {
 // --- AWS::ApiGatewayV2::Authorizer -----------------------------------------------
 
 const AUTHORIZER_SILENT_REQUIRED = {
-  'update-remove:AuthorizerType': apigwv2Required('AuthorizerType', '1423-1432'),
+  'update-remove:AuthorizerType': apigwv2Required('AuthorizerType', 'apigatewayv2/authorizer.ts'),
   'update-remove:Name':
-    'Name is CloudFormation-required, so no deployable template removes it; create() falls back to the logical id for a missing one (apigatewayv2-provider.ts:1396)',
+    'Name is CloudFormation-required, so no deployable template removes it; create() falls back to the logical id for a missing one (apigatewayv2/authorizer.ts)',
 };
 
 const AUTHORIZER_REQUIRED: Record<string, Throw> = {
   'create:ApiId': APIGWV2_REQUIRED(
-    'ApiId is required: create() refuses an authorizer without it before any call (apigatewayv2-provider.ts:1423-1432)',
+    'ApiId is required: create() refuses an authorizer without it before any call (apigatewayv2/authorizer.ts)',
     /ApiId and AuthorizerType are required/
   ),
   'create:AuthorizerType': APIGWV2_REQUIRED(
-    'AuthorizerType is required: create() refuses an authorizer without it before any call (apigatewayv2-provider.ts:1423-1432)',
+    'AuthorizerType is required: create() refuses an authorizer without it before any call (apigatewayv2/authorizer.ts)',
     /ApiId and AuthorizerType are required/
   ),
 };
@@ -493,7 +492,7 @@ const AUTHORIZER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...AUTHORIZER_SILENT_REQUIRED,
-        'update-remove:JwtConfiguration': apigwv2Kept('3211-3222', '#1160'),
+        'update-remove:JwtConfiguration': apigwv2Kept('apigatewayv2/authorizer.ts', '#1160'),
       },
       expectedRemovalThrows: AUTHORIZER_REQUIRED,
     },
@@ -513,12 +512,12 @@ const AUTHORIZER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...AUTHORIZER_SILENT_REQUIRED,
-        'update-remove:AuthorizerUri': apigwv2Kept('3223-3232', '#1160'),
-        'update-remove:AuthorizerCredentialsArn': apigwv2Kept('3233-3242', '#5004'),
-        'update-remove:AuthorizerPayloadFormatVersion': apigwv2Kept('3243-3253', '#5004'),
-        'update-remove:AuthorizerResultTtlInSeconds': apigwv2Kept('3254-3264', '#5004'),
-        'update-remove:EnableSimpleResponses': apigwv2Kept('3265-3274', '#1160'),
-        'update-remove:IdentityValidationExpression': apigwv2Kept('3275-3285', '#5004'),
+        'update-remove:AuthorizerUri': apigwv2Kept('apigatewayv2/authorizer.ts', '#1160'),
+        'update-remove:AuthorizerCredentialsArn': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
+        'update-remove:AuthorizerPayloadFormatVersion': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
+        'update-remove:AuthorizerResultTtlInSeconds': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
+        'update-remove:EnableSimpleResponses': apigwv2Kept('apigatewayv2/authorizer.ts', '#1160'),
+        'update-remove:IdentityValidationExpression': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
       },
       expectedRemovalThrows: AUTHORIZER_REQUIRED,
     },
@@ -1674,7 +1673,7 @@ const firehoseS3Kms = (bucket: string) => ({
 });
 
 const FIREHOSE_TAG_KEY_REFUSED: Throw = {
-  why: 'a Tags entry without its Key is refused before any call (firehose-provider.ts:406-415, 1007-1031; go-to-k/cdkd#3948)',
+  why: 'a Tags entry without its Key is refused before any call (firehose/shared.ts isReadableTagList, read by firehose/create.ts and firehose/update.ts; go-to-k/cdkd#3948)',
   says: /is not a list of tags with a Key/,
 };
 
@@ -1685,7 +1684,7 @@ const FIREHOSE_TAG_KEY_REFUSED: Throw = {
  * as the create probes observe) and is warned instead.
  */
 const FIREHOSE_FIXED_BACKUP_MODE =
-  'S3BackupMode of this destination cannot change on an existing stream: the Update shape has no member for it, so a change is warned and not sent, as CloudFormation keeps the mode (CFn A/B measured 2026-10-27, firehose-provider.ts:214-245, 1166-1189, 2126-2131)';
+  'S3BackupMode of this destination cannot change on an existing stream: the Update shape has no member for it, so a change is warned and not sent, as CloudFormation keeps the mode (CFn A/B measured 2026-10-27, firehose/shared.ts and warnUnappliedS3BackupMode in firehose/update.ts)';
 
 // --- AWS::KinesisFirehose::DeliveryStream -----------------------------------------
 
@@ -1833,7 +1832,7 @@ const FIREHOSE_CASE: TypeCase = {
           ])
         ),
         [`update-remove:${FIREHOSE_ENCRYPTION}.KeyType`]: {
-          why: 'KeyType is required by the CloudFormation schema: a block without it is refused before any call (firehose-provider.ts:949-964)',
+          why: 'KeyType is required by the CloudFormation schema: a block without it is refused before any call (applyUpdate in firehose/update.ts)',
           says: /is not an object with a string KeyType/,
         },
       },
@@ -2096,8 +2095,9 @@ const ASG_ROLE = (name: string): string => `arn:aws:iam::${ACCOUNT}:role/${name}
 /**
  * The live target groups: the previous bag's, as the last deploy attached
  * them, with every Attach / Detach this run already sent applied. Update's
- * convergence poll (asg-provider.ts:2714-2794) reads them back until they
- * match the desired set, so a fixed answer would spin it for 30s.
+ * convergence poll (waitForTargetGroupArnsConvergence in asg-provider.ts)
+ * reads them back until they match the desired set, so a fixed answer would
+ * spin it for 30s.
  */
 function asgLiveTargetGroups(bag: Bag): string[] {
   const live = new Set(
@@ -2137,33 +2137,33 @@ function armAsg(physicalId: string, bag: Bag): void {
 /**
  * Removed from the template, CloudFormation sends nothing and KEEPS the live
  * value (real CloudFormation A/Bs, go-to-k/cdkd#5004 and #1160), so cdkd sends
- * nothing either (asg-provider.ts:611-628, 1365-1405).
+ * nothing either (removalDefaults in asg-provider.ts, and asg/update.ts).
  */
 const ASG_KEPT: Record<string, string> = {
   MinSize:
-    'MinSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg-provider.ts:1372-1373)',
+    'MinSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg/update.ts)',
   MaxSize:
-    'MaxSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg-provider.ts:1372-1373)',
+    'MaxSize is CloudFormation-required (definitionRequired #top), so no deployable template removes it (asg/update.ts)',
   DesiredCapacity:
-    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg-provider.ts:1371-1373)',
+    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg/update.ts)',
   ServiceLinkedRoleARN:
-    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg-provider.ts:1371-1373)',
+    'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#1160 A/B, asg/update.ts)',
   LaunchTemplate:
-    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg/update.ts)',
   MixedInstancesPolicy:
-    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the launch member the template now declares, as cdkd does (#1160 A/B, asg/update.ts)',
   VPCZoneIdentifier:
-    'CloudFormation sends only the member the template now declares and AWS keeps the subnets, parity (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the member the template now declares and AWS keeps the subnets, parity (#1160 A/B, asg/update.ts)',
   AvailabilityZones:
-    'CloudFormation sends only the member the template now declares, as cdkd does (#1160 A/B, asg-provider.ts:1374-1378)',
+    'CloudFormation sends only the member the template now declares, as cdkd does (#1160 A/B, asg/update.ts)',
   AvailabilityZoneIds:
-    'CloudFormation sends only the zone member the template now declares, as cdkd does (#2762 A/B, asg-provider.ts UpdateAutoScalingGroup removal notes)',
+    'CloudFormation sends only the zone member the template now declares, as cdkd does (#2762 A/B, asg/update.ts UpdateAutoScalingGroup removal notes)',
   InstanceLifecyclePolicy:
-    'KEPT by CloudFormation on removal: it sends nothing and the live retention trigger stays (#2762 A/B, asg-provider.ts UpdateAutoScalingGroup removal notes)',
+    'KEPT by CloudFormation on removal: it sends nothing and the live retention trigger stays (#2762 A/B, asg/update.ts UpdateAutoScalingGroup removal notes)',
   SkipZonalShiftValidation:
-    'write-only per-request flag in the CloudFormation schema, never read back: nothing to reset (asg-provider.ts:1379-1380)',
+    'write-only per-request flag in the CloudFormation schema, never read back: nothing to reset (asg/update.ts)',
   Context:
-    '"Reserved": AWS refuses any value an account sets, so no deployable template removes one (asg-provider.ts:1381-1383)',
+    '"Reserved": AWS refuses any value an account sets, so no deployable template removes one (asg/update.ts)',
   ...Object.fromEntries(
     [
       'HealthCheckType',
@@ -2178,39 +2178,39 @@ const ASG_KEPT: Record<string, string> = {
       'DeletionProtection',
     ].map((key) => [
       key,
-      'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#5004 A/B, asg-provider.ts:619-628, 1400-1405; DefaultCooldown is the Cooldown alias)',
+      'KEPT by CloudFormation on removal: it sends nothing and the live value stays (#5004 A/B, removalDefaults in asg-provider.ts, and asg/update.ts; DefaultCooldown is the Cooldown alias)',
     ])
   ),
 };
 
 /**
  * A member inside a value `UpdateAutoScalingGroup` re-sends WHOLE from the
- * desired bag (asg-provider.ts:1469-1536): removing it leaves `next` equal on
+ * desired bag (asg/update.ts): removing it leaves `next` equal on
  * both sides, and its `update-add` probe observes the delivery.
  */
 const ASG_NESTED: Record<string, string> = {
   LaunchTemplate:
-    'the launch template specification is re-sent whole from the desired bag (asg-provider.ts:1352, 1477, 2157-2200); Version is CloudFormation-required (nestedRequired LaunchTemplate)',
+    'the launch template specification is re-sent whole from the desired bag (asg/update.ts, and buildLaunchTemplate in asg/core.ts); Version is CloudFormation-required (nestedRequired LaunchTemplate)',
   MixedInstancesPolicy:
-    'the policy is re-sent whole from the desired bag (asg-provider.ts:1478-1480); its update-add probe observes delivery',
+    'the policy is re-sent whole from the desired bag (asg/update.ts); its update-add probe observes delivery',
   VPCZoneIdentifier:
-    'the subnet list is re-sent whole, comma-joined, from the desired bag (asg-provider.ts:1353, 1481, 2228-2237)',
+    'the subnet list is re-sent whole, comma-joined, from the desired bag (asg/update.ts, and joinVpcZoneIdentifier in asg/core.ts)',
   AvailabilityZones:
-    'the zone list is re-sent whole from the desired bag (asg-provider.ts:1482-1484)',
+    'the zone list is re-sent whole from the desired bag (asg/update.ts)',
   AvailabilityZoneIds:
     'the zone-id list is re-sent whole from the desired bag, as AvailabilityZones is',
   InstanceLifecyclePolicy:
     'the policy is re-sent whole from the desired bag, never read from the previous side; its update-add probe observes delivery',
   TerminationPolicies:
-    'the policy list is re-sent whole from the desired bag (asg-provider.ts:1494-1496)',
+    'the policy list is re-sent whole from the desired bag (asg/update.ts)',
   InstanceMaintenancePolicy:
-    'a kept-but-partial policy is passed through: AWS refuses one percentage alone, and CloudFormation submits the same partial object (asg-provider.ts:1385-1393)',
+    'a kept-but-partial policy is passed through: AWS refuses one percentage alone, and CloudFormation submits the same partial object (asg/update.ts)',
   CapacityReservationSpecification:
-    'a kept-but-partial specification is passed through verbatim; whether AWS keeps a previous CapacityReservationTarget is unprobed (asg-provider.ts:1385-1387, 1394-1397), and CapacityReservationPreference is CloudFormation-required',
+    'a kept-but-partial specification is passed through verbatim; whether AWS keeps a previous CapacityReservationTarget is unprobed (asg/update.ts), and CapacityReservationPreference is CloudFormation-required',
   AvailabilityZoneDistribution:
-    'its single member is passed through inside the kept object (asg-provider.ts:1385-1387, 1398)',
+    'its single member is passed through inside the kept object (asg/update.ts)',
   AvailabilityZoneImpairmentPolicy:
-    'both members are CloudFormation-required (nestedRequired AvailabilityZoneImpairmentPolicy), so only a whole-policy removal is deployable, which resets (asg-provider.ts:1446-1467)',
+    'both members are CloudFormation-required (nestedRequired AvailabilityZoneImpairmentPolicy), so only a whole-policy removal is deployable, which resets (asg/update.ts)',
 };
 
 /** The `update-remove` silences of `bag`: each kept top-level, and every path under a re-sent value. */
@@ -2232,7 +2232,7 @@ function asgEntryThrows(key: string, member: string, count: number, says: RegExp
       Array.from({ length: count }, (_, i) => [
         `${d}:${key}.${i}.${member}`,
         ASG_REQUIRED(
-          `an entry without its ${member} is refused on either side before any call (asg-provider.ts:133-150, 182-238, 857-880, 2486-2500); CloudFormation requires it too`,
+          `an entry without its ${member} is refused on either side before any call (asg/shared.ts, and readUpdateLists in asg/update-lists.ts); CloudFormation requires it too`,
           says
         ),
       ])
@@ -2254,7 +2254,7 @@ const ASG_EVERY: Bag = {
   HealthCheckGracePeriod: 300,
   Cooldown: '120',
   // Both `true`: an absent PropagateAtLaunch is sent as `false` on create
-  // (asg-provider.ts:2220), so only `true` differs from its removal.
+  // (buildTags in asg/core.ts), so only `true` differs from its removal.
   Tags: [
     { Key: 'k1', Value: 'v1', PropagateAtLaunch: true },
     { Key: 'k2', Value: 'v2', PropagateAtLaunch: true },
@@ -2320,7 +2320,7 @@ const ASG_EVERY: Bag = {
 };
 
 const ASG_TRAFFIC_TYPE =
-  'Type is CloudFormation-required (nestedRequired TrafficSources) and an Identifier names exactly one source kind, so no deployable template drops or changes it on a kept Identifier; the diff attaches and detaches by Identifier (asg-provider.ts:2952-2977)';
+  'Type is CloudFormation-required (nestedRequired TrafficSources) and an Identifier names exactly one source kind, so no deployable template drops or changes it on a kept Identifier; the diff attaches and detaches by Identifier (asg/update-lists.ts)';
 
 const ASG_MIXED: Bag = {
   AutoScalingGroupName: ASG_NAME,

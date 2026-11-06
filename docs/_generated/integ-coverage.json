@@ -5072,6 +5072,7 @@
     {
       "resourceType": "AWS::IAM::InstanceProfile",
       "integs": [
+        "ec2-instance",
         "ec2-instance-fanout",
         "emr-cluster",
         "emr-instance-configs",
@@ -5084,6 +5085,9 @@
         "remove-protection"
       ],
       "signals": {
+        "ec2-instance": [
+          "l1"
+        ],
         "ec2-instance-fanout": [
           "l1"
         ],
@@ -5260,6 +5264,7 @@
         "dlm-lifecycle-policy",
         "docdb-neptune",
         "drift-revert",
+        "ec2-instance",
         "ec2-instance-fanout",
         "ecs-bluegreen",
         "ecs-gateway-role-propagation",
@@ -5428,6 +5433,9 @@
           "l2"
         ],
         "drift-revert": [
+          "l2"
+        ],
+        "ec2-instance": [
           "l2"
         ],
         "ec2-instance-fanout": [

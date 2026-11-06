@@ -35,9 +35,13 @@ import {
   instanceProfileKey,
   instanceVolumeEntries,
   instanceVolumesRefusal,
+  instanceSsmAssociationEntries,
+  instanceSsmAssociationsRefusal,
   isRecordedStandIn,
   refusedBeforeApplying,
+  sameSsmAssociations,
   sameStringSet,
+  ssmAssociationsAwsRefusal,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -103,6 +107,19 @@ export async function updateInstance(
     await this.updateInstanceSecurityProps(physicalId, properties, previousProperties);
 
     await this.applyInstanceMemberUpdates(logicalId, physicalId, resourceType, memberPlan);
+
+    // go-to-k/cdkd#5630: after the members above, an IamInstanceProfile
+    // change included, which the association needs.
+    if (memberPlan.ssmAssociation !== undefined) {
+      await this.applyInstanceSsmAssociationChange(
+        logicalId,
+        physicalId,
+        resourceType,
+        memberPlan.ssmAssociation,
+        maskerOrIdentity(context?.maskSecrets),
+        context?.expectedRegion
+      );
+    }
 
     // Refresh attributes. The map REPLACES the record's (the engine does
     // not merge it with the previous one), and that is the right answer
@@ -329,6 +346,10 @@ export async function updateInstanceSecurityProps(
  *    a Version change creates a new instance.
  *  - `Volumes` (go-to-k/cdkd#5630, measured 2026-11-06): attached and
  *    detached in place; see `planInstanceVolumes`.
+ *  - `LicenseSpecifications` (go-to-k/cdkd#5630): create-only; any change
+ *    creates a new instance.
+ *  - `SsmAssociations` (go-to-k/cdkd#5630): deleted and re-created in
+ *    place; see `planInstanceSsmAssociations`.
  *
  * A member is CHANGED per the engine's `changedProperties` when it is set
  * (a redacted state value cannot be compared to a resolved one), else per
@@ -697,7 +718,73 @@ export function planInstanceMemberUpdates(
     changed
   );
 
+  this.planInstanceSsmAssociations(
+    logicalId,
+    physicalId,
+    resourceType,
+    properties,
+    previousProperties,
+    plan,
+    changed,
+    standInSkips
+  );
+
   return plan;
+}
+
+/**
+ * go-to-k/cdkd#5630: plan an `SsmAssociations` change. CloudFormation
+ * (measured us-east-1) completes only "absent -> one entry" in place; a
+ * parameter change, a document change and a removal all fail the update
+ * after its handler has deleted the association. cdkd applies them in place
+ * instead (a deliberate deviation, see `applyInstanceSsmAssociationChange`):
+ * delete the recorded association, then create the desired one.
+ *
+ * Refused before any call, on every path: a malformed desired list (read as
+ * empty it would delete the association) and the shapes AWS refuses every
+ * time (two or more entries, an entry with no `IamInstanceProfile`). A
+ * desired stand-in parameter is refused on a forward update and keeps the
+ * live association on a rollback revert, like every other member.
+ */
+export function planInstanceSsmAssociations(
+  this: EC2Provider,
+  logicalId: string,
+  physicalId: string,
+  resourceType: string,
+  properties: Record<string, unknown>,
+  previousProperties: Record<string, unknown>,
+  plan: InstanceMemberPlan,
+  changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean,
+  standInSkips: (key: string) => boolean
+): void {
+  const refusal =
+    instanceSsmAssociationsRefusal(properties['SsmAssociations'], resourceType) ??
+    ssmAssociationsAwsRefusal(properties, resourceType);
+  if (refusal !== undefined) {
+    throw refusedBeforeApplying(
+      new ProvisioningError(
+        `${refusal}. The instance ${logicalId} was not updated.`,
+        resourceType,
+        logicalId,
+        physicalId
+      )
+    );
+  }
+  if (!changed('SsmAssociations', (a, b) => sameSsmAssociations(a, b, resourceType))) return;
+  if (standInSkips('SsmAssociations')) return;
+  const desired = instanceSsmAssociationEntries(properties['SsmAssociations']);
+  const recorded = previousProperties['SsmAssociations'];
+  const recordedUsable = instanceSsmAssociationsRefusal(recorded, resourceType) === undefined;
+  const previous = recordedUsable ? instanceSsmAssociationEntries(recorded) : [];
+  // An unreadable record: which association is this resource's is
+  // unknowable, so none is deleted (an instance takes one document, and
+  // Systems Manager's own refusal then names a leftover one).
+  // `applyInstanceSsmAssociationChange` warns, naming the remedy.
+  plan.ssmAssociation = {
+    documentNames: previous.map((e) => e.DocumentName),
+    recordUnreadable: !recordedUsable,
+    create: desired[0],
+  };
 }
 
 /**
@@ -765,4 +852,5 @@ export const instanceUpdateMethods = {
   updateInstanceSecurityProps,
   planInstanceMemberUpdates,
   planInstanceVolumes,
+  planInstanceSsmAssociations,
 };
