@@ -417,12 +417,12 @@ const FLEET_CASE: TypeCase = {
       expectedSilent: Object.fromEntries(
         ['InstanceTypeConfigs', 'ResizeSpecifications'].map((key) => [
           `update-remove:${key}`,
-          'left in place on removal: ModifyInstanceFleet keeps a field it is not sent, and CloudFormation keeps it too (CFn A/B, emr-instance-fleet-config-provider.ts:93-106)',
+          'left in place on removal: ModifyInstanceFleet keeps a field it is not sent, and CloudFormation keeps it too (CFn A/B, emr-instance-fleet-config/shared.ts:48-60)',
         ])
       ),
       expectedRemovalThrows: {
         'create:ClusterId': REQUIRED(
-          'ClusterId is required: create() refuses a fleet without its cluster before any call (emr-instance-fleet-config-provider.ts:373-380)',
+          'ClusterId is required: create() refuses a fleet without its cluster before any call (emr-instance-fleet-config/create.ts:44-51)',
           /is missing ClusterId/
         ),
       },
