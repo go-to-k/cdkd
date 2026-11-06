@@ -211,7 +211,7 @@ describe('provider error-cause critic — the DERIVED error-class table', () => 
   });
 
   it('picks up a provider-LOCAL subclass, which an allowlist silently misses', () => {
-    // `HostedZoneNameNotFoundError` is declared inside route53-provider.ts and
+    // `HostedZoneNameNotFoundError` is declared inside route53/shared.ts and
     // extends ProvisioningError. A hardcoded class list never sees it, and — the
     // dangerous part — reports nothing about the omission.
     const sites = analyzeFile(
@@ -849,7 +849,7 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     const dir = copySrcTree();
     append(
       dir,
-      `${PROVIDERS}/route53-provider.ts`,
+      `${PROVIDERS}/route53/shared.ts`,
       `export function probeLocalSubclass(resourceType: string, logicalId: string): void {
          try { throw new Error('boom'); } catch (error) {
            throw new HostedZoneNameNotFoundError('probe', resourceType, logicalId, 'zid');

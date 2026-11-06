@@ -27,7 +27,6 @@ const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 // EFSProvider
 // =============================================================================
 
-const EFS_SRC = 'efs-provider.ts';
 const FS_ID = 'fs-12345678';
 const MT_ID = 'fsmt-12345678';
 const AP_ID = 'fsap-12345678';
@@ -61,7 +60,7 @@ const armEfs = (): void =>
  * so its create probes reach the wire.
  */
 const efsTagsRefused = (top: string): Throw => ({
-  why: `an ${top} entry without its Key or Value is refused before any call (${EFS_SRC}, refuseMalformedDesiredTags)`,
+  why: `an ${top} entry without its Key or Value is refused before any call (efs/file-system.ts and efs/access-point.ts, refuseMalformedDesiredTags)`,
   says: new RegExp(`desired ${top} of AWS::EFS::\\w+ L is not a list of tags`),
 });
 
@@ -149,8 +148,8 @@ const FILE_SYSTEM_CASE: TypeCase = {
         'FileSystemProtection.ReplicationOverwriteProtection': 'ENABLED',
       },
       expectedSilent: {
-        'update-remove:BackupPolicy.Status': `BackupPolicy.Status is required by the CloudFormation schema (nestedRequired), so no template drops it; a Status-less block is skipped before any call (${EFS_SRC}, applyBackupPolicy)`,
-        'update-remove:FileSystemProtection.ReplicationOverwriteProtection': `CloudFormation refuses an emptied FileSystemProtection block (the update fails, live CFn A/B, go-to-k/cdkd#1160), so there is no reset to send; the apply helper skips it before any call (${EFS_SRC}, applyFileSystemProtection)`,
+        'update-remove:BackupPolicy.Status': `BackupPolicy.Status is required by the CloudFormation schema (nestedRequired), so no template drops it; a Status-less block is skipped before any call (efs/file-system.ts, applyBackupPolicy)`,
+        'update-remove:FileSystemProtection.ReplicationOverwriteProtection': `CloudFormation refuses an emptied FileSystemProtection block (the update fails, live CFn A/B, go-to-k/cdkd#1160), so there is no reset to send; the apply helper skips it before any call (efs/file-system.ts, applyFileSystemProtection)`,
         'update-remove:ThroughputMode': `CFn parity: CloudFormation RETAINS a provisioned mode when only ThroughputMode is removed and ProvisionedThroughputInMibps stays (live CFn A/B, go-to-k/cdkd#5464), so nothing is sent`,
       },
       // The file system checks its desired tags only when they changed, so
@@ -158,7 +157,7 @@ const FILE_SYSTEM_CASE: TypeCase = {
       expectedRemovalThrows: {
         ...efsTagThrows('FileSystemTags', ['update-remove']),
         'update-remove:ProvisionedThroughputInMibps': {
-          why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (${EFS_SRC}, updateFileSystem)`,
+          why: `CloudFormation rejects ThroughputMode: provisioned without ProvisionedThroughputInMibps (live CFn A/B, go-to-k/cdkd#5547: the update fails and rolls back), so it is refused before any call (efs/file-system.ts, updateFileSystem)`,
           says: /Throughput value must be specified for provisioned throughput mode/,
         },
       },
@@ -186,7 +185,7 @@ const MOUNT_TARGET_BAG: Bag = {
 };
 
 const MT_REQUIRED = (member: string): Throw => ({
-  why: `${member} is required: create() refuses a mount target without it before any call (${EFS_SRC}, createMountTarget)`,
+  why: `${member} is required: create() refuses a mount target without it before any call (efs/mount-target.ts, createMountTarget)`,
   says: new RegExp(`${member} is required for EFS MountTarget`),
 });
 
@@ -198,7 +197,7 @@ const MOUNT_TARGET_CASE: TypeCase = {
   arm: armEfs,
   wholeFromNext: {
     keys: (key) => key === 'SecurityGroups',
-    reason: `update() sends SecurityGroups whole from the desired bag on every update (${EFS_SRC}, updateMountTarget) and never reads prev`,
+    reason: `update() sends SecurityGroups whole from the desired bag on every update (efs/mount-target.ts, updateMountTarget) and never reads prev`,
   },
   exempt: {},
   // ModifyMountTargetSecurityGroups replaces the whole list; no per-key call.
@@ -209,7 +208,7 @@ const MOUNT_TARGET_CASE: TypeCase = {
       bag: fresh(MOUNT_TARGET_BAG),
       variants: { IpAddressType: 'IPV4_ONLY' },
       expectedSilent: {
-        'update-remove:SecurityGroups': `SecurityGroups is required by the CloudFormation schema, so no template drops it; an update with none declared is a no-op (${EFS_SRC}, updateMountTarget)`,
+        'update-remove:SecurityGroups': `SecurityGroups is required by the CloudFormation schema, so no template drops it; an update with none declared is a no-op (efs/mount-target.ts, updateMountTarget)`,
       },
       expectedRemovalThrows: {
         'create:FileSystemId': MT_REQUIRED('FileSystemId'),
@@ -252,7 +251,7 @@ const ACCESS_POINT_CASE: TypeCase = {
       bag: fresh(ACCESS_POINT_BAG),
       expectedRemovalThrows: {
         'create:FileSystemId': {
-          why: `FileSystemId is required: create() refuses an access point without it before any call (${EFS_SRC}, createAccessPoint)`,
+          why: `FileSystemId is required: create() refuses an access point without it before any call (efs/access-point.ts, createAccessPoint)`,
           says: /FileSystemId is required for EFS AccessPoint/,
         },
         // The access point checks its desired tags on every update, so
@@ -267,7 +266,6 @@ const ACCESS_POINT_CASE: TypeCase = {
 // Route53Provider
 // =============================================================================
 
-const R53_SRC = 'route53-provider.ts';
 const ZONE_ID = 'Z0123456789ABCDEFGHIJ';
 const LOG_GROUP_ARN = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:/aws/route53/example.com`;
 
@@ -352,7 +350,7 @@ const PRIVATE_ZONE_BAG: Bag = {
 
 const NO_ZONE_NAME: Record<string, Throw> = {
   'create:Name': {
-    why: `create() refuses a hosted zone with no Name before any call (${R53_SRC}, createHostedZone)`,
+    why: `create() refuses a hosted zone with no Name before any call (route53/hosted-zone.ts, createHostedZone)`,
     says: /Name is required for hosted zone/,
   },
 };
@@ -363,13 +361,13 @@ const NO_ZONE_NAME: Record<string, Throw> = {
  * possibly unresolved intrinsic (issues #1471 / #1493). The reduced next is
  * that list on both sides, so neither sends a tagging call.
  */
-const LOSSY_TAGS_KEPT = `a HostedZoneTags entry without its Key or Value makes the desired list unusable, and the live tags are left untouched (${R53_SRC}, updateHostedZone; issues #1471 / #1493)`;
+const LOSSY_TAGS_KEPT = `a HostedZoneTags entry without its Key or Value makes the desired list unusable, and the live tags are left untouched (route53/hosted-zone.ts, updateHostedZone; issues #1471 / #1493)`;
 
-const COMMENT_FROM_NEXT = `UpdateHostedZoneComment is sent on every update with the desired Comment ('' when absent; ${R53_SRC}, updateHostedZone), so the removal reaches the wire through next, which update-add observes; prev is never read for it`;
+const COMMENT_FROM_NEXT = `UpdateHostedZoneComment is sent on every update with the desired Comment ('' when absent; route53/hosted-zone.ts, updateHostedZone), so the removal reaches the wire through next, which update-add observes; prev is never read for it`;
 
-const VPC_REGION_REQUIRED = `VPCRegion is required on every VPCs entry by the CloudFormation schema, so no template drops it; an association is keyed by VPCId alone (${R53_SRC}, syncVPCAssociations), and one VPC id names one VPC in one region`;
+const VPC_REGION_REQUIRED = `VPCRegion is required on every VPCs entry by the CloudFormation schema, so no template drops it; an association is keyed by VPCId alone (route53/zone-config.ts, syncVPCAssociations), and one VPC id names one VPC in one region`;
 
-const VPCS_KEPT = `a VPCs removed whole changes nothing, as in CloudFormation, and a warning names it (${R53_SRC}, VPCS_KEPT_ON_REMOVAL_NOTE; issue #1160)`;
+const VPCS_KEPT = `a VPCs removed whole changes nothing, as in CloudFormation, and a warning names it (route53/shared.ts, VPCS_KEPT_ON_REMOVAL_NOTE; issue #1160)`;
 
 const HOSTED_ZONE_CASE: TypeCase = {
   resourceType: 'AWS::Route53::HostedZone',
@@ -451,12 +449,12 @@ const armRecordSet = (_physicalId: string, bag: Bag): void => {
   });
 };
 
-const NAME_TYPE_REQUIRED = `Name and Type are required by the CloudFormation schema, so no template drops them; update() writes the record from the desired bag alone (${R53_SRC}, updateRecordSet)`;
+const NAME_TYPE_REQUIRED = `Name and Type are required by the CloudFormation schema, so no template drops them; update() writes the record from the desired bag alone (route53/record-set.ts, updateRecordSet)`;
 
 const NO_ZONE_NEEDLE = /Either HostedZoneId or HostedZoneName is required/;
 const NO_ZONE: Record<string, Throw> = {
   'create:HostedZoneId': {
-    why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (${R53_SRC}, createRecordSet)`,
+    why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (route53/record-set.ts, createRecordSet)`,
     says: NO_ZONE_NEEDLE,
   },
 };
@@ -467,7 +465,7 @@ const NO_ZONE: Record<string, Throw> = {
  * hosted-zone-id normalizer throws on it before any request is serialized.
  */
 const ALIAS_ZONE_REQUIRED: Throw = {
-  why: `AliasTarget.HostedZoneId is required by the CloudFormation schema; an absent one reaches the Route 53 client's id normalizer as undefined (${R53_SRC}, buildResourceRecordSet), which throws before any request is sent; the needle is that SDK-internal TypeError, so an SDK update may reword it`,
+  why: `AliasTarget.HostedZoneId is required by the CloudFormation schema; an absent one reaches the Route 53 client's id normalizer as undefined (route53/record-set.ts, buildResourceRecordSet), which throws before any request is sent; the needle is that SDK-internal TypeError, so an SDK update may reword it`,
   says: /Cannot read properties of undefined \(reading 'replace'\)/,
 };
 
@@ -496,7 +494,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
     },
     throws: {
       'create:HostedZoneName': {
-        why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (${R53_SRC}, createRecordSet)`,
+        why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (route53/record-set.ts, createRecordSet)`,
         says: NO_ZONE_NEEDLE,
       },
     },
@@ -620,7 +618,7 @@ const RECORD_SET_CASE: TypeCase = {
   // so update() deletes the live old record in the same batch: prev IS read.
   wholeFromNext: {
     keys: (key) => key !== 'SetIdentifier',
-    reason: `update() UPSERTs the record built from the desired bag alone (${R53_SRC}, updateRecordSet), so a removal reaches the wire through next, which update-add observes; prev is read only for the record's identity (Name / Type / SetIdentifier)`,
+    reason: `update() UPSERTs the record built from the desired bag alone (route53/record-set.ts, updateRecordSet), so a removal reaches the wire through next, which update-add observes; prev is read only for the record's identity (Name / Type / SetIdentifier)`,
   },
   exempt: {},
   // UPSERT writes the whole record built from next; no per-key call.

@@ -16,10 +16,10 @@ import { CloudFrontDistributionProvider } from '../../../src/provisioning/provid
  * (`acquireIdempotencyToken`, retired per successful create), so the runner
  * pins that helper to one fixed token per (scope, logical id), as batch 5 does.
  *
- * The update is a read-modify-write (cloudfront-distribution-provider.ts:504-531):
+ * The update is a read-modify-write (`update`, cloudfront-distribution/core.ts):
  * `GetDistributionConfig` answers the live config (the PREVIOUS bag, in SDK
  * shape) and its ETag, and the template overwrites every top-level member it
- * carries (`mergeUpdateConfig`, :1078-1115).
+ * carries (`mergeUpdateConfig`, cloudfront-distribution/update-config.ts).
  */
 
 const ID = 'E1ABCDEF';
@@ -42,7 +42,7 @@ type Converter = {
  * schema-documented default (AnycastIpListId, CacheTagConfig,
  * ConnectionFunctionAssociation, ConnectionMode, ContinuousDeploymentPolicyId,
  * IPV6Enabled, Staging, TenantConfig, ViewerMtlsConfig) keeps its live value
- * with a warning by design (cloudfront-distribution-provider.ts:127-131), the
+ * with a warning by design (`REMOVAL_RESET_DEFAULTS`, cloudfront-distribution/shared.ts), the
  * absent-field removal class tracked by go-to-k/cdkd#1160.
  */
 function armDistribution(bag: Bag): void {
@@ -68,7 +68,7 @@ function armDistribution(bag: Bag): void {
 }
 
 const behavior = {
-  // Not the GET/HEAD the update fills in (cloudfront-distribution-provider.ts:1171-1188).
+  // Not the GET/HEAD the update fills in (`completeRequiredUpdateFields`).
   AllowedMethods: ['GET', 'HEAD', 'OPTIONS'],
   CachedMethods: ['GET', 'HEAD', 'OPTIONS'],
   CachePolicyId: 'cp-1',
@@ -251,12 +251,12 @@ const DISTRIBUTION_FULL: Bag = {
 
 // Not a gap: the update sends each top-level DistributionConfig member the
 // template carries WHOLE from `next` over the live config
-// (`Object.assign(merged, templateSdk)`, cloudfront-distribution-provider.ts:1111),
+// (`Object.assign(merged, templateSdk)`, cloudfront-distribution/update-config.ts),
 // so a member's nested removal reaches the wire through `next` alone, as its
 // update-add probe observes; `prev` is read only for a top-level member
-// removed outright (:1089-1109).
+// removed outright (`mergeUpdateConfig`).
 const MEMBER_WHOLE_FROM_NEXT =
-  'a carried DistributionConfig member is sent whole from next over the live config, so a nested removal is delivered by next alone (cloudfront-distribution-provider.ts:1089-1111)';
+  'a carried DistributionConfig member is sent whole from next over the live config, so a nested removal is delivered by next alone (`mergeUpdateConfig`, cloudfront-distribution/update-config.ts)';
 
 const nestedUpdateRemoves = Object.fromEntries(
   paths(DISTRIBUTION_FULL)
@@ -323,9 +323,9 @@ export const CLOUDFRONT_CASES: TypeCase[] = [
           ...nestedUpdateRemoves,
           // Not a gap: a missing Comment is always sent as '' (its CFn default),
           // which overwrites the live value whatever the previous side held
-          // (cloudfront-distribution-provider.ts:1068-1073, 1215-1218).
+          // (`mergeUpdateConfig` and `convertToSdkFormat`, cloudfront-distribution/).
           'update-remove:DistributionConfig.Comment':
-            "a missing Comment is always sent as its CFn default '', overwriting the live value whatever prev held (cloudfront-distribution-provider.ts:1068-1073, 1215-1218)",
+            "a missing Comment is always sent as its CFn default '', overwriting the live value whatever prev held (`mergeUpdateConfig` and `convertToSdkFormat`, cloudfront-distribution/)",
         },
         expectedRemovalThrows: TAG_THROWS(['create', 'update-add', 'update-remove'], 2),
       },

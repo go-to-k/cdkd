@@ -3707,10 +3707,7 @@ describe('real-code regression probes (per the repo checker rules)', () => {
   const cfSdkMembers = collectSdkMemberNames(
     resolve(repoRoot, 'node_modules/@aws-sdk/client-cloudfront/dist-types/models')
   );
-  const cfSource = readFileSync(
-    resolve(repoRoot, 'src/provisioning/providers/cloudfront-distribution-provider.ts'),
-    'utf8'
-  );
+  const cfSource = providerWithCompanions('cloudfront-distribution-provider.ts');
   it('SDK member parse floor holds (parser-regression fence)', () => {
     expect(cfSdkMembers.size).toBeGreaterThanOrEqual(50);
     expect(cfSdkMembers.has('ACMCertificateArn')).toBe(true);

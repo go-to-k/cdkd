@@ -74,10 +74,10 @@ const ROLE_REQUIRED: Throw = {
 
 // Not a gap: Code is required by CloudFormation, so a template cannot remove
 // it; update() redeploys code only from a present next Code
-// (lambda-function-provider.ts:1449-1452) and lists Code in
-// removalHandledInUpdate as required (lambda-function-provider.ts:618-619).
+// (lambda-function/update.ts) and lists Code in
+// removalHandledInUpdate as required (lambda-function-provider.ts).
 const CODE_REQUIRED_ON_UPDATE =
-  'Code is required by CloudFormation, so its removal is not a template transition; update() redeploys only a present next Code (lambda-function-provider.ts:618-619, 1449-1452)';
+  'Code is required by CloudFormation, so its removal is not a template transition; update() redeploys only a present next Code (removalHandledInUpdate in lambda-function-provider.ts, lambda-function/update.ts)';
 
 /** Every zip-package property, the code an S3 object (#5305's members included). */
 const FUNCTION_FULL: Bag = {
@@ -194,10 +194,10 @@ const FUNCTION_CASE: TypeCase = {
         'update-remove:Code': CODE_REQUIRED_ON_UPDATE,
         // Not a gap: a removed RecursiveLoop keeps its live value by design,
         // and is the one config property left out of removalHandledInUpdate so
-        // the engine names the removal (lambda-function-provider.ts:610-613,
-        // 1483-1485).
+        // the engine names the removal (removalHandledInUpdate in
+        // lambda-function-provider.ts, lambda-function/update.ts).
         'update-remove:RecursiveLoop':
-          'a removed RecursiveLoop keeps its live value; left out of removalHandledInUpdate so the engine names it (lambda-function-provider.ts:610-613, 1483-1485)',
+          'a removed RecursiveLoop keeps its live value; left out of removalHandledInUpdate so the engine names it (removalHandledInUpdate in lambda-function-provider.ts, lambda-function/update.ts)',
         'create-vary:PackageType':
           'varied to Image, refused before any call beside CodeSigningConfigArn and RuntimeManagementConfig (refuseImageFunctionUnsupported); the container image bag varies it',
       },

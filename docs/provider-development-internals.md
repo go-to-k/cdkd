@@ -521,7 +521,7 @@ behind under the same logical id.
 
 A `List*` walk is still correct when it matches on a **name** the template
 supplies (rather than on a tag) and the service has no direct
-`Get<Name>` lookup — see `s3-tables-provider.ts`'s `TableBucketName` walk
+`Get<Name>` lookup — see `s3-tables/import.ts`'s `TableBucketName` walk
 and `servicediscovery-provider.ts`'s namespace `Name` walk. Guard it with an
 early `return null` when the template carries no name, so the walk never
 pages an account's entire inventory just to fail.
@@ -530,7 +530,7 @@ pages an account's entire inventory just to fail.
 
 | Shape | When | Copy from |
 | --- | --- | --- |
-| Name-matched list walk | The service has no direct lookup by the template-supplied name | `s3-tables-provider.ts` (`TableBucketName`), `servicediscovery-provider.ts` (namespace `Name`) |
+| Name-matched list walk | The service has no direct lookup by the template-supplied name | `s3-tables/import.ts` (`TableBucketName`), `servicediscovery-provider.ts` (namespace `Name`) |
 | Explicit override only | Auto lookup is impractical, or the resource is a sub-resource or an attachment | The providers listed below |
 | Singleton live lookup | The type represents an AWS-managed default | `agentcore-browser-provider.ts`, `agentcore-code-interpreter-provider.ts` |
 

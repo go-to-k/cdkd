@@ -29,7 +29,7 @@ const DEST_BUCKET_ARN = `arn:aws:s3tables:us-east-1:${ACCOUNT}:bucket/dest`;
 
 // Not a gap: a configuration property with a declarable default whose
 // CloudFormation removal reset is unmeasured is left at its AWS value, with a
-// warning (s3-tables-provider.ts, applyTableBucketConfigUpdate /
+// warning (s3-tables/table-bucket.ts, applyTableBucketConfigUpdate /
 // applyTableMaintenanceUpdate; go-to-k/cdkd#2762).
 const KEPT_ON_REMOVAL =
   'a removed configuration property with a declarable default is left at its AWS value and warned about';
@@ -39,14 +39,14 @@ const KEPT_ON_REMOVAL =
 const NO_METADATA = 'WithoutMetadata declares a table with no schema: CreateTable without metadata';
 
 const required = (name: string): Throw => ({
-  why: `create() refuses a missing ${name} before any call (s3-tables-provider.ts)`,
+  why: `create() refuses a missing ${name} before any call (the s3-tables/ create bodies)`,
   says: new RegExp(`${name} is required`),
 });
 
 /**
  * The table the record names. It differs from every bag's Namespace and
  * TableName on purpose: `planTableRename` compares the desired names with the
- * PHYSICAL ID, not `previousProperties` (s3-tables-provider.ts:1612-1622), so
+ * PHYSICAL ID, not `previousProperties` (s3-tables/table.ts, planTableRename), so
  * only an id naming another table makes an update owe a RenameTable whose
  * `newNamespaceName` / `newName` the probes can read (go-to-k/cdkd#5319).
  */
@@ -54,7 +54,7 @@ export const TABLE_PHYSICAL_ID = `${BUCKET_ARN}|ns_live|tbl_live`;
 
 // Not a gap: the rename is planned from `next` against the physical id, and a
 // key the template omits keeps the table's current name
-// (s3-tables-provider.ts:1651-1668); `prev` is never read for it. A removal
+// (s3-tables/table.ts, planTableRename); `prev` is never read for it. A removal
 // from `prev` alone sends the same request; its update-add probe observes
 // delivery. (Namespace and TableName are required by CloudFormation, so their
 // removal is not a template that deploys anyway.)
@@ -62,10 +62,11 @@ const RENAME_FROM_NEXT =
   'RenameTable is planned from next against the physical id; prev is not read for Namespace / TableName / Name';
 
 // Not a gap: `Format` is cdkd's legacy alias of `OpenTableFormat`
-// (s3-tables-provider.ts:212-216), read only by create (:857-859). There is no
-// UpdateTable API (:356), the SDK's `OpenTableFormat` enum has the single
-// member `ICEBERG`, and the CFn-canonical `OpenTableFormat` is create-only, so
-// the engine replaces on any change the schema can spell.
+// (s3-tables-provider.ts, handledProperties), read only by create
+// (s3-tables/table.ts, createTable). There is no UpdateTable API
+// (s3-tables/core.ts, applyUpdate), the SDK's `OpenTableFormat` enum has the
+// single member `ICEBERG`, and the CFn-canonical `OpenTableFormat` is
+// create-only, so the engine replaces on any change the schema can spell.
 const FORMAT_CREATE_ONLY =
   'Format (legacy OpenTableFormat alias) is read only by create; no UpdateTable API exists';
 
@@ -116,12 +117,12 @@ export const S3TABLES_CASES: TypeCase[] = [
     provider: () => new S3TablesProvider(),
     physicalId: `${BUCKET_ARN}|ns`,
     // Both properties are create-only, so no update probe runs: update() is a
-    // documented no-op for a namespace (s3-tables-provider.ts:414-416).
+    // documented no-op for a namespace (s3-tables/core.ts, applyUpdate).
     createOnly: createOnlyOf('AWS::S3Tables::Namespace'),
     exempt: {},
     schemaExempt: {
       Namespace:
-        'the schema types it string; the singleton list is the addPropertyOverride spelling the provider also accepts (s3-tables-provider.ts:1384-1392)',
+        'the schema types it string; the singleton list is the addPropertyOverride spelling the provider also accepts (s3-tables/namespace.ts, createNamespace)',
     },
     targets: [],
     bags: [
@@ -135,7 +136,7 @@ export const S3TABLES_CASES: TypeCase[] = [
       },
       {
         // A singleton list is accepted too (`addPropertyOverride`,
-        // s3-tables-provider.ts:1384-1392); its emptied form is refused.
+        // s3-tables/namespace.ts, createNamespace); its emptied form is refused.
         name: 'namespace as a singleton list',
         bag: { TableBucketARN: BUCKET_ARN, Namespace: ['ns'] },
         expectedRemovalThrows: {

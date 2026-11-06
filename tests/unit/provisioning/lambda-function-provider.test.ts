@@ -493,7 +493,7 @@ describe('LambdaFunctionProvider', () => {
       // A sub-field dropped from a KEPT ImageConfig block is whole-object
       // REPLACE on UpdateFunctionConfiguration, and CloudFormation reaches the
       // same end state (live A/B 2026-08-11 — see the ImageConfig comment in
-      // lambda-function-provider.ts). So the provider must NOT synthesize
+      // lambda-function/update.ts). So the provider must NOT synthesize
       // per-sub-field clear values: the new block goes out as-is, and AWS
       // clears whatever it omits.
       mockLambdaSend

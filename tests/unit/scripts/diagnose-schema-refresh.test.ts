@@ -436,7 +436,12 @@ describe('findDeclarationCandidates', () => {
     );
     expect(hits.length).toBeGreaterThan(0);
     for (const hit of hits) {
-      expect(hit.startsWith('src/provisioning/providers/route53-provider.ts:')).toBe(true);
+      // The provider file or one of its companion files (`route53/`).
+      expect(
+        hit.startsWith('src/provisioning/providers/route53-provider.ts:') ||
+          hit.startsWith('src/provisioning/providers/route53/'),
+        hit
+      ).toBe(true);
     }
   });
 
@@ -4271,7 +4276,7 @@ describe('classifyRemovedProperty', () => {
     // carry both facts and where each was read — not a template sentence.
     expect(rationale).toContain('@aws-sdk/client-route-53');
     expect(rationale).toContain('ResourceRecordSet');
-    expect(rationale).toMatch(/wires it at src\/provisioning\/providers\/route53-provider\.ts:\d+/);
+    expect(rationale).toMatch(/wires it at src\/provisioning\/providers\/route53\/record-set\.ts:\d+/);
     expect(rationale).toContain('Written automatically by the schema refresh job');
     // PascalCase here, so the camelCase note must NOT appear — it is a claim
     // about the service's modelling convention, wrong on this one.
@@ -4618,6 +4623,7 @@ describe('writeAutoTolerated', () => {
       for (const companions of [
         'src/provisioning/providers/apigateway',
         'src/provisioning/providers/asg',
+        'src/provisioning/providers/route53',
       ]) {
         cpSync(join(REPO_ROOT, companions), join(root, companions), { recursive: true });
       }

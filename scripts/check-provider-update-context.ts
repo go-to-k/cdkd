@@ -155,7 +155,7 @@
  *     `class WidgetFactory extends BaseFactory { create() }` — none of which
  *     could be a provider, and the cache appended to a real provider file made
  *     the shipped binary exit 1. (`HostedZoneNameNotFoundError` in
- *     `route53-provider.ts` is the in-tree instance; it extends
+ *     `route53/shared.ts` is the in-tree instance; it extends
  *     `ProvisioningError`, not `Error` — no class under `providers/` extends
  *     `Error` directly.)
  *

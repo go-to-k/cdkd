@@ -4,6 +4,7 @@ import {
   DescribeSubnetsCommand,
   ModifySubnetAttributeCommand,
   type CreateSubnetCommandOutput,
+  type Subnet,
 } from '@aws-sdk/client-ec2';
 import { canonicalizeIpv6Cidr } from '../../../utils/ipv6-cidr.js';
 import {
@@ -528,6 +529,7 @@ export async function updateSubnet(
     // declared true.
     const declaredAssign = declaredDetachValue('AssignIpv6AddressOnCreation');
     let blockless = false;
+    let liveSubnet: Subnet | undefined;
     if (
       prepared['Ipv6CidrBlock'] === undefined &&
       coerceCfnBoolean(prepared['Ipv6Native']) !== true &&
@@ -536,12 +538,31 @@ export async function updateSubnet(
       const live = await this.ec2Client.send(
         new DescribeSubnetsCommand({ SubnetIds: [physicalId] })
       );
-      blockless = !(live.Subnets?.[0]?.Ipv6CidrBlockAssociationSet ?? []).some(
+      liveSubnet = live.Subnets?.[0];
+      blockless = !(liveSubnet?.Ipv6CidrBlockAssociationSet ?? []).some(
         (association) => association.Ipv6CidrBlockState?.State === 'associated'
       );
     }
-    const wantsAssignOn =
+    // go-to-k/cdkd#5843: a declared true the live subnet holds off is sent
+    // again even when the record already says true. A record written before
+    // the narrowing below keeps true over a live false (the write was skipped
+    // while the block was missing), so the record alone never re-sends it.
+    // It also turns back on a value someone switched off out of band, which
+    // drift would otherwise report; such a re-send is logged at debug level.
+    const keptAssign =
+      prepared['AssignIpv6AddressOnCreation'] !== properties['AssignIpv6AddressOnCreation'];
+    const keptDns =
+      prepared['PrivateDnsNameOptionsOnLaunch'] !== properties['PrivateDnsNameOptionsOnLaunch'];
+    const liveOffAssign =
+      !keptAssign && declaredAssign === true && liveSubnet?.AssignIpv6AddressOnCreation === false;
+    const liveOffDns64 = !keptDns64 && dns64 === true && liveSubnet?.EnableDns64 === false;
+    const liveOffAaaa =
+      !keptDns &&
+      declaredAaaa === true &&
+      liveSubnet?.PrivateDnsNameOptionsOnLaunch?.EnableResourceNameDnsAAAARecord === false;
+    const recordAssignOn =
       restore.has('AssignIpv6AddressOnCreation') || (changedAssignIpv6 && assignIpv6 === true);
+    const wantsAssignOn = recordAssignOn || liveOffAssign;
     const wantsAaaaOn =
       restore.has('EnableResourceNameDnsAAAARecordOnLaunch') ||
       (declaredAaaa === true &&
@@ -550,28 +571,52 @@ export async function updateSubnet(
           AAAA_MEMBER
         ) !== true ||
           context?.unsettledProperties?.has('PrivateDnsNameOptionsOnLaunch') === true));
-    const hadBlock = previousProperties['Ipv6CidrBlock'] !== undefined;
-    if (blockless && declaredAssign === true && (wantsAssignOn || hadBlock)) {
+    // EC2 refuses each of the three on with no IPv6 block (InvalidParameterValue,
+    // measured), so a true write is skipped, announced, and RECORDED as the
+    // false AWS holds (go-to-k/cdkd#5843): the next deploy then diffs the
+    // template's true against it and sends the write once a block is there,
+    // e.g. one an AWS::EC2::SubnetCidrBlock attached after this update.
+    // CloudFormation fails the deploy instead; this gave way to converging.
+    // No canonicalizeDesiredProperties counterpart, on purpose: that resurfacing
+    // diff IS the retry, and all three are mutable, so it is an update.
+    let recorded = prepared;
+    const skipOn = (key: string, value: unknown, member: string): void => {
       this.logger.warn(
-        safeMsg`Subnet ${logicalId}: AssignIpv6AddressOnCreation is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off`
+        safeMsg`Subnet ${logicalId}: ${member} is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off until a deploy finds a block`
+      );
+      recorded = { ...recorded, [key]: value };
+    };
+    if (blockless && declaredAssign === true) {
+      skipOn('AssignIpv6AddressOnCreation', false, 'AssignIpv6AddressOnCreation');
+    }
+    if (blockless && declaredAaaa === true) {
+      skipOn(
+        'PrivateDnsNameOptionsOnLaunch',
+        {
+          ...(recorded['PrivateDnsNameOptionsOnLaunch'] as Record<string, unknown>),
+          [AAAA_MEMBER.member]: false,
+        },
+        'PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord'
       );
     }
-    if (blockless && declaredAaaa === true && (wantsAaaaOn || hadBlock)) {
-      this.logger.warn(
-        safeMsg`Subnet ${logicalId}: PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off`
-      );
-    }
-    // EC2 also refuses DNS64 on with no IPv6 block (InvalidParameterValue,
-    // measured), so that write is skipped the same way.
-    const wantsDns64On = restore.has('EnableDns64') || (changedDns64 && dns64 === true);
-    if (blockless && dns64 === true && (wantsDns64On || hadBlock)) {
-      this.logger.warn(
-        safeMsg`Subnet ${logicalId}: EnableDns64 is true but the subnet has no IPv6 block, so EC2 cannot keep it on; it stays off`
-      );
+    const recordDns64On = restore.has('EnableDns64') || (changedDns64 && dns64 === true);
+    const wantsDns64On = recordDns64On || liveOffDns64;
+    if (blockless && dns64 === true) skipOn('EnableDns64', false, 'EnableDns64');
+    const resendAaaa = liveOffAaaa && !wantsAaaaOn && !blockless;
+    for (const [member, liveOnly] of [
+      ['EnableDns64', liveOffDns64 && !recordDns64On],
+      ['AssignIpv6AddressOnCreation', liveOffAssign && !recordAssignOn],
+      ['PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord', resendAaaa],
+    ] as const) {
+      if (liveOnly && !blockless) {
+        this.logger.debug(
+          safeMsg`Subnet ${logicalId}: ${member} is declared true but the live subnet holds it off; sending it again`
+        );
+      }
     }
     if (wantsDns64On && !blockless) await applyDns64(true);
     if (wantsAssignOn && !blockless) await applyAssignIpv6(true);
-    if (restore.has('EnableResourceNameDnsAAAARecordOnLaunch')) {
+    if (restore.has('EnableResourceNameDnsAAAARecordOnLaunch') || resendAaaa) {
       context?.markUnsettled?.('PrivateDnsNameOptionsOnLaunch');
       await this.writeSubnetAttribute(physicalId, 'EnableResourceNameDnsAAAARecordOnLaunch', true);
     }
@@ -596,7 +641,7 @@ export async function updateSubnet(
     return {
       physicalId,
       wasReplaced: false,
-      ...(prepared !== properties && { effectiveProperties: prepared }),
+      ...(recorded !== properties && { effectiveProperties: recorded }),
     };
   } catch (error) {
     if (error instanceof CdkdError) throw error;

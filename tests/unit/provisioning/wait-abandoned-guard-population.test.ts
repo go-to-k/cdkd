@@ -99,7 +99,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // `ELBv2Provider`'s `isNotFoundError`, moved to its companion file.
   { file: 'provisioning/providers/elbv2/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/neptune-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // `NeptuneProvider`'s `isNotFoundError`, moved to its companion file.
+  { file: 'provisioning/providers/neptune/core.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // RDSProvider's `isNotFoundError`, in its companion directory (`rds/`).
   { file: 'provisioning/providers/rds/calls.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/s3-vectors-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },

@@ -244,7 +244,7 @@ export const COMPOSITE_PHYSICAL_ID_IDENTIFIERS: Record<string, CompositePhysical
     physicalIdShape: '<apiId>|<typeName>|<fieldName>',
     arnServiceSegment: 'appsync',
   }),
-  // cdkd stores `<tableBucketARN>|<namespace>|<name>` (s3-tables-provider.ts's
+  // cdkd stores `<tableBucketARN>|<namespace>|<name>` (s3-tables/table.ts's
   // `createTable`), and records the real `TableARN` AWS returns — the ARN's
   // format is NOT derivable from the composite's parts. A Cloud-Control-routed
   // import records the bare ARN as the physicalId instead (see

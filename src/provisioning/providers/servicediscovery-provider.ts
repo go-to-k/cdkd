@@ -1,66 +1,10 @@
-import { isDeepStrictEqual } from 'node:util';
-import {
-  ServiceDiscoveryClient,
-  CreateHttpNamespaceCommand,
-  CreatePrivateDnsNamespaceCommand,
-  CreatePublicDnsNamespaceCommand,
-  UpdateHttpNamespaceCommand,
-  UpdatePrivateDnsNamespaceCommand,
-  UpdatePublicDnsNamespaceCommand,
-  DeleteNamespaceCommand,
-  TagResourceCommand,
-  UntagResourceCommand,
-  CreateServiceCommand,
-  type CreateServiceCommandOutput,
-  UpdateServiceCommand,
-  DeleteServiceCommand,
-  UpdateServiceAttributesCommand,
-  DeleteServiceAttributesCommand,
-  GetServiceAttributesCommand,
-  GetNamespaceCommand,
-  GetOperationCommand,
-  GetServiceCommand,
-  ListNamespacesCommand,
-  ListTagsForResourceCommand,
-  NamespaceNotFound,
-  ResourceInUse,
-  ServiceNotFound,
-  type DnsConfig,
-  type DnsConfigChange,
-  type HealthCheckCustomConfig,
-  type HealthCheckConfig,
-  type HttpNamespaceChange,
-  type PrivateDnsNamespaceChange,
-  type PublicDnsNamespaceChange,
-  type ServiceChange,
-  type Tag,
-  type ServiceTypeOption,
-} from '@aws-sdk/client-servicediscovery';
-import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
-import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
-import { getLogger } from '../../utils/logger.js';
-import { withRetry, type RetryLogger } from '../../deployment/retry.js';
-import { isInterruptedWaitError, startInterruptWatch } from '../interrupt-watch.js';
-import { safeMsg } from '../../utils/display-safe.js';
+import { ServiceDiscoveryClient, type ServiceChange } from '@aws-sdk/client-servicediscovery';
+import { STSClient } from '@aws-sdk/client-sts';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import type { RetryLogger } from '../../deployment/retry.js';
 import { ProvisioningError } from '../../utils/error-handler.js';
-import { derivePartitionAndUrlSuffix } from '../../utils/aws-partition.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { markNotGone } from '../not-gone.js';
-import { generatedNameFor } from '../resource-name.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { withRemovalDefaults } from '../update-removal.js';
-import {
-  createMaskedRetryLogger,
-  maskerOrIdentity,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
-import {
-  markRedactedCause,
-  relayedNameCollision,
-  wrapMaskedAwsError,
-} from '../../deployment/retryable-errors.js';
-import { dynamicReferenceTokens, SECRET_MASK } from '../../deployment/secret-redaction.js';
+import type { DeleteContext } from '../region-check.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -73,170 +17,57 @@ import type {
   ResourceNotFound,
   ResourceIdentityVerdict,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
-import { definedAttributes } from '../attribute-map.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import { NAMESPACE_TYPES } from './servicediscovery/shared.js';
 import {
-  isAuxiliaryFailure,
-  markAuxiliaryFailure,
-  markCreatedBeforeFailure,
-} from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
-
-/**
- * Reset targets for a REMOVED `Properties.DnsProperties.SOA.TTL` (issue
- * #1160, servicediscovery batch). The Update*Namespace change objects MERGE
- * (an absent field keeps the live value), so the provider must send the
- * reset explicitly to mirror CloudFormation — and the default TTL is
- * PER KIND, not shared:
- *  - PublicDnsNamespace: 60. Live CFn A/B 2026-08-11 (removing the SOA
- *    block reset the customized 300 back to 60) + raw-SDK create-default
- *    probe (a namespace created without Properties reports TTL 60).
- *  - PrivateDnsNamespace: 15. Raw-SDK create-default probe 2026-08-11 (a
- *    namespace created without Properties reports TTL 15 — matching the
- *    PR #201-era live observation recorded on the create path below) +
- *    live CFn A/B 2026-08-11 on the private kind itself.
- * Removing `Description` clears it entirely on every kind (the `''`
- * sentinel; measured per kind, see `removalDefaults`).
- */
-const PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL = 60;
-const PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL = 15;
-
-/**
- * `CreateService`'s retry on `NamespaceNotFound` right after the namespace was
- * created (issue #5113): 0.5s -> 1s -> 2s, then 4s flat, over 9 retries — 27.5s
- * of backoff, about 30s with the calls themselves.
- */
-const CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES = 9;
-const CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS = 500;
-const CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS = 4_000;
-/** The schedule's total backoff, for the give-up message (27.5). */
-const CREATE_SERVICE_NAMESPACE_LAG_BACKOFF_SECONDS =
-  Array.from({ length: CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES }, (_, i) =>
-    Math.min(
-      CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS * 2 ** i,
-      CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS
-    )
-  ).reduce((a, b) => a + b, 0) / 1000;
-
-/** The three namespace kinds, which share one Description removal reset. */
-const NAMESPACE_TYPES = [
-  'AWS::ServiceDiscovery::PrivateDnsNamespace',
-  'AWS::ServiceDiscovery::HttpNamespace',
-  'AWS::ServiceDiscovery::PublicDnsNamespace',
-] as const;
-
-/** Each namespace kind's `Namespace.Type` (go-to-k/cdkd#4606). */
-const NAMESPACE_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
-  ['AWS::ServiceDiscovery::PrivateDnsNamespace', 'DNS_PRIVATE'],
-  ['AWS::ServiceDiscovery::PublicDnsNamespace', 'DNS_PUBLIC'],
-  ['AWS::ServiceDiscovery::HttpNamespace', 'HTTP'],
-]);
-
-/**
- * Whether a RESOLVED desired value is the one the state record holds, for
- * {@link ServiceDiscoveryProvider}'s Service change planning (issue #1160).
- * The record is REDACTED: a dynamic reference may stay its
- * `{{resolve:...}}` token (any kind, not only a secret one) and a `NoEcho`
- * value is `***`, while the desired
- * bag carries the plaintext. Such a recorded leaf cannot be compared, so it
- * counts as CHANGED: a wildcard would silently drop a real template change
- * (one secret reference swapped for another), and sending the declared value
- * again is harmless. Every other leaf is compared deep and strict.
- *
- * Only the FALLBACK when the deploy engine passes no
- * `UpdateContext.changedProperties` (go-to-k/cdkd#5112): a rollback revert,
- * `cdkd drift --revert`, or a direct call. A deploy's in-place update passes
- * the keys that changed template to template, as CloudFormation compares, so
- * an unchanged `Description` recorded as a dynamic reference with a
- * `HealthCheckConfig` removed beside it keeps the health check there. One
- * recorded as a `NoEcho` `***` is left out of those keys only when the engine
- * read the service back and AWS holds its value; otherwise it is named, and
- * sent.
- */
-function sameAsRecorded(desired: unknown, recorded: unknown): boolean {
-  if (typeof recorded === 'string' && isRecordedStandIn(recorded)) return false;
-  if (Array.isArray(desired) && Array.isArray(recorded)) {
-    return (
-      desired.length === recorded.length &&
-      desired.every((item, i) => sameAsRecorded(item, recorded[i]))
-    );
-  }
-  if (
-    desired !== null &&
-    recorded !== null &&
-    typeof desired === 'object' &&
-    typeof recorded === 'object' &&
-    !Array.isArray(desired) &&
-    !Array.isArray(recorded)
-  ) {
-    const d = desired as Record<string, unknown>;
-    const r = recorded as Record<string, unknown>;
-    const keys = new Set([...Object.keys(d), ...Object.keys(r)]);
-    return [...keys].every(
-      (key) => Object.hasOwn(d, key) === Object.hasOwn(r, key) && sameAsRecorded(d[key], r[key])
-    );
-  }
-  return isDeepStrictEqual(desired, recorded);
-}
-
-/**
- * The `DnsConfig` members of a Cloud Map service that changed but cannot be
- * applied in place (go-to-k/cdkd#5373): `UpdateService`'s `DnsConfigChange`
- * carries `DnsRecords` only, so a `NamespaceId` or `RoutingPolicy` change has
- * no member to send. CloudFormation behaves the same way. Measured in
- * us-east-1 on 2026-10-26: moving `DnsConfig.NamespaceId` to another namespace
- * and changing `RoutingPolicy` from MULTIVALUE to WEIGHTED, each on its own and
- * beside a `Description` change, planned `Modify` with `Replacement: False`,
- * ended `UPDATE_COMPLETE` and left the service id, namespace and routing
- * policy as they were. cdkd matches that outcome and names the members in a
- * warning instead of staying silent.
- *
- * Only a `DnsConfig` the template still declares is compared: a removed
- * `DnsConfig` is the #1160 removal path in {@link planServiceChange}.
- */
-function unappliedDnsConfigMembers(
-  properties: Record<string, unknown>,
-  previousProperties: Record<string, unknown>,
-  changedProperties: ReadonlySet<string> | undefined
-): string[] {
-  if (changedProperties !== undefined && !changedProperties.has('DnsConfig')) return [];
-  const desired = properties['DnsConfig'];
-  const previous = previousProperties['DnsConfig'];
-  if (!isPlainObject(desired) || !isPlainObject(previous)) return [];
-  return ['NamespaceId', 'RoutingPolicy'].filter(
-    (member) => !sameAsRecorded(desired[member], previous[member])
-  );
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** A recorded string standing in for a resolved secret: a dynamic reference, or the mask. */
-function isRecordedStandIn(value: string): boolean {
-  return dynamicReferenceTokens(value).length > 0 || value.includes(SECRET_MASK);
-}
-
-/** The id forms Cloud Map generates: `ns-` / `srv-` and 16 lowercase alphanumerics. */
-const NAMESPACE_ID_PATTERN = /^ns-[a-z0-9]{16}$/;
-const SERVICE_ID_PATTERN = /^srv-[a-z0-9]{16}$/;
-
-/**
- * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
- * not gone (go-to-k/cdkd#2319, #5228). The wrap names the class, and the
- * deploy and destroy delete classifiers (`deploy-engine/delete.ts`,
- * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
- * in a message as "already deleted" unless the error is marked. This
- * resource's own not-found returned before the wrap, so a `NotFound` class
- * reaching it is another object's (an operation, a key, a namespace) and the
- * resource may still exist. Retryability stays the retry classifiers'.
- */
-function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
-  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
-}
+  getClient,
+  getStsClient,
+  maskedRetryLogger,
+  maskErrorMessage,
+  wrapCaughtError,
+  extractSoaTtlProperties,
+  resolveSoaTtlChange,
+  resolveNamespaceArn,
+  syncNamespaceTags,
+  wrapOperationFailedError,
+  pollOperation,
+  buildNamespaceArn,
+} from './servicediscovery/core.js';
+import { create, update, deleteImpl } from './servicediscovery/dispatch.js';
+import {
+  createNamespace,
+  updateNamespace,
+  deleteNamespace,
+  createHttpNamespace,
+  updateHttpNamespace,
+  createPublicDnsNamespace,
+  updatePublicDnsNamespace,
+} from './servicediscovery/namespace.js';
+import {
+  createService,
+  updateService,
+  planServiceChange,
+  warnUnappliedDnsConfigMembers,
+  keepUndeclaredServiceFields,
+  deleteService,
+} from './servicediscovery/service.js';
+import {
+  getAttribute,
+  isSameResource,
+  readNamespaceIdForIdentity,
+  readServiceIdForIdentity,
+  readCurrentState,
+  getDriftUnknownPaths,
+  readNamespace,
+  readService,
+  normalizeServiceAttributes,
+  attachTags,
+} from './servicediscovery/read-state.js';
+import {
+  importImpl,
+  importNamespaceResource,
+  importServiceResource,
+} from './servicediscovery/import.js';
 
 /**
  * AWS Service Discovery Provider
@@ -255,10 +86,10 @@ function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E)
  * (issue #1044).
  */
 export class ServiceDiscoveryProvider implements ResourceProvider {
-  private client?: ServiceDiscoveryClient;
-  private stsClient?: STSClient;
-  private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('ServiceDiscoveryProvider');
+  client?: ServiceDiscoveryClient;
+  stsClient?: STSClient;
+  readonly providerRegion = ambientRegion();
+  logger: ConsoleLogger = getLogger().child('ServiceDiscoveryProvider');
 
   handledProperties = new Map<string, ReadonlySet<string>>([
     [
@@ -329,149 +160,39 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): ServiceDiscoveryClient {
-    if (!this.client) {
-      this.client = new ServiceDiscoveryClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
-    }
-    return this.client;
+  getClient(): ServiceDiscoveryClient {
+    return getClient.call(this);
   }
 
-  private getStsClient(): STSClient {
-    if (!this.stsClient) {
-      this.stsClient = new STSClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
-    }
-    return this.stsClient;
+  getStsClient(): STSClient {
+    return getStsClient.call(this);
   }
 
-  /**
-   * A {@link RetryLogger} for this provider's `withRetry` calls, bound to the
-   * caller's secret masker (issue #2050).
-   *
-   * Thin wrapper over the shared {@link createMaskedRetryLogger} — see that
-   * module for why the factory is shared with `elbv2-provider.ts` rather than
-   * hand-rolled per file, and for why `warn` is threaded rather than omitted.
-   *
-   * NOT applied to `deleteNamespace`'s retry: that one sends a
-   * `DeleteNamespaceCommand` carrying a physical id only. The delete's
-   * `maskSecrets` reaches its failure wrap instead.
-   */
-  private maskedRetryLogger(maskSecrets: SecretMasker | undefined): RetryLogger {
-    return createMaskedRetryLogger(this.logger, maskSecrets);
+  maskedRetryLogger(maskSecrets: SecretMasker | undefined): RetryLogger {
+    return maskedRetryLogger.call(this, maskSecrets);
   }
 
-  /**
-   * Mask a caught AWS error's message before it is interpolated into a line
-   * this provider logs (issue #2050, review round 2). A thrown failure goes
-   * through {@link wrapCaughtError} instead, which masks the same text and
-   * also stamps the wrap.
-   *
-   * Masks `error.message` rather than the assembled sentence so the masker can
-   * reach `maskSecretsInText`'s WHOLE-VALUE arm (any length) instead of only
-   * the SUBSTRING arm (needles of 4+ characters).
-   */
-  private maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
-    const mask = maskerOrIdentity(maskSecrets);
-    // `.detail`: the same text, without out-throwing the cleanup catch it runs
-    // in on a value `String()` cannot convert (go-to-k/cdkd#3361).
-    return mask(describeAwsFailure(error).detail);
+  maskErrorMessage(error: unknown, maskSecrets: SecretMasker | undefined): string {
+    return maskErrorMessage.call(this, error, maskSecrets);
   }
 
-  /**
-   * The failure wrap every create / update / delete catch throws.
-   *
-   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
-   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
-   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
-   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
-   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
-   * the withheld text on the `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}), except from the Service create's
-   * attributes wiring ({@link markAuxiliaryFailure}), where "it" would read as
-   * the service. A non-`Error` throw is withheld the same way, unstamped: it
-   * has no chain to read.
-   *
-   * A cdkd-authored or transport error keeps its text, masked RAW (an AWS SDK
-   * error can echo a request value off the RESOLVED `properties` bag, issue
-   * #2050), stamped exactly when the mask changed it (`wrapMaskedAwsError`,
-   * issue #4259). The deletes check `NamespaceNotFound` / `ServiceNotFound` by
-   * type before they wrap. A method, so `gen-update-wrap-coverage` sees the
-   * catch that throws it as a wrap.
-   *
-   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call.
-   */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const failure = describeAwsFailure(error);
-    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
-    this.logger.debug(mask(build(mask(failure.detail)).message));
-    const relay = isAuxiliaryFailure(error) ? '' : relayedNameCollision(failure.detail);
-    const wrapped = build(`${mask(failure.summary)}${relay}`);
-    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+    return wrapCaughtError.call(this, mask, error, build);
   }
 
-  // ─── Dispatch ─────────────────────────────────────────────────────
-
-  /**
-   * `context` is read for ONE thing today: `maskSecrets` (issue #2050). The
-   * Service create path runs a post-create `UpdateServiceAttributes` through
-   * `withRetry` — see {@link maskedRetryLogger}.
-   *
-   * EVERY arm receives it, not just the Service one (issue #2063). The three
-   * namespace arms build their `Create*NamespaceCommand` payload out of the
-   * RESOLVED `properties` bag — `Name`, `Description`, `Tags` — and each has
-   * two disclosure surfaces for it: the `ProvisioningError` its catch throws
-   * (printed at ERROR, i.e. DEFAULT verbosity, by `deploy-engine.ts`) and the
-   * AWS `ErrorMessage` that {@link pollOperation} raises for a FAILED
-   * operation. Cloud Map's create is operation-based, so the second one is the
-   * NORMAL rejection path for those arms, not an edge case.
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    switch (resourceType) {
-      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.createNamespace(logicalId, resourceType, properties, context?.maskSecrets);
-      case 'AWS::ServiceDiscovery::HttpNamespace':
-        return this.createHttpNamespace(logicalId, resourceType, properties, context?.maskSecrets);
-      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
-        return this.createPublicDnsNamespace(
-          logicalId,
-          resourceType,
-          properties,
-          context?.maskSecrets
-        );
-      case 'AWS::ServiceDiscovery::Service':
-        return this.createService(logicalId, resourceType, properties, context?.maskSecrets);
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId
-        );
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * `context` is read for ONE thing today: `maskSecrets` (issue #2050) — the
-   * update-path twin of the `create()` note above, and threaded into every arm
-   * for the same reason (issue #2063). The namespace update arms carry one
-   * payload surface the create arms do not: {@link syncNamespaceTags} sends
-   * `TagResource` with the resolved `Tags` VALUES, whose rejection lands in
-   * the arm's own catch.
-   */
   update(
     logicalId: string,
     physicalId: string,
@@ -480,221 +201,37 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
       resourceType,
       properties,
       previousProperties,
       context
     );
-    switch (resourceType) {
-      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-        return this.updateNamespace(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          context?.maskSecrets
-        );
-      case 'AWS::ServiceDiscovery::HttpNamespace':
-        return this.updateHttpNamespace(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          context?.maskSecrets
-        );
-      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
-        return this.updatePublicDnsNamespace(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          context?.maskSecrets
-        );
-      case 'AWS::ServiceDiscovery::Service':
-        return this.updateService(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          context?.maskSecrets,
-          context?.changedProperties
-        );
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-    }
   }
 
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     _properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    switch (resourceType) {
-      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-      case 'AWS::ServiceDiscovery::HttpNamespace':
-      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
-        return this.deleteNamespace(logicalId, physicalId, resourceType, context);
-      case 'AWS::ServiceDiscovery::Service':
-        return this.deleteService(logicalId, physicalId, resourceType, context);
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, _properties, context);
   }
 
-  // ─── AWS::ServiceDiscovery::PrivateDnsNamespace ───────────────────
-
-  private async createNamespace(
+  createNamespace(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating private DNS namespace ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
-
-    const name = properties['Name'] as string;
-    const vpc = properties['Vpc'] as string;
-    const description = properties['Description'] as string | undefined;
-
-    if (!name) {
-      throw new ProvisioningError(
-        `Name is required for PrivateDnsNamespace ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-    if (!vpc) {
-      throw new ProvisioningError(
-        `Vpc is required for PrivateDnsNamespace ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // CFn `Properties.DnsProperties.SOA.TTL` is mutable. Pass it through to
-    // CreatePrivateDnsNamespace so a templated TTL is actually applied
-    // (without this, cdkd silently dropped the property and AWS used its
-    // default 15 — readCurrentState would then surface the AWS default,
-    // detected as drift on the very first run after deploy). PR #201
-    // follow-up: also added `Properties` to the handledProperties set so
-    // the deploy engine doesn't fall back to CC API on this resource type.
-    const inputProperties = this.extractSoaTtlProperties(properties);
-
-    // go-to-k/cdkd#4583: set once the create operation has SUCCEEDED; a failure
-    // after it (the ARN lookup) leaves this namespace with no state record.
-    let createdNamespaceId: string | undefined;
-    try {
-      const response = await client.send(
-        new CreatePrivateDnsNamespaceCommand({
-          Name: name,
-          Vpc: vpc,
-          ...(description && { Description: description }),
-          ...(tags.length > 0 && { Tags: tags }),
-          ...(inputProperties && { Properties: inputProperties }),
-        })
-      );
-
-      const operationId = response.OperationId;
-      if (!operationId) {
-        throw new Error('CreatePrivateDnsNamespace did not return OperationId');
-      }
-
-      // Poll for operation completion
-      const namespaceId = await this.pollOperation(
-        operationId,
-        logicalId,
-        resourceType,
-        maskSecrets
-      );
-      // pollOperation falls back to the operation id when AWS names no namespace;
-      // that is not an id delete() can take, so leave it unmarked.
-      if (namespaceId !== operationId) createdNamespaceId = namespaceId;
-
-      // Build ARN
-      const arn = await this.buildNamespaceArn(namespaceId);
-
-      this.logger.debug(`Successfully created private DNS namespace ${logicalId}: ${namespaceId}`);
-
-      return {
-        physicalId: namespaceId,
-        attributes: {
-          Id: namespaceId,
-          Arn: arn,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      // `cause` carries the ORIGINAL error untouched (issue #2063): the
-      // classifier walks it for `$metadata`, so only the human-readable
-      // message is masked. The `ProvisioningError` passthrough below is why
-      // {@link pollOperation} masks its OWN message rather than relying on
-      // this line — a FAILED-operation error re-throws here untouched.
-      const thrown =
-        error instanceof ProvisioningError
-          ? error
-          : this.wrapCaughtError(
-              maskerOrIdentity(maskSecrets),
-              error,
-              (text) =>
-                new ProvisioningError(
-                  `Failed to create private DNS namespace ${logicalId}: ${text}`,
-                  resourceType,
-                  logicalId,
-                  undefined,
-                  cause
-                )
-            );
-      if (createdNamespaceId) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdNamespaceId);
-      }
-      throw thrown;
-    }
+    return createNamespace.call(this, logicalId, resourceType, properties, maskSecrets);
   }
 
-  /**
-   * Update a private DNS namespace.
-   *
-   * AWS exposes `UpdatePrivateDnsNamespace` for two mutable surfaces:
-   *  - `Description`
-   *  - `Properties.DnsProperties.SOA.TTL`
-   *
-   * `Name` and `Vpc` are immutable; the deploy engine's
-   * replacement-detection layer routes those through DELETE+CREATE
-   * before this method is ever called, so we do not validate them here.
-   * Tags ride on the separate `TagResource` / `UntagResource` APIs
-   * (see {@link syncNamespaceTags} — wired in with issue #1044 so a
-   * Tags-only change is no longer silently dropped, the ECR #981 class).
-   *
-   * Empty-string Description is intentionally allowed through (`!== undefined`
-   * gate, not truthy) so `cdkd drift --revert` can clear a console-side ADD.
-   *
-   * Removal resets (issue #1160): the change object MERGES (absent = "no
-   * change"), so a Description / SOA.TTL REMOVED from the template must be
-   * reset explicitly — Description via the `''` clear sentinel, TTL to the
-   * kind's Cloud Map default ({@link PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL}) —
-   * the CFn-parity shape, live A/B'd 2026-08-11 on the private kind itself.
-   */
-  private async updateNamespace(
+  updateNamespace(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -702,269 +239,36 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating private DNS namespace ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
-    // (read as empty, it would untag every recorded key).
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const client = this.getClient();
-
-    const namespaceChange: PrivateDnsNamespaceChange = {};
-
-    // A REMOVED Description arrives as its `removalDefaults` reset, `''`.
-    const description = properties['Description'] as string | undefined;
-    if (description !== undefined) {
-      namespaceChange.Description = description;
-    }
-
-    const soaProperties = this.resolveSoaTtlChange(
+    return updateNamespace.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
       properties,
       previousProperties,
-      PRIVATE_DNS_NAMESPACE_DEFAULT_SOA_TTL
+      maskSecrets
     );
-    if (soaProperties) {
-      namespaceChange.Properties = soaProperties;
-    }
-
-    try {
-      if (Object.keys(namespaceChange).length > 0) {
-        const response = await client.send(
-          new UpdatePrivateDnsNamespaceCommand({
-            Id: physicalId,
-            Namespace: namespaceChange,
-          })
-        );
-
-        const operationId = response.OperationId;
-        if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
-        }
-      } else {
-        this.logger.debug(`No mutable namespace-body diff for PrivateDnsNamespace ${logicalId}`);
-      }
-
-      await this.syncNamespaceTags(
-        logicalId,
-        physicalId,
-        resourceType,
-        properties,
-        previousProperties
-      );
-
-      this.logger.debug(`Successfully updated private DNS namespace ${logicalId}`);
-
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update private DNS namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  /**
-   * Delete a Cloud Map namespace (shared by PrivateDnsNamespace,
-   * HttpNamespace, and PublicDnsNamespace — `DeleteNamespace` is
-   * kind-agnostic and operation-based for all three).
-   */
-  private async deleteNamespace(
+  deleteNamespace(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting Cloud Map namespace ${logicalId}: ${physicalId}`);
-    const client = this.getClient();
-
-    try {
-      // ECS Service Connect creates Cloud Map services inside a namespace and
-      // deletes them ASYNCHRONOUSLY after the owning ECS service is deleted,
-      // so a destroy that removes the ECS service and then this namespace in
-      // DAG order can hit `ResourceInUse: Namespace has associated services`
-      // while the ECS-managed cleanup is still draining (observed live on the
-      // ecs-fargate fixture once #609 flipped its Service to the SDK route:
-      // destroy failed 22/23, and the associated services were gone minutes
-      // later with no action taken). Retry the delete on that signal with a
-      // bounded ~5.5 min budget; any other error surfaces immediately.
-      //
-      // Interruptible (issue #2053): 24 retries at 3s -> 15s is ~5.5 minutes of
-      // backoff, and without the watch a Ctrl-C had to sit out all of it.
-      const watch = startInterruptWatch(`Cloud Map namespace ${logicalId}`);
-      try {
-        await withRetry(
-          async () => {
-            const response = await client.send(new DeleteNamespaceCommand({ Id: physicalId }));
-
-            const operationId = response.OperationId;
-            if (operationId) {
-              await this.pollOperation(operationId, logicalId, resourceType);
-            }
-          },
-          logicalId,
-          {
-            maxRetries: 24,
-            initialDelayMs: 3_000,
-            maxDelayMs: 15_000,
-            isRetryable: (message, error) =>
-              error instanceof ResourceInUse || /has associated services/i.test(message),
-            logger: this.logger,
-            isInterrupted: watch.isInterrupted,
-            onInterrupted: watch.onInterrupted,
-          }
-        );
-      } finally {
-        watch.dispose();
-      }
-
-      this.logger.debug(`Successfully deleted Cloud Map namespace ${logicalId}`);
-    } catch (error) {
-      if (error instanceof NamespaceNotFound) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`Namespace ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      // `OperationNotFound` from the poll's GetOperation names the class.
-      const refused = markNotGoneOnNotFoundClass(
-        error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete Cloud Map namespace ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
-      );
-      throw refused;
-    }
+    return deleteNamespace.call(this, logicalId, physicalId, resourceType, context);
   }
 
-  // ─── AWS::ServiceDiscovery::HttpNamespace ─────────────────────────
-
-  private async createHttpNamespace(
+  createHttpNamespace(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating HTTP namespace ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
-
-    const name = properties['Name'] as string;
-    const description = properties['Description'] as string | undefined;
-
-    if (!name) {
-      throw new ProvisioningError(
-        `Name is required for HttpNamespace ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // go-to-k/cdkd#4583: set once the create operation has SUCCEEDED; a failure
-    // after it (the ARN lookup) leaves this namespace with no state record.
-    let createdNamespaceId: string | undefined;
-    try {
-      const response = await client.send(
-        new CreateHttpNamespaceCommand({
-          Name: name,
-          ...(description && { Description: description }),
-          ...(tags.length > 0 && { Tags: tags }),
-        })
-      );
-
-      const operationId = response.OperationId;
-      if (!operationId) {
-        throw new Error('CreateHttpNamespace did not return OperationId');
-      }
-
-      const namespaceId = await this.pollOperation(
-        operationId,
-        logicalId,
-        resourceType,
-        maskSecrets
-      );
-      // pollOperation falls back to the operation id when AWS names no namespace;
-      // that is not an id delete() can take, so leave it unmarked.
-      if (namespaceId !== operationId) createdNamespaceId = namespaceId;
-      const arn = await this.resolveNamespaceArn(namespaceId);
-
-      this.logger.debug(`Successfully created HTTP namespace ${logicalId}: ${namespaceId}`);
-
-      return {
-        physicalId: namespaceId,
-        attributes: {
-          Id: namespaceId,
-          Arn: arn,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const thrown =
-        error instanceof ProvisioningError
-          ? error
-          : this.wrapCaughtError(
-              maskerOrIdentity(maskSecrets),
-              error,
-              (text) =>
-                new ProvisioningError(
-                  `Failed to create HTTP namespace ${logicalId}: ${text}`,
-                  resourceType,
-                  logicalId,
-                  undefined,
-                  cause
-                )
-            );
-      if (createdNamespaceId) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdNamespaceId);
-      }
-      throw thrown;
-    }
+    return createHttpNamespace.call(this, logicalId, resourceType, properties, maskSecrets);
   }
 
-  /**
-   * Update an HTTP namespace.
-   *
-   * `UpdateHttpNamespace` exposes exactly one mutable field: `Description`
-   * (the SDK's `HttpNamespaceChange` shape). `Name` is createOnly — the
-   * replacement-detection layer routes a Name change through DELETE+CREATE
-   * before this method is ever called. Tags ride on the separate
-   * `TagResource` / `UntagResource` APIs (see {@link syncNamespaceTags}).
-   *
-   * Empty-string Description is intentionally allowed through
-   * (`!== undefined` gate, not truthy) so `cdkd drift --revert` can clear a
-   * console-side ADD.
-   *
-   * Removal reset (issue #1160): `HttpNamespaceChange` MERGES conceptually
-   * (skipping the call keeps the live value), so a Description REMOVED from
-   * the template must be cleared explicitly via the `''` sentinel — the
-   * CFn-parity shape, measured on this kind (see {@link removalDefaults}).
-   */
-  private async updateHttpNamespace(
+  updateHttpNamespace(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -972,529 +276,55 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating HTTP namespace ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
-    // (read as empty, it would untag every recorded key).
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const client = this.getClient();
-
-    // A REMOVED Description arrives as its `removalDefaults` reset, `''`.
-    const description = properties['Description'] as string | undefined;
-
-    try {
-      if (description !== undefined) {
-        const namespaceChange: HttpNamespaceChange = {
-          Description: description,
-        };
-        const response = await client.send(
-          new UpdateHttpNamespaceCommand({
-            Id: physicalId,
-            Namespace: namespaceChange,
-          })
-        );
-
-        const operationId = response.OperationId;
-        if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
-        }
-      }
-
-      await this.syncNamespaceTags(
-        logicalId,
-        physicalId,
-        resourceType,
-        properties,
-        previousProperties
-      );
-
-      this.logger.debug(`Successfully updated HTTP namespace ${logicalId}`);
-
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update HTTP namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
-  }
-
-  // ─── AWS::ServiceDiscovery::PublicDnsNamespace ────────────────────
-
-  private async createPublicDnsNamespace(
-    logicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
-  ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating public DNS namespace ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
-
-    const name = properties['Name'] as string;
-    const description = properties['Description'] as string | undefined;
-
-    if (!name) {
-      throw new ProvisioningError(
-        `Name is required for PublicDnsNamespace ${logicalId}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    // Same mutable nested field as PrivateDnsNamespace:
-    // `Properties.DnsProperties.SOA.TTL` — pass it through so a templated
-    // TTL is applied instead of AWS's default.
-    const inputProperties = this.extractSoaTtlProperties(properties);
-
-    // go-to-k/cdkd#4583: set once the create operation has SUCCEEDED; a failure
-    // after it (the ARN lookup) leaves this namespace with no state record.
-    let createdNamespaceId: string | undefined;
-    try {
-      const response = await client.send(
-        new CreatePublicDnsNamespaceCommand({
-          Name: name,
-          ...(description && { Description: description }),
-          ...(tags.length > 0 && { Tags: tags }),
-          ...(inputProperties && { Properties: inputProperties }),
-        })
-      );
-
-      const operationId = response.OperationId;
-      if (!operationId) {
-        throw new Error('CreatePublicDnsNamespace did not return OperationId');
-      }
-
-      const namespaceId = await this.pollOperation(
-        operationId,
-        logicalId,
-        resourceType,
-        maskSecrets
-      );
-      // pollOperation falls back to the operation id when AWS names no namespace;
-      // that is not an id delete() can take, so leave it unmarked.
-      if (namespaceId !== operationId) createdNamespaceId = namespaceId;
-
-      // PublicDnsNamespace exposes `HostedZoneId` as a CFn attribute (AWS
-      // creates a public Route 53 hosted zone alongside the namespace);
-      // GetNamespace returns both the Arn and the HostedZoneId.
-      let arn: string | undefined;
-      let hostedZoneId: string | undefined;
-      try {
-        const nsResp = await client.send(new GetNamespaceCommand({ Id: namespaceId }));
-        arn = nsResp.Namespace?.Arn;
-        hostedZoneId = nsResp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
-      } catch (err) {
-        // Deliberately UNMASKED even though a masker is in scope here (issue
-        // #2063 audit). Not an oversight and not "probably fine": the request
-        // is `GetNamespace({ Id })` where `Id` came back from AWS's own
-        // operation result, so NO resolved template value is in the payload
-        // for AWS to quote back. The masked lines in this same `try` are the
-        // ones whose payload IS built from `properties`. If this call ever
-        // grows a template-derived member, mask it.
-        this.logger.debug(
-          `GetNamespace(${namespaceId}) after create failed: ${describeAwsFailure(err).detail}`
-        );
-      }
-      if (!arn) {
-        arn = await this.buildNamespaceArn(namespaceId);
-      }
-
-      this.logger.debug(`Successfully created public DNS namespace ${logicalId}: ${namespaceId}`);
-
-      return {
-        physicalId: namespaceId,
-        attributes: {
-          Id: namespaceId,
-          Arn: arn,
-          ...(hostedZoneId && { HostedZoneId: hostedZoneId }),
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      const thrown =
-        error instanceof ProvisioningError
-          ? error
-          : this.wrapCaughtError(
-              maskerOrIdentity(maskSecrets),
-              error,
-              (text) =>
-                new ProvisioningError(
-                  `Failed to create public DNS namespace ${logicalId}: ${text}`,
-                  resourceType,
-                  logicalId,
-                  undefined,
-                  cause
-                )
-            );
-      if (createdNamespaceId) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, createdNamespaceId);
-      }
-      throw thrown;
-    }
-  }
-
-  /**
-   * Update a public DNS namespace.
-   *
-   * `UpdatePublicDnsNamespace` exposes two mutable surfaces (the SDK's
-   * `PublicDnsNamespaceChange` shape): `Description` and
-   * `Properties.DnsProperties.SOA.TTL`. `Name` is createOnly — replacement
-   * is routed through DELETE+CREATE upstream. Tags ride on the separate
-   * `TagResource` / `UntagResource` APIs (see {@link syncNamespaceTags}).
-   *
-   * Removal resets (issue #1160): the change object MERGES (absent = "no
-   * change"), so a Description / SOA.TTL REMOVED from the template must be
-   * reset explicitly — Description via the `''` clear sentinel, TTL to the
-   * kind's Cloud Map default ({@link PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL}) —
-   * the CFn-parity shape. The TTL reset was live A/B'd 2026-08-11 on this
-   * exact kind; the Description clear's measurements are on
-   * {@link removalDefaults}.
-   */
-  private async updatePublicDnsNamespace(
-    logicalId: string,
-    physicalId: string,
-    resourceType: string,
-    properties: Record<string, unknown>,
-    previousProperties: Record<string, unknown>,
-    maskSecrets?: SecretMasker
-  ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating public DNS namespace ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call
-    // (read as empty, it would untag every recorded key).
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const client = this.getClient();
-
-    const namespaceChange: PublicDnsNamespaceChange = {};
-
-    // A REMOVED Description arrives as its `removalDefaults` reset, `''`.
-    const description = properties['Description'] as string | undefined;
-    if (description !== undefined) {
-      namespaceChange.Description = description;
-    }
-
-    const soaProperties = this.resolveSoaTtlChange(
+    return updateHttpNamespace.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
       properties,
       previousProperties,
-      PUBLIC_DNS_NAMESPACE_DEFAULT_SOA_TTL
+      maskSecrets
     );
-    if (soaProperties) {
-      namespaceChange.Properties = soaProperties;
-    }
-
-    try {
-      if (Object.keys(namespaceChange).length > 0) {
-        const response = await client.send(
-          new UpdatePublicDnsNamespaceCommand({
-            Id: physicalId,
-            Namespace: namespaceChange,
-          })
-        );
-
-        const operationId = response.OperationId;
-        if (operationId) {
-          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
-        }
-      }
-
-      await this.syncNamespaceTags(
-        logicalId,
-        physicalId,
-        resourceType,
-        properties,
-        previousProperties
-      );
-
-      this.logger.debug(`Successfully updated public DNS namespace ${logicalId}`);
-
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update public DNS namespace ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  // ─── AWS::ServiceDiscovery::Service ───────────────────────────────
-
-  private async createService(
+  createPublicDnsNamespace(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     maskSecrets?: SecretMasker
   ): Promise<ResourceCreateResult> {
-    this.logger.debug(`Creating service discovery service ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags: Tag[] = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
-
-    // go-to-k/cdkd#5348: the name is optional, as in CloudFormation, which
-    // generates one; so does cdkd, through the shared rule.
-    const name =
-      (properties['Name'] as string | undefined) ||
-      generatedNameFor('AWS::ServiceDiscovery::Service', logicalId);
-    const namespaceId = properties['NamespaceId'] as string | undefined;
-    const description = properties['Description'] as string | undefined;
-    const dnsConfig = properties['DnsConfig'] as DnsConfig | undefined;
-    const healthCheckCustomConfig = properties['HealthCheckCustomConfig'] as
-      | HealthCheckCustomConfig
-      | undefined;
-    const healthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig | undefined;
-    const type = properties['Type'] as ServiceTypeOption | undefined;
-
-    let leftBehindServiceId: string | undefined;
-    try {
-      // Issue #5113: right after its namespace's create operation reports
-      // SUCCESS, Cloud Map can still answer `NamespaceNotFound` (a
-      // read-after-write lag, observed live on the servicediscovery fixture:
-      // one of four parallel creates against a fresh namespace). Retry THAT
-      // error only, for ~27.5s of backoff; every other error surfaces at once.
-      //
-      // A retry cannot duplicate the service: `NamespaceNotFound` is a
-      // synchronous client-fault rejection, so no service exists after it,
-      // and only that error is retried. Each attempt carries its own
-      // `CreatorRequestId` — cdkd sends none, and the SDK mints a fresh
-      // idempotency token per `send` — so a retry is never matched against
-      // the rejected attempt's token.
-      //
-      // Interruptible (issue #2053), and through the masked sink (issue
-      // #2050): `withRetry` prints AWS's message, which quotes the RESOLVED
-      // `NamespaceId` back.
-      const watch = startInterruptWatch(`Cloud Map service ${logicalId}`);
-      let response: CreateServiceCommandOutput;
-      try {
-        response = await withRetry(
-          () =>
-            client.send(
-              new CreateServiceCommand({
-                Name: name,
-                ...(namespaceId && { NamespaceId: namespaceId }),
-                ...(description && { Description: description }),
-                ...(dnsConfig && { DnsConfig: dnsConfig }),
-                ...(healthCheckCustomConfig && {
-                  HealthCheckCustomConfig: healthCheckCustomConfig,
-                }),
-                ...(healthCheckConfig && { HealthCheckConfig: healthCheckConfig }),
-                ...(tags.length > 0 && { Tags: tags }),
-                ...(type && { Type: type }),
-              })
-            ),
-          logicalId,
-          {
-            maxRetries: CREATE_SERVICE_NAMESPACE_LAG_MAX_RETRIES,
-            initialDelayMs: CREATE_SERVICE_NAMESPACE_LAG_INITIAL_DELAY_MS,
-            maxDelayMs: CREATE_SERVICE_NAMESPACE_LAG_MAX_DELAY_MS,
-            isRetryable: (_text, error) => error instanceof NamespaceNotFound,
-            logger: this.maskedRetryLogger(maskSecrets),
-            isInterrupted: watch.isInterrupted,
-            onInterrupted: watch.onInterrupted,
-          }
-        );
-      } finally {
-        watch.dispose();
-      }
-
-      const service = response.Service;
-      if (!service || !service.Id) {
-        throw new Error('CreateService did not return Service ID');
-      }
-      const serviceId = service.Id;
-      // go-to-k/cdkd#4583: AWS holds this service; cleared once the cleanup deletes it.
-      leftBehindServiceId = serviceId;
-      reportCreatedResource(logicalId, resourceType, serviceId);
-
-      this.logger.debug(
-        `Successfully created service discovery service ${logicalId}: ${serviceId}`
-      );
-
-      // ServiceAttributes is NOT accepted by CreateService — it rides on a
-      // separate post-create `UpdateServiceAttributes` control-plane call.
-      // CreateService has already committed the service on AWS, so a failure
-      // here would strand a half-configured service that the next deploy plans
-      // CREATE for (and AWS then rejects with a name collision). Wrap the
-      // attributes call in an inner try/catch that issues a best-effort
-      // `DeleteService` before re-throwing (atomicity), mirroring the ELBv2
-      // Listener create path (PR #879).
-      try {
-        const attrs = this.normalizeServiceAttributes(properties['ServiceAttributes']);
-        if (Object.keys(attrs).length > 0) {
-          // Interruptible (issue #2053).
-          const watch = startInterruptWatch(`Cloud Map service ${logicalId} attributes`);
-          try {
-            await withRetry(
-              () =>
-                client.send(
-                  new UpdateServiceAttributesCommand({ ServiceId: serviceId, Attributes: attrs })
-                ),
-              logicalId,
-              // NOT `this.logger` (issue #2050): `attrs` is
-              // `properties['ServiceAttributes']`, already RESOLVED, and an AWS
-              // rejection quotes the offending value back into the message
-              // `withRetry` interpolates.
-              {
-                logger: this.maskedRetryLogger(maskSecrets),
-                isInterrupted: watch.isInterrupted,
-                onInterrupted: watch.onInterrupted,
-              }
-            );
-          } finally {
-            watch.dispose();
-          }
-          this.logger.debug(
-            `Applied ${Object.keys(attrs).length} ServiceAttribute(s) for ${logicalId}`
-          );
-        }
-      } catch (innerError) {
-        // An interrupt takes the SAME cleanup as any other attributes-wiring
-        // failure — see the twin arm in `elbv2-provider.ts` for the full
-        // argument. In short: `create()` is throwing, so nothing in cdkd state
-        // ever holds this service id (only a FAILED cleanup marks it for the
-        // rollback journal, go-to-k/cdkd#4583), and the choice is "delete vs
-        // orphan" rather than "delete vs preserve".
-        //
-        // The Cloud Map case is the WORSE of the two, which is why the note is
-        // not simply a cross-reference: an orphaned service also blocks
-        // `DeleteServiceDiscoveryNamespace` with `ResourceInUse`, so the
-        // untracked leftover makes the enclosing NAMESPACE undestroyable too.
-        //
-        // The handle is printed BEFORE the delete is attempted, at default
-        // verbosity, so a process that dies mid-cleanup still leaves the user
-        // something to act on.
-        if (isInterruptedWaitError(innerError)) {
-          // Masked for the same reason as the sibling `warn` below, which
-          // states it: an unmasked line sitting beside masked ones is what a
-          // later author copies.
-          this.logger.warn(
-            maskerOrIdentity(maskSecrets)(
-              `Interrupted after creating ServiceDiscovery Service ${logicalId} (${serviceId}) ` +
-                `but before its ServiceAttributes were applied. Nothing in cdkd state refers to ` +
-                `it, so cdkd is deleting it now — left behind it would fail the next deploy on a ` +
-                `name collision AND block deletion of its namespace with ResourceInUse. If that ` +
-                `delete fails, outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise remove it yourself: ` +
-                `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
-            )
-          );
-        }
-        try {
-          await client.send(new DeleteServiceCommand({ Id: serviceId }));
-          leftBehindServiceId = undefined;
-          retractCreatedResource(logicalId, resourceType, serviceId);
-          this.logger.debug(
-            `Cleaned up partially-created ServiceDiscovery Service ${logicalId} (${serviceId}) after ServiceAttributes wiring failure`
-          );
-        } catch (cleanupError) {
-          // An AWS failure is named by its class at warn, AWS's text at debug
-          // under the same head (go-to-k/cdkd#2319): a denied `DeleteService`
-          // names the caller. A cdkd-authored error keeps its text at warn.
-          const cleanupFailure = describeAwsFailure(cleanupError);
-          const cleanupHead =
-            `Failed to clean up partially-created ServiceDiscovery Service ${logicalId} ` +
-            `(${serviceId}) after ServiceAttributes wiring failure: `;
-          if (cleanupFailure.redacted) {
-            this.logger.debug(
-              maskerOrIdentity(maskSecrets)(`${cleanupHead}${cleanupFailure.detail}`)
-            );
-          }
-          this.logger.warn(
-            // Masked for uniformity with the sibling lines in this same `try`
-            // (issue #2050). The cleanup call carries only a physical id, so a
-            // resolved property value reaching here would be surprising — but
-            // "surprising" is not "impossible", and an unmasked line sitting
-            // beside masked ones is what a later author copies.
-            `${cleanupHead}` +
-              `${cleanupFailure.redacted ? `${maskerOrIdentity(maskSecrets)(cleanupFailure.summary)} ` : `${this.maskErrorMessage(cleanupError, maskSecrets)}. `}Outside a rollback's re-create, the failed deploy's rollback ` +
-              `journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself ` +
-              `before the next deploy: ` +
-              `${pasteableAwsCommand(maskSecrets)`aws servicediscovery delete-service --id ${serviceId}`.render()}`
-          );
-        }
-        // The service itself was created: an "already exists" from its
-        // attributes wiring is not this service's name collision (#3826).
-        throw markAuxiliaryFailure(innerError, logicalId);
-      }
-
-      return {
-        physicalId: serviceId,
-        attributes: definedAttributes({
-          Id: serviceId,
-          Arn: service.Arn,
-          Name: service.Name || name,
-        }),
-      };
-    } catch (error) {
-      // `cause` carries the ORIGINAL error untouched (issue #2050): the
-      // classifier walks it for `$metadata`, so only the human-readable
-      // message is masked.
-      const cause = error instanceof Error ? error : undefined;
-      // Issue #5113: the retry above gives up silently at default verbosity
-      // (its custom classifier feeds none of `withRetry`'s give-up counters),
-      // so the wrap says the wait happened. Worded with no not-found phrase,
-      // which the substring classifiers would read.
-      const retriedNote =
-        error instanceof NamespaceNotFound
-          ? ` (Cloud Map still rejected the namespace after ${CREATE_SERVICE_NAMESPACE_LAG_BACKOFF_SECONDS}s of retries)`
-          : '';
-      const thrown = this.wrapCaughtError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create service discovery service ${logicalId}${retriedNote}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-      if (leftBehindServiceId) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, leftBehindServiceId);
-      }
-      throw thrown;
-    }
+    return createPublicDnsNamespace.call(this, logicalId, resourceType, properties, maskSecrets);
   }
 
-  /**
-   * Update a service discovery service.
-   *
-   * Per AWS docs, `UpdateService` accepts a `ServiceChange` body with
-   * `Description`, `DnsConfig.DnsRecords` (TTLs etc. — `DnsConfig.NamespaceId`
-   * / `RoutingPolicy` are not part of the change shape: a change to either is
-   * not applied, as in CloudFormation, and is named in a warning; see
-   * {@link unappliedDnsConfigMembers}), and `HealthCheckConfig`. `Name` /
-   * `NamespaceId` /
-   * `HealthCheckCustomConfig` are immutable on UpdateService — the
-   * replacement-detection layer routes those through DELETE+CREATE.
-   *
-   * The `ServiceChange` body REPLACES rather than merges: an omitted
-   * `Description` or `HealthCheckConfig` is cleared, and an omitted
-   * `DnsConfig` is refused on a DNS service (`Service dns config cannot be
-   * null`). WHEN to send it, and with what, follows CloudFormation
-   * ({@link planServiceChange}, issue #1160). `cdkd drift --revert` passes
-   * the full AWS-current snapshot as both bags with the drifted keys
-   * overlaid, so only a drifted field reads as a change.
-   */
-  private async updateService(
+  updatePublicDnsNamespace(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
+  ): Promise<ResourceUpdateResult> {
+    return updatePublicDnsNamespace.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      maskSecrets
+    );
+  }
+
+  createService(
+    logicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    maskSecrets?: SecretMasker
+  ): Promise<ResourceCreateResult> {
+    return createService.call(this, logicalId, resourceType, properties, maskSecrets);
+  }
+
+  updateService(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1503,956 +333,158 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
     maskSecrets?: SecretMasker,
     changedProperties?: ReadonlySet<string>
   ): Promise<ResourceUpdateResult> {
-    this.logger.debug(`Updating service discovery service ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#3994: `Tags` used to be ignored on update; a malformed
-    // desired one is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const client = this.getClient();
-
-    const servicePlan = this.planServiceChange(properties, previousProperties, changedProperties);
-    const serviceChange = servicePlan?.change ?? {};
-
-    // ServiceAttributes is NOT part of the `ServiceChange` body — it is
-    // mutated via its own `UpdateServiceAttributes` (upsert) /
-    // `DeleteServiceAttributes` (remove keys) APIs. Diff old vs new: keys
-    // whose value changed or are new go in the upsert map; keys present only
-    // in the old set are removed. These calls THROW on AWS failure (NOT
-    // warn-swallow) so cdkd state is never written as-if-applied — see memory
-    // feedback_tags_on_update_must_throw; the next deploy retries naturally.
-    const newAttrs = this.normalizeServiceAttributes(properties['ServiceAttributes']);
-    const oldAttrs = this.normalizeServiceAttributes(previousProperties['ServiceAttributes']);
-    const upsertAttrs: Record<string, string> = {};
-    for (const [k, v] of Object.entries(newAttrs)) {
-      if (oldAttrs[k] !== v) upsertAttrs[k] = v;
-    }
-    const removedAttrKeys = Object.keys(oldAttrs).filter((k) => !Object.hasOwn(newAttrs, k));
-
-    const hasServiceChange = servicePlan !== undefined;
-    const hasAttrUpsert = Object.keys(upsertAttrs).length > 0;
-    const hasAttrRemove = removedAttrKeys.length > 0;
-
-    // Tags ride their own TagResource / UntagResource calls, keyed by the
-    // service ARN (go-to-k/cdkd#3994).
-    const tagPlan = planTagDiff(previousProperties['Tags'], properties['Tags']);
-    const hasTagChange = tagPlan.set.size > 0 || tagPlan.remove.length > 0;
-    // Warned whatever else the update does: a record cdkd cannot read, or keys
-    // it cannot name, matter even when the plan has nothing to send.
-    const tagWarning = tagPlanWarning(tagPlan, resourceType, logicalId);
-    if (tagWarning !== undefined) this.logger.warn(tagWarning);
-
-    // go-to-k/cdkd#5373: named once the update has succeeded (or had nothing
-    // to send), never before a call that could still fail.
-    const unapplied = unappliedDnsConfigMembers(properties, previousProperties, changedProperties);
-
-    if (!hasServiceChange && !hasAttrUpsert && !hasAttrRemove && !hasTagChange) {
-      this.logger.debug(
-        `No mutable diff for ServiceDiscovery Service ${logicalId}, skipping update`
-      );
-      await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
-      return { physicalId, wasReplaced: false };
-    }
-
-    // The service's ARN when a GetService already ran in this update, so the
-    // Tags arm below does not read it a second time.
-    let knownArn: string | undefined;
-    try {
-      if (hasServiceChange) {
-        if (servicePlan.keepRemovedFromLive) {
-          knownArn = await this.keepUndeclaredServiceFields(physicalId, serviceChange);
-        }
-        const response = await client.send(
-          new UpdateServiceCommand({
-            Id: physicalId,
-            Service: serviceChange,
-          })
-        );
-
-        const operationId = response.OperationId;
-        if (operationId) {
-          // Threaded (issue #2063): the `UpdateService` body carries the
-          // resolved `Description` / `DnsConfig` / `HealthCheckConfig`, and
-          // this arm's catch re-throws a `ProvisioningError` untouched — so
-          // the operation's `ErrorMessage` escapes unless `pollOperation`
-          // masks it itself. Issue #2050 threaded the two `withRetry` calls
-          // below but left this one, which was the hole.
-          await this.pollOperation(operationId, logicalId, resourceType, maskSecrets);
-        }
-      }
-
-      // ONE watch for both attribute calls (issue #2053): they run back to back
-      // on the same resource, so a single Ctrl-C has to abort whichever of them
-      // is currently in its backoff.
-      // Entered only when an attribute call actually runs (issue #2053 review):
-      // the common update touches no ServiceAttributes at all, and a watch taken
-      // for it is a `Set` entry added and removed for a path that never waits.
-      if (hasAttrUpsert || hasAttrRemove) {
-        const attrWatch = startInterruptWatch(`Cloud Map service ${logicalId} attributes`);
-        try {
-          if (hasAttrUpsert) {
-            await withRetry(
-              () =>
-                client.send(
-                  new UpdateServiceAttributesCommand({
-                    ServiceId: physicalId,
-                    Attributes: upsertAttrs,
-                  })
-                ),
-              logicalId,
-              // Masked for the same reason as the create path (issue #2050) — the
-              // upsert map is built from `properties`, already RESOLVED.
-              {
-                logger: this.maskedRetryLogger(maskSecrets),
-                isInterrupted: attrWatch.isInterrupted,
-                onInterrupted: attrWatch.onInterrupted,
-              }
-            );
-            this.logger.debug(
-              `Applied ${Object.keys(upsertAttrs).length} ServiceAttribute change(s) for ${logicalId}`
-            );
-          }
-
-          if (hasAttrRemove) {
-            await withRetry(
-              () =>
-                client.send(
-                  new DeleteServiceAttributesCommand({
-                    ServiceId: physicalId,
-                    Attributes: removedAttrKeys,
-                  })
-                ),
-              logicalId,
-              // Masked too (issue #2050). The payload is attribute KEYS from
-              // `previousProperties`, not values — but a key can itself be a
-              // resolved secret, and AWS quotes the rejected key back.
-              {
-                logger: this.maskedRetryLogger(maskSecrets),
-                isInterrupted: attrWatch.isInterrupted,
-                onInterrupted: attrWatch.onInterrupted,
-              }
-            );
-            this.logger.debug(
-              `Removed ${removedAttrKeys.length} ServiceAttribute(s) for ${logicalId}`
-            );
-          }
-        } finally {
-          attrWatch.dispose();
-        }
-      }
-
-      if (hasTagChange) {
-        const arn =
-          knownArn ?? (await client.send(new GetServiceCommand({ Id: physicalId }))).Service?.Arn;
-        if (!arn) {
-          throw new ProvisioningError(
-            safeMsg`Could not resolve the ARN of service discovery service ${logicalId}; its Tags were not updated`,
-            resourceType,
-            logicalId,
-            physicalId
-          );
-        }
-        if (tagPlan.remove.length > 0) {
-          await client.send(
-            new UntagResourceCommand({ ResourceARN: arn, TagKeys: tagPlan.remove })
-          );
-        }
-        if (tagPlan.set.size > 0) {
-          await client.send(
-            new TagResourceCommand({
-              ResourceARN: arn,
-              Tags: [...tagPlan.set].map(([Key, Value]) => ({ Key, Value })),
-            })
-          );
-        }
-      }
-
-      this.logger.debug(`Successfully updated service discovery service ${logicalId}`);
-      await this.warnUnappliedDnsConfigMembers(logicalId, physicalId, properties, unapplied);
-
-      return { physicalId, wasReplaced: false };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      // `cause` carries the ORIGINAL error untouched (issue #2050) — see the
-      // create path above.
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        maskerOrIdentity(maskSecrets),
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update service discovery service ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return updateService.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      maskSecrets,
+      changedProperties
+    );
   }
 
-  /**
-   * Decide whether `UpdateService` is sent and what it carries, following
-   * CloudFormation (issue #1160; live A/Bs in us-east-1, go-to-k/cdkd#1160
-   * issuecomment-6272137682 and issuecomment-6281592365):
-   *
-   * - A DECLARED `Description` or `HealthCheckConfig` differing from the
-   *   previous template: CloudFormation sends the declared model as it is, so
-   *   a removed `Description` / `HealthCheckConfig` in the same update is
-   *   CLEARED and a removed `DnsConfig` is REFUSED by AWS (`Service dns
-   *   config cannot be null`). cdkd sends the same body.
-   * - Only `DnsConfig.DnsRecords` differing (a TTL, say): CloudFormation
-   *   sends nothing, so the record change is DROPPED and any removed field is
-   *   kept. cdkd DIVERGES deliberately and applies the record change, but
-   *   keeps a removed `Description` / `HealthCheckConfig` from the live
-   *   service ({@link keepUndeclaredServiceFields}), so their final state
-   *   still matches CloudFormation.
-   * - Nothing declared differing (a removal on its own, or a change only to
-   *   `ServiceAttributes` / `Tags`): no `UpdateService`, every removed field
-   *   is kept — as CloudFormation.
-   *
-   * Returns `undefined` when no `UpdateService` is due.
-   */
-  private planServiceChange(
+  planServiceChange(
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     changedProperties: ReadonlySet<string> | undefined
   ): { change: ServiceChange; keepRemovedFromLive: boolean } | undefined {
-    // go-to-k/cdkd#5112: the engine's template-to-template answer when it gave
-    // one; otherwise (a rollback revert, `drift --revert`, a direct call) the
-    // two bags compared here, a recorded stand-in counting as changed.
-    const changed = (key: string): boolean =>
-      changedProperties !== undefined
-        ? changedProperties.has(key)
-        : !sameAsRecorded(properties[key], previousProperties[key]);
-    const declaredDiffers = (key: string): boolean => properties[key] !== undefined && changed(key);
-
-    const change: ServiceChange = {};
-    if (properties['Description'] !== undefined) {
-      change.Description = properties['Description'] as string;
-    }
-    const desiredRecords = (properties['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
-    const previousRecords = (previousProperties['DnsConfig'] as DnsConfig | undefined)?.DnsRecords;
-    if (desiredRecords !== undefined) {
-      const dnsChange: DnsConfigChange = { DnsRecords: desiredRecords };
-      change.DnsConfig = dnsChange;
-    }
-    if (properties['HealthCheckConfig'] !== undefined) {
-      change.HealthCheckConfig = properties['HealthCheckConfig'] as HealthCheckConfig;
-    }
-
-    if (declaredDiffers('Description') || declaredDiffers('HealthCheckConfig')) {
-      return { change, keepRemovedFromLive: false };
-    }
-    // `DnsConfig` unchanged as written leaves its records unchanged; changed,
-    // the records themselves are compared (its other members cannot be
-    // updated; go-to-k/cdkd#5373).
-    if (
-      desiredRecords !== undefined &&
-      (changedProperties === undefined || changedProperties.has('DnsConfig')) &&
-      !sameAsRecorded(desiredRecords, previousRecords)
-    ) {
-      return { change, keepRemovedFromLive: true };
-    }
-    return undefined;
+    return planServiceChange.call(this, properties, previousProperties, changedProperties);
   }
 
-  /**
-   * Name each `DnsConfig` member {@link unappliedDnsConfigMembers} found, in
-   * one warning (go-to-k/cdkd#5373), once the live service confirms it still
-   * differs. The state records the declared value, never applied, so a
-   * template-to-state difference alone also fires on a rollback revert, on a
-   * template reverted to what AWS holds, and on a member added at the value
-   * AWS already has. A failed read keeps the warning: it cannot be confirmed
-   * either way, and the update itself has already succeeded.
-   */
-  private async warnUnappliedDnsConfigMembers(
+  warnUnappliedDnsConfigMembers(
     logicalId: string,
     physicalId: string,
     properties: Record<string, unknown>,
     candidates: readonly string[]
   ): Promise<void> {
-    if (candidates.length === 0) return;
-    let members = candidates;
-    try {
-      const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
-      const dns = properties['DnsConfig'] as DnsConfig;
-      const desired: Record<string, unknown> = {
-        NamespaceId: dns.NamespaceId ?? properties['NamespaceId'],
-        RoutingPolicy: dns.RoutingPolicy,
-      };
-      const held: Record<string, unknown> = {
-        NamespaceId: live?.NamespaceId ?? live?.DnsConfig?.NamespaceId,
-        RoutingPolicy: live?.DnsConfig?.RoutingPolicy,
-      };
-      members = candidates.filter((m) => desired[m] === undefined || desired[m] !== held[m]);
-    } catch {
-      this.logger.debug(
-        safeMsg`Could not read service discovery service ${logicalId} back to confirm its DnsConfig; warning unconfirmed`
-      );
-    }
-    if (members.length === 0) return;
-    const paths = members.map((m) => `DnsConfig.${m}`).join(' and ');
-    const [it, value] = members.length > 1 ? ['them', 'values'] : ['it', 'value'];
-    const remedy = members.includes('NamespaceId')
-      ? 'To move the service, declare the namespace in the top-level NamespaceId: a change there replaces the service.'
-      : 'To change it, replace the service, for example by giving it a new Name.';
-    this.logger.warn(
-      safeMsg`${logicalId} (AWS::ServiceDiscovery::Service): ${paths} changed, but Cloud Map cannot change ${it} on an existing service, so the service keeps its current ${value}, as CloudFormation does. ${remedy}`
-    );
+    return warnUnappliedDnsConfigMembers.call(this, logicalId, physicalId, properties, candidates);
   }
 
-  /**
-   * The DnsRecords-only arm of {@link planServiceChange}: fill a
-   * `Description` / `HealthCheckConfig` the template does not declare with
-   * the service's live value, so the replace-style `UpdateService` keeps it,
-   * as CloudFormation (which sends nothing there) does. Returns the service
-   * ARN when it read one.
-   */
-  private async keepUndeclaredServiceFields(
+  keepUndeclaredServiceFields(
     physicalId: string,
     serviceChange: ServiceChange
   ): Promise<string | undefined> {
-    if (serviceChange.Description !== undefined && serviceChange.HealthCheckConfig !== undefined) {
-      return undefined;
-    }
-    const live = (await this.getClient().send(new GetServiceCommand({ Id: physicalId }))).Service;
-    if (serviceChange.Description === undefined && live?.Description !== undefined) {
-      serviceChange.Description = live.Description;
-    }
-    if (serviceChange.HealthCheckConfig === undefined && live?.HealthCheckConfig !== undefined) {
-      serviceChange.HealthCheckConfig = live.HealthCheckConfig;
-    }
-    return live?.Arn;
+    return keepUndeclaredServiceFields.call(this, physicalId, serviceChange);
   }
 
-  private async deleteService(
+  deleteService(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting service discovery service ${logicalId}: ${physicalId}`);
-    const client = this.getClient();
-
-    try {
-      await client.send(new DeleteServiceCommand({ Id: physicalId }));
-      this.logger.debug(`Successfully deleted service discovery service ${logicalId}`);
-    } catch (error) {
-      if (error instanceof ServiceNotFound) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`Service ${physicalId} does not exist, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const refused = markNotGoneOnNotFoundClass(
-        error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete service discovery service ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
-      );
-      throw refused;
-    }
+    return deleteService.call(this, logicalId, physicalId, resourceType, context);
   }
 
-  // ─── Helpers ──────────────────────────────────────────────────────
-
-  /**
-   * Extract the CFn `Properties.DnsProperties.SOA.TTL` nested field (the only
-   * mutable entry in the namespace `Properties` bag, shared by the private
-   * and public DNS namespace kinds) into the SDK's input shape. Returns
-   * `undefined` when the template does not set a TTL.
-   */
-  private extractSoaTtlProperties(
+  extractSoaTtlProperties(
     properties: Record<string, unknown>
   ): { DnsProperties: { SOA: { TTL: number } } } | undefined {
-    const propsBag = properties['Properties'] as Record<string, unknown> | undefined;
-    const dnsProps = propsBag?.['DnsProperties'] as Record<string, unknown> | undefined;
-    const soa = dnsProps?.['SOA'] as { TTL?: number } | undefined;
-    return soa?.TTL !== undefined
-      ? { DnsProperties: { SOA: { TTL: Number(soa.TTL) } } }
-      : undefined;
+    return extractSoaTtlProperties.call(this, properties);
   }
 
-  /**
-   * Resolve the SOA-TTL entry for an Update*Namespace change object,
-   * including the REMOVAL reset (issue #1160): a TTL present in the desired
-   * template passes through; a TTL absent from the desired template but
-   * present in the previous one is reset to the Cloud Map default
-   * the caller-supplied per-kind default (the CFn-parity shape — the change
-   * object merges, so skipping it would silently keep the customized TTL).
-   * Never-present stays absent (no change entry).
-   */
-  private resolveSoaTtlChange(
+  resolveSoaTtlChange(
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     defaultTtl: number
   ): { DnsProperties: { SOA: { TTL: number } } } | undefined {
-    const desired = this.extractSoaTtlProperties(properties);
-    if (desired) return desired;
-    const previous = this.extractSoaTtlProperties(previousProperties);
-    if (previous) {
-      return { DnsProperties: { SOA: { TTL: defaultTtl } } };
-    }
-    return undefined;
+    return resolveSoaTtlChange.call(this, properties, previousProperties, defaultTtl);
   }
 
-  /**
-   * Resolve a namespace's ARN — authoritative via `GetNamespace`, with a
-   * deterministic STS-based construction as fallback so a transient read
-   * failure right after create does not fail the whole resource.
-   *
-   * Takes NO masker, deliberately (issue #2063 audit). Its request is
-   * `GetNamespace({ Id })` with an AWS-issued namespace id — no resolved
-   * template value is in the payload, so the AWS error text it logs cannot
-   * echo one back. That is a structural reason, not an assessment of
-   * likelihood; add the parameter if this call ever grows a template-derived
-   * member. The `TagResource` / `UntagResource` calls in
-   * {@link syncNamespaceTags} DO carry resolved values, but they throw rather
-   * than log, and the throw lands in the calling arm's masked catch.
-   */
-  private async resolveNamespaceArn(namespaceId: string): Promise<string> {
-    try {
-      const resp = await this.getClient().send(new GetNamespaceCommand({ Id: namespaceId }));
-      if (resp.Namespace?.Arn) return resp.Namespace.Arn;
-    } catch (err) {
-      this.logger.debug(
-        `GetNamespace(${namespaceId}) failed while resolving ARN: ${describeAwsFailure(err).detail}`
-      );
-    }
-    return this.buildNamespaceArn(namespaceId);
+  resolveNamespaceArn(namespaceId: string): Promise<string> {
+    return resolveNamespaceArn.call(this, namespaceId);
   }
 
-  /**
-   * Diff-and-apply namespace tags via `TagResource` / `UntagResource`.
-   *
-   * `TagResource` is additive-only, so a tag dropped from the template
-   * (partial removal) — or the entire `Tags` property removed (full removal,
-   * `newTags === undefined`) — would survive on AWS unless we explicitly
-   * `UntagResource` the removed keys (the ECR #981 regression class).
-   * Failures THROW (never warn-swallow) so cdkd state is never written
-   * as-if-applied; the next deploy retries naturally.
-   */
-  private async syncNamespaceTags(
+  syncNamespaceTags(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): Promise<void> {
-    // Untag keys present in the old set but absent from the new set; an
-    // absent desired `Tags` removes every recorded key. Both sides are read
-    // through `planTagDiff` (go-to-k/cdkd#3994): an unreadable record untags
-    // nothing, and the desired side was refused above when malformed.
-    const plan = planTagDiff(previousProperties['Tags'], properties['Tags']);
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
-    }
-    const removedKeys = plan.remove;
-    const tagsToAdd: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
-    const hasAdds = tagsToAdd.length > 0;
-
-    // A shape-only diff with no actual work (e.g. `Tags: []` vs absent)
-    // must not spend a GetNamespace/STS round-trip resolving the ARN.
-    if (removedKeys.length === 0 && !hasAdds) return;
-
-    const arn = await this.resolveNamespaceArn(physicalId);
-
-    if (removedKeys.length > 0) {
-      await this.getClient().send(
-        new UntagResourceCommand({ ResourceARN: arn, TagKeys: removedKeys })
-      );
-    }
-    // Apply added / changed tags. Skip the call when the new set is empty
-    // (a pure removal has nothing left to add).
-    if (hasAdds) {
-      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: tagsToAdd }));
-    }
-    this.logger.debug(`Updated tags for namespace ${logicalId} (${physicalId})`);
+    return syncNamespaceTags.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties
+    );
   }
 
-  /**
-   * The error a FAILED Cloud Map operation throws (go-to-k/cdkd#2319). AWS's
-   * `ErrorMessage` is a status reason a SUCCESSFUL GetOperation reports, and a
-   * Route 53 refusal behind it names the caller's assumed-role ARN, so the
-   * message carries its `ErrorCode` plus the `--verbose` pointer
-   * ({@link describeAwsStatusReason}) and the text goes to `debug`, masked. It
-   * rides as the unmasked `cause`, and the wrap is stamped, so the retry
-   * classifiers read it as they read the message before (issue #4299). No
-   * reason keeps cdkd's fallback text, unstamped.
-   */
-  private wrapOperationFailedError(
+  wrapOperationFailedError(
     mask: MaskerFn,
     logicalId: string,
     resourceType: string,
     operation: { ErrorCode?: string | undefined; ErrorMessage?: string | undefined } | undefined
   ): ProvisioningError {
-    const reason = describeAwsStatusReason(
-      { code: operation?.ErrorCode, message: operation?.ErrorMessage },
-      'Unknown error'
-    );
-    const raw = new Error(reason.detail);
-    const build = (text: string): ProvisioningError =>
-      new ProvisioningError(
-        `Operation failed for ${logicalId}: ${text}`,
-        resourceType,
-        logicalId,
-        undefined,
-        raw
-      );
-    if (!reason.redacted) return build(reason.detail);
-    this.logger.debug(mask(build(mask(reason.detail)).message));
-    return markRedactedCause(
-      build(`${mask(reason.summary)}${relayedNameCollision(reason.detail)}`)
-    );
+    return wrapOperationFailedError.call(this, mask, logicalId, resourceType, operation);
   }
 
-  /**
-   * Poll a Service Discovery operation until it completes.
-   * Returns the target resource ID from the operation result.
-   *
-   * MASKS `Operation.ErrorMessage` (issue #2063), and this is the only place
-   * that can. Cloud Map's create / update are operation-based: the caller's
-   * `Create*Namespace` / `Update*` request carried the RESOLVED `properties`
-   * bag — `Name`, `Description`, `Tags`, `DnsConfig` — and AWS reports its
-   * rejection here rather than by rejecting the submit call, quoting the
-   * offending value back in `ErrorMessage`. A FAILED operation is therefore
-   * the NORMAL rejection path for these arms, not an edge case.
-   *
-   * Why not leave it to the arms' own catch: every namespace arm and
-   * `updateService` open with `if (error instanceof ProvisioningError) throw
-   * error;`, so a `ProvisioningError` raised here is re-thrown VERBATIM and
-   * never reaches their `wrapCaughtError`. `deploy-engine.ts` then prints it
-   * at ERROR — DEFAULT verbosity. That passthrough is correct (it preserves
-   * the resource/logical-id context this frame added), which is exactly why
-   * the mask has to be applied at the point of construction.
-   *
-   * `errorMessage` is masked RAW, before any interpolation. Stating precisely
-   * what that buys, because the obvious phrasing over-claims (issue #2063
-   * review): `maskSecretsInText`'s WHOLE-VALUE arm fires only when
-   * `secrets.has(text)` — i.e. when the text IS the secret in its entirety —
-   * so masking raw covers the case where AWS returns the offending value as
-   * the whole `ErrorMessage`, at ANY length, including below the substring
-   * arm's 4-character `MIN_NEEDLE_LENGTH` floor. When AWS instead quotes the
-   * value INSIDE a sentence, the substring arm handles it and that floor
-   * applies either way, raw or not. So masking here is strictly better than
-   * masking the assembled message, but it is not general sub-4-character
-   * coverage. See `SecretMaskingContext` in `src/types/resource.ts`.
-   *
-   * The `operationId` / timeout message below carries no template-derived
-   * value (an AWS-issued opaque id), so it is left as-is.
-   */
-  private async pollOperation(
+  pollOperation(
     operationId: string,
     logicalId: string,
     resourceType: string,
     maskSecrets?: SecretMasker
   ): Promise<string> {
-    const client = this.getClient();
-    const maxAttempts = 60;
-    let delay = 1000; // start at 1s
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const result = await client.send(new GetOperationCommand({ OperationId: operationId }));
-
-      const status = result.Operation?.Status;
-
-      if (status === 'SUCCESS') {
-        // Extract the target resource ID (NAMESPACE or SERVICE)
-        const targets = result.Operation?.Targets;
-        if (targets) {
-          return targets['NAMESPACE'] || targets['SERVICE'] || operationId;
-        }
-        return operationId;
-      }
-
-      if (status === 'FAIL') {
-        throw this.wrapOperationFailedError(
-          maskerOrIdentity(maskSecrets),
-          logicalId,
-          resourceType,
-          result.Operation
-        );
-      }
-
-      // SUBMITTED or PENDING - wait and retry
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      delay = Math.min(delay * 2, 10000); // exponential backoff, max 10s
-    }
-
-    throw new ProvisioningError(
-      `Operation timed out for ${logicalId} (operationId: ${operationId})`,
-      resourceType,
-      logicalId
-    );
+    return pollOperation.call(this, operationId, logicalId, resourceType, maskSecrets);
   }
 
-  // ─── Attribute resolution ─────────────────────────────────────────
-
-  /**
-   * Resolve a `Fn::GetAtt` attribute live from AWS (used by `cdkd orphan`'s
-   * sibling-reference rewriting and other post-deploy attribute reads).
-   *
-   * Namespace kinds resolve `Id` / `Arn` (plus `HostedZoneId` for the DNS
-   * namespace kinds, read from `GetNamespace`'s
-   * `Properties.DnsProperties.HostedZoneId`); Services resolve `Id` / `Arn` /
-   * `Name` via `GetService`. Returns `undefined` for unknown attributes and
-   * for gone resources.
-   */
-  async getAttribute(
-    physicalId: string,
-    resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
-    switch (resourceType) {
-      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-      case 'AWS::ServiceDiscovery::HttpNamespace':
-      case 'AWS::ServiceDiscovery::PublicDnsNamespace': {
-        if (attributeName === 'Id') return physicalId;
-        if (attributeName !== 'Arn' && attributeName !== 'HostedZoneId') return undefined;
-        try {
-          const resp = await this.getClient().send(new GetNamespaceCommand({ Id: physicalId }));
-          if (attributeName === 'Arn') return resp.Namespace?.Arn;
-          return resp.Namespace?.Properties?.DnsProperties?.HostedZoneId;
-        } catch (err) {
-          if (err instanceof NamespaceNotFound) return undefined;
-          throw err;
-        }
-      }
-      case 'AWS::ServiceDiscovery::Service': {
-        if (attributeName === 'Id') return physicalId;
-        if (attributeName !== 'Arn' && attributeName !== 'Name') return undefined;
-        try {
-          const resp = await this.getClient().send(new GetServiceCommand({ Id: physicalId }));
-          return attributeName === 'Arn' ? resp.Service?.Arn : resp.Service?.Name;
-        } catch (err) {
-          if (err instanceof ServiceNotFound) return undefined;
-          throw err;
-        }
-      }
-      default:
-        return undefined;
-    }
+  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown> {
+    return getAttribute.call(this, physicalId, resourceType, attributeName);
   }
 
-  // ─── Identity (go-to-k/cdkd#4606) ─────────────────────────────────
-
-  /**
-   * go-to-k/cdkd#4606: whether the namespace or service a failed CREATE
-   * journaled (a namespace whose create operation succeeded before a later
-   * step failed; a service whose `ServiceAttributes` wiring failed and whose
-   * cleanup delete failed too) is the one the record under the same logical
-   * id holds (a fix-forward that created a new one there).
-   *
-   * The identity is the id Cloud Map generates: a namespace's `ns-…` and a
-   * service's `srv-…` id, the physical id the create and the import record,
-   * unique per account and region and never reassigned, so two distinct ids in
-   * the stack's region name two distinct resources. Any other form is
-   * `'unknown'`. Equal ids are `'same'` without a read. After the region
-   * check, the record's resource must read back under its own id (a
-   * namespace also of the record's kind: `DNS_PRIVATE`, `DNS_PUBLIC` or
-   * `HTTP`), else `'unknown'`; the journaled one is then `'different'`
-   * whether it reads back under its own id or Cloud Map reports it gone (a
-   * read answering the record's id or a third one is `'unknown'`). Any other read failure throws,
-   * which the caller reads as `'unknown'`.
-   *
-   * SDK-routed resources only: the settle asks the provider the journaled
-   * operation was provisioned by, so a Cloud Control-routed namespace or
-   * service never reaches this method and keeps the warning.
-   */
-  async isSameResource(
+  isSameResource(
     journaledPhysicalId: string,
     record: { physicalId: string },
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<ResourceIdentityVerdict> {
-    let pattern: RegExp;
-    let read: (id: string) => Promise<string | undefined>;
-    const namespaceKind = NAMESPACE_KIND_BY_TYPE.get(resourceType);
-    if (namespaceKind !== undefined) {
-      pattern = NAMESPACE_ID_PATTERN;
-      read = (id) => this.readNamespaceIdForIdentity(id, namespaceKind);
-    } else if (resourceType === 'AWS::ServiceDiscovery::Service') {
-      pattern = SERVICE_ID_PATTERN;
-      read = (id) => this.readServiceIdForIdentity(id);
-    } else {
-      return 'unknown';
-    }
-    if (!pattern.test(journaledPhysicalId) || !pattern.test(record.physicalId)) return 'unknown';
-    if (journaledPhysicalId === record.physicalId) return 'same';
-    const clientRegion = await this.getClient().config.region();
-    if (clientRegion !== context.expectedRegion) return 'unknown';
-    if ((await read(record.physicalId)) !== record.physicalId) return 'unknown';
-    const journaledRead = await read(journaledPhysicalId);
-    // Gone, or read back under its own id. Any other answer (the record's id,
-    // or a third one) is a state Cloud Map should not produce: 'unknown', so
-    // the settle keeps the entry and warns rather than dropping it as tracked.
-    return journaledRead === undefined || journaledRead === journaledPhysicalId
-      ? 'different'
-      : 'unknown';
+    return isSameResource.call(this, journaledPhysicalId, record, resourceType, context);
   }
 
-  /**
-   * The id `GetNamespace` reports for `namespaceId` when the namespace is of
-   * `kind`; `undefined` when Cloud Map reports it gone (`NamespaceNotFound`).
-   * A response naming no namespace, or one of another kind, throws: "could
-   * not read" never reads as "gone".
-   */
-  private async readNamespaceIdForIdentity(
-    namespaceId: string,
-    kind: string
-  ): Promise<string | undefined> {
-    let response;
-    try {
-      response = await this.getClient().send(new GetNamespaceCommand({ Id: namespaceId }));
-    } catch (error) {
-      if (error instanceof NamespaceNotFound) return undefined;
-      throw error;
-    }
-    const namespace = response.Namespace;
-    if (typeof namespace?.Id !== 'string' || namespace.Type !== kind) {
-      throw new Error('GetNamespace did not return a namespace of the kind asked for');
-    }
-    return namespace.Id;
+  readNamespaceIdForIdentity(namespaceId: string, kind: string): Promise<string | undefined> {
+    return readNamespaceIdForIdentity.call(this, namespaceId, kind);
   }
 
-  /**
-   * The id `GetService` reports for `serviceId`; `undefined` when Cloud Map
-   * reports it gone (`ServiceNotFound`). A response naming no service throws.
-   */
-  private async readServiceIdForIdentity(serviceId: string): Promise<string | undefined> {
-    let response;
-    try {
-      response = await this.getClient().send(new GetServiceCommand({ Id: serviceId }));
-    } catch (error) {
-      if (error instanceof ServiceNotFound) return undefined;
-      throw error;
-    }
-    if (typeof response.Service?.Id !== 'string') {
-      throw new Error('GetService did not return the service asked for');
-    }
-    return response.Service.Id;
+  readServiceIdForIdentity(serviceId: string): Promise<string | undefined> {
+    return readServiceIdForIdentity.call(this, serviceId);
   }
 
-  // ─── Import dispatch ──────────────────────────────────────────────
-
-  /**
-   * Adopt an existing Cloud Map (Service Discovery) resource into cdkd state.
-   *
-   *  - **AWS::ServiceDiscovery::PrivateDnsNamespace**: tag-based auto-lookup
-   *    via `ListNamespaces` + `ListTagsForResource(ResourceARN)` (Tag[]
-   *    array). Falls back to `--resource` override or matching
-   *    `Properties.Name` against the namespace name.
-   *  - **AWS::ServiceDiscovery::Service**: same shape — `ListServices` +
-   *    `ListTagsForResource`. Both use `Tag[]` arrays.
-   */
-  /**
-   * Read the AWS-current ServiceDiscovery resource configuration in CFn-property shape.
-   *
-   * Dispatch per resource type:
-   *  - `PrivateDnsNamespace` → `GetNamespace` (Name, Description). `Vpc`
-   *    is NOT returned by `GetNamespace` — Cloud Map exposes the VPC only
-   *    at create time and via `ListNamespaces`-side `Properties.DnsProperties.HostedZoneId`,
-   *    not as a directly comparable VPC ID. We skip it; the comparator
-   *    only descends into keys present in cdkd state, so an absent key
-   *    cannot fire false drift, but a `Vpc` change will not be detected
-   *    via this provider's drift surface (use the CFn-side `aws cloudmap`
-   *    CLI for that edge case).
-   *  - `Service` → `GetService` (Name, NamespaceId, Description, Type,
-   *    DnsConfig, HealthCheckConfig, HealthCheckCustomConfig).
-   *
-   * Tags are surfaced via a follow-up `ListTagsForResource(ResourceARN)`
-   * call (using the resource ARN from `GetNamespace.Arn` or
-   * `GetService.Arn`). CDK's `aws:*` auto-tags are filtered out and the
-   * result key is omitted when AWS reports no user tags. Returns
-   * `RESOURCE_NOT_FOUND` when the resource is gone (`NamespaceNotFound` /
-   * `ServiceNotFound`), `undefined` for another type.
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    switch (resourceType) {
-      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
-        return this.readNamespace(physicalId, { includeProperties: true });
-      case 'AWS::ServiceDiscovery::HttpNamespace':
-        // HttpNamespace has no CFn `Properties` bag (no hosted zone / SOA).
-        return this.readNamespace(physicalId, { includeProperties: false });
-      case 'AWS::ServiceDiscovery::Service':
-        return this.readService(physicalId);
-      default:
-        return undefined;
-    }
+    return readCurrentState.call(this, physicalId, _logicalId, resourceType);
   }
 
-  /**
-   * Declare drift-unreadable property paths.
-   *
-   * - `AWS::ServiceDiscovery::PrivateDnsNamespace.Vpc`: Cloud Map's
-   *   `GetNamespace` does NOT return the VPC ID — it is only consumed at
-   *   create time and surfaced in opaque form via
-   *   `Properties.DnsProperties.HostedZoneId`. Without this declaration
-   *   the comparator would walk into `Vpc` (state has it because cdkd
-   *   stored the user-supplied template value) and report a guaranteed
-   *   false-positive on every clean drift run, since `readCurrentState`
-   *   deliberately omits the key.
-   */
   getDriftUnknownPaths(resourceType: string): string[] {
-    if (resourceType === 'AWS::ServiceDiscovery::PrivateDnsNamespace') {
-      return ['Vpc'];
-    }
-    return [];
+    return getDriftUnknownPaths.call(this, resourceType);
   }
 
-  private async readNamespace(
+  readNamespace(
     physicalId: string,
     options: { includeProperties: boolean }
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let ns;
-    try {
-      const resp = await this.getClient().send(new GetNamespaceCommand({ Id: physicalId }));
-      ns = resp.Namespace;
-    } catch (err) {
-      if (err instanceof NamespaceNotFound) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    if (!ns) return undefined;
-
-    const result: Record<string, unknown> = {};
-    if (ns.Name !== undefined) result['Name'] = ns.Name;
-    result['Description'] = ns.Description ?? '';
-    if (options.includeProperties) {
-      // Properties.DnsProperties.SOA.TTL is the only mutable nested field
-      // (PR #195's update path round-trips it). Surface it on read too so
-      // the comparator can detect a console-side TTL change. Always emit
-      // the Properties placeholder for v3 baseline parity. HttpNamespace
-      // skips this — it has no CFn `Properties` bag.
-      const soa = ns.Properties?.DnsProperties?.SOA;
-      if (soa?.TTL !== undefined) {
-        result['Properties'] = { DnsProperties: { SOA: { TTL: soa.TTL } } };
-      } else {
-        result['Properties'] = {};
-      }
-    }
-    if (ns.Arn) await this.attachTags(result, ns.Arn);
-    return result;
+    return readNamespace.call(this, physicalId, options);
   }
 
-  private async readService(
-    physicalId: string
-  ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let svc;
-    try {
-      const resp = await this.getClient().send(new GetServiceCommand({ Id: physicalId }));
-      svc = resp.Service;
-    } catch (err) {
-      if (err instanceof ServiceNotFound) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    if (!svc) return undefined;
-
-    const result: Record<string, unknown> = {};
-    if (svc.Name !== undefined) result['Name'] = svc.Name;
-    if (svc.NamespaceId !== undefined) result['NamespaceId'] = svc.NamespaceId;
-    result['Description'] = svc.Description ?? '';
-    if (svc.Type !== undefined) result['Type'] = svc.Type;
-    if (svc.DnsConfig) {
-      result['DnsConfig'] = svc.DnsConfig as unknown as Record<string, unknown>;
-    }
-    if (svc.HealthCheckConfig) {
-      result['HealthCheckConfig'] = svc.HealthCheckConfig as unknown as Record<string, unknown>;
-    }
-    if (svc.HealthCheckCustomConfig) {
-      result['HealthCheckCustomConfig'] = svc.HealthCheckCustomConfig as unknown as Record<
-        string,
-        unknown
-      >;
-    }
-
-    // ServiceAttributes via GetServiceAttributes (a separate call from
-    // GetService). Emit the full key→value map so a console-side attribute
-    // change surfaces as drift against the deploy-time baseline. On a
-    // permission / transient error leave the key absent rather than firing
-    // false drift on every run (matching attachTags' best-effort posture);
-    // the drift comparator is state-keys-only so an absent key is safe.
-    try {
-      const attrsResp = await this.getClient().send(
-        new GetServiceAttributesCommand({ ServiceId: physicalId })
-      );
-      result['ServiceAttributes'] = attrsResp.ServiceAttributes?.Attributes ?? {};
-    } catch (err) {
-      this.logger.debug(
-        `ServiceDiscovery GetServiceAttributes(${physicalId}) failed: ${describeAwsFailure(err).detail}`
-      );
-    }
-
-    if (svc.Arn) await this.attachTags(result, svc.Arn);
-    return result;
+  readService(physicalId: string): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
+    return readService.call(this, physicalId);
   }
 
-  /**
-   * Normalize a CFn `ServiceAttributes` value (a bare key→value JSON map) into
-   * the SDK's `Attributes` shape (`Record<string,string>`). Only string /
-   * number / boolean values are coerced via `String()`; a non-scalar value is
-   * malformed input and is dropped rather than stringified to `[object
-   * Object]`. A non-object input (absent / null / array) yields `{}` so callers
-   * can branch on `Object.keys(...).length`.
-   */
-  private normalizeServiceAttributes(raw: unknown): Record<string, string> {
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      if (v === undefined || v === null) continue;
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-        out[k] = String(v);
-      }
-    }
-    return out;
+  normalizeServiceAttributes(raw: unknown): Record<string, string> {
+    return normalizeServiceAttributes.call(this, raw);
   }
 
-  /** Best-effort tag fetch via `ListTagsForResource(ResourceARN)`. */
-  private async attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
-    try {
-      const tagsResp = await this.getClient().send(
-        new ListTagsForResourceCommand({ ResourceARN: arn })
-      );
-      const tags = normalizeAwsTagsToCfn(tagsResp.Tags);
-      result['Tags'] = tags;
-    } catch (err) {
-      this.logger.debug(
-        `ServiceDiscovery ListTagsForResource(${arn}) failed: ${describeAwsFailure(err).detail}`
-      );
-    }
+  attachTags(result: Record<string, unknown>, arn: string): Promise<void> {
+    return attachTags.call(this, result, arn);
   }
 
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    switch (input.resourceType) {
-      case 'AWS::ServiceDiscovery::PrivateDnsNamespace':
-      case 'AWS::ServiceDiscovery::HttpNamespace':
-      case 'AWS::ServiceDiscovery::PublicDnsNamespace':
-        return this.importNamespaceResource(input);
-      case 'AWS::ServiceDiscovery::Service':
-        return this.importServiceResource(input);
-      default:
-        return null;
-    }
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 
   /**
@@ -2461,109 +493,21 @@ export class ServiceDiscoveryProvider implements ResourceProvider {
    * (Cloud Map names are NOT unique across kinds; adopting the wrong one
    * would make a later destroy delete the wrong resource).
    */
-  private static readonly NAMESPACE_KIND_BY_TYPE: Record<string, string> = {
+  static readonly NAMESPACE_KIND_BY_TYPE: Record<string, string> = {
     'AWS::ServiceDiscovery::PrivateDnsNamespace': 'DNS_PRIVATE',
     'AWS::ServiceDiscovery::HttpNamespace': 'HTTP',
     'AWS::ServiceDiscovery::PublicDnsNamespace': 'DNS_PUBLIC',
   };
 
-  private async importNamespaceResource(
-    input: ResourceImportInput
-  ): Promise<ResourceImportResult | null> {
-    const expectedKind = ServiceDiscoveryProvider.NAMESPACE_KIND_BY_TYPE[input.resourceType];
-
-    if (input.knownPhysicalId) {
-      try {
-        const resp = await this.getClient().send(
-          new GetNamespaceCommand({ Id: input.knownPhysicalId })
-        );
-        if (expectedKind && resp.Namespace?.Type && resp.Namespace.Type !== expectedKind) {
-          this.logger.debug(
-            `Namespace ${input.knownPhysicalId} is kind ${resp.Namespace.Type}, expected ${expectedKind} for ${input.resourceType} — refusing to adopt`
-          );
-          return null;
-        }
-        return { physicalId: input.knownPhysicalId, attributes: {} };
-      } catch (err) {
-        if (err instanceof NamespaceNotFound) return null;
-        throw err;
-      }
-    }
-
-    // The `aws:cdk:path` tag leg of this walk is gone: AWS rejects
-    // `aws:`-prefixed tag writes, so that tag never exists on a real resource
-    // and the comparison could not match (issue #1134). The name leg below is
-    // reachable and is kept — without a desired `Name` there is nothing left
-    // to match on, so skip the listing entirely.
-    const desiredName =
-      typeof input.properties?.['Name'] === 'string' ? input.properties['Name'] : undefined;
-    if (!desiredName) return null;
-
-    let token: string | undefined;
-    do {
-      const list = await this.getClient().send(
-        new ListNamespacesCommand({ ...(token && { NextToken: token }) })
-      );
-      for (const ns of list.Namespaces ?? []) {
-        if (!ns.Id || !ns.Arn) continue;
-        if (expectedKind && ns.Type && ns.Type !== expectedKind) continue;
-        if (ns.Name === desiredName) {
-          return { physicalId: ns.Id, attributes: {} };
-        }
-      }
-      token = list.NextToken;
-    } while (token);
-    return null;
+  importNamespaceResource(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importNamespaceResource.call(this, input);
   }
 
-  private async importServiceResource(
-    input: ResourceImportInput
-  ): Promise<ResourceImportResult | null> {
-    if (input.knownPhysicalId) {
-      try {
-        const resp = await this.getClient().send(
-          new GetServiceCommand({ Id: input.knownPhysicalId })
-        );
-        // Issue #3627: the same map `create()` records; the resolver's
-        // Service arm builds only `Arn` / `Id`, so `Name` resolved to the id.
-        return {
-          physicalId: input.knownPhysicalId,
-          attributes: definedAttributes({
-            Id: input.knownPhysicalId,
-            Arn: resp.Service?.Arn,
-            Name: resp.Service?.Name,
-          }),
-        };
-      } catch (err) {
-        if (err instanceof ServiceNotFound) return null;
-        throw err;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // service reaching here needs an explicit `--resource` override.
-    return null;
+  importServiceResource(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importServiceResource.call(this, input);
   }
 
-  /**
-   * Build a namespace ARN from namespace ID.
-   * Format: `arn:{partition}:servicediscovery:{region}:{account}:namespace/{namespaceId}`
-   *
-   * The partition is derived from the region through the same closed mapping
-   * `${AWS::Partition}` uses (issue #1815) rather than hardcoded to `aws` —
-   * this ARN is recorded into state and served as the namespace's `Arn`
-   * attribute, so a commercial-partition literal is silently wrong (but
-   * structurally valid, hence unrejected) in `aws-cn` / `aws-us-gov`.
-   */
-  private async buildNamespaceArn(namespaceId: string): Promise<string> {
-    const stsClient = this.getStsClient();
-    const identity = await stsClient.send(new GetCallerIdentityCommand({}));
-    const accountId = identity.Account || '';
-    const region = await this.getClient().config.region();
-    const { partition } = derivePartitionAndUrlSuffix(region);
-    return `arn:${partition}:servicediscovery:${region}:${accountId}:namespace/${namespaceId}`;
+  buildNamespaceArn(namespaceId: string): Promise<string> {
+    return buildNamespaceArn.call(this, namespaceId);
   }
 }
