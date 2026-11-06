@@ -69,7 +69,6 @@ src/provisioning/providers/iam-policy-provider.ts
 src/provisioning/providers/iam-role-provider.ts
 src/provisioning/providers/kms-provider.ts
 src/provisioning/providers/nested-stack-provider.ts
-src/provisioning/providers/pipes-provider.ts
 src/provisioning/providers/rds-dbproxy-provider.ts
 src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts
 src/provisioning/providers/scheduler-schedule-provider.ts
