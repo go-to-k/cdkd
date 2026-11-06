@@ -68,6 +68,13 @@ describe('gen-update-wrap-coverage: unresolved delegates fail closed (#5882)', (
     expect(c?.unresolvedCallees).toEqual(['applyTags']);
   });
 
+  it('blocks on a qualified .call(this, ...) target it cannot resolve', () => {
+    const qualified = delegatingClass.replace('return update.call(', 'return impl.update.call(');
+    const [c] = classifySource(qualified, 'split-provider.ts', new Map(), [wrappingCompanion]);
+    expect(c?.bucket).toBe('unresolved-callee');
+    expect(c?.unresolvedCallees).toEqual(['impl.update']);
+  });
+
   it('outranks an allow-list entry, so a lost edge still blocks', () => {
     const gapClass = `class SplitProvider {
       async update(logicalId, physicalId) {
@@ -128,8 +135,12 @@ describe('gen-update-wrap-coverage: unresolved delegates fail closed (#5882)', (
       expect(silentFlips).toEqual([]);
       // Discrimination floor: hiding companions must actually reach the guard
       // (a literal, so a walk that stopped following delegates cannot pass by
-      // never resolving anything in the first place).
-      expect(blockedDrops).toBeGreaterThanOrEqual(8);
-    });
+      // never resolving anything in the first place). Set near the measured
+      // count, 72 when written, so it also needs the single-FILE drops that
+      // only an edge inside a companion body catches, not just the 8
+      // whole-directory drops.
+      expect(blockedDrops).toBeGreaterThanOrEqual(60);
+      // ~70 re-classifications of the real split providers: seconds, not ms.
+    }, 60_000);
   });
 });

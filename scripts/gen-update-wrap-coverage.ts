@@ -55,13 +55,14 @@
  *     A provider whose bodies moved to its companion directory
  *     (scripts/provider-companion-files.ts) is walked through them: a method
  *     that is `return fn.call(this, ...)` is followed into `fn`, and so is a
- *     `fn.call(this, ...)` inside one. A `fn.call(this, ...)` whose `fn` is
- *     NOT a `this:` function of the companion files (a companion file not
- *     read, or a signature not recognised) is an UNRESOLVED edge too (#5882),
- *     so a split provider fails closed rather than reading as `no-aws`.
+ *     `fn.call(this, ...)` inside one. Any other `<expr>.call(this, ...)` (a
+ *     companion file not read, a signature not recognised, a qualified
+ *     `ns.fn` / `this.impl` target) is an UNRESOLVED edge too (#5882), so a
+ *     split provider fails closed rather than reading as `no-aws`.
  *     KNOWN LIMITATION: delegation to a module-level free function called
- *     WITHOUT `.call(this, ...)`, or to `this.someField.method()`, is
- *     invisible rather than `unresolved-callee`. Neither shape reaches a send
+ *     WITHOUT `.call(this, ...)` (a plain call, `.apply`, `.bind`, a `self`
+ *     alias for `this`), or to `this.someField.method()`, is invisible
+ *     rather than `unresolved-callee`. Neither shape reaches a send
  *     from `update()` in the tree today; widening it needs real call-graph
  *     resolution, which is out of proportion to the risk.
  * Recursion is cycle-guarded and bounded to the class's own members.
@@ -791,13 +792,19 @@ export function analyzeClass(
         // a false "clean".
         else unresolvedCallees.add(callee);
       } else {
-        // `fn.call(this, ...)` whose `fn` is not a companion function of this
-        // class: a delegate whose companion file was not read, or one whose
-        // signature `companionFunctions` does not recognise (#5882). The body
-        // moved out of the class is invisible, so the walk must not fall
-        // through to a confident `no-aws`.
-        const delegate = callThisTarget(node);
-        if (delegate !== null) unresolvedCallees.add(delegate);
+        // `<expr>.call(this, ...)` that did not resolve to a companion
+        // function: a delegate whose companion file was not read, one whose
+        // signature `companionFunctions` does not recognise, or a qualified
+        // target (`ns.fn`, `this.impl`) (#5882). The body behind it is
+        // invisible, so the walk must not fall through to a confident `no-aws`.
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'call' &&
+          node.arguments[0]?.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+          unresolvedCallees.add(callThisTarget(node) ?? node.expression.expression.getText());
+        }
       }
 
       ts.forEachChild(node, (child) => walk(child, isProtected));
