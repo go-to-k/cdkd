@@ -779,13 +779,13 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     const dir = copySrcTree();
     mutate(
       dir,
-      `${PROVIDERS}/iam-role-provider.ts`,
-      '          roleName,\n          cause\n        )',
-      '          roleName\n        )'
+      `${PROVIDERS}/iam-role/create.ts`,
+      '        roleName,\n        cause\n      )',
+      '        roleName\n      )'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('iam-role-provider.ts');
+    expect(stderr).toContain('iam-role/create.ts');
     expect(stderr).toContain('NOT threaded as `cause`');
   }, SPAWN_TIMEOUT_MS);
 
@@ -793,9 +793,9 @@ describe('provider error-cause critic — probes against the REAL src/ tree', ()
     const dir = copySrcTree();
     mutate(
       dir,
-      `${PROVIDERS}/iam-role-provider.ts`,
-      '          roleName,\n          cause\n        )',
-      '          roleName,\n          undefined\n        )'
+      `${PROVIDERS}/iam-role/create.ts`,
+      '        roleName,\n        cause\n      )',
+      '        roleName,\n        undefined\n      )'
     );
     expect(runCheck(dir).status).toBe(1);
   }, SPAWN_TIMEOUT_MS);

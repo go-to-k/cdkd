@@ -476,7 +476,7 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
     'providers/acm-certificate-provider.ts',
     'providers/apigateway/resource-deployment.ts',
     'providers/iam-managed-policy-provider.ts',
-    'providers/iam-role-provider.ts',
+    'providers/iam-role/update.ts',
   ];
 
   it('lists every persisted orphanReason site, so a fifth cannot appear unwatched', () => {
