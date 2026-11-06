@@ -60,7 +60,7 @@
  * the tagged-template {@link pasteableAwsCommand} (same gate) for a command
  * naming several values or one mid-command, which is how the provider sites
  * of issue #3136's second half render.
- * `efs-provider.ts`'s `aws efs describe-access-points --query
+ * `efs/access-point.ts`'s `aws efs describe-access-points --query
  * "AccessPoints[?ClientToken=='<token>']"` is the recorded counter-example and
  * deliberately does NOT route through this: the token comes from
  * `acquireIdempotencyToken`, which mints `cdkd-<sha256 hex>` and nothing else,

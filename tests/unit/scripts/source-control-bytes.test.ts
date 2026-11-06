@@ -304,6 +304,7 @@ describe('the working tree', () => {
 
   it.each([
     'src/provisioning/providers/efs-provider.ts',
+    'src/provisioning/providers/efs/file-system-create.ts',
     'src/provisioning/providers/idempotency-token.ts',
   ])('keeps a raw NUL out of %s, where the creation-token derivation lives', (rel) => {
     // The #1587 site: the EFS creationToken digest once joined its inputs with
