@@ -401,7 +401,7 @@ export async function deleteInstance(
     : [];
   if (!ssmReadable) {
     this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and skips the association cleanup. ${staleSsmAssociationRemedy(physicalId, context?.maskSecrets)}.`
+      safeMsg`${logicalId} (${resourceType}): the record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and skips the association cleanup. ${staleSsmAssociationRemedy(physicalId, await this.ssmRemedyRegion(context?.expectedRegion), context?.maskSecrets)}.`
     );
   }
   // The region the compensation's commands name: the state's, else the

@@ -42,7 +42,6 @@ import {
   sameSsmAssociations,
   sameStringSet,
   ssmAssociationsAwsRefusal,
-  staleSsmAssociationRemedy,
 } from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
@@ -117,7 +116,8 @@ export async function updateInstance(
         physicalId,
         resourceType,
         memberPlan.ssmAssociation,
-        maskerOrIdentity(context?.maskSecrets)
+        maskerOrIdentity(context?.maskSecrets),
+        context?.expectedRegion
       );
     }
 
@@ -726,8 +726,7 @@ export function planInstanceMemberUpdates(
     previousProperties,
     plan,
     changed,
-    standInSkips,
-    context?.maskSecrets
+    standInSkips
   );
 
   return plan;
@@ -756,8 +755,7 @@ export function planInstanceSsmAssociations(
   previousProperties: Record<string, unknown>,
   plan: InstanceMemberPlan,
   changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean,
-  standInSkips: (key: string) => boolean,
-  maskSecrets?: (text: string) => string
+  standInSkips: (key: string) => boolean
 ): void {
   const refusal =
     instanceSsmAssociationsRefusal(properties['SsmAssociations'], resourceType) ??
@@ -778,18 +776,10 @@ export function planInstanceSsmAssociations(
   const recorded = previousProperties['SsmAssociations'];
   const recordedUsable = instanceSsmAssociationsRefusal(recorded, resourceType) === undefined;
   const previous = recordedUsable ? instanceSsmAssociationEntries(recorded) : [];
-  if (!recordedUsable && desired.length > 0) {
-    // Which association is this resource's is unknowable, so none is
-    // deleted: an instance takes one document, and Systems Manager's own
-    // refusal then names a leftover one.
-    this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's; it deletes none and creates the declared one. ${staleSsmAssociationRemedy(physicalId, maskSecrets)}.`
-    );
-  } else if (!recordedUsable) {
-    this.logger.warn(
-      safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and deletes none. ${staleSsmAssociationRemedy(physicalId, maskSecrets)}.`
-    );
-  }
+  // An unreadable record: which association is this resource's is
+  // unknowable, so none is deleted (an instance takes one document, and
+  // Systems Manager's own refusal then names a leftover one).
+  // `applyInstanceSsmAssociationChange` warns, naming the remedy.
   plan.ssmAssociation = {
     documentNames: previous.map((e) => e.DocumentName),
     recordUnreadable: !recordedUsable,

@@ -6,6 +6,7 @@ import {
 } from '@aws-sdk/client-ssm';
 import { enclosingDeadlineRemainingMs } from '../../../deployment/resource-deadline.js';
 import { describeAwsFailure } from '../../../utils/aws-failure-text.js';
+import { canonicalizeRegion } from '../../../utils/aws-partition.js';
 import { markRedactedCause } from '../../../deployment/retryable-errors.js';
 import { ProvisioningError } from '../../../utils/error-handler.js';
 import { safeMsg } from '../../../utils/display-safe.js';
@@ -153,8 +154,18 @@ export async function applyInstanceSsmAssociationChange(
   physicalId: string,
   resourceType: string,
   plan: NonNullable<InstanceMemberPlan['ssmAssociation']>,
-  mask: MaskerFn
+  mask: MaskerFn,
+  expectedRegion?: string
 ): Promise<void> {
+  const remedy = async (): Promise<string> =>
+    staleSsmAssociationRemedy(physicalId, await this.ssmRemedyRegion(expectedRegion), mask);
+  if (plan.recordUnreadable) {
+    this.logger.warn(
+      plan.create !== undefined
+        ? safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's; it deletes none and creates the declared one. ${await remedy()}.`
+        : safeMsg`${logicalId} (${resourceType}): the previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of ${physicalId} is this resource's and deletes none. ${await remedy()}.`
+    );
+  }
   const deleted: string[] = [];
   if (plan.documentNames.length > 0) {
     for (const a of await this.listInstanceSsmAssociations(physicalId, plan.documentNames)) {
@@ -179,7 +190,7 @@ export async function applyInstanceSsmAssociationChange(
     const head =
       deleted.length > 0
         ? `Failed to update EC2 Instance ${logicalId}: cdkd deleted its SSM association (document ${deleted.join(', ')}) and then could not create the new one, so the instance ${physicalId} now has NO SSM association. Fix the cause and deploy again to create it: `
-        : `Failed to update EC2 Instance ${logicalId}: the previous record's SsmAssociations was unreadable, so cdkd did not remove the old SSM association of ${physicalId}, which may be what refuses this one. ${staleSsmAssociationRemedy(physicalId, mask)}. The create failed with: `;
+        : `Failed to update EC2 Instance ${logicalId}: the previous record's SsmAssociations was unreadable, so cdkd did not remove the old SSM association of ${physicalId}, which may be what refuses this one. ${await remedy()}. The create failed with: `;
     const thrown = new ProvisioningError(
       mask(`${head}${this.warnFailureText(head, error, mask)}`),
       resourceType,
@@ -277,8 +288,27 @@ export async function readInstanceSsmAssociations(
   }
 }
 
+/**
+ * The region a pasted SSM command names: the state's, else the client's own,
+ * so it never falls back to the operator's default region (as the instance
+ * delete resolves its commands' region). `undefined` when neither is known.
+ */
+export async function ssmRemedyRegion(
+  this: EC2Provider,
+  expectedRegion: string | undefined
+): Promise<string | undefined> {
+  const recorded = expectedRegion?.trim();
+  if (recorded) return recorded;
+  try {
+    return canonicalizeRegion((await this.ec2Client.config.region())?.trim()) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The {@link EC2Provider} methods this module defines. */
 export const instanceSsmMethods = {
+  ssmRemedyRegion,
   createInstanceSsmAssociation,
   listInstanceSsmAssociations,
   deleteSsmAssociationById,

@@ -736,24 +736,31 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
     expect(warned).toMatch(
       /previous record's SsmAssociations is unreadable, so cdkd cannot tell which SSM association of i-new is this resource's; it deletes none/
     );
+    // No recorded region: the client's own, never the operator's default.
     expect(warned).toContain(
-      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new'
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new --region us-east-1'
     );
-    expect(warned).toContain('aws ssm delete-association --association-id <id>');
+    expect(warned).toContain('aws ssm delete-association --association-id <id> --region us-east-1');
   });
 
   it('warns with the remedy when an unreadable record meets a template declaring no association (R2-3)', async () => {
     seed();
-    await new EC2Provider().update('Inst', 'i-new', TYPE, { ...BASE }, {
-      ...BASE,
-      SsmAssociations: 'garbage',
-    });
+    await new EC2Provider().update(
+      'Inst',
+      'i-new',
+      TYPE,
+      { ...BASE },
+      { ...BASE, SsmAssociations: 'garbage' },
+      { expectedRegion: 'eu-west-3' }
+    );
     expect(ssmSend).not.toHaveBeenCalled();
     const warned = warn.mock.calls.flat().join('\n');
     expect(warned).toMatch(/SsmAssociations is unreadable, .* of i-new is this resource's and deletes none/);
+    // The recorded region, not the client's.
     expect(warned).toContain(
-      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new'
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new --region eu-west-3'
     );
+    expect(warned).toContain('aws ssm delete-association --association-id <id> --region eu-west-3');
   });
 
   it('points a create failure after an unreadable record back to the association it did not remove (R2-1)', async () => {
@@ -765,13 +772,17 @@ describe('AWS::EC2::Instance SsmAssociations update (#5630)', () => {
         'i-new',
         TYPE,
         { ...BASE, SsmAssociations: [SHELL] },
-        { ...BASE, SsmAssociations: 'garbage' }
+        { ...BASE, SsmAssociations: 'garbage' },
+        { expectedRegion: 'eu-west-3' }
       )
       .catch((e: unknown) => e);
     expect(String(error)).toMatch(
       /the previous record's SsmAssociations was unreadable, so cdkd did not remove the old SSM association of i-new/
     );
-    expect(String(error)).toContain('aws ssm delete-association --association-id <id>');
+    expect(String(error)).toContain(
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new --region eu-west-3'
+    );
+    expect(String(error)).toContain('aws ssm delete-association --association-id <id> --region eu-west-3');
     expect(String(error)).toMatch(/multiple documents cannot be associated/);
   });
 
@@ -976,13 +987,20 @@ describe('AWS::EC2::Instance SsmAssociations delete (#5630)', () => {
   });
 
   it('warns, with the remedy, and makes no Systems Manager call for an unreadable recorded SsmAssociations (R2-2)', async () => {
-    await new EC2Provider().delete('Inst', 'i-new', TYPE, { ...BASE, SsmAssociations: [null] });
+    await new EC2Provider().delete(
+      'Inst',
+      'i-new',
+      TYPE,
+      { ...BASE, SsmAssociations: [null] },
+      { expectedRegion: 'eu-west-3' }
+    );
     expect(ssmSend).not.toHaveBeenCalled();
     const warned = warn.mock.calls.flat().join('\n');
     expect(warned).toMatch(/record's SsmAssociations is unreadable, .* skips the association cleanup/);
     expect(warned).toContain(
-      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new'
+      'aws ssm list-associations --association-filter-list key=InstanceId,value=i-new --region eu-west-3'
     );
+    expect(warned).toContain('aws ssm delete-association --association-id <id> --region eu-west-3');
   });
 
   it('makes no Systems Manager call for a record without SsmAssociations', async () => {

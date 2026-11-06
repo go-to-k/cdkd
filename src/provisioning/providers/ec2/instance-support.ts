@@ -463,10 +463,22 @@ function sameOrderedStrings(a: readonly string[], b: readonly string[]): boolean
  */
 export function staleSsmAssociationRemedy(
   instanceId: string,
+  region: string | undefined,
   maskSecrets?: (text: string) => string
 ): string {
   const aws = pasteableAwsCommand(maskSecrets);
-  return `List its associations with: ${aws`aws ssm list-associations --association-filter-list key=InstanceId,value=${instanceId}`.render()} and delete a stale one with: ${aws`aws ssm delete-association --association-id <id>`.render()}`;
+  // Never the operator's default region: there, another region's instance
+  // lists no association, which reads as "nothing stale".
+  const regionArg = region === undefined ? undefined : aws`--region ${region}`;
+  const list =
+    regionArg === undefined
+      ? aws`aws ssm list-associations --association-filter-list key=InstanceId,value=${instanceId} --region <the stack's region>`
+      : aws`aws ssm list-associations --association-filter-list key=InstanceId,value=${instanceId} ${regionArg}`;
+  const del =
+    regionArg === undefined
+      ? aws`aws ssm delete-association --association-id <id> --region <the stack's region>`
+      : aws`aws ssm delete-association --association-id <id> ${regionArg}`;
+  return `List its associations with: ${list.render()} and delete a stale one with: ${del.render()}`;
 }
 
 /**
