@@ -62,9 +62,11 @@
  *     KNOWN LIMITATION: delegation to a module-level free function called
  *     WITHOUT `.call(this, ...)` (a plain call, `.apply`, `.bind`, a `self`
  *     alias for `this`), or to `this.someField.method()`, is invisible
- *     rather than `unresolved-callee`. Neither shape reaches a send
- *     from `update()` in the tree today; widening it needs real call-graph
- *     resolution, which is out of proportion to the risk.
+ *     rather than `unresolved-callee`. Such free functions do reach a send
+ *     from `update()` today (e.g. `applyGlueTagDiff`, `applyDocDBTagDiff`),
+ *     but only inside a wrap; moving one out of its `try` would read as no
+ *     gap. Widening it needs real call-graph resolution, which is out of
+ *     proportion to the risk.
  * Recursion is cycle-guarded and bounded to the class's own members.
  *
  * WHY NOT A GREP
