@@ -1861,7 +1861,7 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     ['src/deployment/deploy-engine/deploy-flow.ts', 'resolveOutputs', 1],
     ['src/deployment/deploy-engine/execute.ts', 'resolveOutputs', 1],
     ['src/cli/commands/import.ts', 'resolveImportedProperties', 2],
-    ['src/cli/commands/export.ts', 'buildResolvedParametersPerStack', 1],
+    ['src/cli/commands/export/per-stack-loop.ts', 'buildResolvedParametersPerStack', 1],
     ['src/cli/commands/scrub.ts', 'resolveCrossStackReads', 3],
   ])('every %s call to %s is inside a shared drain budget', (file, callee, atLeast) => {
     // The wraps are this round's whole deliverable and nothing held them:

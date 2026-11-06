@@ -277,7 +277,7 @@ case "${VARIANT}" in
     # "blocks migration" or "composite primary identifier" message.
     if grep -qE 'block migration|composite primary identifier' /tmp/verify-dry-run.log; then
       echo "[verify] FAIL: dry-run reports unresolved composite-id resources"
-      echo "[verify] (composite-id splitters in src/cli/commands/export.ts are missing entries)"
+      echo "[verify] (composite-id splitters in src/cli/commands/export/composite-id-splitters.ts are missing entries)"
       exit 1
     fi
     # Issue #1771 — SAME helper the default arm calls. Two copies of the same

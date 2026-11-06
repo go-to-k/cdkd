@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
@@ -203,7 +203,6 @@ describe('no handler in the slice stringifies its caught value with String() (#3
   /** File -> the floor of handlers the scan must see, so a parse that saw nothing cannot pass. */
   const FILES: Readonly<Record<string, number>> = {
     'src/cli/commands/local-start-api.ts': 10,
-    'src/cli/commands/export.ts': 20,
     'src/cli/commands/import.ts': 5,
     'src/analyzer/orphan-rewriter.ts': 1,
     'src/assets/docker-asset-publisher.ts': 1,
@@ -286,5 +285,29 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     const { handlers, offenders } = scan(file);
     expect(handlers).toBeGreaterThanOrEqual(floor);
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * `cdkd export` is `export.ts` plus its `export/*.ts` modules. Every one of
+   * them is scanned, read from the directory so a new module cannot be
+   * missed, and their handlers TOGETHER keep the floor of 20 the single file
+   * had.
+   */
+  const EXPORT_FILES = [
+    'src/cli/commands/export.ts',
+    ...readdirSync(join(process.cwd(), 'src/cli/commands/export'))
+      .filter((name) => name.endsWith('.ts'))
+      .sort()
+      .map((name) => `src/cli/commands/export/${name}`),
+  ];
+
+  it.each(EXPORT_FILES)('%s', (file) => {
+    expect(scan(file).offenders).toEqual([]);
+  });
+
+  it('the cdkd export modules together hold at least 20 handlers', () => {
+    expect(EXPORT_FILES.length).toBeGreaterThan(1);
+    const handlers = EXPORT_FILES.reduce((sum, file) => sum + scan(file).handlers, 0);
+    expect(handlers).toBeGreaterThanOrEqual(20);
   });
 });

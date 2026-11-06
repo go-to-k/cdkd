@@ -112,7 +112,7 @@ because cdkd's physical id already is that value.
 
 Types whose CloudFormation `primaryIdentifier` names more than one field are
 mapped by a per-type splitter (`COMPOSITE_ID_SPLITTERS` in
-`src/cli/commands/export.ts`; the public page's table is checked against its
+`src/cli/commands/export/composite-id-splitters.ts`; the public page's table is checked against its
 keys). Sub-resource types whose identifier includes an AWS-generated id
 (`IntegrationId`, `RouteId`, `AWS::Lambda::Permission`'s `Id`,
 `AWS::AppSync::ApiKey`'s `ApiKeyId`) narrow the `Properties` overlay to the
