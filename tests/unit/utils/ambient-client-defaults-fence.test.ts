@@ -55,7 +55,7 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'src/cli/commands/deploy.ts':
     'CLI-only: the command handler builds these clients, and no library entry point reaches it ' +
     '(won\'t-do in #3588)',
-  'src/cli/commands/export.ts':
+  'src/cli/commands/export/pre-delete.ts':
     'CLI-only: the command handler builds these clients, and no library entry point reaches it ' +
     '(won\'t-do in #3588)',
   'src/cli/config-loader.ts':

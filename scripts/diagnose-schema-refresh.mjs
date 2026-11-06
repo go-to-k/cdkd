@@ -349,7 +349,7 @@ export function comparePropertySets(committedJson, refreshedJson) {
  * the honest statement of that is a BOUND rather than a reassurance: an AWS
  * REORDER is UNOBSERVABLE here, not harmless. Order can matter downstream — on
  * the Cloud Control path the `|`-joined physical id follows the declared order,
- * which is why `childFirstInCompositeId` exists in `src/cli/commands/export.ts`
+ * which is why `childFirstInCompositeId` exists in `src/cli/commands/export/composite-id-shapes.ts`
  * for `AWS::ApiGateway::Deployment`'s `[DeploymentId, RestApiId]` against
  * siblings that put the parent first. 19 of the 134 fixtures are compound. A
  * reorder cannot reach this comparison at all, so nothing here reports it;

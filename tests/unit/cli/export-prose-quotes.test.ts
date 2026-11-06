@@ -15,6 +15,7 @@ import { STACK_REF_MAX_CODE_POINTS } from '../../../src/utils/display-safe.js';
 import type { S3StateBackend } from '../../../src/state/s3-state-backend.js';
 import type { StackState } from '../../../src/types/state.js';
 import { readAtKeyRegion } from '../_state-read-double.js';
+import { exportSourceFiles } from './_export-source.js';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 
 /**
@@ -132,18 +133,27 @@ export function quotedInterpolations(line: string): string[] {
   return [...found.entries()].sort(([a], [b]) => a - b).map(([, expr]) => expr);
 }
 
+/** `file:line` of each line {@link exportCode} returns, in the same order. */
+const EXPORT_CODE_AT: string[] = [];
+
 function exportCode(): string[] {
-  const raw = readFileSync(
-    new URL('../../../src/cli/commands/export.ts', import.meta.url),
-    'utf8'
-  );
-  // Newlines kept, so a hit's line number is the file's. KNOWN BOUND: a `//`
-  // inside a template string also strips the rest of its line, so a hand quote
-  // after one would be hidden (none exists today).
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, (span) => '\n'.repeat((span.match(/\n/g) ?? []).length))
-    .split('\n')
-    .map((line) => line.replace(/(^|[^:])\/\/.*$/, '$1'));
+  EXPORT_CODE_AT.length = 0;
+  // `cdkd export` is `export.ts` plus its `export/*.ts` modules; each file is
+  // stripped on its own, so a comment cannot span two of them.
+  return exportSourceFiles().flatMap((file) => {
+    const raw = readFileSync(file, 'utf8');
+    const name = file.slice(file.lastIndexOf('/commands/') + '/commands/'.length);
+    // Newlines kept, so a hit's line number is the file's. KNOWN BOUND: a `//`
+    // inside a template string also strips the rest of its line, so a hand quote
+    // after one would be hidden (none exists today).
+    return raw
+      .replace(/\/\*[\s\S]*?\*\//g, (span) => '\n'.repeat((span.match(/\n/g) ?? []).length))
+      .split('\n')
+      .map((line, i) => {
+        EXPORT_CODE_AT.push(`${name}:${i + 1}`);
+        return line.replace(/(^|[^:])\/\/.*$/, '$1');
+      });
+  });
 }
 
 function stateOf(args: {
@@ -274,7 +284,9 @@ describe('cdkd export puts no state or template value inside its own quotes (go-
       }
     });
     const unlisted = [...seen].filter(([expr]) => !(expr in ALLOWED_HAND_QUOTES));
-    expect(unlisted.map(([expr, at]) => `export.ts:${at.join(',')} \${${expr}}`)).toEqual([]);
+    expect(
+      unlisted.map(([expr, at]) => `${at.map((n) => EXPORT_CODE_AT[n - 1]).join(',')} \${${expr}}`)
+    ).toEqual([]);
     // Each entry at exactly its count: a same-named new site, or a dead entry,
     // fails here.
     const counts = Object.fromEntries(

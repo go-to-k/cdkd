@@ -133,7 +133,10 @@ describe('docs lists derived from source', () => {
   });
 
   it('cli-export.md names every registered composite-id splitter', () => {
-    const source = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'export.ts'), 'utf8');
+    const source = readFileSync(
+      join(repoRoot, 'src', 'cli', 'commands', 'export', 'composite-id-splitters.ts'),
+      'utf8'
+    );
     const start = source.indexOf('const COMPOSITE_ID_SPLITTERS');
     expect(start, 'COMPOSITE_ID_SPLITTERS moved or was renamed').toBeGreaterThanOrEqual(0);
     const table = source.slice(start, source.indexOf('\n};', start));
@@ -158,15 +161,19 @@ describe('docs lists derived from source', () => {
   });
 
   it('the --no-recreate-import-unsupported help names every type it applies to', () => {
-    const source = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'export.ts'), 'utf8');
-    const start = source.indexOf('const IMPORT_UNSUPPORTED_RECREATABLE_TYPES');
+    const table = readFileSync(
+      join(repoRoot, 'src', 'cli', 'commands', 'export', 'plan-types.ts'),
+      'utf8'
+    );
+    const start = table.indexOf('const IMPORT_UNSUPPORTED_RECREATABLE_TYPES');
     expect(start).toBeGreaterThanOrEqual(0);
-    const types = typesIn(source.slice(start, source.indexOf('\n]);', start)));
+    const types = typesIn(table.slice(start, table.indexOf('\n]);', start)));
     expect(
       types.size,
       'parsed no types out of IMPORT_UNSUPPORTED_RECREATABLE_TYPES'
     ).toBeGreaterThanOrEqual(1);
 
+    const source = readFileSync(join(repoRoot, 'src', 'cli', 'commands', 'export.ts'), 'utf8');
     const optionStart = source.indexOf("'--no-recreate-import-unsupported'");
     expect(optionStart).toBeGreaterThanOrEqual(0);
     const help = source.slice(optionStart, optionStart + 1200);

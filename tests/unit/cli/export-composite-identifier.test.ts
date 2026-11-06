@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vite-plus/test';
 import {
   buildImportPlan,
@@ -1898,5 +1901,66 @@ describe('buildImportPlan — AWS::AppSync::GraphQLApi / ::ApiKey (issue #3414)'
     expect(plan.phase1Imports).toEqual([]);
     expect(plan.blocked).toHaveLength(1);
     expect(plan.blocked[0]!.reason).toMatch(/not supported for Import/);
+  });
+});
+
+describe('the splitter refusals name files that exist', () => {
+  // Both refusals tell a contributor which file to edit. The tables moved once
+  // (export.ts split into export/*.ts), so the paths are pinned AND checked on
+  // disk: the next move reddens here instead of shipping a dead pointer.
+  const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const pathsIn = (reason: string): string[] =>
+    [...reason.matchAll(/src\/cli\/commands\/[\w/.-]+\.ts/g)].map((m) => m[0]);
+
+  it('the registry-drift refusal names composite-physical-id.ts and composite-id-splitters.ts', async () => {
+    const state = stateWith({
+      Table: {
+        resourceType: 'AWS::S3Tables::Table',
+        physicalId: TABLE_COMPOSITE,
+        attributes: { TableARN: TABLE_ARN },
+      },
+    });
+    const template = { Resources: { Table: { Type: 'AWS::S3Tables::Table', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::S3Tables::Table': {
+          primaryIdentifier: ['/properties/TableBucketARN', '/properties/Namespace'],
+          handlers: { read: {} },
+        },
+      }),
+      'MyStack'
+    );
+    const paths = pathsIn(plan.blocked[0]!.reason);
+    expect(paths).toEqual([
+      'src/cli/commands/export/composite-physical-id.ts',
+      'src/cli/commands/export/composite-id-splitters.ts',
+    ]);
+    for (const p of paths) expect(existsSync(join(repoRoot, p)), p).toBe(true);
+  });
+
+  it('the missing-splitter refusal names composite-id-splitters.ts', async () => {
+    const state = stateWith({
+      Thing: { resourceType: 'AWS::Fake::Composite', physicalId: 'a|b', attributes: {} },
+    });
+    const template = { Resources: { Thing: { Type: 'AWS::Fake::Composite', Properties: {} } } };
+    const plan = await buildImportPlan(
+      state,
+      template,
+      cfnClientFor({
+        'AWS::Fake::Composite': {
+          primaryIdentifier: ['/properties/First', '/properties/Second'],
+          handlers: { read: {} },
+        },
+      }),
+      'MyStack'
+    );
+    expect(plan.phase1Imports).toEqual([]);
+    const reason = plan.blocked[0]!.reason;
+    expect(reason).toMatch(/composite primary identifier \(2 fields: First, Second\)/);
+    const paths = pathsIn(reason);
+    expect(paths).toEqual(['src/cli/commands/export/composite-id-splitters.ts']);
+    for (const p of paths) expect(existsSync(join(repoRoot, p)), p).toBe(true);
   });
 });

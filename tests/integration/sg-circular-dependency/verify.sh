@@ -585,7 +585,7 @@ fi
 EXPORT_PLAN=$(printf '%s' "${EXPORT_PLAN_RAW}" | sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')
 
 if [ "${EXPORT_PLAN_EXIT}" -ne 0 ]; then
-  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier — the state assertion above discriminates: an sgr- shaped attributes.Id there means the PROVIDER recorded it and the gap is the COMPOSITE_PHYSICAL_ID_IDENTIFIERS resolution in src/cli/commands/export.ts; a missing or non-sgr Id means the provider did not record it (issue #1761). If the failure names some OTHER type, an unregistered composite identifier is aborting the whole plan before the ingress rows are reached — that is not a #1761 regression. Full output:" >&2
+  echo "FAIL: cdkd export --dry-run exited ${EXPORT_PLAN_EXIT} for ${EXPORT_STACK}. If the failure names AWS::EC2::SecurityGroupIngress, cdkd could not resolve the rule's CloudFormation identifier — the state assertion above discriminates: an sgr- shaped attributes.Id there means the PROVIDER recorded it and the gap is the COMPOSITE_PHYSICAL_ID_IDENTIFIERS resolution in src/cli/commands/export/composite-physical-id.ts; a missing or non-sgr Id means the provider did not record it (issue #1761). If the failure names some OTHER type, an unregistered composite identifier is aborting the whole plan before the ingress rows are reached — that is not a #1761 regression. Full output:" >&2
   printf '%s\n' "${EXPORT_PLAN}" >&2
   exit 1
 fi

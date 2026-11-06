@@ -1041,6 +1041,11 @@ describe('runPerStackImportLoop (issue #464 PR B2) — parent + leaf', () => {
       bucket: STATE_BUCKET,
       stackName: 'Root__nested__Child',
     });
+    // Its transient upload is cleaned up exactly once, by the loop's
+    // `finally` (the cleanup is pushed inside the per-stack phases and drained
+    // by `runPerStackImportLoop`, so the two must share one list).
+    const successUpload = await uploadCfnTemplateMock.mock.results[0]!.value;
+    expect(successUpload.cleanup).toHaveBeenCalledTimes(1);
     // GetTemplate was called for the child stack post-IMPORT.
     expect(calls.filter((c) => c.name === 'GetTemplate')).toHaveLength(1);
 
@@ -1670,6 +1675,12 @@ describe('runPerStackImportLoop (issue #464 PR B2) — gates and failure semanti
       const matchingCalls = createChangeSetCallsByStack;
       expect(matchingCalls.get('Root-Child')).toBe(1);
       expect(matchingCalls.get('Root')).toBe(2);
+
+      // The child template uploaded for the failed adoption is still cleaned
+      // up, exactly once, on the failure path.
+      expect(uploadCfnTemplateMock).toHaveBeenCalledTimes(1);
+      const failedUpload = await uploadCfnTemplateMock.mock.results[0]!.value;
+      expect(failedUpload.cleanup).toHaveBeenCalledTimes(1);
 
       // cdkd state preserved across the entire tree (neither leaf nor
       // root state deleted; user re-runs after fixing the adoption cause).

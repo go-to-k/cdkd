@@ -3,6 +3,7 @@ description: cdkd import / export layout (modes, CFn migration, identifier resol
 paths:
   - 'src/cli/commands/import.ts'
   - 'src/cli/commands/export.ts'
+  - 'src/cli/commands/export/**'
   - 'src/cli/yaml-cfn.ts'
 ---
 
@@ -25,6 +26,7 @@ Rest of the CLI: [layout-cli.md](layout-cli.md). Index: [code-layout.md](code-la
 
 ## `cdkd export`
 
+- **Module layout.** `export.ts` holds `createExportCommand` and re-exports every public symbol, so callers and tests import from it alone; the code lives in `export/*.ts`: `command.ts` (`exportCommand`), `command-helpers.ts`, `plan-types.ts`, `render.ts`, `stack-tree.ts`, `import-plan.ts`, `type-schema.ts` (`DescribeType`), `composite-id-splitters.ts` + `composite-id-shapes.ts`, `composite-physical-id.ts`, `sg-ingress-rule-id.ts`, `pre-delete.ts`, `parameters.ts`, `template-overlay.ts`, `drift-baseline.ts`, `changeset.ts`, and `per-stack-loop.ts` + `per-stack-phases.ts` (the nested loop's pre-flight and its per-stack IMPORT phases). Source fences read the whole set through `tests/unit/cli/_export-source.ts`.
 - Ends in an IMPORT changeset and DELETES cdkd state, all-or-nothing; `buildImportPlan` and its `blocked` hard-fail run BEFORE `acquireLock`.
 - **Blocked**: properties holding the mask `***` OUTSIDE the record's `noEchoLeaves` (a `NoEcho` position is let through, unless the IAM policy pre-delete reads it); a nested child parameter resolving to the mask (refused, never defaulted); a RESOLVED import identifier that would be, or embeds, the mask, checked at the identifier choke point and NOT as a whole-bag `attributes` test (`CloudControlProvider.import` masks writable keys by design); a never-importable type (`Custom::*`, `AWS::CloudFormation::CustomResource`); a resource absent from state ([#2274](https://github.com/go-to-k/cdkd/issues/2274)).
 - Identifiers come from `DescribeType`. A `COMPOSITE_PHYSICAL_ID_IDENTIFIERS` type resolves from state `attributes` BEFORE the field-count branch with an EMPTY `propertiesOverlay`, an unrecorded value BLOCKING; `COMPOSITE_ID_SPLITTERS` entries shape-bind BOTH segments; a live backfill must match EXACTLY ONCE ([#1659](https://github.com/go-to-k/cdkd/issues/1659)).

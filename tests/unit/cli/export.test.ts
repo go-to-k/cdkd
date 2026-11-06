@@ -42,6 +42,7 @@ import {
   IntrinsicFunctionResolver,
   type ResolverContext,
 } from '../../../src/deployment/intrinsic-function-resolver.js';
+import { readExportSource } from './_export-source.js';
 
 describe('refuseTransientContextIfUnsafe', () => {
   it('passes through when no context overrides are supplied', () => {
@@ -2920,7 +2921,6 @@ describe('reportDriftBaselineGaps', () => {
   });
 
   it('the unreadable-bag warning carries the account flags it is handed, and none without them', async () => {
-    const { readFileSync } = await import('node:fs');
     const run = (recovery?: { profile: string; stateBucket: string; statePrefix: string }) => {
       const logger = makeLogger();
       reportDriftBaselineGaps(
@@ -2940,10 +2940,7 @@ describe('reportDriftBaselineGaps', () => {
     ).toBe(true);
     expect(run().endsWith('cdkd state show S --stack-region us-east-1 --json')).toBe(true);
     // Both command call sites hand over the command's own context.
-    const source = readFileSync(
-      new URL('../../../src/cli/commands/export.ts', import.meta.url),
-      'utf8'
-    );
+    const source = readExportSource();
     const calls = source.split('reportDriftBaselineGaps(').slice(1);
     // The definition plus two call sites.
     expect(calls).toHaveLength(3);
@@ -4594,12 +4591,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
    * the same trust boundary and have their own case below (go-to-k/cdkd#3375).
    */
   it('renders no record-, template- or CLI-derived name RAW in any message (go-to-k/cdkd#3328, go-to-k/cdkd#3371)', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const source = readFileSync(
-      fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
-      'utf-8'
-    );
+    const source = readExportSource();
 
     // Derived from the CODE in BOTH directions: the receivers this file reads a
     // name off, AND the property names that name is CARRIED under. The minted
@@ -4801,12 +4793,7 @@ describe('buildCdkdStateStackTree (issue #464 PR B1)', () => {
    * value but gives it no boundary.
    */
   it('renders no record BODY value without a boundary in any message (go-to-k/cdkd#3375)', async () => {
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const source = readFileSync(
-      fileURLToPath(new URL('../../../src/cli/commands/export.ts', import.meta.url)),
-      'utf-8'
-    );
+    const source = readExportSource();
     // One regex PER BRANCH, each with its own floor where the tree has sites,
     // so one broken branch cannot hide behind another's matches
     // (go-to-k/cdkd#3910). `attributes[`, `resourceIdentifier` and
