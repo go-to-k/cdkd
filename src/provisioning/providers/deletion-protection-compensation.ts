@@ -517,9 +517,10 @@ function isResourceNotFoundException(error: unknown): boolean {
 /**
  * The {@link ProtectionGuardSite} for an `AWS::Logs::LogGroup`.
  *
- * Built here rather than in `logs-loggroup-provider.ts`, whose LogGroupClass
- * refusal pins its own `put-log-group-deletion-protection` spelling as UNIQUE
- * in that file (`logs-loggroup-provider-class-guard.test.ts`).
+ * Built here rather than in `logs-loggroup-provider.ts` or its companion
+ * `logs-loggroup/` files, whose LogGroupClass refusal pins its own
+ * `put-log-group-deletion-protection` spelling as UNIQUE across them
+ * (`logs-loggroup-provider-class-guard.test.ts`).
  */
 export function logGroupProtectionSite(
   physicalId: string,

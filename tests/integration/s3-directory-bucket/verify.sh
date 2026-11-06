@@ -47,7 +47,7 @@
 # Discrimination: revert the `maskSecrets` this PR threads (destroy-runner.ts
 # for 5a, rollback-executor/replay-orphan-delete.ts for 5b,
 # deploy-engine/delete.ts for 5c) or src/provisioning/providers/
-# s3-directory-bucket-provider.ts ALONE and the matching sub-phase fails "the
+# s3-directory-bucket/delete.ts ALONE and the matching sub-phase fails "the
 # refusal prints an 'aws s3 rm' command" (not yet measured on real AWS).
 #
 # Required env vars:
