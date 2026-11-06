@@ -112,9 +112,9 @@ export function isCommentLine(text: string): boolean {
  * scheme and hid the read after it — on a surface whose URLs are built exactly
  * that way. The scan tracks `'`, `"` and `` ` `` (with backslash escapes) on
  * ONE line; a template's `${...}` stays inside the string, so a comment there
- * survives as code, which can only ADD a site, never hide one. A regex literal
- * holding a lone quote would desynchronise it the same way; none is on the
- * surface. String CONTENTS are kept: a token spelled inside a string is still
+ * survives as code — it adds a site, or decides one if it names a verdict
+ * token (`ignoreAssumedRole: true`). A regex literal holding `//` or a lone
+ * quote desynchronises it the same way; none is on the surface. String CONTENTS are kept: a token spelled inside a string is still
  * not modelled, and comments are, because they are where an author explains
  * the very decision being asserted.
  */
