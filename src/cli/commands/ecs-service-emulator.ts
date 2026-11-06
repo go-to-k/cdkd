@@ -6,7 +6,7 @@
  * registry + shared docker network + SIGINT cleanup + state-provider
  * dispatch all live in one upstream implementation. `addCommonEcsServiceOptions`
  * is the shared option-block factory; `addAlbSpecificOptions` is the ALB-only
- * option-block factory (`--lb-port` / `--tls` / `--tls-cert` / `--tls-key` /
+ * option-block factory (`--lb-port` / `--assume-host` / `--tls` / `--tls-cert` / `--tls-key` /
  * `--no-verify-auth` / `--bearer-token` / `--watch`); `addStartServiceSpecificOptions`
  * is the start-service-only option-block factory (`--host-port` / `--watch`);
  * `albStrategy` / `resolveAlbTarget` / `parseLbPortOverrides` are the ALB

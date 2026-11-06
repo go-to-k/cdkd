@@ -51,6 +51,7 @@ describe('createLocalStartCloudFrontCommand', () => {
     expect(longs).toContain('--tls-cert');
     expect(longs).toContain('--tls-key');
     expect(longs).toContain('--watch');
+    expect(longs).toContain('--env-vars');
   });
 
   it("inherits cdk-local's CFn state-source flags (Function URL + deployed-S3 origins, #380)", () => {
