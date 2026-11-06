@@ -13,6 +13,8 @@ Minimal EC2 Instance deployment example for cdkd.
 - **KMS Key** - customer managed key for an EBS data volume (issue #5445)
 - **IPv6 subnet** - an Amazon-provided IPv6 /56 on the VPC (`AWS::EC2::VPCCidrBlock`) and a subnet
   holding its first /64, with two t3.nano instances (issue #5630)
+- **Launch template** - a t3.nano instance launched from an `AWS::EC2::LaunchTemplate`, with two
+  1 GiB gp3 `AWS::EC2::Volume`s for its `Volumes` property (issue #5630)
 
 ## Demonstrates
 
@@ -44,6 +46,14 @@ Minimal EC2 Instance deployment example for cdkd.
   (`CDKD_TEST_DNS_5630=flag`) turns the A record on alone, in place with no stop, and Phase 1j
   (`=hostname`) changes only `HostnameType`, which stops and starts the instance on its own. And
   `Ipv6AddressCount` / `Ipv6Addresses` on the two instances in the IPv6 subnet.
+- `LaunchTemplate` and `Volumes` (issue #5630): the launch-template instance declares no image or
+  type of its own and must carry the template's instance tag. The `--no-wait` Phase 0 create attaches
+  its volume at `/dev/sdf` (it waits for `running`, which attaching needs), and Phase 1h swaps the
+  entry for the second volume at `/dev/sdg`, which, as in CloudFormation, detaches and attaches on
+  the same instance. Phase 1i then moves that volume to `/dev/sdh` (a `Device` change: the same
+  volume detached and re-attached). Phase 1k removes the `Volumes` property and the second volume in
+  one deploy: that volume is detached from the same instance before it is deleted, and neither volume
+  remains attached.
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.

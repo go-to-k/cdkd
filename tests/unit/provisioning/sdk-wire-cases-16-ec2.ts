@@ -164,6 +164,38 @@ const INSTANCE_THROWS: Record<string, Throw> = {
   },
 };
 
+/**
+ * go-to-k/cdkd#5630: beside a LaunchTemplate the image may come from the
+ * template, so a launch without ImageId goes out; a LaunchTemplate naming
+ * neither an id nor a name is refused before RunInstances (EC2 refuses it).
+ */
+const { 'create:ImageId': _imageIdRequired, ...INSTANCE_THROWS_WITH_LT } = INSTANCE_THROWS;
+const LT_UNNAMED = (member: string): Record<string, Throw> => ({
+  [`create:LaunchTemplate.${member}`]: {
+    why: 'a LaunchTemplate naming neither LaunchTemplateId nor LaunchTemplateName is refused by EC2, so the launch refuses it before RunInstances (go-to-k/cdkd#5630)',
+    says: /LaunchTemplate must name a LaunchTemplateId or a LaunchTemplateName/,
+  },
+});
+
+/**
+ * go-to-k/cdkd#5630: the schema requires Device and VolumeId in each Volumes
+ * entry; a list missing one is refused before any call (on an update too: read
+ * as empty it would detach every volume the record lists).
+ */
+const VOLUMES_MEMBER_REQUIRED: Record<string, Throw> = Object.fromEntries(
+  ['create', 'update-add', 'update-remove'].flatMap((d) =>
+    [0, 1].flatMap((i) =>
+      ['Device', 'VolumeId'].map((m) => [
+        `${d}:Volumes.${i}.${m}`,
+        {
+          why: 'the schema requires Device and VolumeId in each Volumes entry; a list missing one is refused before any call (instanceVolumesRefusal, go-to-k/cdkd#5630)',
+          says: new RegExp(`Volumes\\[${i}\\]\\.${m} is required`),
+        },
+      ])
+    )
+  )
+);
+
 const INSTANCE_KEPT = (member: string): string =>
   `kept on removal: CloudFormation leaves a removed ${member} as it is (real CloudFormation A/B, #1160), so a removed one sends nothing (${SRC}:8110-8115)`;
 
@@ -324,6 +356,12 @@ const INSTANCE_CASE: TypeCase = tc(
             EnableResourceNameDnsARecord: true,
             EnableResourceNameDnsAAAARecord: false,
           },
+          // go-to-k/cdkd#5630.
+          LaunchTemplate: { LaunchTemplateId: 'lt-1', Version: '3' },
+          Volumes: [
+            { Device: '/dev/sdf', VolumeId: 'vol-1' },
+            { Device: '/dev/sdg', VolumeId: 'vol-2' },
+          ],
         },
         variants: {
           UserData: 'ZWNobyAy',
@@ -332,7 +370,9 @@ const INSTANCE_CASE: TypeCase = tc(
         },
         expectedRemovalThrows: {
           ...TAG_THROWS(ALL, 2),
-          ...INSTANCE_THROWS,
+          ...INSTANCE_THROWS_WITH_LT,
+          ...LT_UNNAMED('LaunchTemplateId'),
+          ...VOLUMES_MEMBER_REQUIRED,
           ...DNS_THROWS,
           'update-remove:DisableApiTermination': {
             why: `CloudFormation fails an update that removes DisableApiTermination from an existing instance (measured, #1160), so update() refuses it before any call (guardTerminationProtectionRemoval, ${SRC}:8088-8093)`,
@@ -360,9 +400,11 @@ const INSTANCE_CASE: TypeCase = tc(
           SecurityGroups: ['default', 'web'],
           // go-to-k/cdkd#5630.
           Ipv6Addresses: [{ Ipv6Address: '2001:db8::7' }],
+          LaunchTemplate: { LaunchTemplateName: 'lt-name', Version: '$Latest' },
         },
         expectedRemovalThrows: {
-          ...INSTANCE_THROWS,
+          ...INSTANCE_THROWS_WITH_LT,
+          ...LT_UNNAMED('LaunchTemplateName'),
           'create:Ipv6Addresses.0.Ipv6Address': {
             why: 'the schema requires Ipv6Address in each Ipv6Addresses entry; a launch without it would drop an address the template declared, so it is refused before RunInstances (go-to-k/cdkd#5630)',
             says: /Ipv6Addresses\[0\]\.Ipv6Address is required/,
@@ -414,6 +456,29 @@ const INSTANCE_CASE: TypeCase = tc(
       arm: (_id, bag) =>
         setOutputOverrides({
           RunInstancesCommand: () => ({ Instances: [{ InstanceId: 'i-1' }] }),
+          // go-to-k/cdkd#5630: a volume reads attached at the device of its
+          // last AttachVolume, and unattached after a DetachVolume (or none).
+          DescribeVolumesCommand: (input) => {
+            const volumeId = (input['VolumeIds'] as string[] | undefined)?.[0];
+            const last = wire
+              .map((line) => {
+                const [, , , , , body] = JSON.parse(line) as unknown[];
+                return new URLSearchParams(typeof body === 'string' ? body : '');
+              })
+              .filter((p) => p.get('VolumeId') === volumeId)
+              .at(-1);
+            const attached = last?.get('Action') === 'AttachVolume';
+            return {
+              Volumes: [
+                {
+                  VolumeId: volumeId,
+                  Attachments: attached
+                    ? [{ InstanceId: 'i-1', Device: last?.get('Device'), State: 'attached' }]
+                    : [],
+                },
+              ],
+            };
+          },
           // The VPC's default group, which a removed SecurityGroupIds puts in place.
           DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [{ GroupId: 'sg-default' }] }),
           // The profile association: present once the instance has a profile,

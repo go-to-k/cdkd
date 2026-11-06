@@ -112,6 +112,9 @@ import {
   type ShutdownBehavior,
   type HostnameType,
   type PrivateDnsNameOptionsRequest,
+  type LaunchTemplateSpecification,
+  AttachVolumeCommand,
+  DetachVolumeCommand,
   type NatGatewayAddress,
   type NatGateway,
   AssociateNatGatewayAddressCommand,
@@ -289,6 +292,17 @@ const VPN_GATEWAY_ATTACHMENT_WAIT_MS = 10 * 60 * 1000;
 const INSTANCE_STATE_WAIT_CAP_MS = 15 * 60 * 1000;
 const INSTANCE_STATE_POLL_MS = 5000;
 /**
+ * go-to-k/cdkd#5630: the attach / detach waits of `AWS::EC2::Instance
+ * Volumes`, capped like the stop / start waits outside a resource deadline.
+ * CloudFormation's own attach and detach updates took 10-20 s (measured).
+ */
+const VOLUME_ATTACHMENT_WAIT_CAP_MS = 10 * 60 * 1000;
+const VOLUME_ATTACHMENT_POLL_MS = 2000;
+/** Consecutive reads with no attachment after AttachVolume that fail the wait. */
+const VOLUME_ATTACHMENT_NONE_READS = 15;
+/** `DescribeVolumes`'s answer for a volume id EC2 no longer lists. */
+const VOLUME_NOT_FOUND_NAMES: ReadonlySet<string> = new Set(['InvalidVolume.NotFound']);
+/**
  * Consecutive `stopped` reads after a StartInstances that count as AWS undoing
  * the start (issue #5446): StartInstances answers `pending` at once, so a
  * `stopped` that outlives three polls is not a lagging read.
@@ -349,6 +363,11 @@ interface InstanceMemberPlan {
     EnableResourceNameDnsARecord?: boolean;
     EnableResourceNameDnsAAAARecord?: boolean;
   };
+  /**
+   * go-to-k/cdkd#5630: the `Volumes` entries to detach, then attach, in
+   * place (a Device change is both).
+   */
+  volumes?: { detach: InstanceVolume[]; attach: InstanceVolume[] };
 }
 
 /**
@@ -1230,7 +1249,106 @@ const INSTANCE_CREATE_ONLY_SENT = [
   // go-to-k/cdkd#5630: create-only in the schema.
   'Ipv6AddressCount',
   'Ipv6Addresses',
+  // go-to-k/cdkd#5630: create-only in the schema; CloudFormation measured
+  // (us-east-1, 2026-11-06): a Version change creates a new instance.
+  'LaunchTemplate',
 ];
+
+/**
+ * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance
+ * LaunchTemplate`, so the launch never drops the template it names. EC2
+ * refuses a specification naming neither an id nor a name.
+ */
+function instanceLaunchTemplateRefusal(value: unknown, resourceType: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const path = `${resourceType}.LaunchTemplate`;
+  const refusal =
+    configStringRefusal(value, 'LaunchTemplateId', '', path) ??
+    configStringRefusal(value, 'LaunchTemplateName', '', path) ??
+    configStringRefusal(value, 'Version', '', path, { coerceNumber: true });
+  if (refusal !== undefined) return refusal;
+  const block = value as Record<string, unknown>;
+  const named = (key: string): boolean => typeof block[key] === 'string' && block[key] !== '';
+  if (!named('LaunchTemplateId') && !named('LaunchTemplateName')) {
+    return `${path} must name a LaunchTemplateId or a LaunchTemplateName`;
+  }
+  return undefined;
+}
+
+/**
+ * go-to-k/cdkd#5630: `LaunchTemplate` as RunInstances takes it (the member
+ * names match; a numeric Version is sent as the string EC2 takes), or
+ * `undefined` for an absent block. Call it only after
+ * {@link instanceLaunchTemplateRefusal} passed.
+ */
+function launchTemplateRequest(value: unknown): LaunchTemplateSpecification | undefined {
+  if (value === undefined || value === null) return undefined;
+  const block = value as Record<string, unknown>;
+  const text = (key: string): string | undefined => {
+    const v = block[key];
+    if (typeof v === 'number') return String(v);
+    return typeof v === 'string' && v !== '' ? v : undefined;
+  };
+  const id = text('LaunchTemplateId');
+  const name = text('LaunchTemplateName');
+  const version = text('Version');
+  return {
+    ...(id !== undefined && { LaunchTemplateId: id }),
+    ...(name !== undefined && { LaunchTemplateName: name }),
+    ...(version !== undefined && { Version: version }),
+  };
+}
+
+/** go-to-k/cdkd#5630: one `AWS::EC2::Instance Volumes` entry. */
+interface InstanceVolume {
+  Device: string;
+  VolumeId: string;
+}
+
+/**
+ * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance Volumes`
+ * (a list of `{ Device, VolumeId }`, both required by the schema). It runs on
+ * every path, a rollback replay too: the update detaches what the desired list
+ * lacks, so a list read as empty would detach every volume.
+ */
+function instanceVolumesRefusal(value: unknown, resourceType: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    // The shape only, never the value: a template string may be a resolved secret.
+    const shape = typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+    return `${resourceType}.Volumes must be a list of { Device, VolumeId } entries (got ${shape})`;
+  }
+  for (const [i, item] of (value as unknown[]).entries()) {
+    const path = `${resourceType}.Volumes[${i}]`;
+    if (item === undefined || item === null) {
+      return `${path} must be an object (got ${item === null ? 'null' : 'undefined'})`;
+    }
+    for (const key of ['Device', 'VolumeId']) {
+      const refusal = configStringRefusal(item, key, '', path);
+      if (refusal !== undefined) return refusal;
+      const member = (item as Record<string, unknown>)[key];
+      if (typeof member !== 'string' || member === '') return `${path}.${key} is required`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * go-to-k/cdkd#5630: the `Volumes` entries, or `[]` for an absent list. Call it
+ * only on a value {@link instanceVolumesRefusal} passed.
+ */
+function instanceVolumeEntries(value: unknown): InstanceVolume[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((v) => {
+    const entry = v as Record<string, unknown>;
+    return { Device: entry['Device'] as string, VolumeId: entry['VolumeId'] as string };
+  });
+}
+
+/** Whether `list` holds the same `{ Device, VolumeId }` pair as `entry`. */
+function holdsVolume(list: readonly InstanceVolume[], entry: InstanceVolume): boolean {
+  return list.some((v) => v.Device === entry.Device && v.VolumeId === entry.VolumeId);
+}
 
 /**
  * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance
@@ -1324,6 +1442,12 @@ function foldCreateOnlySent(key: string, value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(hibernation).map(([k, v]) => [k, coerceCfnBoolean(v) ?? v])
     );
+  }
+  if (key === 'LaunchTemplate') {
+    // go-to-k/cdkd#5630: a numeric Version is sent as its string.
+    const template = asRecord(value);
+    if (template === undefined || typeof template['Version'] !== 'number') return value;
+    return { ...template, Version: String(template['Version']) };
   }
   return value;
 }
@@ -1613,6 +1737,11 @@ export class EC2Provider implements ResourceProvider {
         'Ipv6AddressCount',
         'Ipv6Addresses',
         'PrivateDnsNameOptions',
+        // go-to-k/cdkd#5630: `LaunchTemplate` is a RunInstances input
+        // (create-only); `Volumes` are attached after the launch and
+        // attached / detached in place on update (AttachVolume / DetachVolume).
+        'LaunchTemplate',
+        'Volumes',
       ]),
     ],
     ['AWS::EC2::NetworkAcl', new Set(['VpcId', 'Tags'])],
@@ -8654,8 +8783,11 @@ export class EC2Provider implements ResourceProvider {
     // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
     const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
 
-    const imageId = properties['ImageId'] as string;
-    if (!imageId) {
+    // go-to-k/cdkd#5630: a LaunchTemplate can supply the image and the
+    // instance type, so neither is required nor defaulted beside one.
+    const fromLaunchTemplate = properties['LaunchTemplate'] != null;
+    const imageId = properties['ImageId'] as string | undefined;
+    if (!imageId && !fromLaunchTemplate) {
       throw new ProvisioningError(
         `ImageId is required for EC2 Instance ${logicalId}`,
         resourceType,
@@ -8665,12 +8797,15 @@ export class EC2Provider implements ResourceProvider {
 
     // No `coerceNumber`: an instance type is never a bare scalar, so a number
     // here is a template bug rather than YAML's scalar coercion (issue #1513).
-    const instanceType = requireConfigString(
-      properties['InstanceType'],
-      't3.micro',
-      'AWS::EC2::Instance InstanceType',
-      replayWarn(this.logger, context)
-    );
+    const instanceType =
+      fromLaunchTemplate && properties['InstanceType'] === undefined
+        ? undefined
+        : requireConfigString(
+            properties['InstanceType'],
+            't3.micro',
+            'AWS::EC2::Instance InstanceType',
+            replayWarn(this.logger, context)
+          );
 
     // Built before any AWS call: it refuses an `Ebs.Encrypted` it cannot read
     // as a boolean (issue #5445), which must stop the create, not launch an
@@ -8686,6 +8821,9 @@ export class EC2Provider implements ResourceProvider {
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // terminate the instance this call launched.
     let leftBehindId: string | undefined;
+    // go-to-k/cdkd#5630: an AttachVolume was accepted, so the wiring cleanup
+    // waits for the instance to terminate (see there).
+    let volumeAttachIssued = false;
     try {
       const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
       const securityGroups = properties['SecurityGroups'] as string[] | undefined;
@@ -8754,8 +8892,8 @@ export class EC2Provider implements ResourceProvider {
                   : TagSpecifications,
               }),
               ClientToken: runInstancesToken.value,
-              ImageId: imageId,
-              InstanceType: instanceType as _InstanceType,
+              ...(imageId && { ImageId: imageId }),
+              ...(instanceType !== undefined && { InstanceType: instanceType as _InstanceType }),
               KeyName: (properties['KeyName'] as string) ?? undefined,
               NetworkInterfaces: networkInterfaces,
               SecurityGroupIds: securityGroupIds ?? undefined,
@@ -8845,7 +8983,11 @@ export class EC2Provider implements ResourceProvider {
         // Same gating pattern as the NAT Gateway wait above. Before issue
         // #1277 this wait was unconditional, so `--no-wait` silently did
         // nothing on any stack containing an EC2 instance.
-        if (process.env['CDKD_NO_WAIT'] !== 'true') {
+        // go-to-k/cdkd#5630: declared `Volumes` wait under --no-wait too:
+        // AttachVolume refuses an instance that is still `pending`.
+        const volumes = instanceVolumeEntries(properties['Volumes']);
+        const waitsForRunning = process.env['CDKD_NO_WAIT'] !== 'true' || volumes.length > 0;
+        if (waitsForRunning) {
           this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
           await waitUntilInstanceRunning(
             // Poll cadence matters more here than on any other type, because an
@@ -8901,7 +9043,9 @@ export class EC2Provider implements ResourceProvider {
         // SILENTLY profile-less instance is a much worse surprise than an
         // unassigned IP, so this warns rather than staying quiet (issue #1279).
         if (iamInstanceProfile) {
-          if (process.env['CDKD_NO_WAIT'] === 'true') {
+          // go-to-k/cdkd#5630: an instance whose declared Volumes made it wait
+          // for `running` under --no-wait gets the check too.
+          if (!waitsForRunning) {
             // Both commands render through `pasteableAwsCommand` (issue
             // #3136): the profile is a template value, so it is sanitized and
             // shell-quoted, and a value that cannot be printed exactly
@@ -8955,6 +9099,16 @@ export class EC2Provider implements ResourceProvider {
           );
         }
 
+        // go-to-k/cdkd#5630: attach the declared volumes, as CloudFormation
+        // does once the instance runs. A volume another instance holds fails
+        // the create (CloudFormation fails it the same way, measured), and the
+        // wiring cleanup below terminates the new instance.
+        for (const volume of volumes) {
+          await this.attachInstanceVolume(logicalId, instanceId, resourceType, volume, () => {
+            volumeAttachIssued = true;
+          });
+        }
+
         // Describe instance to get attributes after running. Under
         // --no-wait the instance can still be `pending` here, so the public
         // address may not be assigned yet; `describedInstanceAttributes`
@@ -8970,9 +9124,16 @@ export class EC2Provider implements ResourceProvider {
         // (sendTaggedCreate's untagged re-send), so the volumes did not get
         // the tags either: apply them to the attached volumes now.
         if (propagateToVolumes && !tagsApplied && desiredTags.length > 0) {
+          // The declared Volumes are the template's own AWS::EC2::Volume
+          // resources, not volumes the launch created: CloudFormation
+          // propagates the tags to the latter only.
+          const declaredVolumeIds = new Set(volumes.map((v) => v.VolumeId));
           const volumeIds = (runningInstance?.BlockDeviceMappings ?? [])
             .map((m) => m.Ebs?.VolumeId)
-            .filter((id): id is string => typeof id === 'string' && id !== '');
+            .filter(
+              (id): id is string =>
+                typeof id === 'string' && id !== '' && !declaredVolumeIds.has(id)
+            );
           if (volumeIds.length === 0) {
             this.logger.warn(
               safeMsg`${logicalId}: PropagateTagsToVolumeOnCreation is set, but the launch went out without tags (the tagged RunInstances was refused) and DescribeInstances reported no attached volume for ${instanceId} yet (under --no-wait the instance may still be pending), so its volumes were not tagged. Tag them with ec2:CreateTags once they are attached.`
@@ -8997,6 +9158,18 @@ export class EC2Provider implements ResourceProvider {
       } catch (innerError) {
         try {
           await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
+          // go-to-k/cdkd#5630: a volume attached to the instance stays
+          // `in-use` until the instance is gone, and a rollback deleting that
+          // AWS::EC2::Volume next would be refused (VolumeInUse) and leave it
+          // behind. Termination detaches it, so wait for it here.
+          const terminated = volumeAttachIssued
+            ? await this.waitForFailedLaunchTerminated(logicalId, instanceId)
+            : undefined;
+          if (terminated !== undefined && terminated !== 'terminated') {
+            this.logger.warn(
+              safeMsg`Instance ${instanceId} of ${logicalId} was not seen terminated after its failed create (${terminated}); a volume it held may still be attached for a moment.`
+            );
+          }
           retractCreatedResource(logicalId, resourceType, instanceId);
           // Released only now, because only now is the instance this token
           // names actually going away: a retry reusing it would be handed back
@@ -9007,7 +9180,7 @@ export class EC2Provider implements ResourceProvider {
           // launching a second one beside an orphan nothing will ever reach.
           runInstancesToken.release();
           this.logger.debug(
-            `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (not waiting for terminated state)`
+            `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (${terminated === undefined ? 'not waiting for terminated state' : `termination wait: ${terminated}`})`
           );
         } catch (cleanupError) {
           leftBehindId = instanceId;
@@ -9519,6 +9692,10 @@ export class EC2Provider implements ResourceProvider {
    *    like `PrivateIpAddress`.
    *  - `PrivateDnsNameOptions` (go-to-k/cdkd#5630, measured 2026-11-04): see
    *    `planPrivateDnsNameOptions`; a HostnameType change stops and starts.
+   *  - `LaunchTemplate` (go-to-k/cdkd#5630, measured 2026-11-06): create-only;
+   *    a Version change creates a new instance.
+   *  - `Volumes` (go-to-k/cdkd#5630, measured 2026-11-06): attached and
+   *    detached in place; see `planInstanceVolumes`.
    *
    * A member is CHANGED per the engine's `changedProperties` when it is set
    * (a redacted state value cannot be compared to a resolved one), else per
@@ -9876,7 +10053,74 @@ export class EC2Provider implements ResourceProvider {
       if (flips.length > 0) plan.deleteOnTermination = flips;
     }
 
+    this.planInstanceVolumes(
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      plan,
+      changed
+    );
+
     return plan;
+  }
+
+  /**
+   * go-to-k/cdkd#5630: plan a `Volumes` change. What CloudFormation does,
+   * MEASURED (us-east-1, 2026-11-06, a t3.nano): adding an entry attaches the
+   * volume, removing one detaches it, a Device change detaches the volume and
+   * attaches it at the new device, and removing the property detaches every
+   * volume it listed, all on the same running instance. Entries compare as
+   * `{ Device, VolumeId }` pairs, in any order.
+   *
+   * A malformed desired list is refused on every path, a rollback replay too:
+   * read as empty it would detach every volume the record lists. A malformed
+   * RECORDED list only hides what to detach, so the declared volumes are
+   * attached (an attach finding the volume already here is a no-op) and none
+   * is detached, with a warning.
+   */
+  private planInstanceVolumes(
+    logicalId: string,
+    physicalId: string,
+    resourceType: string,
+    properties: Record<string, unknown>,
+    previousProperties: Record<string, unknown>,
+    plan: InstanceMemberPlan,
+    changed: (key: string, same: (a: unknown, b: unknown) => boolean) => boolean
+  ): void {
+    const refusal = instanceVolumesRefusal(properties['Volumes'], resourceType);
+    if (refusal !== undefined) {
+      throw refusedBeforeApplying(
+        new ProvisioningError(
+          `${refusal}. The instance ${logicalId} was not updated.`,
+          resourceType,
+          logicalId,
+          physicalId
+        )
+      );
+    }
+    const usable = (v: unknown): boolean => instanceVolumesRefusal(v, resourceType) === undefined;
+    const sameVolumes = (a: unknown, b: unknown): boolean => {
+      if (!usable(a) || !usable(b)) return false;
+      const left = instanceVolumeEntries(a);
+      const right = instanceVolumeEntries(b);
+      return left.every((v) => holdsVolume(right, v)) && right.every((v) => holdsVolume(left, v));
+    };
+    if (!changed('Volumes', sameVolumes)) return;
+    const desired = instanceVolumeEntries(properties['Volumes']);
+    const recorded = previousProperties['Volumes'];
+    let previous: InstanceVolume[] = [];
+    if (usable(recorded)) {
+      previous = instanceVolumeEntries(recorded);
+    } else {
+      this.logger.warn(
+        safeMsg`${logicalId} (${resourceType}): the previous record's Volumes is not a list of { Device, VolumeId } entries, so cdkd cannot tell which volumes to detach; it attaches the declared volumes and detaches none.`
+      );
+    }
+    const detach = previous.filter((v) => !holdsVolume(desired, v));
+    const attach = desired.filter((v) => !holdsVolume(previous, v));
+    if (detach.length > 0 || attach.length > 0) plan.volumes = { detach, attach };
   }
 
   /**
@@ -10186,6 +10430,19 @@ export class EC2Provider implements ResourceProvider {
       applied.push('the new PrivateDnsNameOptions');
     }
 
+    // go-to-k/cdkd#5630: detaches first, so a Device change can re-attach
+    // the same volume.
+    if (plan.volumes !== undefined) {
+      for (const volume of plan.volumes.detach) {
+        await this.detachInstanceVolume(logicalId, physicalId, resourceType, volume);
+        applied.push(`volume ${volume.VolumeId} detached from ${volume.Device}`);
+      }
+      for (const volume of plan.volumes.attach) {
+        await this.attachInstanceVolume(logicalId, physicalId, resourceType, volume);
+        applied.push(`volume ${volume.VolumeId} attached at ${volume.Device}`);
+      }
+    }
+
     const stopMembers = instanceStopMembers(plan);
     const stopWhat = stopMembers.join(' / ');
     if (stopMembers.length === 0) {
@@ -10396,6 +10653,204 @@ export class EC2Provider implements ResourceProvider {
           );
         }
         if (watch.isInterrupted()) throw watch.onInterrupted();
+        await this.sleep(
+          Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5630: the state of `volumeId`'s attachment to `instanceId`
+   * at `device` (`attaching`, `attached`, `detaching`), `'none'` when the
+   * volume has no such attachment, or `'gone'` when EC2 no longer lists it.
+   */
+  private async readVolumeAttachment(
+    instanceId: string,
+    volume: InstanceVolume,
+    anyDevice = false
+  ): Promise<string> {
+    let resp;
+    try {
+      resp = await this.ec2Client.send(
+        new DescribeVolumesCommand({ VolumeIds: [volume.VolumeId] })
+      );
+    } catch (error) {
+      if (isNamedError(error, VOLUME_NOT_FOUND_NAMES)) return 'gone';
+      throw error;
+    }
+    const found = resp.Volumes?.find((v) => v.VolumeId === volume.VolumeId);
+    if (found === undefined) return 'gone';
+    const attachment = (found.Attachments ?? []).find(
+      (a) => a.InstanceId === instanceId && (anyDevice || a.Device === volume.Device)
+    );
+    return attachment?.State ?? 'none';
+  }
+
+  /**
+   * go-to-k/cdkd#5630: attach one `Volumes` entry and wait for it to read
+   * `attached`. A refused AttachVolume whose volume already sits on this
+   * instance at this device (a retried attempt, a record that lacked the
+   * entry) is that attachment, not a failure.
+   */
+  private async attachInstanceVolume(
+    logicalId: string,
+    instanceId: string,
+    resourceType: string,
+    volume: InstanceVolume,
+    onAccepted?: () => void
+  ): Promise<void> {
+    try {
+      await this.ec2Client.send(
+        new AttachVolumeCommand({
+          InstanceId: instanceId,
+          VolumeId: volume.VolumeId,
+          Device: volume.Device,
+        })
+      );
+    } catch (error) {
+      const state = await this.readVolumeAttachment(instanceId, volume).catch(() => 'none');
+      if (state !== 'attaching' && state !== 'attached') {
+        // Only a 4xx answer to the FIRST attempt proves the attach did not
+        // happen. Anything else (a timeout, a reset, a 5xx) may have attached
+        // the volume with the read lagging, and AttachVolume takes no client
+        // token, so a 4xx from an SDK retry can answer an earlier attempt
+        // that attached it: all of those count as accepted.
+        const meta = (
+          error as { $metadata?: { httpStatusCode?: unknown; attempts?: unknown } } | null
+        )?.$metadata;
+        const status = meta?.httpStatusCode;
+        const retried = typeof meta?.attempts === 'number' && meta.attempts > 1;
+        if (retried || !(typeof status === 'number' && status >= 400 && status < 500)) {
+          onAccepted?.();
+        }
+        throw error;
+      }
+    }
+    onAccepted?.();
+    await this.waitForVolumeAttachment(logicalId, instanceId, resourceType, volume, 'attached');
+  }
+
+  /**
+   * go-to-k/cdkd#5630: detach one `Volumes` entry and wait until the
+   * attachment is gone. A volume no longer attached here (or deleted) is
+   * already detached.
+   */
+  private async detachInstanceVolume(
+    logicalId: string,
+    instanceId: string,
+    resourceType: string,
+    volume: InstanceVolume
+  ): Promise<void> {
+    try {
+      // No Device: a record whose Device went stale (the volume moved out of
+      // band) still detaches the volume from this instance, so the update
+      // converges on the declared device.
+      await this.ec2Client.send(
+        new DetachVolumeCommand({ InstanceId: instanceId, VolumeId: volume.VolumeId })
+      );
+    } catch (error) {
+      // Any device, like the call: a refused detach whose volume is still on
+      // this instance, at whatever device, did not happen.
+      const state = await this.readVolumeAttachment(instanceId, volume, true).catch(
+        () => 'attached'
+      );
+      if (state !== 'none' && state !== 'gone' && state !== 'detaching') throw error;
+    }
+    await this.waitForVolumeAttachment(logicalId, instanceId, resourceType, volume, 'detached');
+  }
+
+  /**
+   * go-to-k/cdkd#5630: poll DescribeVolumes until the attachment reads
+   * `attached`, or has gone (`detached`). Ctrl-C ends the wait with an
+   * `InterruptedWaitError`; the resource deadline, or
+   * {@link VOLUME_ATTACHMENT_WAIT_CAP_MS} outside one, ends it non-retryably.
+   */
+  private async waitForVolumeAttachment(
+    logicalId: string,
+    instanceId: string,
+    resourceType: string,
+    volume: InstanceVolume,
+    target: 'attached' | 'detached'
+  ): Promise<void> {
+    const watch = startInterruptWatch(`EC2 Instance ${logicalId} volume ${target} wait`);
+    const capAt = Date.now() + VOLUME_ATTACHMENT_WAIT_CAP_MS;
+    let last: string | undefined;
+    let noneReads = 0;
+    try {
+      for (;;) {
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        const remaining = Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now());
+        if (remaining <= 0) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): timed out waiting for volume ${volume.VolumeId} to be ${target} at ${volume.Device} on instance ${instanceId} (last attachment state: ${last ?? 'none reported'})`,
+              resourceType,
+              logicalId,
+              instanceId
+            )
+          );
+        }
+        last = await this.readVolumeAttachment(instanceId, volume, target === 'detached');
+        if (target === 'attached' && last === 'attached') return;
+        if (target === 'detached' && (last === 'none' || last === 'gone')) return;
+        // A read right after AttachVolume can lag it, so only a `none` that
+        // persists means the attachment did not happen.
+        noneReads = last === 'none' ? noneReads + 1 : 0;
+        if (
+          target === 'attached' &&
+          (last === 'gone' || noneReads >= VOLUME_ATTACHMENT_NONE_READS)
+        ) {
+          throw markNonRetryable(
+            new ProvisioningError(
+              `${logicalId} (${resourceType}): volume ${volume.VolumeId} is ${last === 'gone' ? 'no longer returned by DescribeVolumes' : `not attached at ${volume.Device}`} while cdkd waited for it to attach to instance ${instanceId}`,
+              resourceType,
+              logicalId,
+              instanceId
+            )
+          );
+        }
+        if (watch.isInterrupted()) throw watch.onInterrupted();
+        await this.sleep(
+          Math.max(0, Math.min(VOLUME_ATTACHMENT_POLL_MS, enclosingDeadlineRemainingMs()))
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5630: after a failed create terminated `instanceId`, poll
+   * until it reads `terminated` (or is no longer listed). It never throws: it
+   * runs inside the wiring cleanup, which re-throws the create's own error.
+   * It answers why it stopped early: the resource deadline or
+   * {@link INSTANCE_STATE_WAIT_CAP_MS}, a Ctrl-C (the latch stays set for the
+   * next wait), or a read that failed.
+   */
+  private async waitForFailedLaunchTerminated(
+    logicalId: string,
+    instanceId: string
+  ): Promise<string> {
+    const watch = startInterruptWatch(`EC2 Instance ${logicalId} termination wait`);
+    const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
+    try {
+      for (;;) {
+        if (watch.isInterrupted()) return 'interrupted';
+        if (Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now()) <= 0) {
+          return 'timed out';
+        }
+        let state: string | undefined;
+        try {
+          state = await this.readInstanceState(instanceId);
+        } catch (error) {
+          if (isNamedError(error, INSTANCE_NOT_FOUND_NAMES)) return 'terminated';
+          return `read failed: ${describeAwsFailure(error).detail}`;
+        }
+        if (state === 'terminated' || state === undefined) return 'terminated';
+        if (watch.isInterrupted()) return 'interrupted';
         await this.sleep(
           Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
         );
@@ -11002,7 +11457,8 @@ export class EC2Provider implements ResourceProvider {
    * / `Ipv6Addresses` are create-only; `PrivateDnsNameOptions` also changes in
    * place; `AdditionalInfo` is reserved by EC2, which refuses the launch
    * (`InvalidParameterValue: Bad property set`, measured), as it fails a
-   * CloudFormation stack. Member names
+   * CloudFormation stack. `LaunchTemplate` is create-only; a malformed
+   * `Volumes` (attached after the launch) is refused here too. Member names
    * match on both sides. A malformed value is refused before RunInstances, on a
    * rollback replay too: RunInstances rejects it every time, so the replay
    * could not succeed, and dropping it would launch an instance with CPU,
@@ -11021,6 +11477,7 @@ export class EC2Provider implements ResourceProvider {
     Ipv6AddressCount?: number;
     Ipv6Addresses?: Array<{ Ipv6Address: string }>;
     PrivateDnsNameOptions?: PrivateDnsNameOptionsRequest;
+    LaunchTemplate?: LaunchTemplateSpecification;
   } {
     const cpu = properties['CpuOptions'];
     const hibernation = properties['HibernationOptions'];
@@ -11042,7 +11499,11 @@ export class EC2Provider implements ResourceProvider {
       configStringRefusal(properties, 'AdditionalInfo', '', resourceType) ??
       configIntegerRefusal(properties, 'Ipv6AddressCount', resourceType, 0) ??
       instanceIpv6AddressesRefusal(properties['Ipv6Addresses'], resourceType) ??
-      privateDnsNameOptionsRefusal(properties['PrivateDnsNameOptions'], resourceType);
+      privateDnsNameOptionsRefusal(properties['PrivateDnsNameOptions'], resourceType) ??
+      // go-to-k/cdkd#5630: a launch template the launch would otherwise drop,
+      // and volumes the create would otherwise not attach.
+      instanceLaunchTemplateRefusal(properties['LaunchTemplate'], resourceType) ??
+      instanceVolumesRefusal(properties['Volumes'], resourceType);
     if (refusal !== undefined) {
       throw markNonRetryable(
         new ProvisioningError(
@@ -11086,6 +11547,8 @@ export class EC2Provider implements ResourceProvider {
     }
     const dnsOptions = privateDnsNameOptionsRequest(properties['PrivateDnsNameOptions']);
     if (dnsOptions !== undefined) out.PrivateDnsNameOptions = dnsOptions;
+    const launchTemplate = launchTemplateRequest(properties['LaunchTemplate']);
+    if (launchTemplate !== undefined) out.LaunchTemplate = launchTemplate;
     return out;
   }
 
@@ -12597,6 +13060,9 @@ export class EC2Provider implements ResourceProvider {
       // CloudFormation-side switch with no EC2 attribute to read back.
       // go-to-k/cdkd#5630: `AdditionalInfo`, `Ipv6AddressCount` and
       // `Ipv6Addresses` are launch inputs the schema declares write-only.
+      // go-to-k/cdkd#5630: DescribeInstances names a `LaunchTemplate` only
+      // through the `aws:ec2launchtemplate:*` tags (an id and a resolved
+      // version number, never a name or `$Latest`), so it is not read back.
       case 'AWS::EC2::Instance':
         return [
           'NetworkInterfaces',
@@ -12604,6 +13070,7 @@ export class EC2Provider implements ResourceProvider {
           'AdditionalInfo',
           'Ipv6AddressCount',
           'Ipv6Addresses',
+          'LaunchTemplate',
         ];
       // go-to-k/cdkd#5633: DescribeVpcs names no IPAM pool; the netmask is
       // read back from the CIDR instead. A `monitor` encryption control
@@ -13285,6 +13752,30 @@ export class EC2Provider implements ResourceProvider {
       blockMappings.push(out);
     }
     result['BlockDeviceMappings'] = blockMappings;
+
+    // Volumes (go-to-k/cdkd#5630): read for a bag that declares them, as the
+    // live attachments of the declared volume ids, in the declared order. A
+    // volume another construct attached (an `AWS::EC2::VolumeAttachment`) is
+    // not this property's, so it is left out.
+    if (
+      Array.isArray(properties?.['Volumes']) &&
+      instanceVolumesRefusal(properties['Volumes'], 'AWS::EC2::Instance') === undefined
+    ) {
+      const declaredIds = instanceVolumeEntries(properties['Volumes'])
+        .map((v) => v.VolumeId)
+        .filter((id) => typeof id === 'string');
+      const attached = (instance.BlockDeviceMappings ?? []).filter(
+        (m) =>
+          m.Ebs?.VolumeId !== undefined &&
+          m.DeviceName !== undefined &&
+          declaredIds.includes(m.Ebs.VolumeId)
+      );
+      result['Volumes'] = attached
+        .sort(
+          (a, b) => declaredIds.indexOf(a.Ebs!.VolumeId!) - declaredIds.indexOf(b.Ebs!.VolumeId!)
+        )
+        .map((m) => ({ Device: m.DeviceName!, VolumeId: m.Ebs!.VolumeId! }));
+    }
 
     // Tags: filter aws:* (CDK-internal metadata) and always emit (even as
     // []). Same pattern as every other tag-aware provider.

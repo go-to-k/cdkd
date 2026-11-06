@@ -82,6 +82,13 @@
 # place; Phase 1j changes HostnameType alone, with its own stop and start; a
 # PrivateDnsName reader must follow each name change), and two instances in an
 # IPv6 subnet launched with Ipv6AddressCount / Ipv6Addresses.
+# The fourth #5630 slice: an instance launched from a launch template (the
+# template's tag and `aws:ec2launchtemplate:id` must be on it) with a Volumes
+# entry attached by the --no-wait Phase 0 create; Phase 1h swaps the entry for
+# another volume at another device, on the same instance, and Phase 1i moves
+# that volume to a third device. Phase 1k removes the Volumes property and
+# volume B in one deploy (B detached and deleted; neither volume remains
+# attached).
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -172,6 +179,12 @@ PLACEMENT_GROUP_NAME=""
 # by the trap if state destroy cannot reach them.
 IPV6_COUNT_INSTANCE_ID=""
 IPV6_ADDRESS_INSTANCE_ID=""
+# Issue #5630 (fourth slice): the launch-template instance, its two volumes and
+# the template, swept by the trap if state destroy cannot reach them.
+LT_INSTANCE_ID=""
+LT_VOLUME_A_ID=""
+LT_VOLUME_B_ID=""
+LAUNCH_TEMPLATE_ID=""
 
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS instance"
@@ -284,6 +297,32 @@ cleanup() {
       --instance-ids "${v6_instance}" \
       --region "${REGION}" >/dev/null 2>&1 || true
   done
+  if [ -n "${LT_INSTANCE_ID:-}" ]; then
+    # Issue #5630: a volume refuses DeleteVolume while it is attached, so
+    # wait for the instance to terminate before the volumes go.
+    aws ec2 terminate-instances \
+      --instance-ids "${LT_INSTANCE_ID}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+    aws ec2 wait instance-terminated \
+      --instance-ids "${LT_INSTANCE_ID}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
+  for lt_volume in ${LT_VOLUME_A_ID:-} ${LT_VOLUME_B_ID:-}; do
+    # A volume the destroy already deleted answers not-found, the normal
+    # case. Any other refusal (still in-use after a terminate wait that timed
+    # out) leaves it behind, so say how to remove it.
+    lt_volume_out=$(aws ec2 delete-volume \
+      --volume-id "${lt_volume}" \
+      --region "${REGION}" 2>&1 >/dev/null || true)
+    if [ -n "${lt_volume_out}" ] && ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${lt_volume_out}"; then
+      echo "NOTE: issue #5630 -- could not delete volume ${lt_volume} ($(sanitize_aws_output "${lt_volume_out}")); remove it with: aws ec2 delete-volume --volume-id ${lt_volume} --region ${REGION}" >&2
+    fi
+  done
+  if [ -n "${LAUNCH_TEMPLATE_ID:-}" ]; then
+    aws ec2 delete-launch-template \
+      --launch-template-id "${LAUNCH_TEMPLATE_ID}" \
+      --region "${REGION}" >/dev/null 2>&1 || true
+  fi
   if [ -n "${PLACEMENT_GROUP_NAME:-}" ]; then
     # Issue #5630: the group refuses a delete while an instance is in it, so
     # wait for the main instance to terminate first. A group state destroy
@@ -507,6 +546,12 @@ PLACEMENT_GROUP_NAME=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.PlacementGroupNa
 # Issue #5630 (third slice): the IPv6-subnet instances, for the trap.
 IPV6_COUNT_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.Ipv6CountInstanceId // ""')
 IPV6_ADDRESS_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.Ipv6AddressInstanceId // ""')
+# Issue #5630 (fourth slice): the launch-template instance, its volumes and the
+# template, for the trap.
+LT_INSTANCE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtInstanceId // ""')
+LT_VOLUME_A_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtVolumeAId // ""')
+LT_VOLUME_B_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LtVolumeBId // ""')
+LAUNCH_TEMPLATE_ID=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.LaunchTemplateId // ""')
 # Issue #5445: the fixture CMK exists from this deploy on, so the trap's
 # schedule-key-deletion must be able to reach it from here too.
 EBS_KEY_ARN=$(echo "${NOWAIT_STATE}" | jq -r '.outputs.EbsKeyArn // ""')
@@ -959,7 +1004,9 @@ echo "    OK: CreditSpecification.CpuCredits == standard on AWS (CreditSpecifica
 # `Placement.AvailabilityZone`. Compare AWS against the value cdkd recorded in
 # state for THIS instance (the resolved template value) rather than a hardcoded
 # AZ, which would break the moment the fixture's VPC lands elsewhere.
-EXPECTED_AZ=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .value.properties.AvailabilityZone] | first // ""')
+# Read by logical id: other instances (LtInstance5630 takes its zone from its
+# subnet) declare no AvailabilityZone.
+EXPECTED_AZ=$(echo "${STATE}" | jq -r '.resources.Instance.properties.AvailabilityZone // ""')
 if [ -z "${EXPECTED_AZ}" ] || [ "${EXPECTED_AZ}" = "null" ]; then
   echo "FAIL: state records no AvailabilityZone for the instance — the template must emit it (issue #1276)" >&2
   echo "${STATE}" | jq '.resources'
@@ -1090,6 +1137,53 @@ if [ "${PROPAGATE_TOTAL}" != "2" ] || [ "${PROPAGATE_TAGGED}" != "2" ]; then
 fi
 echo "    OK: #5630 both volumes of ${PUBLIC_INSTANCE_ID} carry the propagated instance tag"
 
+# Issue #5630 (fourth slice): LtInstance5630 launched from LaunchTemplate5630
+# (it declares no ImageId / InstanceType of its own). EC2 tags an instance
+# launched from a template with `aws:ec2launchtemplate:id`, and gives it the
+# template's instance tag: neither exists when RunInstances dropped the
+# LaunchTemplate (which also fails the launch for want of an ImageId). Phase 0
+# created it under --no-wait, so the /dev/sdf attachment read here also proves
+# the declared Volumes made the create wait for `running` and attach (Phase 1
+# changes nothing on it).
+P1_LT_INSTANCE_ID=$(echo "${STATE}" | jq -r '.outputs.LtInstanceId // ""')
+LAUNCH_TEMPLATE_ID=$(echo "${STATE}" | jq -r '.outputs.LaunchTemplateId // ""')
+LT_VOLUME_A_ID=$(echo "${STATE}" | jq -r '.outputs.LtVolumeAId // ""')
+LT_VOLUME_B_ID=$(echo "${STATE}" | jq -r '.outputs.LtVolumeBId // ""')
+LT_INSTANCE_ID="${P1_LT_INSTANCE_ID}"
+case "${LT_INSTANCE_ID}|${LAUNCH_TEMPLATE_ID}|${LT_VOLUME_A_ID}|${LT_VOLUME_B_ID}" in
+  i-*"|"lt-*"|"vol-*"|"vol-*) ;;
+  *) echo "FAIL: issue #5630 -- outputs LtInstanceId/LaunchTemplateId/LtVolumeAId/LtVolumeBId are '${LT_INSTANCE_ID}|${LAUNCH_TEMPLATE_ID}|${LT_VOLUME_A_ID}|${LT_VOLUME_B_ID}'" >&2; exit 1 ;;
+esac
+LT_SUMMARY=$(aws ec2 describe-instances --instance-ids "${LT_INSTANCE_ID}" --region "${REGION}" \
+  --query 'Reservations[0].Instances[0].[InstanceType, Tags[?Key==`aws:ec2launchtemplate:id`].Value | [0], Tags[?Key==`Cdkd5630Lt`].Value | [0]]' \
+  --output text 2>&1) \
+  || LT_SUMMARY="<describe-failed: $(sanitize_aws_output "${LT_SUMMARY}")>"
+LT_SUMMARY=$(printf '%s' "${LT_SUMMARY}" | tr '\t' '|')
+if [ "${LT_SUMMARY}" != "t3.nano|${LAUNCH_TEMPLATE_ID}|from-template" ]; then
+  echo "FAIL: issue #5630 -- ${LT_INSTANCE_ID} reads InstanceType|aws:ec2launchtemplate:id|Cdkd5630Lt '${LT_SUMMARY}', expected 't3.nano|${LAUNCH_TEMPLATE_ID}|from-template'; the LaunchTemplate did not reach RunInstances" >&2
+  exit 1
+fi
+lt_volume_attachment() { # usage: lt_volume_attachment <volume-id> -> "<state>|<instance>|<device>|<attach state>"
+  local out
+  out=$(aws ec2 describe-volumes --volume-ids "$1" --region "${REGION}" \
+    --query 'Volumes[0].[State, Attachments[0].InstanceId, Attachments[0].Device, Attachments[0].State]' \
+    --output text) || return 1  # the CLI's own error stays on stderr
+  printf '%s' "${out}" | tr '\t' '|'
+}
+P1_VOL_A=$(lt_volume_attachment "${LT_VOLUME_A_ID}") || P1_VOL_A="<describe-failed>"
+P1_VOL_B=$(lt_volume_attachment "${LT_VOLUME_B_ID}") || P1_VOL_B="<describe-failed>"
+if [ "${P1_VOL_A}" != "in-use|${LT_INSTANCE_ID}|/dev/sdf|attached" ] || [ "${P1_VOL_B}" != "available|None|None|None" ]; then
+  echo "FAIL: issue #5630 -- volume A ${LT_VOLUME_A_ID} reads '${P1_VOL_A}' (expected in-use|${LT_INSTANCE_ID}|/dev/sdf|attached) and volume B ${LT_VOLUME_B_ID} '${P1_VOL_B}' (expected available|None|None|None); the declared Volumes entry was not attached" >&2
+  exit 1
+fi
+echo "    OK: #5630 ${LT_INSTANCE_ID} launched from ${LAUNCH_TEMPLATE_ID} (t3.nano, template tag) with volume ${LT_VOLUME_A_ID} attached at /dev/sdf"
+OBSERVED_LT_VOLUMES=$(echo "${STATE}" | jq -c '.resources.LtInstance5630.observedProperties.Volumes // "<absent>"')
+if [ "${OBSERVED_LT_VOLUMES}" != "[{\"Device\":\"/dev/sdf\",\"VolumeId\":\"${LT_VOLUME_A_ID}\"}]" ]; then
+  echo "FAIL: issue #5630 -- observedProperties.Volumes of LtInstance5630 is '${OBSERVED_LT_VOLUMES}', expected the /dev/sdf entry for ${LT_VOLUME_A_ID} (readCurrentState did not read Volumes back)" >&2
+  exit 1
+fi
+echo "    OK: #5630 observedProperties.Volumes recorded on LtInstance5630"
+
 # Issue #5630 (third slice): the deploy-time readback recorded the hostname
 # options in the instance's observedProperties, so the drift arm below compares
 # a real baseline under PrivateDnsNameOptions rather than an absent key.
@@ -1108,9 +1202,9 @@ set +e
 node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
 DRIFT_RC=$?
 set -e
-for lid in Instance PublicInstance; do
+for lid in Instance PublicInstance LtInstance5630; do
   COMPARED=$(jq --arg l "${lid}" '[(.[].clean[], .[].drifted[]) | select(.logicalId == $l)] | length' "${DRIFT_JSON}") || COMPARED="?"
-  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior|SourceDestCheck|Tenancy|PlacementGroupName|PrivateIpAddress|PrivateDnsNameOptions)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
+  BACKFILL_DRIFT=$(jq -r --arg l "${lid}" '[.[].drifted[] | select(.logicalId == $l) | .changes[].path | select(test("^(CpuOptions|HibernationOptions|InstanceInitiatedShutdownBehavior|SourceDestCheck|Tenancy|PlacementGroupName|PrivateIpAddress|PrivateDnsNameOptions|Volumes)(\\.|$)"))] | join(",")' "${DRIFT_JSON}") || BACKFILL_DRIFT="?"
   if [ "${COMPARED}" != "1" ] || [ -n "${BACKFILL_DRIFT}" ]; then
     echo "FAIL: issue #5630 -- cdkd drift on ${lid}: compared=${COMPARED} drifted paths under the backfilled properties='${BACKFILL_DRIFT}' (rc=${DRIFT_RC}):" >&2
     cat "${DRIFT_JSON}" >&2
@@ -1118,7 +1212,7 @@ for lid in Instance PublicInstance; do
   fi
 done
 rm -f "${DRIFT_JSON}"
-echo "    OK: #5630 both instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior / SourceDestCheck / Tenancy / PlacementGroupName / PrivateIpAddress / PrivateDnsNameOptions"
+echo "    OK: #5630 the three instances compared by cdkd drift, no drift under CpuOptions / HibernationOptions / InstanceInitiatedShutdownBehavior / SourceDestCheck / Tenancy / PlacementGroupName / PrivateIpAddress / PrivateDnsNameOptions / Volumes"
 
 # --- Phase 1b: the instance identity read (go-to-k/cdkd#4606) --------------
 # A successful deploy deletes a journaled failed-CREATE instance only when
@@ -1652,6 +1746,28 @@ case "${P1H_DNS_NAME}" in
   *) echo "FAIL: issue #5630 -- PrivateDnsName of ${INSTANCE_ID} is '${P1H_DNS_NAME}' after Phase 1h, expected the ip-name form ip-<address>.<domain>" >&2; exit 1 ;;
 esac
 echo "    OK: #5630 PrivateDnsNameOptions changed to ip-name/false in place on ${INSTANCE_ID} (${P1H_DNS_NAME})"
+# Issue #5630 (fourth slice): Phase 1h swapped LtInstance5630's Volumes entry
+# (volume A at /dev/sdf -> volume B at /dev/sdg). CloudFormation detaches A
+# and attaches B on the SAME instance (measured); before the wiring the entry
+# list was the Cloud Control route's, and an SDK-route drop would leave A
+# attached and B available.
+P1H_LT_INSTANCE_ID=$(echo "${P1H_STATE}" | jq -r '.outputs.LtInstanceId // ""')
+if [ "${P1H_LT_INSTANCE_ID}" != "${P1_LT_INSTANCE_ID}" ]; then
+  echo "FAIL: issue #5630 -- .outputs.LtInstanceId is '${P1H_LT_INSTANCE_ID}' after Phase 1h, expected the same instance ${P1_LT_INSTANCE_ID}; a Volumes change is in place" >&2
+  exit 1
+fi
+P1H_VOL_A=$(lt_volume_attachment "${LT_VOLUME_A_ID}") || P1H_VOL_A="<describe-failed>"
+P1H_VOL_B=$(lt_volume_attachment "${LT_VOLUME_B_ID}") || P1H_VOL_B="<describe-failed>"
+if [ "${P1H_VOL_A}" != "available|None|None|None" ] || [ "${P1H_VOL_B}" != "in-use|${LT_INSTANCE_ID}|/dev/sdg|attached" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1h volume A ${LT_VOLUME_A_ID} reads '${P1H_VOL_A}' (expected available|None|None|None) and volume B ${LT_VOLUME_B_ID} '${P1H_VOL_B}' (expected in-use|${LT_INSTANCE_ID}|/dev/sdg|attached)" >&2
+  exit 1
+fi
+P1H_LT_ROUTE=$(echo "${P1H_STATE}" | jq -r '.resources.LtInstance5630.provisionedBy // "sdk"')
+if [ "${P1H_LT_ROUTE}" != "sdk" ]; then
+  echo "FAIL: issue #5630 -- LtInstance5630 is provisionedBy '${P1H_LT_ROUTE}' after Phase 1h, expected sdk" >&2
+  exit 1
+fi
+echo "    OK: #5630 Volumes swap on ${LT_INSTANCE_ID}: ${LT_VOLUME_A_ID} detached, ${LT_VOLUME_B_ID} attached at /dev/sdg, same instance, SDK route"
 # The stop/start gives the instance (no Elastic IP) a new public address. The
 # update records it, so the `PublicIp` Output (Fn::GetAtt Instance.PublicIp)
 # must read the NEW live address, not the one the instance had before.
@@ -1751,6 +1867,18 @@ if [ -z "${P1I_T_BEFORE}" ] || [ "${P1I_T_AFTER}" != "${P1I_T_BEFORE}" ]; then
 fi
 echo "    OK: #5630 EnableResourceNameDnsARecord turned on in place on ${INSTANCE_ID} (no stop, LaunchTime ${P1I_T_AFTER})"
 
+# Issue #5630 (fourth slice): Phase 1i also moved volume B from /dev/sdg to
+# /dev/sdh on LtInstance5630. The same volume must be detached and then
+# re-attached (EC2 refuses the attach while the detach is still running), on
+# the same instance.
+P1I_LT_INSTANCE_ID=$(echo "${P1I_STATE}" | jq -r '.outputs.LtInstanceId // ""')
+P1I_VOL_B=$(lt_volume_attachment "${LT_VOLUME_B_ID}") || P1I_VOL_B="<describe-failed>"
+if [ "${P1I_LT_INSTANCE_ID}" != "${P1_LT_INSTANCE_ID}" ] || [ "${P1I_VOL_B}" != "in-use|${LT_INSTANCE_ID}|/dev/sdh|attached" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1i LtInstanceId is '${P1I_LT_INSTANCE_ID}' (expected ${P1_LT_INSTANCE_ID}) and volume B ${LT_VOLUME_B_ID} reads '${P1I_VOL_B}' (expected in-use|${LT_INSTANCE_ID}|/dev/sdh|attached); the Device change was not applied" >&2
+  exit 1
+fi
+echo "    OK: #5630 volume ${LT_VOLUME_B_ID} moved /dev/sdg -> /dev/sdh on the same instance ${LT_INSTANCE_ID}"
+
 # Phase 1j (issue #5630, third slice): ONLY HostnameType changes
 # (ip-name -> resource-name, the flag stays true), so PrivateDnsNameOptions
 # alone takes the stop and the start CloudFormation applies it with
@@ -1805,6 +1933,60 @@ if [ "${IPV6_COUNT_INSTANCE_ID}" != "${P1_IPV6_COUNT_INSTANCE_ID}" ] || [ "${IPV
   exit 1
 fi
 echo "    OK: #5630 the IPv6 instances were not replaced by the update phases"
+
+# Phase 1k (issue #5630, fourth slice): ONE deploy removes LtInstance5630's
+# Volumes property AND volume B (the volume it lists) from the template. As in
+# CloudFormation (measured), the removal detaches every listed volume on the
+# same instance; cdkd runs every update before any delete, so B's delete meets
+# a detached volume rather than VolumeInUse.
+echo "==> Phase 1k: remove the Volumes property and the volume it lists, in one deploy (issue #5630)"
+removal_deploy P1K_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed
+P1K_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5630 -- could not read the state after Phase 1k: $(sanitize_aws_output "${P1K_STATE}")" >&2
+  exit 1
+}
+P1K_LT=$(echo "${P1K_STATE}" | jq -r '[.outputs.LtInstanceId // "", (.resources.LtInstance5630.provisionedBy // "sdk"), (.resources.LtInstance5630.properties | has("Volumes") | tostring), (.resources | has("LtVolumeB5630") | tostring)] | join("|")')
+if [ "${P1K_LT}" != "${P1_LT_INSTANCE_ID}|sdk|false|false" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1k LtInstanceId|provisionedBy|records Volumes|records LtVolumeB5630 is '${P1K_LT}', expected '${P1_LT_INSTANCE_ID}|sdk|false|false'" >&2
+  exit 1
+fi
+# Regression net: A was detached in Phase 1h; nothing in 1k may re-attach it.
+P1K_VOL_A=$(lt_volume_attachment "${LT_VOLUME_A_ID}") || P1K_VOL_A="<describe-failed>"
+if [ "${P1K_VOL_A}" != "available|None|None|None" ]; then
+  echo "FAIL: issue #5630 -- volume A ${LT_VOLUME_A_ID} reads '${P1K_VOL_A}' after Phase 1k, expected available|None|None|None" >&2
+  exit 1
+fi
+if gone_probe aws ec2 describe-volumes --volume-ids "${LT_VOLUME_B_ID}" --region "${REGION}"; then
+  P1K_VOL_B="gone"
+else
+  P1K_VOL_B=$(aws ec2 describe-volumes --volume-ids "${LT_VOLUME_B_ID}" --region "${REGION}" \
+    --query 'Volumes[0].State' --output text 2>&1) || P1K_VOL_B="<describe-failed: $(sanitize_aws_output "${P1K_VOL_B}")>"
+fi
+case "${P1K_VOL_B}" in
+  gone|deleted|deleting) ;;
+  *) echo "FAIL: issue #5630 -- volume B ${LT_VOLUME_B_ID} is '${P1K_VOL_B}' after Phase 1k deleted it from the template (expected gone; a VolumeInUse delete means the instance update did not detach it first)" >&2; exit 1 ;;
+esac
+P1K_ATTACHED=$(aws ec2 describe-instances --instance-ids "${LT_INSTANCE_ID}" --region "${REGION}" \
+  --query "join(',', sort(Reservations[0].Instances[0].BlockDeviceMappings[?Ebs.VolumeId=='${LT_VOLUME_A_ID}' || Ebs.VolumeId=='${LT_VOLUME_B_ID}'].Ebs.VolumeId || \`[]\`))" \
+  --output text 2>&1) || P1K_ATTACHED="<describe-failed: $(sanitize_aws_output "${P1K_ATTACHED}")>"
+if [ -n "${P1K_ATTACHED}" ]; then
+  echo "FAIL: issue #5630 -- ${LT_INSTANCE_ID} still lists '${P1K_ATTACHED}' after Phase 1k removed Volumes" >&2
+  exit 1
+fi
+DRIFT_JSON="$(mktemp -t cdkd-ec2-instance-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+P1K_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "LtInstance5630")] | length' "${DRIFT_JSON}") || P1K_CLEAN="?"
+P1K_DRIFTED=$(jq -r '[.[].drifted[] | select(.logicalId == "LtInstance5630") | .changes[].path] | join(",")' "${DRIFT_JSON}") || P1K_DRIFTED="?"
+if [ "${P1K_CLEAN}" != "1" ] || [ -n "${P1K_DRIFTED}" ]; then
+  echo "FAIL: issue #5630 -- cdkd drift on LtInstance5630 after Phase 1k: clean=${P1K_CLEAN} drifted paths='${P1K_DRIFTED}' (rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+echo "    OK: #5630 Phase 1k detached volume ${LT_VOLUME_B_ID} from ${LT_INSTANCE_ID} and deleted it (same instance, SDK route); neither volume remains attached, and drift is clean"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"
@@ -1893,6 +2075,47 @@ done
 IPV6_COUNT_INSTANCE_ID=""
 IPV6_ADDRESS_INSTANCE_ID=""
 
+# Issue #5630 (fourth slice): the launch-template instance, both volumes and
+# the template must be gone too.
+if gone_probe aws ec2 describe-instances --instance-ids "${LT_INSTANCE_ID}" --region "${REGION}"; then
+  LT_STATE="gone"
+elif ! LT_STATE=$(aws ec2 describe-instances \
+    --instance-ids "${LT_INSTANCE_ID}" \
+    --region "${REGION}" \
+    --query 'Reservations[0].Instances[0].State.Name' --output text 2>&1); then
+  grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${LT_STATE}" \
+    && LT_STATE="gone" \
+    || { echo "FAIL: describe-instances requery undetermined: ${LT_STATE}" >&2; exit 1; }
+fi
+case "${LT_STATE}" in
+  terminated|shutting-down|gone) echo "    OK: #5630 instance ${LT_INSTANCE_ID} is ${LT_STATE}" ;;
+  *) echo "FAIL: #5630 instance ${LT_INSTANCE_ID} still in unexpected state after destroy: ${LT_STATE}" >&2; exit 1 ;;
+esac
+LT_INSTANCE_ID=""
+# EC2 can list a deleted volume as `deleted` for a short while.
+for lt_volume in "${LT_VOLUME_A_ID}" "${LT_VOLUME_B_ID}"; do
+  if gone_probe aws ec2 describe-volumes --volume-ids "${lt_volume}" --region "${REGION}"; then
+    LT_VOLUME_STATE="gone"
+  elif ! LT_VOLUME_STATE=$(aws ec2 describe-volumes \
+      --volume-ids "${lt_volume}" \
+      --region "${REGION}" \
+      --query 'Volumes[0].State' --output text 2>&1); then
+    grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${LT_VOLUME_STATE}" \
+      && LT_VOLUME_STATE="gone" \
+      || { echo "FAIL: describe-volumes requery undetermined: ${LT_VOLUME_STATE}" >&2; exit 1; }
+  fi
+  case "${LT_VOLUME_STATE}" in
+    deleted|gone) ;;
+    *) echo "FAIL: issue #5630 -- volume ${lt_volume} is '${LT_VOLUME_STATE}' after destroy, expected deleted or gone" >&2; exit 1 ;;
+  esac
+done
+echo "    OK: #5630 volumes ${LT_VOLUME_A_ID} / ${LT_VOLUME_B_ID} are gone"
+LT_VOLUME_A_ID=""
+LT_VOLUME_B_ID=""
+assert_gone "issue #5630 -- launch template ${LAUNCH_TEMPLATE_ID} still exists after destroy" aws ec2 describe-launch-templates --launch-template-ids "${LAUNCH_TEMPLATE_ID}" --region "${REGION}"
+echo "    OK: #5630 launch template ${LAUNCH_TEMPLATE_ID} is gone"
+LAUNCH_TEMPLATE_ID=""
+
 # Issue #5445: the fixture CMK must be scheduled for deletion by the destroy
 # (RemovalPolicy.DESTROY), never left Enabled.
 EBS_KEY_STATE=$(aws kms describe-key \
@@ -1908,4 +2131,4 @@ echo "    OK: #5445 fixture CMK is PendingDeletion"
 EBS_KEY_ARN=""
 
 echo ""
-echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update + #5630 launch options) ==="
+echo "=== PASS: EC2::Instance integ (#609 security backfill + #1276 AvailabilityZone + #1281 NetworkInterfaces + #5445 Ebs members + #4606 identity reads + #1160 removal + #5446 in-place update + #5630 launch options, LaunchTemplate and Volumes) ==="
