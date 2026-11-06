@@ -1007,6 +1007,11 @@ const NEPTUNE_INSTANCE_CASE: TypeCase = {
  */
 
 const DOCDB_SRC = 'docdb-provider.ts';
+// The DocDB provider's code split out of it, in its companion directory.
+const DOCDB_SHARED_SRC = 'docdb/shared.ts';
+const DOCDB_CLUSTER_CREATE_SRC = 'docdb/cluster-create.ts';
+const DOCDB_CLUSTER_UPDATE_SRC = 'docdb/cluster-update.ts';
+const DOCDB_INSTANCE_SRC = 'docdb/instance.ts';
 const SUBNET_SRC = 'docdb-subnet-group-provider.ts';
 
 const DOCDB_TAGS = [
@@ -1035,7 +1040,7 @@ const DOCDB_CLUSTER_ARN = `arn:aws:rds:us-east-1:${ACCOUNT}:cluster:${DOCDB_CLUS
  * poll and the tag diff has an ARN. An update that SENDS a new Port or group
  * list is answered as applied (the value the ModifyDBCluster just carried),
  * so `waitForClusterPortApplied` / `waitForSecurityGroupsApplied`
- * (docdb-provider.ts) settle on their first poll too. No member instances, so
+ * (docdb/wait.ts) settle on their first poll too. No member instances, so
  * the member waits have nothing to poll.
  */
 function docdbArmCluster(_physicalId: string, bag: Bag): void {
@@ -1109,7 +1114,7 @@ function docdbArmCluster(_physicalId: string, bag: Bag): void {
  */
 const GLOBAL_CLUSTER_REFUSED = {
   says: /Changing GlobalClusterIdentifier to a different global cluster is not supported/,
-  why: `ModifyDBCluster has no GlobalClusterIdentifier member and CloudFormation refuses an add or change too, so one the live cluster does not show is refused before any write (CFn A/B, go-to-k/cdkd#5628, ${DOCDB_SRC} planGlobalClusterUpdate)`,
+  why: `ModifyDBCluster has no GlobalClusterIdentifier member and CloudFormation refuses an add or change too, so one the live cluster does not show is refused before any write (CFn A/B, go-to-k/cdkd#5628, ${DOCDB_CLUSTER_UPDATE_SRC} planGlobalClusterUpdate)`,
 };
 
 const kept = (why: string): string =>
@@ -1117,9 +1122,9 @@ const kept = (why: string): string =>
 
 /** Named in a warning that claims no parity: no A/B has measured the removal. */
 const DOCDB_UNMEASURED = (key: string): string =>
-  `and no CloudFormation A/B has measured a removed ${key} (#2762), so update() warns without claiming parity (${DOCDB_SRC} DOCDB_CLUSTER_UNMEASURED_ON_REMOVAL)`;
+  `and no CloudFormation A/B has measured a removed ${key} (#2762), so update() warns without claiming parity (${DOCDB_SHARED_SRC} DOCDB_CLUSTER_UNMEASURED_ON_REMOVAL)`;
 
-const ROTATE_MODIFY_ONLY = `CreateDBCluster has no such member: it only reaches ModifyDBCluster (${DOCDB_SRC} rotateMasterUserPassword)`;
+const ROTATE_MODIFY_ONLY = `CreateDBCluster has no such member: it only reaches ModifyDBCluster (${DOCDB_SHARED_SRC} rotateMasterUserPassword)`;
 
 /** What a restore bag's update removals keep, as the full bag's do (go-to-k/cdkd#5628). */
 const DOCDB_RESTORE_KEPT = (keys: string[]): Record<string, string> =>
@@ -1127,7 +1132,7 @@ const DOCDB_RESTORE_KEPT = (keys: string[]): Record<string, string> =>
     keys.map((key) => [
       `update-remove:${key}`,
       kept(
-        `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543 / #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+        `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543 / #2762, ${DOCDB_SHARED_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
       ),
     ])
   );
@@ -1137,7 +1142,7 @@ const DOCDB_GROUPS_WHOLE = (count: number): Record<string, string> =>
   Object.fromEntries(
     Array.from({ length: count }, (_, i) => [
       `update-remove:VpcSecurityGroupIds.${i}`,
-      `the desired group list is sent whole from next (${DOCDB_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
+      `the desired group list is sent whole from next (${DOCDB_CLUSTER_UPDATE_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
     ])
   );
 
@@ -1153,7 +1158,7 @@ const DOCDB_CREATE_ONLY_REQUEST = (key: string): Record<string, string> =>
 /** A source with no time is refused before any call, as CloudFormation refuses it. */
 const DOCDB_POINT_IN_TIME_REFUSED = {
   says: /restore needs RestoreToTime or UseLatestRestorableTime: true/,
-  why: `a SourceDBClusterIdentifier with no time is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} readDocDBClusterRestore)`,
+  why: `a SourceDBClusterIdentifier with no time is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#5628, ${DOCDB_SHARED_SRC} readDocDBClusterRestore)`,
 };
 
 const DOCDB_SCALING_THROWS: Record<string, Throw> = Object.fromEntries(
@@ -1250,19 +1255,19 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
           ].map((key) => [
             `update-remove:${key}`,
             kept(
-              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543 / #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+              `and CloudFormation keeps the live value too, warned about by update() (CFn A/B, #5004 / #1160 / go-to-k/cdkd#5543 / #2762, ${DOCDB_SHARED_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
             ),
           ])
         ),
         'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
         'update-vary:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED.why,
         'update-remove:MasterUserPassword': kept(
-          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
+          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SHARED_SRC} masterUserPasswordToSend)`
         ),
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VpcSecurityGroupIds.${i}`,
-            `the desired group list is sent whole from next (${DOCDB_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
+            `the desired group list is sent whole from next (${DOCDB_CLUSTER_UPDATE_SRC} updateDBCluster, sendVpcSgIds), so a dropped element reaches the wire through next, which update-add observes`,
           ])
         ),
       },
@@ -1295,12 +1300,12 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
       expectedSilent: {
         'create:RotateMasterUserPassword': ROTATE_MODIFY_ONLY,
         'create-vary:RotateMasterUserPassword': ROTATE_MODIFY_ONLY,
-        'update-remove:RotateMasterUserPassword': `a request, not a setting: a removal has nothing to reset (${DOCDB_SRC} rotateMasterUserPassword)`,
+        'update-remove:RotateMasterUserPassword': `a request, not a setting: a removal has nothing to reset (${DOCDB_SHARED_SRC} rotateMasterUserPassword)`,
         'update-remove:ManageMasterUserPassword': kept(
           DOCDB_UNMEASURED('ManageMasterUserPassword')
         ),
         'update-remove:MasterUserSecretKmsKeyId': kept(
-          `and CloudFormation keeps the key too, warned about by update() (CFn A/B, #2762, ${DOCDB_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
+          `and CloudFormation keeps the key too, warned about by update() (CFn A/B, #2762, ${DOCDB_SHARED_SRC} DOCDB_CLUSTER_KEPT_ON_REMOVAL)`
         ),
       },
     },
@@ -1335,12 +1340,12 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
         ...DOCDB_GROUPS_WHOLE(2),
         'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
         'update-remove:MasterUserPassword': kept(
-          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SRC} masterUserPasswordToSend)`
+          `and a removed password sends nothing: any supplied password is a master-credential reset, and removal cannot synthesize one (go-to-k/cdkd#5153, ${DOCDB_SHARED_SRC} masterUserPasswordToSend)`
         ),
         ...Object.fromEntries(
           ['create', 'create-vary'].map((direction) => [
             `${direction}:MasterUsername`,
-            `a restore keeps its source's user name, as CloudFormation's does: neither restore call has the member, and a differing one is warned about (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} warnRestoredDifferences)`,
+            `a restore keeps its source's user name, as CloudFormation's does: neither restore call has the member, and a differing one is warned about (measured, go-to-k/cdkd#5628, ${DOCDB_CLUSTER_CREATE_SRC} warnRestoredDifferences)`,
           ])
         ),
       },
@@ -1374,7 +1379,7 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
         'update-remove:NetworkType': kept(DOCDB_UNMEASURED('NetworkType')),
         ...DOCDB_CREATE_ONLY_REQUEST('RestoreType'),
         ...DOCDB_CREATE_ONLY_REQUEST('UseLatestRestorableTime'),
-        'create-vary:UseLatestRestorableTime': `the harness's varied false leaves the source with no time, which is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#5628, ${DOCDB_SRC} readDocDBClusterRestore)`,
+        'create-vary:UseLatestRestorableTime': `the harness's varied false leaves the source with no time, which is refused before any call, as CloudFormation refuses it (measured, go-to-k/cdkd#5628, ${DOCDB_SHARED_SRC} readDocDBClusterRestore)`,
       },
       expectedRemovalThrows: {
         ...TAG_THROWS(ALL_DIRECTIONS, 1),
@@ -1390,7 +1395,7 @@ const DOCDB_CLUSTER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...DOCDB_CREATE_ONLY_REQUEST('RestoreToTime'),
-        'create-vary:RestoreToTime': `the harness's varied value is no timestamp with a zone, so it is refused before any call; docdb-provider-restore-5628.test.ts pins the refusal and the Date a real one sends (${DOCDB_SRC} readDocDBClusterRestore)`,
+        'create-vary:RestoreToTime': `the harness's varied value is no timestamp with a zone, so it is refused before any call; docdb-provider-restore-5628.test.ts pins the refusal and the Date a real one sends (${DOCDB_SHARED_SRC} readDocDBClusterRestore)`,
       },
       expectedRemovalThrows: { 'create:RestoreToTime': DOCDB_POINT_IN_TIME_REFUSED },
     },
@@ -1427,10 +1432,10 @@ function docdbArmInstance(): void {
   });
 }
 
-const DOCDB_INSTANCE_KEPT_2762 = `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, #2762, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`;
+const DOCDB_INSTANCE_KEPT_2762 = `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, #2762, ${DOCDB_SHARED_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`;
 
 /** Valid beside a certificate change only; no bag spells one with the flag alone varied. */
-const RESTART_WITH_CERTIFICATE = `sent only beside a CACertificateIdentifier change, and CreateDBInstance has no such member; docdb-provider-backfill-2762.test.ts covers that arm (${DOCDB_SRC} updateDBInstance)`;
+const RESTART_WITH_CERTIFICATE = `sent only beside a CACertificateIdentifier change, and CreateDBInstance has no such member; docdb-provider-backfill-2762.test.ts covers that arm (${DOCDB_INSTANCE_SRC} updateDBInstance)`;
 
 const DOCDB_INSTANCE_CASE: TypeCase = {
   resourceType: 'AWS::DocDB::DBInstance',
@@ -1456,8 +1461,8 @@ const DOCDB_INSTANCE_CASE: TypeCase = {
         EnablePerformanceInsights: true,
       },
       expectedSilent: {
-        'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_SRC} updateDBInstance)`,
-        'update-remove:PreferredMaintenanceWindow': `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`,
+        'update-remove:DBInstanceClass': `DBInstanceClass is required by the CloudFormation schema, so no deployable template removes it; update() sends only a declared value (${DOCDB_INSTANCE_SRC} updateDBInstance)`,
+        'update-remove:PreferredMaintenanceWindow': `left in place on removal and warned about, as CloudFormation keeps it (CFn A/B, go-to-k/cdkd#5543, ${DOCDB_SHARED_SRC} DOCDB_INSTANCE_KEPT_ON_REMOVAL)`,
         'update-remove:CACertificateIdentifier': DOCDB_INSTANCE_KEPT_2762,
         'update-remove:EnablePerformanceInsights': DOCDB_INSTANCE_KEPT_2762,
         ...Object.fromEntries(
@@ -1465,7 +1470,7 @@ const DOCDB_INSTANCE_CASE: TypeCase = {
             (direction) => [`${direction}:CertificateRotationRestart`, RESTART_WITH_CERTIFICATE]
           )
         ),
-        'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_SRC} updateDBInstance)`,
+        'update-remove:AutoMinorVersionUpgrade': `left in place on removal: the member is inert on DocumentDB ("does not apply to Amazon DocumentDB"), so a reset would change nothing (${DOCDB_INSTANCE_SRC} updateDBInstance)`,
       },
       expectedRemovalThrows: TAG_REFUSALS,
     },
