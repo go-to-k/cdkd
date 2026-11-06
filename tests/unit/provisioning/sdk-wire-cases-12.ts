@@ -1674,7 +1674,7 @@ const firehoseS3Kms = (bucket: string) => ({
 });
 
 const FIREHOSE_TAG_KEY_REFUSED: Throw = {
-  why: 'a Tags entry without its Key is refused before any call (firehose-provider.ts:406-415, 1007-1031; go-to-k/cdkd#3948)',
+  why: 'a Tags entry without its Key is refused before any call (firehose/shared.ts isReadableTagList, read by firehose/create.ts and firehose/update.ts; go-to-k/cdkd#3948)',
   says: /is not a list of tags with a Key/,
 };
 
@@ -1685,7 +1685,7 @@ const FIREHOSE_TAG_KEY_REFUSED: Throw = {
  * as the create probes observe) and is warned instead.
  */
 const FIREHOSE_FIXED_BACKUP_MODE =
-  'S3BackupMode of this destination cannot change on an existing stream: the Update shape has no member for it, so a change is warned and not sent, as CloudFormation keeps the mode (CFn A/B measured 2026-10-27, firehose-provider.ts:214-245, 1166-1189, 2126-2131)';
+  'S3BackupMode of this destination cannot change on an existing stream: the Update shape has no member for it, so a change is warned and not sent, as CloudFormation keeps the mode (CFn A/B measured 2026-10-27, firehose/shared.ts and warnUnappliedS3BackupMode in firehose/update.ts)';
 
 // --- AWS::KinesisFirehose::DeliveryStream -----------------------------------------
 
@@ -1833,7 +1833,7 @@ const FIREHOSE_CASE: TypeCase = {
           ])
         ),
         [`update-remove:${FIREHOSE_ENCRYPTION}.KeyType`]: {
-          why: 'KeyType is required by the CloudFormation schema: a block without it is refused before any call (firehose-provider.ts:949-964)',
+          why: 'KeyType is required by the CloudFormation schema: a block without it is refused before any call (applyUpdate in firehose/update.ts)',
           says: /is not an object with a string KeyType/,
         },
       },
