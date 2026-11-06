@@ -41,7 +41,9 @@ cause rather than answered with the gateway's ID: the gateway stayed
 
 cdkd normally checks that the instance's `IamInstanceProfile` was attached.
 Under `--no-wait` it skips that check and prints a warning that names the
-instance.
+instance. An instance that declares `Volumes` is the exception: attaching a
+volume needs a `running` instance, so it waits for `running` and gets the
+check too.
 
 The check exists because `RunInstances` attaches an instance profile
 asynchronously, and can finish with none attached when the profile was created

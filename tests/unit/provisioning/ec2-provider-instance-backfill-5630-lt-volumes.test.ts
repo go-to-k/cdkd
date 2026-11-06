@@ -7,6 +7,8 @@ import {
   RunInstancesCommand,
   TerminateInstancesCommand,
   CreateTagsCommand,
+  StopInstancesCommand,
+  StartInstancesCommand,
   waitUntilInstanceRunning,
   waitUntilInstanceTerminated,
 } from '@aws-sdk/client-ec2';
@@ -23,9 +25,11 @@ import {
 //    replacement while a listed volume is attached fails ("already attached
 //    to an instance").
 
-const { mockSend, warn, cfnSend } = vi.hoisted(() => ({
+const { mockSend, warn, cfnSend, deadlineRemaining } = vi.hoisted(() => ({
   mockSend: vi.fn(),
   warn: vi.fn(),
+  // The enclosing resource deadline the waits read; none by default.
+  deadlineRemaining: vi.fn(() => Number.POSITIVE_INFINITY),
   cfnSend: vi.fn(() => Promise.reject(new Error('DescribeType is not reachable here'))),
 }));
 
@@ -55,6 +59,11 @@ vi.mock('../../../src/utils/logger.js', () => {
   };
 });
 
+vi.mock('../../../src/deployment/resource-deadline.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as object;
+  return { ...actual, enclosingDeadlineRemainingMs: deadlineRemaining };
+});
+
 vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
   const actual = (await importOriginal()) as object;
   return {
@@ -67,6 +76,12 @@ vi.mock('@aws-sdk/client-ec2', async (importOriginal) => {
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { isRefusedBeforeApplying } from '../../../src/deployment/prior-attempt-scope.js';
+import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors/marks.js';
+import {
+  disarmInterruptWatchForTests,
+  interruptWatchTestSeam,
+  isInterruptedWaitError,
+} from '../../../src/provisioning/interrupt-watch.js';
 
 const TYPE = 'AWS::EC2::Instance';
 const BASE = { ImageId: 'ami-1', InstanceType: 't3.nano', SubnetId: 'subnet-1' };
@@ -108,6 +123,14 @@ let detachingReads: number;
 let goneVolumes: Set<string>;
 /** When set, the tagged RunInstances is denied ec2:CreateTags (the untagged re-send). */
 let denyTaggedLaunch: boolean;
+/** The instance's state after the last StopInstances / StartInstances (running before either). */
+let powerState: string;
+/** When set, every DescribeVolumes fails with this error. */
+let failVolumeRead: Error | undefined;
+/** Called on each DescribeVolumes before it answers. */
+let onVolumeRead: (() => void) | undefined;
+/** States the instance reads after TerminateInstances, in order (the last repeats). */
+let terminateStates: string[];
 
 beforeEach(() => {
   mockSend.mockReset();
@@ -121,6 +144,12 @@ beforeEach(() => {
   detachingReads = 0;
   goneVolumes = new Set();
   denyTaggedLaunch = false;
+  powerState = 'running';
+  failVolumeRead = undefined;
+  onVolumeRead = undefined;
+  terminateStates = ['terminated'];
+  deadlineRemaining.mockReset();
+  deadlineRemaining.mockReturnValue(Number.POSITIVE_INFINITY);
   vi.mocked(waitUntilInstanceTerminated).mockClear();
   vi.spyOn(
     EC2Provider.prototype as unknown as { sleep: () => Promise<void> },
@@ -142,14 +171,23 @@ beforeEach(() => {
       }
       return Promise.resolve({ Instances: [{ InstanceId: 'i-new' }] });
     }
+    if (cmd instanceof StopInstancesCommand) powerState = 'stopped';
+    if (cmd instanceof StartInstancesCommand) powerState = 'running';
+    if (cmd instanceof TerminateInstancesCommand) powerState = 'terminating';
     if (cmd instanceof DescribeInstancesCommand) {
+      const state =
+        powerState === 'terminating'
+          ? terminateStates.length > 1
+            ? terminateStates.shift()!
+            : terminateStates[0]!
+          : powerState;
       return Promise.resolve({
         Reservations: [
           {
             Instances: [
               {
                 InstanceId: 'i-new',
-                State: { Name: 'running' },
+                State: { Name: state },
                 RootDeviceType: 'ebs',
                 BlockDeviceMappings: bdm,
               },
@@ -189,6 +227,8 @@ beforeEach(() => {
       // The waits' sleep is stubbed: a wait that never sees its target fails
       // the test instead of spinning.
       if (++volumeReads > 50) return Promise.reject(new Error('runaway DescribeVolumes poll'));
+      onVolumeRead?.();
+      if (failVolumeRead !== undefined) return Promise.reject(failVolumeRead);
       const id = (input['VolumeIds'] as string[])[0]!;
       if (goneVolumes.has(id)) {
         return Promise.reject(
@@ -306,7 +346,58 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
       new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
     ).rejects.toThrow(/not attached at \/dev\/sdf/);
     expect(sent(TerminateInstancesCommand)).toEqual([{ InstanceIds: ['i-new'] }]);
-    expect(waitUntilInstanceTerminated).toHaveBeenCalledTimes(1);
+    // Polled DescribeInstances until `terminated` (shutting-down first).
+    expect(sent(DescribeInstancesCommand).length).toBeGreaterThan(0);
+    expect(warn.mock.calls.flat().join('\n')).not.toMatch(/not seen terminated/);
+  });
+
+  it('warns, and still throws the attach error, when the instance is not seen terminated before the deadline', async () => {
+    attachInvisible = true;
+    terminateStates = ['shutting-down'];
+    // Room for the attach wait, then none once the instance is terminating.
+    deadlineRemaining.mockImplementation(() =>
+      powerState === 'terminating' ? 0 : Number.POSITIVE_INFINITY
+    );
+    const error = await new EC2Provider()
+      .create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+      .catch((e: unknown) => e);
+    expect(String(error)).toMatch(/volume vol-1 is not attached at \/dev\/sdf/);
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/Instance i-new of Inst was not seen terminated after its failed create \(timed out\)/);
+    expect(warned).not.toMatch(/STILL RUNNING/);
+  });
+
+  it('warns, and still throws the attach error, when the termination read fails', async () => {
+    attachInvisible = true;
+    const base = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation((cmd: unknown) =>
+      cmd instanceof DescribeInstancesCommand && powerState === 'terminating'
+        ? Promise.reject(Object.assign(new Error('throttled'), { name: 'RequestLimitExceeded' }))
+        : base(cmd)
+    );
+    const error = await new EC2Provider()
+      .create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+      .catch((e: unknown) => e);
+    expect(String(error)).toMatch(/volume vol-1 is not attached at \/dev\/sdf/);
+    const warned = warn.mock.calls.flat().join('\n');
+    expect(warned).toMatch(/was not seen terminated after its failed create \(read failed: /);
+    expect(warned).not.toMatch(/STILL RUNNING/);
+  });
+
+  it('does not wait for termination when the only AttachVolume was refused outright', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-old', Device: '/dev/sdf', State: 'attached' });
+    failAttach = Object.assign(new Error('vol-1 is already attached to an instance'), {
+      name: 'VolumeInUse',
+    });
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/already attached to an instance/);
+    expect(sent(TerminateInstancesCommand)).toHaveLength(1);
+    const describesAfterTerminate = mockSend.mock.calls
+      .map((c) => c[0] as object)
+      .slice(mockSend.mock.calls.findIndex((c) => c[0] instanceof TerminateInstancesCommand))
+      .filter((cmd) => cmd instanceof DescribeInstancesCommand);
+    expect(describesAfterTerminate).toHaveLength(0);
   });
 
   it('does not wait for termination when the create failed before any AttachVolume', async () => {
@@ -320,6 +411,13 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     await expect(new EC2Provider().create('Inst', TYPE, BASE)).rejects.toThrow();
     expect(sent(TerminateInstancesCommand)).toHaveLength(1);
     expect(waitUntilInstanceTerminated).not.toHaveBeenCalled();
+    expect(powerState).toBe('terminating');
+    expect(
+      mockSend.mock.calls
+        .map((c) => c[0] as object)
+        .slice(mockSend.mock.calls.findIndex((c) => c[0] instanceof TerminateInstancesCommand))
+        .filter((cmd) => cmd instanceof DescribeInstancesCommand)
+    ).toHaveLength(0);
   });
 
   it('runs the instance-profile check under --no-wait once declared Volumes made the create wait for running', async () => {
@@ -363,6 +461,56 @@ describe('AWS::EC2::Instance Volumes create (#5630)', () => {
     await expect(
       new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
     ).rejects.toThrow(/already attached/);
+  });
+
+  it('times out the attach wait at the resource deadline, non-retryably', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'attaching' });
+    failAttach = Object.assign(new Error('already attaching'), { name: 'VolumeInUse' });
+    let reads = 0;
+    onVolumeRead = () => {
+      if (++reads >= 3) deadlineRemaining.mockReturnValue(0);
+    };
+    const error = await new EC2Provider()
+      .create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+      .catch((e: unknown) => e);
+    expect(String(error)).toMatch(
+      /timed out waiting for volume vol-1 to be attached at \/dev\/sdf on instance i-new \(last attachment state: attaching\)/
+    );
+    expect(isMarkedNonRetryable(error)).toBe(true);
+  });
+
+  it('ends the attach wait on Ctrl-C with an InterruptedWaitError', async () => {
+    disarmInterruptWatchForTests();
+    interruptWatchTestSeam.commandOwnsInterrupts = () => true;
+    const baseline = process.listeners('SIGINT');
+    try {
+      attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'attaching' });
+      failAttach = Object.assign(new Error('already attaching'), { name: 'VolumeInUse' });
+      let reads = 0;
+      onVolumeRead = () => {
+        // The first read is the refused attach's own; interrupt inside the wait.
+        if (++reads === 2) {
+          for (const l of process.listeners('SIGINT').filter((x) => !baseline.includes(x))) {
+            (l as unknown as () => void)();
+          }
+        }
+      };
+      const error = await new EC2Provider()
+        .create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+        .catch((e: unknown) => e);
+      expect(isInterruptedWaitError(error)).toBe(true);
+    } finally {
+      disarmInterruptWatchForTests();
+      delete interruptWatchTestSeam.commandOwnsInterrupts;
+    }
+  });
+
+  it('surfaces the original refused AttachVolume when the volume cannot be read either', async () => {
+    failAttach = Object.assign(new Error('attach refused'), { name: 'IncorrectState' });
+    failVolumeRead = Object.assign(new Error('read throttled'), { name: 'RequestLimitExceeded' });
+    await expect(
+      new EC2Provider().create('Inst', TYPE, { ...BASE, Volumes: [SDF1] })
+    ).rejects.toThrow(/attach refused/);
   });
 
   it('fails the attach wait when the volume is no longer listed', async () => {
@@ -433,6 +581,49 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
     );
     expect(volumeWrites()).toEqual(['Detach vol-1', 'Attach vol-1 /dev/sdh']);
     expect(attachments.get('vol-1')).toMatchObject({ Device: '/dev/sdh', State: 'attached' });
+  });
+
+  it('takes a refused DetachVolume whose volume already reads detaching as under way', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'detaching' });
+    detachingReads = 2;
+    failDetach = Object.assign(new Error('already detaching'), { name: 'IncorrectState' });
+    await update(BASE, { ...BASE, Volumes: [SDF1] }, { removedProperties: new Set(['Volumes']) });
+    expect(volumeWrites()).toEqual(['Detach vol-1']);
+    expect(attachments.has('vol-1')).toBe(false);
+  });
+
+  it('surfaces the original refused DetachVolume when the volume cannot be read either', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'attached' });
+    failDetach = Object.assign(new Error('detach refused'), { name: 'IncorrectState' });
+    failVolumeRead = Object.assign(new Error('read throttled'), { name: 'RequestLimitExceeded' });
+    await expect(
+      update(BASE, { ...BASE, Volumes: [SDF1] }, { removedProperties: new Set(['Volumes']) })
+    ).rejects.toThrow(/detach refused/);
+  });
+
+  it('applies the volume writes on the running instance, before an InstanceType change stops it', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'attached' });
+    await update(
+      { ...BASE, InstanceType: 't3.small', Volumes: [SDG2] },
+      { ...BASE, Volumes: [SDF1] }
+    );
+    const order = mockSend.mock.calls
+      .map((c) => c[0] as object)
+      .filter(
+        (cmd) =>
+          cmd instanceof AttachVolumeCommand ||
+          cmd instanceof DetachVolumeCommand ||
+          cmd instanceof StopInstancesCommand ||
+          cmd instanceof StartInstancesCommand
+      )
+      .map((cmd) => cmd.constructor.name);
+    expect(order).toEqual([
+      'DetachVolumeCommand',
+      'AttachVolumeCommand',
+      'StopInstancesCommand',
+      'StartInstancesCommand',
+    ]);
+    expect(powerState).toBe('running');
   });
 
   it('takes a refused DetachVolume for a volume EC2 no longer lists as detached', async () => {
@@ -524,13 +715,16 @@ describe('AWS::EC2::Instance LaunchTemplate update (#5630)', () => {
   });
 
   it('reads a numeric Version and its string as the same template', async () => {
-    await new EC2Provider().update(
-      'Inst',
-      'i-new',
-      TYPE,
-      { ...BASE, LaunchTemplate: { LaunchTemplateId: 'lt-1', Version: 2 } },
-      { ...BASE, LaunchTemplate: { LaunchTemplateId: 'lt-1', Version: '2' } }
-    );
+    await expect(
+      new EC2Provider().update(
+        'Inst',
+        'i-new',
+        TYPE,
+        { ...BASE, LaunchTemplate: { LaunchTemplateId: 'lt-1', Version: 2 } },
+        { ...BASE, LaunchTemplate: { LaunchTemplateId: 'lt-1', Version: '2' } }
+      )
+    ).resolves.toMatchObject({ physicalId: 'i-new', wasReplaced: false });
+    expect(volumeWrites()).toEqual([]);
   });
 });
 
@@ -547,6 +741,15 @@ describe('AWS::EC2::Instance LaunchTemplate / Volumes read-back (#5630)', () => 
       Volumes: [SDF1, SDG2],
     });
     expect((state as Record<string, unknown>)['Volumes']).toEqual([SDF1, SDH2]);
+  });
+
+  it('reads Volumes as an empty list when a declared volume was detached out of band', async () => {
+    bdm = [{ DeviceName: '/dev/xvda', Ebs: { VolumeId: 'vol-root' } }];
+    const state = await new EC2Provider().readCurrentState('i-new', 'Inst', TYPE, {
+      ...BASE,
+      Volumes: [SDF1],
+    });
+    expect((state as Record<string, unknown>)['Volumes']).toEqual([]);
   });
 
   it('omits Volumes for a malformed recorded list instead of throwing', async () => {

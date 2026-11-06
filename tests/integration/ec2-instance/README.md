@@ -51,7 +51,8 @@ Minimal EC2 Instance deployment example for cdkd.
   its volume at `/dev/sdf` (it waits for `running`, which attaching needs), and Phase 1h swaps the
   entry for the second volume at `/dev/sdg`, which, as in CloudFormation, detaches and attaches on
   the same instance. Phase 1i then moves that volume to `/dev/sdh` (a `Device` change: the same
-  volume detached and re-attached).
+  volume detached and re-attached). Phase 1k removes the `Volumes` property and the second volume in
+  one deploy: both volumes are detached from the same instance before the volume is deleted.
 - Removing the in-place security properties (issue #1160). `verify.sh` Phase 1d redeploys with
   `CDKD_TEST_REMOVAL=true`, which drops `MetadataOptions`, `Monitoring` and `CreditSpecification`.
   As in CloudFormation, detailed monitoring is turned off and the other two keep their values.

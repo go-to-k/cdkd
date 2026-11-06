@@ -8821,8 +8821,8 @@ export class EC2Provider implements ResourceProvider {
     // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
     // terminate the instance this call launched.
     let leftBehindId: string | undefined;
-    // go-to-k/cdkd#5630: an AttachVolume went out, so the wiring cleanup waits
-    // for the instance to terminate (see there).
+    // go-to-k/cdkd#5630: an AttachVolume was accepted, so the wiring cleanup
+    // waits for the instance to terminate (see there).
     let volumeAttachIssued = false;
     try {
       const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
@@ -9104,8 +9104,9 @@ export class EC2Provider implements ResourceProvider {
         // the create (CloudFormation fails it the same way, measured), and the
         // wiring cleanup below terminates the new instance.
         for (const volume of volumes) {
-          volumeAttachIssued = true;
-          await this.attachInstanceVolume(logicalId, instanceId, resourceType, volume);
+          await this.attachInstanceVolume(logicalId, instanceId, resourceType, volume, () => {
+            volumeAttachIssued = true;
+          });
         }
 
         // Describe instance to get attributes after running. Under
@@ -9161,15 +9162,13 @@ export class EC2Provider implements ResourceProvider {
           // `in-use` until the instance is gone, and a rollback deleting that
           // AWS::EC2::Volume next would be refused (VolumeInUse) and leave it
           // behind. Termination detaches it, so wait for it here.
-          if (volumeAttachIssued) {
-            await waitUntilInstanceTerminated(
-              { client: this.ec2Client, maxWaitTime: 300, minDelay: 2, maxDelay: 5 },
-              { InstanceIds: [instanceId] }
-            ).catch((waitError: unknown) => {
-              this.logger.warn(
-                safeMsg`Instance ${instanceId} of ${logicalId} was not seen terminated after its failed create (${describeAwsFailure(waitError).detail}); a volume it held may still be attached for a moment.`
-              );
-            });
+          const terminated = volumeAttachIssued
+            ? await this.waitForFailedLaunchTerminated(logicalId, instanceId)
+            : undefined;
+          if (terminated !== undefined && terminated !== 'terminated') {
+            this.logger.warn(
+              safeMsg`Instance ${instanceId} of ${logicalId} was not seen terminated after its failed create (${terminated}); a volume it held may still be attached for a moment.`
+            );
           }
           retractCreatedResource(logicalId, resourceType, instanceId);
           // Released only now, because only now is the instance this token
@@ -9181,7 +9180,7 @@ export class EC2Provider implements ResourceProvider {
           // launching a second one beside an orphan nothing will ever reach.
           runInstancesToken.release();
           this.logger.debug(
-            `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (not waiting for terminated state)`
+            `Terminate requested for partially-created EC2 Instance ${logicalId} (${instanceId}) after wiring failure (${terminated === undefined ? 'not waiting for terminated state' : `termination wait: ${terminated}`})`
           );
         } catch (cleanupError) {
           leftBehindId = instanceId;
@@ -10700,7 +10699,8 @@ export class EC2Provider implements ResourceProvider {
     logicalId: string,
     instanceId: string,
     resourceType: string,
-    volume: InstanceVolume
+    volume: InstanceVolume,
+    onAccepted?: () => void
   ): Promise<void> {
     try {
       await this.ec2Client.send(
@@ -10714,6 +10714,7 @@ export class EC2Provider implements ResourceProvider {
       const state = await this.readVolumeAttachment(instanceId, volume).catch(() => 'none');
       if (state !== 'attaching' && state !== 'attached') throw error;
     }
+    onAccepted?.();
     await this.waitForVolumeAttachment(logicalId, instanceId, resourceType, volume, 'attached');
   }
 
@@ -10799,6 +10800,44 @@ export class EC2Provider implements ResourceProvider {
         if (watch.isInterrupted()) throw watch.onInterrupted();
         await this.sleep(
           Math.max(0, Math.min(VOLUME_ATTACHMENT_POLL_MS, enclosingDeadlineRemainingMs()))
+        );
+      }
+    } finally {
+      watch.dispose();
+    }
+  }
+
+  /**
+   * go-to-k/cdkd#5630: after a failed create terminated `instanceId`, poll
+   * until it reads `terminated` (or is no longer listed). It never throws: it
+   * runs inside the wiring cleanup, which re-throws the create's own error.
+   * It answers why it stopped early: the resource deadline or
+   * {@link INSTANCE_STATE_WAIT_CAP_MS}, a Ctrl-C (the latch stays set for the
+   * next wait), or a read that failed.
+   */
+  private async waitForFailedLaunchTerminated(
+    logicalId: string,
+    instanceId: string
+  ): Promise<string> {
+    const watch = startInterruptWatch(`EC2 Instance ${logicalId} termination wait`);
+    const capAt = Date.now() + INSTANCE_STATE_WAIT_CAP_MS;
+    try {
+      for (;;) {
+        if (watch.isInterrupted()) return 'interrupted';
+        if (Math.min(enclosingDeadlineRemainingMs(), capAt - Date.now()) <= 0) {
+          return 'timed out';
+        }
+        let state: string | undefined;
+        try {
+          state = await this.readInstanceState(instanceId);
+        } catch (error) {
+          if (isNamedError(error, INSTANCE_NOT_FOUND_NAMES)) return 'terminated';
+          return `read failed: ${describeAwsFailure(error).detail}`;
+        }
+        if (state === 'terminated' || state === undefined) return 'terminated';
+        if (watch.isInterrupted()) return 'interrupted';
+        await this.sleep(
+          Math.max(0, Math.min(INSTANCE_STATE_POLL_MS, enclosingDeadlineRemainingMs()))
         );
       }
     } finally {

@@ -112,7 +112,9 @@ the background. Until then, you may see these:
 - A NAT gateway is still `pending`, so traffic that leaves the VPC through it
   does not flow yet.
 - An EC2 instance is still `pending`. cdkd cannot check that the instance
-  profile attached, so it prints a warning that names the instance.
+  profile attached, so it prints a warning that names the instance. An
+  instance that declares `Volumes` waits for `running` to attach them, and
+  gets that check.
 - An ACM certificate is still in `PENDING_VALIDATION`.
 - A load balancer's DNS name returns 503 until the load balancer is `active`.
 - An ECS service's rollout is unchecked: a service whose tasks never start

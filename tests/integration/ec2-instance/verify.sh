@@ -86,7 +86,8 @@
 # template's tag and `aws:ec2launchtemplate:id` must be on it) with a Volumes
 # entry attached by the --no-wait Phase 0 create; Phase 1h swaps the entry for
 # another volume at another device, on the same instance, and Phase 1i moves
-# that volume to a third device.
+# that volume to a third device. Phase 1k removes the Volumes property and
+# volume B in one deploy (both volumes detached, B deleted).
 #
 # Authored against a RAW L1 `ec2.CfnInstance` because the L2 construct does not
 # expose the five #609 security-backfill props this fixture verifies -- see the
@@ -306,9 +307,15 @@ cleanup() {
       --region "${REGION}" >/dev/null 2>&1 || true
   fi
   for lt_volume in ${LT_VOLUME_A_ID:-} ${LT_VOLUME_B_ID:-}; do
-    aws ec2 delete-volume \
+    # A volume the destroy already deleted answers not-found, the normal
+    # case. Any other refusal (still in-use after a terminate wait that timed
+    # out) leaves it behind, so say how to remove it.
+    lt_volume_out=$(aws ec2 delete-volume \
       --volume-id "${lt_volume}" \
-      --region "${REGION}" >/dev/null 2>&1 || true
+      --region "${REGION}" 2>&1 >/dev/null || true)
+    if [ -n "${lt_volume_out}" ] && ! grep -qiE 'not ?found|does ?not ?exist' <<<"${lt_volume_out}"; then
+      echo "NOTE: issue #5630 -- could not delete volume ${lt_volume} ($(sanitize_aws_output "${lt_volume_out}")); remove it with: aws ec2 delete-volume --volume-id ${lt_volume} --region ${REGION}" >&2
+    fi
   done
   if [ -n "${LAUNCH_TEMPLATE_ID:-}" ]; then
     aws ec2 delete-launch-template \
@@ -996,7 +1003,9 @@ echo "    OK: CreditSpecification.CpuCredits == standard on AWS (CreditSpecifica
 # `Placement.AvailabilityZone`. Compare AWS against the value cdkd recorded in
 # state for THIS instance (the resolved template value) rather than a hardcoded
 # AZ, which would break the moment the fixture's VPC lands elsewhere.
-EXPECTED_AZ=$(echo "${STATE}" | jq -r '[.resources | to_entries[] | select(.value.resourceType == "AWS::EC2::Instance") | .value.properties.AvailabilityZone] | first // ""')
+# Read by logical id: other instances (LtInstance5630 takes its zone from its
+# subnet) declare no AvailabilityZone.
+EXPECTED_AZ=$(echo "${STATE}" | jq -r '.resources.Instance.properties.AvailabilityZone // ""')
 if [ -z "${EXPECTED_AZ}" ] || [ "${EXPECTED_AZ}" = "null" ]; then
   echo "FAIL: state records no AvailabilityZone for the instance — the template must emit it (issue #1276)" >&2
   echo "${STATE}" | jq '.resources'
@@ -1923,6 +1932,59 @@ if [ "${IPV6_COUNT_INSTANCE_ID}" != "${P1_IPV6_COUNT_INSTANCE_ID}" ] || [ "${IPV
   exit 1
 fi
 echo "    OK: #5630 the IPv6 instances were not replaced by the update phases"
+
+# Phase 1k (issue #5630, fourth slice): ONE deploy removes LtInstance5630's
+# Volumes property AND volume B (the volume it lists) from the template. As in
+# CloudFormation (measured), the removal detaches every listed volume on the
+# same instance; cdkd runs every update before any delete, so B's delete meets
+# a detached volume rather than VolumeInUse.
+echo "==> Phase 1k: remove the Volumes property and the volume it lists, in one deploy (issue #5630)"
+removal_deploy P1K_OUTPUT ok CDKD_TEST_REMOVAL=true CDKD_TEST_UPDATE_5446=true CDKD_TEST_IP_READER=true CDKD_TEST_DNS_5630=hostname CDKD_TEST_VOLUMES_5630=removed
+P1K_STATE=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>&1) || {
+  echo "FAIL: issue #5630 -- could not read the state after Phase 1k: $(sanitize_aws_output "${P1K_STATE}")" >&2
+  exit 1
+}
+P1K_LT=$(echo "${P1K_STATE}" | jq -r '[.outputs.LtInstanceId // "", (.resources.LtInstance5630.provisionedBy // "sdk"), (.resources.LtInstance5630.properties | has("Volumes") | tostring), (.resources | has("LtVolumeB5630") | tostring)] | join("|")')
+if [ "${P1K_LT}" != "${P1_LT_INSTANCE_ID}|sdk|false|false" ]; then
+  echo "FAIL: issue #5630 -- after Phase 1k LtInstanceId|provisionedBy|records Volumes|records LtVolumeB5630 is '${P1K_LT}', expected '${P1_LT_INSTANCE_ID}|sdk|false|false'" >&2
+  exit 1
+fi
+P1K_VOL_A=$(lt_volume_attachment "${LT_VOLUME_A_ID}") || P1K_VOL_A="<describe-failed>"
+if [ "${P1K_VOL_A}" != "available|None|None|None" ]; then
+  echo "FAIL: issue #5630 -- volume A ${LT_VOLUME_A_ID} reads '${P1K_VOL_A}' after Phase 1k, expected available|None|None|None" >&2
+  exit 1
+fi
+if gone_probe aws ec2 describe-volumes --volume-ids "${LT_VOLUME_B_ID}" --region "${REGION}"; then
+  P1K_VOL_B="gone"
+else
+  P1K_VOL_B=$(aws ec2 describe-volumes --volume-ids "${LT_VOLUME_B_ID}" --region "${REGION}" \
+    --query 'Volumes[0].State' --output text 2>&1) || P1K_VOL_B="<describe-failed: $(sanitize_aws_output "${P1K_VOL_B}")>"
+fi
+case "${P1K_VOL_B}" in
+  gone|deleted|deleting) ;;
+  *) echo "FAIL: issue #5630 -- volume B ${LT_VOLUME_B_ID} is '${P1K_VOL_B}' after Phase 1k deleted it from the template (expected gone; a VolumeInUse delete means the instance update did not detach it first)" >&2; exit 1 ;;
+esac
+P1K_ATTACHED=$(aws ec2 describe-instances --instance-ids "${LT_INSTANCE_ID}" --region "${REGION}" \
+  --query "join(',', sort(Reservations[0].Instances[0].BlockDeviceMappings[?Ebs.VolumeId=='${LT_VOLUME_A_ID}' || Ebs.VolumeId=='${LT_VOLUME_B_ID}'].Ebs.VolumeId || \`[]\`))" \
+  --output text 2>&1) || P1K_ATTACHED="<describe-failed: $(sanitize_aws_output "${P1K_ATTACHED}")>"
+if [ -n "${P1K_ATTACHED}" ]; then
+  echo "FAIL: issue #5630 -- ${LT_INSTANCE_ID} still lists '${P1K_ATTACHED}' after Phase 1k removed Volumes" >&2
+  exit 1
+fi
+DRIFT_JSON="$(mktemp -t cdkd-ec2-instance-drift.XXXXXX)"
+set +e
+node "${LOCAL_DIST}" drift "${STACK}" --state-bucket "${STATE_BUCKET}" --region "${REGION}" --json >"${DRIFT_JSON}"
+DRIFT_RC=$?
+set -e
+P1K_CLEAN=$(jq '[.[].clean[] | select(.logicalId == "LtInstance5630")] | length' "${DRIFT_JSON}") || P1K_CLEAN="?"
+P1K_DRIFTED=$(jq -r '[.[].drifted[] | select(.logicalId == "LtInstance5630") | .changes[].path] | join(",")' "${DRIFT_JSON}") || P1K_DRIFTED="?"
+if [ "${P1K_CLEAN}" != "1" ] || [ -n "${P1K_DRIFTED}" ]; then
+  echo "FAIL: issue #5630 -- cdkd drift on LtInstance5630 after Phase 1k: clean=${P1K_CLEAN} drifted paths='${P1K_DRIFTED}' (rc=${DRIFT_RC}):" >&2
+  cat "${DRIFT_JSON}" >&2
+  exit 1
+fi
+rm -f "${DRIFT_JSON}"
+echo "    OK: #5630 Phase 1k detached both volumes from ${LT_INSTANCE_ID} (same instance, SDK route), deleted volume ${LT_VOLUME_B_ID}, and drift is clean"
 
 # --- Phase 2: destroy (--remove-protection required) ------------------
 echo "==> Phase 2: destroy with --remove-protection (instance is termination-protected)"

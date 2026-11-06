@@ -414,11 +414,17 @@ export class Ec2InstanceStack extends cdk.Stack {
       size: 1,
       volumeType: 'gp3',
     });
-    const volumeB = new ec2.CfnVolume(this, 'LtVolumeB5630', {
-      availabilityZone: vpc.publicSubnets[0].availabilityZone,
-      size: 1,
-      volumeType: 'gp3',
-    });
+    // Phase 1k (CDKD_TEST_VOLUMES_5630=removed) drops the Volumes property
+    // AND volume B itself in one deploy: the instance update must detach B
+    // before B's delete runs.
+    const volumesRemoved = process.env.CDKD_TEST_VOLUMES_5630 === 'removed';
+    const volumeB = volumesRemoved
+      ? undefined
+      : new ec2.CfnVolume(this, 'LtVolumeB5630', {
+          availabilityZone: vpc.publicSubnets[0].availabilityZone,
+          size: 1,
+          volumeType: 'gp3',
+        });
     const ltInstance = new ec2.CfnInstance(this, 'LtInstance5630', {
       launchTemplate: {
         launchTemplateId: launchTemplate.ref,
@@ -427,11 +433,14 @@ export class Ec2InstanceStack extends cdk.Stack {
       subnetId: vpc.publicSubnets[0].subnetId,
       // Phases 1i-1j (dnsMode set) move volume B to /dev/sdh: the same
       // volume detached and re-attached at the new device.
-      volumes: !isUpdate5446
-        ? [{ device: '/dev/sdf', volumeId: volumeA.ref }]
-        : dnsMode !== undefined
-          ? [{ device: '/dev/sdh', volumeId: volumeB.ref }]
-          : [{ device: '/dev/sdg', volumeId: volumeB.ref }],
+      volumes:
+        volumeB === undefined
+          ? undefined
+          : !isUpdate5446
+            ? [{ device: '/dev/sdf', volumeId: volumeA.ref }]
+            : dnsMode !== undefined
+              ? [{ device: '/dev/sdh', volumeId: volumeB.ref }]
+              : [{ device: '/dev/sdg', volumeId: volumeB.ref }],
     });
     // Destroyed after the instance: a volume still attached refuses DeleteVolume.
     ltInstance.addDependency(volumeA);
@@ -447,10 +456,12 @@ export class Ec2InstanceStack extends cdk.Stack {
       value: volumeA.ref,
       description: 'Attached at /dev/sdf before Phase 1h, detached by it (issue #5630)',
     });
-    new cdk.CfnOutput(this, 'LtVolumeBId', {
-      value: volumeB.ref,
-      description: 'Attached at /dev/sdg by Phase 1h (issue #5630)',
-    });
+    if (volumeB !== undefined) {
+      new cdk.CfnOutput(this, 'LtVolumeBId', {
+        value: volumeB.ref,
+        description: 'Attached at /dev/sdg by Phase 1h (issue #5630)',
+      });
+    }
 
     new cdk.CfnOutput(this, 'EbsKeyArn', {
       value: ebsKey.keyArn,
