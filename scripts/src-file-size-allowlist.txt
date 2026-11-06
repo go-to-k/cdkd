@@ -72,7 +72,6 @@ src/provisioning/providers/rds-dbproxy-targetgroup-provider.ts
 src/provisioning/providers/scheduler-schedule-provider.ts
 src/provisioning/providers/secretsmanager-secret-provider.ts
 src/provisioning/providers/ssm-parameter-provider.ts
-src/provisioning/providers/stepfunctions-provider.ts
 src/provisioning/providers/wafv2-provider.ts
 src/provisioning/resource-name.ts
 src/state/lock-manager.ts

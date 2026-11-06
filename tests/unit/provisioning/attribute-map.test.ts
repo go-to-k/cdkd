@@ -35,9 +35,9 @@
  * `?? ''` fails the "no unexpected hit" case by name.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import ts from 'typescript-v6';
 import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 import {
@@ -172,8 +172,11 @@ interface Scan {
  * would pass too); a helper resolved by BARE NAME (`findCallee` takes the first
  * same-named method / function in the file, so a file declaring several
  * classes with a same-named method can attribute a hit to the wrong class or
- * miss one); and `findDeclaration`, which takes the first same-named
- * declaration in the enclosing function.
+ * miss one); a bare-identifier call with no same-file declaration resolved in
+ * the file's provider FAMILY (the provider and its companion files) only when
+ * exactly one other member declares a top-level function of that name; and
+ * `findDeclaration`, which takes the first same-named declaration in the
+ * enclosing function.
  *
  * Also out of reach, each pinned as a NOT FOLLOWED fixture below: a key
  * recorded present-but-`undefined` without the helper (`{ Port: r.port }`)
@@ -189,14 +192,36 @@ interface Scan {
  */
 function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
   // With each provider's companion files (scripts/provider-companion-files.ts),
-  // which hold code split out of it.
+  // which hold code split out of it. A provider and its companions form one
+  // FAMILY: a helper moved into a companion is called from the others by its
+  // imported bare name, so `findCallee` resolves such a call inside the family.
+  const families = new Map<string, readonly string[]>();
   const files = readdirSync(providersDir)
     .filter((f) => f.endsWith('.ts'))
     .sort()
-    .flatMap((f) => [
-      f,
-      ...companionFiles(join(providersDir, f)).map((c) => relative(providersDir, c)),
-    ]);
+    .flatMap((f) => {
+      const family = [
+        f,
+        ...companionFiles(join(providersDir, f)).map((c) => relative(providersDir, c)),
+      ];
+      for (const member of family) families.set(member, family);
+      return family;
+    });
+  const parsed = new Map<string, ts.SourceFile>();
+  const parse = (file: string): ts.SourceFile => {
+    let sf = parsed.get(file);
+    if (sf === undefined) {
+      const path = join(providersDir, file);
+      sf = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+      parsed.set(file, sf);
+    }
+    return sf;
+  };
+  // One hit per source position (file and offset): the `const attributes = {}`
+  // declaration and the `attributes` shorthand that returns it both reach the
+  // same builder writes, and a family helper is reached from every member
+  // that calls it.
+  const recorded = new Set<string>();
   const scan: Scan = {
     hits: [],
     files: files.length,
@@ -225,28 +250,49 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
   };
 
   for (const file of files) {
-    const path = join(providersDir, file);
-    const sf = ts.createSourceFile(
-      path,
-      readFileSync(path, 'utf8'),
-      ts.ScriptTarget.Latest,
-      true
-    );
+    const sf = parse(file);
     const visited = new Set<ts.Node>();
 
-    const recorded = new Set<number>();
     const record = (n: ts.Node): void => {
-      // One hit per source position: the `const attributes = {}` declaration
-      // and the `attributes` shorthand that returns it both reach the same
-      // builder writes.
-      if (recorded.has(n.getStart())) return;
-      recorded.add(n.getStart());
-      const { line } = sf.getLineAndCharacterOfPosition(n.getStart());
-      scan.hits.push({ file, line: line + 1, text: n.getText().replace(/\s+/g, ' ') });
+      // Attributed to the file the node sits in, which is a family member's
+      // when the walk followed a family helper.
+      const nodeSf = n.getSourceFile();
+      const nodeFile = relative(providersDir, nodeSf.fileName);
+      const key = `${nodeFile}:${n.getStart()}`;
+      if (recorded.has(key)) return;
+      recorded.add(key);
+      const { line } = nodeSf.getLineAndCharacterOfPosition(n.getStart());
+      scan.hits.push({
+        file: nodeFile,
+        line: line + 1,
+        text: n.getText().replace(/\s+/g, ' '),
+      });
     };
 
-    /** The same-file method or function declaration a call resolves to, by bare name. */
+    /**
+     * The same-file method or function declaration a call resolves to, by bare
+     * name; failing that, for a bare-identifier call, the top-level function
+     * declaration of that name in ANOTHER member of the file's family (a
+     * helper a split moved into a companion, called by its imported name).
+     * Only a name exactly one other member declares resolves: an ambiguous one
+     * is left unresolved rather than attributed by file order.
+     */
     const findCallee = (call: ts.CallExpression): ts.Node | undefined => {
+      const local = findLocalCallee(call);
+      if (local !== undefined || !ts.isIdentifier(call.expression)) return local;
+      const name = call.expression.text;
+      const matches = (families.get(file) ?? [])
+        .filter((member) => member !== file)
+        .flatMap((member) =>
+          parse(member).statements.filter(
+            (st): st is ts.FunctionDeclaration =>
+              ts.isFunctionDeclaration(st) && st.name?.text === name && st.body !== undefined
+          )
+        );
+      return matches.length === 1 ? matches[0] : undefined;
+    };
+
+    const findLocalCallee = (call: ts.CallExpression): ts.Node | undefined => {
       const callee = call.expression;
       const name = ts.isPropertyAccessExpression(callee)
         ? callee.name.text
@@ -551,6 +597,8 @@ describe('no provider records an attribute as `?? \'\'` (issue #3077 fence)', ()
       expect.arrayContaining([
         'dynamodb-globaltable/create-commit.ts',
         'dynamodb-globaltable/update-indexes.ts',
+        'stepfunctions/update.ts',
+        'stepfunctions/read-state.ts',
       ])
     );
     expect(scan.hoistedResolved).toBeGreaterThanOrEqual(FLOORS.hoistedResolved);
@@ -801,5 +849,80 @@ describe('the fence reds every shape it claims to see (fixture-driven probe)', (
     expect(verdict.unexpected[0]).toContain("(properties['VpcId'] as string) ?? ''");
     // ...and against the REAL (empty) list every copy is unexpected.
     expect(allowListVerdict(scan).unexpected).toHaveLength(3);
+  });
+});
+
+describe('a split provider family: a helper a companion declares is followed from every member', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'attribute-map-family-'));
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const helper = 'export function toArn(r: { arn?: string }): string {\n  return r.arn ?? "";\n}\n';
+  const caller = (fn: string, from: string): string =>
+    [
+      `import { toArn } from '${from}';`,
+      `export function ${fn}(resp: { arn?: string }) {`,
+      '  return { physicalId: "a", attributes: { Arn: toArn(resp) } };',
+      '}',
+      '',
+    ].join('\n');
+
+  /** A providers dir holding `files` (path relative to it -> source). */
+  function family(files: Record<string, string>): string {
+    const root = mkdtempSync(join(dir, 'family-'));
+    for (const [path, source] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), source);
+    }
+    return root;
+  }
+
+  it('follows a provider call into the companion that declares the helper, and attributes the hit there', () => {
+    const scan = scanProviders(
+      family({ 'fake-provider.ts': caller('create', './fake/shared.js'), 'fake/shared.ts': helper })
+    );
+    expect(scan.helperCallsResolved).toBe(1);
+    expect(scan.hits.map((h) => [h.file, h.line, h.text])).toEqual([
+      ['fake/shared.ts', 2, 'r.arn ?? ""'],
+    ]);
+  });
+
+  it('reports the helper once when two members call it', () => {
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': caller('create', './fake/shared.js'),
+        'fake/update.ts': caller('update', './shared.js'),
+        'fake/shared.ts': helper,
+      })
+    );
+    expect(scan.helperCallsResolved).toBe(2);
+    expect(scan.hits.map((h) => h.file)).toEqual(['fake/shared.ts']);
+  });
+
+  it('leaves a name two other members declare unresolved instead of picking one by file order', () => {
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': caller('create', './fake/a.js'),
+        'fake/a.ts': helper,
+        'fake/b.ts': helper,
+      })
+    );
+    expect(scan.helperCallsResolved).toBe(0);
+    expect(scan.hits).toEqual([]);
+  });
+
+  it('does not follow a helper another provider declares', () => {
+    const scan = scanProviders(
+      family({
+        'fake-provider.ts': caller('create', './other-provider.js'),
+        'other-provider.ts': helper,
+      })
+    );
+    expect(scan.helperCallsResolved).toBe(0);
+    expect(scan.hits).toEqual([]);
   });
 });

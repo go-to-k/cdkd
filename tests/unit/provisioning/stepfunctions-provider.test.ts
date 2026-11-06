@@ -178,7 +178,7 @@ describe('StepFunctionsProvider', () => {
       // CFn templates ALWAYS use PascalCase property names; the provider
       // is responsible for translating to the SDK's camelCase shape on
       // the wire (see mapLoggingConfiguration / mapTracingConfiguration
-      // in stepfunctions-provider.ts).
+      // in stepfunctions/shared.ts).
       await provider.create('MyExpress', 'AWS::StepFunctions::StateMachine', {
         RoleArn: 'arn:aws:iam::123456789012:role/role',
         DefinitionString: '{}',
