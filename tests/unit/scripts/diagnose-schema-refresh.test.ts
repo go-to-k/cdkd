@@ -4623,6 +4623,7 @@ describe('writeAutoTolerated', () => {
       for (const companions of [
         'src/provisioning/providers/apigateway',
         'src/provisioning/providers/asg',
+        'src/provisioning/providers/nested-stack',
         'src/provisioning/providers/route53',
       ]) {
         cpSync(join(REPO_ROOT, companions), join(root, companions), { recursive: true });

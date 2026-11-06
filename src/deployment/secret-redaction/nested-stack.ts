@@ -484,7 +484,7 @@ export function recordNestedStackParameterExpressions(
     // Issue [#2327](https://github.com/go-to-k/cdkd/issues/2327) was FILED
     // naming this test as the second broken half of the list-typed collapse,
     // beside the diff side. Measured against `NestedStackProvider` while fixing
-    // that issue: `extractParameters` (`src/provisioning/providers/nested-stack-provider.ts`)
+    // that issue: `extractParameters` (`src/provisioning/providers/nested-stack/template.ts`)
     // casts a scalar parent-side parameter value to a string, JOINS an array
     // back into the comma-delimited string the wire carries (issue #2347;
     // before it, arrays were refused with the rest), and REFUSES every other
