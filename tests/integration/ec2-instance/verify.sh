@@ -2087,12 +2087,26 @@ ssm_commands_of() {
 # The license configuration ARNs License Manager lists for instance `$1`,
 # sorted and comma-joined. DescribeInstances reports none (measured), so this
 # is the only reader.
+# With `$2` = `none-ok`, the one refusal License Manager answers for an
+# instance never launched with a license reads as an empty list.
 licenses_of() {
-  local out
-  out=$(aws license-manager list-license-specifications-for-resource \
+  local out err
+  err=$(mktemp -t cdkd-ec2-instance-lm.XXXXXX)
+  if ! out=$(aws license-manager list-license-specifications-for-resource \
     --resource-arn "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/$1" \
     --region "${REGION}" \
-    --output json) || return 1
+    --output json 2>"${err}"); then
+    # License Manager refuses a never-licensed instance's ARN (measured) rather than listing none.
+    if [ "${2:-}" = none-ok ] \
+      && grep -q 'InvalidParameterValueException' "${err}" \
+      && grep -q 'Resource ARN is invalid' "${err}"; then
+      rm -f "${err}"
+      return 0
+    fi
+    rm -f "${err}"
+    return 1
+  fi
+  rm -f "${err}"
   echo "${out}" | jq -r '[.LicenseSpecifications[].LicenseConfigurationArn] | sort | join(",")'
 }
 # `$1` = phase label. Reads the state record of SsmInstance5630 into
@@ -2142,9 +2156,14 @@ assert_ssm_instance() {
 # For an expected EMPTY list an empty read proves nothing on its own (the
 # lag reads empty too), so every read of the window must stay empty.
 assert_licenses() {
-  local got="" _
+  local got="" _ accept=""
+  case "$1" in
+    i-?*) ;;
+    *) echo "FAIL: issue #5630 ($3) -- no instance id to read licenses for ('$1')" >&2; exit 1 ;;
+  esac
+  if [ -z "$2" ]; then accept=none-ok; fi
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    got=$(licenses_of "$1") || got="<read error>"
+    got=$(licenses_of "$1" "${accept}") || got="<read error>"
     if [ -n "$2" ]; then
       [ "${got}" = "$2" ] && return 0
     elif [ -n "${got}" ]; then
