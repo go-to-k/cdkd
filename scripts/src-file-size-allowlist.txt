@@ -74,7 +74,6 @@ src/provisioning/providers/fsx-filesystem-provider.ts
 src/provisioning/providers/iam-managed-policy-provider.ts
 src/provisioning/providers/iam-policy-provider.ts
 src/provisioning/providers/iam-role-provider.ts
-src/provisioning/providers/iam-user-group-provider.ts
 src/provisioning/providers/kinesis-provider.ts
 src/provisioning/providers/kms-provider.ts
 src/provisioning/providers/lambda-eventsource-provider.ts
