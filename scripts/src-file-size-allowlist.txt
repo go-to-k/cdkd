@@ -90,7 +90,6 @@ src/provisioning/providers/s3-directory-bucket-provider.ts
 src/provisioning/providers/s3-tables-provider.ts
 src/provisioning/providers/scheduler-schedule-provider.ts
 src/provisioning/providers/secretsmanager-secret-provider.ts
-src/provisioning/providers/servicediscovery-provider.ts
 src/provisioning/providers/sns-topic-provider.ts
 src/provisioning/providers/ssm-parameter-provider.ts
 src/provisioning/providers/stepfunctions-provider.ts
