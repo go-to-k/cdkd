@@ -17,7 +17,8 @@
  * defeatable by a line break between the parameter name and its initializer.
  *
  * SCOPE, stated so a later reader does not over-read it: this file covers
- * `dynamodb-table-provider.ts` ONLY. Five sibling providers still carry
+ * `dynamodb-table-provider.ts` and its companion files (`dynamodb-table/**`,
+ * where the provider's method bodies live) ONLY. Five sibling providers still carry
  * parameter-default maskers and are tracked separately; this fence is
  * deliberately not widened to them, because a repo-wide assertion would be RED
  * on arrival and would have to be allow-listed, which is the shape that goes
@@ -27,6 +28,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
+import { companionFiles } from '../../../scripts/provider-companion-files.js';
 
 const SUBJECT = fileURLToPath(
   new URL('../../../src/provisioning/providers/dynamodb-table-provider.ts', import.meta.url)
@@ -48,8 +50,37 @@ const SUBJECT = fileURLToPath(
  * the walk sees all 19. A floor of 16 therefore carried three parameters of
  * SLACK: four would have to disappear before it noticed. A raise is fine; a
  * DROP means the walk stopped seeing parameters it used to see.
+ *
+ * FORTY-ONE since the provider was split into `dynamodb-table/**`: the moved
+ * bodies kept their 19-era parameters and `update()`'s slices each take the
+ * masker as a parameter of their own. Measured against the walk, and pinned
+ * PER FILE below as well, so dropping one file from the walk (a companion, or
+ * the provider file itself) reds even when the total would still clear a
+ * looser floor.
  */
-const MIN_MASKER_PARAMETERS = 19;
+const MIN_MASKER_PARAMETERS = 41;
+
+/**
+ * Per-file floors, keyed by the path under `providers/`: MEASURED, like the
+ * total. A raise is fine; a file whose count drops, or that is no longer
+ * walked at all, reds.
+ */
+const MIN_MASKER_PARAMETERS_BY_FILE: Readonly<Record<string, number>> = {
+  'dynamodb-table-provider.ts': 2,
+  'dynamodb-table/capacity.ts': 1,
+  'dynamodb-table/create.ts': 1,
+  'dynamodb-table/gsi-updates.ts': 3,
+  'dynamodb-table/index-throughput.ts': 7,
+  'dynamodb-table/index-warnings.ts': 7,
+  'dynamodb-table/kinesis.ts': 4,
+  'dynamodb-table/streams.ts': 5,
+  'dynamodb-table/table-helpers.ts': 1,
+  'dynamodb-table/table-settings.ts': 1,
+  'dynamodb-table/update-billing.ts': 2,
+  'dynamodb-table/update-preflight.ts': 2,
+  'dynamodb-table/update-settings.ts': 3,
+  'dynamodb-table/waits.ts': 2,
+};
 
 /**
  * Is this type annotation the masker capability, under EITHER spelling?
@@ -66,6 +97,7 @@ function isMaskerType(node: ts.TypeNode): boolean {
 }
 
 interface MaskerParameter {
+  /** `<file under providers/>:<function>`. */
   readonly owner: string;
   readonly line: number;
   readonly hasInitializer: boolean;
@@ -73,13 +105,13 @@ interface MaskerParameter {
 }
 
 function collectMaskerParameters(): MaskerParameter[] {
-  const sf = ts.createSourceFile(
-    SUBJECT,
-    readFileSync(SUBJECT, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true
-  );
   const found: MaskerParameter[] = [];
+  for (const file of [SUBJECT, ...companionFiles(SUBJECT)]) collectMaskerParametersIn(file, found);
+  return found;
+}
+
+function collectMaskerParametersIn(file: string, found: MaskerParameter[]): void {
+  const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
 
   /** The nearest enclosing named function-like declaration, for the report. */
   const ownerOf = (node: ts.Node): string => {
@@ -112,7 +144,7 @@ function collectMaskerParameters(): MaskerParameter[] {
       if (isMaskerType(node.type)) {
         const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
         found.push({
-          owner: ownerOf(node),
+          owner: `${file.slice(file.lastIndexOf('/providers/') + 11)}:${ownerOf(node)}`,
           line: line + 1,
           hasInitializer: node.initializer !== undefined,
           isOptional: node.questionToken !== undefined,
@@ -122,7 +154,6 @@ function collectMaskerParameters(): MaskerParameter[] {
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return found;
 }
 
 describe('AWS::DynamoDB::Table provider: the masker parameter is REQUIRED (issue #3364)', () => {
@@ -130,6 +161,18 @@ describe('AWS::DynamoDB::Table provider: the masker parameter is REQUIRED (issue
 
   it('finds every SecretMasker parameter in the provider', () => {
     expect(parameters.length).toBeGreaterThanOrEqual(MIN_MASKER_PARAMETERS);
+  });
+
+  it('finds every file\'s SecretMasker parameters, file by file', () => {
+    const byFile = new Map<string, number>();
+    for (const p of parameters) {
+      const file = p.owner.slice(0, p.owner.indexOf(':'));
+      byFile.set(file, (byFile.get(file) ?? 0) + 1);
+    }
+    const short = Object.entries(MIN_MASKER_PARAMETERS_BY_FILE)
+      .filter(([file, floor]) => (byFile.get(file) ?? 0) < floor)
+      .map(([file, floor]) => `${file}: ${byFile.get(file) ?? 0} < ${floor}`);
+    expect(short).toEqual([]);
   });
 
   it('declares none of them with an identity (or any) default', () => {

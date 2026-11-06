@@ -525,9 +525,11 @@ describe('provider secret-mask critic — classifier', () => {
     // silencing a site now takes a deliberate mis-declaration rather than any
     // of the unbounded ways to spell a no-op. If either of these ever goes
     // `raw`, the bound closed and the header's KNOWN BOUND (4) must change.
+    // NARROWED: an IDENTITY function declaration is refused at the root, so
+    // the bound is pinned with a no-op the syntax cannot see through.
     expect(
       verdicts(`${MASK_IMPORT}
-        function noMask(value: unknown): unknown { return value; }
+        function noMask(value: unknown): unknown { return structuredClone(value); }
         const FAKE: MaskerFn = noMask;
         function f(p: Record<string, unknown>) {
           return \`got \${JSON.stringify(maskDeep(p, FAKE))}\`;
@@ -540,6 +542,42 @@ describe('provider secret-mask critic — classifier', () => {
           return \`got \${JSON.stringify(maskDeep(p, bag.maskSecrets))}\`;
         }`)
     ).toEqual(['masked']);
+  });
+
+  it('refuses an IDENTITY function declaration (module-scope or nested) a masker-typed parameter shares a name with', () => {
+    // In-file ONE-HOP shape: the parameter puts the NAME `maskSecrets` in the
+    // pool; without the root refusal, a wrapper calling the identity function
+    // would be credited as a masker.
+    expect(
+      verdicts(`${MASK_IMPORT}
+        function maskSecrets(v: unknown): unknown { return v; }
+        function maskLeafValue(value: unknown, _m: SecretMasker): unknown { return maskSecrets(value); }
+        function other(x: unknown, maskSecrets: SecretMasker): unknown { return maskSecrets(String(x)); }
+        function f(raw: unknown, mask: SecretMasker) {
+          return \`got \${JSON.stringify(maskLeafValue(raw, mask))}\`;
+        }`)
+    ).toEqual(['raw']);
+    // NESTED in the wrapper: refused inside its enclosing function too.
+    expect(
+      verdicts(`${MASK_IMPORT}
+        function maskLeafValue(value: unknown, _m: SecretMasker): unknown {
+          function maskSecrets(v: unknown): unknown { return v; }
+          return maskSecrets(value);
+        }
+        function other(x: unknown, maskSecrets: SecretMasker): unknown { return maskSecrets(String(x)); }
+        function f(raw: unknown, mask: SecretMasker) {
+          return \`got \${JSON.stringify(maskLeafValue(raw, mask))}\`;
+        }`)
+    ).toEqual(['raw']);
+    // Direct use is refused too.
+    expect(
+      verdicts(`${MASK_IMPORT}
+        function maskSecrets(v: unknown): unknown { return v; }
+        function other(x: unknown, maskSecrets: SecretMasker): unknown { return maskSecrets(String(x)); }
+        function f(raw: unknown) {
+          return \`got \${JSON.stringify(maskSecrets(raw))}\`;
+        }`)
+    ).toEqual(['raw']);
   });
 
   it('still accepts the shared walk handed a REAL capability', () => {
@@ -740,16 +778,20 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // The site text is UNCHANGED — `maskLeafValue(...)` still reads as a mask.
     // Only the dataflow behind it broke, which is what makes this a check of
     // the effect rather than of the spelling.
+    //
+    // The wrapper lives in the split provider's companion module and its
+    // callers IMPORT it (scripts/provider-companion-files.ts), so this also
+    // proves the cross-file credit is judged from the wrapper's own body.
     const dir = copyTree();
     mutate(
       dir,
-      'dynamodb-table-provider.ts',
+      'dynamodb-table/table-helpers.ts',
       '  return maskDeep(value, maskSecrets);\n}',
       '  return value;\n}'
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('dynamodb-table-provider.ts');
+    expect(stderr).toContain('dynamodb-table/index-throughput.ts');
     expect(stderr).toContain('maskLeafValue(coerced.spec, maskSecrets)');
   }, SPAWN_TIMEOUT_MS);
 

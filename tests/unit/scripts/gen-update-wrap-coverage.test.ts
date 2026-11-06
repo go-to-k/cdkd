@@ -18,6 +18,59 @@ function providerSource(body: string, className = 'FakeProvider'): string {
 }
 
 describe('gen-update-wrap-coverage classifier', () => {
+  // dynamodb-table's shapes: a companion body calling back through `this.x()`
+  // to another DELEGATING method, and a GENERIC delegator, which instantiates
+  // before `.call` (`(fn<T>).call(this, ...)`) because `.call` drops `T`.
+  describe('split provider: this.x() back through a delegator, and a generic delegator', () => {
+    const cls = providerSource(`
+      async update(logicalId, physicalId, resourceType, props, prev, context) {
+        return update.call(this, logicalId, physicalId, resourceType, props, prev, context);
+      }
+      applyTags(...args) {
+        return applyTags.call(this, ...args);
+      }
+      retrying<T>(...args) {
+        return (retrying<T>).call(this, ...args);
+      }
+    `);
+    const helpers = `
+      export async function applyTags(this: FakeProvider, arn) {
+        await this.client.send(new TagResourceCommand({}));
+      }
+      export async function retrying<T>(this: FakeProvider, op) {
+        await this.client.send(new RetryCommand({}));
+      }
+    `;
+
+    it('resolves both delegators to their companion bodies inside the wrap', () => {
+      const update = `
+        export async function update(this: FakeProvider, logicalId, physicalId, resourceType) {
+          try {
+            await this.applyTags('arn');
+            await this.retrying(() => 1);
+          } catch (error) {
+            throw new ProvisioningError('Failed to update', resourceType, logicalId);
+          }
+        }
+      `;
+      const [c] = classifySource(cls, 'fake-provider.ts', new Map(), [update, helpers]);
+      expect(c?.bucket).toBe('wrapped');
+      expect(c?.unresolvedCallees).toEqual([]);
+    });
+
+    it('reports the sends behind both delegators when nothing wraps them', () => {
+      const update = `
+        export async function update(this: FakeProvider, logicalId) {
+          await this.retrying(() => 1);
+          await this.applyTags('arn');
+        }
+      `;
+      const [c] = classifySource(cls, 'fake-provider.ts', new Map(), [update, helpers]);
+      expect(c?.bucket).toBe('gap');
+      expect(c?.unwrappedSendMethods).toEqual(['applyTags', 'retrying']);
+    });
+  });
+
   describe('companion-file delegation (a provider split into <stem>/)', () => {
     const delegating = providerSource(`
       update(logicalId, physicalId, resourceType, props, prev, context) {
