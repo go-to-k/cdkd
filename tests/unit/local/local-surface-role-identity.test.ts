@@ -114,7 +114,11 @@ function constructionAt(
   const statement = constructionStatement(lines, index);
   if (statement === undefined) return { kind: 'bareClient', span: 1 };
   const span = statement.split('\n').length;
-  if (CREDENTIAL_OVERRIDE.test(statement) || OPAQUE_SPREAD.test(statement)) {
+  if (
+    CREDENTIAL_OVERRIDE.test(statement) ||
+    OPAQUE_SPREAD.test(statement) ||
+    hasOpaqueParenSpread(statement)
+  ) {
     return { kind: 'credentialOverride', span };
   }
   if (clientSiteKind(statement) !== undefined) return { kind: 'covered', span };
@@ -130,6 +134,38 @@ function constructionAt(
  */
 const OPAQUE_SPREAD =
   /\.\.\.\s*(?!(?:awsClientDefaults|ambientClientDefaults|clientDefaultsFor)\s*\()[A-Za-z_$]/;
+
+/**
+ * Does a parenthesised spread hide a value? `...(x && { region })` and
+ * `...(x ? { a } : {})` spell their objects out and are judged on what they
+ * say; `...(cond && opts)` or `...(useRole ? roleOpts : {})` spread a value
+ * whose keys are not on the line, exactly as `...opts` does. The object
+ * literals are blanked to `{}` (balanced) before the shape is tested.
+ */
+function hasOpaqueParenSpread(statement: string): boolean {
+  for (const m of statement.matchAll(/\.\.\.\s*\(/g)) {
+    let depth = 0;
+    let content: string | undefined;
+    for (let i = (m.index ?? 0) + m[0].length - 1; i < statement.length; i++) {
+      const ch = statement[i];
+      if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) {
+        content = statement.slice((m.index ?? 0) + m[0].length, i);
+        break;
+      }
+    }
+    if (content === undefined) return true;
+    let blanked = content;
+    for (let prev = ''; prev !== blanked; ) {
+      prev = blanked;
+      blanked = blanked.replace(/\{[^{}]*\}/g, '{}');
+    }
+    const inline =
+      /&&\s*\{\}\s*$/.test(blanked) || /\?\s*\{\}\s*:\s*\{\}\s*$/.test(blanked);
+    if (!inline) return true;
+  }
+  return false;
+}
 
 /**
  * Is a construction decided by an annotation ABOVE it, or by one INSIDE its own
@@ -369,11 +405,15 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       '  new STSClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), ...credOpts });',
       '  new STSClient({ ...awsClientDefaults(), ...this.config });',
       '  new STSClient({ ...awsClientDefaults(), ...makeOptions() });',
+      '  new STSClient({ ...awsClientDefaults(), ...(useRole ? roleOpts : {}) });',
+      '  new STSClient({ ...awsClientDefaults(), ...(cond && opts) });',
     ]) {
       expect(classifyLine([statement], 0).site?.kind, statement).toBe('credentialOverride');
     }
     // An inline spread is spelled out on the line and judged on what it says.
     for (const statement of [
+      '  new STSClient({ ...awsClientDefaults(), ...(x ? { region } : {}) });',
+      '  new STSClient({ ...awsClientDefaults(), ...(r && { region: canon(r) }) });',
       '  new STSClient({ ...awsClientDefaults(), ...(region && { region }) });',
       '  new STSClient({ ...clientDefaultsFor(c), ...{ region } });',
     ]) {

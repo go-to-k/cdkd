@@ -388,26 +388,52 @@ function annotationGovernsRead(lines: string[], index: number): boolean {
  * branch of its own — `if (creds.sessionToken) { env['AWS_SESSION_TOKEN'] = ...
  * } else { delete env['AWS_SESSION_TOKEN']; }` — below the two it completes. So
  * the walk climbs over other quoted-key WRITES (never a `process.env` read,
- * which is the stricter `annotationGovernsRead`), the branch's own braces and
- * `if` / `else` openers, comments and blank lines, then asks
- * `hasAnnotationAbove` from the top of that run. Anything else — any other
- * statement — ends it, so a key line cannot borrow a reason across code.
+ * which is the stricter `annotationGovernsRead`), braces, `else` and call-free
+ * `if (...)` openers, comments and blank lines, then asks `hasAnnotationAbove`
+ * from the top of that run. Two stops keep it from borrowing a reason:
+ *
+ *   - any other statement — a call in an `if` condition included — ends it;
+ *   - a key it has already passed ends it, as in `annotationGovernsRead`, so
+ *     a write AFTER a decided triple is a new decision. The two arms of an
+ *     `if` / `else` are alternatives, so each arm is checked against the keys
+ *     outside the branch, not against the other arm.
  */
 function annotationGovernsKeyLine(lines: string[], index: number): boolean {
+  let seen = credentialKeysNamed(stripComments(lines[index] ?? ''));
+  // One frame per `if` / `else` construct the climb is inside: `base` is what
+  // the construct's arms are checked against, `union` what they wrote.
+  const frames: { base: Set<string>; union: Set<string> }[] = [];
+  const opener = /^(?:if\s*\([^()]*\)\s*)?\{$/;
+  const elseLine = /^\}\s*else\s*(?:if\s*\([^()]*\)\s*)?\{$/;
   let top = index;
   for (let i = index - 1; i >= 0 && index - i <= 15; i--) {
     const raw = lines[i] ?? '';
+    if (isCommentLine(raw)) {
+      // Passed over unless it IS the annotation, which stops the climb so
+      // `hasAnnotationAbove` finds it from the run's top.
+      if (isAnnotationCommentLine(raw, ANNOTATION)) break;
+      continue;
+    }
     const code = stripComments(raw).trim();
-    // A comment is passed over unless it IS the annotation, which stops the
-    // climb so `hasAnnotationAbove` finds it from the run's top.
-    const passable = isCommentLine(raw)
-      ? !isAnnotationCommentLine(raw, ANNOTATION)
-      : code === '' ||
-          /^\}?\s*(?:else\s*)?(?:if\s*\(.*\)\s*)?\{$/.test(code) ||
-          code === '}' ||
-          (CREDENTIAL_KEY_SITE.test(code) && !PROCESS_ENV_CREDENTIAL_READ.test(code));
-    if (!passable) break;
-    if (!isCommentLine(raw) && code !== '') top = i;
+    if (code === '') continue;
+    if (code === '}') {
+      frames.push({ base: new Set(seen), union: new Set(seen) });
+    } else if (elseLine.test(code)) {
+      const frame = frames.at(-1) ?? { base: new Set<string>(), union: new Set<string>() };
+      if (frames.length === 0) frames.push(frame);
+      for (const k of seen) frame.union.add(k);
+      seen = new Set(frame.base);
+    } else if (opener.test(code)) {
+      const frame = frames.pop();
+      if (frame !== undefined) seen = new Set([...frame.union, ...seen]);
+    } else if (CREDENTIAL_KEY_SITE.test(code) && !PROCESS_ENV_CREDENTIAL_READ.test(code)) {
+      const keys = credentialKeysNamed(code);
+      if ([...keys].some((k) => seen.has(k))) break;
+      for (const k of keys) seen.add(k);
+    } else {
+      break;
+    }
+    top = i;
   }
   return hasAnnotationAbove(lines, top, ANNOTATION);
 }
@@ -868,6 +894,21 @@ describe('every identity reaching an emulated workload through process env or a 
     expect(siteAt(written, 7)?.verdict).toBe('annotated');
     const afterCode = [...written.slice(0, 3), '  doSomething();', "  env['AWS_SESSION_TOKEN'] = t;"];
     expect(siteAt(afterCode, 4)?.verdict).toBe('undeclared');
+    // A key written AFTER the decided block closes is a new decision, by any
+    // spelling; so is one reached through a condition that calls something.
+    for (const late of [
+      "  env['AWS_ACCESS_KEY_ID'] = leakedRoleKey;",
+      "  args.push('-e', 'AWS_SESSION_TOKEN');",
+    ]) {
+      expect(siteAt([...written, late], written.length)?.verdict, late).toBe('undeclared');
+    }
+    const callInCondition = [
+      ...written.slice(0, 3),
+      '  if (leak(env)) {',
+      "    env['AWS_SESSION_TOKEN'] = t;",
+      '  }',
+    ];
+    expect(siteAt(callInCondition, 4)?.verdict).toBe('undeclared');
     const duplicate = [...triple, '  leak = process.env.AWS_SESSION_TOKEN;'];
     expect(annotationGovernsRead(duplicate, 4)).toBe(false);
     expect(siteAt(duplicate, 4)?.verdict).toBe('undeclared');
