@@ -115,9 +115,10 @@ describe('gen-update-wrap-coverage classifier', () => {
       expect(c?.unwrappedSendMethods).toEqual(['sendIt']);
     });
 
-    it('reads no-aws without the companion sources, which is why the generator passes them', () => {
+    it('fails closed without the companion sources, which is why the generator passes them', () => {
       const [c] = classifySource(delegating, 'fake-provider.ts', new Map());
-      expect(c?.bucket).toBe('no-aws');
+      expect(c?.bucket).toBe('unresolved-callee');
+      expect(c?.unresolvedCallees).toEqual(['update']);
     });
   });
 
@@ -932,6 +933,7 @@ describe('real-repo coverage floors', () => {
     // unresolved-callee: expected to be ZERO today. It is asserted (not
     // floored) because a NON-zero value means the walk lost visibility
     // somewhere and the whole matrix's verdicts are less trustworthy.
+    // `--check` blocks on it too since #5882; this is the second guard.
     expect(count('unresolved-callee')).toBe(0);
     // Belt-and-braces: check the RAW field across every class, not just the
     // bucket. A class that is `gap` / `allow-listed` AND has a lost edge would

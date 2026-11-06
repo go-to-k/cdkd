@@ -52,7 +52,6 @@ const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
  * the Api / Stage `Tags` (`UntagResource`, go-to-k/cdkd#5390).
  */
 
-const APIGWV2_SRC = 'apigatewayv2-provider.ts';
 const APIGWV2_REQUIRED = (why: string, says: RegExp): Throw => ({ why, says });
 const APIGWV2_TAG_MAP = { k1: 'v1', k2: 'v2' };
 const APIGWV2_API_ID = 'api-1';
@@ -60,11 +59,11 @@ const APIGWV2_API_ID = 'api-1';
 
 /** A property CloudFormation KEEPS on removal: `update()` sends nothing for it. */
 const apigwv2Kept = (at: string, ab: string): string =>
-  `left in place on removal: CloudFormation keeps the live value (real CloudFormation A/B, ${ab}), and an omitted Update member is "unchanged" (${APIGWV2_SRC}:${at})`;
+  `left in place on removal: CloudFormation keeps the live value (real CloudFormation A/B, ${ab}), and an omitted Update member is "unchanged" (${at})`;
 
 /** A CloudFormation-required property: no deployable template removes it. */
 const apigwv2Required = (prop: string, at: string): string =>
-  `${prop} is CloudFormation-required, so no deployable template removes it; create() refuses a resource without it (${APIGWV2_SRC}:${at})`;
+  `${prop} is CloudFormation-required, so no deployable template removes it; create() refuses a resource without it (${at})`;
 
 /**
  * A member of a keyed map: carried under its key (`RequestParameters.<key>.Required`),
@@ -123,21 +122,21 @@ const API_CASE: TypeCase = {
       },
       variants: { IpAddressType: 'dualstack' },
       expectedSilent: {
-        'update-remove:Name': apigwv2Required('Name', '694-703'),
-        'update-remove:Description': apigwv2Kept('2135-2144', '#5004'),
-        'update-remove:DisableExecuteApiEndpoint': apigwv2Kept('2161-2170', '#5004'),
-        'update-remove:Version': apigwv2Kept('2171-2180', '#5004'),
-        'update-remove:RouteSelectionExpression': apigwv2Kept('2181-2190', '#1160'),
-        'update-remove:ApiKeySelectionExpression': apigwv2Kept('2191-2200', '#5004'),
-        'update-remove:IpAddressType': apigwv2Kept('2201-2210', '#5004'),
+        'update-remove:Name': apigwv2Required('Name', 'apigatewayv2/api.ts'),
+        'update-remove:Description': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:DisableExecuteApiEndpoint': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:Version': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:RouteSelectionExpression': apigwv2Kept('apigatewayv2/api.ts', '#1160'),
+        'update-remove:ApiKeySelectionExpression': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
+        'update-remove:IpAddressType': apigwv2Kept('apigatewayv2/api.ts', '#5004'),
       },
       expectedRemovalThrows: {
         'create:Name': APIGWV2_REQUIRED(
-          'Name is required: create() refuses an API without it before any call (apigatewayv2-provider.ts:694-703)',
+          'Name is required: create() refuses an API without it before any call (apigatewayv2/api.ts)',
           /Name and ProtocolType are required/
         ),
         'create:ProtocolType': APIGWV2_REQUIRED(
-          'ProtocolType is required: create() refuses an API without it before any call (apigatewayv2-provider.ts:694-703)',
+          'ProtocolType is required: create() refuses an API without it before any call (apigatewayv2/api.ts)',
           /Name and ProtocolType are required/
         ),
       },
@@ -205,28 +204,28 @@ const STAGE_CASE: TypeCase = {
       },
       variants: { 'DefaultRouteSettings.LoggingLevel': 'ERROR' },
       expectedSilent: {
-        'update-remove:Description': apigwv2Kept('2387-2396', '#1160'),
+        'update-remove:Description': apigwv2Kept('apigatewayv2/stage.ts', '#1160'),
         ...Object.fromEntries(
           ['StageVariables', 'StageVariables.a', 'StageVariables.b'].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '2397-2420',
+              'apigatewayv2/stage.ts',
               '#5004; StageVariables merges per key, and a dropped key stays live'
             ),
           ])
         ),
-        'update-remove:DefaultRouteSettings': apigwv2Kept('2421-2433', '#1160'),
-        'update-remove:ClientCertificateId': apigwv2Kept('2464-2473', '#5004'),
+        'update-remove:DefaultRouteSettings': apigwv2Kept('apigatewayv2/stage.ts', '#1160'),
+        'update-remove:ClientCertificateId': apigwv2Kept('apigatewayv2/stage.ts', '#5004'),
         'update-remove:DeploymentId':
-          'DeploymentId has no "no deployment" sentinel, so a removed one is passed through and the live deployment stays (apigatewayv2-provider.ts:2474-2483); an API constraint, not a CloudFormation A/B measurement',
+          'DeploymentId has no "no deployment" sentinel, so a removed one is passed through and the live deployment stays (apigatewayv2/stage.ts); an API constraint, not a CloudFormation A/B measurement',
       },
       expectedRemovalThrows: {
         'create:ApiId': APIGWV2_REQUIRED(
-          'ApiId is required: create() refuses a stage without it before any call (apigatewayv2-provider.ts:963-972)',
+          'ApiId is required: create() refuses a stage without it before any call (apigatewayv2/stage.ts)',
           /ApiId and StageName are required/
         ),
         'create:StageName': APIGWV2_REQUIRED(
-          'StageName is required: create() refuses a stage without it before any call (apigatewayv2-provider.ts:963-972)',
+          'StageName is required: create() refuses a stage without it before any call (apigatewayv2/stage.ts)',
           /ApiId and StageName are required/
         ),
       },
@@ -238,16 +237,16 @@ const STAGE_CASE: TypeCase = {
 
 const INTEGRATION_REQUIRED: Record<string, Throw> = {
   'create:ApiId': APIGWV2_REQUIRED(
-    'ApiId is required: create() refuses an integration without it before any call (apigatewayv2-provider.ts:1089-1098)',
+    'ApiId is required: create() refuses an integration without it before any call (apigatewayv2/integration.ts)',
     /ApiId and IntegrationType are required/
   ),
   'create:IntegrationType': APIGWV2_REQUIRED(
-    'IntegrationType is required: create() refuses an integration without it before any call (apigatewayv2-provider.ts:1089-1098)',
+    'IntegrationType is required: create() refuses an integration without it before any call (apigatewayv2/integration.ts)',
     /ApiId and IntegrationType are required/
   ),
 };
 
-const INTEGRATION_TYPE_SILENT = apigwv2Required('IntegrationType', '1089-1098');
+const INTEGRATION_TYPE_SILENT = apigwv2Required('IntegrationType', 'apigatewayv2/integration.ts');
 
 const INTEGRATION_CASE: TypeCase = {
   resourceType: 'AWS::ApiGatewayV2::Integration',
@@ -297,7 +296,7 @@ const INTEGRATION_CASE: TypeCase = {
         'update-remove:IntegrationType': INTEGRATION_TYPE_SILENT,
         ...Object.fromEntries(
           ['IntegrationUri', 'IntegrationMethod', 'PayloadFormatVersion', 'TimeoutInMillis'].map(
-            (key) => [`update-remove:${key}`, apigwv2Kept('2622-2626', '#1160')]
+            (key) => [`update-remove:${key}`, apigwv2Kept('apigatewayv2/integration.ts', '#1160')]
           )
         ),
         ...Object.fromEntries(
@@ -308,12 +307,12 @@ const INTEGRATION_CASE: TypeCase = {
           ].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '2627-2649',
+              'apigatewayv2/integration.ts',
               '#5004; RequestParameters merges per key, and a dropped key stays live'
             ),
           ])
         ),
-        'update-remove:Description': apigwv2Kept('2650-2659', '#5004'),
+        'update-remove:Description': apigwv2Kept('apigatewayv2/integration.ts', '#5004'),
         ...Object.fromEntries(
           [
             'ConnectionId',
@@ -325,7 +324,7 @@ const INTEGRATION_CASE: TypeCase = {
             'ResponseParameters',
             'TemplateSelectionExpression',
             'TlsConfig',
-          ].map((key) => [`update-remove:${key}`, apigwv2Kept('2665-2670', '#1160')])
+          ].map((key) => [`update-remove:${key}`, apigwv2Kept('apigatewayv2/integration.ts', '#1160')])
         ),
       },
       expectedRemovalThrows: INTEGRATION_REQUIRED,
@@ -346,8 +345,8 @@ const INTEGRATION_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:IntegrationType': INTEGRATION_TYPE_SILENT,
-        'update-remove:PayloadFormatVersion': apigwv2Kept('2622-2626', '#1160'),
-        'update-remove:CredentialsArn': apigwv2Kept('2665-2670', '#1160'),
+        'update-remove:PayloadFormatVersion': apigwv2Kept('apigatewayv2/integration.ts', '#1160'),
+        'update-remove:CredentialsArn': apigwv2Kept('apigatewayv2/integration.ts', '#1160'),
         ...Object.fromEntries(
           [
             'RequestParameters',
@@ -357,7 +356,7 @@ const INTEGRATION_CASE: TypeCase = {
           ].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '2627-2649',
+              'apigatewayv2/integration.ts',
               '#5004; a dropped key alone is no change, and CloudFormation fails an update that drops a required one beside another change (3284-3287)'
             ),
           ])
@@ -366,7 +365,7 @@ const INTEGRATION_CASE: TypeCase = {
       expectedRemovalThrows: {
         ...INTEGRATION_REQUIRED,
         'update-remove:IntegrationSubtype': APIGWV2_REQUIRED(
-          'a removed IntegrationSubtype without a declared IntegrationUri is refused before any call, as CloudFormation fails that update (real CloudFormation A/B, #1160; apigatewayv2-provider.ts:2726-2761)',
+          'a removed IntegrationSubtype without a declared IntegrationUri is refused before any call, as CloudFormation fails that update (real CloudFormation A/B, #1160; apigatewayv2/integration.ts)',
           /previous deploy recorded IntegrationSubtype/
         ),
       },
@@ -405,18 +404,18 @@ const ROUTE_CASE: TypeCase = {
         RouteResponseSelectionExpression: '$default',
       },
       expectedSilent: {
-        'update-remove:RouteKey': apigwv2Required('RouteKey', '1291-1300'),
-        'update-remove:Target': apigwv2Kept('2935-2952', '#1160'),
-        'update-remove:AuthorizationType': apigwv2Kept('2953-2962', '#5004'),
-        'update-remove:AuthorizerId': apigwv2Kept('2963-2972', '#5004'),
-        'update-remove:OperationName': apigwv2Kept('2986-2995', '#5004'),
-        'update-remove:ApiKeyRequired': apigwv2Kept('2996-3018', '#5548'),
+        'update-remove:RouteKey': apigwv2Required('RouteKey', 'apigatewayv2/route.ts'),
+        'update-remove:Target': apigwv2Kept('apigatewayv2/route.ts', '#1160'),
+        'update-remove:AuthorizationType': apigwv2Kept('apigatewayv2/route.ts', '#5004'),
+        'update-remove:AuthorizerId': apigwv2Kept('apigatewayv2/route.ts', '#5004'),
+        'update-remove:OperationName': apigwv2Kept('apigatewayv2/route.ts', '#5004'),
+        'update-remove:ApiKeyRequired': apigwv2Kept('apigatewayv2/route.ts', '#5548'),
         ...Object.fromEntries(
           ['RequestModels', 'RequestModels.application/json', 'RequestModels.text/plain'].map(
             (label) => [
               `update-remove:${label}`,
               apigwv2Kept(
-                '3019-3037',
+                'apigatewayv2/route.ts',
                 '#5004; RequestModels merges per key, and a dropped key stays live'
               ),
             ]
@@ -430,21 +429,21 @@ const ROUTE_CASE: TypeCase = {
           ].map((label) => [
             `update-remove:${label}`,
             apigwv2Kept(
-              '3038-3059',
+              'apigatewayv2/route.ts',
               '#5004; RequestParameters merges per key, and a dropped key stays live'
             ),
           ])
         ),
-        'update-remove:ModelSelectionExpression': apigwv2Kept('3060-3070', '#1160'),
-        'update-remove:RouteResponseSelectionExpression': apigwv2Kept('3071-3080', '#1160'),
+        'update-remove:ModelSelectionExpression': apigwv2Kept('apigatewayv2/route.ts', '#1160'),
+        'update-remove:RouteResponseSelectionExpression': apigwv2Kept('apigatewayv2/route.ts', '#1160'),
       },
       expectedRemovalThrows: {
         'create:ApiId': APIGWV2_REQUIRED(
-          'ApiId is required: create() refuses a route without it before any call (apigatewayv2-provider.ts:1291-1300)',
+          'ApiId is required: create() refuses a route without it before any call (apigatewayv2/route.ts)',
           /ApiId and RouteKey are required/
         ),
         'create:RouteKey': APIGWV2_REQUIRED(
-          'RouteKey is required: create() refuses a route without it before any call (apigatewayv2-provider.ts:1291-1300)',
+          'RouteKey is required: create() refuses a route without it before any call (apigatewayv2/route.ts)',
           /ApiId and RouteKey are required/
         ),
       },
@@ -455,18 +454,18 @@ const ROUTE_CASE: TypeCase = {
 // --- AWS::ApiGatewayV2::Authorizer -----------------------------------------------
 
 const AUTHORIZER_SILENT_REQUIRED = {
-  'update-remove:AuthorizerType': apigwv2Required('AuthorizerType', '1423-1432'),
+  'update-remove:AuthorizerType': apigwv2Required('AuthorizerType', 'apigatewayv2/authorizer.ts'),
   'update-remove:Name':
-    'Name is CloudFormation-required, so no deployable template removes it; create() falls back to the logical id for a missing one (apigatewayv2-provider.ts:1396)',
+    'Name is CloudFormation-required, so no deployable template removes it; create() falls back to the logical id for a missing one (apigatewayv2/authorizer.ts)',
 };
 
 const AUTHORIZER_REQUIRED: Record<string, Throw> = {
   'create:ApiId': APIGWV2_REQUIRED(
-    'ApiId is required: create() refuses an authorizer without it before any call (apigatewayv2-provider.ts:1423-1432)',
+    'ApiId is required: create() refuses an authorizer without it before any call (apigatewayv2/authorizer.ts)',
     /ApiId and AuthorizerType are required/
   ),
   'create:AuthorizerType': APIGWV2_REQUIRED(
-    'AuthorizerType is required: create() refuses an authorizer without it before any call (apigatewayv2-provider.ts:1423-1432)',
+    'AuthorizerType is required: create() refuses an authorizer without it before any call (apigatewayv2/authorizer.ts)',
     /ApiId and AuthorizerType are required/
   ),
 };
@@ -493,7 +492,7 @@ const AUTHORIZER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...AUTHORIZER_SILENT_REQUIRED,
-        'update-remove:JwtConfiguration': apigwv2Kept('3211-3222', '#1160'),
+        'update-remove:JwtConfiguration': apigwv2Kept('apigatewayv2/authorizer.ts', '#1160'),
       },
       expectedRemovalThrows: AUTHORIZER_REQUIRED,
     },
@@ -513,12 +512,12 @@ const AUTHORIZER_CASE: TypeCase = {
       },
       expectedSilent: {
         ...AUTHORIZER_SILENT_REQUIRED,
-        'update-remove:AuthorizerUri': apigwv2Kept('3223-3232', '#1160'),
-        'update-remove:AuthorizerCredentialsArn': apigwv2Kept('3233-3242', '#5004'),
-        'update-remove:AuthorizerPayloadFormatVersion': apigwv2Kept('3243-3253', '#5004'),
-        'update-remove:AuthorizerResultTtlInSeconds': apigwv2Kept('3254-3264', '#5004'),
-        'update-remove:EnableSimpleResponses': apigwv2Kept('3265-3274', '#1160'),
-        'update-remove:IdentityValidationExpression': apigwv2Kept('3275-3285', '#5004'),
+        'update-remove:AuthorizerUri': apigwv2Kept('apigatewayv2/authorizer.ts', '#1160'),
+        'update-remove:AuthorizerCredentialsArn': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
+        'update-remove:AuthorizerPayloadFormatVersion': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
+        'update-remove:AuthorizerResultTtlInSeconds': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
+        'update-remove:EnableSimpleResponses': apigwv2Kept('apigatewayv2/authorizer.ts', '#1160'),
+        'update-remove:IdentityValidationExpression': apigwv2Kept('apigatewayv2/authorizer.ts', '#5004'),
       },
       expectedRemovalThrows: AUTHORIZER_REQUIRED,
     },

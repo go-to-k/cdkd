@@ -6,6 +6,7 @@ import {
   setOutputOverrides,
   TAG_THROWS,
   wire,
+  wrapClientModule,
   type Bag,
   type BagCase,
   type Throw,
@@ -15,6 +16,26 @@ import { describe, expect, it } from 'vite-plus/test';
 import type { ResourceProvider } from '../../../src/types/resource.js';
 import { ResourceUpdateNotSupportedError } from '../../../src/utils/error-handler.js';
 import { EC2Provider } from '../../../src/provisioning/providers/ec2-provider.js';
+import * as ssmModule from '@aws-sdk/client-ssm';
+
+/** go-to-k/cdkd#5630: an SSM client whose requests the harness captures. */
+const { SSMClient: WireSSMClient } = wrapClientModule(
+  ssmModule as unknown as Record<string, unknown>,
+  'SSMClient'
+) as unknown as typeof ssmModule;
+/**
+ * A captured SSM client. A runner that already `vi.mock`s the package with
+ * `wrapClientModule` (`sdk-wire-coverage.test.ts`) hands out a captured class,
+ * which a second wrap would capture twice (a duplicate middleware): use it
+ * as is there.
+ */
+const capturedSsmClient = (): InstanceType<typeof ssmModule.SSMClient> => {
+  const plain = new ssmModule.SSMClient({});
+  const captured = plain.middlewareStack
+    .identify()
+    .some((entry) => entry.startsWith('wireCapture'));
+  return captured ? plain : new WireSSMClient({});
+};
 
 /**
  * The sixteenth batch's EC2 wire cases (#3723): every type `EC2Provider`
@@ -39,8 +60,15 @@ const ALL = ['create', 'update-add', 'update-remove'];
  * reads answer the settled state on the first poll, so a delay only slows the
  * run. Nothing it sends changes.
  */
-const ec2 = (): ResourceProvider =>
-  Object.assign(new EC2Provider(), { sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) }) as ResourceProvider;
+const ec2 = (): ResourceProvider => {
+  const provider = new EC2Provider();
+  return Object.assign(provider, {
+    sleep: () => new Promise<void>((resolve) => setImmediate(resolve)),
+    // go-to-k/cdkd#5630: the Instance SsmAssociations calls' client, captured
+    // like the EC2 one (the test's `getAwsClients()` answers no SSM client).
+    awsClients: { ...provider.awsClients, ssm: capturedSsmClient() },
+  }) as ResourceProvider;
+};
 
 /**
  * A provider whose `update()` is answered in place. The two association types'
@@ -195,6 +223,51 @@ const VOLUMES_MEMBER_REQUIRED: Record<string, Throw> = Object.fromEntries(
     )
   )
 );
+
+/**
+ * go-to-k/cdkd#5630: an SsmAssociations entry needs a DocumentName and each
+ * parameter a Key and a Value list (schema), refused before any call on every
+ * path (read as empty, the update would delete the association); and an
+ * association on an instance with no IamInstanceProfile is refused by AWS
+ * every time (CloudFormation fails it before RunInstances, measured), so it
+ * is refused before any call too.
+ */
+const SSM_MEMBER_REQUIRED = (member: string, says: RegExp): Record<string, Throw> =>
+  Object.fromEntries(
+    ALL.map((d) => [
+      `${d}:SsmAssociations.0.${member}`,
+      {
+        why: 'the schema requires DocumentName in each SsmAssociations entry and Key / Value in each parameter; an entry missing one is refused before any call (instanceSsmAssociationsRefusal, go-to-k/cdkd#5630)',
+        says,
+      },
+    ])
+  );
+const SSM_THROWS: Record<string, Throw> = {
+  ...SSM_MEMBER_REQUIRED('DocumentName', /SsmAssociations\[0\]\.DocumentName is required/),
+  ...[0, 1].reduce<Record<string, Throw>>(
+    (acc, i) => ({
+      ...acc,
+      ...SSM_MEMBER_REQUIRED(
+        `AssociationParameters.${i}.Key`,
+        new RegExp(`AssociationParameters\\[${i}\\]\\.Key is required`)
+      ),
+      ...SSM_MEMBER_REQUIRED(
+        `AssociationParameters.${i}.Value`,
+        new RegExp(`AssociationParameters\\[${i}\\]\\.Value must be a list of strings`)
+      ),
+    }),
+    {}
+  ),
+  ...Object.fromEntries(
+    ALL.map((d) => [
+      `${d}:IamInstanceProfile`,
+      {
+        why: 'Systems Manager refuses an association on an instance with no IAM role, and CloudFormation fails it before RunInstances (measured, go-to-k/cdkd#5630), so a bag declaring SsmAssociations without an IamInstanceProfile is refused before any call',
+        says: /SsmAssociations needs an IamInstanceProfile/,
+      },
+    ])
+  ),
+};
 
 const INSTANCE_KEPT = (member: string): string =>
   `kept on removal: CloudFormation leaves a removed ${member} as it is (real CloudFormation A/B, #1160), so a removed one sends nothing (${SRC}:8110-8115)`;
@@ -412,6 +485,39 @@ const INSTANCE_CASE: TypeCase = tc(
         },
       },
       {
+        // go-to-k/cdkd#5630: a bag of its own, so the association's need for
+        // an IamInstanceProfile leaves the first bag's profile probes alone.
+        name: 'license and SSM association',
+        bag: {
+          ImageId: 'ami-1',
+          InstanceType: 't3.small',
+          SubnetId: 'subnet-1',
+          IamInstanceProfile: 'profile',
+          LicenseSpecifications: [
+            {
+              LicenseConfigurationArn: `arn:aws:license-manager:us-east-1:${ACCOUNT}:license-configuration:lic-1`,
+            },
+          ],
+          SsmAssociations: [
+            {
+              DocumentName: 'AWS-RunShellScript',
+              AssociationParameters: [
+                { Key: 'commands', Value: ['echo one', 'echo two'] },
+                { Key: 'workingDirectory', Value: ['/tmp'] },
+              ],
+            },
+          ],
+        },
+        expectedRemovalThrows: {
+          ...INSTANCE_THROWS,
+          ...SSM_THROWS,
+          'create:LicenseSpecifications.0.LicenseConfigurationArn': {
+            why: 'the schema requires LicenseConfigurationArn in each LicenseSpecifications entry; a launch without it would drop a license configuration the template declared, so it is refused before RunInstances (go-to-k/cdkd#5630)',
+            says: /LicenseSpecifications\[0\]\.LicenseConfigurationArn is required/,
+          },
+        },
+      },
+      {
         name: 'network interfaces',
         bag: {
           ImageId: 'ami-1',
@@ -479,6 +585,16 @@ const INSTANCE_CASE: TypeCase = tc(
               ],
             };
           },
+          // go-to-k/cdkd#5630: the instance's SSM association, listed until a
+          // DeleteAssociation is the last write.
+          CreateAssociationCommand: () => ({
+            AssociationDescription: { AssociationId: 'assoc-1' },
+          }),
+          ListAssociationsCommand: () => ({
+            Associations: wire.at(-1)?.includes('DeleteAssociation')
+              ? []
+              : [{ AssociationId: 'assoc-1', InstanceId: 'i-1', Name: 'AWS-RunShellScript' }],
+          }),
           // The VPC's default group, which a removed SecurityGroupIds puts in place.
           DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [{ GroupId: 'sg-default' }] }),
           // The profile association: present once the instance has a profile,

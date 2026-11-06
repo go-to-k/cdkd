@@ -58,7 +58,6 @@ src/provisioning/final-snapshot.ts
 src/provisioning/provider-registry.ts
 src/provisioning/providers/acm-certificate-provider.ts
 src/provisioning/providers/agentcore-runtime-provider.ts
-src/provisioning/providers/apigatewayv2-provider.ts
 src/provisioning/providers/budgets-budget-provider.ts
 src/provisioning/providers/cloudfront-distribution-provider.ts
 src/provisioning/providers/cloudtrail-provider.ts

@@ -10,6 +10,7 @@ import { definedAttributes } from '../../attribute-map.js';
 import { isSettledInstanceState } from '../../ec2-instance-state.js';
 import { markNonRetryable } from '../../../deployment/retryable-errors.js';
 import { markRefusedBeforeApplying } from '../../../deployment/prior-attempt-scope.js';
+import { pasteableAwsCommand } from '../../replacement-protection-advice.js';
 
 /**
  * Issue #5446: the stop / start waits of an in-place InstanceType / UserData
@@ -25,6 +26,14 @@ export const INSTANCE_STATE_POLL_MS = 5000;
  */
 export const VOLUME_ATTACHMENT_WAIT_CAP_MS = 10 * 60 * 1000;
 export const VOLUME_ATTACHMENT_POLL_MS = 2000;
+/**
+ * go-to-k/cdkd#5630: how long CreateAssociation is retried while Systems
+ * Manager does not yet see the instance's IAM role (cdkd launches and
+ * associates the profile faster than CloudFormation does). It is bounded
+ * by whichever ends first: this cap or the enclosing resource deadline.
+ */
+export const SSM_ASSOCIATION_ROLE_WAIT_CAP_MS = 5 * 60 * 1000;
+export const SSM_ASSOCIATION_ROLE_POLL_MS = 3000;
 /** Consecutive reads with no attachment after AttachVolume that fail the wait. */
 export const VOLUME_ATTACHMENT_NONE_READS = 15;
 /** `DescribeVolumes`'s answer for a volume id EC2 no longer lists. */
@@ -95,6 +104,19 @@ export interface InstanceMemberPlan {
    * place (a Device change is both).
    */
   volumes?: { detach: InstanceVolume[]; attach: InstanceVolume[] };
+  /**
+   * go-to-k/cdkd#5630: an `SsmAssociations` change, applied in place by
+   * `applyInstanceSsmAssociationChange`: the instance's association is
+   * deleted when the record held one, then the desired one is created.
+   * `documentNames` are the recorded documents, the only associations the
+   * delete touches (none for an unusable record).
+   */
+  ssmAssociation?: {
+    documentNames: string[];
+    /** The previous record was unreadable, so no old association was deleted. */
+    recordUnreadable: boolean;
+    create: InstanceSsmAssociation | undefined;
+  };
 }
 
 /**
@@ -244,7 +266,251 @@ export const INSTANCE_CREATE_ONLY_SENT = [
   // go-to-k/cdkd#5630: create-only in the schema; CloudFormation measured
   // (us-east-1, 2026-11-06): a Version change creates a new instance.
   'LaunchTemplate',
+  // go-to-k/cdkd#5630: create-only in the schema; CloudFormation measured
+  // (us-east-1): adding, changing or removing an entry creates a new instance.
+  'LicenseSpecifications',
 ];
+
+/**
+ * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance
+ * LicenseSpecifications` (a list of `{ LicenseConfigurationArn }`, the member
+ * required by the schema), so the launch never drops a license configuration
+ * the template declared.
+ */
+export function instanceLicenseSpecificationsRefusal(
+  value: unknown,
+  resourceType: string
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    // The shape only, never the value: a template string may be a resolved secret.
+    const shape = typeof value === 'object' ? 'an object' : `a ${typeof value}`;
+    return `${resourceType}.LicenseSpecifications must be a list of { LicenseConfigurationArn } entries (got ${shape})`;
+  }
+  for (const [i, item] of (value as unknown[]).entries()) {
+    const path = `${resourceType}.LicenseSpecifications[${i}]`;
+    const refusal =
+      item === undefined || item === null
+        ? `${path} must be an object (got ${item === null ? 'null' : 'undefined'})`
+        : configStringRefusal(item, 'LicenseConfigurationArn', '', path);
+    if (refusal !== undefined) return refusal;
+    const arn = (item as Record<string, unknown>)['LicenseConfigurationArn'];
+    if (typeof arn !== 'string' || arn === '') return `${path}.LicenseConfigurationArn is required`;
+  }
+  return undefined;
+}
+
+/**
+ * go-to-k/cdkd#5630: `LicenseSpecifications` as RunInstances takes it (the
+ * member names match), or `undefined` for an absent list. Call it only after
+ * {@link instanceLicenseSpecificationsRefusal} passed.
+ */
+export function licenseSpecificationsRequest(
+  value: unknown
+): Array<{ LicenseConfigurationArn: string }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((v) => ({
+    LicenseConfigurationArn: (v as Record<string, unknown>)['LicenseConfigurationArn'] as string,
+  }));
+}
+
+/**
+ * go-to-k/cdkd#5630: one `AWS::EC2::Instance SsmAssociations` entry, its
+ * `AssociationParameters` as the `Parameters` map CreateAssociation takes.
+ * `parameterKeys` keeps the declared order (the drift readback emits the
+ * parameters in it); `declaresParameters` whether the entry named the list.
+ */
+export interface InstanceSsmAssociation {
+  DocumentName: string;
+  Parameters: Record<string, string[]>;
+  parameterKeys: string[];
+  declaresParameters: boolean;
+}
+
+/**
+ * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance
+ * SsmAssociations` (a list of `{ DocumentName, AssociationParameters? }`, each
+ * parameter a `{ Key, Value: [string] }`). It runs on every path, a rollback
+ * replay too: the update deletes the association the desired list lacks, so a
+ * list read as empty would delete it. The messages name shapes and keys,
+ * never a parameter VALUE: CloudTrail withholds those as sensitive, and a
+ * template may resolve a secret into one.
+ */
+export function instanceSsmAssociationsRefusal(
+  value: unknown,
+  resourceType: string
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const shapeOf = (v: unknown): string =>
+    v === null
+      ? 'null'
+      : Array.isArray(v)
+        ? 'a list'
+        : typeof v === 'object'
+          ? 'an object'
+          : `a ${typeof v}`;
+  if (!Array.isArray(value)) {
+    return `${resourceType}.SsmAssociations must be a list of { DocumentName, AssociationParameters } entries (got ${shapeOf(value)})`;
+  }
+  for (const [i, item] of (value as unknown[]).entries()) {
+    const path = `${resourceType}.SsmAssociations[${i}]`;
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      return `${path} must be an object (got ${item === undefined ? 'undefined' : shapeOf(item)})`;
+    }
+    const entry = item as Record<string, unknown>;
+    const name = entry['DocumentName'];
+    if (typeof name !== 'string' || name === '') {
+      return name === undefined || name === ''
+        ? `${path}.DocumentName is required`
+        : `${path}.DocumentName must be a string (got ${shapeOf(name)})`;
+    }
+    const params = entry['AssociationParameters'];
+    if (params === undefined || params === null) continue;
+    if (!Array.isArray(params)) {
+      return `${path}.AssociationParameters must be a list of { Key, Value } entries (got ${shapeOf(params)})`;
+    }
+    const seen = new Set<string>();
+    for (const [j, param] of (params as unknown[]).entries()) {
+      const ppath = `${path}.AssociationParameters[${j}]`;
+      if (param === null || typeof param !== 'object' || Array.isArray(param)) {
+        return `${ppath} must be an object (got ${param === undefined ? 'undefined' : shapeOf(param)})`;
+      }
+      const key = (param as Record<string, unknown>)['Key'];
+      if (typeof key !== 'string' || key === '') return `${ppath}.Key is required`;
+      if (seen.has(key)) return `${ppath} declares the Key ${key} a second time`;
+      seen.add(key);
+      const values = (param as Record<string, unknown>)['Value'];
+      if (!Array.isArray(values)) {
+        return `${ppath}.Value must be a list of strings (got ${values === undefined ? 'undefined' : shapeOf(values)})`;
+      }
+      for (const [k, v] of (values as unknown[]).entries()) {
+        if (typeof v !== 'string' && !(typeof v === 'number' && Number.isFinite(v))) {
+          return `${ppath}.Value[${k}] must be a string (got ${v === undefined ? 'undefined' : shapeOf(v)})`;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * go-to-k/cdkd#5630: the `SsmAssociations` entries, or `[]` for an absent
+ * list. A numeric parameter value is sent as the string SSM takes, as
+ * CloudFormation coerces a scalar. Call it only on a value
+ * {@link instanceSsmAssociationsRefusal} passed.
+ */
+export function instanceSsmAssociationEntries(value: unknown): InstanceSsmAssociation[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((v) => {
+    const entry = v as Record<string, unknown>;
+    const params = Array.isArray(entry['AssociationParameters'])
+      ? (entry['AssociationParameters'] as Array<Record<string, unknown>>)
+      : [];
+    const Parameters: Record<string, string[]> = {};
+    for (const p of params) {
+      Parameters[p['Key'] as string] = (p['Value'] as unknown[]).map((x) => String(x));
+    }
+    return {
+      DocumentName: entry['DocumentName'] as string,
+      Parameters,
+      parameterKeys: params.map((p) => p['Key'] as string),
+      declaresParameters: Array.isArray(entry['AssociationParameters']),
+    };
+  });
+}
+
+/** An SSM document's name, from a name or an ARN (`arn:...:document/<name>`). */
+export function ssmDocumentName(nameOrArn: string): string {
+  return nameOrArn.startsWith('arn:') ? nameOrArn.slice(nameOrArn.lastIndexOf('/') + 1) : nameOrArn;
+}
+
+/**
+ * go-to-k/cdkd#5630: whether two `SsmAssociations` values associate the same
+ * documents with the same parameters (parameter order aside; the order of a
+ * parameter's values counts). An unusable side is never the same.
+ */
+export function sameSsmAssociations(a: unknown, b: unknown, resourceType: string): boolean {
+  if (
+    instanceSsmAssociationsRefusal(a, resourceType) !== undefined ||
+    instanceSsmAssociationsRefusal(b, resourceType) !== undefined
+  ) {
+    return false;
+  }
+  const left = instanceSsmAssociationEntries(a);
+  const right = instanceSsmAssociationEntries(b);
+  if (left.length !== right.length) return false;
+  return left.every((l, i) => {
+    const r = right[i]!;
+    if (ssmDocumentName(l.DocumentName) !== ssmDocumentName(r.DocumentName)) return false;
+    const lk = Object.keys(l.Parameters).sort();
+    const rk = Object.keys(r.Parameters).sort();
+    return (
+      lk.length === rk.length &&
+      lk.every((k, j) => k === rk[j] && sameOrderedStrings(l.Parameters[k]!, r.Parameters[k]!))
+    );
+  });
+}
+
+function sameOrderedStrings(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * go-to-k/cdkd#5630: how to find and remove a stale SSM association of
+ * `instanceId` by hand, for a message where cdkd could not tell which
+ * association is the resource's (an unreadable record). Names no parameter
+ * value.
+ */
+export function staleSsmAssociationRemedy(
+  instanceId: string,
+  region: string | undefined,
+  maskSecrets?: (text: string) => string
+): string {
+  const aws = pasteableAwsCommand(maskSecrets);
+  // Never the operator's default region: there, another region's instance
+  // lists no association, which reads as "nothing stale".
+  const regionArg = region === undefined ? undefined : aws`--region ${region}`;
+  const list =
+    regionArg === undefined
+      ? aws`aws ssm list-associations --association-filter-list key=InstanceId,value=${instanceId} --region <the stack's region>`
+      : aws`aws ssm list-associations --association-filter-list key=InstanceId,value=${instanceId} ${regionArg}`;
+  const del =
+    regionArg === undefined
+      ? aws`aws ssm delete-association --association-id <id> --region <the stack's region>`
+      : aws`aws ssm delete-association --association-id <id> ${regionArg}`;
+  return `List its associations with: ${list.render()} and delete a stale one with: ${del.render()}`;
+}
+
+/**
+ * go-to-k/cdkd#5630: an `SsmAssociations` EC2 and Systems Manager refuse
+ * every time, so CloudFormation fails the create before RunInstances
+ * (measured us-east-1): two or more entries, or an entry on an instance with
+ * no `IamInstanceProfile`. Refused before any call on every path, a rollback
+ * replay included, since the replay could not succeed either. An instance
+ * declaring a `LaunchTemplate` is not refused for a missing profile: the
+ * template can carry one.
+ */
+export function ssmAssociationsAwsRefusal(
+  properties: Record<string, unknown>,
+  resourceType: string
+): string | undefined {
+  const entries = instanceSsmAssociationEntries(properties['SsmAssociations']);
+  if (entries.length > 1) {
+    return `${resourceType}.SsmAssociations declares ${entries.length} documents, and an instance takes at most one ("Currently, multiple documents cannot be associated with one instance", which CloudFormation refuses too). Declare a single entry`;
+  }
+  const profile = properties['IamInstanceProfile'];
+  const hasProfile =
+    (typeof profile === 'string' && profile.trim() !== '') ||
+    (profile !== null && typeof profile === 'object');
+  // A LaunchTemplate can carry the instance profile, which only the launch
+  // reveals: the association's bounded retry then surfaces Systems
+  // Manager's own answer instead.
+  const fromLaunchTemplate = properties['LaunchTemplate'] != null;
+  if (entries.length === 1 && !hasProfile && !fromLaunchTemplate) {
+    return `${resourceType}.SsmAssociations needs an IamInstanceProfile: Systems Manager associates a document only with an instance that has an IAM role ("Before you can associate a document with the instance, you must associate an IAM role", which CloudFormation refuses too). Declare an IamInstanceProfile`;
+  }
+  return undefined;
+}
 
 /**
  * go-to-k/cdkd#5630: the refusal for a malformed `AWS::EC2::Instance

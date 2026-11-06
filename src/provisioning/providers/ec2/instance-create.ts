@@ -19,7 +19,13 @@ import { pasteableAwsCommand, WITHHELD_AWS_COMMAND } from '../../replacement-pro
 import { safeMsg } from '../../../utils/display-safe.js';
 import { markAuxiliaryFailure, markCreatedBeforeFailure } from '../../auxiliary-failure.js';
 import { reportCreatedResource, retractCreatedResource } from '../../created-resource-sink.js';
-import { describedInstanceAttributes, instanceVolumeEntries } from './instance-support.js';
+import { markNonRetryable } from '../../../deployment/retryable-errors.js';
+import {
+  describedInstanceAttributes,
+  instanceSsmAssociationEntries,
+  instanceVolumeEntries,
+  isRecordedStandIn,
+} from './instance-support.js';
 import type { EC2Provider } from '../ec2-provider.js';
 
 // ─── AWS::EC2::Instance ──────────────────────────────────────────
@@ -70,12 +76,39 @@ export async function createInstance(
     logicalId
   );
 
+  // go-to-k/cdkd#5630: the association to create once the instance runs
+  // (the refusals above passed). A rollback replay's state record can hold a
+  // parameter as a stand-in (an unresolved `{{resolve:...}}` reference or the
+  // redaction mask), which must never be sent: the replay launches the
+  // instance without the association, says so, and records none.
+  let ssmAssociations = instanceSsmAssociationEntries(properties['SsmAssociations']);
+  let skippedSsmAssociations = false;
+  if (ssmAssociations.length > 0 && isRecordedStandIn(properties['SsmAssociations'])) {
+    if (context?.replayingState !== true) {
+      throw markNonRetryable(
+        new ProvisioningError(
+          `${resourceType}.SsmAssociations holds a recorded stand-in (an unresolved {{resolve:...}} reference or the redaction mask), not a value cdkd can send. The instance ${logicalId} was not launched; deploy from the template so the value resolves.`,
+          resourceType,
+          logicalId
+        )
+      );
+    }
+    this.logger.warn(
+      safeMsg`${logicalId} (${resourceType}): the state being restored records SsmAssociations with a stand-in parameter (an unresolved {{resolve:...}} reference or the redaction mask), so the instance is launched without its SSM association; deploy from the template to create it.`
+    );
+    ssmAssociations = [];
+    skippedSsmAssociations = true;
+  }
+
   // go-to-k/cdkd#4583: set only when the wiring-failure cleanup could not
   // terminate the instance this call launched.
   let leftBehindId: string | undefined;
   // go-to-k/cdkd#5630: an AttachVolume was accepted, so the wiring cleanup
   // waits for the instance to terminate (see there).
   let volumeAttachIssued = false;
+  // go-to-k/cdkd#5630: the association this create made, which the wiring
+  // cleanup deletes with the instance.
+  let createdAssociationId: string | undefined;
   try {
     const securityGroupIds = properties['SecurityGroupIds'] as string[] | undefined;
     const securityGroups = properties['SecurityGroups'] as string[] | undefined;
@@ -236,9 +269,12 @@ export async function createInstance(
       // #1277 this wait was unconditional, so `--no-wait` silently did
       // nothing on any stack containing an EC2 instance.
       // go-to-k/cdkd#5630: declared `Volumes` wait under --no-wait too:
-      // AttachVolume refuses an instance that is still `pending`.
+      // AttachVolume refuses an instance that is still `pending`. Declared
+      // `SsmAssociations` wait too: the association needs the IAM profile
+      // check below, which a `pending` instance cannot take.
       const volumes = instanceVolumeEntries(properties['Volumes']);
-      const waitsForRunning = process.env['CDKD_NO_WAIT'] !== 'true' || volumes.length > 0;
+      const waitsForRunning =
+        process.env['CDKD_NO_WAIT'] !== 'true' || volumes.length > 0 || ssmAssociations.length > 0;
       if (waitsForRunning) {
         this.logger.debug(`Waiting for instance ${instanceId} to be running...`);
         await waitUntilInstanceRunning(
@@ -361,6 +397,19 @@ export async function createInstance(
         });
       }
 
+      // go-to-k/cdkd#5630: associate the declared SSM document, as
+      // CloudFormation does once the instance is launched (it does not wait
+      // for the association to execute, and neither does cdkd). A failure
+      // fails the create, and the wiring cleanup below terminates the instance.
+      for (const entry of ssmAssociations) {
+        createdAssociationId = await this.createInstanceSsmAssociation(
+          logicalId,
+          instanceId,
+          entry,
+          maskerOrIdentity(context?.maskSecrets)
+        );
+      }
+
       // Describe instance to get attributes after running. Under
       // --no-wait the instance can still be `pending` here, so the public
       // address may not be assigned yet; `describedInstanceAttributes`
@@ -405,8 +454,25 @@ export async function createInstance(
       this.logger.debug(`Successfully created EC2 Instance ${logicalId}: ${instanceId}`);
 
       runInstancesToken.release();
+      if (skippedSsmAssociations) {
+        // Record what was created: no association.
+        const { SsmAssociations: _skipped, ...effectiveProperties } = properties;
+        return { physicalId: instanceId, attributes, effectiveProperties };
+      }
       return { physicalId: instanceId, attributes };
     } catch (innerError) {
+      if (createdAssociationId !== undefined) {
+        // Best effort: the instance is terminated below either way, and
+        // CloudFormation leaves an association on a terminated instance.
+        try {
+          await this.deleteSsmAssociationById(createdAssociationId);
+        } catch (associationError) {
+          const head = `Could not delete the SSM association ${createdAssociationId} of the partially-created EC2 Instance ${logicalId} (${instanceId}): `;
+          this.logger.warn(
+            safeMsg`${head}${this.warnFailureSentence(head, associationError, maskerOrIdentity(context?.maskSecrets))}`
+          );
+        }
+      }
       try {
         await this.ec2Client.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
         // go-to-k/cdkd#5630: a volume attached to the instance stays
