@@ -122,7 +122,7 @@ dynamodb-stream-filter	2026-11-04T07:36:26Z	PASS	70	verify.sh	rc ok, orph clean 
 dynamodb-streams	2026-11-04T18:01:46Z	PASS	233	verify.sh	rc ok, M3 delete-resource-policy cooldown retry passed, M4/M5 passed, orph clean, own temp state bucket deleted; sweep batch 19 re-run
 dynamodb-tableclass-switch	2026-11-04T06:43:31Z	PASS	65	verify.sh	rc ok, orph clean, own state bucket; no leaked log groups
 dynamodb-ttl-attr-change	2026-10-28T05:24:24Z	PASS	1944	verify.sh	rc ok, orph clean; 2c waited out rate limit (1874s); pre-fix probe RED at 2c (#5451)
-ec2-instance	2026-11-06T08:41:15Z	PASS	466	verify.sh	rc ok, orph clean, final sha 9f62ca023
+ec2-instance	2026-11-06T16:25:30Z	PASS	762	verify.sh	rc ok, orph clean, us-east-1, #5884 final
 ec2-instance-fanout	2026-11-04T05:01:38Z	PASS	100	verify.sh	rc ok, orph clean; 10-instance fan-out, destroy 0 errors
 ec2-route-targets	2026-11-02T20:45:34Z	PASS	777	verify.sh	rc ok, orph clean, ODB rejection probe
 ec2-sg-source-group-name	2026-10-28T13:02:37Z	PASS	60	verify.sh	PR#5479 5478 SourceSecurityGroupName peer created+renamed in place (real PASS, not SKIP); pre-fix probe RED at Phase 1; destroy 0 errors 0 orphans
