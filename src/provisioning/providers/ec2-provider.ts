@@ -10729,16 +10729,15 @@ export class EC2Provider implements ResourceProvider {
     volume: InstanceVolume
   ): Promise<void> {
     try {
+      // No Device: a record whose Device went stale (the volume moved out of
+      // band) still detaches the volume from this instance, so the update
+      // converges on the declared device.
       await this.ec2Client.send(
-        new DetachVolumeCommand({
-          InstanceId: instanceId,
-          VolumeId: volume.VolumeId,
-          Device: volume.Device,
-        })
+        new DetachVolumeCommand({ InstanceId: instanceId, VolumeId: volume.VolumeId })
       );
     } catch (error) {
-      // Any device: a volume still on this instance at another device (the
-      // record's Device is stale) is not detached.
+      // Any device, like the call: a refused detach whose volume is still on
+      // this instance, at whatever device, did not happen.
       const state = await this.readVolumeAttachment(instanceId, volume, true).catch(
         () => 'attached'
       );

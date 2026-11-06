@@ -88,7 +88,10 @@ function volumeWrites(): string[] {
     .map((cmd) => {
       const input = (cmd as unknown as { input: Record<string, string> }).input;
       const verb = cmd instanceof AttachVolumeCommand ? 'Attach' : 'Detach';
-      return `${verb} ${input['VolumeId']} ${input['Device']}`;
+      // A DetachVolume names no Device (it detaches from the instance).
+      return verb === 'Attach'
+        ? `${verb} ${input['VolumeId']} ${input['Device']}`
+        : `${verb} ${input['VolumeId']}${input['Device'] === undefined ? '' : ` ${input['Device']}`}`;
     });
 }
 
@@ -170,6 +173,14 @@ beforeEach(() => {
       if (failDetach !== undefined) return Promise.reject(failDetach);
       const id = input['VolumeId'] as string;
       const held = attachments.get(id);
+      // EC2 refuses a DetachVolume naming a Device the volume is not at.
+      if (held !== undefined && input['Device'] !== undefined && input['Device'] !== held.Device) {
+        return Promise.reject(
+          Object.assign(new Error('No attachment at that device'), {
+            name: 'InvalidAttachment.NotFound',
+          })
+        );
+      }
       if (held !== undefined && detachingReads > 0) held.State = 'detaching';
       else attachments.delete(id);
       return Promise.resolve({ State: 'detaching' });
@@ -385,7 +396,7 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
   it('detaches a removed entry before attaching an added one', async () => {
     attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'attached' });
     await update({ ...BASE, Volumes: [SDG2] }, { ...BASE, Volumes: [SDF1] });
-    expect(volumeWrites()).toEqual(['Detach vol-1 /dev/sdf', 'Attach vol-2 /dev/sdg']);
+    expect(volumeWrites()).toEqual(['Detach vol-1', 'Attach vol-2 /dev/sdg']);
     expect(sent(DetachVolumeCommand)[0]).toMatchObject({ InstanceId: 'i-new' });
   });
 
@@ -393,7 +404,7 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
     attachments.set('vol-2', { InstanceId: 'i-new', Device: '/dev/sdg', State: 'attached' });
     detachingReads = 2;
     await update({ ...BASE, Volumes: [SDH2] }, { ...BASE, Volumes: [SDG2] });
-    expect(volumeWrites()).toEqual(['Detach vol-2 /dev/sdg', 'Attach vol-2 /dev/sdh']);
+    expect(volumeWrites()).toEqual(['Detach vol-2', 'Attach vol-2 /dev/sdh']);
     // The detach wait read `detaching` twice and then no attachment, all
     // before the AttachVolume went out.
     const order = mockSend.mock.calls
@@ -414,11 +425,21 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
     ]);
   });
 
+  it('converges when the recorded Device went stale: the volume is detached from wherever it sits, then attached as declared', async () => {
+    attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdh', State: 'attached' });
+    await update(
+      { ...BASE, Volumes: [{ Device: '/dev/sdh', VolumeId: 'vol-1' }] },
+      { ...BASE, Volumes: [SDF1] }
+    );
+    expect(volumeWrites()).toEqual(['Detach vol-1', 'Attach vol-1 /dev/sdh']);
+    expect(attachments.get('vol-1')).toMatchObject({ Device: '/dev/sdh', State: 'attached' });
+  });
+
   it('takes a refused DetachVolume for a volume EC2 no longer lists as detached', async () => {
     goneVolumes.add('vol-1');
     failDetach = Object.assign(new Error('gone'), { name: 'InvalidVolume.NotFound' });
     await update(BASE, { ...BASE, Volumes: [SDF1] }, { removedProperties: new Set(['Volumes']) });
-    expect(volumeWrites()).toEqual(['Detach vol-1 /dev/sdf']);
+    expect(volumeWrites()).toEqual(['Detach vol-1']);
   });
 
   it('surfaces a refused DetachVolume while the volume sits on this instance at another device', async () => {
@@ -433,7 +454,7 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
     attachments.set('vol-1', { InstanceId: 'i-new', Device: '/dev/sdf', State: 'attached' });
     attachments.set('vol-2', { InstanceId: 'i-new', Device: '/dev/sdg', State: 'attached' });
     await update(BASE, { ...BASE, Volumes: [SDF1, SDG2] }, { removedProperties: new Set(['Volumes']) });
-    expect(volumeWrites()).toEqual(['Detach vol-1 /dev/sdf', 'Detach vol-2 /dev/sdg']);
+    expect(volumeWrites()).toEqual(['Detach vol-1', 'Detach vol-2']);
   });
 
   it('sends nothing for a reordered list, or an unchanged one', async () => {
@@ -447,7 +468,7 @@ describe('AWS::EC2::Instance Volumes update (#5630)', () => {
       name: 'IncorrectState',
     });
     await update(BASE, { ...BASE, Volumes: [SDF1] }, { removedProperties: new Set(['Volumes']) });
-    expect(volumeWrites()).toEqual(['Detach vol-1 /dev/sdf']);
+    expect(volumeWrites()).toEqual(['Detach vol-1']);
   });
 
   it('surfaces a refused DetachVolume while the volume is still attached here', async () => {
