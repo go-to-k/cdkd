@@ -505,7 +505,7 @@ PHASE2B_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2B_LOG}")"
 # warning did not fire.
 if ! grep -qF "${REMOVAL_NEEDLE}" <<<"${PHASE2B_PLAIN}"; then
   if grep -qF "${REMOVAL_SENTINEL}" <<<"${PHASE2B_PLAIN}"; then
-    echo "FAIL [phase 2b]: the removal warning fired without the CloudFormation-keeps wording '${REMOVAL_NEEDLE}' -- the measured claim regressed in src/provisioning/providers/fsx-filesystem-provider.ts (CFN_KEEPS_TOP_LEVEL_ON_REMOVAL / cfnKeepsOnRemoval), or the wording drifted and this needle needs updating" >&2
+    echo "FAIL [phase 2b]: the removal warning fired without the CloudFormation-keeps wording '${REMOVAL_NEEDLE}' -- the measured claim regressed in src/provisioning/providers/fsx-filesystem/shared.ts (CFN_KEEPS_TOP_LEVEL_ON_REMOVAL / cfnKeepsOnRemoval), or the wording drifted and this needle needs updating" >&2
   else
     echo "FAIL [phase 2b]: removing StorageCapacity / StorageType / NetworkType produced no warning (issue #1160: the removal was dropped silently)" >&2
   fi
@@ -560,7 +560,7 @@ if [ "${PHASE2C_RC}" -ne 0 ]; then
 fi
 PHASE2C_PLAIN="$(sed 's/\x1b\[[0-9;]*m//g' "${PHASE2C_LOG}")"
 if grep -qF "${TP_OVERCLAIM_NEEDLE}" <<<"${PHASE2C_PLAIN}"; then
-  echo "FAIL [phase 2c]: the warning claims CloudFormation keeps a removed ThroughputCapacity on SINGLE_AZ_1, a shape the CFn A/B on #1160 never measured -- the MULTI_AZ_1 gate in src/provisioning/providers/fsx-filesystem-provider.ts (CFN_KEEPS_ON_REMOVAL_FOR_SHAPE) regressed" >&2
+  echo "FAIL [phase 2c]: the warning claims CloudFormation keeps a removed ThroughputCapacity on SINGLE_AZ_1, a shape the CFn A/B on #1160 never measured -- the MULTI_AZ_1 gate in src/provisioning/providers/fsx-filesystem/shared.ts (CFN_KEEPS_ON_REMOVAL_FOR_SHAPE) regressed" >&2
   exit 1
 fi
 if ! grep -qF "${TP_REMOVAL_NEEDLE}" <<<"${PHASE2C_PLAIN}"; then
