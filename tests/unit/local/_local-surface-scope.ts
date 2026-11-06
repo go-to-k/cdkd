@@ -107,13 +107,43 @@ export function isCommentLine(text: string): boolean {
  * write above it in the same function as restoring — both the exact opposite of
  * what the comment says.
  *
- * A string literal containing one of the tokens is deliberately not modelled:
- * nothing in the tree has one, and a quote-aware scan would be its own source of
- * silent misses. Comments ARE modelled, because they are where an author
- * explains the very decision being asserted.
+ * QUOTE-AWARE (issue #5866): a `//` inside a string is not a comment. A plain
+ * regex cut `` `http://localhost/?t=${process.env.AWS_SESSION_TOKEN}` `` at the
+ * scheme and hid the read after it — on a surface whose URLs are built exactly
+ * that way. The scan tracks `'`, `"` and `` ` `` (with backslash escapes) on
+ * ONE line; a template's `${...}` stays inside the string, so a comment there
+ * survives as code, which can only ADD a site, never hide one. A regex literal
+ * holding a lone quote would desynchronise it the same way; none is on the
+ * surface. String CONTENTS are kept: a token spelled inside a string is still
+ * not modelled, and comments are, because they are where an author explains
+ * the very decision being asserted.
  */
 export function stripComments(line: string): string {
-  return line.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/, '');
+  let out = '';
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i] ?? '';
+    if (quote !== undefined) {
+      out += ch;
+      if (ch === '\\') {
+        out += line[i + 1] ?? '';
+        i++;
+      } else if (ch === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (ch === '/' && line[i + 1] === '/') break;
+    if (ch === '/' && line[i + 1] === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end === -1) break;
+      i = end + 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+    out += ch;
+  }
+  return out;
 }
 
 /**

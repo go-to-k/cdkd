@@ -77,7 +77,8 @@ import {
  * delivers no identity, so requiring a verdict on one would be noise the next
  * author learns to paste past.
  */
-const CREDENTIAL_KEY_SITE = /'AWS_ACCESS_KEY_ID'|\bAWS_CREDENTIAL_ENV_KEYS\b/;
+const CREDENTIAL_KEY_SITE =
+  /(['"])AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)\1|\bAWS_CREDENTIAL_ENV_KEYS\b/;
 const CALLER_READ_SITE = /\bcallerEnvCredentials\s*\(/;
 /**
  * A READ of the engine's own credential triple out of `process.env`, by any
@@ -338,33 +339,41 @@ function processEnvBinding(lines: string[], index: number, imports: Set<number>)
   return /\benv\b/.test(head) || (moduleName !== undefined && moduleName !== 'process');
 }
 
-/** The credential keys a line reads out of `process.env`. */
-function credentialKeysRead(code: string): Set<string> {
+/**
+ * The credential keys a line names as a site does: read out of `process.env`,
+ * or spelled as a quoted key.
+ */
+function credentialKeysNamed(code: string): Set<string> {
   const keys = new Set<string>();
-  for (const m of code.matchAll(new RegExp(PROCESS_ENV_CREDENTIAL_READ_SOURCE, 'g'))) {
-    const key = CREDENTIAL_ENV_NAME_TOKEN.exec(m[0])?.[0];
-    if (key !== undefined) keys.add(key);
+  const sources = [PROCESS_ENV_CREDENTIAL_READ_SOURCE, String.raw`(['"])${CREDENTIAL_ENV_NAME}\1`];
+  for (const source of sources) {
+    for (const m of code.matchAll(new RegExp(source, 'g'))) {
+      const key = CREDENTIAL_ENV_NAME_TOKEN.exec(m[0])?.[0];
+      if (key !== undefined) keys.add(key);
+    }
   }
   return keys;
 }
 
 /**
- * Does an annotation govern this `process.env` credential read?
+ * Does an annotation govern this credential-key line — a `process.env` read or
+ * a quoted key?
  *
- * The triple is read on three consecutive lines and decided once, so a read
- * directly below ANOTHER read inherits the annotation above the first. Only a
+ * The triple is read or written on three consecutive lines and decided once,
+ * so such a line directly below ANOTHER inherits the annotation above the
+ * first. Only a
  * contiguous run of reads of DIFFERENT keys is skipped — at most the triple: a
  * second read of a key the run already read is a new decision, not the same
  * one, and any other statement in between ends the run, where
  * `hasAnnotationAbove` stops as usual.
  */
 function annotationGovernsRead(lines: string[], index: number): boolean {
-  const seen = credentialKeysRead(stripComments(lines[index] ?? ''));
+  const seen = credentialKeysNamed(stripComments(lines[index] ?? ''));
   let top = index;
   while (top > 0) {
     const above = lines[top - 1] ?? '';
     if (isCommentLine(above)) break;
-    const keys = credentialKeysRead(stripComments(above));
+    const keys = credentialKeysNamed(stripComments(above));
     if (keys.size === 0 || [...keys].some((k) => seen.has(k))) break;
     for (const k of keys) seen.add(k);
     top--;
@@ -372,12 +381,47 @@ function annotationGovernsRead(lines: string[], index: number): boolean {
   return hasAnnotationAbove(lines, top, ANNOTATION);
 }
 
+/**
+ * Does an annotation govern this QUOTED-key line (the `env-keys` shape)?
+ *
+ * The triple is WRITTEN as one decision, and its third key usually sits in a
+ * branch of its own — `if (creds.sessionToken) { env['AWS_SESSION_TOKEN'] = ...
+ * } else { delete env['AWS_SESSION_TOKEN']; }` — below the two it completes. So
+ * the walk climbs over other quoted-key WRITES (never a `process.env` read,
+ * which is the stricter `annotationGovernsRead`), the branch's own braces and
+ * `if` / `else` openers, comments and blank lines, then asks
+ * `hasAnnotationAbove` from the top of that run. Anything else — any other
+ * statement — ends it, so a key line cannot borrow a reason across code.
+ */
+function annotationGovernsKeyLine(lines: string[], index: number): boolean {
+  let top = index;
+  for (let i = index - 1; i >= 0 && index - i <= 15; i--) {
+    const raw = lines[i] ?? '';
+    const code = stripComments(raw).trim();
+    // A comment is passed over unless it IS the annotation, which stops the
+    // climb so `hasAnnotationAbove` finds it from the run's top.
+    const passable = isCommentLine(raw)
+      ? !isAnnotationCommentLine(raw, ANNOTATION)
+      : code === '' ||
+          /^\}?\s*(?:else\s*)?(?:if\s*\(.*\)\s*)?\{$/.test(code) ||
+          code === '}' ||
+          (CREDENTIAL_KEY_SITE.test(code) && !PROCESS_ENV_CREDENTIAL_READ.test(code));
+    if (!passable) break;
+    if (!isCommentLine(raw) && code !== '') top = i;
+  }
+  return hasAnnotationAbove(lines, top, ANNOTATION);
+}
+
 /** The shape of one code line (comments already stripped). */
 function shapeOf(code: string): Shape | undefined {
-  if (CALLER_READ_SITE.test(code)) return 'caller-read';
+  // The `process.env` shapes come FIRST: a line that also asks the caller
+  // (`callerEnvCredentials()?.sessionToken ?? process.env.AWS_SESSION_TOKEN`)
+  // falls back to the role's value when the caller has none, so `reads-caller`
+  // would clear exactly the read this fence exists to stop.
   if (PROCESS_ENV_CREDENTIAL_READ.test(code)) return 'process-env-read';
-  if (CREDENTIAL_KEY_SITE.test(code)) return 'env-keys';
   if (PROCESS_ENV_WHOLE.test(code)) return 'process-env-whole';
+  if (CALLER_READ_SITE.test(code)) return 'caller-read';
+  if (CREDENTIAL_KEY_SITE.test(code)) return 'env-keys';
   if (INI_CREDENTIAL_KEY_SITE.test(code)) return 'ini-key';
   if (INI_WRITER_CALL_SITE.test(code) && !INI_WRITER_DECLARATION.test(code)) {
     return 'ini-writer-call';
@@ -452,6 +496,8 @@ function siteAt(
   const annotated =
     shape === 'process-env-read'
       ? annotationGovernsRead(lines, index)
+      : shape === 'env-keys'
+        ? annotationGovernsKeyLine(lines, index)
       : hasAnnotationAbove(lines, index, ANNOTATION);
   return { shape, verdict: annotated ? 'annotated' : 'undeclared' };
 }
@@ -470,21 +516,21 @@ describe('every identity reaching an emulated workload through process env or a 
   it('sees the population it claims to guard, per shape', () => {
     // Floors, so a broken walk, a renamed helper or a regex that stopped
     // matching reports a failure rather than a vacuous pass. Measured
-    // 2026-11-07: 22 sites across 11 files — by VERDICT 3 `restores`, 1
-    // `reads-caller`, 18 `annotated`; by SHAPE 12 `env-keys`, 1 `caller-read`,
-    // 3 `process-env-read`, 0 `process-env-whole`, 2 `ini-key`, 4
-    // `ini-writer-call`. The floors sit below that so ordinary
+    // 2026-11-07: 39 sites across 11 files — by VERDICT 3 `restores`, 1
+    // `reads-caller`, 35 `annotated`; by SHAPE 29 `env-keys` (all three quoted
+    // keys since #5866), 1 `caller-read`, 3 `process-env-read`, 0
+    // `process-env-whole`, 2 `ini-key`, 4 `ini-writer-call`. The floors sit below that so ordinary
     // deletions do not trip them, but every shape and every verdict carries its
     // OWN: a whole-population floor stays green while one arm silently empties,
     // and the `restores` arm is the one that actually delivers container
     // credentials. The counts are literals typed from a measurement, not read
     // back out of anything this fence computes.
-    expect(sites.length, 'total credential-channel sites').toBeGreaterThanOrEqual(15);
+    expect(sites.length, 'total credential-channel sites').toBeGreaterThanOrEqual(32);
     expect(new Set(sites.map((s) => s.file)).size, 'files with a site').toBeGreaterThanOrEqual(5);
     expect(countOf(sites, 'restores'), '`restores` sites').toBeGreaterThanOrEqual(3);
     expect(countOf(sites, 'reads-caller'), '`reads-caller` sites').toBeGreaterThanOrEqual(1);
-    expect(countOf(sites, 'annotated'), '`annotated` sites').toBeGreaterThanOrEqual(11);
-    expect(shapeCount(sites, 'env-keys'), '`env-keys` shape').toBeGreaterThanOrEqual(10);
+    expect(countOf(sites, 'annotated'), '`annotated` sites').toBeGreaterThanOrEqual(28);
+    expect(shapeCount(sites, 'env-keys'), '`env-keys` shape').toBeGreaterThanOrEqual(24);
     expect(shapeCount(sites, 'caller-read'), '`caller-read` shape').toBeGreaterThanOrEqual(1);
     // Issue #5866: 3 — the triple `local-host-synthesizer.ts` reads in bracket
     // form. No DOT or DESTRUCTURING read, and no `process-env-whole` site,
@@ -516,6 +562,14 @@ describe('every identity reaching an emulated workload through process env or a 
       envKeySites.filter((s) => /'AWS_ACCESS_KEY_ID'/.test(s.code)).length,
       'sites naming the quoted key'
     ).toBeGreaterThanOrEqual(6);
+    // #5866: the secret and the token, quoted, are sites of their own — the
+    // spelling a name-only forward (`-e 'AWS_SECRET_ACCESS_KEY'`) would take.
+    // Measured 2026-11-07: 17.
+    expect(
+      envKeySites.filter((s) => /(['"])AWS_(?:SECRET_ACCESS_KEY|SESSION_TOKEN)\1/.test(s.code))
+        .length,
+      'sites naming the quoted secret or token'
+    ).toBeGreaterThanOrEqual(12);
   });
 
   it('has no site that leaves the question open', () => {
@@ -663,9 +717,28 @@ describe('every identity reaching an emulated workload through process env or a 
     // Not a credential, not `process.env`, or a message naming the variable.
     expect(one("  const r = process.env['AWS_REGION'];")).toBeUndefined();
     expect(one('  const r = process.env.AWS_SESSION_TOKEN_TTL;')).toBeUndefined();
-    expect(one("  const t = env['AWS_SESSION_TOKEN'];")).toBeUndefined();
+    // A QUOTED key of any of the three is the `env-keys` site, whatever object
+    // it indexes: name-only forwarding never reads `process.env` itself.
+    expect(one("  const t = env['AWS_SESSION_TOKEN'];")).toBe('env-keys');
+    expect(one("  const ek = 'AWS_SESSION_TOKEN';")).toBe('env-keys');
+    expect(one('  args.push(\'-e\', "AWS_SECRET_ACCESS_KEY");')).toBe('env-keys');
     expect(one('  throw new Error(`set AWS_SESSION_TOKEN first`);')).toBeUndefined();
     expect(one('  x(); // process.env.AWS_SESSION_TOKEN')).toBeUndefined();
+    // A `//` inside a string is not a comment, so a read after a URL scheme
+    // is still seen.
+    expect(one('  const u = `http://localhost/?t=${process.env.AWS_SESSION_TOKEN}`;')).toBe(
+      'process-env-read'
+    );
+    expect(stripComments("  f('it\\'s // here', \"a//b\"); // note")).toBe(
+      "  f('it\\'s // here', \"a//b\"); "
+    );
+    expect(stripComments('  x(/* c */ y); // z')).toBe('  x( y); ');
+    // Asking the caller first does not clear a `process.env` fallback, which
+    // is the role's value whenever the caller has none.
+    expect(
+      one('  const tk = callerEnvCredentials()?.sessionToken ?? process.env.AWS_SESSION_TOKEN;')
+    ).toBe('process-env-read');
+    expect(one('  const caller = callerEnvCredentials();')).toBe('caller-read');
     expect(one('  const value = process.env[key];')).toBeUndefined();
 
     // Destructuring: on one line, typed, across several, and a `...rest`,
@@ -778,6 +851,23 @@ describe('every identity reaching an emulated workload through process env or a 
     expect(annotationGovernsRead(interrupted, 3)).toBe(false);
     // A second read of a key the run already read is a NEW decision: it does
     // not inherit the triple's reason.
+    // A WRITTEN triple's third key in a branch of its own is the same decision;
+    // the same key after any other statement is not.
+    const written = [
+      '  // cdkd-local-env-identity: the caller named this profile',
+      "  env['AWS_ACCESS_KEY_ID'] = c.accessKeyId;",
+      "  env['AWS_SECRET_ACCESS_KEY'] = c.secretAccessKey;",
+      '  if (c.sessionToken) {',
+      "    env['AWS_SESSION_TOKEN'] = c.sessionToken;",
+      '  } else {',
+      '    // long-lived keys: strip any inherited token',
+      "    delete env['AWS_SESSION_TOKEN'];",
+      '  }',
+    ];
+    expect(siteAt(written, 4)?.verdict).toBe('annotated');
+    expect(siteAt(written, 7)?.verdict).toBe('annotated');
+    const afterCode = [...written.slice(0, 3), '  doSomething();', "  env['AWS_SESSION_TOKEN'] = t;"];
+    expect(siteAt(afterCode, 4)?.verdict).toBe('undeclared');
     const duplicate = [...triple, '  leak = process.env.AWS_SESSION_TOKEN;'];
     expect(annotationGovernsRead(duplicate, 4)).toBe(false);
     expect(siteAt(duplicate, 4)?.verdict).toBe('undeclared');

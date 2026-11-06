@@ -50,17 +50,18 @@ import {
  * (issue #5866). Every direct `new <Name>Client(` is therefore scanned to its
  * closing paren, and one spreading no helper is a `bareClient` site.
  *
- * A construction choosing its own credentials (`credentials:`, `fromEnv()`)
- * is a `credentialOverride` site even beside a helper, which it overrides.
+ * A construction choosing its own credentials (`credentials:`, `fromEnv()`),
+ * or spreading an OPAQUE value (`...overrides`, which may carry them), is a
+ * `credentialOverride` site even beside a helper, which it overrides.
  *
  * WHAT THIS FENCE STILL CANNOT SEE, recorded rather than implied away: a
  * constructor bound under another name (`const { STSClient: S } = ...; new
- * S(...)`), a v3 aggregated client (`new STS(...)`, no `Client` suffix), a
- * spread of an arbitrary object after the helper (`...overrides`, which may
- * carry `credentials`), and a client CONSTRUCTED ELSEWHERE and injected. One
- * thing it sees but cannot re-ask: an override added later to a construction
- * whose reason was written for its helper is governed by that same reason —
- * the annotation is per construction, not per spread. `resolveEcsSecrets` accepts
+ * S(...)`, or `const C = STSClient; new C({})`), a v3 aggregated client
+ * (`new STS(...)`, no `Client` suffix), and a client CONSTRUCTED ELSEWHERE and
+ * injected. One thing it sees but cannot re-ask: an override added later to a
+ * construction whose reason was written for its helper is governed by that
+ * same reason — the annotation is per construction, not per spread.
+ * `resolveEcsSecrets` accepts
  * `secretsManagerClient` / `ssmClient` for tests, and an injected client's
  * identity was decided at its own construction site — outside this surface, or
  * outside `src/**` entirely. That seam is documented at the option itself as
@@ -113,10 +114,22 @@ function constructionAt(
   const statement = constructionStatement(lines, index);
   if (statement === undefined) return { kind: 'bareClient', span: 1 };
   const span = statement.split('\n').length;
-  if (CREDENTIAL_OVERRIDE.test(statement)) return { kind: 'credentialOverride', span };
+  if (CREDENTIAL_OVERRIDE.test(statement) || OPAQUE_SPREAD.test(statement)) {
+    return { kind: 'credentialOverride', span };
+  }
   if (clientSiteKind(statement) !== undefined) return { kind: 'covered', span };
   return { kind: 'bareClient', span };
 }
+
+/**
+ * A spread of anything but a helper call or an inline literal: `...credOpts`,
+ * `...this.config`, `...makeOptions()`. Its contents are not on the line, so
+ * it may carry `credentials` the override check cannot see — and, spread after
+ * a helper, replace what the helper resolved. An inline `...(x && { region })`
+ * or `...{ region }` is spelled out and judged by `CREDENTIAL_OVERRIDE`.
+ */
+const OPAQUE_SPREAD =
+  /\.\.\.\s*(?!(?:awsClientDefaults|ambientClientDefaults|clientDefaultsFor)\s*\()[A-Za-z_$]/;
 
 /**
  * Is a construction decided by an annotation ABOVE it, or by one INSIDE its own
@@ -352,8 +365,19 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       '  new ECRClient({ ...clientDefaultsFor(c), ...(assumed && { credentials: assumed }) });',
       '  new STSClient({ credentials: fromNodeProviderChain() });',
       '  new STSClient({ credentialDefaultProvider: defaultProvider() });',
+      // An opaque spread may carry `credentials` the line never spells.
+      '  new STSClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), ...credOpts });',
+      '  new STSClient({ ...awsClientDefaults(), ...this.config });',
+      '  new STSClient({ ...awsClientDefaults(), ...makeOptions() });',
     ]) {
       expect(classifyLine([statement], 0).site?.kind, statement).toBe('credentialOverride');
+    }
+    // An inline spread is spelled out on the line and judged on what it says.
+    for (const statement of [
+      '  new STSClient({ ...awsClientDefaults(), ...(region && { region }) });',
+      '  new STSClient({ ...clientDefaultsFor(c), ...{ region } });',
+    ]) {
+      expect(classifyLine([statement], 0).covered, statement).toBe(true);
     }
     expect(CREDENTIAL_OVERRIDE.test('...clientDefaultsFor(credentialConfig)')).toBe(false);
   });
