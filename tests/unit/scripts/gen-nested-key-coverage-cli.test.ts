@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { NESTED_KEY_TARGETS, loadReport } from '../../../scripts/gen-nested-key-coverage.ts';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 // Kept apart from gen-nested-key-coverage.test.ts so these ~2s spawns run in a
 // worker of their own; vitest's concurrent mode is not an option because the
@@ -33,15 +34,27 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     return { status: run.status ?? -1, stderr: run.stderr };
   };
 
-  /** A scratch COPY of the REAL providers tree, with one regression injected. */
-  const regressedTree = (name: string, file: string, edit: (source: string) => string): string => {
+  /**
+   * A scratch COPY of the REAL providers tree, with one regression injected.
+   * A provider split into a companion directory is edited as a whole: the
+   * provider file and every companion file (`companionFiles`). The provider
+   * file itself must change, or the anchor drifted.
+   */
+  const regressedTree = (
+    name: string,
+    file: string,
+    edit: (source: string) => string,
+    { wholeFamily = false }: { wholeFamily?: boolean } = {}
+  ): string => {
     const dir = join(scratch, name);
     cpSync(PROVIDERS_DIR, dir, { recursive: true });
-    const path = join(dir, file);
-    const before = readFileSync(path, 'utf8');
-    const after = edit(before);
-    expect(after, `the ${name} probe changed nothing — anchor drifted?`).not.toBe(before);
-    writeFileSync(path, after);
+    const paths = [join(dir, file), ...(wholeFamily ? companionFiles(join(dir, file)) : [])];
+    if (wholeFamily) expect(paths.length, `${name}: no companion files found`).toBeGreaterThan(1);
+    for (const path of paths) writeFileSync(path, edit(readFileSync(path, 'utf8')));
+    expect(
+      readFileSync(join(dir, file), 'utf8'),
+      `the ${name} probe changed nothing in ${file} — anchor drifted?`
+    ).not.toBe(readFileSync(join(PROVIDERS_DIR, file), 'utf8'));
     return dir;
   };
 
@@ -91,8 +104,13 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
   it('exits 1 on a collapsed hand-off walk, naming the walk', () => {
     // Renaming the desired-state bag out of `HANDOFF_BAG_PARAM_NAMES` is a real
     // shape of collapse: only the dedicated floor can name the cause.
-    const dir = regressedTree('providers-handoff-collapsed', 'apigatewayv2-provider.ts', (source) =>
-      source.replaceAll(/\bproperties\b/g, 'bag')
+    // The provider is split into `apigatewayv2/`, so the rename covers the
+    // provider file and every companion file: the hand-offs live in the latter.
+    const dir = regressedTree(
+      'providers-handoff-collapsed',
+      'apigatewayv2-provider.ts',
+      (source) => source.replaceAll(/\bproperties\b/g, 'bag'),
+      { wholeFamily: true }
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
