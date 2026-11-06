@@ -268,13 +268,16 @@
  *      (issue #5845), not by oversight. Pre-stringify masking exists because
  *      of ESCAPING, and a bare value is not escaped: it occurs verbatim in the
  *      finished line, so the SINK masks it — `currentLogLineMasker()`
- *      (`src/utils/logger.ts`) on every line emitted inside
+ *      (`src/utils/log-line-masker.ts`) on every line emitted inside
  *      `withCurrentResourceSecrets`, `DeployEngine` on a thrown message, and
  *      a provider's own `warn = (m) => this.logger.warn(maskSecrets(m))`.
  *      A per-value wrap still buys two things over the sink, stated in
  *      `.claude/rules/provider-masking.md`: a secret shorter than
  *      `BASE_MASKER_SUBSTRING_FLOOR` (4), and a line emitted with no bag
- *      bound. Neither is fenced HERE; a site whose wrap matters is pinned by
+ *      bound. The second is not an edge case: today it is every provider
+ *      `delete()` and every `drift --revert` `update()`, so the per-value
+ *      wrap is the only mask on those paths until #5848 lands. Neither is
+ *      fenced HERE; a site whose wrap matters is pinned by
  *      a RUNTIME twin instead — `dynamodb-table/update-billing.ts`'s
  *      `${unspecified.map((n) => maskSecrets(n)).join(', ')}` by
  *      `tests/unit/provisioning/dynamodb-table-provider-masked-warn.test.ts`
