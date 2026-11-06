@@ -138,7 +138,7 @@ const PROCESS_ENV_WHOLE = new RegExp(
     // The MODULE taken as a value — an alias (`const p = process`), or the
     // module required whole — reaches `.env` under a name this model cannot
     // follow, so the binding is the site.
-    String.raw`(?:[=:(,]|\breturn)\s*process\s*(?:[;,)}]|$)`,
+    String.raw`(?:[=:(,]|\breturn)\s*(?:(?:globalThis|global)\s*\.\s*)?process\s*(?:[;,)}]|$)`,
     String.raw`=\s*require\s*\(\s*['"](?:node:)?process['"]\s*\)\s*(?:[;,)]|$)`,
   ].join('|')
 );
@@ -745,6 +745,8 @@ describe('every identity reaching an emulated workload through process env or a 
     expect(at(["import * as proc from 'node:process';"])).toBe('process-env-whole');
     expect(at(["import proc from 'node:process';"])).toBe('process-env-whole');
     expect(at(['  const pr = process;'])).toBe('process-env-whole');
+    expect(at(['  const pg = globalThis.process;'])).toBe('process-env-whole');
+    expect(at(['  const pg = global.process;'])).toBe('process-env-whole');
     expect(at(["  const pr = require('node:process');"])).toBe('process-env-whole');
     expect(at(['  const { platform: pf, ...restp } = process;'])).toBe('process-env-whole');
     // Bound as `process` itself, its `process.env` uses are seen as usual.
