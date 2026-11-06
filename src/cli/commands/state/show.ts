@@ -15,6 +15,10 @@ import { stripForDisplay } from '../../../utils/regexp.js';
 import { buildCdkdStateStackTree, type CdkdStateStackTree } from '../export.js';
 import type { LockInfo, StackState, ResourceState } from '../../../types/state.js';
 import { withStackInstanceIdWithheld } from '../../../state/stack-instance-id.js';
+import {
+  secretSegmentsOfState,
+  withSecretPhysicalIdsMaskedInState,
+} from '../../../provisioning/secret-physical-id.js';
 import { formatStackRefSafe, legacyRecordRefusal, resolveSingleRegion } from './refs.js';
 import { type StateSetup, setupStateBackend, renderRecovery, stackRegionOption } from './setup.js';
 import {
@@ -146,7 +150,9 @@ export async function printStackShow(
       // enumerating the tree concludes it is complete when a subtree was cut.
       // The record itself is still emitted verbatim, so the evidence survives.
       warnUnreadableTreeNodes(treeWithLocks, logger, renderRecovery(options, setup));
-      process.stdout.write(`${stringifyJsonPayload(treeToShowJson(treeWithLocks))}\n`);
+      process.stdout.write(
+        `${stringifyJsonPayload(treeToShowJson(treeWithLocks, treeSecretSegments(treeWithLocks)))}\n`
+      );
       return;
     }
 
@@ -158,7 +164,7 @@ export async function printStackShow(
 
   if (options.json) {
     process.stdout.write(
-      `${stringifyJsonPayload({ state: withStackInstanceIdWithheld(stateResult.state), lock: lockInfo })}\n`
+      `${stringifyJsonPayload({ state: withStackInstanceIdWithheld(withSecretPhysicalIdsMaskedInState(stateResult.state)), lock: lockInfo })}\n`
     );
     return;
   }
@@ -170,7 +176,9 @@ export async function printStackShow(
     logger,
     renderRecovery(options, setup)
   );
-  process.stdout.write(`${renderStateBlock(stateResult.state, lockInfo, true).join('\n')}\n`);
+  process.stdout.write(
+    `${renderStateBlock(stateResult.state, lockInfo, true, secretSegmentsOfState(stateResult.state)).join('\n')}\n`
+  );
 }
 
 /**
@@ -186,12 +194,20 @@ export async function printStackShow(
  * that choice cannot be made silently.
  */
 function renderStateBlock(
-  state: StackState,
+  recordState: StackState,
   lockInfo: LockInfo | null,
   // No default: both tree call sites pass `false` and the single-stack one
   // passes `true`, so a default would only hide which mode a call is in.
-  withLegend: boolean
+  withLegend: boolean,
+  /**
+   * go-to-k/cdkd#5868: the keys to mask (`secretSegmentsOfState`, or a
+   * nested tree's union). An id that IS a bearer credential, and every value
+   * it was copied to, renders as `****last4` (stdout reaches no log masker);
+   * the record keeps it whole.
+   */
+  secretSegments: readonly string[]
 ): string[] {
+  const state = withSecretPhysicalIdsMaskedInState(recordState, secretSegments);
   const lines: string[] = [];
 
   // Every RECORD-derived string interpolated into a row below is stripped —
@@ -496,8 +512,9 @@ function treeOwesSkippedLegend(node: CdkdStateStackTreeWithLock): boolean {
  */
 function renderTreeWithChildren(root: CdkdStateStackTreeWithLock): string[] {
   const lines: string[] = [];
-  lines.push(...renderStateBlock(root.state, root.lock, false));
-  appendDescendants(root.children, lines);
+  const segments = treeSecretSegments(root);
+  lines.push(...renderStateBlock(root.state, root.lock, false, segments));
+  appendDescendants(root.children, lines, segments);
   // Once for the whole tree, and only when some node rendered the block — the
   // alternative repeats it per child. Both this and the block's own guard call
   // `rendersSkippedBlock`, which is the only copy of that condition. Scanning
@@ -509,7 +526,11 @@ function renderTreeWithChildren(root: CdkdStateStackTreeWithLock): string[] {
   return lines;
 }
 
-function appendDescendants(children: readonly CdkdStateStackTreeWithLock[], out: string[]): void {
+function appendDescendants(
+  children: readonly CdkdStateStackTreeWithLock[],
+  out: string[],
+  segments: readonly string[]
+): void {
   for (const child of children) {
     out.push('');
     // Not read from a record: `walkCdkdStateStackTree` builds it as
@@ -518,8 +539,8 @@ function appendDescendants(children: readonly CdkdStateStackTreeWithLock[], out:
     // `displayStackName`'s boundary and cap like every other stack name this
     // view prints (go-to-k/cdkd#3179). A plain `Parent~Child` is unchanged.
     out.push(`Nested stack: ${displayStackName(child.stackName)}`);
-    out.push(...renderStateBlock(child.state, child.lock, false));
-    appendDescendants(child.children, out);
+    out.push(...renderStateBlock(child.state, child.lock, false, segments));
+    appendDescendants(child.children, out, segments);
   }
 }
 
@@ -535,13 +556,28 @@ interface StateShowJson {
   children: StateShowJson[];
 }
 
-function treeToShowJson(node: CdkdStateStackTreeWithLock): StateShowJson {
+function treeToShowJson(
+  node: CdkdStateStackTreeWithLock,
+  segments: readonly string[]
+): StateShowJson {
   return {
     // go-to-k/cdkd#5064: never the id the stack's names derive from.
-    state: withStackInstanceIdWithheld(node.state),
+    state: withStackInstanceIdWithheld(withSecretPhysicalIdsMaskedInState(node.state, segments)),
     lock: node.lock,
-    children: node.children.map(treeToShowJson),
+    children: node.children.map((child) => treeToShowJson(child, segments)),
   };
+}
+
+/**
+ * Every key a nested tree's records hold (go-to-k/cdkd#5868), masked in every
+ * node: a parent passes values to its children, so a child's parameter can
+ * hold a key only the parent's record names.
+ */
+function treeSecretSegments(node: CdkdStateStackTreeWithLock): string[] {
+  return [
+    ...secretSegmentsOfState(node.state),
+    ...node.children.flatMap((child) => treeSecretSegments(child)),
+  ];
 }
 
 /**

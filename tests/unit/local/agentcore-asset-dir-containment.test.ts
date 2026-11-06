@@ -104,7 +104,7 @@ describe('loadAgentCoreAssetContext absolute-path warning names ITS OWN sink', (
     const victim = join(outer, 'victim');
     mkdirSync(victim);
     writeFileSync(
-      join(manifestDir, 'StageStack.assets.json'),
+      join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
       JSON.stringify({ version: '54.0.0', files: {}, dockerImages: {}, ...body(victim) })
     );
     return { outdir, manifestDir, victim };
@@ -129,7 +129,7 @@ describe('loadAgentCoreAssetContext absolute-path warning names ITS OWN sink', (
           {
             stackName: 'StageStack',
             assetOutdir: outdir,
-            assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
           } as unknown as StackInfo,
         ],
         cdkOutDir: outdir,
@@ -164,7 +164,7 @@ describe('loadAgentCoreAssetContext absolute-path warning names ITS OWN sink', (
           {
             stackName: 'StageStack',
             assetOutdir: outdir,
-            assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
           } as unknown as StackInfo,
         ],
         cdkOutDir: outdir,
@@ -225,7 +225,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     mkdirSync(manifestDir, { recursive: true });
     mkdirSync(join(outdir, 'asset.abc123'));
     writeFileSync(
-      join(manifestDir, 'StageStack.assets.json'),
+      join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
       JSON.stringify({
         version: '54.0.0',
         files: {},
@@ -244,7 +244,14 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
         resolved: { containerUri: 'deadbeef' } as never,
         // cdkd's own record carries the app outdir; the watch loop looks it up
         // by stack name because cdk-local's StackInfo has no such field.
-        stacks: [{ stackName: 'StageStack', assetOutdir: outdir } as unknown as StackInfo],
+        stacks: [
+          {
+            stackName: 'StageStack',
+            // Named after the artifact id, as CDK names a Stage manifest (cdkd#5872).
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
+            assetOutdir: outdir,
+          } as unknown as StackInfo,
+        ],
         cdkOutDir: manifestDir,
         assetLoader: new AssetManifestLoader(),
       })
@@ -258,7 +265,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     mkdirSync(manifestDir, { recursive: true });
     mkdirSync(join(outer, 'victim'));
     writeFileSync(
-      join(manifestDir, 'StageStack.assets.json'),
+      join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
       JSON.stringify({
         version: '54.0.0',
         files: {},
@@ -275,7 +282,14 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
       loadAgentCoreAssetContext({
         resolvedTarget: 'StageStack',
         resolved: { containerUri: 'deadbeef' } as never,
-        stacks: [{ stackName: 'StageStack', assetOutdir: outdir } as unknown as StackInfo],
+        stacks: [
+          {
+            stackName: 'StageStack',
+            // Named after the artifact id, as CDK names a Stage manifest (cdkd#5872).
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
+            assetOutdir: outdir,
+          } as unknown as StackInfo,
+        ],
         cdkOutDir: manifestDir,
         assetLoader: new AssetManifestLoader(),
       })
@@ -294,7 +308,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
 
     const write = (path: string): void =>
       writeFileSync(
-        join(manifestDir, 'StageStack.assets.json'),
+        join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
         JSON.stringify({
           version: '54.0.0',
           files: {
@@ -311,7 +325,14 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
       loadAgentCoreAssetContext({
         resolvedTarget: 'StageStack',
         resolved: { codeArtifact: { codeAssetHash: 'codehash' } } as never,
-        stacks: [{ stackName: 'StageStack', assetOutdir: outdir } as unknown as StackInfo],
+        stacks: [
+          {
+            stackName: 'StageStack',
+            // Named after the artifact id, as CDK names a Stage manifest (cdkd#5872).
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
+            assetOutdir: outdir,
+          } as unknown as StackInfo,
+        ],
         cdkOutDir: manifestDir,
         assetLoader: new AssetManifestLoader(),
       });
@@ -340,7 +361,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     mkdirSync(manifestDir, { recursive: true });
     mkdirSync(join(outdir, 'asset.abc123'));
     writeFileSync(
-      join(manifestDir, 'StageStack.assets.json'),
+      join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
       JSON.stringify({
         version: '54.0.0',
         files: {},
@@ -360,7 +381,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
         stacks: [
           {
             stackName: 'StageStack',
-            assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
             assetOutdir: outdir,
           } as unknown as StackInfo,
         ],
@@ -378,7 +399,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     mkdirSync(manifestDir, { recursive: true });
     mkdirSync(join(outer, 'victim'));
     writeFileSync(
-      join(manifestDir, 'StageStack.assets.json'),
+      join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
       JSON.stringify({
         version: '54.0.0',
         files: {},
@@ -398,7 +419,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
         stacks: [
           {
             stackName: 'StageStack',
-            assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+            assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
             assetOutdir: outdir,
           } as unknown as StackInfo,
         ],
@@ -422,7 +443,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     mkdirSync(manifestDir, { recursive: true });
     mkdirSync(join(outdir, 'asset.abc123'));
     writeFileSync(
-      join(manifestDir, 'StageStack.assets.json'),
+      join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
       JSON.stringify({
         version: '54.0.0',
         files: {},
@@ -437,7 +458,7 @@ describe('loadAgentCoreAssetContext docker source.directory containment', () => 
     const stacks = [
       {
         stackName: 'StageStack',
-        assetManifestPath: join(manifestDir, 'StageStack.assets.json'),
+        assetManifestPath: join(manifestDir, 'MyStageStageStackA1B2C3D4.assets.json'),
         assetOutdir: outdir,
       } as unknown as StackInfo,
     ];

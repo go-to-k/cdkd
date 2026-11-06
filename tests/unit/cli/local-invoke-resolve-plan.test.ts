@@ -34,7 +34,7 @@ vi.mock('../../../src/local/ecr-puller.js', () => ({
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
   AssetManifestLoader: vi.fn().mockImplementation(() => ({
-    loadManifest: mocks.loadManifestMock,
+    loadStackManifest: mocks.loadManifestMock,
   })),
   getDockerImageBySourceHash: mocks.getDockerImageBySourceHashMock,
 }));
@@ -87,6 +87,12 @@ describe('resolveContainerImagePlan', () => {
 
     expect(plan.image).toBe('cdkd-local/MyImageFn:abc');
     expect(plan.platform).toBe('linux/amd64');
+    // The manifest is read through the stack record, so a Stage manifest named
+    // after its artifact id is found (cdkd#5872).
+    expect(loadManifestMock).toHaveBeenCalledWith(
+      expect.objectContaining({ assetManifestPath: '/tmp/cdk.out/TestStack.assets.json' }),
+      '/tmp/cdk.out'
+    );
     expect(buildContainerImageMock).toHaveBeenCalledTimes(1);
     expect(pullEcrImageMock).not.toHaveBeenCalled();
   });

@@ -230,6 +230,12 @@ export class RDSProvider implements ResourceProvider {
         // would read as a create-only removal.
         'EngineMode',
         'AvailabilityZones',
+        // go-to-k/cdkd#5639: CreateDBCluster joins the named global cluster (as
+        // its primary when it has no member yet). ModifyDBCluster has no member
+        // for it; CloudFormation's update handler (`ImmutabilityHelper.
+        // isGlobalClusterMutable`) detaches a removed one in place and fails an
+        // add or change as immutable (`planGlobalClusterUpdate`).
+        'GlobalClusterIdentifier',
       ]),
     ],
     [
@@ -639,7 +645,7 @@ export class RDSProvider implements ResourceProvider {
     logicalId: string,
     physicalId: string,
     globalClusterId: string,
-    removeProtection: boolean,
+    options: { beforeDelete: boolean; removeProtection: boolean },
     progress: DeleteProgress,
     mask: (text: string) => string
   ): Promise<boolean> {
@@ -648,7 +654,7 @@ export class RDSProvider implements ResourceProvider {
       logicalId,
       physicalId,
       globalClusterId,
-      removeProtection,
+      options,
       progress,
       mask
     );

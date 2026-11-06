@@ -47,6 +47,27 @@ export function recordedGlobalClusterIdentifier(
 }
 
 /**
+ * go-to-k/cdkd#5639: whether a `GlobalClusterIdentifier` value is one
+ * {@link recordedGlobalClusterIdentifier} can read (absent, `null` or a
+ * string). Anything else is refused on a template path and left out on a
+ * state-borne one.
+ */
+export function readableGlobalClusterId(value: unknown): boolean {
+  return value == null || typeof value === 'string';
+}
+
+export const usableGlobalClusterId = (value: unknown): boolean => typeof value === 'string';
+
+/** What an update does about `GlobalClusterIdentifier` (`planGlobalClusterUpdate`). */
+export type GlobalClusterUpdate =
+  | { kind: 'none' }
+  | { kind: 'keep' }
+  | { kind: 'drop' }
+  | { kind: 'detach'; globalClusterId: string };
+
+export const GLOBAL_CLUSTER_CHANGE_REFUSED = `GlobalClusterIdentifier cannot be added or changed on an existing DB cluster unless the cluster is already a member of that global cluster (CloudFormation's update handler fails it as "Resource is immutable"). To join a different global cluster, replace the cluster, for example with a new DBClusterIdentifier`;
+
+/**
  * go-to-k/cdkd#5639: the faults a Data API call is refused with while the
  * cluster is busy (`InvalidResourceStateFault` is the one the
  * EnableHttpEndpoint / DisableHttpEndpoint models declare), retried by

@@ -1550,7 +1550,11 @@ Checklist when writing or reviewing an `update()`:
   sends `EnableLocalWriteForwarding: false`, and so does cdkd. A removed
   `AssociatedRoles` on either type detaches every recorded role, as the
   handlers' `updateAssociatedRoles` removes the previous roles the desired
-  list lacks.
+  list lacks. A removed DBCluster `GlobalClusterIdentifier` (or `""`)
+  detaches the cluster in place with `RemoveFromGlobalCluster`, as the
+  handler's update does; an added or changed one fails there as immutable,
+  so cdkd refuses it before any write unless the live cluster is already a
+  member of that global cluster.
 - A real CloudFormation A/B can show it KEEPS the live value: for
   `AWS::DLM::LifecyclePolicy`, `CreateInterval`, `RetainInterval`, `CopyTags`,
   `ExtendDeletion`, `CrossRegionCopyTargets` and `Exclusions` get no reset

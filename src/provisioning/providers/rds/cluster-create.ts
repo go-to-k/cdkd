@@ -30,6 +30,7 @@ import {
   retentionPeriodValue,
   usableAvailabilityZones,
 } from './cluster-members.js';
+import { readableGlobalClusterId, recordedGlobalClusterIdentifier } from './shared.js';
 
 // ─── DBCluster ────────────────────────────────────────────────────
 
@@ -94,9 +95,17 @@ export async function createDBCluster(
     rawAvailabilityZones != null && !availabilityZonesSkipped
       ? (rawAvailabilityZones as string[])
       : undefined;
+  // go-to-k/cdkd#5639: likewise a global cluster to join that is not a
+  // string; a rollback re-create leaves that one out (a string joins, as on
+  // a template create).
+  const globalClusterSkipped = !readableGlobalClusterId(properties['GlobalClusterIdentifier']);
+  const globalClusterId = globalClusterSkipped
+    ? undefined
+    : recordedGlobalClusterIdentifier(properties);
   for (const [skipped, key, expected, created] of [
     [backtrackSkipped, 'BacktrackWindow', 'a whole number of seconds', 'backtracking off'],
     [forwardingSkipped, 'EnableLocalWriteForwarding', 'true or false', 'write forwarding off'],
+    [globalClusterSkipped, 'GlobalClusterIdentifier', 'a string', 'no global cluster'],
     [
       availabilityZonesSkipped,
       'AvailabilityZones',
@@ -137,6 +146,7 @@ export async function createDBCluster(
     ...(backtrackSkipped ? ['BacktrackWindow'] : []),
     ...(forwardingSkipped ? ['EnableLocalWriteForwarding'] : []),
     ...(availabilityZonesSkipped ? ['AvailabilityZones'] : []),
+    ...(globalClusterSkipped ? ['GlobalClusterIdentifier'] : []),
   ];
   const effectiveProperties =
     skippedKeys.length > 0
@@ -231,6 +241,9 @@ export async function createDBCluster(
         // An empty list leaves the choice to RDS, as an absent one does.
         ...(availabilityZones !== undefined &&
           availabilityZones.length > 0 && { AvailabilityZones: availabilityZones }),
+        // go-to-k/cdkd#5639: the global cluster to join, as CloudFormation's
+        // create sends it (a blank one names none).
+        ...(globalClusterId !== undefined && { GlobalClusterIdentifier: globalClusterId }),
         ...(tags.length > 0 && { Tags: tags }),
       })
     );

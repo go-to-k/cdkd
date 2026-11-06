@@ -1525,7 +1525,7 @@ export async function resolveAgentCoreImage(
   if (manifestPath) {
     const cdkOutDir = dirname(manifestPath);
     const loader = new AssetManifestLoader();
-    const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
+    const manifest = await loader.loadStackManifest(resolved.stack, cdkOutDir);
     if (manifest) {
       const entry = getDockerImageBySourceHash(manifest, containerUri);
       if (entry) {
@@ -1593,7 +1593,7 @@ async function resolveAgentCoreCodeImage(
   }
   const cdkOutDir = dirname(manifestPath);
   const loader = new AssetManifestLoader();
-  const manifest = await loader.loadManifest(cdkOutDir, resolved.stack.stackName);
+  const manifest = await loader.loadStackManifest(resolved.stack, cdkOutDir);
   const fileAssets = manifest ? loader.getFileAssets(manifest) : undefined;
   // The manifest's `files` are keyed by SOURCE hash; for the default
   // synthesizer that equals the destination objectKey hash (`<hash>.zip`), so a

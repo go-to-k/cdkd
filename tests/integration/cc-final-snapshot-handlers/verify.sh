@@ -7,9 +7,11 @@
 # fixture covers the rest of #4029, each resource Cloud Control-routed and
 # declaring DeletionPolicy: Delete. Measured on pre-fix cdkd (2026-09-29):
 #
-#   - AuroraMember: an Aurora cluster that is a member of a global cluster.
-#     The handler detached it and took `rds-snapshot-<random>`; cdkd now
-#     detaches it through RDS and deletes it without a snapshot.
+#   - AuroraMember: an Aurora cluster that is a member of a global cluster,
+#     created on the SDK route and its record seeded to cc-api after phase 1
+#     (go-to-k/cdkd#5639 wired GlobalClusterIdentifier). The handler detached
+#     it and took `rds-snapshot-<random>`; cdkd now detaches it through RDS
+#     and deletes it without a snapshot.
 #   - NeptuneCluster: a Neptune cluster, moved onto Cloud Control in phase 2
 #     with --recreate-via-cc-api. The handler took
 #     `<logical id>-snapshot-<random>`; cdkd now deletes it through Neptune.
@@ -116,6 +118,19 @@ record() { # usage: record <logical id> <jq field>
   aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" - 2>/dev/null | jq -r --arg id "$1" ".resources[\$id]$2 // \"absent\""
 }
 
+# go-to-k/cdkd#5639: since GlobalClusterIdentifier is wired, the deploy creates
+# AuroraMember on the SDK route. Rewrite its record to provisionedBy=cc-api, the
+# record a binary that routed it through Cloud Control wrote (every one before
+# #5639): both routes record the DBClusterIdentifier as the physical id, and the
+# record stays cc-api (AWS::RDS::DBCluster is not in STICKY_CC_MIGRATION_EXEMPT),
+# so the destroy below still takes the Cloud Control delete this arm covers.
+seed_aurora_member_cc_api() {
+  local state seeded
+  state=$(aws s3 cp "s3://${STATE_BUCKET}/${STATE_KEY}" -) || return 1
+  seeded=$(echo "${state}" | jq '.resources.AuroraMember.provisionedBy = "cc-api"') || return 1
+  printf '%s\n' "${seeded}" | aws s3 cp - "s3://${STATE_BUCKET}/${STATE_KEY}" >/dev/null || return 1
+}
+
 cleanup() {
   echo "==> Cleanup: dropping any leftover state + AWS resources"
   set +eu
@@ -210,6 +225,11 @@ env -u CDKD_TEST_UPDATE node "${LOCAL_DIST}" deploy "${STACK}" \
   --state-bucket "${STATE_BUCKET}" \
   --region "${REGION}" \
   --yes
+
+[ "$(record AuroraMember '.physicalId')" != "absent" ] || { echo "FAIL: no AuroraMember record after phase 1" >&2; exit 1; }
+BY=$(record AuroraMember '.provisionedBy')
+[ "${BY}" = "sdk" ] || [ "${BY}" = "absent" ] || { echo "FAIL: #5639: AuroraMember was created via '${BY}', expected the SDK route (GlobalClusterIdentifier is wired)" >&2; exit 1; }
+seed_aurora_member_cc_api || { echo "FAIL: could not seed the AuroraMember record to cc-api" >&2; exit 1; }
 
 # Premises: without these the no-snapshot assertions test nothing.
 BY=$(record AuroraMember '.provisionedBy')

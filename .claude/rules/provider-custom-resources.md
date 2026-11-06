@@ -2,6 +2,7 @@
 description: Lambda-backed Custom Resources
 paths:
   - 'src/provisioning/providers/custom-resource-provider.ts'
+  - 'src/provisioning/providers/custom-resource/**'
 ---
 
 # Provider Pattern - Lambda-backed Custom Resources

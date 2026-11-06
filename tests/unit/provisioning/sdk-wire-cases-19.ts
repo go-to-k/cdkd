@@ -228,6 +228,7 @@ function armCluster(_physicalId: string, bag: Bag): void {
   let httpEndpoint = bag['EnableHttpEndpoint'] === true;
   let forwarding = bag['EnableLocalWriteForwarding'] === true;
   const roles = { current: liveRoles(bag) };
+  let detached = false;
   setOutputOverrides({
     ...roleCallOverrides('AddRoleToDBClusterCommand', 'RemoveRoleFromDBClusterCommand', roles),
     // The create wait reads back the write forwarding the create sent.
@@ -274,8 +275,34 @@ function armCluster(_physicalId: string, bag: Bag): void {
       DBSubnetGroups: [{ DBSubnetGroupArn: SUBNET_GROUP_ARN, VpcId: 'vpc-1' }],
     }),
     DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [{ GroupId: DEFAULT_SG }] }),
+    // go-to-k/cdkd#5639: a removal's detach takes it out of the global cluster.
+    RemoveFromGlobalClusterCommand: () => {
+      detached = true;
+      return {};
+    },
+    // The bag's global cluster holds the cluster, as the last deploy left it.
+    DescribeGlobalClustersCommand: () => ({
+      GlobalClusters:
+        typeof bag['GlobalClusterIdentifier'] === 'string' && !detached
+          ? [
+              {
+                GlobalClusterIdentifier: bag['GlobalClusterIdentifier'],
+                GlobalClusterMembers: [{ DBClusterArn: CLUSTER_ARN }],
+              },
+            ]
+          : [],
+    }),
   });
 }
+
+/**
+ * go-to-k/cdkd#5639: joining another global cluster is refused before any
+ * write; a removal detaches in place and reaches the wire.
+ */
+const GLOBAL_CLUSTER_REFUSED = {
+  says: /GlobalClusterIdentifier cannot be added or changed on an existing DB cluster/,
+  why: `ModifyDBCluster has no GlobalClusterIdentifier member, and CloudFormation's update handler fails an add or change as immutable (ImmutabilityHelper.isGlobalClusterMutable, read from the handler source), so one the live cluster does not show is refused before any write (${SRC} planGlobalClusterUpdate)`,
+};
 
 /** `MasterUserSecret.SecretArn` is the secret RDS creates, never a write input. */
 const SECRET_ARN_READ_ONLY = `read-only in the registry schema (/properties/MasterUserSecret/SecretArn): the secret RDS creates. Create and modify take only MasterUserSecretKmsKeyId, so neither reads it (${SRC})`;
@@ -509,6 +536,22 @@ const CLUSTER_CASE: TypeCase = {
             `ModifyDBCluster has no AvailabilityZones member, and CloudFormation's update handler sends none (Translator.modifyDbClusterRequest; read from the handler source, not measured), so a change completes in place keeping the live zones (${SRC})`,
           ])
         ),
+      },
+    },
+    {
+      name: 'a member of a global cluster (go-to-k/cdkd#5639)',
+      bag: {
+        Engine: 'aurora-postgresql',
+        MasterUsername: 'admin',
+        GlobalClusterIdentifier: 'global-1',
+      },
+      expectedSilent: {
+        ...CLUSTER_ENGINE_SILENT,
+        ...CLUSTER_MASTER_USERNAME_SILENT,
+        'update-vary:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED.why,
+      },
+      expectedRemovalThrows: {
+        'update-add:GlobalClusterIdentifier': GLOBAL_CLUSTER_REFUSED,
       },
     },
     {

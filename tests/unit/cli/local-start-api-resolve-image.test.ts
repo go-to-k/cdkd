@@ -45,7 +45,7 @@ vi.mock('../../../src/local/ecr-puller.js', () => ({
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
   AssetManifestLoader: vi.fn().mockImplementation(() => ({
-    loadManifest: mocks.loadManifestMock,
+    loadStackManifest: mocks.loadManifestMock,
   })),
   getDockerImageBySourceHash: mocks.getDockerImageBySourceHashMock,
 }));
@@ -99,6 +99,12 @@ describe('resolveContainerImageForStartApi (PR #493 review G4)', () => {
 
     expect(result.imageRef).toBe('cdkd-local-start-api-abcdef0123456789');
     expect(mocks.buildContainerImageMock).toHaveBeenCalledTimes(1);
+    // The manifest is read through the stack record, so a Stage manifest named
+    // after its artifact id is found (cdkd#5872).
+    expect(mocks.loadManifestMock).toHaveBeenCalledWith(
+      expect.objectContaining({ assetManifestPath: '/tmp/cdk.out/TestStack.assets.json' }),
+      '/tmp/cdk.out'
+    );
     expect(mocks.buildContainerImageMock).toHaveBeenCalledWith(
       expect.objectContaining({ source: expect.any(Object) }),
       expect.any(String),

@@ -459,7 +459,7 @@ const EXEMPT: readonly Exemption[] = [
   },
   // --- DELETE PATH -------------------------------------------------------
   {
-    file: 'src/provisioning/providers/custom-resource-provider.ts',
+    file: 'src/provisioning/providers/custom-resource/lambda-payload.ts',
     expression: 'parsed',
     count: 1,
     reason:
@@ -556,7 +556,7 @@ const MAX_CONCAT_SITES = 0;
  * is entirely NON-message: 228 deep-equality comparisons (`!==` 172, `===` 56),
  * 41 `?:` value arms, 10 `return`s, 6 arrow bodies, one `??`, one `=`, one
  * `Message: JSON.stringify(request)` on an SNS `PublishCommand` at
- * `custom-resource-provider.ts:2182`, one `createHash('sha256').update(...)` at
+ * `custom-resource/dispatch.ts` (`publishToSns`), one `createHash('sha256').update(...)` at
  * `cloudwatch-anomaly-detector-provider.ts:421` and one `Buffer.from(...)`.
  * None is a sink; whether such a VALUE later reaches a message is decided at
  * the interpolation, which is already in the population.

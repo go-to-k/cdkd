@@ -189,7 +189,8 @@ describe('RDSProvider cluster delete detaches a global-cluster member first (iss
   });
 
   it('an unreadable member list fails the delete, NON-RETRYABLE', async () => {
-    script({ memberPolls: [awsError('AccessDenied', 'not authorized')] });
+    // The pre-detach read (go-to-k/cdkd#5853) answers; the confirming poll fails.
+    script({ memberPolls: [[ARN], awsError('AccessDenied', 'not authorized')] });
 
     const error = await provider
       .delete('Db', 'db-1', CLUSTER, { GlobalClusterIdentifier: GLOBAL })
@@ -219,7 +220,9 @@ describe('RDSProvider cluster delete detaches a global-cluster member first (iss
       $fault: 'client',
       $metadata: { httpStatusCode: 403 },
     });
-    script(arm === 'RemoveFromGlobalCluster' ? { remove: denied } : { memberPolls: [denied] });
+    script(
+      arm === 'RemoveFromGlobalCluster' ? { remove: denied } : { memberPolls: [[ARN], denied] }
+    );
     const debug = vi.mocked(getLogger().child('x').debug);
     debug.mockClear();
 

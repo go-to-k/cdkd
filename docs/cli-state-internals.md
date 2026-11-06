@@ -88,6 +88,10 @@ control sequence. It is not byte-for-byte in every mode:
 Plain `cdkd state show --json` emits the record as parsed, without walking it
 or rendering a lock summary.
 
+In every mode above, an AppSync API key the record holds is printed as
+`****<last 4>` wherever it occurs, so those values are not the stored ones:
+[AppSync API keys are masked](cli-state.md#appsync-api-keys-are-masked).
+
 ## Malformed containers
 
 `--show-nested` reports no children for a record whose `resources` is not a

@@ -522,6 +522,31 @@ describe('a replaced resource whose delete is refused in use stays recorded (#51
     expect(all).not.toContain(secretName);
   });
 
+  it.each([
+    ['an AppSync ApiKey', 'AWS::AppSync::ApiKey', false],
+    ['negative control, an AppSync DataSource', 'AWS::AppSync::DataSource', true],
+  ])(
+    'masks the key segment of a superseded id that IS a credential (go-to-k/cdkd#5868): %s',
+    async (_l, type, shown) => {
+      const apiKey = 'da2-5868supersededkeyvalue';
+      const engine = makeEngine();
+      const old = record(`oldapi5868|${apiKey}`, type, { ApiId: 'oldapi5868' });
+      const entry: SupersededResourceRecord = { logicalId: 'Key', supersededAt: 1, state: old };
+      const host = { supersededResources: [entry] } as StackState;
+      vi.mocked(provider.delete).mockRejectedValueOnce(new Error(`Cannot delete ${apiKey}`));
+
+      await retryCarriedSupersededResources(engine, host, [entry], {
+        Key: record(`newapi5868|da2-other`, type, { ApiId: 'newapi5868' }),
+      });
+
+      const all = [...printed.info, ...printed.warn].join('\n');
+      // Premise: the superseded delete ran and named the old resource.
+      expect(all).toContain('Deleting old Key (oldapi5868|');
+      expect(all).toContain('Failed to delete old resource Key');
+      expect(all.includes(apiKey)).toBe(shown);
+    }
+  );
+
   it('a deferral left unretried says whether state still tracks it', () => {
     const engine = makeEngine();
     const run = engine.replacementRun;

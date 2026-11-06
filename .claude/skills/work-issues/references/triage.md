@@ -111,7 +111,10 @@ unreached ones stood down with a four-field comment.
 record included (its comments; a body's "conditional on #N": read N's `state`;
 an umbrella's row ticks lag its claim-release comments — `ship.md`'s "Release
 the claims" — so read those and the PRs they name BEFORE ranking a row, #1160) —
-already-done, not-yet-true and WRONG look identical from the title. Grep the
+already-done, not-yet-true and WRONG look identical from the title. "WRONG" /
+"not cdkd" needs BOTH sides of the boundary read: the handler or asset that
+consumes cdkd's output too, from `node_modules` (#5871: cdkd kept the port,
+aws-cdk-lib's handler dropped it). Grep the
 asserted SYMBOL, not the body's paths or line numbers; a body PROPOSING a mechanism has no symbol, so resolve its EFFECT — what on
 `origin/main` already produces it (#2286). On an empty grep,
 `gh pr list --state all --search <symbol>` separates "premise wrong" from

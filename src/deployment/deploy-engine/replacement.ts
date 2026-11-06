@@ -1,3 +1,4 @@
+import { displayPhysicalId } from '../../provisioning/secret-physical-id.js';
 import type { NoEchoDeleteValues } from '../noecho-delete-reresolution.js';
 import { type RollbackRetainedCopy } from '../kept-in-history.js';
 import { type DeployEngine, EMPTY_SECRETS, InterruptedError } from '../deploy-engine.js';
@@ -1069,7 +1070,9 @@ export async function createFirstThenDeleteOld(
     );
   }
   if (retainOld) return createResult;
-  deps.logger.info(safeMsg`  Deleting old ${logicalId} (${currentResource.physicalId})...`);
+  deps.logger.info(
+    safeMsg`  Deleting old ${logicalId} (${displayPhysicalId(currentResource.resourceType, currentResource.physicalId)})...`
+  );
   await deleteReplacedAfterCreate(
     run,
     deps,
