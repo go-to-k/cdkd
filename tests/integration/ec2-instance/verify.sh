@@ -313,7 +313,7 @@ cleanup() {
     lt_volume_out=$(aws ec2 delete-volume \
       --volume-id "${lt_volume}" \
       --region "${REGION}" 2>&1 >/dev/null || true)
-    if [ -n "${lt_volume_out}" ] && ! grep -qiE 'not ?found|does ?not ?exist' <<<"${lt_volume_out}"; then
+    if [ -n "${lt_volume_out}" ] && ! grep -qiE 'not ?found|no ?such|does ?not ?exist|non ?existent|\(404' <<<"${lt_volume_out}"; then
       echo "NOTE: issue #5630 -- could not delete volume ${lt_volume} ($(sanitize_aws_output "${lt_volume_out}")); remove it with: aws ec2 delete-volume --volume-id ${lt_volume} --region ${REGION}" >&2
     fi
   done
