@@ -32,6 +32,7 @@ import {
 import { buildRevertNewProperties, driftAbsentMeansDefaultKeys } from './revert-payload.js';
 import type { RevertTally, RevertDriftedOutcomeArgs } from './revert.js';
 import { applyRevertUpdate } from './revert-apply.js';
+import { withPrintingSecrets } from '../../../deployment/resource-secrets-scope.js';
 
 /** What {@link applyRevertUpdate} reads from {@link revertDriftedOutcome}'s scope. */
 export interface ApplyRevertUpdateArgs {
@@ -557,18 +558,27 @@ export async function revertDriftedOutcome(args: RevertDriftedOutcomeArgs): Prom
     );
     return;
   }
-  await applyRevertUpdate({
-    logger,
-    tally,
-    report,
-    narrowedByLogicalId,
-    reRecordedByLogicalId,
-    settledByRevert,
-    outcome,
-    stateResource,
-    provider,
-    secrets,
-    revertBaseline,
-    newProperties,
-  });
+  // go-to-k/cdkd#5848: the RESOLVED bag is a printing bag for the whole
+  // update — the unsettled-previous settle, every `provider.update` attempt
+  // and `withUnprovenUnsettled` — so a provider's own log line that skips
+  // `context.maskSecrets` is masked by the sink, as on a deploy. Stacked on
+  // the secret-NAME bag `revert.ts` binds (#3869). NOT
+  // `withCurrentResourceSecrets`: two providers read that store's absence as
+  // "this is drift --revert".
+  await withPrintingSecrets(secrets, () =>
+    applyRevertUpdate({
+      logger,
+      tally,
+      report,
+      narrowedByLogicalId,
+      reRecordedByLogicalId,
+      settledByRevert,
+      outcome,
+      stateResource,
+      provider,
+      secrets,
+      revertBaseline,
+      newProperties,
+    })
+  );
 }

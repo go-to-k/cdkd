@@ -49,6 +49,7 @@ vi.mock('../../../src/utils/live-renderer.js', () => ({
 
 import { runDestroyForStack } from '../../../src/cli/commands/destroy-runner.js';
 import { currentLogLineMasker } from '../../../src/utils/log-line-masker.js';
+import { getAwsClients } from '../../../src/utils/aws-clients.js';
 
 const REGION = 'us-east-1';
 const REF = '{{resolve:secretsmanager:team:SecretString:user::}}';
@@ -177,6 +178,47 @@ describe('cdkd destroy masks a name derived from a secret (go-to-k/cdkd#3869)', 
     // Premise: an identifier derived from the name was built and handed over.
     expect(identifier).toMatch(/^team-secret-db/);
     expect(snapshotLine).not.toContain('team-secret-db');
+  });
+
+  // go-to-k/cdkd#5848, a CHARACTERIZATION test: no binding guards this. A
+  // delete's `properties` is the persisted, redacted record, and a destroy
+  // resolves nothing, so a provider interpolating a property into its delete
+  // line prints the `{{resolve:...}}` EXPRESSION, never the secret's plaintext.
+  it('prints the {{resolve:...}} expression a record holds on the delete line, never plaintext', async () => {
+    const PASSWORD_REF = '{{resolve:secretsmanager:db-secret:SecretString:password::}}';
+    const state: StackState = {
+      version: 8,
+      stackName: 'TestStack',
+      region: REGION,
+      resources: {
+        Db: {
+          physicalId: 'db-1',
+          resourceType: 'AWS::Test::Database',
+          properties: { Password: PASSWORD_REF },
+          attributes: {},
+          dependencies: [],
+        },
+      },
+      outputs: {},
+      lastModified: 1,
+    };
+    lastMadeState = state;
+    let received: unknown;
+    let line: string | undefined;
+    const providerDelete = vi.fn(
+      (_l: string, _p: string, _t: string, props: Record<string, unknown>) => {
+        received = props['Password'];
+        const text = `Deleting db-1 with password ${String(props['Password'])}`;
+        line = currentLogLineMasker()?.(text) ?? text;
+        return Promise.resolve(undefined);
+      }
+    );
+    const result = await runDestroyForStack('TestStack', state, makeCtx(providerDelete));
+    expect(result.errorCount).toBe(0);
+    expect(received).toBe(PASSWORD_REF);
+    expect(line).toBe(`Deleting db-1 with password ${PASSWORD_REF}`);
+    // Nothing on the delete path resolves a secret.
+    expect(vi.mocked(getAwsClients)).not.toHaveBeenCalled();
   });
 
   // go-to-k/cdkd#2007: the same bag reaches the provider as
