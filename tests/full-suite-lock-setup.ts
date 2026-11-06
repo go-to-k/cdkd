@@ -48,7 +48,8 @@ export function defaultLockDir(): string {
 
 function isLiveHolder(owner: LockOwner): boolean {
   if (Math.abs(owner.bootMs - bootTimeMs()) > BOOT_TOLERANCE_MS) return false;
-  const ps = spawnSync('ps', ['-o', 'comm=', '-p', String(owner.pid)], { encoding: 'utf8' });
+  // `args`, not `comm`: on Linux `comm` is the main thread's name, which node sets to `MainThread`.
+  const ps = spawnSync('ps', ['-o', 'args=', '-p', String(owner.pid)], { encoding: 'utf8' });
   if (ps.error) {
     try {
       process.kill(owner.pid, 0);
