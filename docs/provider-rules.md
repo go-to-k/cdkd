@@ -1070,7 +1070,7 @@ arms in `custom-resource-provider.ts` (and, since issue
 [#3960](https://github.com/go-to-k/cdkd/issues/3960), its masked- and
 secret-reference-`ServiceToken` arms), the empty-policy-name arm in
 `iam-policy-provider.ts`, and both `AWS::IAM::UserToGroupAddition` arms in
-`iam-user-group-provider.ts`. Issue
+`iam-user-group/user-to-group-addition.ts`. Issue
 [#3878](https://github.com/go-to-k/cdkd/issues/3878) added the
 malformed-target-list arm in `iam-policy-provider.ts`: a recorded `Roles` /
 `Groups` / `Users` that is not a list of IAM names. Issue
