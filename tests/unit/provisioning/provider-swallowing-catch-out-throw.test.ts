@@ -475,7 +475,7 @@ describe('provisioning swallowing-handler out-throw (#3309 follow-up)', () => {
   const PERSISTED_REASON_SITES: readonly string[] = [
     'providers/acm-certificate-provider.ts',
     'providers/apigateway/resource-deployment.ts',
-    'providers/iam-managed-policy-provider.ts',
+    'providers/iam-managed-policy/update.ts',
     'providers/iam-role-provider.ts',
   ];
 

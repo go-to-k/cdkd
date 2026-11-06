@@ -263,7 +263,7 @@
   "src/provisioning/providers/glue/trigger.ts": 3,
   "src/provisioning/providers/glue/workflow.ts": 4,
   "src/provisioning/providers/iam-access-key-provider.ts": 3,
-  "src/provisioning/providers/iam-managed-policy-provider.ts": 1,
+  "src/provisioning/providers/iam-managed-policy/delete.ts": 1,
   "src/provisioning/providers/iam-policy-provider.ts": 9,
   "src/provisioning/providers/iam-user-group/read-state.ts": 1,
   "src/provisioning/providers/iam-user-group/user-to-group-addition.ts": 5,
