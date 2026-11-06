@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readWaitTable } from '../../wait-table.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 /**
  * Enforce that every SDK provider whose stabilization wait is gated on
@@ -29,7 +30,13 @@ function handledTypes(source: string): string[] {
 describe('--full-wait doc coverage', () => {
   const files = readdirSync(providersDir).filter((f) => f.endsWith('-provider.ts'));
   const fullWaitProviders = files
-    .map((f) => ({ file: f, source: readFileSync(join(providersDir, f), 'utf8') }))
+    // With the provider's companion files (scripts/provider-companion-files.ts).
+    .map((f) => ({
+      file: f,
+      source: [join(providersDir, f), ...companionFiles(join(providersDir, f))]
+        .map((path) => readFileSync(path, 'utf8'))
+        .join('\n'),
+    }))
     .filter((p) => p.source.includes("process.env['CDKD_FULL_WAIT']"));
 
   it('finds every CDKD_FULL_WAIT-honoring provider (coverage floor)', () => {

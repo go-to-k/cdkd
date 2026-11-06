@@ -37,8 +37,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vite-plus/test';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import ts from 'typescript-v6';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 import {
   definedAttributes,
   stringifyIfAssigned,
@@ -134,6 +135,8 @@ interface Scan {
   files: number;
   /** `attributes` VALUES seen (property, shorthand, or `const attributes`). */
   attributeValues: number;
+  /** The files at least one of those values sits in. */
+  filesWithAttributes: Set<string>;
   /** Identifier values resolved to a same-function declaration (the hoisted shape). */
   hoistedResolved: number;
   /** Call values resolved to a same-file method / function body (the helper-return shape). */
@@ -185,13 +188,20 @@ interface Scan {
  * hits, because the walk sees only the initializer / the nested literal.
  */
 function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
+  // With each provider's companion files (scripts/provider-companion-files.ts),
+  // which hold code split out of it.
   const files = readdirSync(providersDir)
     .filter((f) => f.endsWith('.ts'))
-    .sort();
+    .sort()
+    .flatMap((f) => [
+      f,
+      ...companionFiles(join(providersDir, f)).map((c) => relative(providersDir, c)),
+    ]);
   const scan: Scan = {
     hits: [],
     files: files.length,
     attributeValues: 0,
+    filesWithAttributes: new Set(),
     hoistedResolved: 0,
     helperCallsResolved: 0,
     builderAssignments: 0,
@@ -460,10 +470,12 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
     const visit = (node: ts.Node): void => {
       if (ts.isPropertyAssignment(node) && node.name.getText() === 'attributes') {
         scan.attributeValues += 1;
+        scan.filesWithAttributes.add(file);
         scanAttributesValue(node.initializer, enclosingFunction(node), 0);
       }
       if (ts.isShorthandPropertyAssignment(node) && node.name.text === 'attributes') {
         scan.attributeValues += 1;
+        scan.filesWithAttributes.add(file);
         scanAttributesValue(node.name, enclosingFunction(node), 0);
       }
       if (
@@ -473,6 +485,7 @@ function scanProviders(providersDir: string = PROVIDERS_DIR): Scan {
         node.initializer !== undefined
       ) {
         scan.attributeValues += 1;
+        scan.filesWithAttributes.add(file);
         scanAttributesValue(node.name, enclosingFunction(node), 0);
       }
       ts.forEachChild(node, visit);
@@ -532,6 +545,14 @@ describe('no provider records an attribute as `?? \'\'` (issue #3077 fence)', ()
     // because an aggregate alone hides one dead shape.
     expect(scan.files).toBeGreaterThanOrEqual(72);
     expect(scan.attributeValues).toBeGreaterThanOrEqual(FLOORS.attributeValues);
+    // A split provider's attributes literals sit in its companion files; the
+    // GlobalTable's create and update results must still be scanned.
+    expect([...scan.filesWithAttributes]).toEqual(
+      expect.arrayContaining([
+        'dynamodb-globaltable/create-commit.ts',
+        'dynamodb-globaltable/update-indexes.ts',
+      ])
+    );
     expect(scan.hoistedResolved).toBeGreaterThanOrEqual(FLOORS.hoistedResolved);
     expect(scan.helperCallsResolved).toBeGreaterThanOrEqual(FLOORS.helperCallsResolved);
     expect(scan.builderAssignments).toBeGreaterThanOrEqual(FLOORS.builderAssignments);

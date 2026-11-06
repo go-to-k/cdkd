@@ -16,6 +16,7 @@ import { parseProviderSource } from '../../../scripts/gen-property-coverage.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 /**
  * Every (type, ARN attribute) pair fixed by CACHING rather than by an allow-list
@@ -322,6 +323,12 @@ describe('real repo coverage (regression floor)', () => {
       const parsed = parseProviderSource(src, file);
       if (parsed.handled.size === 0) continue;
       const keys = collectStoredAttributeKeys(src, file);
+      // As the generator does: the companion files' keys are the provider's.
+      for (const companion of companionFiles(join(providersDir, file))) {
+        for (const k of collectStoredAttributeKeys(readFileSync(companion, 'utf8'), companion)) {
+          keys.add(k);
+        }
+      }
       for (const type of parsed.handled.keys()) {
         sdkBacked.add(type);
         const t = cached.get(type) ?? new Set<string>();

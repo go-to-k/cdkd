@@ -3167,6 +3167,9 @@ function listSourceFiles(dir: string): string[] {
  * file of a group, the local names of its imports that resolve to a masker
  * another file of the group derives and EXPORTS, grown to a fixpoint (a
  * wrapper around an imported masker is a masker too).
+ *
+ * BOUND: a seeded name is believed FILE-WIDE, so a local of the same name that
+ * shadows the import (and is not a masker) is believed too.
  */
 function companionImportedMaskers(files: readonly string[]): Map<string, Set<string>> {
   const imported = new Map<string, Set<string>>();

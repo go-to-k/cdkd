@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vite-plus/test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 /**
  * Mechanical non-regression backstop for the "sparse poll-loop backoff" latency
@@ -39,7 +40,8 @@ const MAX_ALLOWED_CAP_MS = 15_000;
 function providerFiles(): string[] {
   return readdirSync(providersDir)
     .filter((f) => f.endsWith('-provider.ts'))
-    .map((f) => join(providersDir, f));
+    // With each provider's companion files (scripts/provider-companion-files.ts).
+    .flatMap((f) => [join(providersDir, f), ...companionFiles(join(providersDir, f))]);
 }
 
 function parseCap(literal: string): number {
