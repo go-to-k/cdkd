@@ -68,9 +68,9 @@ that list**: beside the fix, its unit test and (user-visible) its
 assertions the fix changes (`grep -rl '<[dir/]basename, no
 extension>' tests/unit` hits; suites need not mirror `src/`; a new drift-unknown
 path changes the type's `getDriftUnknownPaths` pin, `grep -rl
-getDriftUnknownPaths tests/unit`), the fixture §8-c will
-extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW one,
-or a new `aws <svc> <subcommand>` in its `verify.sh`, adds `gen:all-matrices`'
+getDriftUnknownPaths tests/unit | grep '<provider basename>'`), the fixture §8-c
+will extend (`grep -rl '<type's last segment>' tests/integration/*/lib`; a NEW
+one, or a `--<flag>` token no `verify.sh` used before, adds `gen:all-matrices`'
 outputs in `docs/`) and, when a
 provider gains `context?: UpdateContext`, triage.md §2's checker/test pair, and
 every file the fix makes FALSE — a comment, doc or rule stating the old invariant
