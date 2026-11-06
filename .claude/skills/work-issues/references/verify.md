@@ -16,7 +16,8 @@
 **Run the integ LAST — after every reviewer RETURNS and the final edit to any
 `integ-destroy`-scoped file.** A lane runs no integ (it still runs `triage.md`'s
 throwaway CFn change set itself: never brief it down to read-only probes,
-#5401), so only the parent finds an integ-time AWS-side rejection:
+#5401; a create→update→delete STACK its permissions refuse: the PARENT plans
+it and asks `AskUserQuestion` before the lane starts, #5830), so only the parent finds an integ-time AWS-side rejection:
 run a NEW or edited arm EARLY, to GREEN, once the lane writes it, from a
 `--detach` sibling at the pushed sha (§8-d's `worktree add`, no revert), so no
 fix round waits on it (#2762). It and §8-d's probe set no marker and commit no

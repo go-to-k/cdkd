@@ -118,7 +118,8 @@ git rebase origin/main   # its OWN call, then `git status`: at most one conflict
   merged it CLEANLY**: take upstream's copy whole — the generator's BASELINE —
   re-run the generator, commit ITS output before the push (#4460). Take it with
   `git show origin/main:<file> > <file>`: mid-rebase `checkout -- <file>` hits
-  `dirty-path-restore-gate` on the staged copy.
+  `dirty-path-restore-gate` on the staged copy. `tests/fixtures/cfn-schemas/_todo-backfill.json`
+  is NOT generated (no generator writes it): merge it by hand (#5829).
 - **The integ ledger is the exception**: its rows record real-AWS RUNS, so
   upstream-whole drops this lane's row. GitHub ignores its `merge=union`, so
   each `main` ledger row re-CONFLICTS the PR: rebase locally, normalize (Merge).
@@ -161,7 +162,10 @@ gh pr merge <n> -R <owner>/<repo> --squash --delete-branch
   **PUSH FIRST, then run the post-rebase suite while CI drains** — so its ledger
   test runs only after the push: re-run `vp install --frozen-lockfile &&
   vp run build` (left stale, gen exits 1 and `version.test.ts` fails), then `vp run gen:all-matrices && vp run format`
-  (it ends in the ledger normalize) after EVERY rebase; push once
+  (it ends in the ledger normalize) after EVERY rebase, then `vp run build` AGAIN
+  before any integ: gen rewrites `src/provisioning/property-coverage.generated.ts`,
+  which `dist/` bundles (#5829: a pre-regen `dist/` routed the PR's own type to
+  cc-api and FAILED its arm); push once
   `git status --porcelain` is empty (`docs/cli-flag-coverage.md` is outside `_generated/`).
 - **A bot can push onto the PR's own branch mid-merge** (#5123): merge with
   `--match-head-commit <the sha you verified>`, take a head you did not author
