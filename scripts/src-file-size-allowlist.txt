@@ -61,7 +61,6 @@ src/provisioning/providers/agentcore-runtime-provider.ts
 src/provisioning/providers/cloudtrail-provider.ts
 src/provisioning/providers/codebuild-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/provisioning/providers/elasticache-provider.ts
 src/provisioning/providers/emr-instance-fleet-config-provider.ts
 src/provisioning/providers/eventbridge-rule-provider.ts
 src/provisioning/providers/iam-managed-policy-provider.ts
