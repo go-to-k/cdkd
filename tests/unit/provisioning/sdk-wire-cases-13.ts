@@ -477,7 +477,7 @@ const APIGW_CASES: TypeCase[] = [
  * a client the provider builds itself, a create client among them).
  */
 
-const COGNITO_SRC = 'cognito-provider.ts';
+const COGNITO_SRC = 'cognito/';
 const COGNITO_POOL_ID = 'us-east-1_pool';
 const COGNITO_FN = (name: string): string =>
   `arn:aws:lambda:us-east-1:${ACCOUNT}:function:${name}`;
@@ -485,13 +485,13 @@ const COGNITO_ROLE = `arn:aws:iam::${ACCOUNT}:role/sms`;
 
 /**
  * The properties `UpdateUserPool` has no member for: `update()` refuses a
- * change to one before any call (cognito-provider.ts:3238-3261,
- * `createTimeOnlyChanges` at :435-467). CloudFormation's handler refuses the
+ * change to one before any call (`update()` in cognito/update.ts,
+ * `createTimeOnlyChanges` in cognito/shared.ts). CloudFormation's handler refuses the
  * same ("Updates are not allowed for property"), measured for a change to each
  * of the three and for the removal of `UsernameAttributes` or
- * `UsernameConfiguration` (:423-433); the removal of `AliasAttributes`, and
+ * `UsernameConfiguration` (`createTimeOnlyChanges`); the removal of `AliasAttributes`, and
  * declaring any of them on a pool created without it, are CloudFormation-
- * unmeasured. The schema lists no create-only path for the type (:423-424), so
+ * unmeasured. The schema lists no create-only path for the type, so
  * the case marks them itself; `describeCognitoExtras` pins each refusal, in
  * every direction the harness skips for a create-only path.
  */
@@ -645,17 +645,17 @@ const COGNITO_VARIANTS = {
 /**
  * The Schema probes that throw: `update()` refuses any change to an existing
  * custom attribute (a removal, or a member added to or dropped from it) as
- * immutable, before `AddCustomAttributes` (cognito-provider.ts:3734-3765), and
- * a Schema entry without a `Name` (:3709-3722). Only an ADDED custom attribute
+ * immutable, before `AddCustomAttributes` (`reconcileSchemaCustomAttributes`, cognito/update.ts), and
+ * a Schema entry without a `Name`. Only an ADDED custom attribute
  * is applied in place, which `update-add:Schema` / `update-add:Schema.<i>`
  * observe.
  */
 const COGNITO_SCHEMA_IMMUTABLE: Throw = {
-  why: `update() refuses a changed or removed existing custom attribute as immutable, before any write (${COGNITO_SRC}:3734-3765)`,
+  why: `update() refuses a changed or removed existing custom attribute as immutable, before any write (${COGNITO_SRC}update.ts, reconcileSchemaCustomAttributes)`,
   says: /is immutable on AWS/,
 };
 const COGNITO_SCHEMA_NAMELESS: Throw = {
-  why: `update() refuses a Schema entry with no Name before any write (${COGNITO_SRC}:3709-3722)`,
+  why: `update() refuses a Schema entry with no Name before any write (${COGNITO_SRC}update.ts, reconcileSchemaCustomAttributes)`,
   says: /has a Schema attribute with no Name/,
 };
 
@@ -683,7 +683,7 @@ function cognitoSchemaThrows(): Record<string, Throw> {
 /**
  * A constraint leaf's update-vary base drops the constraints block, so both
  * sides MODIFY an existing attribute, which `update()` refuses
- * (cognito-provider.ts:3734-3765): the value is observed by `create-vary`.
+ * (`reconcileSchemaCustomAttributes`, cognito/update.ts): the value is observed by `create-vary`.
  */
 function cognitoSchemaVarySilent(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -692,7 +692,7 @@ function cognitoSchemaVarySilent(): Record<string, string> {
       if (value === null || typeof value !== 'object') continue;
       for (const k of Object.keys(value)) {
         out[`update-vary:Schema.${i}.${member}.${k}`] =
-          `the vary base drops ${member}, so both sides modify the existing attribute, which update() refuses before any write (${COGNITO_SRC}:3734-3765); create-vary observes the value`;
+          `the vary base drops ${member}, so both sides modify the existing attribute, which update() refuses before any write (${COGNITO_SRC}update.ts, reconcileSchemaCustomAttributes); create-vary observes the value`;
       }
     }
   });
@@ -701,19 +701,19 @@ function cognitoSchemaVarySilent(): Record<string, string> {
 
 /** A removal both UpdateUserPool and CloudFormation keep (real CloudFormation A/B, #1160). */
 const cognitoKept = (member: string): string =>
-  `left in place on removal: UpdateUserPool keeps an omitted ${member} and CloudFormation keeps it on the same edit (real CloudFormation A/B, #1160), so update() only warns (${COGNITO_SRC}:543-554, 3077-3109)`;
+  `left in place on removal: UpdateUserPool keeps an omitted ${member} and CloudFormation keeps it on the same edit (real CloudFormation A/B, #1160), so update() only warns (${COGNITO_SRC}shared.ts KEPT_ON_REMOVAL_MEMBERS, ${COGNITO_SRC}update.ts warnOnKeptRemovedMembers)`;
 
 const COGNITO_ISSUER_KEPT =
-  `left in place on removal: UpdateUserPool keeps an omitted IssuerConfiguration and CloudFormation keeps it on the same edit (real CloudFormation A/B, #2762), so update() only warns (${COGNITO_SRC}:543-554, 3077-3109)`;
+  `left in place on removal: UpdateUserPool keeps an omitted IssuerConfiguration and CloudFormation keeps it on the same edit (real CloudFormation A/B, #2762), so update() only warns (${COGNITO_SRC}shared.ts KEPT_ON_REMOVAL_MEMBERS, ${COGNITO_SRC}update.ts warnOnKeptRemovedMembers)`;
 
 const COGNITO_POLICIES_KEPT =
-  `left in place on removal: UpdateUserPool keeps an omitted Policies sub-key and CloudFormation keeps it on the same edit (real CloudFormation A/B, #1979), so update() only warns (${COGNITO_SRC}:2039-2080, 3308-3314)`;
+  `left in place on removal: UpdateUserPool keeps an omitted Policies sub-key and CloudFormation keeps it on the same edit (real CloudFormation A/B, #1979), so update() only warns (${COGNITO_SRC}create.ts toSdkUserPoolPolicies, ${COGNITO_SRC}update.ts warnOnUnremovablePoliciesSubKeys)`;
 
 const COGNITO_NAME_KEPT =
-  `a dropped UserPoolName sends no PoolName and the pool keeps its live name, which CloudFormation does on the same edit (measured, ${COGNITO_SRC}:3339-3346)`;
+  `a dropped UserPoolName sends no PoolName and the pool keeps its live name, which CloudFormation does on the same edit (measured, ${COGNITO_SRC}update.ts update)`;
 
 const COGNITO_MFA_WITH_FACTOR =
-  `with an MFA factor still declared, SetUserPoolMfaConfig carries MfaConfiguration, built from the desired bag and defaulting a removed value (${COGNITO_SRC}:993-1001); the turn-off arm reads the previous side only when no factor is left (${COGNITO_SRC}:3317-3324)`;
+  `with an MFA factor still declared, SetUserPoolMfaConfig carries MfaConfiguration, built from the desired bag and defaulting a removed value (${COGNITO_SRC}mfa-request.ts buildMfaConfigRequest); the turn-off arm reads the previous side only when no factor is left (${COGNITO_SRC}mfa-apply.ts turnOffRemovedMfa)`;
 
 const USER_POOL_CASE: TypeCase = {
   resourceType: 'AWS::Cognito::UserPool',
@@ -723,7 +723,7 @@ const USER_POOL_CASE: TypeCase = {
   wholeFromNext: {
     keys: (key) => key !== 'UserPoolTags' && key !== 'MfaConfiguration' && key !== 'Schema',
     reason:
-      `UpdateUserPool and SetUserPoolMfaConfig are built from the desired bag alone (${COGNITO_SRC}:3335-3466, 823-1001); the previous side is read only to warn about a kept removal (${COGNITO_SRC}:3308-3315). So an omitted member is simply not sent. What AWS does on that omission is measured only for the members the provider's ledgers name (UpdateUserPool: AutoVerifiedAttributes, LambdaConfig, UserPoolAddOns, VerificationMessageTemplate, SmsAuthenticationMessage, DeviceConfiguration and AdminCreateUserConfig.AllowAdminCreateUserOnly reset, ${COGNITO_SRC}:2718-2737, a DEVELOPER EmailConfiguration resets to COGNITO_DEFAULT, ${COGNITO_SRC}:144-149, and a customer-managed KeyConfiguration resets to AWS_OWNED_KEY, which CloudFormation does on removal too, ${COGNITO_SRC}:156-160; SetUserPoolMfaConfig: MfaConfiguration and WebAuthnConfiguration.FactorConfiguration, ${COGNITO_SRC}:2758-2772), and a member CloudFormation keeps on removal is named in the bag's expectedSilent; for every other member (EnabledMfas, the WebAuthn relying party and verification, the email-OTP message and subject, AdminCreateUserConfig.InviteMessageTemplate / UnusedAccountValidityDays, the email / SMS verification messages, UserAttributeUpdateSettings: ${COGNITO_SRC}:123-154) both the omission and CloudFormation's removal are unmeasured`,
+      `UpdateUserPool and SetUserPoolMfaConfig are built from the desired bag alone (${COGNITO_SRC}update.ts update, ${COGNITO_SRC}mfa-request.ts buildMfaConfigRequest); the previous side is read only to warn about a kept removal (${COGNITO_SRC}update.ts warnOnKeptRemovedMembers / warnOnUnremovablePoliciesSubKeys). So an omitted member is simply not sent. What AWS does on that omission is measured only for the members the provider's ledgers name (UpdateUserPool: AutoVerifiedAttributes, LambdaConfig, UserPoolAddOns, VerificationMessageTemplate, SmsAuthenticationMessage, DeviceConfiguration and AdminCreateUserConfig.AllowAdminCreateUserOnly reset, ${COGNITO_SRC}mfa-apply.ts readLiveMfaConfiguration, a DEVELOPER EmailConfiguration resets to COGNITO_DEFAULT, ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS, and a customer-managed KeyConfiguration resets to AWS_OWNED_KEY, which CloudFormation does on removal too, ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS; SetUserPoolMfaConfig: MfaConfiguration and WebAuthnConfiguration.FactorConfiguration, ${COGNITO_SRC}mfa-apply.ts readLiveMfaConfiguration), and a member CloudFormation keeps on removal is named in the bag's expectedSilent; for every other member (EnabledMfas, the WebAuthn relying party and verification, the email-OTP message and subject, AdminCreateUserConfig.InviteMessageTemplate / UnusedAccountValidityDays, the email / SMS verification messages, UserAttributeUpdateSettings: ${COGNITO_SRC}shared.ts USER_POOL_ECHO_MEMBERS) both the omission and CloudFormation's removal are unmeasured`,
   },
   exempt: {},
   targets: [
@@ -777,7 +777,7 @@ const USER_POOL_CASE: TypeCase = {
     },
     {
       // The EmailMfaConfiguration block IS the email-OTP factor: a bare
-      // message / subject sends it without EMAIL_OTP listed (cognito-provider.ts:900-915).
+      // message / subject sends it without EMAIL_OTP listed (`buildMfaConfigRequest`, cognito/mfa-request.ts).
       name: 'email-OTP message and subject beside a software token',
       bag: {
         MfaConfiguration: 'ON',

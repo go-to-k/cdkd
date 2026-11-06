@@ -566,7 +566,7 @@ implementation. Three details are worth copying:
     (issue [#2007](https://github.com/go-to-k/cdkd/issues/2007)).
     The reference implementation
     is `buildMfaConfigRequest` in
-    [src/provisioning/providers/cognito-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/cognito-provider.ts),
+    [src/provisioning/providers/cognito/mfa-request.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/cognito/mfa-request.ts),
     which routes every warning through one masked sink rather than masking at
     each call; `create()` in
     [src/provisioning/providers/ssm-parameter-provider.ts](https://github.com/go-to-k/cdkd/blob/main/src/provisioning/providers/ssm-parameter-provider.ts)
@@ -1616,7 +1616,7 @@ Checklist when writing or reviewing an `update()`:
   does, so a cdkd-side reset would DIVERGE from template compatibility. The
   correct shape there is pass-through-nothing plus a WARN naming the sub-key
   and the explicit-declaration remedy (`warnOnUnremovablePoliciesSubKeys` in
-  `cognito-provider.ts`): under both A/B answers the only wrong option is
+  `cognito/update.ts`): under both A/B answers the only wrong option is
   silence, because the user who deleted the sub-key believes a change (often
   a TIGHTENING) landed. The same UserPool A/B for its other members (issue
   #1160): removal KEEPS `AccountRecoverySetting`, `SmsConfiguration`,
