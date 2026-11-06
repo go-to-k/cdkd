@@ -24,7 +24,7 @@ gh issue view <n> --json body -q .body \
 
 The diff is a LOWER bound: a `next` is `now` if ANY file its fix touches or
 must read was read this run, or if the open PR its `(a)` names has merged since
-(`gh pr view <N> --json state`; #5894's blocker #5878 merged 14 min after filing). Empty output is not "nothing to promote" — bodies
+(`gh pr view <N> --json state`; #5894's blocker #5878 merged 13 min after filing). Empty output is not "nothing to promote" — bodies
 name subjects by SYMBOL as often as by path. A hit prompts judgement, not a
 verdict. Then split the filed count by what §5-f did with each:
 
