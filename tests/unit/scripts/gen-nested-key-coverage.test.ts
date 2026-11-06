@@ -1019,7 +1019,7 @@ describe('whole-blob hand-off walk (synthetic, issue #1445)', () => {
     // Pinning the bound rather than the behaviour we want: this converter drops
     // every key in `DROP` and still passes, because "names no member" is the
     // whole test. No such shape is a hand-off callee in the tree today, but
-    // `glue-provider.ts`'s `renameRecordKeys` is the same shape.
+    // `glue/crawler-targets.ts`'s `renameRecordKeys` is the same shape.
     // If a future change makes this expectation FAIL, that is an improvement —
     // update the module header's known bound (5) with the new measurement.
     const points = pointsOf(`

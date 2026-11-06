@@ -72,15 +72,15 @@ function armDatabase(_physicalId: string, bag: Bag): void {
 }
 
 const DATABASE_INPUT_REQUIRED = REQUIRED(
-  'DatabaseInput is required: create() and update() refuse a database without it before any call (glue-provider.ts:1250-1257, 1336-1344)',
+  'DatabaseInput is required: create() and update() refuse a database without it before any call (glue/database.ts)',
   /DatabaseInput is required for Glue Database/
 );
 const DATABASE_NAME_REQUIRED = REQUIRED(
-  'a database needs DatabaseInput.Name or the top-level DatabaseName: create() refuses one with neither (glue-provider.ts:1263-1272)',
+  'a database needs DatabaseInput.Name or the top-level DatabaseName: create() refuses one with neither (glue/database.ts)',
   /DatabaseInput\.Name or top-level DatabaseName is required/
 );
 const PRINCIPAL_REFUSED = REQUIRED(
-  'a default-permission Principal naming no DataLakePrincipalIdentifier is refused before any call rather than sent as an empty grant (usableDefaultPermissions, glue-provider.ts:2605-2631)',
+  'a default-permission Principal naming no DataLakePrincipalIdentifier is refused before any call rather than sent as an empty grant (usableDefaultPermissions, glue/database.ts)',
   /CreateTableDefaultPermissions carries an entry cdkd cannot read/
 );
 
@@ -90,7 +90,7 @@ const DATABASE_CASE: TypeCase = {
   physicalId: 'db',
   createOnly: createOnlyOf('AWS::Glue::Database'),
   arm: armDatabase,
-  // UpdateDatabase replaces `DatabaseInput` wholesale (glue-provider.ts:1378-1395):
+  // UpdateDatabase replaces `DatabaseInput` wholesale (glue/database.ts):
   // `previousProperties` is read only as the fallback for a MALFORMED nested
   // block and for the AWS-authored `Parameters` keys the read-merge-write
   // keeps, a key live but declared by neither side, which the arm (live = the
@@ -127,9 +127,9 @@ const DATABASE_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-remove:CatalogId':
-          'update() sends updateCatalogId(next) and never reads the recorded CatalogId for the call (glue-provider.ts:1374, 1441), so a removal compares two requests that both omit it; the recorded side reaches only the catalog-move check',
+          'update() sends updateCatalogId(next) and never reads the recorded CatalogId for the call (glue/database.ts), so a removal compares two requests that both omit it; the recorded side reaches only the catalog-move check',
         'update-vary:CatalogId':
-          'a changed CatalogId moves the database to another catalog, which update() refuses before any call (refuseCatalogMove, glue-provider.ts:1360-1372)',
+          'a changed CatalogId moves the database to another catalog, which update() refuses before any call (refuseCatalogMove, glue/database.ts)',
       },
       expectedRemovalThrows: {
         'create:DatabaseInput': DATABASE_INPUT_REQUIRED,
@@ -154,9 +154,9 @@ const DATABASE_CASE: TypeCase = {
       },
       expectedSilent: {
         'update-add:DatabaseInput.Name':
-          'the name is the physical id: update() sends it as the fallback when the block omits it (buildDatabaseInput, glue-provider.ts:2461-2463)',
+          'the name is the physical id: update() sends it as the fallback when the block omits it (buildDatabaseInput, glue/database.ts)',
         'update-vary:DatabaseInput.Name':
-          'a renamed database is refused before any call (refuseNestedRename, glue-provider.ts:1346-1359)',
+          'a renamed database is refused before any call (refuseNestedRename, glue/database.ts)',
       },
       expectedRemovalThrows: {
         'create:DatabaseInput': DATABASE_INPUT_REQUIRED,
@@ -256,24 +256,24 @@ const TABLE_INPUT = {
 };
 
 const TABLE_INPUT_REQUIRED = REQUIRED(
-  'TableInput is required: create() and update() refuse a table without it before any call (glue-provider.ts:1572-1579, 1752-1760)',
+  'TableInput is required: create() and update() refuse a table without it before any call (glue/table-write.ts)',
   /TableInput is required for Glue Table/
 );
 const TABLE_NAME_REQUIRED = REQUIRED(
-  'a table needs TableInput.Name or the top-level Name: create() refuses one with neither (glue-provider.ts:1585-1593)',
+  'a table needs TableInput.Name or the top-level Name: create() refuses one with neither (glue/table-write.ts)',
   /TableInput\.Name or top-level Name is required/
 );
 /** The create refusals every table bag carries, plus its table-name one. */
 const TABLE_THROWS = (nameLabels: string[]): Record<string, Throw> => ({
   'create:DatabaseName': REQUIRED(
-    'DatabaseName is required: create() refuses a table without it before any call (glue-provider.ts:1563-1570)',
+    'DatabaseName is required: create() refuses a table without it before any call (glue/table-write.ts)',
     /DatabaseName is required for Glue Table/
   ),
   'create:TableInput': TABLE_INPUT_REQUIRED,
   ...Object.fromEntries(nameLabels.map((label) => [label, TABLE_NAME_REQUIRED])),
 });
 const OPEN_TABLE_FORMAT_CREATE_ONLY =
-  'wired on create only: UpdateTable has no OpenTableFormatInput member, and IcebergInput is a create-time directive (glue-provider.ts:1602-1608)';
+  'wired on create only: UpdateTable has no OpenTableFormatInput member, and IcebergInput is a create-time directive (glue/table-write.ts)';
 
 const TABLE_CASE: TypeCase = {
   resourceType: 'AWS::Glue::Table',
@@ -281,7 +281,7 @@ const TABLE_CASE: TypeCase = {
   physicalId: TABLE_ID,
   createOnly: createOnlyOf('AWS::Glue::Table'),
   arm: armTable,
-  // UpdateTable replaces `TableInput` wholesale (glue-provider.ts:1829-1870):
+  // UpdateTable replaces `TableInput` wholesale (glue/table-write.ts):
   // `previousProperties` is read only to tell a key the template dropped from
   // one AWS authored (`preserveAwsManagedParameters` /
   // `preserveAwsManagedStorageDescriptor`), and the arm (live = the previous
@@ -469,7 +469,7 @@ const WORKFLOW_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         'create:Name': REQUIRED(
-          'Name is required: create() refuses a workflow without it before any call (glue-provider.ts:3379-3386)',
+          'Name is required: create() refuses a workflow without it before any call (glue/workflow.ts)',
           /Name is required for Glue Workflow/
         ),
       },
@@ -481,7 +481,7 @@ const WORKFLOW_CASE: TypeCase = {
 
 /**
  * A security configuration has no update API: `update()` always refuses
- * (glue-provider.ts:3811-3845), and the case marks `EncryptionConfiguration`
+ * (glue/security-configuration.ts), and the case marks `EncryptionConfiguration`
  * create-only beside the schema's `Name` (the schema lists only `Name`, but no
  * in-place path exists for the rest). The refusal is CloudFormation parity,
  * measured by a CFn A/B (us-east-1): an `EncryptionConfiguration` change shows
@@ -526,11 +526,11 @@ const SECURITY_CONFIGURATION_CASE: TypeCase = {
       bag: SECURITY_CONFIGURATION_BAG,
       expectedRemovalThrows: {
         'create:Name': REQUIRED(
-          'Name is required: create() refuses a security configuration without it before any call (glue-provider.ts:3764-3771)',
+          'Name is required: create() refuses a security configuration without it before any call (glue/security-configuration.ts)',
           /Name is required for Glue SecurityConfiguration/
         ),
         'create:EncryptionConfiguration': REQUIRED(
-          'EncryptionConfiguration is required: create() refuses a security configuration without it before any call (glue-provider.ts:3773-3782)',
+          'EncryptionConfiguration is required: create() refuses a security configuration without it before any call (glue/security-configuration.ts)',
           /EncryptionConfiguration is required for Glue SecurityConfiguration/
         ),
       },
@@ -607,11 +607,11 @@ const JOB_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         'create:Role': REQUIRED(
-          'Role is required: create() refuses a job without it before any call (glue-provider.ts:4469-4475)',
+          'Role is required: create() refuses a job without it before any call (glue/job.ts)',
           /Role is required for Glue Job/
         ),
         'create:Command': REQUIRED(
-          'Command is required: create() refuses a job without it before any call (glue-provider.ts:4476-4482)',
+          'Command is required: create() refuses a job without it before any call (glue/job.ts)',
           /Command is required for Glue Job/
         ),
       },
@@ -628,7 +628,7 @@ const CRAWLER_CASE: TypeCase = {
   createOnly: createOnlyOf('AWS::Glue::Crawler'),
   // Beside the shared reason: the ten settings in
   // CRAWLER_LEFT_IN_PLACE_ON_REMOVAL keep their live value when removed, as
-  // CloudFormation keeps them (CFn A/B, glue-provider.ts:5029-5052), and
+  // CloudFormation keeps them (CFn A/B, glue/crawler.ts), and
   // `Targets` is re-sent whole.
   wholeFromNext: { keys: (key) => key !== 'Tags', reason: WHOLE_FROM_NEXT },
   exempt: {},
@@ -723,11 +723,11 @@ const CRAWLER_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         'create:Role': REQUIRED(
-          'Role is required: create() refuses a crawler without it before any call (glue-provider.ts:5197-5203)',
+          'Role is required: create() refuses a crawler without it before any call (glue/crawler.ts)',
           /Role is required for Glue Crawler/
         ),
         'create:Targets': REQUIRED(
-          'Targets is required: create() refuses a crawler without it before any call (glue-provider.ts:5204-5210)',
+          'Targets is required: create() refuses a crawler without it before any call (glue/crawler.ts)',
           /Targets is required for Glue Crawler/
         ),
       },
@@ -811,7 +811,7 @@ const CONNECTION_CASE: TypeCase = {
       },
       expectedRemovalThrows: {
         'create:ConnectionInput': REQUIRED(
-          'ConnectionInput is required: create() refuses a connection without it before any call (glue-provider.ts:5813-5820)',
+          'ConnectionInput is required: create() refuses a connection without it before any call (glue/connection.ts)',
           /ConnectionInput is required for Glue Connection/
         ),
       },
@@ -823,11 +823,11 @@ const CONNECTION_CASE: TypeCase = {
 
 const TRIGGER_THROWS: Record<string, Throw> = {
   'create:Type': REQUIRED(
-    'Type is required: create() refuses a trigger without it before any call (glue-provider.ts:6297-6303)',
+    'Type is required: create() refuses a trigger without it before any call (glue/trigger.ts)',
     /Type is required for Glue Trigger/
   ),
   'create:Actions': REQUIRED(
-    'Actions is required: create() refuses a trigger without it before any call (glue-provider.ts:6304-6310)',
+    'Actions is required: create() refuses a trigger without it before any call (glue/trigger.ts)',
     /Actions is required for Glue Trigger/
   ),
 };
@@ -885,7 +885,7 @@ const TRIGGER_CASE: TypeCase = {
       expectedSilent: Object.fromEntries(
         ['update-add', 'update-remove', 'update-vary'].map((d) => [
           `${d}:StartOnCreation`,
-          'read at create only: TriggerUpdate has no StartOnCreation member, and a trigger is started or stopped by StartTrigger / StopTrigger, never by its definition (glue-provider.ts:6244-6245, 6407-6423)',
+          'read at create only: TriggerUpdate has no StartOnCreation member, and a trigger is started or stopped by StartTrigger / StopTrigger, never by its definition (glue/trigger.ts)',
         ])
       ),
       expectedRemovalThrows: TRIGGER_THROWS,
