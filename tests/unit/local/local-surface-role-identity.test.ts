@@ -117,6 +117,7 @@ function constructionAt(
   if (
     CREDENTIAL_OVERRIDE.test(statement) ||
     OPAQUE_SPREAD.test(statement) ||
+    OPAQUE_KEYS.test(statement) ||
     hasOpaqueParenSpread(statement)
   ) {
     return { kind: 'credentialOverride', span };
@@ -134,6 +135,14 @@ function constructionAt(
  */
 const OPAQUE_SPREAD =
   /\.\.\.\s*(?!(?:awsClientDefaults|ambientClientDefaults|clientDefaultsFor)\s*\()[A-Za-z_$]/;
+
+/**
+ * Keys the line does not spell: `Object.assign(...)` merging a value into the
+ * config, and a COMPUTED property (`{ [credKey]: v }`), either of which can be
+ * `credentials`. An index inside a ternary (`a ? x[0] : y`) is not one — the
+ * bracket must open a property, after `{` or `,`.
+ */
+const OPAQUE_KEYS = /\bObject\s*\.\s*assign\s*\(|[{,]\s*\[[^\]]+\]\s*:/;
 
 /**
  * Does a parenthesised spread hide a value? `...(x && { region })` and
@@ -407,6 +416,8 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       '  new STSClient({ ...awsClientDefaults(), ...makeOptions() });',
       '  new STSClient({ ...awsClientDefaults(), ...(useRole ? roleOpts : {}) });',
       '  new STSClient({ ...awsClientDefaults(), ...(cond && opts) });',
+      '  new STSClient(Object.assign({ ...awsClientDefaults() }, extra));',
+      '  new STSClient({ ...awsClientDefaults(), [credKey]: v });',
     ]) {
       expect(classifyLine([statement], 0).site?.kind, statement).toBe('credentialOverride');
     }
@@ -416,6 +427,7 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       '  new STSClient({ ...awsClientDefaults(), ...(r && { region: canon(r) }) });',
       '  new STSClient({ ...awsClientDefaults(), ...(region && { region }) });',
       '  new STSClient({ ...clientDefaultsFor(c), ...{ region } });',
+      '  new STSClient({ ...awsClientDefaults(), region: useA ? regions[0] : r });',
     ]) {
       expect(classifyLine([statement], 0).covered, statement).toBe(true);
     }

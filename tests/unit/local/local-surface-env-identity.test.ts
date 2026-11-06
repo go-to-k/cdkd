@@ -402,6 +402,9 @@ function annotationGovernsRead(lines: string[], index: number): boolean {
  */
 function annotationGovernsKeyLine(lines: string[], index: number): boolean {
   let seen = credentialKeysNamed(stripComments(lines[index] ?? ''));
+  // A line naming no key (the `AWS_CREDENTIAL_ENV_KEYS` loop) cannot be held to
+  // the repeated-key stop, so it takes only its own annotation.
+  if (seen.size === 0) return hasAnnotationAbove(lines, index, ANNOTATION);
   // One frame per `if` / `else` construct the climb is inside (entered from an
   // `else` arm): `base` is what its arms are checked against, `union` what
   // they wrote.
@@ -432,7 +435,8 @@ function annotationGovernsKeyLine(lines: string[], index: number): boolean {
       if (frame !== undefined) seen = new Set([...frame.union, ...seen]);
     } else if (CREDENTIAL_KEY_SITE.test(code) && !PROCESS_ENV_CREDENTIAL_READ.test(code)) {
       const keys = credentialKeysNamed(code);
-      if ([...keys].some((k) => seen.has(k))) break;
+      // A key-less site above (the constant's loop) is a decision of its own.
+      if (keys.size === 0 || [...keys].some((k) => seen.has(k))) break;
       for (const k of keys) seen.add(k);
     } else {
       break;
@@ -906,6 +910,17 @@ describe('every identity reaching an emulated workload through process env or a 
     ]) {
       expect(siteAt([...written, late], written.length)?.verdict, late).toBe('undeclared');
     }
+    // A site naming NO key (the constant's loop) takes only its own reason,
+    // and is not climbed over either.
+    const keyless = [
+      '  // cdkd-local-env-identity: placeholder',
+      "  e2['AWS_ACCESS_KEY_ID'] = 'x';",
+      "  for (const k of AWS_CREDENTIAL_ENV_KEYS) e2[k] = process.env[k] ?? '';",
+    ];
+    expect(siteAt(keyless, 2)?.verdict).toBe('undeclared');
+    expect(siteAt([...keyless.slice(0, 2), ...keyless.slice(2), "  e2['AWS_SESSION_TOKEN'] = 'y';"], 3)?.verdict).toBe(
+      'undeclared'
+    );
     // A reason INSIDE a block that closed above does not reach past it.
     const closedBlock = [
       '  if (x) {',
