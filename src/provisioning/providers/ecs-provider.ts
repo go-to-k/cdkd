@@ -1,27 +1,5 @@
 import {
   ECSClient,
-  CreateClusterCommand,
-  DeleteClusterCommand,
-  DescribeClustersCommand,
-  PutClusterCapacityProvidersCommand,
-  UpdateClusterCommand,
-  RegisterTaskDefinitionCommand,
-  DeregisterTaskDefinitionCommand,
-  DescribeTaskDefinitionCommand,
-  ListTaskDefinitionsCommand,
-  CreateServiceCommand,
-  UpdateServiceCommand,
-  DeleteServiceCommand,
-  DescribeServicesCommand,
-  waitUntilServicesStable,
-  TagResourceCommand,
-  UntagResourceCommand,
-  type DescribeClustersCommandOutput,
-  type Deployment,
-  type Service,
-  type DescribeTaskDefinitionCommandOutput,
-  type RegisterTaskDefinitionCommandOutput,
-  type Tag,
   type KeyValuePair,
   type PortMapping,
   type MountPoint,
@@ -36,7 +14,6 @@ import {
   type ContainerDefinition,
   type NetworkConfiguration,
   type LoadBalancer,
-  type AdvancedConfiguration,
   type DeploymentConfiguration,
   type CapacityProviderStrategyItem,
   type PlacementConstraint,
@@ -44,19 +21,9 @@ import {
   type ServiceRegistry,
   type LinuxParameters,
   type ClusterConfiguration,
-  type NetworkMode,
-  type Compatibility,
   type TaskDefinitionPlacementConstraint,
   type RuntimePlatform,
   type ProxyConfiguration,
-  type PidMode,
-  type IpcMode,
-  type LaunchType,
-  type SchedulingStrategy,
-  type PropagateTags,
-  type TransportProtocol,
-  type ApplicationProtocol,
-  type LogDriver,
   type EFSVolumeConfiguration,
   type S3FilesVolumeConfiguration,
   type EFSAuthorizationConfig,
@@ -64,62 +31,17 @@ import {
   type FSxWindowsFileServerVolumeConfiguration,
   type FSxWindowsFileServerAuthorizationConfig,
   type HostVolumeProperties,
-  type Scope,
-  type EFSTransitEncryption,
-  type EFSAuthorizationConfigIAM,
-  type AssignPublicIp,
-  type ContainerCondition,
-  type EnvironmentFileType,
-  type UlimitName,
-  type RepositoryCredentials,
   type FirelensConfiguration,
-  type FirelensConfigurationType,
-  type ResourceRequirement,
-  type SystemControl,
-  type HostEntry,
-  type ContainerRestartPolicy,
-  type VersionConsistency,
-  type AvailabilityZoneRebalancing,
   type DeploymentController,
   type ServiceConnectConfiguration,
   type ServiceVolumeConfiguration,
   type VpcLatticeConfiguration,
   type GatewayConnector,
   type MonitoringConfiguration,
-  type ThresholdConfiguration,
 } from '@aws-sdk/client-ecs';
-import { isDeepStrictEqual } from 'node:util';
-import { ecsServiceLaunchTypeSetOrChanged } from '../../analyzer/replacement-rules.js';
-import { getLogger } from '../../utils/logger.js';
-import { describeAwsFailure, VERBOSE_POINTER } from '../../utils/aws-failure-text.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { markDeleteStarted } from '../delete-started.js';
-import { markNotGone } from '../not-gone.js';
-import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
-import {
-  markNonRetryable,
-  markRedactedCause,
-  relayedNameCollision,
-  wrapMaskedAwsError,
-} from '../../deployment/retryable-errors.js';
-import { generatedNameFor } from '../resource-name.js';
-import { chunks, withApiLimit } from '../name-lookup.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import {
-  isPlainImportValue,
-  normalizeAwsTagsToCfn,
-  resolveExplicitPhysicalId,
-  VALUE_NOT_SHOWN,
-} from '../import-helpers.js';
-import { logicalIdShown } from '../composite-id.js';
-import {
-  planTagDiff,
-  tagPlanWarning,
-  refuseMalformedDesiredTags,
-  type CfnTagEntry,
-} from '../tag-list.js';
-import { pascalToCamelCaseKeys, camelToPascalCaseKeys } from './agentcore-case-convert.js';
+import { type ConsoleLogger, getLogger } from '../../utils/logger.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeleteContext } from '../region-check.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -131,560 +53,135 @@ import type {
   UpdateContext,
   ResourceNotFound,
 } from '../../types/resource.js';
-import { RESOURCE_NOT_FOUND } from '../../types/resource.js';
-import {
-  createMaskedLogSinks,
-  maskerOrIdentity,
-  withDerivedNameMasks,
-  type MaskedLogSinks,
-  type MaskerFn,
-} from '../masked-retry-logger.js';
-import { unchangedBehindSecretReference } from '../secret-reference-immutable.js';
-import { clearOnUpdateRemoval, withRemovalDefaults } from '../update-removal.js';
-import { readConfigString } from '../config-shape.js';
-import { commandHole } from '../../utils/pasteable-command.js';
-import { resolvedResourceTimeoutMs } from '../resource-timeout-registry.js';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
+import type { MaskedLogSinks, MaskerFn } from '../masked-retry-logger.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-import { displaySafe } from '../../utils/display-safe.js';
-import { pasteableAwsCommand } from '../replacement-protection-advice.js';
+import type { AmbiguousCreateWindow } from './ambiguous-create.js';
+import type { RequestedRollout } from './ecs/shared.js';
 import {
-  hasErrorName,
-  nameHeldBefore,
-  skippedCleanupText,
-  type NameHeldBefore,
-} from './create-ownership.js';
-import { isRedactedRecordedValue, redactedDeleteAddressSkip } from '../redacted-delete-address.js';
+  getClient,
+  getTaskDefinitionCreateClient,
+  reportPossibleOrphanTaskDefinitions,
+  wrapCaughtError,
+  operationSinks,
+  create,
+  update,
+  deleteImpl,
+  getAttribute,
+} from './ecs/core.js';
 import {
-  AmbiguousCreateLatch,
-  RecentIdSet,
-  isInsideWindow,
-  replayedSendWindow,
-  withoutServerErrorRetries,
-  type AmbiguousCreateWindow,
-} from './ambiguous-create.js';
+  createCluster,
+  updateCluster,
+  deleteCluster,
+  getClusterAttribute,
+  createTaskDefinition,
+  updateTaskDefinition,
+  deleteTaskDefinition,
+  getTaskDefinitionAttribute,
+} from './ecs/cluster-task-definition.js';
 import {
-  MAX_ORPHAN_LIST_PAGES,
-  orphanCommandRegionArg,
-  reportPossibleOrphans,
-} from './orphan-report.js';
+  createService,
+  serviceNameHeld,
+  wrapWaiterResultError,
+  wrapSteadyStateError,
+  settleService,
+} from './ecs/service-create.js';
+import { updateService } from './ecs/service-update.js';
+import {
+  deleteService,
+  waitForServiceInactive,
+  getServiceAttribute,
+  applyTagDiff,
+} from './ecs/service-delete.js';
+import {
+  convertContainerDefinitions,
+  convertPortMappings,
+  convertEnvironment,
+  convertEnvironmentFiles,
+  convertSecrets,
+  convertMountPoints,
+  convertVolumesFrom,
+  convertDependsOn,
+  convertUlimits,
+  convertLogConfiguration,
+  convertFirelensConfiguration,
+  convertHealthCheck,
+  convertVolumes,
+  convertS3FilesVolumeConfiguration,
+  convertVolumeHost,
+  convertDockerVolumeConfiguration,
+  convertEFSVolumeConfiguration,
+  convertEFSAuthorizationConfig,
+  convertFSxWindowsVolumeConfiguration,
+  convertFSxWindowsAuthorizationConfig,
+} from './ecs/convert-task-definition.js';
+import {
+  volumesToCfn,
+  proxyConfigurationToCfn,
+  containerDefinitionsToCfn,
+  logConfigurationToCfn,
+  linuxParametersToCfn,
+  coerceBool,
+} from './ecs/task-definition-to-cfn.js';
+import {
+  convertLoadBalancers,
+  convertDeploymentConfiguration,
+  resolveDeploymentConfiguration,
+  convertCapacityProviderStrategy,
+  convertPlacementConstraints,
+  convertPlacementStrategies,
+  convertServiceRegistries,
+  convertDeploymentController,
+  convertServiceConnectConfiguration,
+  convertServiceVolumeConfigurations,
+  convertVpcLatticeConfigurations,
+  convertGatewayConnectors,
+  convertMonitoringConfiguration,
+  resolveForceNewDeployment,
+  convertRuntimePlatform,
+  convertEphemeralStorage,
+  convertClusterConfiguration,
+  convertProxyConfiguration,
+  convertTaskDefinitionPlacementConstraints,
+  convertLinuxParameters,
+  convertNetworkConfiguration,
+  isClusterNotFoundException,
+  isNotFoundException,
+  isServiceNotFoundException,
+  isServiceNotActiveException,
+} from './ecs/convert-service.js';
+import {
+  getDriftUnknownPaths,
+  readCurrentState,
+  readCurrentStateCluster,
+  readCurrentStateService,
+  readCurrentStateTaskDefinition,
+} from './ecs/read-state.js';
+import {
+  generatedCreateName,
+  lookupNames,
+  importImpl,
+  importCluster,
+  importService,
+  importTaskDefinition,
+} from './ecs/import.js';
 
-/**
- * Issue #2080: `RegisterTaskDefinition` carries no idempotency token, and
- * every call registers the family's NEXT revision. A 5xx whose request had
- * succeeded therefore leaves an extra ACTIVE revision that no state records
- * and `cdkd destroy` never deregisters (`RegisterTaskDefinition` refuses
- * nothing on a replay, so nothing collides either). Armed by an ambiguous
- * create failure; the next attempt reports candidates before registering again.
- */
-const registerTaskDefinitionLatch = new AmbiguousCreateLatch('ecs:RegisterTaskDefinition');
-/** Task definition ARNs this process registered, never reported as orphan candidates. */
-const taskDefinitionsRegisteredByThisProcess = new RecentIdSet();
-
-/** Reset the module-scoped retry-safety state. TEST-ONLY. */
-export function resetTaskDefinitionCreateRetryStateForTests(): void {
-  registerTaskDefinitionLatch.resetForTests();
-  taskDefinitionsRegisteredByThisProcess.resetForTests();
-}
-
-/** The family of a task definition ARN (`...:task-definition/<family>:<revision>`). */
-function familyOfTaskDefinitionArn(arn: string): string | undefined {
-  return /:task-definition\/(.+):\d+$/.exec(arn)?.[1];
-}
-
-/**
- * Convert CFn Tags (Array<{Key, Value}>) to ECS Tags (Array<{key, value}>)
- */
-function convertTags(tags: CfnTagEntry[]): Tag[] | undefined {
-  if (tags.length === 0) return undefined;
-  return tags.map((t) => ({ key: t.Key, value: t.Value }));
-}
-
-/**
- * `DeploymentConfiguration.LifecycleHooks[].HookDetails` is a free-form JSON
- * document (SDK `__DocumentType`) whose inner keys are user-supplied hook
- * payload fields, NOT CloudFormation property names. The recursive
- * PascalCase->camelCase key flip must therefore copy its value subtree
- * verbatim (the `HookDetails` key itself is still flipped to `hookDetails`).
- * See `convertDeploymentConfiguration`.
- */
-const DEPLOYMENT_CONFIG_PRESERVE_KEYS: ReadonlySet<string> = new Set(['HookDetails']);
-
-/**
- * Read-side (camelCase -> PascalCase) counterpart of
- * `DEPLOYMENT_CONFIG_PRESERVE_KEYS` for `readCurrentState` (issue #1165 /
- * #1167). The SDK response carries the free-form document under the camelCase
- * key `hookDetails`, so the reverse key-flip must copy its value subtree
- * verbatim (the key itself is still flipped to `HookDetails`).
- */
-const DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL: ReadonlySet<string> = new Set(['hookDetails']);
-
-/**
- * `ServiceConnectConfiguration.LogConfiguration.Options` is a free-form
- * log-driver option map (e.g. `awslogs-group`) whose keys are user data, NOT
- * CloudFormation property names — copy the value subtree verbatim while the
- * `Options` key itself still flips to `options` (issue #609; same rule as
- * `DEPLOYMENT_CONFIG_PRESERVE_KEYS` above and the container-level
- * `LogConfiguration.Options` handling in `convertLogConfiguration`).
- */
-const SERVICE_CONNECT_PRESERVE_KEYS: ReadonlySet<string> = new Set(['Options']);
-
-/**
- * SHARED RATIONALE for both `CIRCUIT_BREAKER_*_DEFAULT` constants below —
- * WHERE THE VALUES COME FROM, and when they may be sent (issue #1861).
- *
- * They are the values CloudFormation was MEASURED to produce when a template
- * that previously DECLARED the member stops declaring it (us-east-1,
- * 2026-08-13, same service, `Rollback` flipped in the same call so the update
- * demonstrably applied and service identity captured on both sides so a
- * replacement could not be mistaken for a reset): `resetOnHealthyTask` false
- * -> `true`, `thresholdConfiguration` {COUNT, 7} -> {BOUNDED_PERCENT, 50}.
- * They match the SDK's documented defaults for both members, and the SDK
- * documents those unconditionally — they do not vary by scheduling strategy or
- * deployment type (see the strategy note in `updateService`'s comment block).
- *
- * They are used ONLY as `clearOnUpdateRemoval`'s clear value, i.e. only on a
- * previous-present / current-absent REMOVAL. They must NEVER be sent for a
- * member the template never declared — a third measurement in the same
- * session set both members OUT OF BAND on a service whose template never
- * declared them, then ran a CloudFormation update that flipped `Rollback`
- * INSIDE the block: the out-of-band `false` / {COUNT, 9} BOTH survived. That
- * arm is what excludes the competing reading "CFn re-serializes the struct
- * whenever its declared content changed" and makes this a genuine removal.
- */
-
-/**
- * `DeploymentCircuitBreaker.ResetOnHealthyTask`'s AWS default. A primitive, so
- * it needs no copy-on-use treatment — unlike its object-valued sibling below.
- * Provenance and the send-only-on-removal rule: see the shared note above.
- */
-const CIRCUIT_BREAKER_RESET_ON_HEALTHY_TASK_DEFAULT = true;
-
-/**
- * `DeploymentCircuitBreaker.ThresholdConfiguration`'s AWS default. Provenance
- * and the send-only-on-removal rule: see the shared note above.
- *
- * FROZEN, and spread into a fresh object at the use site rather than handed
- * over by reference. `ECSProvider` is a singleton serving concurrent
- * resources, so a module-level object reaching the SDK input directly would be
- * one shared mutable value across every in-flight `UpdateService` — a
- * middleware or a future normalization step mutating it would corrupt every
- * other caller. The two halves guard different failures and BOTH are pinned by
- * unit arms: the copy means no caller can ever reach this object, and the
- * freeze means a caller that somehow does fails LOUDLY instead of silently
- * poisoning every later update.
- *
- * @internal EXPORTED for tests only (issue #1861). Every production consumer
- * is in this file. The export exists because the freeze is otherwise
- * UNOBSERVABLE from a test: the resolver hands out a copy by design, so the
- * payload a test can reach is never this object, and dropping `Object.freeze`
- * left the whole suite green. Asserting it through a source grep was the
- * alternative and is the weaker fence this repo has retired elsewhere.
- */
-export const CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT: Readonly<ThresholdConfiguration> =
-  Object.freeze({
-    type: 'BOUNDED_PERCENT',
-    value: 50,
-  });
-
-/**
- * A plain object — something a CFn config block can legitimately be. Arrays
- * and non-objects are excluded on purpose: `typeof [] === 'object'` and every
- * non-empty string is truthy, so a truthiness check would wave a malformed
- * template through into a spread.
- *
- * Deliberately a module-local copy rather than an export added to
- * `src/provisioning/config-shape.ts`, whose private `isPlainObject` is
- * byte-identical: this lane may not widen a shared module's API.
- *
- * No "promote it if a third copy appears" trigger, because that already fired
- * long before this PR and adding it here would read as a new one. Grepped for
- * a standalone helper whose body is exactly this predicate: NINE across nine
- * files under six different names — `config-shape.ts`, `wafv2-provider.ts`,
- * `s3-bucket/shared.ts` (`isPlainObject`), `emr-configuration.ts`,
- * `lambda-microvm-image-provider.ts` (`isRecord`),
- * `apigateway-provider.ts` (`isPlainObjectBlock`), `drift.ts`
- * (`isPlainRecord`), `lambda-vpc-deps.ts` (`isObject`), and this one — plus
- * further INLINE copies (`route53-provider.ts` x2,
- * `custom-resource-provider.ts`, `diff-recursive.ts`,
- * `intrinsic-resolver/string-functions.ts`). Consolidating them touches files across
- * several lanes and is a separate lane's job, not this PR's.
- */
-function isPlainCfnObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * True when a `Describe{Clusters,Services}` answer that listed nothing says
- * the requested id is gone: at least one failure, and every one `MISSING`.
- * An empty failure list is no answer (`[].every` is vacuously true, so the
- * length check is load-bearing), and any other reason is a lookup that did not
- * answer.
- */
-function describeListedNothingGone(failures: Array<{ reason?: string }> | undefined): boolean {
-  return (failures ?? []).length > 0 && failures!.every((f) => f.reason === 'MISSING');
-}
-
-/**
- * `DescribeTaskDefinition`'s answer for a revision that does not exist: a
- * `ClientException` reading "Unable to describe task definition." Narrower
- * than `isNotFoundException` (which reads EVERY `ClientException` as gone), so
- * an access or validation failure never reads as a deleted revision. The
- * message match is safe to rely on: it is AWS's fixed ASCII wording, matched
- * case-insensitively, and ECS gives this case no error name of its own.
- */
-function isTaskDefinitionMissingError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    err.name === 'ClientException' &&
-    /unable to describe task definition/i.test(err.message)
-  );
-}
-
-/**
- * Whether a `DescribeTaskDefinition` status means the revision is gone in
- * cdkd's sense (go-to-k/cdkd#4272). `deleteTaskDefinition` DEREGISTERS, which
- * leaves the revision describable as `INACTIVE` indefinitely, and
- * `DELETE_IN_PROGRESS` lies past that. `ACTIVE`, an absent status and any
- * unknown one stay present.
- */
-function isDeregisteredTaskDefinitionStatus(status: string | undefined): boolean {
-  return status === 'INACTIVE' || status === 'DELETE_IN_PROGRESS';
-}
-
-/**
- * Derive the cluster name from a long-format ECS Service ARN
- * (`arn:<partition>:ecs:<region>:<account>:service/<clusterName>/<serviceName>`)
- * so `DescribeServices` can be scoped to the right cluster (issue #1170).
- * Returns `undefined` for the legacy short-format ARN
- * (`.../service/<serviceName>`, which does not encode a cluster) or any input
- * that does not match the ARN shape — the caller then falls back to the default
- * cluster, matching what the short-format ARN implies.
- */
-function clusterNameFromServiceArn(arn: string): string | undefined {
-  const segments = serviceArnResourceSegments(arn);
-  if (segments === undefined) return undefined;
-  return segments.length >= 3 ? segments[1] : undefined;
-}
-
-/**
- * The service name a Service ARN ends with, in either the long
- * (`service/<clusterName>/<serviceName>`) or the legacy short
- * (`service/<serviceName>`) format; `undefined` for anything else.
- */
-function serviceNameFromServiceArn(arn: string): string | undefined {
-  const segments = serviceArnResourceSegments(arn);
-  if (segments === undefined || segments.length < 2) return undefined;
-  return segments[segments.length - 1] || undefined;
-}
-
-/**
- * The `/`-separated segments of a Service ARN's resource part
- * (`arn:<partition>:ecs:<region>:<account>:<resource>`), starting with
- * `service`; `undefined` when the input has no `service/...` resource. The one
- * ARN split both {@link clusterNameFromServiceArn} and
- * {@link serviceNameFromServiceArn} read, so they agree on every input.
- */
-function serviceArnResourceSegments(arn: string): string[] | undefined {
-  const resource = arn.split(':').slice(5).join(':');
-  if (!resource) return undefined;
-  const segments = resource.split('/');
-  return segments[0] === 'service' ? segments : undefined;
-}
-
-/**
- * The cluster NAME a Service's `Cluster` value addresses: the segment after
- * `:cluster/` of a cluster ARN, otherwise the value itself (a bare name, or an
- * ARN of another shape, whose whole value then becomes the needle: it can only
- * over-mask). `undefined` for a non-string. A long-format Service ARN embeds
- * this name.
- */
-function clusterNameOfRef(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const marker = ':cluster/';
-  const at = value.startsWith('arn:') ? value.indexOf(marker) : -1;
-  return at >= 0 ? value.slice(at + marker.length) || undefined : value;
-}
-
-/**
- * The service and cluster names a recorded Service physical id carries. The
- * id is the service ARN `createService` stores, the composite
- * `<clusterArn>|<serviceName>` form `readCurrentState` also accepts, or a bare
- * service name (an import's explicit physical id), which is the name itself.
- */
-function recordedServiceNames(physicalId: string): {
-  service: string | undefined;
-  cluster: string | undefined;
-} {
-  const sep = physicalId.indexOf('|');
-  if (sep >= 0) {
-    return {
-      service: physicalId.substring(sep + 1) || undefined,
-      cluster: clusterNameOfRef(physicalId.substring(0, sep)),
-    };
-  }
-  if (!physicalId.startsWith('arn:')) {
-    return { service: physicalId || undefined, cluster: undefined };
-  }
-  return {
-    service: serviceNameFromServiceArn(physicalId),
-    cluster: clusterNameFromServiceArn(physicalId),
-  };
-}
-
-/** An ECS error by exact NAME — the only answer that proves a resource gone (go-to-k/cdkd#4283). */
-function isEcsErrorNamed(error: unknown, names: readonly string[]): boolean {
-  const name = (error as { name?: unknown } | null)?.name;
-  return typeof name === 'string' && names.includes(name);
-}
-
-/**
- * AWS ECS Provider
- *
- * Implements resource provisioning for ECS resources:
- * - AWS::ECS::Cluster
- * - AWS::ECS::TaskDefinition
- * - AWS::ECS::Service
- *
- * WHY: ECS CreateCluster and RegisterTaskDefinition are synchronous.
- * The CC API adds unnecessary polling overhead for operations that
- * complete immediately. This SDK provider eliminates that polling.
- */
-/**
- * Test seam for `settleService`'s post-stability rollout poll (the sibling of
- * `finalSnapshotDelays` / `describeTypeRetryDelays`) — tests replace `sleep`
- * to skip the real 3s waits.
- */
-export const settleRolloutDelays = {
-  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-};
-
-/**
- * Test seam for `deleteService`'s wait for the service to reach `INACTIVE`
- * (go-to-k/cdkd#5664) — tests replace `sleep` to skip the real poll interval
- * and `now` to drive the deadline.
- */
-export const serviceInactiveWait = {
-  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-  now: () => Date.now(),
-};
-
-/**
- * The rollout a `CreateService` / `UpdateService` started, read off its
- * response: the PRIMARY
- * deployment's `id`, and its `taskDefinition` (else the service's). Both are
- * AWS-minted (a deployment id, a full task-definition revision ARN), so the
- * comparison never meets the template's `family` / `family:revision`
- * spellings. The UpdateService API reference's example response carries
- * `deployments[].{id,status,taskDefinition}` and `service.taskDefinition`.
- */
-export interface RequestedRollout {
-  deploymentId?: string | undefined;
-  taskDefinition?: string | undefined;
-}
-
-/** {@link RequestedRollout} from a `CreateService` / `UpdateService` response's service. */
-export function requestedRolloutOf(service: Service | undefined): RequestedRollout | undefined {
-  if (!service) return undefined;
-  const primary = service.deployments?.find((d) => d.status === 'PRIMARY');
-  const deploymentId = typeof primary?.id === 'string' && primary.id ? primary.id : undefined;
-  const taskDefinitionRaw = primary?.taskDefinition ?? service.taskDefinition;
-  const taskDefinition =
-    typeof taskDefinitionRaw === 'string' && taskDefinitionRaw ? taskDefinitionRaw : undefined;
-  if (deploymentId === undefined && taskDefinition === undefined) return undefined;
-  return { deploymentId, taskDefinition };
-}
-
-/**
- * The deployment this create / update started, if a DescribeServices answer
- * shows it `FAILED` — a deployment circuit breaker's verdict (the API
- * reference: "If the service fails to reach a steady state and circuit
- * breaker is turned on, the deployment transitions to a FAILED state").
- * Matched by the requested deployment id; with none readable, the PRIMARY
- * deployment stands in for it. `undefined` when no such deployment is FAILED.
- */
-export function failedRequestedDeployment(
-  requested: RequestedRollout | undefined,
-  deployments: readonly Deployment[] | undefined
-): Deployment | undefined {
-  if (!Array.isArray(deployments)) return undefined;
-  const target =
-    requested?.deploymentId !== undefined
-      ? deployments.find((d) => d?.id === requested.deploymentId)
-      : deployments.find((d) => d?.status === 'PRIMARY');
-  return target?.rolloutState === 'FAILED' ? target : undefined;
-}
-
-/**
- * The revision NUMBER of a task-definition revision ARN, or `undefined`.
- * Only the number: the family is template-chosen, can be secret-derived and
- * too short for the substring masker, so it never reaches a message.
- */
-function taskDefinitionRevision(arn: string | undefined): string | undefined {
-  const match = typeof arn === 'string' ? /:task-definition\/[^:]+:(\d+)$/.exec(arn) : null;
-  return match ? match[1] : undefined;
-}
-
-/**
- * A rollout for a message, by AWS-minted identity only: its deployment id
- * (`ecs-svc/<digits>`) and its task definition's revision number. Never the
- * family (see {@link taskDefinitionRevision}).
- */
-function describeRollout(rollout: {
-  id?: string | undefined;
-  taskDefinition?: string | undefined;
-}): string {
-  const revision = taskDefinitionRevision(rollout.taskDefinition);
-  const id =
-    typeof rollout.id === 'string' && /^ecs-svc\/\d+$/.test(rollout.id) ? rollout.id : undefined;
-  if (id && revision) return `deployment ${id} (task definition revision ${revision})`;
-  if (id) return `deployment ${id}`;
-  if (revision) return `task definition revision ${revision}`;
-  return 'another deployment';
-}
-
-/**
- * A deployment circuit breaker's verdict (go-to-k/cdkd#5571): the rollout
- * FAILED, or the service settled on another deployment. Its own class so
- * `wrapSteadyStateError` does not offer a longer `--resource-timeout` for a
- * verdict no wait would change.
- */
-class EcsCircuitBreakerVerdict extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'EcsCircuitBreakerVerdict';
-  }
-}
-
-/** The verdict for a requested deployment ECS marked `FAILED`. */
-function wrapBreakerFailedError(failed: Deployment): EcsCircuitBreakerVerdict {
-  return new EcsCircuitBreakerVerdict(
-    `its deployment circuit breaker failed the rollout of ${describeRollout(failed)} (deployment FAILED). The new tasks failed to start or failed their health checks`
-  );
-}
-
-/**
- * Whether the DESIRED `DeploymentController` lets ECS settle the service
- * (go-to-k/cdkd#5571): only the `ECS` rolling-update controller (also the
- * default when absent) has the ECS-managed deployment the ServicesStable
- * waiter and the rollout checks read. `CODE_DEPLOY` and `EXTERNAL` (task
- * sets) never produce one, so waiting would time out and the create arm would
- * DELETE a healthy new service. An unreadable value fails toward NOT waiting,
- * never toward that delete. Returns `undefined` to wait, else the reason.
- */
-export function controllerSkipsWait(properties: Record<string, unknown>): string | undefined {
-  let type: string;
-  try {
-    type = readConfigString(
-      properties['DeploymentController'],
-      'Type',
-      'ECS',
-      'DeploymentController'
-    );
-  } catch {
-    return 'its DeploymentController could not be read';
-  }
-  if (type === 'ECS') return undefined;
-  if (type === 'CODE_DEPLOY' || type === 'EXTERNAL') {
-    return `its DeploymentController is ${type}, which ECS does not settle`;
-  }
-  return 'its DeploymentController type is not one cdkd can settle';
-}
-
-/**
- * Did the service settle on a rollout OTHER than the one this update started
- * (go-to-k/cdkd#5571)? When a deployment circuit breaker with `rollback`
- * fires, ECS marks the new deployment `FAILED` and rolls back to the last
- * `COMPLETED` deployment; once the failed one drains, `DescribeServices`
- * lists that single rollback deployment, `COMPLETED`, which the
- * ServicesStable waiter accepts. The `FAILED` deployment is no longer listed
- * then, so `rolloutState` cannot carry the signal; what does is the IDENTITY
- * of the settled deployment.
- *
- * The deployment id decides when both sides carry one: a rollback deployment
- * is never the deployment the update started, whether ECS reactivates the
- * previous one or starts a new one with the previous configuration, and an
- * update that starts no new deployment (a `DesiredCount`-only change) keeps
- * the PRIMARY's id, so it compares equal. Otherwise the task-definition ARN
- * decides. Either side unreadable answers `undefined` (no verdict): fail open
- * rather than fail a deploy on a shape cdkd could not read.
- *
- * Returns the settled rollout's description when superseded.
- */
-export function rolloutSupersededBy(
-  requested: RequestedRollout | undefined,
-  settled: Deployment | undefined
-): string | undefined {
-  if (!requested || !settled) return undefined;
-  if (requested.deploymentId !== undefined && typeof settled.id === 'string' && settled.id) {
-    return settled.id === requested.deploymentId ? undefined : describeRollout(settled);
-  }
-  if (
-    requested.taskDefinition !== undefined &&
-    typeof settled.taskDefinition === 'string' &&
-    settled.taskDefinition
-  ) {
-    return settled.taskDefinition === requested.taskDefinition
-      ? undefined
-      : describeRollout(settled);
-  }
-  return undefined;
-}
-
-/**
- * A DELETE failure wrap whose caught error's CLASS spells `NotFound`, marked
- * not gone (go-to-k/cdkd#2319, #5228). The wrap names the class, and the
- * deploy and destroy delete classifiers (`deploy-engine/delete.ts`,
- * `deploy-engine/update-in-place.ts`, `destroy-runner.ts`) read `NotFound`
- * in a message as "already deleted" unless the error is marked. This
- * resource's own not-found returned before the wrap, so a `NotFound` class
- * reaching it is another object's (an operation, a key, a namespace) and the
- * resource may still exist. Retryability stays the retry classifiers'.
- */
-function markNotGoneOnNotFoundClass<E extends Error>(error: unknown, wrapped: E): E {
-  return error instanceof Error && error.name.includes('NotFound') ? markNotGone(wrapped) : wrapped;
-}
-
-/**
- * The `GatewayConnectors` update gate's comparison key (go-to-k/cdkd#5634).
- * Each connector's `Filters.AccessTypes` is CFn `insertionOrder: false`, so a
- * reorder of it is not a change and must not start a deployment; it is
- * compared sorted. Everything else, the connector list's own order included,
- * compares as written. Used only for the change gate, never for the value
- * sent. A shape this does not model (a non-array list, a non-object element,
- * a non-array `AccessTypes`) falls through to the plain serialization.
- */
-function gatewayConnectorsGateKey(value: unknown): string {
-  if (!Array.isArray(value)) return JSON.stringify(value ?? null);
-  return JSON.stringify(
-    value.map((connector: unknown) => {
-      if (typeof connector !== 'object' || connector === null || Array.isArray(connector)) {
-        return connector;
-      }
-      const filters = (connector as Record<string, unknown>)['Filters'];
-      if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
-        return connector;
-      }
-      const accessTypes = (filters as Record<string, unknown>)['AccessTypes'];
-      if (!Array.isArray(accessTypes)) return connector;
-      return {
-        ...(connector as Record<string, unknown>),
-        Filters: {
-          ...(filters as Record<string, unknown>),
-          // Sorted by serialization: the values are enum strings, but a
-          // malformed element must still sort deterministically.
-          AccessTypes: accessTypes.map((v) => JSON.stringify(v) ?? 'undefined').sort(),
-        },
-      };
-    })
-  );
-}
+export {
+  resetTaskDefinitionCreateRetryStateForTests,
+  CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT,
+  settleRolloutDelays,
+  serviceInactiveWait,
+  requestedRolloutOf,
+  failedRequestedDeployment,
+  controllerSkipsWait,
+  rolloutSupersededBy,
+} from './ecs/shared.js';
+export type { RequestedRollout } from './ecs/shared.js';
 
 export class ECSProvider implements ResourceProvider {
-  private ecsClient?: ECSClient;
-  private taskDefinitionCreateClient?: ECSClient;
-  private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('ECSProvider');
+  ecsClient?: ECSClient;
+  taskDefinitionCreateClient?: ECSClient;
+  readonly providerRegion = ambientRegion();
+  logger: ConsoleLogger = getLogger().child('ECSProvider');
 
   /**
    * `removalDefaults` is deliberately EMPTY for `AWS::ECS::Service`. A real
@@ -786,247 +283,48 @@ export class ECSProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): ECSClient {
-    if (!this.ecsClient) {
-      this.ecsClient = new ECSClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
-    }
-    return this.ecsClient;
+  getClient(): ECSClient {
+    return getClient.call(this);
   }
 
-  /**
-   * The client `RegisterTaskDefinition` goes through: SDK retries on, except
-   * a 5xx (`withoutServerErrorRetries`, issue #2080). Separate so every other
-   * ECS call keeps the full SDK retry.
-   */
-  private getTaskDefinitionCreateClient(): ECSClient {
-    if (!this.taskDefinitionCreateClient) {
-      this.taskDefinitionCreateClient = withoutServerErrorRetries(
-        new ECSClient({
-          ...ambientClientDefaults(),
-          ...(this.providerRegion ? { region: this.providerRegion } : {}),
-        })
-      );
-    }
-    return this.taskDefinitionCreateClient;
+  getTaskDefinitionCreateClient(): ECSClient {
+    return getTaskDefinitionCreateClient.call(this);
   }
 
-  /**
-   * Issue #2080: after an attempt at `RegisterTaskDefinition` ended AMBIGUOUS
-   * (a 5xx: ECS may have registered the revision and lost the answer), name
-   * the ACTIVE revisions of `family` registered inside the failed attempts'
-   * window (`registeredAt`) that this process did not register, and warn: a
-   * read command first, then a DEREGISTER command to run only after
-   * confirming. Detection only: a family is per account and region and is
-   * meant to be shared -- every deploy of the same family adds a revision --
-   * so a revision in the window can be another deploy's.
-   *
-   * `ListTaskDefinitions` returns ARNs only, so each candidate's
-   * `registeredAt` takes a `DescribeTaskDefinition`. Listed newest first, so
-   * the walk stops at the first revision registered before the window (or
-   * with no `registeredAt`, which only revisions older than the field carry):
-   * revision numbers only grow, so every later one is older still.
-   */
-  private async reportPossibleOrphanTaskDefinitions(
+  reportPossibleOrphanTaskDefinitions(
     logicalId: string,
     family: string,
     window: AmbiguousCreateWindow,
     log: MaskedLogSinks
   ): Promise<void> {
-    const client = this.getClient();
-    const aws = pasteableAwsCommand(log.mask);
-    const regionArg = await orphanCommandRegionArg(client, aws);
-    await reportPossibleOrphans(logicalId, window, log, {
-      action: 'RegisterTaskDefinition',
-      service: 'ECS',
-      listAction: 'ListTaskDefinitions',
-      subject: `a revision of task definition family ${log.value(family)}`,
-      noun: 'task definition revision(s)',
-      list: async () => {
-        const ids: string[] = [];
-        let nextToken: string | undefined;
-        let pages = 0;
-        do {
-          const page = await client.send(
-            new ListTaskDefinitionsCommand({
-              familyPrefix: family,
-              status: 'ACTIVE',
-              sort: 'DESC',
-              ...(nextToken && { nextToken }),
-            })
-          );
-          pages++;
-          for (const arn of page.taskDefinitionArns ?? []) {
-            // `familyPrefix` is documented as the full family name; compare
-            // exactly anyway, so a prefix match never names another family.
-            if (familyOfTaskDefinitionArn(arn) !== family) continue;
-            let registeredAt: Date | undefined;
-            let active = true;
-            try {
-              const described = await client.send(
-                new DescribeTaskDefinitionCommand({ taskDefinition: arn })
-              );
-              registeredAt = described.taskDefinition?.registeredAt;
-              // Deregistered since the listing: someone already let it go.
-              active = (described.taskDefinition?.status ?? 'ACTIVE') === 'ACTIVE';
-            } catch (error) {
-              // Deleted since the listing: not an orphan any more.
-              if (isTaskDefinitionMissingError(error)) continue;
-              throw error;
-            }
-            if (registeredAt === undefined || registeredAt.getTime() < window.floorMs) {
-              return { ids, truncated: false };
-            }
-            if (
-              active &&
-              isInsideWindow(registeredAt, window) &&
-              !taskDefinitionsRegisteredByThisProcess.has(arn)
-            ) {
-              ids.push(arn);
-            }
-          }
-          nextToken = page.nextToken;
-        } while (nextToken && pages < MAX_ORPHAN_LIST_PAGES);
-        return { ids, truncated: Boolean(nextToken) };
-      },
-      inspect: (arn) =>
-        aws`aws ecs describe-task-definition --task-definition ${arn}${regionArg}`.render(),
-      remove: (arn) =>
-        aws`aws ecs deregister-task-definition --task-definition ${arn}${regionArg}`.render(),
-      removeVerb: 'deregister it',
-    });
+    return reportPossibleOrphanTaskDefinitions.call(this, logicalId, family, window, log);
   }
 
-  /**
-   * The failure wrap every create / update / delete catch throws.
-   *
-   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
-   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
-   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
-   * caller's assumed-role ARN. AWS's own text goes to `debug` through `mask`,
-   * and the wrap is stamped `markRedactedCause`, so the retry classifiers read
-   * the withheld text on the `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}). A non-`Error` throw is withheld the same
-   * way, unstamped: it has no chain to read.
-   *
-   * A cdkd-authored or transport error keeps its text, masked RAW (issue
-   * #2177: AWS text quotes a rejected request value back off the RESOLVED
-   * `properties` bag, and a cdkd refusal can describe a bag value), stamped
-   * exactly when the mask changed it (`wrapMaskedAwsError`, issue #4244). The
-   * deletes check not-found by type before they wrap. A method, so
-   * `gen-update-wrap-coverage` sees the catch that throws it as a wrap.
-   *
-   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call.
-   */
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn,
     error: unknown,
     build: (maskedText: string) => ProvisioningError
   ): ProvisioningError {
-    const failure = describeAwsFailure(error);
-    if (!failure.redacted) return wrapMaskedAwsError(mask, error, build);
-    this.logger.debug(mask(build(mask(failure.detail)).message));
-    const wrapped = build(`${mask(failure.summary)}${relayedNameCollision(failure.detail)}`);
-    return error instanceof Error ? markRedactedCause(wrapped) : wrapped;
+    return wrapCaughtError.call(this, mask, error, build);
   }
 
-  // ─── Dispatch ─────────────────────────────────────────────────────
-
-  /**
-   * The masked sinks ONE `create()` / `update()` logs through (issue #2177,
-   * `.claude/rules/provider-masking.md`): `createMaskedLogSinks` over the
-   * context's masker, extended by `withDerivedNameMasks` with `pairs` — each
-   * `[template value, name derived from it]`. An ECS physical id or ARN
-   * embeds the cluster name, task-definition family or service name the
-   * template chose, any of which can be secret-derived; the needle masks it
-   * wherever it occurs (an ARN on a success line, an AWS echo, a pasteable
-   * command, which it then withholds). Built per call; never cached on the
-   * provider, which serves concurrent resources.
-   */
-  private operationSinks(
+  operationSinks(
     context: CreateContext | UpdateContext | undefined,
     pairs: ReadonlyArray<readonly [raw: unknown, name: string | undefined]>
   ): MaskedLogSinks {
-    return withDerivedNameMasks(
-      this.logger,
-      createMaskedLogSinks(this.logger, context?.maskSecrets),
-      pairs
-    );
+    return operationSinks.call(this, context, pairs);
   }
 
-  /**
-   * Create a resource.
-   *
-   * Each `create()` / `update()` builds ONE masked sink set from its own
-   * context (issue #2177) and routes every log line and wrapped AWS error text
-   * through it; a bag value a cdkd line interpolates is also masked RAW
-   * (`log.value`), so a secret below the masker's substring floor is caught
-   * too. Absent context means identity.
-   */
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // `withDerivedNameMasks` drops a non-string name at runtime, so each cast
-    // below only narrows the type.
-    switch (resourceType) {
-      case 'AWS::ECS::Cluster':
-        return this.createCluster(
-          logicalId,
-          resourceType,
-          properties,
-          this.operationSinks(context, [
-            [properties['ClusterName'], properties['ClusterName'] as string | undefined],
-          ])
-        );
-      case 'AWS::ECS::TaskDefinition':
-        return this.createTaskDefinition(
-          logicalId,
-          resourceType,
-          properties,
-          this.operationSinks(context, [
-            [properties['Family'], properties['Family'] as string | undefined],
-          ])
-        );
-      case 'AWS::ECS::Service':
-        return this.createService(
-          logicalId,
-          resourceType,
-          properties,
-          this.operationSinks(context, [
-            [properties['ServiceName'], properties['ServiceName'] as string | undefined],
-            // The cluster name the long-format service ARN embeds (the value
-            // itself when it is a bare name).
-            [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
-          ]),
-          context?.replayingState === true
-        );
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId
-        );
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Update a resource. `context` is read for its masker only (issue #2177);
-   * see `create()`.
-   *
-   * The recorded name is what the physical id carries, and either side's
-   * template value being secret-derived makes it a needle. The desired side
-   * covers the threaded callers (a rotated secret resolves to a NEW plaintext
-   * the masker knows, and the needle then removes the OLD one); the previous
-   * side is a backstop for a name state recorded as a `{{resolve:` reference
-   * or `***`. Both can only over-mask.
-   */
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1034,197 +332,41 @@ export class ECSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    properties = withRemovalDefaults(
-      this.removalDefaults,
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
       resourceType,
       properties,
       previousProperties,
       context
     );
-    switch (resourceType) {
-      case 'AWS::ECS::Cluster':
-        // A Cluster's physical id IS its name.
-        return this.updateCluster(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          this.operationSinks(context, [
-            [properties['ClusterName'], physicalId],
-            [previousProperties['ClusterName'], physicalId],
-          ])
-        );
-      case 'AWS::ECS::TaskDefinition':
-        // A change outside `Tags` refuses before any AWS call or log line,
-        // interpolating no bag value. The physical id is the revision ARN,
-        // which embeds the family.
-        return this.updateTaskDefinition(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          this.operationSinks(context, [
-            [properties['Family'], familyOfTaskDefinitionArn(physicalId)],
-            [previousProperties['Family'], familyOfTaskDefinitionArn(physicalId)],
-          ]),
-          context?.maskSecrets
-        );
-      case 'AWS::ECS::Service': {
-        // A Service's physical id is its ARN, which embeds the service name
-        // and (long format) the cluster name.
-        const { service: recordedService, cluster: recordedCluster } =
-          recordedServiceNames(physicalId);
-        return this.updateService(
-          logicalId,
-          physicalId,
-          resourceType,
-          properties,
-          previousProperties,
-          this.operationSinks(context, [
-            [properties['ServiceName'], recordedService],
-            [previousProperties['ServiceName'], recordedService],
-            [properties['Cluster'], recordedCluster],
-            [previousProperties['Cluster'], recordedCluster],
-            [properties['Cluster'], clusterNameOfRef(properties['Cluster'])],
-          ]),
-          context?.desiredFromAwsReadback === true,
-          context?.replayingState === true
-        );
-      }
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-    }
   }
 
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    switch (resourceType) {
-      case 'AWS::ECS::Cluster':
-        return this.deleteCluster(logicalId, physicalId, resourceType, context);
-      case 'AWS::ECS::TaskDefinition':
-        return this.deleteTaskDefinition(logicalId, physicalId, resourceType, context);
-      case 'AWS::ECS::Service':
-        return this.deleteService(logicalId, physicalId, resourceType, properties, context);
-      default:
-        throw new ProvisioningError(
-          `Unsupported resource type: ${resourceType}`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-    }
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  async getAttribute(
-    physicalId: string,
-    resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
-    switch (resourceType) {
-      case 'AWS::ECS::Cluster':
-        return this.getClusterAttribute(physicalId, attributeName);
-      case 'AWS::ECS::TaskDefinition':
-        return this.getTaskDefinitionAttribute(physicalId, attributeName);
-      case 'AWS::ECS::Service':
-        return this.getServiceAttribute(physicalId, attributeName);
-      default:
-        return undefined;
-    }
+  getAttribute(physicalId: string, resourceType: string, attributeName: string): Promise<unknown> {
+    return getAttribute.call(this, physicalId, resourceType, attributeName);
   }
 
-  // ─── AWS::ECS::Cluster ──────────────────────────────────────────
-
-  private async createCluster(
+  createCluster(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating ECS cluster ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
-
-    const clusterName =
-      (properties['ClusterName'] as string | undefined) ||
-      (this.generatedCreateName(resourceType, logicalId, properties) as string);
-
-    try {
-      const response = await client.send(
-        new CreateClusterCommand({
-          clusterName,
-          capacityProviders: properties['CapacityProviders'] as string[] | undefined,
-          defaultCapacityProviderStrategy: this.convertCapacityProviderStrategy(
-            properties['DefaultCapacityProviderStrategy'] as
-              | Array<Record<string, unknown>>
-              | undefined
-          ),
-          configuration: this.convertClusterConfiguration(
-            properties['Configuration'] as Record<string, unknown> | undefined
-          ),
-          settings: properties['ClusterSettings']
-            ? (properties['ClusterSettings'] as Array<Record<string, unknown>>).map((s) => ({
-                name: (s['Name'] || s['name']) as string as 'containerInsights',
-                value: ((s['Value'] || s['value']) as string) ?? undefined,
-              }))
-            : undefined,
-          serviceConnectDefaults: properties['ServiceConnectDefaults']
-            ? {
-                namespace: (properties['ServiceConnectDefaults'] as Record<string, unknown>)[
-                  'Namespace'
-                ] as string,
-              }
-            : undefined,
-          tags: convertTags(desiredTags),
-        })
-      );
-
-      const cluster = response.cluster;
-      if (!cluster || !cluster.clusterArn) {
-        throw new Error('CreateCluster did not return cluster ARN');
-      }
-
-      log.debug(`Successfully created ECS cluster ${logicalId}: ${cluster.clusterArn}`);
-
-      // The name AWS answers with, not the one requested: were ECS to fold a
-      // spelling, a record of the requested one would name a cluster that
-      // does not exist under it (go-to-k/cdkd#3937 review).
-      return {
-        physicalId: cluster.clusterName ?? clusterName,
-        attributes: {
-          Arn: cluster.clusterArn,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create ECS cluster ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            clusterName,
-            cause
-          )
-      );
-    }
+    return createCluster.call(this, logicalId, resourceType, properties, log);
   }
 
-  private async updateCluster(
+  updateCluster(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1232,315 +374,40 @@ export class ECSProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceUpdateResult> {
-    // The physical id is the cluster NAME, a template value: masked RAW.
-    const shownCluster = log.value(physicalId);
-    log.debug(`Updating ECS cluster ${logicalId}: ${shownCluster}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const client = this.getClient();
-
-    try {
-      // Update capacity providers if specified
-      if (properties['CapacityProviders'] || properties['DefaultCapacityProviderStrategy']) {
-        await client.send(
-          new PutClusterCapacityProvidersCommand({
-            cluster: physicalId,
-            capacityProviders: (properties['CapacityProviders'] as string[]) || [],
-            defaultCapacityProviderStrategy:
-              this.convertCapacityProviderStrategy(
-                properties['DefaultCapacityProviderStrategy'] as
-                  | Array<Record<string, unknown>>
-                  | undefined
-              ) || [],
-          })
-        );
-        log.debug(`Updated capacity providers for ECS cluster ${shownCluster}`);
-      }
-
-      // Apply ClusterSettings / Configuration / ServiceConnectDefaults via
-      // UpdateClusterCommand when any changed. Issue a single call so AWS
-      // evaluates the new shape atomically (avoids partial-apply on a
-      // per-field call). Skipped entirely when nothing differs so a
-      // no-drift round-trip stays mutation-free against AWS.
-      const settingsChanged =
-        JSON.stringify(previousProperties['ClusterSettings'] ?? null) !==
-        JSON.stringify(properties['ClusterSettings'] ?? null);
-      const configChanged =
-        JSON.stringify(previousProperties['Configuration'] ?? null) !==
-        JSON.stringify(properties['Configuration'] ?? null);
-      const svcConnectChanged =
-        JSON.stringify(previousProperties['ServiceConnectDefaults'] ?? null) !==
-        JSON.stringify(properties['ServiceConnectDefaults'] ?? null);
-
-      if (settingsChanged || configChanged || svcConnectChanged) {
-        const settingsInput = settingsChanged
-          ? (
-              (properties['ClusterSettings'] as Array<Record<string, unknown>> | undefined) ?? []
-            ).map((s) => ({
-              name: (s['Name'] || s['name']) as 'containerInsights',
-              value: ((s['Value'] || s['value']) as string) ?? undefined,
-            }))
-          : undefined;
-
-        // AWS UpdateCluster accepts `serviceConnectDefaults: { namespace: '' }`
-        // as the "clear the cluster's default namespace" sentinel (per
-        // ClusterServiceConnectDefaultsRequest docs). When the user removes
-        // the property from their template, pass that sentinel so AWS
-        // actually clears the value instead of treating "absent" as no-op.
-        const svcConnectInput = svcConnectChanged
-          ? properties['ServiceConnectDefaults']
-            ? {
-                namespace: (properties['ServiceConnectDefaults'] as Record<string, unknown>)[
-                  'Namespace'
-                ] as string,
-              }
-            : { namespace: '' }
-          : undefined;
-
-        await client.send(
-          new UpdateClusterCommand({
-            cluster: physicalId,
-            ...(settingsChanged && { settings: settingsInput }),
-            ...(configChanged && {
-              configuration: this.convertClusterConfiguration(
-                properties['Configuration'] as Record<string, unknown> | undefined
-              ),
-            }),
-            ...(svcConnectChanged && { serviceConnectDefaults: svcConnectInput }),
-          })
-        );
-        log.debug(
-          `Updated ECS cluster ${shownCluster} (settings=${settingsChanged}, config=${configChanged}, svcConnect=${svcConnectChanged})`
-        );
-      }
-
-      // Describe cluster to get current ARN
-      const describeResponse = await client.send(
-        new DescribeClustersCommand({ clusters: [physicalId] })
-      );
-      const cluster = describeResponse.clusters?.[0];
-
-      // Apply tag diff. ECS uses lowercase camelCase tags.
-      if (cluster?.clusterArn) {
-        await this.applyTagDiff(
-          cluster.clusterArn,
-          resourceType,
-          logicalId,
-          previousProperties['Tags'],
-          properties['Tags'],
-          log
-        );
-      }
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          Arn: cluster?.clusterArn,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update ECS cluster ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return updateCluster.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      log
+    );
   }
 
-  private async deleteCluster(
+  deleteCluster(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting ECS cluster ${logicalId}: ${physicalId}`);
-    const client = this.getClient();
-
-    try {
-      await client.send(new DeleteClusterCommand({ cluster: physicalId }));
-      this.logger.debug(`Successfully deleted ECS cluster ${logicalId}`);
-    } catch (error) {
-      // Handle ClusterNotFoundException for idempotent delete
-      if (this.isClusterNotFoundException(error)) {
-        const clientRegion = await client.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`ECS cluster ${physicalId} not found, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const refused = markNotGoneOnNotFoundClass(
-        error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete ECS cluster ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
-      );
-      throw refused;
-    }
+    return deleteCluster.call(this, logicalId, physicalId, resourceType, context);
   }
 
-  private async getClusterAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    const client = this.getClient();
-    const response = await client.send(new DescribeClustersCommand({ clusters: [physicalId] }));
-    const cluster = response.clusters?.[0];
-    if (!cluster) return undefined;
-
-    switch (attributeName) {
-      case 'Arn':
-        return cluster.clusterArn;
-      default:
-        return undefined;
-    }
+  getClusterAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getClusterAttribute.call(this, physicalId, attributeName);
   }
 
-  // ─── AWS::ECS::TaskDefinition ───────────────────────────────────
-
-  private async createTaskDefinition(
+  createTaskDefinition(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     log: MaskedLogSinks
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating ECS task definition ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const family =
-      (properties['Family'] as string | undefined) ||
-      generatedNameFor('AWS::ECS::TaskDefinition', logicalId);
-
-    try {
-      // Issue #2080: after an earlier ambiguous attempt, name the revision it
-      // may have registered before a second RegisterTaskDefinition is sent.
-      // Detection only -- see `orphan-report.ts`.
-      const orphanWindow = registerTaskDefinitionLatch.take(logicalId);
-      if (orphanWindow !== undefined) {
-        await this.reportPossibleOrphanTaskDefinitions(logicalId, family, orphanWindow, log);
-      }
-      const attemptStartMs = Date.now();
-      let response: RegisterTaskDefinitionCommandOutput;
-      try {
-        response = await this.getTaskDefinitionCreateClient().send(
-          new RegisterTaskDefinitionCommand({
-            family,
-            containerDefinitions: this.convertContainerDefinitions(
-              properties['ContainerDefinitions'] as Array<Record<string, unknown>> | undefined
-            ),
-            cpu: properties['Cpu'] as string | undefined,
-            memory: properties['Memory'] as string | undefined,
-            networkMode: properties['NetworkMode'] as NetworkMode | undefined,
-            requiresCompatibilities: properties['RequiresCompatibilities'] as
-              | Compatibility[]
-              | undefined,
-            executionRoleArn: properties['ExecutionRoleArn'] as string | undefined,
-            taskRoleArn: properties['TaskRoleArn'] as string | undefined,
-            volumes: this.convertVolumes(
-              properties['Volumes'] as Array<Record<string, unknown>> | undefined
-            ),
-            placementConstraints: this.convertTaskDefinitionPlacementConstraints(
-              properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
-            ),
-            tags: convertTags(desiredTags),
-            runtimePlatform: this.convertRuntimePlatform(
-              properties['RuntimePlatform'] as Record<string, unknown> | undefined
-            ),
-            proxyConfiguration: this.convertProxyConfiguration(
-              properties['ProxyConfiguration'] as Record<string, unknown> | undefined
-            ),
-            pidMode: properties['PidMode'] as PidMode | undefined,
-            ipcMode: properties['IpcMode'] as IpcMode | undefined,
-            ephemeralStorage: this.convertEphemeralStorage(
-              properties['EphemeralStorage'] as Record<string, unknown> | undefined
-            ),
-            enableFaultInjection: properties['EnableFaultInjection'] as boolean | undefined,
-          })
-        );
-      } catch (error) {
-        registerTaskDefinitionLatch.noteFailure(logicalId, error, attemptStartMs, orphanWindow);
-        throw error;
-      }
-
-      const taskDef = response.taskDefinition;
-      if (!taskDef || !taskDef.taskDefinitionArn) {
-        throw new Error('RegisterTaskDefinition did not return task definition ARN');
-      }
-      taskDefinitionsRegisteredByThisProcess.add(taskDef.taskDefinitionArn);
-      // Issue #4687: the SDK replayed this RegisterTaskDefinition inside its `send`, so
-      // an earlier attempt may have made one too. Detection only.
-      const replayWindow = replayedSendWindow(response, attemptStartMs);
-      if (replayWindow !== undefined) {
-        await this.reportPossibleOrphanTaskDefinitions(logicalId, family, replayWindow, log);
-      }
-
-      log.debug(
-        `Successfully created ECS task definition ${logicalId}: ${taskDef.taskDefinitionArn}`
-      );
-
-      return {
-        physicalId: taskDef.taskDefinitionArn,
-        attributes: {
-          TaskDefinitionArn: taskDef.taskDefinitionArn,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create ECS task definition ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-    }
+    return createTaskDefinition.call(this, logicalId, resourceType, properties, log);
   }
 
-  /**
-   * ECS TaskDefinitions are immutable revisioned resources: every property
-   * change but `Tags` registers a new revision whose `taskDefinitionArn`
-   * differs from the cdkd-state physicalId. Routing such a change through
-   * `cdkd drift --revert` would silently swap state's physicalId for a
-   * freshly-registered revision (and deregister the previous one) without the
-   * user's awareness, so it is refused; the deploy path replaces
-   * (CREATE→DELETE) on those properties instead.
-   *
-   * `Tags` is the one property the registry schema leaves updatable
-   * (`tagUpdatable`), and CloudFormation tags the SAME revision in place
-   * (measured for issue #5392: a tags-only change set said `Modify`,
-   * `Replacement: False`, and the revision kept its ARN). So a change whose
-   * only moved key is `Tags` is applied with `TagResource` / `UntagResource`.
-   *
-   * `maskSecrets` is the caller's `context?.maskSecrets`, the raw masker
-   * `unchangedBehindSecretReference` compares a recorded `{{resolve:...}}`
-   * leaf with (`log.mask` carries derived name needles it must not see).
-   */
-  private async updateTaskDefinition(
+  updateTaskDefinition(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1549,136 +416,32 @@ export class ECSProvider implements ResourceProvider {
     log: MaskedLogSinks,
     maskSecrets: UpdateContext['maskSecrets']
   ): Promise<ResourceUpdateResult> {
-    // A key whose record keeps a secret-derived leaf as its `{{resolve:...}}`
-    // reference while the desired side holds the resolved value has not moved
-    // (go-to-k/cdkd#4275); every key here but Tags is create-only, which the
-    // helper's engine gate requires.
-    let movedOutsideTags = false;
-    for (const key of new Set([...Object.keys(properties), ...Object.keys(previousProperties)])) {
-      if (key === 'Tags' || isDeepStrictEqual(properties[key], previousProperties[key])) continue;
-      if (
-        await unchangedBehindSecretReference({
-          resourceType,
-          key,
-          desired: properties[key],
-          previous: previousProperties[key],
-          maskSecrets,
-        })
-      ) {
-        continue;
-      }
-      movedOutsideTags = true;
-      break;
-    }
-    if (movedOutsideTags) {
-      throw new ResourceUpdateNotSupportedError(
-        'AWS::ECS::TaskDefinition',
-        logicalId,
-        'ECS TaskDefinition revisions are immutable on AWS — there is no UpdateTaskDefinition API; every change but Tags registers a new revision via RegisterTaskDefinition. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack.'
-      );
-    }
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    log.debug(`Updating tags of ECS task definition ${logicalId}: ${physicalId}`);
-    try {
-      await this.applyTagDiff(
-        physicalId,
-        resourceType,
-        logicalId,
-        previousProperties['Tags'],
-        properties['Tags'],
-        log
-      );
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update ECS task definition ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
-    return {
+    return updateTaskDefinition.call(
+      this,
+      logicalId,
       physicalId,
-      wasReplaced: false,
-      attributes: { TaskDefinitionArn: physicalId },
-    };
+      resourceType,
+      properties,
+      previousProperties,
+      log,
+      maskSecrets
+    );
   }
 
-  private async deleteTaskDefinition(
+  deleteTaskDefinition(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting ECS task definition ${logicalId}: ${physicalId}`);
-    const client = this.getClient();
-
-    try {
-      await client.send(new DeregisterTaskDefinitionCommand({ taskDefinition: physicalId }));
-      this.logger.debug(`Successfully deregistered ECS task definition ${logicalId}`);
-    } catch (error) {
-      // Handle not found for idempotent delete
-      if (this.isNotFoundException(error)) {
-        const clientRegion = await client.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`ECS task definition ${physicalId} not found, skipping deletion`);
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const refused = markNotGoneOnNotFoundClass(
-        error,
-        this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete ECS task definition ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        )
-      );
-      throw refused;
-    }
+    return deleteTaskDefinition.call(this, logicalId, physicalId, resourceType, context);
   }
 
-  private async getTaskDefinitionAttribute(
-    physicalId: string,
-    attributeName: string
-  ): Promise<unknown> {
-    const client = this.getClient();
-    const response = await client.send(
-      new DescribeTaskDefinitionCommand({ taskDefinition: physicalId })
-    );
-    const taskDef = response.taskDefinition;
-    if (!taskDef) return undefined;
-
-    switch (attributeName) {
-      case 'TaskDefinitionArn':
-        return taskDef.taskDefinitionArn;
-      default:
-        return undefined;
-    }
+  getTaskDefinitionAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getTaskDefinitionAttribute.call(this, physicalId, attributeName);
   }
 
-  // ─── AWS::ECS::Service ──────────────────────────────────────────
-
-  private async createService(
+  createService(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
@@ -1686,342 +449,18 @@ export class ECSProvider implements ResourceProvider {
     /** `CreateContext.replayingState`: a rollback's reverse-replacement re-create. */
     replayingState: boolean
   ): Promise<ResourceCreateResult> {
-    log.debug(`Creating ECS service ${logicalId}`);
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const desiredTags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    const client = this.getClient();
-
-    const serviceName =
-      (properties['ServiceName'] as string | undefined) ||
-      generatedNameFor('AWS::ECS::Service', logicalId);
-    // go-to-k/cdkd#4583: the ARN of a service CreateService returned that the
-    // cleanup below could not delete, named for the failed-CREATE journal.
-    let survivorArn: string | undefined;
-
-    try {
-      // Whether the cleanup below may delete what CreateService returns: with
-      // identical parameters it hands back an ACTIVE service already holding
-      // the name (go-to-k/cdkd#4403). Asked only when the wait can fail the
-      // create: not under --no-wait, not for a controller ECS does not
-      // settle (no wait runs), and not on a rollback replay, which warns and
-      // keeps the service instead (see the catch below).
-      const skipReason = controllerSkipsWait(properties);
-      const heldBefore: NameHeldBefore =
-        process.env['CDKD_NO_WAIT'] !== 'true' && skipReason === undefined && !replayingState
-          ? await nameHeldBefore(
-              () => this.serviceNameHeld(properties['Cluster'] as string | undefined, serviceName),
-              (error) => hasErrorName(error, ['ClusterNotFoundException'])
-            )
-          : 'free';
-
-      const response = await client.send(
-        new CreateServiceCommand({
-          cluster: properties['Cluster'] as string | undefined,
-          serviceName,
-          taskDefinition: properties['TaskDefinition'] as string | undefined,
-          desiredCount: properties['DesiredCount'] as number | undefined,
-          launchType: properties['LaunchType'] as LaunchType | undefined,
-          networkConfiguration: this.convertNetworkConfiguration(
-            properties['NetworkConfiguration'] as Record<string, unknown> | undefined
-          ),
-          loadBalancers: this.convertLoadBalancers(
-            properties['LoadBalancers'] as Array<Record<string, unknown>> | undefined
-          ),
-          capacityProviderStrategy: this.convertCapacityProviderStrategy(
-            properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
-          ),
-          deploymentConfiguration: this.convertDeploymentConfiguration(
-            properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
-          ),
-          placementConstraints: this.convertPlacementConstraints(
-            properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
-          ),
-          placementStrategy: this.convertPlacementStrategies(
-            (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
-              | Array<Record<string, unknown>>
-              | undefined
-          ),
-          platformVersion: properties['PlatformVersion'] as string | undefined,
-          healthCheckGracePeriodSeconds: properties['HealthCheckGracePeriodSeconds'] as
-            | number
-            | undefined,
-          schedulingStrategy: properties['SchedulingStrategy'] as SchedulingStrategy | undefined,
-          enableECSManagedTags: properties['EnableECSManagedTags'] as boolean | undefined,
-          propagateTags: properties['PropagateTags'] as PropagateTags | undefined,
-          enableExecuteCommand: properties['EnableExecuteCommand'] as boolean | undefined,
-          serviceRegistries: this.convertServiceRegistries(
-            properties['ServiceRegistries'] as Array<Record<string, unknown>> | undefined
-          ),
-          tags: convertTags(desiredTags),
-          // issue #609 backfill — previously SDK-unwired Service members.
-          // `ForceNewDeployment` is deliberately NOT mapped here: it is a
-          // CFn-only rollout trigger with no CreateService counterpart (the
-          // SDK's `forceNewDeployment` boolean exists only on UpdateService),
-          // so it is a create-path no-op — see `resolveForceNewDeployment`.
-          availabilityZoneRebalancing: properties['AvailabilityZoneRebalancing'] as
-            | AvailabilityZoneRebalancing
-            | undefined,
-          deploymentController: this.convertDeploymentController(
-            properties['DeploymentController'] as Record<string, unknown> | undefined
-          ),
-          // `Role` is the legacy classic-ELB service role override — a real
-          // create-only CFn property (createOnlyProperties in the registry
-          // schema), passed through verbatim; a change classifies as
-          // replacement via the create-only fallback in the diff layer.
-          role: properties['Role'] as string | undefined,
-          serviceConnectConfiguration: this.convertServiceConnectConfiguration(
-            properties['ServiceConnectConfiguration'] as Record<string, unknown> | undefined
-          ),
-          volumeConfigurations: this.convertServiceVolumeConfigurations(
-            properties['VolumeConfigurations'] as Array<Record<string, unknown>> | undefined
-          ),
-          vpcLatticeConfigurations: this.convertVpcLatticeConfigurations(
-            properties['VpcLatticeConfigurations'] as Array<Record<string, unknown>> | undefined
-          ),
-          monitoring: this.convertMonitoringConfiguration(
-            properties['Monitoring'] as Record<string, unknown> | undefined
-          ),
-          // go-to-k/cdkd#5634: the 2026-10-20 schema-refresh addition.
-          gatewayConnectors: this.convertGatewayConnectors(
-            properties['GatewayConnectors'] as Array<Record<string, unknown>> | undefined
-          ),
-        })
-      );
-
-      const service = response.service;
-      if (!service || !service.serviceArn) {
-        throw new Error('CreateService did not return service ARN');
-      }
-
-      log.debug(`Successfully created ECS service ${logicalId}: ${service.serviceArn}`);
-      // go-to-k/cdkd#5511: only a service this create made (not a held one).
-      if (heldBefore === 'free') {
-        reportCreatedResource(logicalId, resourceType, service.serviceArn);
-      }
-
-      // A steady-state failure (timeout or circuit breaker) has to fail the
-      // resource, which means throwing AFTER AWS has already created the service. The
-      // throw aborts before the success-return, so cdkd state would not carry
-      // the service while AWS does, and the next deploy's CreateService would
-      // collide on the name. Clean up best-effort first, mirroring the
-      // partial-create handling in the ELBv2 / EC2 Instance providers.
-      // `force: true` deletes without a separate scale-to-0 round trip.
-      // The cleanup NARROWS the collision window rather than closing it:
-      // DeleteService returns with the service in DRAINING, which outlives
-      // the call, so an immediate retry can still hit a name conflict until
-      // draining completes (issue #1291 item 4).
-      //
-      // The UPDATE path deliberately does NOT delete on the same timeout,
-      // and the asymmetry is about STATE OWNERSHIP, not about whether AWS
-      // holds the service. Both cases end with AWS holding a service that is
-      // not steady, so "AWS has it" alone cannot explain the difference:
-      //
-      //   - CREATE: cdkd has no state record and, because the throw skips the
-      //     success-return, never will. The service is unreachable from cdkd
-      //     forever after — an orphan that also blocks the retry, since the
-      //     next CreateService hits the name. Deleting it is the only way back
-      //     to a consistent pair.
-      //   - UPDATE: the state record already exists and keeps pointing at this
-      //     same serviceArn. The failure leaves a live, previously-working
-      //     service mid-rollout; cdkd can still see it, `cdkd destroy` still
-      //     removes it, and the next deploy retries UpdateService against it.
-      //     Deleting there would DESTROY a running service (dropping every
-      //     task serving traffic) to react to a wait that timed out — turning
-      //     a recoverable stall into an outage.
-      //
-      // So the rule is "delete only what cdkd is about to lose track of",
-      // which is exactly the create case.
-      try {
-        await this.settleService(
-          logicalId,
-          service.serviceName ?? service.serviceArn,
-          properties['Cluster'] as string | undefined,
-          log,
-          requestedRolloutOf(service),
-          skipReason
-        );
-      } catch (waitError) {
-        if (replayingState) {
-          // A rollback's reverse-replacement re-create (go-to-k/cdkd#5571):
-          // the desired bag is a STATE record, restoring what the stack held
-          // before the failed deploy. Deleting the never-stable service or
-          // failing here would leave the rollback unfinished and the stack
-          // un-rollbackable over a rollout the user cannot fix through the
-          // template; whether the restored service runs is the next deploy's
-          // question. Warn and record it, so state carries what AWS holds.
-          log.warn(
-            `${this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log, false).message} Continuing the rollback: the restored service stays recorded.`
-          );
-          return {
-            physicalId: service.serviceArn,
-            attributes: {
-              ServiceArn: service.serviceArn,
-              Name: service.serviceName,
-            },
-          };
-        }
-        // Include --cluster: a service in a non-default cluster cannot be
-        // addressed without it, and the ARN alone is not documented to imply
-        // the cluster. Matches the INFO hint's shape.
-        //
-        // Every command below renders through `pasteableAwsCommand` (issue
-        // #3136): the cluster is a TEMPLATE value, so it is sanitized and
-        // shell-quoted, and one that cannot be printed exactly withholds the
-        // command. The service ARN is AWS-minted but embeds the
-        // template-chosen service name, so it takes the same gate. The
-        // operation's masker withholds a command naming a secret (issue #2177).
-        const aws = pasteableAwsCommand(log.mask);
-        // A truthy NON-string reaches the tag and withholds the command:
-        // dropping `--cluster` would address the default cluster instead.
-        const cleanupCluster = properties['Cluster'] as string | undefined;
-        const clusterArg = cleanupCluster ? aws` --cluster ${cleanupCluster}` : aws``;
-        const listStopped = aws`aws ecs list-tasks${clusterArg} --desired-status STOPPED`;
-        const deleteCommand = aws`aws ecs delete-service${clusterArg} --service ${service.serviceArn} --force`;
-        if (heldBefore !== 'free') {
-          log.warn(
-            skippedCleanupText(
-              heldBefore,
-              `ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}`,
-              deleteCommand.render()
-            )
-          );
-        } else {
-          try {
-            await client.send(
-              new DeleteServiceCommand({
-                cluster: properties['Cluster'] as string | undefined,
-                service: service.serviceArn,
-                force: true,
-              })
-            );
-            retractCreatedResource(logicalId, resourceType, service.serviceArn);
-            // warn, not debug: the dominant steady-state failure is a crashing
-            // container, and this delete removes the service the user would
-            // reach for first when asking "why". Say where the evidence
-            // still lives (issue #1291 item 2).
-            log.warn(
-              `Deleted partially-created ECS service ${logicalId} (${service.serviceArn}) after the steady-state wait failed, so the next deploy's CreateService does not collide on the name. Its stopped tasks remain inspectable for about an hour: ${listStopped.render()}`
-            );
-          } catch (cleanupError) {
-            survivorArn = service.serviceArn;
-            // An AWS-authored failure is named by its class at warn, and AWS's
-            // text (a denied `DeleteService` names the caller) goes to `debug`
-            // under the same head (go-to-k/cdkd#2319).
-            const cleanupFailure = describeAwsFailure(cleanupError);
-            const cleanupHead = `Failed to clean up partially-created ECS service ${logicalIdShown(logicalId)} ${isPlainImportValue(service.serviceArn) ? `(${service.serviceArn})` : VALUE_NOT_SHOWN}: `;
-            if (cleanupFailure.redacted) log.debug(`${cleanupHead}${cleanupFailure.detail}`);
-            log.warn(
-              `${cleanupHead}${cleanupFailure.redacted ? `${cleanupFailure.summary} ` : `${cleanupFailure.detail}. `}Manual deletion may be required before the next deploy: ${deleteCommand.render()}`
-            );
-          }
-        }
-        // The SDK waiter's bare "Waiter has timed out" explains nothing.
-        // Carry the diagnosis path in the thrown message; the wrapping
-        // ProvisioningError in the outer catch preserves it verbatim, and
-        // the cause chain keeps the original waiter error reachable for
-        // `cdkd events` metadata extraction.
-        throw this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log);
-      }
-
-      return {
-        physicalId: service.serviceArn,
-        attributes: {
-          ServiceArn: service.serviceArn,
-          Name: service.serviceName,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(log.mask, error, (text) => {
-        const wrapped = new ProvisioningError(
-          // The wrapped text can be the steady-state refusal, with its `aws`
-          // commands, so the logical id is shown only when plain
-          // (go-to-k/cdkd#4295).
-          `Failed to create ECS service ${logicalIdShown(logicalId)}: ${text}`,
-          resourceType,
-          logicalId,
-          serviceName,
-          cause
-        );
-        // The ARN is what delete() takes (the success physicalId).
-        if (survivorArn !== undefined) {
-          markCreatedBeforeFailure(wrapped, logicalId, resourceType, survivorArn);
-        }
-        return wrapped;
-      });
-    }
+    return createService.call(this, logicalId, resourceType, properties, log, replayingState);
   }
 
-  /**
-   * Does a service that is not INACTIVE already hold `serviceName` in
-   * `cluster`? The by-name lookup before CreateService (go-to-k/cdkd#4403):
-   * CreateService hands back an ACTIVE service with identical parameters, and
-   * refuses the name while one is DRAINING, so both read as held. An INACTIVE
-   * service is gone (a create under its name makes a new one), as is a
-   * `MISSING` failure. Any other answer throws, which reads as `unknown`.
-   */
-  private async serviceNameHeld(
-    cluster: string | undefined,
-    serviceName: string
-  ): Promise<boolean> {
-    const response = await this.getClient().send(
-      new DescribeServicesCommand({ cluster, services: [serviceName] })
-    );
-    const services = response.services ?? [];
-    const failures = response.failures ?? [];
-    if (services.length === 0 && failures.length === 1 && failures[0]?.reason === 'MISSING') {
-      return false;
-    }
-    if (failures.length > 0 || services.length !== 1) {
-      throw new Error('DescribeServices gave no readable answer for the service name');
-    }
-    return services[0]!.status !== 'INACTIVE';
+  serviceNameHeld(cluster: string | undefined, serviceName: string): Promise<boolean> {
+    return serviceNameHeld.call(this, cluster, serviceName);
   }
 
-  /**
-   * The error a `waitUntilServicesStable` that did not succeed throws, with
-   * AWS's text withheld (go-to-k/cdkd#2319). `@smithy/util-waiter` throws a
-   * plain `Error` whose message is the JSON of the waiter's result: every
-   * DescribeServices answer it saw (service, task-definition and role ARNs)
-   * and every failure's text (a denied call quotes the caller's assumed-role
-   * ARN). It carries no AWS-authored signal, so the failure wrap would keep it
-   * whole and persist it to `deployments/{runId}.jsonl`. The thrown message
-   * names the waiter's state and error name plus the `--verbose` pointer; the
-   * result goes to `debug`, masked, and stays on the stamped `cause` chain for
-   * the retry classifiers. Any other error is returned as it is.
-   */
-  private wrapWaiterResultError(error: unknown, logicalId: string, log: MaskedLogSinks): unknown {
-    if (!(error instanceof Error)) return error;
-    let state: unknown;
-    try {
-      state = (JSON.parse(error.message) as { state?: unknown } | null)?.state;
-    } catch {
-      return error;
-    }
-    if (typeof state !== 'string' || !/^[A-Z]+$/.test(state)) return error;
-    log.debug(`ECS service ${logicalId} ServicesStable waiter result: ${error.message}`);
-    const reduced = new Error(
-      `the ServicesStable waiter ended in state ${state}${error.name && error.name !== 'Error' ? ` (${error.name})` : ''}. ${VERBOSE_POINTER}`,
-      { cause: error }
-    );
-    // Keep the waiter's name (`TimeoutError`): `isAmbiguousOutcomeError` and
-    // the chain walks read it, and this adds a link to the cause chain.
-    reduced.name = error.name;
-    return markRedactedCause(reduced);
+  wrapWaiterResultError(error: unknown, logicalId: string, log: MaskedLogSinks): unknown {
+    return wrapWaiterResultError.call(this, error, logicalId, log);
   }
 
-  /**
-   * The failure `createService` / `updateService` throw when `settleService`
-   * did not settle: the waiter's (or the breaker check's) reason, plus the two
-   * commands that show why the service's tasks stopped. Names `--no-wait` only
-   * where the invoking command declares it (`CDKD_WAIT_FLAGS_AVAILABLE`), and
-   * the logical id only when plain (go-to-k/cdkd#4295).
-   *
-   * An AWS-authored failure (the rollout poll's DescribeServices) is named by
-   * its class here, its text at `debug` and on the stamped `cause` chain
-   * (go-to-k/cdkd#2319); the outer wrap keeps this cdkd-authored sentence.
-   */
-  private wrapSteadyStateError(
+  wrapSteadyStateError(
     logicalId: string,
     waitError: unknown,
     cluster: unknown,
@@ -2029,55 +468,10 @@ export class ECSProvider implements ResourceProvider {
     /** `false` where the failure is only warned about (a state-borne replay). */
     offerNoWait = true
   ): Error {
-    const aws = pasteableAwsCommand(log.mask);
-    // A truthy NON-string reaches the tag and withholds the command:
-    // dropping `--cluster` would address the default cluster instead.
-    const clusterArg = cluster ? aws` --cluster ${cluster as string}` : aws``;
-    const listStopped = aws`aws ecs list-tasks${clusterArg} --desired-status STOPPED`;
-    const waitFailure = describeAwsFailure(waitError);
-    if (waitFailure.redacted) {
-      log.debug(`ECS service ${logicalId} steady-state wait failed: ${waitFailure.detail}`);
-    }
-    // Flags are named only where the invoking command declares them. A
-    // breaker verdict is final, so a longer wait is offered only for a wait
-    // that ran out (or failed otherwise), never for the verdict.
-    const flagsAvailable = offerNoWait && process.env['CDKD_WAIT_FLAGS_AVAILABLE'] === 'true';
-    const timeoutHint =
-      flagsAvailable && !(waitError instanceof EcsCircuitBreakerVerdict)
-        ? ` To wait longer, raise the limit with --resource-timeout AWS::ECS::Service=${commandHole('duration')}.`
-        : '';
-    const noWaitHint = flagsAvailable
-      ? ' To deploy without waiting for steady state, pass --no-wait.'
-      : '';
-    const steadyStateError = new Error(
-      `ECS service ${logicalIdShown(logicalId)} did not reach steady state: ${waitFailure.summary.replace(/\.$/, '')}. Inspect why its tasks stopped (stopped tasks stay visible for about an hour): ${listStopped.render()}, then ${aws`aws ecs describe-tasks${clusterArg} --tasks '<task-arn>' --query 'tasks[].[stoppedReason,containers[].reason]'`.render()}.${timeoutHint}${noWaitHint}`,
-      { cause: waitError }
-    );
-    return waitFailure.redacted ? markRedactedCause(steadyStateError) : steadyStateError;
+    return wrapSteadyStateError.call(this, logicalId, waitError, cluster, log, offerNoWait);
   }
 
-  /**
-   * Settle an ECS Service according to the run's wait mode.
-   *
-   * cdkd WAITS for steady state by default (go-to-k/cdkd#5571, superseding
-   * the fire-and-forget default of #1275), as CloudFormation does. Steady
-   * state is the one signal that tells a healthy rollout from a failing one
-   * (a crash-looping container, an image that cannot be pulled), which is the
-   * failure detection the default wait tier exists for; Terraform's
-   * `wait_for_steady_state = false` default gives way here. `--no-wait`
-   * (`CDKD_NO_WAIT`) is the escape hatch and keeps the old early return with
-   * its manual-wait INFO line. `--full-wait` changes nothing for this type.
-   *
-   * `requested` is the rollout this create / update started, read off the
-   * `CreateService` / `UpdateService` response. Two circuit-breaker checks
-   * use it (go-to-k/cdkd#5571): a requested deployment observed `FAILED`
-   * during the wait ends it at once (`failedRequestedDeployment`), and after
-   * steady state a service that settled on a DIFFERENT deployment — what a
-   * breaker with `rollback: true` leaves once the failed deployment drains,
-   * one `COMPLETED` deployment the waiter accepts — throws too
-   * (`rolloutSupersededBy`). Both fail open on an unreadable response.
-   */
-  private async settleService(
+  settleService(
     logicalId: string,
     serviceRef: string,
     cluster: string | undefined,
@@ -2090,148 +484,10 @@ export class ECSProvider implements ResourceProvider {
      */
     skipReason: string | undefined
   ): Promise<void> {
-    if (skipReason !== undefined) {
-      // INFO has no masked sink; the finished line goes through the same
-      // mask. No `--no-wait` hint: the flag would change nothing here.
-      this.logger.info(
-        log.mask(
-          `ECS service ${logicalIdShown(logicalId)} accepted (not waiting for steady state: ${skipReason}).`
-        )
-      );
-      return;
-    }
-    if (process.env['CDKD_NO_WAIT'] !== 'true') {
-      log.debug(`Waiting for ECS service ${logicalId} to reach steady state...`);
-      // 600s matches Terraform's `aws_ecs_service` default create timeout, and
-      // stays the floor on purpose even though the default now waits
-      // (go-to-k/cdkd#5571): a breaker-less crash loop must not hold a dev
-      // deploy for the generic 30m resource timeout. An explicit
-      // `--resource-timeout` (per-type or global) lifts the cap so the inner
-      // waiter can never undercut the outer per-resource deadline the same
-      // flag raises (issue #1280) — but never lowers it below the 600s floor;
-      // the timeout failure names that flag.
-      const maxWaitTime = Math.max(
-        600,
-        (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
-      );
-      // A circuit breaker's verdict ends the wait early: every DescribeServices
-      // answer the waiter reads is checked for the requested deployment
-      // turning `FAILED`, which aborts the waiter (no extra AWS call). Without
-      // this, a breaker with `rollback: false` leaves the FAILED deployment in
-      // place, which never stabilizes, and the wait would run to its cap.
-      const client = this.getClient();
-      const breakerVerdict = new AbortController();
-      let failedRollout: Deployment | undefined;
-      const watchedClient = {
-        send: async (command: DescribeServicesCommand) => {
-          const output = await client.send(command);
-          if (failedRollout === undefined) {
-            failedRollout = failedRequestedDeployment(
-              requested,
-              output?.services?.[0]?.deployments
-            );
-            if (failedRollout !== undefined) breakerVerdict.abort();
-          }
-          return output;
-        },
-      } as unknown as ECSClient;
-      try {
-        await waitUntilServicesStable(
-          // minDelay/maxDelay override the AWS SDK defaults (15s / 120s) per the
-          // #1177 poll-cap sweep.
-          {
-            client: watchedClient,
-            maxWaitTime,
-            minDelay: 5,
-            maxDelay: 10,
-            abortSignal: breakerVerdict.signal,
-          },
-          { cluster, services: [serviceRef] }
-        );
-      } catch (waiterError) {
-        if (failedRollout !== undefined) {
-          // `rolloutStateReason` is AWS-authored text: `debug` only
-          // (go-to-k/cdkd#2319).
-          log.debug(
-            `ECS service ${logicalId} deployment ${failedRollout.id ?? '(no id)'} FAILED: ${failedRollout.rolloutStateReason ?? '(no rollout reason)'}`
-          );
-          throw wrapBreakerFailedError(failedRollout);
-        }
-        throw this.wrapWaiterResultError(waiterError, logicalId, log);
-      }
-      // The waiter can also RESOLVE on the very answer that showed the
-      // requested deployment FAILED: a `rollback: false` breaker leaves it in
-      // place, and once ECS's replacement tasks count as running,
-      // `runningCount == desiredCount` with one deployment satisfies the
-      // waiter. A FAILED ever seen is the verdict either way.
-      if (failedRollout !== undefined) throw wrapBreakerFailedError(failedRollout);
-      // waitUntilServicesStable's condition (a single deployment whose
-      // runningCount matches desiredCount) is satisfied a few seconds BEFORE
-      // ECS flips the PRIMARY deployment's rolloutState to COMPLETED — a race
-      // the ecs-fargate fixture lost on the update path the moment #609
-      // flipped its Service from the CC route (whose CFn handler waits for
-      // rollout completion) to this SDK route. The default wait promises the
-      // CloudFormation-equivalent doneness, so close the gap with a short
-      // bounded poll; NONE (no rollout tracking, e.g. EXTERNAL controller)
-      // counts as settled.
-      const rolloutDeadline = Date.now() + 120_000;
-      let settledDeployment: Deployment | undefined;
-      for (;;) {
-        const settled = await this.getClient().send(
-          new DescribeServicesCommand({
-            cluster,
-            services: [serviceRef],
-          })
-        );
-        const deployments = settled?.services?.[0]?.deployments;
-        // FAILED here is the breaker's verdict, not a rollout still in
-        // progress: it never turns COMPLETED.
-        const failedNow = failedRequestedDeployment(requested, deployments);
-        if (failedNow !== undefined) throw wrapBreakerFailedError(failedNow);
-        settledDeployment = deployments && deployments.length === 1 ? deployments[0] : undefined;
-        const rolloutState = settledDeployment?.rolloutState;
-        if (settledDeployment !== undefined && rolloutState === 'FAILED') {
-          throw wrapBreakerFailedError(settledDeployment);
-        }
-        if (rolloutState === undefined || rolloutState === 'COMPLETED') break;
-        if (Date.now() >= rolloutDeadline) {
-          log.warn(
-            `ECS service ${logicalId} is steady but its rollout is still ${rolloutState} after the post-stability grace window; continuing`
-          );
-          break;
-        }
-        await settleRolloutDelays.sleep(3_000);
-      }
-      const supersededBy = rolloutSupersededBy(requested, settledDeployment);
-      if (supersededBy !== undefined) {
-        // `rolloutStateReason` is AWS-authored text: `debug` only
-        // (go-to-k/cdkd#2319).
-        log.debug(
-          `ECS service ${logicalId} settled deployment ${settledDeployment?.id ?? '(no id)'}: ${settledDeployment?.rolloutStateReason ?? '(no rollout reason)'}`
-        );
-        throw new EcsCircuitBreakerVerdict(
-          `its deployment circuit breaker rolled the rollout back: the service settled on ${supersededBy}, not on the deployment this update started (${describeRollout({ id: requested!.deploymentId, taskDefinition: requested!.taskDefinition })}). The new tasks failed to start or failed their health checks`
-        );
-      }
-      log.debug(`ECS service ${logicalId} reached steady state`);
-      return;
-    }
-
-    // `--no-wait`. Rendered through `pasteableAwsCommand` (issue #3136): the
-    // cluster and the service name are TEMPLATE values, and the operation's
-    // masker withholds a command naming a secret (issue #2177).
-    const aws = pasteableAwsCommand(log.mask);
-    const clusterArg = cluster ? aws` --cluster ${cluster}` : aws``;
-    // INFO has no masked sink; the finished line goes through the same mask.
-    this.logger.info(
-      log.mask(
-        `ECS service ${logicalIdShown(logicalId)} accepted (not waiting for steady state under --no-wait). ` +
-          `To wait manually: ${aws`aws ecs wait services-stable${clusterArg} --services ${serviceRef}`.render()}`
-      )
-    );
+    return settleService.call(this, logicalId, serviceRef, cluster, log, requested, skipReason);
   }
 
-  private async updateService(
+  updateService(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -2243,898 +499,43 @@ export class ECSProvider implements ResourceProvider {
     /** The rollback executor's revert arms (`UpdateContext.replayingState`). */
     replayingState: boolean
   ): Promise<ResourceUpdateResult> {
-    log.debug(`Updating ECS service ${logicalId}: ${physicalId}`);
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const client = this.getClient();
-
-    // ServiceName is immutable - if changed, requires replacement. A
-    // secret-derived name is recorded as its `{{resolve:...}}` reference and
-    // handed here resolved: the name the physical id carries decides instead
-    // (go-to-k/cdkd#4263).
-    const newServiceName = properties['ServiceName'] as string | undefined;
-    const oldServiceName = previousProperties['ServiceName'] as string | undefined;
-    if (
-      newServiceName &&
-      oldServiceName &&
-      newServiceName !== oldServiceName &&
-      !(await unchangedBehindSecretReference({
-        resourceType,
-        key: 'ServiceName',
-        desired: newServiceName,
-        previous: oldServiceName,
-        physicalName: recordedServiceNames(physicalId).service,
-      }))
-    ) {
-      throw new ProvisioningError(
-        `Cannot update ServiceName for ECS service ${logicalId} (immutable property, requires replacement)`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    // `UpdateService` has no `launchType` member: a changed LaunchType is a
-    // replacement (issue #5392, the registry's predicate), so one that still
-    // reaches here is refused rather than recorded while AWS keeps the old
-    // value. A removal keeps the live value, as CloudFormation does.
-    //
-    // An ADD: an ordinary deploy never brings one here, because the
-    // replacement rule replaces on an add first. Outside `cdkd drift
-    // --revert` the one caller that does is the rollback revert, restoring
-    // the value a removal left live, so the add passes and sends nothing.
-    // Under drift --revert the previous side is the AWS readback, which omits
-    // LaunchType for a service moved to a capacity provider strategy out of
-    // band; restoring it needs a replacement, so the add is refused too. Only
-    // `desiredFromAwsReadback` is read: every other caller passes.
-    const previousLaunchType = previousProperties['LaunchType'];
-    if (
-      (previousLaunchType != null || desiredFromAwsReadback) &&
-      ecsServiceLaunchTypeSetOrChanged(previousLaunchType, properties['LaunchType'])
-    ) {
-      throw new ResourceUpdateNotSupportedError(
-        resourceType,
-        logicalId,
-        desiredFromAwsReadback
-          ? // The template and state are unchanged, so `deploy --replace`
-            // would plan nothing here.
-            'UpdateService cannot change a service launch type, so drift --revert cannot restore it. Destroy + redeploy the stack to restore it, or run cdkd drift --accept to keep the live value'
-          : 'UpdateService cannot change a service launch type; CloudFormation replaces the service. Re-deploy with cdkd deploy --replace, or destroy + redeploy the stack'
-      );
-    }
-
-    // loadBalancers / serviceRegistries are only accepted by UpdateService when
-    // the service uses the ECS rolling-update deployment controller. For
-    // CODE_DEPLOY (blue/green) and EXTERNAL controllers, AWS rejects these
-    // parameters (blue/green updates them via a new CodeDeploy deployment;
-    // EXTERNAL via a new task set) — see the AWS UpdateService API docs. The
-    // deployment controller defaults to ECS when unspecified. enableECSManagedTags
-    // / propagateTags are accepted under ALL three controllers, so they are
-    // mapped unconditionally.
-    // Wrapped: this point in `updateService` has no enclosing catch, so the
-    // helper's plain Error would otherwise escape untyped into the deploy
-    // engine's retry loop instead of surfacing as a ProvisioningError.
-    let deploymentControllerType: string;
-    try {
-      deploymentControllerType = readConfigString(
-        properties['DeploymentController'],
-        'Type',
-        'ECS',
-        'AWS::ECS::Service DeploymentController'
-      );
-    } catch (error) {
-      // The refusal can describe the bag value it read (issue #2177).
-      throw this.wrapCaughtError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            text,
-            resourceType,
-            logicalId,
-            physicalId,
-            error instanceof Error ? error : undefined
-          )
-      );
-    }
-    const isEcsController = deploymentControllerType === 'ECS';
-
-    // Only send loadBalancers / serviceRegistries when they actually changed, so
-    // a no-drift update stays mutation-free and doesn't trigger a spurious new
-    // deployment. Removal-from-template is sent as an empty list (the AWS-
-    // documented "clear" sentinel), not an omitted field (which AWS treats as
-    // "leave unchanged"). Both fields are gated on the ECS rolling controller.
-    const loadBalancersChanged =
-      JSON.stringify(previousProperties['LoadBalancers'] ?? null) !==
-      JSON.stringify(properties['LoadBalancers'] ?? null);
-    const serviceRegistriesChanged =
-      JSON.stringify(previousProperties['ServiceRegistries'] ?? null) !==
-      JSON.stringify(properties['ServiceRegistries'] ?? null);
-
-    // A LoadBalancers / ServiceRegistries change under a non-ECS controller
-    // (CODE_DEPLOY blue/green or EXTERNAL) is applied by AWS via a new
-    // CodeDeploy deployment / task set, NOT UpdateService — cdkd does not
-    // orchestrate those. Fail loudly rather than silently omitting the field
-    // (which would report success, poison state with the new value, and leave
-    // AWS on the old config — the exact silent-drop class #975 fixes).
-    if (!isEcsController && (loadBalancersChanged || serviceRegistriesChanged)) {
-      // The controller type is a bag value, masked RAW (issue #2177).
-      throw new ProvisioningError(
-        `AWS::ECS::Service '${logicalId}' changes LoadBalancers/ServiceRegistries under the ` +
-          `'${log.value(deploymentControllerType)}' deployment controller, which applies them via a new ` +
-          `CodeDeploy deployment / task set rather than UpdateService. cdkd does not support ` +
-          `updating these under a non-ECS controller; recreate the service or manage the ` +
-          `blue/green deployment out-of-band.`,
-        resourceType,
-        logicalId,
-        physicalId
-      );
-    }
-
-    const loadBalancersInput =
-      isEcsController && loadBalancersChanged
-        ? (this.convertLoadBalancers(
-            properties['LoadBalancers'] as Array<Record<string, unknown>> | undefined
-          ) ?? [])
-        : undefined;
-    const serviceRegistriesInput =
-      isEcsController && serviceRegistriesChanged
-        ? (this.convertServiceRegistries(
-            properties['ServiceRegistries'] as Array<Record<string, unknown>> | undefined
-          ) ?? [])
-        : undefined;
-
-    // Removal semantics (issue #5004). UpdateService treats an ABSENT input
-    // field as "no change". CloudFormation KEEPS the live value of
-    // CapacityProviderStrategy / PlacementConstraints / PlacementStrategies /
-    // PlatformVersion / HealthCheckGracePeriodSeconds / EnableECSManagedTags /
-    // PropagateTags / EnableExecuteCommand when they are removed from the
-    // template (real A/B), so those eight send NOTHING on removal. LoadBalancers
-    // / ServiceRegistries still clear via #975 (their change-detected
-    // empty-list sentinel above).
-    //
-    // The array fields below are converted from CFn PascalCase to SDK camelCase
-    // via their `convert*` helpers (issue #1165 — the same silent-drop class as
-    // `DeploymentConfiguration` below; without the conversion the SDK reads the
-    // camelCase keys, finds them absent, and drops the whole value on update).
-    //
-    // `DeploymentConfiguration` casing is now fixed on both create() and
-    // update() (converted via `convertDeploymentConfiguration`). Its removal
-    // RESET and its kept-but-partial normalization were BOTH deferred to
-    // issues #1160 / #1225 pending a live probe; that probe is done and for
-    // the TOP-LEVEL shapes the answer is that cdkd's verbatim pass-through IS
-    // CloudFormation parity, so NO reset and NO normalization is correct here.
-    // Measured us-east-1, 2026-08-13, SDK and CloudFormation A/B against the
-    // same service (baseline MaximumPercent 200 / MinimumHealthyPercent 50 /
-    // DeploymentCircuitBreaker {Enable,Rollback} true; a ROLLING, REPLICA,
-    // Fargate service). Two limits of that probe, stated rather than
-    // dismissed: the DAEMON scheduling strategy was not exercised — the
-    // ORIGINAL dismissal here read "harmless, since the deployment-type-
-    // dependent defaults only mattered for the reset that is no longer being
-    // added", and issue #1861 INVALIDATED it by adding a reset, so the
-    // reasoning is restated rather than left standing. It is still harmless,
-    // but for ONE reason, not two: the SDK documents the two defaults this
-    // provider sends (`resetOnHealthyTask` true, `thresholdConfiguration`
-    // {BOUNDED_PERCENT, 50}) with no scheduling-strategy dimension, so there
-    // is no DAEMON-specific value for the reset to get wrong. Read that as
-    // the PER-FIELD claim it is, not a general one about this property: the
-    // sibling `minimumHealthyPercent` IS strategy-dependent (100% for a
-    // replica service, 0% for DAEMON via the SDK/CLI/API — models_0.d.ts),
-    // and it is only safe here because it is a PASS-THROUGH that cdkd never
-    // defaults. A second reason was drafted here and REMOVED because it
-    // argued the opposite of its own conclusion: "the circuit breaker is only
-    // usable under the rolling-update (ECS) deployment type" does not put
-    // DAEMON out of scope, it puts DAEMON squarely IN it — the SDK states
-    // that CODE_DEPLOY / EXTERNAL controllers do not support the DAEMON
-    // scheduling strategy, so a DAEMON service NECESSARILY runs the ECS
-    // rolling-update type and can therefore carry a circuit breaker and reach
-    // this reset. Scheduling strategy and deployment type are different
-    // dimensions; do not let the second stand in for the first.
-    // The DAEMON gap remains real for the OTHER rows in this block (they are
-    // pass-throughs, so it costs nothing) — and ROLLING did not exercise the
-    // traffic-shifting blocks (LinearConfiguration / CanaryConfiguration /
-    // LifecycleHooks), so #1805 left them UNMEASURED. That mattered because they
-    // carry no (or a partial) `required` list, unlike the two required-listed
-    // blocks whose rows follow, so a kept-but-partial block there IS reachable
-    // from a template CFn accepts. Issue #1806 measured them: the three blocks
-    // it names are PARITY (the API default-fills the omitted member), while
-    // the sweep of the REST of the tree found a loud AWS refusal for some
-    // shapes and ONE genuine DIVERGENCE — see the last two bullets. That
-    // divergence (issue #1861) is FIXED: it is the only shape in this whole
-    // property that is NOT a pass-through, and it lives in
-    // `resolveDeploymentConfiguration`.
-    //   - KEPT block, sub-field dropped (send only `MaximumPercent: 150`):
-    //     UpdateService MERGES server-side — MinimumHealthyPercent stayed 50
-    //     and the circuit breaker survived. A CloudFormation stack given the
-    //     same partial block reached the IDENTICAL end state, via a real
-    //     UPDATE_IN_PROGRESS -> UPDATE_COMPLETE on the resource rather than a
-    //     no-op. (What was measured is the END STATE; that CFn's handler
-    //     submits the same partial to UpdateService is the inference, not an
-    //     observation.) So the retained value is CFn's behavior too, and
-    //     normalizing to an explicit clear shape would DIVERGE from it.
-    //   - WHOLE block removed: CloudFormation issued a real resource UPDATE
-    //     and did NOT reset the configuration — the live values survived
-    //     intact. Passing `undefined` (below) reproduces that exactly, so the
-    //     #1160 removal-reset this field was holding open must NOT be added.
-    //   - Sub-field dropped one level DOWN (kept `DeploymentCircuitBreaker`,
-    //     `Rollback` omitted): this one is NOT parity, and the difference is
-    //     worth stating precisely because the obvious reading gets it
-    //     backwards. The nested struct is REPLACED rather than merged, and
-    //     the SDK ACCEPTS the partial — a live `rollback` went true -> false.
-    //     CloudFormation refuses the same template up front (`Model
-    //     validation failed (#/DeploymentConfiguration/
-    //     DeploymentCircuitBreaker: required key [Rollback] not found)`,
-    //     UPDATE_ROLLBACK_COMPLETE with the live config intact), because the
-    //     registry schema marks the `DeploymentCircuitBreaker` definition
-    //     required [Enable, Rollback] and `DeploymentAlarms` (the `Alarms`
-    //     property) required [AlarmNames, Rollback, Enable]. cdkd used to
-    //     DEPLOY that template and silently flip the live setting; the deploy
-    //     pre-flight now refuses it as CloudFormation does
-    //     (`nested-required.ts`, issue #1802), so a LITERAL partial block no
-    //     longer reaches this method (one behind `Fn::If`, or a member
-    //     resolving to `AWS::NoValue`, still can). It is deliberately NOT papered over
-    //     here by re-filling `Rollback` from the previous side, which would
-    //     invent a value the template never declared. Do NOT read this row as the ASG
-    //     InstanceMaintenancePolicy disposition (#1227): there AWS ITSELF
-    //     rejected the partial, so cdkd failed loudly too and pass-through
-    //     really was parity.
-    //   - The three DEPTH-1 sibling blocks #1806 names — `LinearConfiguration`
-    //     and `CanaryConfiguration` (neither carries a required list) and
-    //     `LifecycleHooks[]`, whose element requires only `LifecycleStages` —
-    //     are PARITY, which is the answer the row above makes it easy to guess
-    //     wrong. Measured us-east-1 2026-08-13
-    //     on a real traffic-shifting service, SDK and CloudFormation A/B.
-    //     A kept-but-partial block IS replaced like the depth-2 case, but the
-    //     absent member is filled with an AWS-side DEFAULT rather than left
-    //     at its live value: `LinearConfiguration` {StepPercent 33,
-    //     StepBakeTimeInMinutes 9} re-sent as {StepPercent 44} came back
-    //     {44, 6}; `CanaryConfiguration` {21, 9} re-sent as {CanaryPercent
-    //     30} came back {30, 10}; a hook's `TimeoutConfiguration` {31,
-    //     CONTINUE} re-sent as {TimeoutInMinutes 45} came back {45,
-    //     ROLLBACK}. The defaults are FIXED, not derived from the sibling
-    //     member — an empty `LinearConfiguration: {}` sent from a live
-    //     {33, 9} came back {10, 6}. CloudFormation given the SAME partial
-    //     template reached the IDENTICAL end state in all three cases, so the
-    //     reset is ECS's own behavior and normalizing it away would DIVERGE —
-    //     the top-level row's conclusion, reached the same way. What was
-    //     measured is again the END STATE; that CFn's handler submits the same
-    //     partial to `UpdateService` is the inference, though a CFn-side
-    //     fill-from-previous would have produced {44, 9} rather than the
-    //     observed {44, 6}. One PREMISE of #1806 did not survive contact: these
-    //     configs are NOT BLUE_GREEN-reachable (`Linear configuration can only
-    //     be present with LINEAR deployment strategy` — each is gated on its
-    //     OWN strategy, while `LifecycleHooks` is not, measured under CANARY;
-    //     its reach under ROLLING was not probed), so the heavier BLUE_GREEN
-    //     fixture the issue prescribed could not have reached two of them at
-    //     all. And one FINDING the issue does not discuss: the default-fill
-    //     does not become phantom drift, because the deploy engine captures
-    //     `observedProperties` from `readCurrentState` — which reverse-maps
-    //     this whole block from `DescribeServices` — so the AWS-filled value
-    //     lands in the drift baseline. That holds only while the property
-    //     stays drift-COMPARED; the test file fences it.
-    //     (The hook block's schema definition is named `HookTimeoutConfig`,
-    //     NOT the unrelated ServiceConnect `TimeoutConfiguration` definition —
-    //     the property PATH is `LifecycleHooks[].TimeoutConfiguration`.)
-    //   - The shapes the rows ABOVE do not already cover split TWO ways (plus
-    //     the array shape at the end of this bullet), so
-    //     neither "the rest of the tree is fine" nor "the other blocks are
-    //     refused" is the takeaway, and `DeploymentAlarms` keeps the #1802 (now pre-flight-refused)
-    //     disposition the row above gives it. Enumerated from
-    //     the LIVE registry definitions (`describe-type`, us-east-1
-    //     2026-08-13) rather than from the blocks #1806 names, and measured
-    //     the same day on the same service:
-    //       * AWS ITSELF REFUSES (the ASG `InstanceMaintenancePolicy`
-    //         disposition, #1227 — cdkd fails LOUDLY, no nested required-ness
-    //         check involved): a hook element missing `LifecycleStages`
-    //         (`InvalidParameterException: Lifecycle stage cannot be null or
-    //         empty for any deployment lifecycle hooks`); a hook element
-    //         missing `TargetType` (`Role arn or Hook Target arn is missing
-    //         for one or more deployment lifecycle hooks`, because an absent
-    //         `TargetType` DEFAULTS to `AWS_LAMBDA`, which then requires
-    //         members a PAUSE hook does not carry — dropping ONE member arms a
-    //         requirement for TWO others); and
-    //         `DeploymentCircuitBreaker.ThresholdConfiguration` missing
-    //         `Value` (`Invalid deployment circuit breaker threshold value.`) —
-    //         a block the issue's depth-1 scan never listed.
-    //         That one is REFUSED BY CFn TOO — its definition carries
-    //         `required: [Type, Value]` — so it is NOT an example of a
-    //         CFn-accepted partial, and the parity comes from both engines
-    //         failing rather than from agreeing on an end state. What decides
-    //         the verdict is whether AWS ACCEPTS, not whether CFn refuses:
-    //         `DeploymentCircuitBreaker` missing `Rollback` is refused by CFn
-    //         and ACCEPTED by AWS, which is exactly why that row was the #1802
-    //         divergence and this one is not.
-    //       * AWS RETAINS the live value AND CLOUDFORMATION RESETS IT — the
-    //         one DIVERGENT row this sweep found, opposite in polarity to
-    //         #1802 and tracked as issue #1861. `DeploymentCircuitBreaker`'s
-    //         OPTIONAL children (`ResetOnHealthyTask`, and the whole
-    //         `ThresholdConfiguration` block) dropped from an otherwise
-    //         complete parent form a partial CFn ACCEPTS, so it reaches AWS.
-    //         From the IDENTICAL baseline, with `Rollback` flipped in the same
-    //         call so the update demonstrably applied: cdkd's `UpdateService`
-    //         left `resetOnHealthyTask: false` / `{COUNT, 7}` intact, while
-    //         CloudFormation handed the same template RESET them to AWS's
-    //         defaults (`true` / `{BOUNDED_PERCENT, 50}`). So cdkd silently
-    //         fails to apply a removal CFn applies — too STICKY, where #1802
-    //         is too PERMISSIVE. THIS ROW IS NOW FIXED (#1861): those two
-    //         members — and ONLY those two, only when BOTH sides still declare
-    //         the `DeploymentCircuitBreaker` block — are routed through
-    //         `clearOnUpdateRemoval` in `resolveDeploymentConfiguration`, so a
-    //         declared-then-dropped member is sent as its AWS default. Every
-    //         other shape in this comment block still ships as the verbatim
-    //         pass-through the rows above measured as parity.
-    //         What CFn is doing there is applying a REMOVAL, not materializing
-    //         defaults wholesale — measured, because the distinction decides
-    //         the fix: a member the template NEVER declared (set out of band)
-    //         SURVIVED a CFn update that changed only `MinimumHealthyPercent`,
-    //         while the same member declared-then-dropped was reset. That is
-    //         a previous-present / current-absent REMOVAL — the semantic
-    //         `clearOnUpdateRemoval` implements one level up, though the
-    //         member-vs-whole-property boundary here is EMPIRICAL rather than
-    //         derived from it: removing the WHOLE `DeploymentConfiguration`
-    //         resets nothing under either engine, so only a member dropped
-    //         from a struct the template STILL DECLARES is treated as a
-    //         removal. Two details make that arm discriminating, and both had
-    //         to be measured because the obvious one alone does not: the block
-    //         itself STAYED DECLARED while the member was absent, AND a later
-    //         arm flipped `Rollback` INSIDE the block while the optional
-    //         members remained never-declared — they still survived. That
-    //         excludes the competing reading "CFn re-serializes a nested
-    //         struct with defaults whenever its declared content CHANGED",
-    //         which the first two arms fit just as well. Service identity was captured on
-    //         both sides (same `serviceArn` / `createdAt`, stack events showing
-    //         UPDATE not a second CREATE) so a replacement cannot be mistaken
-    //         for a reset. Two things this row teaches. ONE nested block holds
-    //         members with DIFFERENT semantics — the required `Rollback` reads
-    //         as replaced while the optional children are retained — so do not
-    //         generalize a row to its siblings. And the shape to carry: where
-    //         the API RETAINS an omitted optional member of a STILL-DECLARED
-    //         struct, cdkd diverges, because CFn treats the omission as a
-    //         removal; the `LinearConfiguration` family above is parity only
-    //         because the API ITSELF default-fills there, which is exactly why
-    //         each block had to be measured rather than reasoned about.
-    //     The `LifecycleHooks` ARRAY itself is REPLACED WHOLESALE (a 2-element
-    //     list re-sent with one element left exactly that one), which is the
-    //     #1227 array shape and makes a per-element DROP a non-issue.
-    //     A note on HOW that was probed, because it changes the answer: the
-    //     AWS CLI refuses the `ThresholdConfiguration` partial CLIENT-side
-    //     (botocore validates the required trait before sending), so it never
-    //     reaches the service. The JS SDK cdkd uses declares the same member
-    //     required in its TYPE (`value: number | undefined`, a non-optional
-    //     key, vs the optional `targetType?:`) but performs no runtime
-    //     required check, so it SERIALIZES the partial and cdkd's refusal
-    //     arrives from the SERVICE. The models agree; only where the
-    //     validation runs differs — which is why the row was probed through
-    //     `@aws-sdk/client-ecs` directly rather than through the CLI.
-    // Pinned by `ecs-deployment-configuration-subfield.test.ts`.
-    // Absent-from-template still passes `undefined` (no reset) below. Also not
-    // reset (immutable / required / always-carried): ServiceName (immutable,
-    // guarded above), Cluster / TaskDefinition / DesiredCount /
-    // NetworkConfiguration, SchedulingStrategy (create-only).
-    // Removal of CapacityProviderStrategy / PlacementConstraints /
-    // PlacementStrategies / PlatformVersion / HealthCheckGracePeriodSeconds /
-    // EnableECSManagedTags / PropagateTags / EnableExecuteCommand sends NOTHING:
-    // CloudFormation keeps the live value (real A/B, #5004), and UpdateService
-    // treats an absent member as unchanged.
-    const capacityProviderStrategyInput = this.convertCapacityProviderStrategy(
-      properties['CapacityProviderStrategy'] as Array<Record<string, unknown>> | undefined
-    );
-    const placementConstraintsInput = this.convertPlacementConstraints(
-      properties['PlacementConstraints'] as Array<Record<string, unknown>> | undefined
-    );
-    const placementStrategyInput = this.convertPlacementStrategies(
-      (properties['PlacementStrategies'] ?? properties['PlacementStrategy']) as
-        | Array<Record<string, unknown>>
-        | undefined
-    );
-    const platformVersionInput = properties['PlatformVersion'] as string | undefined;
-    const healthCheckGracePeriodSecondsInput = properties['HealthCheckGracePeriodSeconds'] as
-      | number
-      | undefined;
-    const enableECSManagedTagsInput = properties['EnableECSManagedTags'] as boolean | undefined;
-    const propagateTagsInput = properties['PropagateTags'] as PropagateTags | undefined;
-    const enableExecuteCommandInput = properties['EnableExecuteCommand'] as boolean | undefined;
-
-    // issue #609 backfill — the previously SDK-unwired Service members on
-    // the update path. All of the config blobs below are change-gated (like
-    // LoadBalancers / ServiceRegistries above) because the AWS docs mark them
-    // "this parameter triggers a new service deployment": re-sending an
-    // unchanged value on an unrelated update could start a spurious rollout.
-    //
-    // Removal (present before, absent now) semantics per member, each settled
-    // by a real CloudFormation A/B (#5004, #1160):
-    //   - ServiceConnectConfiguration -> `{ enabled: false }`: CloudFormation
-    //     resets it to disabled on removal.
-    //   - VolumeConfigurations / VpcLatticeConfigurations -> `[]`:
-    //     CloudFormation clears both (the service revision carries neither
-    //     afterwards), and UpdateService clears on an empty list.
-    //   - AvailabilityZoneRebalancing -> no reset sent: CloudFormation KEEPS
-    //     the live value (DISABLED stayed DISABLED, not the schema's ENABLED
-    //     default), and UpdateService keeps an absent member.
-    //   - GatewayConnectors -> no reset sent (#5634): CloudFormation KEEPS
-    //     the live connector; see the block below.
-    //   - Monitoring -> `{ metricConfigurations: [] }`: CloudFormation resets
-    //     the service revision to exactly that, while UpdateService keeps an
-    //     absent member (the old 20-second resolution survived).
-    //   - DeploymentController -> no reset by design: absent means the
-    //     default ECS controller, and sending nothing keeps AWS's current
-    //     controller (the property is only sent when present AND changed —
-    //     the SDK supports an explicit change for ECS<->CODE_DEPLOY
-    //     migration).
-    //   - Role -> create-only (registry schema createOnlyProperties); a
-    //     change is classified as replacement by the diff layer, so update()
-    //     never delivers it (UpdateService has no role member).
-    const availabilityZoneRebalancingChanged =
-      JSON.stringify(previousProperties['AvailabilityZoneRebalancing'] ?? null) !==
-      JSON.stringify(properties['AvailabilityZoneRebalancing'] ?? null);
-    const availabilityZoneRebalancingInput =
-      availabilityZoneRebalancingChanged && properties['AvailabilityZoneRebalancing'] !== undefined
-        ? (properties['AvailabilityZoneRebalancing'] as AvailabilityZoneRebalancing)
-        : undefined;
-
-    const deploymentControllerChanged =
-      JSON.stringify(previousProperties['DeploymentController'] ?? null) !==
-      JSON.stringify(properties['DeploymentController'] ?? null);
-    const deploymentControllerInput =
-      deploymentControllerChanged && properties['DeploymentController'] != null
-        ? this.convertDeploymentController(
-            properties['DeploymentController'] as Record<string, unknown>
-          )
-        : undefined;
-
-    const serviceConnectChanged =
-      JSON.stringify(previousProperties['ServiceConnectConfiguration'] ?? null) !==
-      JSON.stringify(properties['ServiceConnectConfiguration'] ?? null);
-    const serviceConnectConfigurationInput = serviceConnectChanged
-      ? clearOnUpdateRemoval(
-          this.convertServiceConnectConfiguration(
-            properties['ServiceConnectConfiguration'] as Record<string, unknown> | undefined
-          ),
-          previousProperties['ServiceConnectConfiguration'] as
-            | ServiceConnectConfiguration
-            | undefined,
-          { enabled: false }
-        )
-      : undefined;
-
-    const volumeConfigurationsChanged =
-      JSON.stringify(previousProperties['VolumeConfigurations'] ?? null) !==
-      JSON.stringify(properties['VolumeConfigurations'] ?? null);
-    const volumeConfigurationsInput = volumeConfigurationsChanged
-      ? clearOnUpdateRemoval(
-          this.convertServiceVolumeConfigurations(
-            properties['VolumeConfigurations'] as Array<Record<string, unknown>> | undefined
-          ),
-          previousProperties['VolumeConfigurations'] as ServiceVolumeConfiguration[] | undefined,
-          []
-        )
-      : undefined;
-
-    const vpcLatticeConfigurationsChanged =
-      JSON.stringify(previousProperties['VpcLatticeConfigurations'] ?? null) !==
-      JSON.stringify(properties['VpcLatticeConfigurations'] ?? null);
-    const vpcLatticeConfigurationsInput = vpcLatticeConfigurationsChanged
-      ? clearOnUpdateRemoval(
-          this.convertVpcLatticeConfigurations(
-            properties['VpcLatticeConfigurations'] as Array<Record<string, unknown>> | undefined
-          ),
-          previousProperties['VpcLatticeConfigurations'] as VpcLatticeConfiguration[] | undefined,
-          []
-        )
-      : undefined;
-
-    const monitoringChanged =
-      JSON.stringify(previousProperties['Monitoring'] ?? null) !==
-      JSON.stringify(properties['Monitoring'] ?? null);
-    const monitoringInput = monitoringChanged
-      ? clearOnUpdateRemoval(
-          this.convertMonitoringConfiguration(
-            properties['Monitoring'] as Record<string, unknown> | undefined
-          ),
-          previousProperties['Monitoring'] as MonitoringConfiguration | undefined,
-          { metricConfigurations: [] }
-        )
-      : undefined;
-
-    // go-to-k/cdkd#5634: GatewayConnectors, change-gated like the blobs above.
-    // A CloudFormation A/B settled removal: dropping the property (alone, or
-    // beside another change) starts no deployment and the live connector
-    // stays, so sending nothing is parity — UpdateService keeps an absent
-    // member. Only a DECLARED `[]` clears it (CloudFormation sends it, and
-    // the next service revision carries no connector), and it reaches here
-    // as a change like any other value. The gate compares
-    // `Filters.AccessTypes` as a set (CFn schema `insertionOrder: false`), so
-    // a pure reorder starts no deployment; the value SENT keeps the
-    // template's order.
-    const gatewayConnectorsChanged =
-      gatewayConnectorsGateKey(previousProperties['GatewayConnectors']) !==
-      gatewayConnectorsGateKey(properties['GatewayConnectors']);
-    const gatewayConnectorsInput = gatewayConnectorsChanged
-      ? this.convertGatewayConnectors(
-          properties['GatewayConnectors'] as Array<Record<string, unknown>> | undefined
-        )
-      : undefined;
-
-    // CFn ForceNewDeployment `{EnableForceNewDeployment, ForceNewDeploymentNonce}`
-    // -> the SDK's plain `forceNewDeployment` boolean (only send `true`; the
-    // field is a one-shot trigger, never persisted state).
-    const forceNewDeploymentInput = this.resolveForceNewDeployment(
+    return updateService.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
       properties,
       previousProperties,
-      log
+      log,
+      desiredFromAwsReadback,
+      replayingState
     );
-
-    // Verbatim PascalCase->camelCase conversion PLUS the member-level removal
-    // reset inside `DeploymentCircuitBreaker` (issue #1861 — the last bullet
-    // of the block above). Everything else in this property stays a
-    // pass-through, which the same measurement established as parity.
-    const deploymentConfigurationInput = this.resolveDeploymentConfiguration(
-      properties,
-      previousProperties
-    );
-
-    try {
-      const response = await client.send(
-        new UpdateServiceCommand({
-          cluster: properties['Cluster'] as string | undefined,
-          service: physicalId,
-          taskDefinition: properties['TaskDefinition'] as string | undefined,
-          desiredCount: properties['DesiredCount'] as number | undefined,
-          networkConfiguration: this.convertNetworkConfiguration(
-            properties['NetworkConfiguration'] as Record<string, unknown> | undefined
-          ),
-          capacityProviderStrategy: capacityProviderStrategyInput,
-          // DeploymentConfiguration is converted PascalCase->camelCase (issue
-          // #1165); a change is sent through and an absent value passes
-          // undefined (no WHOLE-property removal RESET — measured as
-          // CloudFormation parity). The one member-level removal reset the
-          // measurement DID find lives in `resolveDeploymentConfiguration`
-          // (issue #1861); see the comment block above the try.
-          deploymentConfiguration: deploymentConfigurationInput,
-          placementConstraints: placementConstraintsInput,
-          placementStrategy: placementStrategyInput,
-          platformVersion: platformVersionInput,
-          healthCheckGracePeriodSeconds: healthCheckGracePeriodSecondsInput,
-          enableECSManagedTags: enableECSManagedTagsInput,
-          propagateTags: propagateTagsInput,
-          enableExecuteCommand: enableExecuteCommandInput,
-          loadBalancers: loadBalancersInput,
-          serviceRegistries: serviceRegistriesInput,
-          // issue #609 backfill (change-gated; removal semantics documented
-          // in the block above the try).
-          availabilityZoneRebalancing: availabilityZoneRebalancingInput,
-          deploymentController: deploymentControllerInput,
-          serviceConnectConfiguration: serviceConnectConfigurationInput,
-          volumeConfigurations: volumeConfigurationsInput,
-          vpcLatticeConfigurations: vpcLatticeConfigurationsInput,
-          monitoring: monitoringInput,
-          gatewayConnectors: gatewayConnectorsInput,
-          forceNewDeployment: forceNewDeploymentInput,
-        })
-      );
-
-      const service = response.service;
-
-      // Apply tag diff. ECS Service ARN comes from the UpdateService response.
-      if (service?.serviceArn) {
-        await this.applyTagDiff(
-          service.serviceArn,
-          resourceType,
-          logicalId,
-          previousProperties['Tags'],
-          properties['Tags'],
-          log
-        );
-      }
-
-      // The rolling deployment UpdateService starts settles minutes later;
-      // the default waits for it and fails on a circuit-breaker verdict.
-      try {
-        await this.settleService(
-          logicalId,
-          service?.serviceName ?? physicalId,
-          properties['Cluster'] as string | undefined,
-          log,
-          requestedRolloutOf(service),
-          // `cdkd drift --revert` (go-to-k/cdkd#5571) does not wait at all:
-          // the outcome of its wait could only ever be the warning below
-          // (a revert must not fail on the rollout it restores), and drift
-          // has no `--no-wait` to skip a wait that only costs time.
-          desiredFromAwsReadback
-            ? 'a drift revert does not wait for it'
-            : controllerSkipsWait(properties)
-        );
-      } catch (waitError) {
-        // Not a template deploy (go-to-k/cdkd#5571): the rollback executor's
-        // revert arms (`replayingState`) re-apply a configuration the service
-        // held before — a STATE record. Failing the rollback on its steady
-        // state would leave the stack un-rollbackable (the user cannot fix a
-        // state record through the template), and the revert has already
-        // been accepted by AWS: what follows is the service's rollout, not
-        // cdkd's write. So warn, with the same diagnosis commands, and report
-        // the update applied. A template deploy throws: its rollout is the
-        // deploy's outcome. (`drift --revert` never waits; see above.)
-        if (replayingState) {
-          log.warn(
-            `${this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log, false).message} The rollback update was applied; continuing.`
-          );
-        } else {
-          throw this.wrapSteadyStateError(logicalId, waitError, properties['Cluster'], log);
-        }
-      }
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        attributes: {
-          ServiceArn: service?.serviceArn || physicalId,
-          Name: service?.serviceName,
-        },
-      };
-    } catch (error) {
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        log.mask,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update ECS service ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
   }
 
-  private async deleteService(
+  deleteService(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void | ResourceDeleteResult> {
-    this.logger.debug(`Deleting ECS service ${logicalId}: ${physicalId}`);
-    const client = this.getClient();
-
-    // go-to-k/cdkd#3952: a redacted Cluster names no cluster, and the
-    // not-found arms below read a miss as "already deleted". The long-format
-    // service ARN (the physicalId) carries the cluster name, so that is used
-    // first; only a short-format ARN, which does not, leaves nothing to address.
-    const recordedCluster = properties?.['Cluster'];
-    let cluster: string | undefined;
-    if (isRedactedRecordedValue(recordedCluster)) {
-      cluster = clusterNameFromServiceArn(physicalId);
-      if (cluster === undefined) {
-        const skip = redactedDeleteAddressSkip(this.logger, logicalId, 'ECS service', ['Cluster']);
-        if (skip) return skip;
-      }
-    } else {
-      cluster = recordedCluster as string | undefined;
-    }
-    // go-to-k/cdkd#4946: set once the scale-down is accepted, so a refused
-    // `DeleteService` is never read as a whole survivor.
-    let stripped = false;
-    // go-to-k/cdkd#5664: the scale-down found the service NOT ACTIVE (an
-    // earlier attempt deleted it), so only the INACTIVE wait remains.
-    let alreadyDeleted = false;
-
-    try {
-      // First scale down to 0
-      try {
-        await client.send(
-          new UpdateServiceCommand({
-            cluster,
-            service: physicalId,
-            desiredCount: 0,
-          })
-        );
-        // A service its record already sets to 0 is what the record describes.
-        const recordedCount = properties?.['DesiredCount'];
-        stripped = !(recordedCount === 0 || recordedCount === '0');
-        this.logger.debug(`Scaled down ECS service ${physicalId} to 0`);
-      } catch (error) {
-        // If service not found during scale down, it's already gone
-        if (this.isServiceNotFoundException(error)) {
-          const clientRegion = await client.config.region();
-          assertRegionMatch(
-            clientRegion,
-            context?.expectedRegion,
-            resourceType,
-            logicalId,
-            physicalId
-          );
-          this.logger.debug(
-            `ECS service ${physicalId} not found during scale down, skipping deletion`
-          );
-          // go-to-k/cdkd#5664: NOT ACTIVE is not gone. A service an earlier
-          // attempt already deleted is still DRAINING, and what depends on it
-          // must not be deleted before it is INACTIVE: skip the delete and
-          // fall through to the wait below (outside this try, so its failure
-          // is not re-wrapped as a delete failure).
-          if (!this.isServiceNotActiveException(error)) return;
-          alreadyDeleted = true;
-        } else {
-          throw error;
-        }
-      }
-
-      // Then force delete
-      if (!alreadyDeleted) {
-        await client.send(
-          new DeleteServiceCommand({
-            cluster,
-            service: physicalId,
-            force: true,
-          })
-        );
-        this.logger.debug(`Successfully deleted ECS service ${logicalId}`);
-      }
-    } catch (error) {
-      if (this.isServiceNotFoundException(error)) {
-        const clientRegion = await client.config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        this.logger.debug(`ECS service ${physicalId} not found, skipping deletion`);
-        // NOT ACTIVE (#5664): already deleted and possibly still DRAINING,
-        // so it falls through to the wait below instead of returning.
-        if (!this.isServiceNotActiveException(error)) return;
-      } else {
-        const cause = error instanceof Error ? error : undefined;
-        const wrapped = this.wrapCaughtError(
-          maskerOrIdentity(context?.maskSecrets),
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to delete ECS service ${logicalId}: ${text}`,
-              resourceType,
-              logicalId,
-              physicalId,
-              cause
-            )
-        );
-        // A missing CLUSTER means the service is gone too, so it stays readable
-        // as already deleted; any other `NotFound` class (a Service Connect
-        // `NamespaceNotFoundException` from the scale-down UpdateService) is
-        // not this service's.
-        const failure = this.isClusterNotFoundException(error)
-          ? wrapped
-          : markNotGoneOnNotFoundClass(error, wrapped);
-        throw stripped ? markDeleteStarted(failure) : failure;
-      }
-    }
-
-    // go-to-k/cdkd#5664: DeleteService returns while the service is still
-    // DRAINING. Wait for INACTIVE before reporting it deleted, as
-    // CloudFormation does, so nothing that depends on it is deleted first.
-    await this.waitForServiceInactive(logicalId, physicalId, cluster, resourceType);
+    return deleteService.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * Wait for a deleted ECS service to reach `INACTIVE` (go-to-k/cdkd#5664).
-   *
-   * `DeleteService` (with `force`) returns while the service is still
-   * `DRAINING`. CloudFormation waits for `INACTIVE` before it reports the
-   * service deleted; cdkd returned at once, so a dependent's delete ran
-   * against a live service. Measured: an `AWS::ECS::Gateway`'s cluster
-   * association stayed `DISASSOCIATING` and the gateway delete was refused
-   * ("Cannot delete gateway with active cluster associations") while the
-   * service with a gateway connector drained; after `INACTIVE` (~42s for a
-   * desiredCount-0 service) the disassociation and the gateway delete were
-   * immediate. Every SDK-routed service waits, not only one with a connector:
-   * a draining service also holds task ENIs, target-group registrations and
-   * Cloud Map instances that its dependents' deletes run into, and waiting
-   * is what CloudFormation does for every service.
-   *
-   * Like the other destroy waits (NAT gateway, Kinesis), this runs whatever
-   * the deploy wait mode: `--no-wait` / `CDKD_NO_WAIT` is a deploy-time flag.
-   * The cap is the create/update wait's: 600s, lifted (never lowered) by an
-   * explicit `--resource-timeout`. Running out THROWS, marked delete-started
-   * and non-retryable — a warning would let the destroy delete the
-   * service's dependents against a still-draining service, which is the
-   * defect this wait exists for, and a retry would re-run the same wait.
-   * The service counts as gone once DescribeServices reports it `INACTIVE`,
-   * reports it `MISSING`, or its cluster is gone.
-   */
-  private async waitForServiceInactive(
+  waitForServiceInactive(
     logicalId: string,
     physicalId: string,
     cluster: string | undefined,
     resourceType: string
   ): Promise<void> {
-    const client = this.getClient();
-    const maxWaitSeconds = Math.max(
-      600,
-      (resolvedResourceTimeoutMs('AWS::ECS::Service') ?? 0) / 1000
-    );
-    const deadline = serviceInactiveWait.now() + maxWaitSeconds * 1000;
-    let delay = 2_000;
-    let lastStatus = 'unknown';
-    for (;;) {
-      try {
-        const out = await client.send(
-          new DescribeServicesCommand({ cluster, services: [physicalId] })
-        );
-        if ((out?.failures ?? []).some((failure) => failure.reason === 'MISSING')) return;
-        const status = out?.services?.[0]?.status;
-        if (status === 'INACTIVE') return;
-        lastStatus = status ?? 'unknown';
-      } catch (error) {
-        if (this.isClusterNotFoundException(error)) return;
-        // Anything else (a throttle, a denial) ends the wait as a failed
-        // delete; the deploy engine's retry re-enters `deleteService`, whose
-        // scale-down then sees the service NOT ACTIVE and comes back here.
-        const readFailure = new ProvisioningError(
-          `Failed to confirm ECS service ${logicalId} deletion: ${error instanceof Error ? error.name : 'unknown error'}`,
-          resourceType,
-          logicalId,
-          physicalId,
-          error instanceof Error ? error : undefined
-        );
-        throw markDeleteStarted(readFailure);
-      }
-      if (serviceInactiveWait.now() >= deadline) {
-        throw markNonRetryable(
-          markDeleteStarted(
-            new ProvisioningError(
-              `ECS service ${logicalIdShown(logicalId)} was deleted but did not reach INACTIVE within ${maxWaitSeconds}s (last status: ${lastStatus}). Re-run once the service is INACTIVE, or raise the limit with --resource-timeout AWS::ECS::Service=${commandHole('duration')}.`,
-              resourceType,
-              logicalId,
-              physicalId
-            )
-          )
-        );
-      }
-      await serviceInactiveWait.sleep(delay);
-      delay = Math.min(delay * 2, 10_000);
-    }
+    return waitForServiceInactive.call(this, logicalId, physicalId, cluster, resourceType);
   }
 
-  private async getServiceAttribute(physicalId: string, attributeName: string): Promise<unknown> {
-    const client = this.getClient();
-
-    // physicalId is the service ARN (what createService stores). DescribeServices
-    // scopes to the default cluster unless a cluster is given, so a Service in a
-    // non-default cluster would come back MISSING; derive the cluster from the
-    // ARN so the lookup is scoped correctly (issue #1170).
-    const response = await client.send(
-      new DescribeServicesCommand({
-        cluster: clusterNameFromServiceArn(physicalId),
-        services: [physicalId],
-      })
-    );
-    const service = response.services?.[0];
-    if (!service) return undefined;
-
-    switch (attributeName) {
-      case 'ServiceArn':
-        return service.serviceArn;
-      case 'Name':
-        return service.serviceName;
-      default:
-        return undefined;
-    }
+  getServiceAttribute(physicalId: string, attributeName: string): Promise<unknown> {
+    return getServiceAttribute.call(this, physicalId, attributeName);
   }
 
-  // ─── Helpers ────────────────────────────────────────────────────
-
-  /**
-   * Apply a diff between old and new CFn-shape Tags arrays via ECS's
-   * `TagResource` / `UntagResource` APIs. ECS uses lowercase camelCase
-   * (`{ key, value }`) for tags. Resource ARN identifies the cluster /
-   * service / task definition. Both sides are read through `planTagDiff`
-   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
-   *
-   * `log` is the calling update's masked sink (issue #2177): the ARN embeds
-   * the cluster or service name, which can be secret-derived.
-   */
-  private async applyTagDiff(
+  applyTagDiff(
     resourceArn: string,
     resourceType: string,
     logicalId: string,
@@ -3142,1879 +543,317 @@ export class ECSProvider implements ResourceProvider {
     newTagsRaw: unknown,
     log: MaskedLogSinks
   ): Promise<void> {
-    const plan = planTagDiff(oldTagsRaw, newTagsRaw);
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      log.warn(tagWarning);
-    }
-    const tagsToAdd: Tag[] = [...plan.set].map(([key, value]) => ({ key, value }));
-    const tagsToRemove = plan.remove;
-
-    if (tagsToRemove.length > 0) {
-      await this.getClient().send(new UntagResourceCommand({ resourceArn, tagKeys: tagsToRemove }));
-      log.debug(`Removed ${tagsToRemove.length} tag(s) from ECS resource ${resourceArn}`);
-    }
-    if (tagsToAdd.length > 0) {
-      await this.getClient().send(new TagResourceCommand({ resourceArn, tags: tagsToAdd }));
-      log.debug(`Added/updated ${tagsToAdd.length} tag(s) on ECS resource ${resourceArn}`);
-    }
+    return applyTagDiff.call(
+      this,
+      resourceArn,
+      resourceType,
+      logicalId,
+      oldTagsRaw,
+      newTagsRaw,
+      log
+    );
   }
 
-  /**
-   * Convert CFn ContainerDefinitions to ECS SDK format.
-   * CFn uses PascalCase, ECS SDK uses camelCase.
-   */
-  private convertContainerDefinitions(
+  convertContainerDefinitions(
     defs?: Array<Record<string, unknown>>
   ): ContainerDefinition[] | undefined {
-    if (!defs) return undefined;
-
-    return defs.map((def) => ({
-      name: def['Name'] as string,
-      image: def['Image'] as string,
-      cpu: def['Cpu'] as number | undefined,
-      memory: def['Memory'] as number | undefined,
-      memoryReservation: def['MemoryReservation'] as number | undefined,
-      essential: def['Essential'] as boolean | undefined,
-      command: def['Command'] as string[] | undefined,
-      entryPoint: def['EntryPoint'] as string[] | undefined,
-      environment: this.convertEnvironment(
-        def['Environment'] as Array<Record<string, unknown>> | undefined
-      ),
-      environmentFiles: this.convertEnvironmentFiles(
-        def['EnvironmentFiles'] as Array<Record<string, unknown>> | undefined
-      ),
-      secrets: this.convertSecrets(def['Secrets'] as Array<Record<string, unknown>> | undefined),
-      portMappings: this.convertPortMappings(
-        def['PortMappings'] as Array<Record<string, unknown>> | undefined
-      ),
-      mountPoints: this.convertMountPoints(
-        def['MountPoints'] as Array<Record<string, unknown>> | undefined
-      ),
-      volumesFrom: this.convertVolumesFrom(
-        def['VolumesFrom'] as Array<Record<string, unknown>> | undefined
-      ),
-      dependsOn: this.convertDependsOn(
-        def['DependsOn'] as Array<Record<string, unknown>> | undefined
-      ),
-      links: def['Links'] as string[] | undefined,
-      workingDirectory: def['WorkingDirectory'] as string | undefined,
-      disableNetworking: def['DisableNetworking'] as boolean | undefined,
-      privileged: def['Privileged'] as boolean | undefined,
-      readonlyRootFilesystem: def['ReadonlyRootFilesystem'] as boolean | undefined,
-      user: def['User'] as string | undefined,
-      ulimits: this.convertUlimits(def['Ulimits'] as Array<Record<string, unknown>> | undefined),
-      logConfiguration: this.convertLogConfiguration(
-        def['LogConfiguration'] as Record<string, unknown> | undefined
-      ),
-      healthCheck: this.convertHealthCheck(
-        def['HealthCheck'] as Record<string, unknown> | undefined
-      ),
-      linuxParameters: this.convertLinuxParameters(
-        def['LinuxParameters'] as Record<string, unknown> | undefined
-      ),
-      dockerLabels: def['DockerLabels'] as Record<string, string> | undefined,
-      startTimeout: def['StartTimeout'] as number | undefined,
-      stopTimeout: def['StopTimeout'] as number | undefined,
-      interactive: def['Interactive'] as boolean | undefined,
-      pseudoTerminal: def['PseudoTerminal'] as boolean | undefined,
-      // issue #1173: these container sub-fields were previously unmapped, so
-      // they were silently dropped on RegisterTaskDefinition. Each is a
-      // mechanical first-letter flip (pascalToCamelCaseKeys) EXCEPT
-      // FirelensConfiguration, whose `Options` is a free-form map whose keys
-      // are user data (NOT CFn property names) and must be copied verbatim.
-      repositoryCredentials: def['RepositoryCredentials']
-        ? (pascalToCamelCaseKeys(def['RepositoryCredentials']) as RepositoryCredentials)
-        : undefined,
-      firelensConfiguration: this.convertFirelensConfiguration(
-        def['FirelensConfiguration'] as Record<string, unknown> | undefined
-      ),
-      resourceRequirements: def['ResourceRequirements']
-        ? (pascalToCamelCaseKeys(def['ResourceRequirements']) as ResourceRequirement[])
-        : undefined,
-      systemControls: def['SystemControls']
-        ? (pascalToCamelCaseKeys(def['SystemControls']) as SystemControl[])
-        : undefined,
-      extraHosts: def['ExtraHosts']
-        ? (pascalToCamelCaseKeys(def['ExtraHosts']) as HostEntry[])
-        : undefined,
-      restartPolicy: def['RestartPolicy']
-        ? (pascalToCamelCaseKeys(def['RestartPolicy']) as ContainerRestartPolicy)
-        : undefined,
-      dnsServers: def['DnsServers'] as string[] | undefined,
-      dnsSearchDomains: def['DnsSearchDomains'] as string[] | undefined,
-      dockerSecurityOptions: def['DockerSecurityOptions'] as string[] | undefined,
-      credentialSpecs: def['CredentialSpecs'] as string[] | undefined,
-      hostname: def['Hostname'] as string | undefined,
-      versionConsistency: def['VersionConsistency'] as VersionConsistency | undefined,
-    }));
+    return convertContainerDefinitions.call(this, defs);
   }
 
-  /**
-   * Convert CFn PortMappings to ECS SDK format
-   */
-  private convertPortMappings(
-    mappings?: Array<Record<string, unknown>>
-  ): PortMapping[] | undefined {
-    if (!mappings) return undefined;
-
-    return mappings.map((m) => ({
-      containerPort: m['ContainerPort'] as number | undefined,
-      containerPortRange: m['ContainerPortRange'] as string | undefined,
-      hostPort: m['HostPort'] as number | undefined,
-      protocol: m['Protocol'] as TransportProtocol | undefined,
-      appProtocol: m['AppProtocol'] as ApplicationProtocol | undefined,
-      name: m['Name'] as string | undefined,
-    }));
+  convertPortMappings(mappings?: Array<Record<string, unknown>>): PortMapping[] | undefined {
+    return convertPortMappings.call(this, mappings);
   }
 
-  /**
-   * Convert CFn Environment (KeyValuePair) to ECS SDK format.
-   * CFn template emits `{Name, Value}` (PascalCase); ECS SDK requires
-   * `{name, value}` (camelCase). Pre-fix the cast `as KeyValuePair[]`
-   * silently dropped both fields and AWS rejected RegisterTaskDefinition
-   * with a generic null/empty validation error.
-   */
-  private convertEnvironment(entries?: Array<Record<string, unknown>>): KeyValuePair[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      name: e['Name'] as string | undefined,
-      value: e['Value'] as string | undefined,
-    }));
+  convertEnvironment(entries?: Array<Record<string, unknown>>): KeyValuePair[] | undefined {
+    return convertEnvironment.call(this, entries);
   }
 
-  /**
-   * Convert CFn EnvironmentFiles (S3-backed env-var files) to ECS SDK format.
-   * CFn: `{Type, Value}` → SDK: `{type, value}`.
-   */
-  private convertEnvironmentFiles(
-    entries?: Array<Record<string, unknown>>
-  ): EnvironmentFile[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      type: e['Type'] as EnvironmentFileType | undefined,
-      value: e['Value'] as string | undefined,
-    }));
+  convertEnvironmentFiles(entries?: Array<Record<string, unknown>>): EnvironmentFile[] | undefined {
+    return convertEnvironmentFiles.call(this, entries);
   }
 
-  /**
-   * Convert CFn Secrets to ECS SDK format.
-   * CFn: `{Name, ValueFrom}` → SDK: `{name, valueFrom}`.
-   * Same PascalCase→camelCase trap as convertEnvironment — discovered
-   * end-to-end via the local-run-task-from-state integ on 2026-05-12
-   * (issue #291 fixture).
-   */
-  private convertSecrets(entries?: Array<Record<string, unknown>>): Secret[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      name: e['Name'] as string | undefined,
-      valueFrom: e['ValueFrom'] as string | undefined,
-    }));
+  convertSecrets(entries?: Array<Record<string, unknown>>): Secret[] | undefined {
+    return convertSecrets.call(this, entries);
   }
 
-  /**
-   * Convert CFn MountPoints to ECS SDK format.
-   * CFn: `{SourceVolume, ContainerPath, ReadOnly}` → SDK: `{sourceVolume,
-   * containerPath, readOnly}`.
-   */
-  private convertMountPoints(entries?: Array<Record<string, unknown>>): MountPoint[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      sourceVolume: e['SourceVolume'] as string | undefined,
-      containerPath: e['ContainerPath'] as string | undefined,
-      readOnly: e['ReadOnly'] as boolean | undefined,
-    }));
+  convertMountPoints(entries?: Array<Record<string, unknown>>): MountPoint[] | undefined {
+    return convertMountPoints.call(this, entries);
   }
 
-  /**
-   * Convert CFn VolumesFrom to ECS SDK format.
-   * CFn: `{SourceContainer, ReadOnly}` → SDK: `{sourceContainer, readOnly}`.
-   */
-  private convertVolumesFrom(entries?: Array<Record<string, unknown>>): VolumeFrom[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      sourceContainer: e['SourceContainer'] as string | undefined,
-      readOnly: e['ReadOnly'] as boolean | undefined,
-    }));
+  convertVolumesFrom(entries?: Array<Record<string, unknown>>): VolumeFrom[] | undefined {
+    return convertVolumesFrom.call(this, entries);
   }
 
-  /**
-   * Convert CFn DependsOn to ECS SDK format.
-   * CFn: `{ContainerName, Condition}` → SDK: `{containerName, condition}`.
-   * The pre-existing local-run-task-multi-container integ was relying
-   * on ECS SDK being lenient about the dependsOn key casing on input,
-   * but per the SDK type definition the input is camelCase so this
-   * converter brings the actual wire shape in line with the contract.
-   */
-  private convertDependsOn(
-    entries?: Array<Record<string, unknown>>
-  ): ContainerDependency[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      containerName: e['ContainerName'] as string | undefined,
-      condition: e['Condition'] as ContainerCondition | undefined,
-    }));
+  convertDependsOn(entries?: Array<Record<string, unknown>>): ContainerDependency[] | undefined {
+    return convertDependsOn.call(this, entries);
   }
 
-  /**
-   * Convert CFn Ulimits to ECS SDK format.
-   * CFn: `{Name, SoftLimit, HardLimit}` → SDK: `{name, softLimit, hardLimit}`.
-   */
-  private convertUlimits(entries?: Array<Record<string, unknown>>): Ulimit[] | undefined {
-    if (!entries) return undefined;
-    return entries.map((e) => ({
-      name: e['Name'] as UlimitName | undefined,
-      softLimit: e['SoftLimit'] as number | undefined,
-      hardLimit: e['HardLimit'] as number | undefined,
-    }));
+  convertUlimits(entries?: Array<Record<string, unknown>>): Ulimit[] | undefined {
+    return convertUlimits.call(this, entries);
   }
 
-  /**
-   * Convert CFn LogConfiguration to ECS SDK format
-   */
-  private convertLogConfiguration(config?: Record<string, unknown>): LogConfiguration | undefined {
-    if (!config) return undefined;
-
-    return {
-      logDriver: config['LogDriver'] as LogDriver,
-      options: config['Options'] as Record<string, string> | undefined,
-      secretOptions: this.convertSecrets(
-        config['SecretOptions'] as Array<Record<string, unknown>> | undefined
-      ),
-    };
+  convertLogConfiguration(config?: Record<string, unknown>): LogConfiguration | undefined {
+    return convertLogConfiguration.call(this, config);
   }
 
-  /**
-   * Convert CFn `ContainerDefinitions[].FirelensConfiguration` to the ECS SDK
-   * shape (issue #1173). `Type` flips to `type`, but `Options` is a free-form
-   * map of user-supplied FireLens options (e.g. `enable-ecs-log-metadata`,
-   * `config-file-value`) whose keys are NOT CFn property names, so it is copied
-   * verbatim rather than case-flipped.
-   */
-  private convertFirelensConfiguration(
+  convertFirelensConfiguration(
     config?: Record<string, unknown>
   ): FirelensConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      type: config['Type'] as FirelensConfigurationType | undefined,
-      options: config['Options'] as Record<string, string> | undefined,
-    };
+    return convertFirelensConfiguration.call(this, config);
   }
 
-  /**
-   * Convert CFn HealthCheck to ECS SDK format
-   */
-  private convertHealthCheck(check?: Record<string, unknown>): HealthCheck | undefined {
-    if (!check) return undefined;
-
-    return {
-      command: check['Command'] as string[],
-      interval: check['Interval'] as number | undefined,
-      timeout: check['Timeout'] as number | undefined,
-      retries: check['Retries'] as number | undefined,
-      startPeriod: check['StartPeriod'] as number | undefined,
-    };
+  convertHealthCheck(check?: Record<string, unknown>): HealthCheck | undefined {
+    return convertHealthCheck.call(this, check);
   }
 
-  /**
-   * Convert CFn Volumes to ECS SDK format.
-   *
-   * Every nested volume-configuration block is PascalCase in the CFn
-   * template and camelCase in the ECS SDK input, so each sub-block runs
-   * through a dedicated converter — the same PascalCase->camelCase trap
-   * already fixed for the ContainerDefinitions sub-arrays
-   * (convertEnvironment / convertSecrets / convertMountPoints etc.).
-   * Before issue #815, `Host` / `EFSVolumeConfiguration` were cast through
-   * raw (so their nested keys reached the SDK still PascalCase) and
-   * `DockerVolumeConfiguration` / `FSxWindowsFileServerVolumeConfiguration`
-   * were not mapped at all (silently dropped).
-   */
-  private convertVolumes(volumes?: Array<Record<string, unknown>>): Volume[] | undefined {
-    if (!volumes) return undefined;
-
-    return volumes.map((v) => ({
-      name: v['Name'] as string,
-      host: this.convertVolumeHost(v['Host'] as Record<string, unknown> | undefined),
-      dockerVolumeConfiguration: this.convertDockerVolumeConfiguration(
-        v['DockerVolumeConfiguration'] as Record<string, unknown> | undefined
-      ),
-      efsVolumeConfiguration: this.convertEFSVolumeConfiguration(
-        v['EFSVolumeConfiguration'] as Record<string, unknown> | undefined
-      ),
-      fsxWindowsFileServerVolumeConfiguration: this.convertFSxWindowsVolumeConfiguration(
-        v['FSxWindowsFileServerVolumeConfiguration'] as Record<string, unknown> | undefined
-      ),
-      // SDK member is `s3filesVolumeConfiguration` — an all-lowercase
-      // `s3files` prefix, NOT the mechanical `s3FilesVolumeConfiguration`
-      // first-letter flip, so the shared key-flip converter can never reach
-      // it (nested-key critic catch, issue #1373).
-      s3filesVolumeConfiguration: this.convertS3FilesVolumeConfiguration(
-        v['S3FilesVolumeConfiguration'] as Record<string, unknown> | undefined
-      ),
-      // ConfiguredAtLaunch marks the volume as attach-at-launch so a
-      // same-stack AWS::ECS::Service can carry a matching
-      // VolumeConfigurations entry (managed EBS volume). Dropping it made
-      // the Service create fail with "Volume configuration provided but no
-      // matching configuredAtLaunch volume found in task definition"
-      // (issue #806).
-      configuredAtLaunch: this.coerceBool(v['ConfiguredAtLaunch']),
-    }));
+  convertVolumes(volumes?: Array<Record<string, unknown>>): Volume[] | undefined {
+    return convertVolumes.call(this, volumes);
   }
 
-  /**
-   * Convert CFn Volumes[].S3FilesVolumeConfiguration to ECS SDK format.
-   * CFn: `{FileSystemArn, AccessPointArn, RootDirectory,
-   * TransitEncryptionPort}` -> SDK members of the same spelling modulo the
-   * first-letter flip. The parent key itself is the irregular one (see
-   * `convertVolumes`).
-   */
-  private convertS3FilesVolumeConfiguration(
+  convertS3FilesVolumeConfiguration(
     config?: Record<string, unknown>
   ): S3FilesVolumeConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      fileSystemArn: config['FileSystemArn'] as string,
-      accessPointArn: config['AccessPointArn'] as string | undefined,
-      rootDirectory: config['RootDirectory'] as string | undefined,
-      // CFn templates carry stringly-typed numerics; coerce like the EFS
-      // sibling above.
-      transitEncryptionPort:
-        config['TransitEncryptionPort'] !== undefined
-          ? Number(config['TransitEncryptionPort'])
-          : undefined,
-    };
+    return convertS3FilesVolumeConfiguration.call(this, config);
   }
 
-  /**
-   * Convert CFn Volumes[].Host to ECS SDK format.
-   * CFn: `{SourcePath}` -> SDK: `{sourcePath}`.
-   */
-  private convertVolumeHost(host?: Record<string, unknown>): HostVolumeProperties | undefined {
-    if (!host) return undefined;
-    return {
-      sourcePath: host['SourcePath'] as string | undefined,
-    };
+  convertVolumeHost(host?: Record<string, unknown>): HostVolumeProperties | undefined {
+    return convertVolumeHost.call(this, host);
   }
 
-  /**
-   * Convert CFn Volumes[].DockerVolumeConfiguration to ECS SDK format.
-   * CFn: `{Scope, Autoprovision, Driver, DriverOpts, Labels}`
-   * -> SDK: `{scope, autoprovision, driver, driverOpts, labels}`.
-   */
-  private convertDockerVolumeConfiguration(
+  convertDockerVolumeConfiguration(
     config?: Record<string, unknown>
   ): DockerVolumeConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      scope: config['Scope'] as Scope | undefined,
-      autoprovision: this.coerceBool(config['Autoprovision']),
-      driver: config['Driver'] as string | undefined,
-      driverOpts: config['DriverOpts'] as Record<string, string> | undefined,
-      labels: config['Labels'] as Record<string, string> | undefined,
-    };
+    return convertDockerVolumeConfiguration.call(this, config);
   }
 
-  /**
-   * Convert CFn Volumes[].EFSVolumeConfiguration to ECS SDK format.
-   * CFn: `{FilesystemId, RootDirectory, TransitEncryption,
-   * TransitEncryptionPort, AuthorizationConfig}`
-   * -> SDK: `{fileSystemId, rootDirectory, transitEncryption,
-   * transitEncryptionPort, authorizationConfig}`.
-   * Note the CFn property is `FilesystemId` (lowercase `s`) while the SDK
-   * field is `fileSystemId` — they are not a simple first-letter case flip.
-   */
-  private convertEFSVolumeConfiguration(
+  convertEFSVolumeConfiguration(
     config?: Record<string, unknown>
   ): EFSVolumeConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      fileSystemId: config['FilesystemId'] as string,
-      rootDirectory: config['RootDirectory'] as string | undefined,
-      transitEncryption: config['TransitEncryption'] as EFSTransitEncryption | undefined,
-      transitEncryptionPort:
-        config['TransitEncryptionPort'] !== undefined
-          ? Number(config['TransitEncryptionPort'])
-          : undefined,
-      authorizationConfig: this.convertEFSAuthorizationConfig(
-        config['AuthorizationConfig'] as Record<string, unknown> | undefined
-      ),
-    };
+    return convertEFSVolumeConfiguration.call(this, config);
   }
 
-  /**
-   * Convert CFn EFSVolumeConfiguration.AuthorizationConfig to ECS SDK format.
-   * CFn: `{AccessPointId, IAM}` -> SDK: `{accessPointId, iam}`.
-   * Note the CFn key is `IAM` (all caps), NOT `Iam` — not a simple
-   * first-letter case flip (verified against the CDK L1 `IAM` mapping).
-   */
-  private convertEFSAuthorizationConfig(
+  convertEFSAuthorizationConfig(
     config?: Record<string, unknown>
   ): EFSAuthorizationConfig | undefined {
-    if (!config) return undefined;
-    return {
-      accessPointId: config['AccessPointId'] as string | undefined,
-      iam: config['IAM'] as EFSAuthorizationConfigIAM | undefined,
-    };
+    return convertEFSAuthorizationConfig.call(this, config);
   }
 
-  /**
-   * Convert CFn Volumes[].FSxWindowsFileServerVolumeConfiguration to ECS
-   * SDK format.
-   * CFn: `{FileSystemId, RootDirectory, AuthorizationConfig}`
-   * -> SDK: `{fileSystemId, rootDirectory, authorizationConfig}`.
-   */
-  private convertFSxWindowsVolumeConfiguration(
+  convertFSxWindowsVolumeConfiguration(
     config?: Record<string, unknown>
   ): FSxWindowsFileServerVolumeConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      fileSystemId: config['FileSystemId'] as string,
-      rootDirectory: config['RootDirectory'] as string,
-      authorizationConfig: this.convertFSxWindowsAuthorizationConfig(
-        config['AuthorizationConfig'] as Record<string, unknown> | undefined
-      ) as FSxWindowsFileServerAuthorizationConfig,
-    };
+    return convertFSxWindowsVolumeConfiguration.call(this, config);
   }
 
-  /**
-   * Convert CFn FSxWindowsFileServerVolumeConfiguration.AuthorizationConfig
-   * to ECS SDK format.
-   * CFn: `{CredentialsParameter, Domain}`
-   * -> SDK: `{credentialsParameter, domain}`.
-   */
-  private convertFSxWindowsAuthorizationConfig(
+  convertFSxWindowsAuthorizationConfig(
     config?: Record<string, unknown>
   ): FSxWindowsFileServerAuthorizationConfig | undefined {
-    if (!config) return undefined;
-    return {
-      credentialsParameter: config['CredentialsParameter'] as string,
-      domain: config['Domain'] as string,
-    };
+    return convertFSxWindowsAuthorizationConfig.call(this, config);
   }
 
-  /**
-   * Convert the camelCase SDK `volumes` shape returned by
-   * DescribeTaskDefinition back to the PascalCase CFn template form, so the
-   * `readCurrentState` snapshot matches the deploy-time template
-   * representation for drift comparison (issue #815). Only volume keys
-   * present on the SDK side are emitted, so a future field cdkd does not
-   * map cannot surface as phantom drift. TaskDefinitions are immutable
-   * replace-only today, so this is forward-looking normalization.
-   */
-  private volumesToCfn(volumes?: Volume[]): Array<Record<string, unknown>> {
-    if (!volumes) return [];
-    return volumes.map((v) => {
-      const out: Record<string, unknown> = {};
-      if (v.name !== undefined) out['Name'] = v.name;
-      if (v.host !== undefined) {
-        const host: Record<string, unknown> = {};
-        if (v.host.sourcePath !== undefined) host['SourcePath'] = v.host.sourcePath;
-        out['Host'] = host;
-      }
-      if (v.dockerVolumeConfiguration !== undefined) {
-        const d = v.dockerVolumeConfiguration;
-        const docker: Record<string, unknown> = {};
-        if (d.scope !== undefined) docker['Scope'] = d.scope;
-        if (d.autoprovision !== undefined) docker['Autoprovision'] = d.autoprovision;
-        if (d.driver !== undefined) docker['Driver'] = d.driver;
-        if (d.driverOpts !== undefined) docker['DriverOpts'] = d.driverOpts;
-        if (d.labels !== undefined) docker['Labels'] = d.labels;
-        out['DockerVolumeConfiguration'] = docker;
-      }
-      if (v.efsVolumeConfiguration !== undefined) {
-        const e = v.efsVolumeConfiguration;
-        const efs: Record<string, unknown> = {};
-        if (e.fileSystemId !== undefined) efs['FilesystemId'] = e.fileSystemId;
-        if (e.rootDirectory !== undefined) efs['RootDirectory'] = e.rootDirectory;
-        if (e.transitEncryption !== undefined) efs['TransitEncryption'] = e.transitEncryption;
-        if (e.transitEncryptionPort !== undefined) {
-          efs['TransitEncryptionPort'] = e.transitEncryptionPort;
-        }
-        if (e.authorizationConfig !== undefined) {
-          const a = e.authorizationConfig;
-          const auth: Record<string, unknown> = {};
-          if (a.accessPointId !== undefined) auth['AccessPointId'] = a.accessPointId;
-          if (a.iam !== undefined) auth['IAM'] = a.iam;
-          efs['AuthorizationConfig'] = auth;
-        }
-        out['EFSVolumeConfiguration'] = efs;
-      }
-      if (v.s3filesVolumeConfiguration !== undefined) {
-        const s = v.s3filesVolumeConfiguration;
-        const s3f: Record<string, unknown> = {};
-        if (s.fileSystemArn !== undefined) s3f['FileSystemArn'] = s.fileSystemArn;
-        if (s.accessPointArn !== undefined) s3f['AccessPointArn'] = s.accessPointArn;
-        if (s.rootDirectory !== undefined) s3f['RootDirectory'] = s.rootDirectory;
-        if (s.transitEncryptionPort !== undefined) {
-          s3f['TransitEncryptionPort'] = s.transitEncryptionPort;
-        }
-        out['S3FilesVolumeConfiguration'] = s3f;
-      }
-      if (v.fsxWindowsFileServerVolumeConfiguration !== undefined) {
-        const f = v.fsxWindowsFileServerVolumeConfiguration;
-        const fsx: Record<string, unknown> = {};
-        if (f.fileSystemId !== undefined) fsx['FileSystemId'] = f.fileSystemId;
-        if (f.rootDirectory !== undefined) fsx['RootDirectory'] = f.rootDirectory;
-        if (f.authorizationConfig !== undefined) {
-          const a = f.authorizationConfig;
-          const auth: Record<string, unknown> = {};
-          if (a.credentialsParameter !== undefined) {
-            auth['CredentialsParameter'] = a.credentialsParameter;
-          }
-          if (a.domain !== undefined) auth['Domain'] = a.domain;
-          fsx['AuthorizationConfig'] = auth;
-        }
-        out['FSxWindowsFileServerVolumeConfiguration'] = fsx;
-      }
-      if (v.configuredAtLaunch !== undefined) out['ConfiguredAtLaunch'] = v.configuredAtLaunch;
-      return out;
-    });
+  volumesToCfn(volumes?: Volume[]): Array<Record<string, unknown>> {
+    return volumesToCfn.call(this, volumes);
   }
 
-  /**
-   * Reverse of `convertProxyConfiguration` for `readCurrentState` (issue
-   * #1167): map the SDK camelCase `ProxyConfiguration` back to the CFn
-   * PascalCase shape so the drift baseline (state `properties`, PascalCase)
-   * and the AWS-current read compare apples-to-apples. Unlike the pure
-   * first-letter flips, the SDK field `properties` maps back to the CFn key
-   * `ProxyConfigurationProperties` (a `{Name,Value}[]`), so it needs an
-   * explicit remap rather than `camelToPascalCaseKeys`.
-   */
-  private proxyConfigurationToCfn(config: ProxyConfiguration): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
-    if (config.type !== undefined) out['Type'] = config.type;
-    if (config.containerName !== undefined) out['ContainerName'] = config.containerName;
-    if (config.properties !== undefined) {
-      out['ProxyConfigurationProperties'] = config.properties.map((p) => ({
-        Name: p.name,
-        Value: p.value,
-      }));
-    }
-    return out;
+  proxyConfigurationToCfn(config: ProxyConfiguration): Record<string, unknown> {
+    return proxyConfigurationToCfn.call(this, config);
   }
 
-  /**
-   * Reverse of `convertContainerDefinitions` for `readCurrentState` (issue
-   * #1169). Emits CFn PascalCase so the drift baseline (state `properties`
-   * PascalCase, or `observedProperties` captured via this same reader) compares
-   * apples-to-apples instead of phantom-drifting on the whole array — the drift
-   * comparator compares arrays wholesale via `deepEqual`, so the previous raw
-   * SDK camelCase read (`result['ContainerDefinitions'] = td.containerDefinitions`)
-   * never matched a PascalCase baseline.
-   *
-   * Two rules keep the read side matching a template that omits AWS's defaults:
-   *   1. Only the fields `convertContainerDefinitions` can SET are emitted, so
-   *      the round-trip is symmetric — a field cdkd cannot set is never surfaced
-   *      as drift against a template that lacks it.
-   *   2. AWS-defaulted-empty divergences are normalized away — `Cpu: 0`, empty
-   *      arrays (`PortMappings` / `Environment` / ...), and an empty
-   *      `LinuxParameters.Capabilities: {Add:[],Drop:[]}` are dropped so they
-   *      equal "absent" (what the template has). AWS returns these defaults on
-   *      EVERY read, so without this the `properties` fallback baseline
-   *      (pre-observedProperties state) would phantom-drift on every run; the
-   *      normalization trades that for a rare edge — a template that EXPLICITLY
-   *      sets one of these to its empty/zero default AND has no observed baseline
-   *      (CDK L2 never emits e.g. an explicit `Cpu: 0`). On the normal
-   *      `observedProperties` path both sides run through this reader, so the
-   *      snapshot is self-consistent regardless.
-   *
-   * Free-form maps (`DockerLabels`, `LogConfiguration.Options`) are copied
-   * verbatim — their keys are user data (log-driver options / container labels),
-   * NOT CFn property names, so they must not be case-flipped.
-   */
-  private containerDefinitionsToCfn(defs?: ContainerDefinition[]): Array<Record<string, unknown>> {
-    if (!defs) return [];
-    return defs.map((c) => {
-      const out: Record<string, unknown> = {};
-      if (c.name !== undefined) out['Name'] = c.name;
-      if (c.image !== undefined) out['Image'] = c.image;
-      // Cpu 0 is the AWS default for a container that omits it; drop so it
-      // matches a template without an explicit Cpu.
-      if (c.cpu !== undefined && c.cpu !== 0) out['Cpu'] = c.cpu;
-      if (c.memory !== undefined) out['Memory'] = c.memory;
-      if (c.memoryReservation !== undefined) out['MemoryReservation'] = c.memoryReservation;
-      if (c.essential !== undefined) out['Essential'] = c.essential;
-      if (c.command && c.command.length > 0) out['Command'] = [...c.command];
-      if (c.entryPoint && c.entryPoint.length > 0) out['EntryPoint'] = [...c.entryPoint];
-      if (c.environment && c.environment.length > 0) {
-        out['Environment'] = c.environment.map((e) => ({ Name: e.name, Value: e.value }));
-      }
-      if (c.environmentFiles && c.environmentFiles.length > 0) {
-        out['EnvironmentFiles'] = c.environmentFiles.map((e) => ({ Type: e.type, Value: e.value }));
-      }
-      if (c.secrets && c.secrets.length > 0) {
-        out['Secrets'] = c.secrets.map((s) => ({ Name: s.name, ValueFrom: s.valueFrom }));
-      }
-      if (c.portMappings && c.portMappings.length > 0) {
-        out['PortMappings'] = camelToPascalCaseKeys(c.portMappings);
-      }
-      if (c.mountPoints && c.mountPoints.length > 0) {
-        out['MountPoints'] = camelToPascalCaseKeys(c.mountPoints);
-      }
-      if (c.volumesFrom && c.volumesFrom.length > 0) {
-        out['VolumesFrom'] = camelToPascalCaseKeys(c.volumesFrom);
-      }
-      if (c.dependsOn && c.dependsOn.length > 0) {
-        out['DependsOn'] = camelToPascalCaseKeys(c.dependsOn);
-      }
-      if (c.links && c.links.length > 0) out['Links'] = [...c.links];
-      if (c.workingDirectory !== undefined) out['WorkingDirectory'] = c.workingDirectory;
-      if (c.disableNetworking !== undefined) out['DisableNetworking'] = c.disableNetworking;
-      if (c.privileged !== undefined) out['Privileged'] = c.privileged;
-      if (c.readonlyRootFilesystem !== undefined) {
-        out['ReadonlyRootFilesystem'] = c.readonlyRootFilesystem;
-      }
-      if (c.user !== undefined) out['User'] = c.user;
-      if (c.ulimits && c.ulimits.length > 0) out['Ulimits'] = camelToPascalCaseKeys(c.ulimits);
-      if (c.logConfiguration) {
-        out['LogConfiguration'] = this.logConfigurationToCfn(c.logConfiguration);
-      }
-      if (c.healthCheck) out['HealthCheck'] = camelToPascalCaseKeys(c.healthCheck);
-      if (c.linuxParameters) {
-        const lp = this.linuxParametersToCfn(c.linuxParameters);
-        if (Object.keys(lp).length > 0) out['LinuxParameters'] = lp;
-      }
-      if (c.dockerLabels && Object.keys(c.dockerLabels).length > 0) {
-        out['DockerLabels'] = { ...c.dockerLabels };
-      }
-      if (c.startTimeout !== undefined) out['StartTimeout'] = c.startTimeout;
-      if (c.stopTimeout !== undefined) out['StopTimeout'] = c.stopTimeout;
-      if (c.interactive !== undefined) out['Interactive'] = c.interactive;
-      if (c.pseudoTerminal !== undefined) out['PseudoTerminal'] = c.pseudoTerminal;
-      // issue #1173: reverse-map the newly-settable sub-fields (see
-      // convertContainerDefinitions). FirelensConfiguration.Options is a
-      // free-form map copied verbatim; the rest are first-letter flips.
-      if (c.repositoryCredentials) {
-        out['RepositoryCredentials'] = camelToPascalCaseKeys(c.repositoryCredentials);
-      }
-      if (c.firelensConfiguration) {
-        const fc: Record<string, unknown> = {};
-        if (c.firelensConfiguration.type !== undefined) fc['Type'] = c.firelensConfiguration.type;
-        if (
-          c.firelensConfiguration.options &&
-          Object.keys(c.firelensConfiguration.options).length > 0
-        ) {
-          fc['Options'] = { ...c.firelensConfiguration.options };
-        }
-        if (Object.keys(fc).length > 0) out['FirelensConfiguration'] = fc;
-      }
-      if (c.resourceRequirements && c.resourceRequirements.length > 0) {
-        out['ResourceRequirements'] = camelToPascalCaseKeys(c.resourceRequirements);
-      }
-      if (c.systemControls && c.systemControls.length > 0) {
-        out['SystemControls'] = camelToPascalCaseKeys(c.systemControls);
-      }
-      if (c.extraHosts && c.extraHosts.length > 0) {
-        out['ExtraHosts'] = camelToPascalCaseKeys(c.extraHosts);
-      }
-      if (c.restartPolicy) out['RestartPolicy'] = camelToPascalCaseKeys(c.restartPolicy);
-      if (c.dnsServers && c.dnsServers.length > 0) out['DnsServers'] = [...c.dnsServers];
-      if (c.dnsSearchDomains && c.dnsSearchDomains.length > 0) {
-        out['DnsSearchDomains'] = [...c.dnsSearchDomains];
-      }
-      if (c.dockerSecurityOptions && c.dockerSecurityOptions.length > 0) {
-        out['DockerSecurityOptions'] = [...c.dockerSecurityOptions];
-      }
-      if (c.credentialSpecs && c.credentialSpecs.length > 0) {
-        out['CredentialSpecs'] = [...c.credentialSpecs];
-      }
-      if (c.hostname !== undefined) out['Hostname'] = c.hostname;
-      // AWS returns `versionConsistency: 'enabled'` by default even when the
-      // template omits it, so drop that default to equal "absent" (mirrors the
-      // Cpu: 0 / empty-array normalization above); a non-default 'disabled'
-      // still surfaces so real drift is caught.
-      if (c.versionConsistency !== undefined && c.versionConsistency !== 'enabled') {
-        out['VersionConsistency'] = c.versionConsistency;
-      }
-      return out;
-    });
+  containerDefinitionsToCfn(defs?: ContainerDefinition[]): Array<Record<string, unknown>> {
+    return containerDefinitionsToCfn.call(this, defs);
   }
 
-  /**
-   * Reverse of `convertLogConfiguration` for `containerDefinitionsToCfn`.
-   * `LogDriver` flips; `Options` is a free-form log-driver option map copied
-   * verbatim (its keys, e.g. `awslogs-group`, are NOT CFn property names);
-   * `SecretOptions` is a `{Name, ValueFrom}[]` list. Emit-when-present so an
-   * absent / empty sub-field does not phantom-drift.
-   */
-  private logConfigurationToCfn(lc: LogConfiguration): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
-    if (lc.logDriver !== undefined) out['LogDriver'] = lc.logDriver;
-    if (lc.options && Object.keys(lc.options).length > 0) out['Options'] = { ...lc.options };
-    if (lc.secretOptions && lc.secretOptions.length > 0) {
-      out['SecretOptions'] = lc.secretOptions.map((s) => ({
-        Name: s.name,
-        ValueFrom: s.valueFrom,
-      }));
-    }
-    return out;
+  logConfigurationToCfn(lc: LogConfiguration): Record<string, unknown> {
+    return logConfigurationToCfn.call(this, lc);
   }
 
-  /**
-   * Reverse of `convertLinuxParameters` for `containerDefinitionsToCfn`. The
-   * SET side is a mechanical first-letter flip (`pascalToCamelCaseKeys`), so the
-   * read side is the inverse `camelToPascalCaseKeys` — plus normalization of the
-   * AWS-defaulted-empty `Capabilities` / `Devices` / `Tmpfs`: AWS returns
-   * `capabilities: {add:[], drop:[]}` even when the template set neither, so the
-   * empty `Add` / `Drop` (and an otherwise-empty `Capabilities`) and empty
-   * `Devices` / `Tmpfs` arrays are dropped to equal a template that omits them.
-   */
-  private linuxParametersToCfn(lp: LinuxParameters): Record<string, unknown> {
-    const out = camelToPascalCaseKeys(lp) as Record<string, unknown>;
-    const caps = out['Capabilities'] as Record<string, unknown> | undefined;
-    if (caps) {
-      const normalized: Record<string, unknown> = {};
-      if (Array.isArray(caps['Add']) && caps['Add'].length > 0) normalized['Add'] = caps['Add'];
-      if (Array.isArray(caps['Drop']) && caps['Drop'].length > 0) normalized['Drop'] = caps['Drop'];
-      if (Object.keys(normalized).length > 0) out['Capabilities'] = normalized;
-      else delete out['Capabilities'];
-    }
-    for (const key of ['Devices', 'Tmpfs']) {
-      if (Array.isArray(out[key]) && (out[key] as unknown[]).length === 0) delete out[key];
-    }
-    return out;
+  linuxParametersToCfn(lp: LinuxParameters): Record<string, unknown> {
+    return linuxParametersToCfn.call(this, lp);
   }
 
-  /**
-   * Coerce a CFn boolean property to a real boolean at the wire boundary.
-   * CFn templates can carry booleans as the strings "true" / "false"
-   * (e.g. via Fn::Sub / parameter plumbing), so the SDK input must
-   * normalize both. Returns `undefined` for absent props so the field is
-   * omitted from the SDK input (AWS keeps its default) rather than being
-   * forced to `false`.
-   */
-  private coerceBool(value: unknown): boolean | undefined {
-    if (value === undefined || value === null) return undefined;
-    if (typeof value === 'boolean') return value;
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return undefined;
+  coerceBool(value: unknown): boolean | undefined {
+    return coerceBool.call(this, value);
   }
 
-  /**
-   * Convert CFn NetworkConfiguration to ECS SDK format
-   */
-  /**
-   * Convert CFn PascalCase LoadBalancers to SDK camelCase
-   */
-  private convertLoadBalancers(lbs?: Array<Record<string, unknown>>): LoadBalancer[] | undefined {
-    if (!lbs) return undefined;
-    return lbs.map((lb) => ({
-      targetGroupArn: lb['TargetGroupArn'] as string | undefined,
-      containerName: lb['ContainerName'] as string | undefined,
-      containerPort: lb['ContainerPort'] as number | undefined,
-      loadBalancerName: lb['LoadBalancerName'] as string | undefined,
-      // Blue/green deployment block (AlternateTargetGroupArn /
-      // ProductionListenerRule / TestListenerRule / RoleArn) — every member is
-      // a pure first-letter case flip, so the shared recursive converter
-      // delivers the whole subtree including members CFn adds later.
-      advancedConfiguration: lb['AdvancedConfiguration']
-        ? (pascalToCamelCaseKeys(lb['AdvancedConfiguration']) as AdvancedConfiguration)
-        : undefined,
-    }));
+  convertLoadBalancers(lbs?: Array<Record<string, unknown>>): LoadBalancer[] | undefined {
+    return convertLoadBalancers.call(this, lbs);
   }
 
-  /**
-   * Convert the CFn PascalCase `DeploymentConfiguration` block to the ECS SDK
-   * camelCase input shape (issue #1165). Every field is a pure first-letter
-   * case flip (`MaximumPercent` -> `maximumPercent`, `DeploymentCircuitBreaker`
-   * -> `deploymentCircuitBreaker` with `{Enable, Rollback}` -> `{enable,
-   * rollback}`, `Alarms.AlarmNames` -> `alarms.alarmNames`, and the blue/green
-   * `Strategy` / `BakeTimeInMinutes` / `LifecycleHooks` / `LinearConfiguration`
-   * / `CanaryConfiguration` fields), so the shared recursive key-flip converter
-   * handles the whole subtree — including fields CDK/CFn add later, which avoids
-   * re-introducing the silent-drop this fix closes. The one exception is
-   * `LifecycleHooks[].HookDetails`, a free-form document copied verbatim (see
-   * `DEPLOYMENT_CONFIG_PRESERVE_KEYS`).
-   *
-   * Before this fix the block was passed RAW into the SDK's camelCase
-   * `deploymentConfiguration` field, so the SDK read `.maximumPercent` (absent)
-   * and serialized nothing — a custom `minHealthyPercent` / `maxHealthyPercent`
-   * / circuit breaker / deployment alarms deployed as the AWS defaults, silently
-   * (state recorded the intended value, `cdkd diff` showed "No changes").
-   */
-  private convertDeploymentConfiguration(
+  convertDeploymentConfiguration(
     config?: Record<string, unknown>
   ): DeploymentConfiguration | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(
-      config,
-      DEPLOYMENT_CONFIG_PRESERVE_KEYS
-    ) as DeploymentConfiguration;
+    return convertDeploymentConfiguration.call(this, config);
   }
 
-  /**
-   * UPDATE-path `DeploymentConfiguration` resolver: the verbatim conversion
-   * above, plus the ONE member-level removal reset real AWS measurement found
-   * in this property tree (issue #1861).
-   *
-   * The rule this keys on is previous-present / current-absent — exactly the
-   * semantic `clearOnUpdateRemoval` implements for TOP-LEVEL properties, which
-   * is why this reuses that helper rather than re-spelling the predicate. What
-   * is new is only the DEPTH: the member lives inside a nested struct the
-   * template STILL DECLARES.
-   *
-   * Scope is deliberately narrow, and each boundary is measured rather than
-   * reasoned about (us-east-1, 2026-08-13; the full A/B table is in the long
-   * comment inside `updateService`):
-   *   - Only `DeploymentCircuitBreaker`'s two OPTIONAL members
-   *     (`ResetOnHealthyTask`, `ThresholdConfiguration`). Its REQUIRED sibling
-   *     `Rollback` reads as REPLACED, so one block holds members with
-   *     different semantics and no row generalizes to its neighbours.
-   *   - NOT the depth-1 siblings `LinearConfiguration` / `CanaryConfiguration`
-   *     / `LifecycleHooks[].TimeoutConfiguration`: those are already PARITY
-   *     because the ECS API ITSELF replaces the struct and default-fills the
-   *     omitted member, so adding a reset there would be the divergence.
-   *   - NOT the whole-struct cases. Removing the whole `DeploymentConfiguration`
-   *     resets nothing under either engine, and the parent
-   *     `DeploymentCircuitBreaker` disappearing entirely was never measured —
-   *     so BOTH sides must still declare the block for a member omission to
-   *     read as a removal.
-   *   - NOT "always send the defaults": a member the template NEVER declared
-   *     is left alone by CloudFormation even when the block around it changes,
-   *     and `clearOnUpdateRemoval` returning `undefined` for that case is what
-   *     keeps cdkd from clobbering an out-of-band value CFn preserves.
-   *   - NOT scoped by scheduling strategy, and that is a deliberate omission
-   *     rather than an unconsidered one. The A/B ran on a ROLLING / REPLICA /
-   *     Fargate service and DAEMON was never exercised, so the question is
-   *     fair — and DAEMON is genuinely REACHABLE here, because the SDK states
-   *     that CODE_DEPLOY / EXTERNAL controllers do not support DAEMON, so a
-   *     DAEMON service necessarily runs the ECS rolling-update type and can
-   *     carry a circuit breaker. What makes the omission safe is narrower and
-   *     PER-FIELD: the SDK documents these TWO members' defaults with no
-   *     strategy dimension. It is not a general property of this block —
-   *     `minimumHealthyPercent`'s default IS strategy-dependent (100% replica
-   *     vs 0% DAEMON), and stays correct only because cdkd passes it through
-   *     rather than defaulting it.
-   *
-   * The previous side stays RAW CFn PascalCase on purpose: `clearOnUpdateRemoval`
-   * only inspects it for PRESENCE, the same shortcut the top-level call sites
-   * in `updateService` take.
-   *
-   * SCOPE OF THAT PRESENCE TEST — state it as what it literally is, because
-   * the obvious reading is stronger than the truth. It means "the previous
-   * BAG carried this member", NOT "the previous TEMPLATE declared it". Those
-   * coincide on the deploy path, where `previousProperties` is the last
-   * deployed template. They do NOT at `drift --revert`
-   * (`src/cli/commands/drift.ts`, the `provider.update(...)` call that passes
-   * `outcome.awsProperties`), where the previous bag is an AWS READBACK: a
-   * member the template never declared but AWS reports is present there, so a
-   * desired side that omits it reads as a removal and gets the default sent.
-   * The window is narrow — the revert path's own desired bag is built from
-   * `observedProperties`, which normally carries the member too, and its
-   * `preserveUntemplated` arm recurses via `mergeUntemplatedValue` and keeps
-   * AWS-only members — but it is real when an `observedProperties` snapshot
-   * predates AWS reporting the member. Kept on purpose (issue #1160): a
-   * nested `clearOnUpdateRemoval` that read presence from the desired bag
-   * instead would stop reverting a console change the baseline declares as
-   * unset (the Lambda URL `Cors` placeholder arm depends on the readback), so
-   * only a TOP-LEVEL removal is judged template-vs-template
-   * (`UpdateContext.removedProperties`), which is empty on that path. It is
-   * unit-pinned so the next member copied onto this pattern does not inherit
-   * the premise unchecked.
-   */
-  private resolveDeploymentConfiguration(
+  resolveDeploymentConfiguration(
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): DeploymentConfiguration | undefined {
-    const desired = this.convertDeploymentConfiguration(
-      properties['DeploymentConfiguration'] as Record<string, unknown> | undefined
-    );
-    const desiredBreaker = desired?.deploymentCircuitBreaker;
-    // PLAIN-OBJECT guard, not truthiness. A template can put anything here —
-    // `DeploymentCircuitBreaker: 'oops'` / `[]` / `7` are all truthy, and the
-    // rebuild arm below would spread them: a string spreads to
-    // `{0:'o',1:'o',2:'p',3:'s'}` and then gains both synthesized defaults,
-    // turning a malformed template into a differently-malformed one. No live
-    // mutation results either way (the rebuilt block has no `enable` /
-    // `rollback`, so AWS rejects the whole `UpdateService` exactly as it did
-    // before this fix), but "malformed shapes fall back to the pre-change
-    // pass-through" should be literally TRUE rather than nearly true — so
-    // anything that is not a plain object is handed straight back untouched.
-    if (!desired || !isPlainCfnObject(desiredBreaker)) return desired;
-
-    const previousDeploymentConfiguration = previousProperties['DeploymentConfiguration'];
-    const previousBreaker = isPlainCfnObject(previousDeploymentConfiguration)
-      ? previousDeploymentConfiguration['DeploymentCircuitBreaker']
-      : undefined;
-    // Same guard on the previous side: only PRESENCE is read from it, but a
-    // non-object there would make `previousBreaker['ResetOnHealthyTask']`
-    // read an index off a string or an array element off a list, which is a
-    // presence answer nobody wrote down.
-    if (!isPlainCfnObject(previousBreaker)) return desired;
-
-    const resetOnHealthyTask = clearOnUpdateRemoval(
-      desiredBreaker.resetOnHealthyTask,
-      previousBreaker['ResetOnHealthyTask'] as boolean | undefined,
-      CIRCUIT_BREAKER_RESET_ON_HEALTHY_TASK_DEFAULT
-    );
-    const thresholdConfiguration = clearOnUpdateRemoval(
-      desiredBreaker.thresholdConfiguration,
-      // Cast for the helper's signature only. The previous side is raw CFn
-      // `{Type, Value}` PascalCase, NOT the camelCase SDK shape this names —
-      // sound because only PRESENCE is read, never the value.
-      previousBreaker['ThresholdConfiguration'] as ThresholdConfiguration | undefined,
-      // A FRESH copy per call — see the constant's note. The SDK input must
-      // never carry the shared module-level object.
-      { ...CIRCUIT_BREAKER_THRESHOLD_CONFIGURATION_DEFAULT }
-    );
-
-    if (
-      resetOnHealthyTask === desiredBreaker.resetOnHealthyTask &&
-      thresholdConfiguration === desiredBreaker.thresholdConfiguration
-    ) {
-      return desired;
-    }
-
-    return {
-      ...desired,
-      deploymentCircuitBreaker: {
-        ...desiredBreaker,
-        // Conditional spreads keep the built OBJECT's key set equal to what
-        // the template declared, so a never-declared member is absent rather
-        // than an explicit `undefined` key. This is a shape claim, NOT a wire
-        // claim: the SDK omits `undefined` members, and both forms were
-        // measured through a real `UpdateServiceCommand` with a capturing
-        // request handler to serialize byte-identically (102 bytes). Keeping
-        // the shape honest still matters — the object is what unit assertions,
-        // logs and any future diff of this input see.
-        ...(resetOnHealthyTask !== undefined ? { resetOnHealthyTask } : {}),
-        ...(thresholdConfiguration !== undefined ? { thresholdConfiguration } : {}),
-      },
-    };
+    return resolveDeploymentConfiguration.call(this, properties, previousProperties);
   }
 
-  /**
-   * Convert the CFn PascalCase `CapacityProviderStrategy` array to the ECS SDK
-   * camelCase input shape (issue #1165). Each element `{CapacityProvider,
-   * Weight, Base}` is a pure first-letter case flip to `{capacityProvider,
-   * weight, base}`.
-   */
-  private convertCapacityProviderStrategy(
+  convertCapacityProviderStrategy(
     items?: Array<Record<string, unknown>>
   ): CapacityProviderStrategyItem[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as CapacityProviderStrategyItem[];
+    return convertCapacityProviderStrategy.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `PlacementConstraints` array to the ECS SDK
-   * camelCase input shape (issue #1165). Each element `{Type, Expression}` ->
-   * `{type, expression}`.
-   */
-  private convertPlacementConstraints(
+  convertPlacementConstraints(
     items?: Array<Record<string, unknown>>
   ): PlacementConstraint[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as PlacementConstraint[];
+    return convertPlacementConstraints.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `PlacementStrategies` array to the ECS SDK
-   * camelCase input shape (issue #1165). Each element `{Type, Field}` ->
-   * `{type, field}`.
-   */
-  private convertPlacementStrategies(
+  convertPlacementStrategies(
     items?: Array<Record<string, unknown>>
   ): PlacementStrategy[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as PlacementStrategy[];
+    return convertPlacementStrategies.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `ServiceRegistries` array to the ECS SDK
-   * camelCase input shape (issue #1165). Each element `{RegistryArn, Port,
-   * ContainerName, ContainerPort}` -> `{registryArn, port, containerName,
-   * containerPort}`.
-   */
-  private convertServiceRegistries(
-    items?: Array<Record<string, unknown>>
-  ): ServiceRegistry[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as ServiceRegistry[];
+  convertServiceRegistries(items?: Array<Record<string, unknown>>): ServiceRegistry[] | undefined {
+    return convertServiceRegistries.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `DeploymentController` block (`{Type}`) to the
-   * ECS SDK camelCase input shape (`{type}`) — a pure first-letter flip
-   * (issue #609).
-   */
-  private convertDeploymentController(
-    config?: Record<string, unknown>
-  ): DeploymentController | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(config) as DeploymentController;
+  convertDeploymentController(config?: Record<string, unknown>): DeploymentController | undefined {
+    return convertDeploymentController.call(this, config);
   }
 
-  /**
-   * Convert the CFn PascalCase `ServiceConnectConfiguration` block to the ECS
-   * SDK camelCase input shape (issue #609). Every key in the subtree is a pure
-   * first-letter flip (`Enabled` / `Namespace` / `Services[].{PortName,
-   * DiscoveryName, ClientAliases, IngressPortOverride, Timeout, Tls}` /
-   * `LogConfiguration` / `AccessLogConfiguration`), so the shared recursive
-   * converter delivers the whole subtree — EXCEPT
-   * `LogConfiguration.Options`, a free-form log-driver option map copied
-   * verbatim (see {@link SERVICE_CONNECT_PRESERVE_KEYS}).
-   */
-  private convertServiceConnectConfiguration(
+  convertServiceConnectConfiguration(
     config?: Record<string, unknown>
   ): ServiceConnectConfiguration | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(
-      config,
-      SERVICE_CONNECT_PRESERVE_KEYS
-    ) as ServiceConnectConfiguration;
+    return convertServiceConnectConfiguration.call(this, config);
   }
 
-  /**
-   * Convert the CFn PascalCase `VolumeConfigurations` array to the ECS SDK
-   * camelCase input shape (issue #609). Every key is a pure first-letter flip
-   * — including the two spellings worth calling out: `ManagedEBSVolume` ->
-   * `managedEBSVolume` and `SizeInGiB` -> `sizeInGiB` (both verified against
-   * the SDK model; only the FIRST character flips, the interior case is
-   * identical), so the shared recursive converter delivers the whole subtree
-   * (`Encrypted` / `KmsKeyId` / `VolumeType` / `SnapshotId` /
-   * `VolumeInitializationRate` / `Iops` / `Throughput` / `TagSpecifications`
-   * / `RoleArn` / `FilesystemType`).
-   */
-  private convertServiceVolumeConfigurations(
+  convertServiceVolumeConfigurations(
     items?: Array<Record<string, unknown>>
   ): ServiceVolumeConfiguration[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as ServiceVolumeConfiguration[];
+    return convertServiceVolumeConfigurations.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `VpcLatticeConfigurations` array to the ECS
-   * SDK camelCase input shape (issue #609). Each element `{RoleArn,
-   * TargetGroupArn, PortName}` is a pure first-letter flip.
-   */
-  private convertVpcLatticeConfigurations(
+  convertVpcLatticeConfigurations(
     items?: Array<Record<string, unknown>>
   ): VpcLatticeConfiguration[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as VpcLatticeConfiguration[];
+    return convertVpcLatticeConfigurations.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `GatewayConnectors` array to the ECS SDK
-   * camelCase input shape (go-to-k/cdkd#5634). Every key of `{PortName,
-   * HealthCheck: {HealthCheckProtocol, HealthCheckPort, HealthCheckPath,
-   * HealthCheckTimeoutSeconds, HealthCheckIntervalSeconds,
-   * HealthyThresholdCount, UnhealthyThresholdCount, Matcher: {HttpCode,
-   * GrpcCode}}, Filters: {AccessTypes}}` is a pure first-letter flip; the
-   * enum VALUES (`HTTP`, `PUBLIC`, ...) pass through untouched.
-   */
-  private convertGatewayConnectors(
-    items?: Array<Record<string, unknown>>
-  ): GatewayConnector[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as GatewayConnector[];
+  convertGatewayConnectors(items?: Array<Record<string, unknown>>): GatewayConnector[] | undefined {
+    return convertGatewayConnectors.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `Monitoring` block to the ECS SDK camelCase
-   * `monitoring` input shape (issue #609). Every key is a pure first-letter
-   * flip (`MetricConfigurations[].{MetricNames, ResolutionSeconds}`).
-   */
-  private convertMonitoringConfiguration(
+  convertMonitoringConfiguration(
     config?: Record<string, unknown>
   ): MonitoringConfiguration | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(config) as MonitoringConfiguration;
+    return convertMonitoringConfiguration.call(this, config);
   }
 
-  /**
-   * Translate the CFn-only `ForceNewDeployment` trigger object
-   * (`{EnableForceNewDeployment, ForceNewDeploymentNonce}`) into the SDK's
-   * plain `forceNewDeployment` boolean on UpdateService (issue #609).
-   *
-   * A forced rollout is requested when EITHER the template says
-   * `EnableForceNewDeployment: true` OR the nonce changed vs the previous
-   * deploy's recorded value (introducing a nonce counts as a change). On any
-   * other shape — block absent, malformed, enable false with an unchanged
-   * nonce — return `undefined` so the field is omitted (AWS's documented
-   * default: deployments are not forced).
-   *
-   * Create-path: deliberate no-op — CreateService has no such member, and the
-   * initial deployment IS a fresh rollout by definition.
-   *
-   * This is UPDATE-path code, so a malformed desired block WARNS and skips
-   * rather than throwing (the config-shape doctrine: a rollback replays
-   * `update()` with a historical state record as the desired bag).
-   */
-  private resolveForceNewDeployment(
+  resolveForceNewDeployment(
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>,
     log: MaskedLogSinks
   ): boolean | undefined {
-    const desired = properties['ForceNewDeployment'];
-    if (desired == null) return undefined;
-    if (typeof desired !== 'object' || Array.isArray(desired)) {
-      log.warn(
-        `AWS::ECS::Service ForceNewDeployment is not an object (got ${Array.isArray(desired) ? 'array' : typeof desired}); skipping the forced-rollout translation`
-      );
-      return undefined;
-    }
-    const block = desired as Record<string, unknown>;
-    const enable = this.coerceBool(block['EnableForceNewDeployment']);
-    const nonce = block['ForceNewDeploymentNonce'];
-    const previous = previousProperties['ForceNewDeployment'];
-    const previousNonce =
-      previous != null && typeof previous === 'object' && !Array.isArray(previous)
-        ? (previous as Record<string, unknown>)['ForceNewDeploymentNonce']
-        : undefined;
-    // Value comparison, not identity: a non-string nonce (a number, or an
-    // unresolved-intrinsic object surviving to this layer) is a fresh object
-    // reference on every deploy, and an identity compare would read it as
-    // "changed" and force a spurious rollout on EVERY update (review catch).
-    const nonceChanged =
-      nonce !== undefined && JSON.stringify(nonce) !== JSON.stringify(previousNonce);
-    return enable === true || nonceChanged ? true : undefined;
+    return resolveForceNewDeployment.call(this, properties, previousProperties, log);
   }
 
-  /**
-   * Convert the CFn PascalCase `TaskDefinition.RuntimePlatform` to the ECS SDK
-   * camelCase input shape (issue #1165). `{CpuArchitecture,
-   * OperatingSystemFamily}` -> `{cpuArchitecture, operatingSystemFamily}`.
-   *
-   * High-impact: before the fix a `RuntimePlatform: { CpuArchitecture: ARM64 }`
-   * (Graviton Fargate) was passed raw into the SDK's camelCase slot and
-   * silently dropped, so the task definition registered as the default X86_64.
-   */
-  private convertRuntimePlatform(config?: Record<string, unknown>): RuntimePlatform | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(config) as RuntimePlatform;
+  convertRuntimePlatform(config?: Record<string, unknown>): RuntimePlatform | undefined {
+    return convertRuntimePlatform.call(this, config);
   }
 
-  /**
-   * Convert the CFn PascalCase `TaskDefinition.EphemeralStorage` to the ECS SDK
-   * camelCase input shape (issue #1165). `{SizeInGiB}` -> `{sizeInGiB}` — the
-   * value under the wrong-cased key was silently dropped before the fix, so a
-   * custom ephemeral storage size reverted to the AWS default.
-   */
-  private convertEphemeralStorage(
-    config?: Record<string, unknown>
-  ): { sizeInGiB: number } | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(config) as { sizeInGiB: number };
+  convertEphemeralStorage(config?: Record<string, unknown>): { sizeInGiB: number } | undefined {
+    return convertEphemeralStorage.call(this, config);
   }
 
-  /**
-   * Convert the CFn PascalCase `Cluster.Configuration` to the ECS SDK camelCase
-   * input shape (issue #1165). Every key is a pure first-letter flip
-   * (`ExecuteCommandConfiguration` / `ManagedStorageConfiguration` and their
-   * nested `KmsKeyId` / `LogConfiguration` / `CloudWatchLogGroupName` /
-   * `S3BucketName` fields), so the shared recursive converter handles the whole
-   * subtree.
-   */
-  private convertClusterConfiguration(
-    config?: Record<string, unknown>
-  ): ClusterConfiguration | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(config) as ClusterConfiguration;
+  convertClusterConfiguration(config?: Record<string, unknown>): ClusterConfiguration | undefined {
+    return convertClusterConfiguration.call(this, config);
   }
 
-  /**
-   * Convert the CFn PascalCase `TaskDefinition.ProxyConfiguration` to the ECS
-   * SDK camelCase input shape (issue #1165). Unlike the other nested fields,
-   * this is NOT a pure first-letter flip: the CFn key
-   * `ProxyConfigurationProperties` maps to the SDK's `properties` field (a
-   * `KeyValuePair[]`), so it needs an explicit remap rather than the recursive
-   * converter.
-   */
-  private convertProxyConfiguration(
-    config?: Record<string, unknown>
-  ): ProxyConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      type: config['Type'] as ProxyConfiguration['type'],
-      containerName: config['ContainerName'] as string | undefined,
-      properties: this.convertEnvironment(
-        config['ProxyConfigurationProperties'] as Array<Record<string, unknown>> | undefined
-      ),
-    };
+  convertProxyConfiguration(config?: Record<string, unknown>): ProxyConfiguration | undefined {
+    return convertProxyConfiguration.call(this, config);
   }
 
-  /**
-   * Convert the CFn PascalCase `TaskDefinition.PlacementConstraints` array to
-   * the ECS SDK camelCase input shape (issue #1165). Each element `{Type,
-   * Expression}` -> `{type, expression}`. Distinct from the Service's
-   * `PlacementConstraints` only in the SDK element type
-   * (`TaskDefinitionPlacementConstraint` vs `PlacementConstraint`); both are a
-   * pure first-letter flip.
-   */
-  private convertTaskDefinitionPlacementConstraints(
+  convertTaskDefinitionPlacementConstraints(
     items?: Array<Record<string, unknown>>
   ): TaskDefinitionPlacementConstraint[] | undefined {
-    if (!items) return undefined;
-    return pascalToCamelCaseKeys(items) as TaskDefinitionPlacementConstraint[];
+    return convertTaskDefinitionPlacementConstraints.call(this, items);
   }
 
-  /**
-   * Convert the CFn PascalCase `ContainerDefinitions[].LinuxParameters` to the
-   * ECS SDK camelCase input shape (issue #1165). Every key is a pure
-   * first-letter flip (`Capabilities.{Add,Drop}`, `Devices[].{HostPath,
-   * ContainerPath,Permissions}`, `Tmpfs[].{ContainerPath,Size,MountOptions}`,
-   * `InitProcessEnabled` / `SharedMemorySize` / `MaxSwap` / `Swappiness`), so
-   * the shared recursive converter handles the whole subtree. Before this fix
-   * the block was passed raw, so a `LinuxParameters.Capabilities` /
-   * `Devices` / `InitProcessEnabled` was silently dropped on register.
-   */
-  private convertLinuxParameters(config?: Record<string, unknown>): LinuxParameters | undefined {
-    if (!config) return undefined;
-    return pascalToCamelCaseKeys(config) as LinuxParameters;
+  convertLinuxParameters(config?: Record<string, unknown>): LinuxParameters | undefined {
+    return convertLinuxParameters.call(this, config);
   }
 
-  private convertNetworkConfiguration(
-    config?: Record<string, unknown>
-  ): NetworkConfiguration | undefined {
-    if (!config) return undefined;
-
-    const awsvpcConfig = config['AwsvpcConfiguration'] as Record<string, unknown> | undefined;
-    if (!awsvpcConfig) return undefined;
-
-    return {
-      awsvpcConfiguration: {
-        subnets: awsvpcConfig['Subnets'] as string[],
-        securityGroups: awsvpcConfig['SecurityGroups'] as string[] | undefined,
-        assignPublicIp: awsvpcConfig['AssignPublicIp'] as AssignPublicIp | undefined,
-      },
-    };
+  convertNetworkConfiguration(config?: Record<string, unknown>): NetworkConfiguration | undefined {
+    return convertNetworkConfiguration.call(this, config);
   }
 
-  /**
-   * Check if error is ClusterNotFoundException
-   */
-  private isClusterNotFoundException(error: unknown): boolean {
-    if (error instanceof Error) {
-      return (
-        error.name === 'ClusterNotFoundException' || error.message.includes('Cluster not found')
-      );
-    }
-    return false;
+  isClusterNotFoundException(error: unknown): boolean {
+    return isClusterNotFoundException.call(this, error);
   }
 
-  /**
-   * Check if error is a not-found error (for task definitions)
-   */
-  private isNotFoundException(error: unknown): boolean {
-    if (error instanceof Error) {
-      return (
-        error.name === 'ClientException' ||
-        error.name === 'InvalidParameterException' ||
-        error.message.includes('not found') ||
-        error.message.includes('does not exist')
-      );
-    }
-    return false;
+  isNotFoundException(error: unknown): boolean {
+    return isNotFoundException.call(this, error);
   }
 
-  /**
-   * Check if error is ServiceNotFoundException
-   */
-  private isServiceNotFoundException(error: unknown): boolean {
-    if (error instanceof Error) {
-      return (
-        error.name === 'ServiceNotFoundException' ||
-        error.name === 'ServiceNotActiveException' ||
-        error.message.includes('service not found') ||
-        error.message.includes('Service not found')
-      );
-    }
-    return false;
+  isServiceNotFoundException(error: unknown): boolean {
+    return isServiceNotFoundException.call(this, error);
   }
 
-  /** The NOT-ACTIVE arm of {@link isServiceNotFoundException} (go-to-k/cdkd#5664). */
-  private isServiceNotActiveException(error: unknown): boolean {
-    return error instanceof Error && error.name === 'ServiceNotActiveException';
+  isServiceNotActiveException(error: unknown): boolean {
+    return isServiceNotActiveException.call(this, error);
   }
 
-  /**
-   * State property paths `readCurrentState` deliberately cannot read back
-   * from AWS (issue #609) — fed into the drift comparator's `ignorePaths` so
-   * a template that sets them does not phantom-drift as "removed" on every
-   * run:
-   *   - `ServiceConnectConfiguration` / `VolumeConfigurations` /
-   *     `VpcLatticeConfigurations`: DescribeServices does not return them on
-   *     the top-level `Service` shape (they surface only per-deployment
-   *     under `deployments[]`, which is rollout metadata, not service
-   *     config). `VolumeConfigurations` is also registry-recorded write-only.
-   *   - `Monitoring` / `GatewayConnectors` (go-to-k/cdkd#5634): not returned
-   *     by DescribeServices at all — only the service REVISION carries them
-   *     (`GatewayConnectors` is also registry-recorded write-only).
-   *   - `ForceNewDeployment`: a write-only rollout trigger, not persisted
-   *     service state.
-   *   - `Role`: AWS reports `Service.roleArn` as the service-linked
-   *     AWSServiceRoleForECS ARN when the template omits Role, and always as
-   *     a full ARN when the template may carry a bare role name — a
-   *     mechanical reverse-map would manufacture drift in both directions.
-   */
   getDriftUnknownPaths(resourceType: string): string[] {
-    if (resourceType === 'AWS::ECS::Service') {
-      return [
-        'ServiceConnectConfiguration',
-        'VolumeConfigurations',
-        'VpcLatticeConfigurations',
-        'Monitoring',
-        'ForceNewDeployment',
-        'Role',
-        'GatewayConnectors',
-      ];
-    }
-    return [];
+    return getDriftUnknownPaths.call(this, resourceType);
   }
 
-  /**
-   * Read the AWS-current ECS resource configuration in CFn-property shape.
-   *
-   * Dispatches by resource type:
-   *   - `AWS::ECS::Cluster` → `DescribeClusters`
-   *   - `AWS::ECS::Service` → `DescribeServices`. Service physicalIds come in
-   *     two forms — the service ARN (what `createService` stores) and the
-   *     composite `<clusterArn>|<serviceName>` — and both are accepted (#1170).
-   *   - `AWS::ECS::TaskDefinition` → `DescribeTaskDefinition`
-   *
-   * Each branch surfaces only the keys cdkd's `create()` accepts, mapping
-   * the SDK's camelCase to CFn PascalCase. Tags are surfaced via
-   * `DescribeClusters/Services(include=[TAGS])` for cluster / service, and
-   * via `DescribeTaskDefinition(include=[TAGS])` for task definitions —
-   * with CDK's `aws:*` auto-tags filtered out. Tag-result keys are omitted
-   * when AWS reports no user tags.
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    switch (resourceType) {
-      case 'AWS::ECS::Cluster':
-        return this.readCurrentStateCluster(physicalId);
-      case 'AWS::ECS::Service':
-        return this.readCurrentStateService(physicalId);
-      case 'AWS::ECS::TaskDefinition':
-        return this.readCurrentStateTaskDefinition(physicalId);
-      default:
-        return undefined;
-    }
+    return readCurrentState.call(this, physicalId, _logicalId, resourceType);
   }
 
-  private async readCurrentStateCluster(
+  readCurrentStateCluster(
     physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let resp: {
-      clusters?: Array<{
-        clusterName?: string;
-        status?: string;
-        capacityProviders?: string[];
-        defaultCapacityProviderStrategy?: CapacityProviderStrategyItem[];
-        configuration?: ClusterConfiguration;
-        settings?: Array<{ name?: string; value?: string }>;
-        serviceConnectDefaults?: { namespace?: string };
-        tags?: Array<{ key?: string; value?: string }>;
-      }>;
-      failures?: Array<{ reason?: string }>;
-    };
-    try {
-      resp = (await this.getClient().send(
-        // AWS DescribeClusters omits `settings` / `configuration` from the
-        // response unless they are explicitly requested via `include`. Without
-        // SETTINGS / CONFIGURATIONS the readCurrentState round-trip silently
-        // surfaces empty `ClusterSettings: []` even when the cluster has
-        // containerInsights enabled — a console-side toggle then can't be
-        // detected as drift because both the deploy-time observedProperties
-        // baseline AND the drift-time AWS read would identically miss the
-        // field. Discovered by the drift-revert integ test (PR #201).
-        new DescribeClustersCommand({
-          clusters: [physicalId],
-          include: ['TAGS', 'SETTINGS', 'CONFIGURATIONS'],
-        })
-      )) as unknown as typeof resp;
-    } catch (err) {
-      if (isEcsErrorNamed(err, ['ClusterNotFoundException'])) return RESOURCE_NOT_FOUND;
-      return undefined;
-    }
-    const c = resp.clusters?.[0];
-    if (!c || !c.clusterName) {
-      // Nothing listed: only `MISSING` failures say the cluster is gone; any
-      // other failure reason is a lookup that did not answer.
-      return describeListedNothingGone(resp.failures) ? RESOURCE_NOT_FOUND : undefined;
-    }
-    // An `INACTIVE` cluster is a DELETED one that `DescribeClusters` still
-    // lists for a while; reading it as present would make `cdkd drift`
-    // compare a deleted cluster's properties. Same rule as `importCluster`
-    // (go-to-k/cdkd#4272); every other status is a live cluster.
-    if (c.status === 'INACTIVE') return RESOURCE_NOT_FOUND;
-
-    const result: Record<string, unknown> = { ClusterName: c.clusterName };
-    result['CapacityProviders'] = c.capacityProviders ? [...c.capacityProviders] : [];
-    // Reverse-map SDK camelCase -> CFn PascalCase so the drift baseline
-    // (state `properties`, PascalCase) and this AWS-current read compare
-    // apples-to-apples (issue #1167 — mirror of the #1165 SET-path fix).
-    result['DefaultCapacityProviderStrategy'] = camelToPascalCaseKeys(
-      c.defaultCapacityProviderStrategy ?? []
-    );
-    if (c.configuration) result['Configuration'] = camelToPascalCaseKeys(c.configuration);
-    result['ClusterSettings'] = (c.settings ?? []).map((s) => ({
-      Name: s.name,
-      Value: s.value,
-    }));
-    // `ServiceConnectDefaults`: emit-when-present (NOT a default-when-absent
-    // placeholder — a cluster that never set a default Service Connect
-    // namespace returns no `serviceConnectDefaults` from `DescribeClusters`,
-    // and emitting a phantom `{ Namespace: '' }` placeholder would force
-    // guaranteed drift on every clean run for the typical case).
-    if (c.serviceConnectDefaults?.namespace !== undefined) {
-      result['ServiceConnectDefaults'] = { Namespace: c.serviceConnectDefaults.namespace };
-    }
-    const tags = normalizeAwsTagsToCfn(c.tags);
-    result['Tags'] = tags;
-    return result;
+    return readCurrentStateCluster.call(this, physicalId);
   }
 
-  private async readCurrentStateService(
+  readCurrentStateService(
     physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    // Service physicalId can be either the composite form `<clusterArn>|<serviceName>`
-    // or the service ARN. `createService` stores the ARN (which has no `|`), so a
-    // clusterArn|name split alone made `cdkd drift` report every cdkd-created
-    // Service as drift-unknown (issue #1170). Accept BOTH: the composite form
-    // still splits on `|`, while the ARN form derives the cluster from the ARN
-    // (DescribeServices scopes to that cluster, falling back to the default
-    // cluster when the legacy short-format ARN does not encode one).
-    // `cluster` holds a cluster ARN (composite form) or a cluster name (derived
-    // from the service ARN); DescribeServices accepts either, or the default
-    // cluster when undefined.
-    let cluster: string | undefined;
-    let serviceName: string;
-    const sep = physicalId.indexOf('|');
-    if (sep >= 0) {
-      cluster = physicalId.substring(0, sep);
-      serviceName = physicalId.substring(sep + 1);
-    } else {
-      serviceName = physicalId;
-      cluster = clusterNameFromServiceArn(physicalId);
-    }
-
-    let resp: {
-      services?: Array<{
-        serviceName?: string;
-        status?: string;
-        clusterArn?: string;
-        taskDefinition?: string;
-        desiredCount?: number;
-        launchType?: string;
-        platformVersion?: string;
-        schedulingStrategy?: string;
-        propagateTags?: string;
-        enableECSManagedTags?: boolean;
-        enableExecuteCommand?: boolean;
-        healthCheckGracePeriodSeconds?: number;
-        networkConfiguration?: NetworkConfiguration;
-        loadBalancers?: LoadBalancer[];
-        capacityProviderStrategy?: CapacityProviderStrategyItem[];
-        deploymentConfiguration?: DeploymentConfiguration;
-        placementConstraints?: PlacementConstraint[];
-        placementStrategy?: PlacementStrategy[];
-        serviceRegistries?: ServiceRegistry[];
-        availabilityZoneRebalancing?: string;
-        deploymentController?: DeploymentController;
-        tags?: Array<{ key?: string; value?: string }>;
-      }>;
-      failures?: Array<{ reason?: string }>;
-    };
-    try {
-      resp = (await this.getClient().send(
-        new DescribeServicesCommand({
-          cluster,
-          services: [serviceName],
-          include: ['TAGS'],
-        })
-      )) as unknown as typeof resp;
-    } catch (err) {
-      // A deleted cluster takes its services with it. Error NAMES only: the
-      // message matches the delete path also uses prove nothing here. And only
-      // for a cluster the id NAMED: with none, the call asked the DEFAULT
-      // cluster, whose answer says nothing about a service in a named one.
-      if (
-        cluster !== undefined &&
-        isEcsErrorNamed(err, [
-          'ClusterNotFoundException',
-          'ServiceNotFoundException',
-          'ServiceNotActiveException',
-        ])
-      ) {
-        return RESOURCE_NOT_FOUND;
-      }
-      return undefined;
-    }
-    const s = resp.services?.[0];
-    if (!s || !s.serviceName) {
-      // Same default-cluster caveat as the catch above.
-      return cluster !== undefined && describeListedNothingGone(resp.failures)
-        ? RESOURCE_NOT_FOUND
-        : undefined;
-    }
-    // `DescribeServices` keeps listing a DELETED service as `INACTIVE` for a
-    // while (go-to-k/cdkd#4272, the cluster rule). `DRAINING` is a delete in
-    // progress, but the service still exists, so it stays present.
-    if (s.status === 'INACTIVE') return RESOURCE_NOT_FOUND;
-
-    const result: Record<string, unknown> = {};
-    if (s.serviceName !== undefined) result['ServiceName'] = s.serviceName;
-    if (s.clusterArn !== undefined) result['Cluster'] = s.clusterArn;
-    if (s.taskDefinition !== undefined) result['TaskDefinition'] = s.taskDefinition;
-    if (s.desiredCount !== undefined) result['DesiredCount'] = s.desiredCount;
-    if (s.launchType !== undefined) result['LaunchType'] = s.launchType;
-    if (s.platformVersion !== undefined) result['PlatformVersion'] = s.platformVersion;
-    if (s.schedulingStrategy !== undefined) result['SchedulingStrategy'] = s.schedulingStrategy;
-    if (s.propagateTags !== undefined) result['PropagateTags'] = s.propagateTags;
-    if (s.enableECSManagedTags !== undefined) {
-      result['EnableECSManagedTags'] = s.enableECSManagedTags;
-    }
-    if (s.enableExecuteCommand !== undefined) {
-      result['EnableExecuteCommand'] = s.enableExecuteCommand;
-    }
-    if (s.healthCheckGracePeriodSeconds !== undefined) {
-      result['HealthCheckGracePeriodSeconds'] = s.healthCheckGracePeriodSeconds;
-    }
-    // NetworkConfiguration / LoadBalancers are also converted on the SET path
-    // (convertNetworkConfiguration / convertLoadBalancers); reverse-map them here
-    // too so the read side is consistently PascalCase (issue #1167). Both are
-    // pure first-letter flips (`awsvpcConfiguration.{subnets,securityGroups,
-    // assignPublicIp}`, `{targetGroupArn,containerName,containerPort,
-    // loadBalancerName,advancedConfiguration.{alternateTargetGroupArn,
-    // productionListenerRule,testListenerRule,roleArn}}` — issue #1473).
-    if (s.networkConfiguration) {
-      result['NetworkConfiguration'] = camelToPascalCaseKeys(s.networkConfiguration);
-    }
-    result['LoadBalancers'] = camelToPascalCaseKeys(s.loadBalancers ?? []);
-    // Class 1: LaunchType vs CapacityProviderStrategy are mutually exclusive
-    // on the AWS API side. UpdateService rejects when both arrive together
-    // (e.g. `launchType=FARGATE` + `capacityProviderStrategy=[]`). Skip the
-    // empty placeholder when LaunchType is set so `cdkd drift --revert`
-    // doesn't push a structurally-invalid input back to AWS. A non-empty
-    // strategy still surfaces (drift detection on the strategy itself).
-    // Reverse-map SDK camelCase -> CFn PascalCase (issue #1167 — mirror of the
-    // #1165 SET-path fix) so a resource whose drift baseline falls back to the
-    // template `properties` (PascalCase) does not phantom-drift on these nested
-    // fields. `DeploymentConfiguration.LifecycleHooks[].HookDetails` is a
-    // free-form document copied verbatim.
-    if (s.capacityProviderStrategy && s.capacityProviderStrategy.length > 0) {
-      result['CapacityProviderStrategy'] = camelToPascalCaseKeys(s.capacityProviderStrategy);
-    } else if (!s.launchType) {
-      result['CapacityProviderStrategy'] = [];
-    }
-    if (s.deploymentConfiguration) {
-      result['DeploymentConfiguration'] = camelToPascalCaseKeys(
-        s.deploymentConfiguration,
-        DEPLOYMENT_CONFIG_PRESERVE_KEYS_CAMEL
-      );
-    }
-    result['PlacementConstraints'] = camelToPascalCaseKeys(s.placementConstraints ?? []);
-    // Class 1: PlacementStrategy is EC2-only. Emitting `[]` on a Fargate
-    // service means `cdkd drift --revert` pushes `placementStrategy: []` to
-    // UpdateService, which AWS rejects with "Placement strategies are not
-    // valid for tasks using the Fargate launch type." Discriminator-gated
-    // emit: only surface PlacementStrategy when LaunchType is EC2 (or
-    // EXTERNAL) — Fargate services cannot legally have one, so the emit
-    // would never detect a real console-side change anyway.
-    // CFn schema spells this property `PlacementStrategies` (plural);
-    // AWS API uses the singular `placementStrategy`. Emit BOTH names so
-    // drift comparison works for state files written by either name —
-    // pre-#613-fix templates that wrote the legacy `PlacementStrategy`
-    // AND post-fix templates that use the CFn-canonical
-    // `PlacementStrategies` both round-trip cleanly.
-    if (s.launchType === 'EC2' || s.launchType === 'EXTERNAL') {
-      const strategy = camelToPascalCaseKeys(s.placementStrategy ?? []);
-      result['PlacementStrategy'] = strategy;
-      result['PlacementStrategies'] = strategy;
-    } else if (s.placementStrategy && s.placementStrategy.length > 0) {
-      // Defensive: surface a non-empty strategy regardless of launch type
-      // (so drift still flags an out-of-band attach if AWS ever permits it).
-      const strategy = camelToPascalCaseKeys(s.placementStrategy);
-      result['PlacementStrategy'] = strategy;
-      result['PlacementStrategies'] = strategy;
-    }
-    result['ServiceRegistries'] = camelToPascalCaseKeys(s.serviceRegistries ?? []);
-    // issue #609 read-back additions. Only what the top-level `Service` shape
-    // actually returns is surfaced: DescribeServices does NOT return
-    // `serviceConnectConfiguration` / `volumeConfigurations` /
-    // `vpcLatticeConfigurations` / `monitoring` / `gatewayConnectors`
-    // (#5634) on the Service itself (the first three only appear
-    // per-deployment under `deployments[]`), and `ForceNewDeployment` is a
-    // write-only rollout trigger — all six are declared in
-    // `getDriftUnknownPaths` instead of being fabricated here.
-    // `Role` is deliberately NOT reverse-mapped from `Service.roleArn`: for
-    // the typical template that omits Role, AWS reports the
-    // AWSServiceRoleForECS service-linked role ARN there, and a template that
-    // DOES set Role may carry a role NAME while AWS always reports the full
-    // ARN — either way a mechanical read-back would manufacture phantom
-    // drift, so Role is also covered by `getDriftUnknownPaths`.
-    if (s.availabilityZoneRebalancing !== undefined) {
-      result['AvailabilityZoneRebalancing'] = s.availabilityZoneRebalancing;
-    }
-    // DescribeServices omits `deploymentController` for services on the
-    // default ECS controller (the SDK API doc: "If a service is using the ECS
-    // deployment controller, the deploymentController ... parameters will not
-    // be returned"), so an absent field MEANS the ECS controller — emit the
-    // CFn shape either way so an explicit `DeploymentController: {Type: ECS}`
-    // template does not phantom-drift. UNVERIFIED-LIVE: whether current
-    // DescribeServices echoes the controller for ECS-controller services; the
-    // fallback makes both behaviors correct.
-    result['DeploymentController'] = { Type: s.deploymentController?.type ?? 'ECS' };
-    const tags = normalizeAwsTagsToCfn(s.tags);
-    result['Tags'] = tags;
-    return result;
+    return readCurrentStateService.call(this, physicalId);
   }
 
-  private async readCurrentStateTaskDefinition(
+  readCurrentStateTaskDefinition(
     physicalId: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    let resp: {
-      taskDefinition?: {
-        family?: string;
-        status?: string;
-        cpu?: string;
-        memory?: string;
-        networkMode?: string;
-        requiresCompatibilities?: string[];
-        executionRoleArn?: string;
-        taskRoleArn?: string;
-        volumes?: Volume[];
-        placementConstraints?: TaskDefinitionPlacementConstraint[];
-        runtimePlatform?: RuntimePlatform;
-        proxyConfiguration?: ProxyConfiguration;
-        pidMode?: string;
-        ipcMode?: string;
-        ephemeralStorage?: { sizeInGiB?: number };
-        enableFaultInjection?: boolean;
-        containerDefinitions?: ContainerDefinition[];
-      };
-      tags?: Array<{ key?: string; value?: string }>;
-    };
-    try {
-      resp = (await this.getClient().send(
-        new DescribeTaskDefinitionCommand({ taskDefinition: physicalId, include: ['TAGS'] })
-      )) as unknown as typeof resp;
-    } catch (err) {
-      if (isTaskDefinitionMissingError(err)) return RESOURCE_NOT_FOUND;
-      return undefined;
-    }
-    const td = resp.taskDefinition;
-    if (!td) return undefined;
-    if (isDeregisteredTaskDefinitionStatus(td.status)) return RESOURCE_NOT_FOUND;
-
-    const result: Record<string, unknown> = {};
-    if (td.family !== undefined) result['Family'] = td.family;
-    if (td.cpu !== undefined) result['Cpu'] = td.cpu;
-    if (td.memory !== undefined) result['Memory'] = td.memory;
-    if (td.networkMode !== undefined) result['NetworkMode'] = td.networkMode;
-    result['RequiresCompatibilities'] = td.requiresCompatibilities
-      ? [...td.requiresCompatibilities]
-      : [];
-    if (td.executionRoleArn !== undefined) result['ExecutionRoleArn'] = td.executionRoleArn;
-    if (td.taskRoleArn !== undefined) result['TaskRoleArn'] = td.taskRoleArn;
-    result['Volumes'] = this.volumesToCfn(td.volumes);
-    // Reverse-map SDK camelCase -> CFn PascalCase (issue #1167 — mirror of the
-    // #1165 SET-path fix). `ProxyConfiguration` uses an explicit remap because
-    // the SDK field `properties` maps back to CFn `ProxyConfigurationProperties`.
-    result['PlacementConstraints'] = camelToPascalCaseKeys(td.placementConstraints ?? []);
-    if (td.runtimePlatform) result['RuntimePlatform'] = camelToPascalCaseKeys(td.runtimePlatform);
-    if (td.proxyConfiguration) {
-      result['ProxyConfiguration'] = this.proxyConfigurationToCfn(td.proxyConfiguration);
-    }
-    if (td.pidMode !== undefined) result['PidMode'] = td.pidMode;
-    if (td.ipcMode !== undefined) result['IpcMode'] = td.ipcMode;
-    if (td.ephemeralStorage?.sizeInGiB !== undefined) {
-      result['EphemeralStorage'] = { SizeInGiB: td.ephemeralStorage.sizeInGiB };
-    }
-    if (td.enableFaultInjection !== undefined) {
-      result['EnableFaultInjection'] = td.enableFaultInjection;
-    }
-    // Reverse-map the container definitions from SDK camelCase to CFn
-    // PascalCase (issue #1169). The previous raw `td.containerDefinitions`
-    // surfaced camelCase, so the drift comparator (which compares this array
-    // wholesale via deepEqual) phantom-drifted the whole block against the
-    // PascalCase baseline.
-    result['ContainerDefinitions'] = this.containerDefinitionsToCfn(td.containerDefinitions);
-    const tags = normalizeAwsTagsToCfn(resp.tags);
-    result['Tags'] = tags;
-    return result;
+    return readCurrentStateTaskDefinition.call(this, physicalId);
   }
 
-  /**
-   * Adopt an existing ECS resource into cdkd state.
-   *
-   * Supported types: `AWS::ECS::Cluster`, `AWS::ECS::Service`,
-   * `AWS::ECS::TaskDefinition` — all explicit-override only (see the
-   * per-branch notes on why the `aws:cdk:path` tag walk was removed).
-   *
-   * `createService` stores the service ARN as the Service physical id (and
-   * the mutation ops pass it straight through as the `service` argument, with
-   * the cluster read from the template `Cluster` property). The explicit
-   * `--resource` override is honored verbatim, so a caller may also supply the
-   * composite `<clusterArn>|<serviceName>` form that `readCurrentState` accepts.
-   */
-  /**
-   * go-to-k/cdkd#4705: the name a cluster's `create()` sends when the
-   * template names none (clusters only: the one name-adopting ECS type).
-   */
   generatedCreateName(
     resourceType: string,
     logicalId: string,
     properties: Record<string, unknown>
   ): string | undefined {
-    if (resourceType !== 'AWS::ECS::Cluster' || properties['ClusterName']) return undefined;
-    return generatedNameFor('AWS::ECS::Cluster', logicalId);
+    return generatedCreateName.call(this, resourceType, logicalId, properties);
   }
 
-  /**
-   * go-to-k/cdkd#4705: `DescribeClusters`, exact names, 100 per call, the
-   * chunks in parallel through one run-wide limiter. As `importCluster`
-   * reads it: an `INACTIVE` (deleted) cluster frees its name, a `MISSING`
-   * failure is absent, and any other failure did not answer (throws).
-   */
-  async lookupNames(resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
-    const found = new Map<string, string>();
-    if (resourceType !== 'AWS::ECS::Cluster') return found;
-    const wanted = new Set(names);
-    await Promise.all(
-      chunks(names, 100).map((chunk) =>
-        withApiLimit('ecs:DescribeClusters', 5, async () => {
-          const resp = await this.getClient().send(
-            new DescribeClustersCommand({ clusters: chunk })
-          );
-          const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
-          if (unanswered !== undefined) {
-            throw new Error(
-              `DescribeClusters did not answer: ${displaySafe(unanswered.reason ?? 'no reason given')}`
-            );
-          }
-          for (const cluster of resp.clusters ?? []) {
-            const name = cluster.clusterName;
-            if (name !== undefined && wanted.has(name) && cluster.status !== 'INACTIVE') {
-              found.set(name, name);
-            }
-          }
-        })
-      )
-    );
-    return found;
+  lookupNames(resourceType: string, names: readonly string[]): Promise<Map<string, string>> {
+    return lookupNames.call(this, resourceType, names);
   }
 
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    switch (input.resourceType) {
-      case 'AWS::ECS::Cluster':
-        return this.importCluster(input);
-      case 'AWS::ECS::Service':
-        return this.importService(input);
-      case 'AWS::ECS::TaskDefinition':
-        return this.importTaskDefinition(input);
-      default:
-        return null;
-    }
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 
-  private async importCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    const explicit = resolveExplicitPhysicalId(input, 'ClusterName');
-    if (explicit) {
-      let resp: DescribeClustersCommandOutput;
-      try {
-        resp = await this.getClient().send(new DescribeClustersCommand({ clusters: [explicit] }));
-      } catch (err) {
-        if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
-          return null;
-        }
-        throw err;
-      }
-      // Read OUTSIDE the `try`: its not-found arm matches message substrings,
-      // so an error this code throws from the answer must never reach it.
-      //
-      // `DescribeClusters` keeps listing a DELETED cluster, as `INACTIVE`,
-      // for a while after its delete, and its name is free to create again,
-      // so that one is absent — for every caller: `cdkd import` (an explicit
-      // `--resource` included) and orphan adoption no longer adopt a dead
-      // cluster, and the stale-attribute heal reads it as not found. Any
-      // other status (ACTIVE, PROVISIONING, an unknown one) holds the name:
-      // the replacement name probe reads a found cluster as its holder
-      // (go-to-k/cdkd#3937), and refusing is the safe direction there.
-      const cluster = resp.clusters?.[0];
-      if (cluster?.clusterName) {
-        return cluster.status !== 'INACTIVE'
-          ? { physicalId: cluster.clusterName, attributes: {} }
-          : null;
-      }
-      // No cluster listed: only a `MISSING` failure says the name is free.
-      // Any other reason is a lookup that did not answer, and reading it as
-      // free would let the probe hand the name to a create that adopts.
-      const unanswered = (resp.failures ?? []).find((f) => f.reason !== 'MISSING');
-      if (unanswered !== undefined) {
-        // `reason` is ECS's short failure code; `detail` is AWS's free text,
-        // which reaches a persisted deploy failure through the replacement
-        // name probe, so it goes to `debug` and the message points at
-        // `--verbose` instead (go-to-k/cdkd#2319).
-        if (unanswered.detail !== undefined) {
-          this.logger.debug(
-            `DescribeClusters failure detail for cluster ${displaySafe(explicit)}: ${displaySafe(unanswered.detail)}`
-          );
-        }
-        throw new Error(
-          `DescribeClusters did not answer for cluster ${displaySafe(explicit)}: ` +
-            `${displaySafe(unanswered.reason ?? 'no reason given')}` +
-            (unanswered.detail !== undefined ? `. ${VERBOSE_POINTER}` : '')
-        );
-      }
-      return null;
-    }
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // cluster reaching here needs an explicit `--resource` override.
-    return null;
+  importCluster(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importCluster.call(this, input);
   }
 
-  private async importService(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    // `createService` stores the service ARN as the physical id; an explicit
-    // override is honored as-is (the composite `<clusterArn>|<serviceName>`
-    // form is also accepted by readCurrentState).
-    if (input.knownPhysicalId) {
-      return { physicalId: input.knownPhysicalId, attributes: {} };
-    }
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // service reaching here needs an explicit `--resource` override.
-    return null;
+  importService(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importService.call(this, input);
   }
 
-  private async importTaskDefinition(
-    input: ResourceImportInput
-  ): Promise<ResourceImportResult | null> {
-    // TaskDefinitions are immutable revisions; physical id is the full
-    // `family:revision` ARN. CDK templates rarely encode a stable
-    // identifier, so we only support explicit overrides for these.
-    if (input.knownPhysicalId) {
-      let resp: DescribeTaskDefinitionCommandOutput;
-      try {
-        resp = await this.getClient().send(
-          new DescribeTaskDefinitionCommand({ taskDefinition: input.knownPhysicalId })
-        );
-      } catch (err) {
-        if (this.isClusterNotFoundException(err) || this.isServiceNotFoundException(err)) {
-          return null;
-        }
-        throw err;
-      }
-      // Read OUTSIDE the `try`, as `importCluster` does: its not-found arm
-      // matches message substrings. A deregistered revision is gone in cdkd's
-      // sense, the same answer `readCurrentState` gives (go-to-k/cdkd#4272).
-      if (isDeregisteredTaskDefinitionStatus(resp.taskDefinition?.status)) return null;
-      const arn = resp.taskDefinition?.taskDefinitionArn;
-      return arn ? { physicalId: arn, attributes: {} } : null;
-    }
-    return null;
+  importTaskDefinition(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importTaskDefinition.call(this, input);
   }
 }

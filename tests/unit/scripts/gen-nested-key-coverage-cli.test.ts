@@ -129,10 +129,11 @@ describe('the shipped --check command', { timeout: 30_000 }, () => {
     // resolve, so `ProxyConfigurationProperties -> properties` stops earning
     // its place and must be reported rather than left as an inert exception —
     // the discipline `NESTED_KEY_ALLOW_LIST` has carried since #1373.
-    const dir = regressedTree('providers-stale-rename', 'ecs-provider.ts', (source) =>
+    // `convertProxyConfiguration` moved to `ecs-provider.ts`'s companion file.
+    const dir = regressedTree('providers-stale-rename', 'ecs/convert-service.ts', (source) =>
       source.replace(
-        "      properties: this.convertEnvironment(\n",
-        "      proxyConfigurationProperties: this.convertEnvironment(\n"
+        '    properties: this.convertEnvironment(\n',
+        '    proxyConfigurationProperties: this.convertEnvironment(\n'
       )
     );
     const { status, stderr } = runCheck(dir);

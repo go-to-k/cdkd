@@ -151,7 +151,7 @@
  * fire against real code, not only against synthetic fixtures.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // `typescript-v6` is an npm alias of typescript@6 — TS7 no longer ships the
 // stable JS compiler API (see the note in gen-property-coverage.ts).
@@ -1548,6 +1548,76 @@ const ARRAY_ELEMENT_CALLBACK_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * `source` (the text of `file`) with every relative `import` / `export ... from`
+ * specifier rewritten to name the same module from `toDir`. A split provider is
+ * read as ONE text (the provider file plus its companion files), and the
+ * sibling resolver behind the whole-blob hand-off walk reads specifiers as
+ * relative to the provider's directory: unrebased, a companion's
+ * `../agentcore-case-convert.js` resolves nowhere and its hand-offs drop out.
+ * The provider file itself (`dirname(file) === toDir`) comes back unchanged.
+ */
+export function rebaseRelativeImports(source: string, file: string, toDir: string): string {
+  const fromDir = dirname(resolve(file));
+  if (fromDir === resolve(toDir)) return source;
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  for (const stmt of sf.statements) {
+    const spec =
+      ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)
+        ? stmt.moduleSpecifier
+        : undefined;
+    if (spec === undefined || !ts.isStringLiteral(spec) || !spec.text.startsWith('.')) continue;
+    let rebased = relative(resolve(toDir), resolve(fromDir, spec.text)).split(sep).join('/');
+    if (!rebased.startsWith('.')) rebased = `./${rebased}`;
+    edits.push({ start: spec.getStart(sf), end: spec.end, text: `'${rebased}'` });
+  }
+  let out = source;
+  for (const edit of edits.reverse()) {
+    out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
+  }
+  return out;
+}
+
+/**
+ * The function a split provider's DELEGATING method hands off to, or undefined.
+ * A delegator's whole body is `return f.call(this, a, b)` (or `(f<T>).call`),
+ * passing its own parameters on in order (`...rest` spread as itself), so its
+ * result is exactly `f`'s. Any other body, extra argument, reordered argument
+ * or dropped one is not a delegator. Neither is a generator method (it returns
+ * an iterator over `f`'s result, not the result) nor a method with a
+ * default-valued parameter (its default, not `f`'s, fills an omitted argument).
+ */
+export function delegateOf(method: ts.MethodDeclaration): string | undefined {
+  if (method.asteriskToken !== undefined) return undefined;
+  const statements = method.body?.statements;
+  if (statements === undefined || statements.length !== 1) return undefined;
+  const ret = statements[0]!;
+  if (!ts.isReturnStatement(ret) || ret.expression === undefined) return undefined;
+  const call = ret.expression;
+  if (!ts.isCallExpression(call) || !ts.isPropertyAccessExpression(call.expression)) {
+    return undefined;
+  }
+  if (call.expression.name.text !== 'call') return undefined;
+  let target: ts.Expression = call.expression.expression;
+  while (ts.isParenthesizedExpression(target) || ts.isExpressionWithTypeArguments(target)) {
+    target = target.expression;
+  }
+  if (!ts.isIdentifier(target)) return undefined;
+  const [self, ...args] = call.arguments;
+  if (self === undefined || self.kind !== ts.SyntaxKind.ThisKeyword) return undefined;
+  const params = method.parameters;
+  if (args.length !== params.length) return undefined;
+  const passesOwn = params.every((p, i) => {
+    const arg = args[i]!;
+    if (!ts.isIdentifier(p.name) || p.initializer !== undefined) return false;
+    const inner = p.dotDotDotToken !== undefined && ts.isSpreadElement(arg) ? arg.expression : arg;
+    if (p.dotDotDotToken !== undefined && inner === arg) return false;
+    return ts.isIdentifier(inner) && inner.text === p.name.text;
+  });
+  return passesOwn ? target.text : undefined;
+}
+
+/**
  * A callable's CALL-SITE parameters, index-aligned with a call's arguments. A
  * leading `this:` parameter takes no argument (a split provider's method body,
  * `function applyTags(this: S3BucketProvider, ...)`; see
@@ -1705,9 +1775,13 @@ export function collectWriteEvidence(
     list.push(init);
     initializers.set(name, list);
   };
+  /** Delegating methods and the function each delegates to (see {@link delegateOf}). */
+  const delegators: Array<{ name: string; target: string; method: ts.MethodDeclaration }> = [];
   const indexVisit = (node: ts.Node): void => {
     if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
-      indexCallable(node.name.text, node);
+      const target = delegateOf(node);
+      if (target !== undefined) delegators.push({ name: node.name.text, target, method: node });
+      else indexCallable(node.name.text, node);
     } else if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
       indexCallable(node.name.text, node);
     } else if (
@@ -1725,6 +1799,15 @@ export function collectWriteEvidence(
     ts.forEachChild(node, indexVisit);
   };
   indexVisit(sf);
+  // A split provider's delegating method stands for the function it calls, so
+  // `this.convertX(...)` resolves to the moved body, not to a wrapper whose
+  // `f.call(...)` return no walk can follow. A target this text does not declare
+  // leaves the method indexed as itself.
+  for (const { name, target, method } of delegators) {
+    const fns = callables.get(target);
+    if (fns === undefined) indexCallable(name, method);
+    else if (target !== name) for (const fn of fns) indexCallable(name, fn);
+  }
 
   /**
    * Callables the WHOLE-BLOB HAND-OFF walk may descend into (issue #1445):
@@ -4311,8 +4394,11 @@ export function loadReport(
     if (!literals || !written || !handled) {
       // The file plus its companion files (`provider-companion-files.ts`), as
       // one text: a write can sit in a moved method body.
+      // A companion's relative imports are rebased onto the provider's
+      // directory, so `resolveImportSource` follows `ecs/convert-service.ts`'s
+      // `../agentcore-case-convert.js` as the sibling it names.
       const source = [providerPath, ...companionFiles(providerPath)]
-        .map((f) => readFileSync(f, 'utf8'))
+        .map((f) => rebaseRelativeImports(readFileSync(f, 'utf8'), f, dirname(providerPath)))
         .join('\n');
       literals = collectStringLiterals(source, target.providerFile);
       written = collectWriteEvidence(

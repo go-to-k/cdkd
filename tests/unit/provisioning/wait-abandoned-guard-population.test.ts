@@ -93,7 +93,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   // out of docdb-provider.ts); it classifies only their own SDK rejections.
   { file: 'provisioning/providers/docdb-shared.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/ec2-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/ecs-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // `ecs-provider.ts`'s `isNotFoundException`, moved to its companion file.
+  { file: 'provisioning/providers/ecs/convert-service.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/elbv2-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/neptune-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
