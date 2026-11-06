@@ -212,9 +212,27 @@ export function clientSiteKind(code: string): ClientSiteKind | undefined {
  * through that helper. One spreading NONE of them is the gap issue #5866
  * named: `new STSClient({ region })` resolves the SDK's default chain, which
  * under `--role-arn` reads the role's env triple, and the role fence never saw
- * it because it keyed on the helpers alone.
+ * it because it keyed on the helpers alone. A namespace-qualified constructor
+ * (`new sts.STSClient(`) is the same shape. The v3 AGGREGATED clients
+ * (`new STS(`) carry no `Client` suffix and are not matched; none is used on
+ * this surface.
  */
-export const CLIENT_CONSTRUCTION = /\bnew\s+[A-Z][A-Za-z0-9]*Client\s*\(/;
+export const CLIENT_CONSTRUCTION = /\bnew\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)?[A-Z][A-Za-z0-9]*Client\s*\(/;
+
+/**
+ * An explicit credential choice inside a construction: a `credentials` key
+ * (shorthand too) or a call to a credential provider. Spread AFTER a helper,
+ * it replaces the helper's identity — `...awsClientDefaults({ ignoreAssumedRole:
+ * true }), credentials: fromEnv()` reads the role's env triple while the line
+ * above it says it opted out.
+ */
+export const CREDENTIAL_OVERRIDE =
+  /\bcredentials\b|\bfrom(?:Env|Ini|NodeProviderChain|TemporaryCredentials|ContainerMetadata|InstanceMetadata|Process|SSO|TokenFile|WebToken|Cognito\w*)\s*\(|\bdefaultProvider\s*\(/;
+
+/** Is this code line (comments stripped) an SDK-client site of either fence's sibling? */
+export function isClientChannelLine(code: string): boolean {
+  return clientSiteKind(code) !== undefined || CLIENT_CONSTRUCTION.test(code);
+}
 
 /**
  * The comment-stripped text of the construction starting on line `index`, from
@@ -259,8 +277,7 @@ export function clientChannelFiles(): Set<string> {
     const lines = readFileSync(file, 'utf8').split('\n');
     for (const line of lines) {
       if (isCommentLine(line)) continue;
-      const code = stripComments(line);
-      if (clientSiteKind(code) !== undefined || CLIENT_CONSTRUCTION.test(code)) {
+      if (isClientChannelLine(stripComments(line))) {
         files.add(file);
         break;
       }

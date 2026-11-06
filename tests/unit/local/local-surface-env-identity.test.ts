@@ -88,25 +88,40 @@ const CALLER_READ_SITE = /\bcallerEnvCredentials\s*\(/;
  * of it is a decision about whose identity flows onward.
  *
  * Dot (`process.env.X`, `process.env?.X`) and bracket (`process.env['X']`, any
- * quote) are one regex; destructuring (`const { X } = process.env`, one line or
- * many) needs the lines above and is `destructuresCredentialFromProcessEnv`.
- * Line-based like every other shape here, not an AST: the repo's `typescript`
- * ships no JS parser API, and both fences share one line model. What it cannot
- * see, by design of that model: an ALIAS (`const e = process.env; e.X`) and a
- * computed key — `process.env[key]` over `AWS_CREDENTIAL_ENV_KEYS` is the
- * constant's shape, above.
+ * quote) are one regex, tested BEFORE the quoted-key shape so the bracket
+ * access-key-id read cannot take that shape's `restores` verdict; destructuring
+ * (`const { X } = process.env`, one line or many, typed or not, and any
+ * `...rest`, which carries the triple) needs the lines above and is
+ * `destructuresCredentialFromProcessEnv`.
  *
  * Its only verdict is the annotation: a later `applyCallerIdentityCredentials`
  * rewrites an env COPY, not the value this line already read.
  */
 const CREDENTIAL_ENV_NAME = String.raw`AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)`;
-const PROCESS_ENV_CREDENTIAL_READ = new RegExp(
+const PROCESS_ENV_CREDENTIAL_READ_SOURCE =
   String.raw`\bprocess\.env\s*(?:\?\.|\.)\s*${CREDENTIAL_ENV_NAME}\b` +
-    '|' +
-    String.raw`\bprocess\.env\s*(?:\?\.)?\s*\[\s*(['"\x60])${CREDENTIAL_ENV_NAME}\1\s*\]`
-);
+  '|' +
+  String.raw`\bprocess\.env\s*(?:\?\.)?\s*\[\s*(['"\x60])${CREDENTIAL_ENV_NAME}\1\s*\]`;
+const PROCESS_ENV_CREDENTIAL_READ = new RegExp(PROCESS_ENV_CREDENTIAL_READ_SOURCE);
 const CREDENTIAL_ENV_NAME_TOKEN = new RegExp(String.raw`\b${CREDENTIAL_ENV_NAME}\b`);
-const DESTRUCTURE_FROM_PROCESS_ENV = /\}\s*=\s*process\.env\b(?!\s*(?:\?\.|\.|\[))/;
+const DESTRUCTURE_FROM_PROCESS_ENV = /\}\s*(?::[^=]*)?=\s*process\.env\b(?!\s*(?:\?\.|\.|\[))/;
+/**
+ * The WHOLE environment, taken as a value rather than one key read out of it:
+ * a spread (`{ ...process.env }`), an alias (`const e = process.env`), an
+ * argument (`Object.entries(process.env)`, `env: process.env`), and any
+ * `process['env']`. Every one carries the triple — the role's under
+ * `--role-arn` — to wherever the value goes, so it is a site: `restores` when
+ * the enclosing function corrects the copy, else the annotation. None exists on
+ * the surface today, so it has unit cases and no floor.
+ *
+ * What remains unseeable in this line model (no AST: the repo's `typescript`
+ * ships no JS parser API, and both fences share one line model): a member
+ * access split across lines (`process.env\n  .X`, which Prettier does not
+ * emit), and a computed key — `process.env[key]` over `AWS_CREDENTIAL_ENV_KEYS`
+ * is the constant's shape, above.
+ */
+const PROCESS_ENV_WHOLE =
+  /\bprocess\.env\b(?!\s*(?:\?\.|\.|\[))|\bprocess\s*(?:\?\.\s*)?\[\s*['"\x60]env['"\x60]\s*\]/;
 /**
  * The INI channel. The KEY is the lowercase shared-credentials-file spelling —
  * a different string from the env one, which is precisely why neither fence saw
@@ -129,7 +144,13 @@ const INI_WRITER_DECLARATION = /\bfunction\s+writeProfileCredentialsFile\b/;
 const RESTORE_CALL = /\bapplyCallerIdentityCredentials\s*\(/;
 const ANNOTATION = 'cdkd-local-env-identity:';
 
-type Shape = 'env-keys' | 'caller-read' | 'process-env-read' | 'ini-key' | 'ini-writer-call';
+type Shape =
+  | 'env-keys'
+  | 'caller-read'
+  | 'process-env-read'
+  | 'process-env-whole'
+  | 'ini-key'
+  | 'ini-writer-call';
 type Verdict = 'restores' | 'reads-caller' | 'annotated' | 'undeclared';
 
 interface Site {
@@ -217,10 +238,11 @@ function importLines(lines: string[]): Set<number> {
 }
 
 /**
- * Does the line at `index` close a destructuring of `process.env` that names a
- * credential key? `const {\n  AWS_SESSION_TOKEN: t,\n} = process.env;` puts the
- * key and `process.env` on different lines, so the pattern is taken from the
- * closing `} = process.env` and walked UP until the braces balance.
+ * Does the line at `index` close a destructuring of `process.env` that takes a
+ * credential — a credential key by name, or a `...rest`, which carries all
+ * three? `const {\n  AWS_SESSION_TOKEN: t,\n} = process.env;` puts the key and
+ * `process.env` on different lines, so the pattern is taken from the closing
+ * `} = process.env` and walked UP until the braces balance.
  *
  * A walk that never balances within the cap answers TRUE — an unmodelled shape
  * becomes a site a human decides, never a silent miss.
@@ -237,7 +259,17 @@ function destructuresCredentialFromProcessEnv(lines: string[], index: number): b
     const raw = lines[i] ?? '';
     pattern = `${isCommentLine(raw) ? '' : stripComments(raw)}\n${pattern}`;
   }
-  return CREDENTIAL_ENV_NAME_TOKEN.test(pattern);
+  return CREDENTIAL_ENV_NAME_TOKEN.test(pattern) || pattern.includes('...');
+}
+
+/** The credential keys a line reads out of `process.env`. */
+function credentialKeysRead(code: string): Set<string> {
+  const keys = new Set<string>();
+  for (const m of code.matchAll(new RegExp(PROCESS_ENV_CREDENTIAL_READ_SOURCE, 'g'))) {
+    const key = CREDENTIAL_ENV_NAME_TOKEN.exec(m[0])?.[0];
+    if (key !== undefined) keys.add(key);
+  }
+  return keys;
 }
 
 /**
@@ -245,28 +277,54 @@ function destructuresCredentialFromProcessEnv(lines: string[], index: number): b
  *
  * The triple is read on three consecutive lines and decided once, so a read
  * directly below ANOTHER read inherits the annotation above the first. Only a
- * contiguous run of reads is skipped: any other statement in between ends the
- * run, and `hasAnnotationAbove` stops there as usual.
+ * contiguous run of reads of DIFFERENT keys is skipped — at most the triple: a
+ * second read of a key the run already read is a new decision, not the same
+ * one, and any other statement in between ends the run, where
+ * `hasAnnotationAbove` stops as usual.
  */
 function annotationGovernsRead(lines: string[], index: number): boolean {
+  const seen = credentialKeysRead(stripComments(lines[index] ?? ''));
   let top = index;
   while (top > 0) {
     const above = lines[top - 1] ?? '';
-    if (isCommentLine(above) || !PROCESS_ENV_CREDENTIAL_READ.test(stripComments(above))) break;
+    if (isCommentLine(above)) break;
+    const keys = credentialKeysRead(stripComments(above));
+    if (keys.size === 0 || [...keys].some((k) => seen.has(k))) break;
+    for (const k of keys) seen.add(k);
     top--;
   }
   return hasAnnotationAbove(lines, top, ANNOTATION);
 }
 
-function shapeOf(code: string): Shape | undefined {
+/**
+ * The shape of one code line (comments already stripped). `wholeEnv: false` is
+ * for a destructuring's right-hand side, which `shapeAt` has already judged.
+ */
+function shapeOf(code: string, { wholeEnv = true } = {}): Shape | undefined {
   if (CALLER_READ_SITE.test(code)) return 'caller-read';
-  if (CREDENTIAL_KEY_SITE.test(code)) return 'env-keys';
   if (PROCESS_ENV_CREDENTIAL_READ.test(code)) return 'process-env-read';
+  if (CREDENTIAL_KEY_SITE.test(code)) return 'env-keys';
+  if (wholeEnv && PROCESS_ENV_WHOLE.test(code)) return 'process-env-whole';
   if (INI_CREDENTIAL_KEY_SITE.test(code)) return 'ini-key';
   if (INI_WRITER_CALL_SITE.test(code) && !INI_WRITER_DECLARATION.test(code)) {
     return 'ini-writer-call';
   }
   return undefined;
+}
+
+/**
+ * The shape of the line at `index` — the ONE classification `collectSites`
+ * uses, so a case driving it drives the walk's own wiring. A destructuring of
+ * `process.env` is judged on its pattern: one taking a credential is a read,
+ * one naming only other keys is not a whole-env copy either.
+ */
+function shapeAt(lines: string[], index: number): Shape | undefined {
+  const code = stripComments(lines[index] ?? '');
+  if (DESTRUCTURE_FROM_PROCESS_ENV.test(code)) {
+    if (destructuresCredentialFromProcessEnv(lines, index)) return 'process-env-read';
+    return shapeOf(code, { wholeEnv: false });
+  }
+  return shapeOf(code);
 }
 
 function collectSites(): Site[] {
@@ -278,23 +336,28 @@ function collectSites(): Site[] {
     lines.forEach((text, i) => {
       if (isCommentLine(text) || imports.has(i)) return;
       const code = stripComments(text);
-      const shape =
-        shapeOf(code) ??
-        (destructuresCredentialFromProcessEnv(lines, i) ? 'process-env-read' : undefined);
-      if (shape === undefined) return;
-      const annotated =
-        shape === 'process-env-read'
-          ? annotationGovernsRead(lines, i)
-          : hasAnnotationAbove(lines, i, ANNOTATION);
-      let verdict: Verdict;
-      if (shape === 'caller-read') verdict = 'reads-caller';
-      else if (shape === 'env-keys' && enclosingBlockRestores(lines, i)) verdict = 'restores';
-      else if (annotated) verdict = 'annotated';
-      else verdict = 'undeclared';
-      sites.push({ file, line: i + 1, text: text.trim(), code, shape, verdict });
+      const site = siteAt(lines, i);
+      if (site === undefined) return;
+      sites.push({ file, line: i + 1, text: text.trim(), code, ...site });
     });
   }
   return sites;
+}
+
+/** Shape and verdict of the line at `index`: the walk's per-line decision. */
+function siteAt(lines: string[], index: number): { shape: Shape; verdict: Verdict } | undefined {
+  if (isCommentLine(lines[index] ?? '')) return undefined;
+  const shape = shapeAt(lines, index);
+  if (shape === undefined) return undefined;
+  if (shape === 'caller-read') return { shape, verdict: 'reads-caller' };
+  if ((shape === 'env-keys' || shape === 'process-env-whole') && enclosingBlockRestores(lines, index)) {
+    return { shape, verdict: 'restores' };
+  }
+  const annotated =
+    shape === 'process-env-read'
+      ? annotationGovernsRead(lines, index)
+      : hasAnnotationAbove(lines, index, ANNOTATION);
+  return { shape, verdict: annotated ? 'annotated' : 'undeclared' };
 }
 
 function countOf(sites: Site[], verdict: Verdict): number {
@@ -311,9 +374,10 @@ describe('every identity reaching an emulated workload through process env or a 
   it('sees the population it claims to guard, per shape', () => {
     // Floors, so a broken walk, a renamed helper or a regex that stopped
     // matching reports a failure rather than a vacuous pass. Measured
-    // 2026-09-18: 19 sites across 7 files — by VERDICT 3 `restores`, 1
-    // `reads-caller`, 15 `annotated`; by SHAPE 12 `env-keys`, 1 `caller-read`,
-    // 2 `ini-key`, 4 `ini-writer-call`. The floors sit below that so ordinary
+    // 2026-11-07: 22 sites across 11 files — by VERDICT 3 `restores`, 1
+    // `reads-caller`, 18 `annotated`; by SHAPE 12 `env-keys`, 1 `caller-read`,
+    // 3 `process-env-read`, 0 `process-env-whole`, 2 `ini-key`, 4
+    // `ini-writer-call`. The floors sit below that so ordinary
     // deletions do not trip them, but every shape and every verdict carries its
     // OWN: a whole-population floor stays green while one arm silently empties,
     // and the `restores` arm is the one that actually delivers container
@@ -326,12 +390,12 @@ describe('every identity reaching an emulated workload through process env or a 
     expect(countOf(sites, 'annotated'), '`annotated` sites').toBeGreaterThanOrEqual(11);
     expect(shapeCount(sites, 'env-keys'), '`env-keys` shape').toBeGreaterThanOrEqual(10);
     expect(shapeCount(sites, 'caller-read'), '`caller-read` shape').toBeGreaterThanOrEqual(1);
-    // Issue #5866, measured 2026-11-07: 2 — the secret and the token beside
-    // the quoted access-key-id in `local-host-synthesizer.ts`, which stays an
-    // `env-keys` site. No DOT or DESTRUCTURING read exists in the tree, so
-    // those spellings are held by the cases below, not by this floor.
+    // Issue #5866: 3 — the triple `local-host-synthesizer.ts` reads in bracket
+    // form. No DOT or DESTRUCTURING read, and no `process-env-whole` site,
+    // exists in the tree, so those spellings are held by the `shapeAt` cases
+    // below, not by a floor.
     expect(shapeCount(sites, 'process-env-read'), '`process-env-read` shape').toBeGreaterThanOrEqual(
-      2
+      3
     );
     expect(shapeCount(sites, 'ini-key'), '`ini-key` shape').toBeGreaterThanOrEqual(2);
     expect(shapeCount(sites, 'ini-writer-call'), '`ini-writer-call` shape').toBeGreaterThanOrEqual(
@@ -373,7 +437,9 @@ describe('every identity reaching an emulated workload through process env or a 
         '`src/utils/caller-credentials.ts`). If it comes from the caller, take it from ' +
         '`callerEnvCredentials()`. A READ of a credential variable out of `process.env` ' +
         '(`process.env.X`, `process.env[\'X\']`, or destructuring) holds the `--role-arn` ' +
-        'role when one is set, and takes the comment. If neither applies — the identity was chosen by ' +
+        'role when one is set, and takes the comment; so does the WHOLE `process.env` taken as ' +
+        'a value (a spread, an alias, an argument) unless its function restores the copy. ' +
+        'If neither applies — the identity was chosen by ' +
         '`--assume-role` / `--assume-task-role` / `--profile`, or the value is a ' +
         'placeholder — write a `cdkd-local-env-identity: <reason>` comment above it.'
     ).toEqual([]);
@@ -483,54 +549,76 @@ describe('every identity reaching an emulated workload through process env or a 
   });
 
   it('classifies every spelling of a `process.env` credential read, and nothing else (#5866)', () => {
-    // Per SPELLING: the real-tree floor is met by the bracket form alone, so a
-    // dropped dot or destructuring arm would stay green on it.
+    // Per SPELLING, and through `shapeAt` — the classification the walk itself
+    // calls — so a case reds when an arm is dropped from the WIRING, not only
+    // from a helper: the real-tree floor is met by the bracket form alone.
+    const one = (line: string) => shapeAt([line], 0);
     for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
-      const spellings = [
+      for (const line of [
         `  const t = process.env.${key};`,
         `  const t = process.env?.${key};`,
         `  const t = process.env['${key}'];`,
         `  const t = process.env["${key}"];`,
         `  const t = process.env[\`${key}\`];`,
-      ];
-      for (const line of spellings) {
-        // The quoted access-key-id is the older `env-keys` shape; it is still a
-        // site, which is what matters, and keeps its own floors.
-        const expected =
-          key === 'AWS_ACCESS_KEY_ID' && /'AWS_ACCESS_KEY_ID'/.test(line)
-            ? 'env-keys'
-            : 'process-env-read';
-        expect(shapeOf(line), line).toBe(expected);
+      ]) {
+        expect(one(line), line).toBe('process-env-read');
       }
     }
     // Not a credential, not `process.env`, or a message naming the variable.
-    expect(shapeOf("  const r = process.env['AWS_REGION'];")).toBeUndefined();
-    expect(shapeOf('  const r = process.env.AWS_SESSION_TOKEN_TTL;')).toBeUndefined();
-    expect(shapeOf("  const t = env['AWS_SESSION_TOKEN'];")).toBeUndefined();
-    expect(shapeOf('  throw new Error(`set AWS_SESSION_TOKEN first`);')).toBeUndefined();
-    expect(shapeOf(stripComments('  x(); // process.env.AWS_SESSION_TOKEN'))).toBeUndefined();
+    expect(one("  const r = process.env['AWS_REGION'];")).toBeUndefined();
+    expect(one('  const r = process.env.AWS_SESSION_TOKEN_TTL;')).toBeUndefined();
+    expect(one("  const t = env['AWS_SESSION_TOKEN'];")).toBeUndefined();
+    expect(one('  throw new Error(`set AWS_SESSION_TOKEN first`);')).toBeUndefined();
+    expect(one('  x(); // process.env.AWS_SESSION_TOKEN')).toBeUndefined();
+    expect(one('  const value = process.env[key];')).toBeUndefined();
 
-    // Destructuring, on one line and across several.
-    expect(
-      destructuresCredentialFromProcessEnv(['  const { AWS_SESSION_TOKEN } = process.env;'], 0)
-    ).toBe(true);
+    // Destructuring: on one line, typed, across several, and a `...rest`,
+    // which carries the triple without naming it.
+    expect(one('  const { AWS_SESSION_TOKEN } = process.env;')).toBe('process-env-read');
+    expect(one('  const { AWS_SESSION_TOKEN: t }: NodeJS.ProcessEnv = process.env;')).toBe(
+      'process-env-read'
+    );
+    expect(one('  const { AWS_REGION, ...rest } = process.env;')).toBe('process-env-read');
     const multiLine = [
       '  const {',
       '    AWS_REGION: region,',
       '    AWS_SECRET_ACCESS_KEY: secret,',
       '  } = process.env;',
     ];
-    expect(destructuresCredentialFromProcessEnv(multiLine, 3)).toBe(true);
-    expect(
-      destructuresCredentialFromProcessEnv(['  const { AWS_REGION, HOME } = process.env;'], 0)
-    ).toBe(false);
+    expect(shapeAt(multiLine, 3)).toBe('process-env-read');
+    // A destructure taking only other keys is no site at all — not a read, and
+    // not a whole-env copy either.
+    expect(one('  const { AWS_REGION, HOME } = process.env;')).toBeUndefined();
     // A different object, and a member of `process.env`, are not this shape.
-    expect(
-      destructuresCredentialFromProcessEnv(['  const { AWS_SESSION_TOKEN } = creds;'], 0)
-    ).toBe(false);
-    expect(
-      destructuresCredentialFromProcessEnv(['  const { AWS_SESSION_TOKEN } = process.env.X;'], 0)
-    ).toBe(false);
+    expect(one('  const { AWS_SESSION_TOKEN } = creds;')).toBeUndefined();
+    expect(destructuresCredentialFromProcessEnv(['  const { A } = process.env.X;'], 0)).toBe(false);
+  });
+
+  it('classifies the WHOLE environment taken as a value, and takes its restore (#5866)', () => {
+    const one = (line: string) => shapeAt([line], 0);
+    for (const line of [
+      '  const env = { ...process.env };',
+      '  const env = { ...process.env, FOO: 1 };',
+      '  const pe = process.env;',
+      '  for (const [k, v] of Object.entries(process.env)) {',
+      '  spawn(cmd, args, { env: process.env });',
+      '  const copy = structuredClone(process.env);',
+      "  const t = process['env'].AWS_SESSION_TOKEN;",
+    ]) {
+      expect(one(line), line).toBe('process-env-whole');
+    }
+    // A copy the enclosing function corrects is `restores`, like the constant's
+    // forwarding sites; a READ beside the same restore is not (it took the
+    // value before any correction), which is why the bracket access-key-id
+    // read is no longer the `env-keys` shape.
+    const restored = [
+      '  const env = { ...process.env };',
+      "  const leaked = process.env['AWS_ACCESS_KEY_ID'];",
+      '  applyCallerIdentityCredentials(env);',
+      '}',
+    ];
+    expect(siteAt(restored, 0)).toEqual({ shape: 'process-env-whole', verdict: 'restores' });
+    expect(siteAt(restored, 1)).toEqual({ shape: 'process-env-read', verdict: 'undeclared' });
   });
 
   it('lets a contiguous run of `process.env` reads share one annotation, and no further', () => {
@@ -548,6 +636,11 @@ describe('every identity reaching an emulated workload through process env or a 
       '  const t = process.env.AWS_SESSION_TOKEN;',
     ];
     expect(annotationGovernsRead(interrupted, 3)).toBe(false);
+    // A second read of a key the run already read is a NEW decision: it does
+    // not inherit the triple's reason.
+    const duplicate = [...triple, '  leak = process.env.AWS_SESSION_TOKEN;'];
+    expect(annotationGovernsRead(duplicate, 4)).toBe(false);
+    expect(siteAt(duplicate, 4)?.verdict).toBe('undeclared');
   });
 
   it('keeps a nested `src/cli/commands/local/**` file and the emulator shim in scope', () => {
