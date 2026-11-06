@@ -78,7 +78,6 @@ src/provisioning/providers/emr-instance-fleet-config-provider.ts
 src/provisioning/providers/eventbridge-rule-provider.ts
 src/provisioning/providers/firehose-provider.ts
 src/provisioning/providers/fsx-filesystem-provider.ts
-src/provisioning/providers/glue-provider.ts
 src/provisioning/providers/iam-managed-policy-provider.ts
 src/provisioning/providers/iam-policy-provider.ts
 src/provisioning/providers/iam-role-provider.ts

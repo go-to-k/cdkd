@@ -49,6 +49,7 @@ import {
   typedSdkMember,
 } from '../../../scripts/offline-property-evidence.ts';
 import { collectSdkInterfaces } from '../../../scripts/gen-nested-key-coverage.ts';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -295,10 +296,14 @@ describe('providerWiresProperty', () => {
       'Timeout',
       'WorkerType',
     ];
-    const glue = readFileSync(join(REPO_ROOT, GLUE), 'utf8');
+    // The provider file with its companion files (scripts/provider-companion-files.ts),
+    // which hold the read-back since the split; `providerWiresProperty` reads the same set.
+    const glue = [join(REPO_ROOT, GLUE), ...companionFiles(join(REPO_ROOT, GLUE))]
+      .map((f) => readFileSync(f, 'utf8'))
+      .join('\n');
     for (const property of DOT_ONLY_GLUE_JOB_PROPERTIES) {
-      // The half that makes the refusal observable: the access IS in the file,
-      // so a `.X` recognizer answers for every one of these.
+      // The half that makes the refusal observable: the access IS in the
+      // provider's files, so a `.X` recognizer answers for every one of these.
       expect(
         new RegExp(`\\.${property}\\b`).test(glue),
         `${property} is no longer read back off the SDK response — pick another anchor`
