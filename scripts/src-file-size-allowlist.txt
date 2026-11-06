@@ -65,7 +65,6 @@ src/provisioning/providers/codebuild-provider.ts
 src/provisioning/providers/codecommit-repository-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
 src/provisioning/providers/efs-provider.ts
-src/provisioning/providers/elasticache-provider.ts
 src/provisioning/providers/emr-cluster-provider.ts
 src/provisioning/providers/emr-instance-fleet-config-provider.ts
 src/provisioning/providers/eventbridge-rule-provider.ts
