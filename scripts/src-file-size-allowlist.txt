@@ -16,7 +16,6 @@ src/assets/asset-storage.ts
 src/cli/commands/deploy.ts
 src/cli/commands/destroy-runner.ts
 src/cli/commands/destroy.ts
-src/cli/commands/diff-recursive.ts
 src/cli/commands/gc.ts
 src/cli/commands/local-invoke-agentcore.ts
 src/cli/commands/local-invoke.ts

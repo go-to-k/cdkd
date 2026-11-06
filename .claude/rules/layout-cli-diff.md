@@ -3,11 +3,16 @@ description: cdkd diff and its nested-stack walk
 paths:
   - 'src/cli/commands/diff.ts'
   - 'src/cli/commands/diff-recursive.ts'
+  - 'src/cli/commands/diff-recursive/**'
 ---
 
 # `cdkd diff`
 
-`diff-recursive.ts` holds the recursive helpers; `diff.ts` is glue (synth,
+`diff-recursive.ts` re-exports the recursive helpers, which live in
+`diff-recursive/*.ts` (`computeStackDiff` in `compute-stack-diff.ts`, its
+parameter / condition, orphan-splice and failed-outputs steps beside it,
+`buildDiffTree` in `build-tree.ts`, `loadStateOrEmpty` in `load-state.ts`); a
+name below without a path is in one of them. `diff.ts` is glue (synth,
 `buildDiffTree` per stack, render / JSON / `--fail-on`). `destructive` reads
 each node's `destructiveChanges`, `broadening` runs
 `src/analyzer/security-diff.ts` per node; both force the nested walk. Plain
@@ -64,7 +69,7 @@ use `displaySafe`, as does the synth-time twin in `assembly-reader.ts`
 `resolveAssemblyPath` beside their absolute-path tripwire, against the PARENT
 TEMPLATE's directory — CDK emits nested templates as siblings, so the base is
 that directory and not the assembly root
-([#3489](https://github.com/go-to-k/cdkd/issues/3489)). This file's OWN
+([#3489](https://github.com/go-to-k/cdkd/issues/3489)). `build-tree.ts`'s OWN
 `Nested template file not found` throw does not yet.
 
 `indexNestedChildTemplates` builds onto `nullPrototypeRecord()`, never a `{}`

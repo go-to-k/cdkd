@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
 
@@ -304,7 +304,10 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     'src/deployment/deploy-engine/rollback.ts': { catchClause: 6 },
     'src/deployment/deploy-engine/update-in-place.ts': { catchClause: 3 },
     'src/deployment/deploy-engine/update-replace.ts': { catchClause: 3 },
-    'src/cli/commands/diff-recursive.ts': { catchClause: 4 },
+    // `cdkd diff`'s walk, split into `diff-recursive/` (go-to-k/cdkd#5835): the
+    // two modules holding its four handlers. The family case below scans the rest.
+    'src/cli/commands/diff-recursive/nested-template.ts': { catchClause: 2 },
+    'src/cli/commands/diff-recursive/parameters-conditions.ts': { catchClause: 2 },
   };
 
   function scan(file: string): { handlers: Record<Shape, number>; offenders: string[] } {
@@ -397,5 +400,22 @@ describe('no handler in the slice stringifies its caught value with String() (#3
       expect(handlers[shape as Shape], shape).toBeGreaterThanOrEqual(floor);
     }
     expect(offenders).toEqual([]);
+  });
+
+  it('every module of src/cli/commands/diff-recursive/ (read recursively)', () => {
+    // A handler added to ANY module of the walk is scanned, not only the two
+    // named above; the floor is the family's total on the pre-split file.
+    const dir = 'src/cli/commands/diff-recursive/';
+    const files = readdirSync(join(process.cwd(), dir), { recursive: true, encoding: 'utf8' })
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => `${dir}${name.split('\\').join('/')}`);
+    expect(files.length, 'the directory read found no modules').toBeGreaterThan(2);
+    let catchClauses = 0;
+    for (const file of files) {
+      const { handlers, offenders } = scan(file);
+      catchClauses += handlers.catchClause;
+      expect(offenders, file).toEqual([]);
+    }
+    expect(catchClauses).toBeGreaterThanOrEqual(4);
   });
 });
