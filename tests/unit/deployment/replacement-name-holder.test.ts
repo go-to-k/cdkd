@@ -29,6 +29,7 @@ import { withSkipPrefix, withStackScope } from '../../../src/provisioning/resour
 import { SECRET_MASK } from '../../../src/deployment/secret-redaction.js';
 import { ProviderRegistry } from '../../../src/provisioning/provider-registry.js';
 import { loadProviderClasses, registerAllProviders } from '../../../src/provisioning/register-providers.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const providerClasses = await loadProviderClasses();
 
@@ -659,7 +660,12 @@ describe('replacementOldHoldsSentName', () => {
     const table = replacementDerivedGeneratedNames();
     expect(Object.keys(table).length).toBeGreaterThanOrEqual(9);
     for (const [type, { file, source }] of Object.entries(table)) {
-      const text = readFileSync(join(process.cwd(), 'src/provisioning/providers', file), 'utf-8');
+      // With the provider's companion files (scripts/provider-companion-files.ts),
+      // which hold the code split out of it.
+      const providerPath = join(process.cwd(), 'src/provisioning/providers', file);
+      const text = [providerPath, ...companionFiles(providerPath)]
+        .map((path) => readFileSync(path, 'utf-8'))
+        .join('\n');
       // Exactly once, and as the fallback of the create's name assignment
       // (`|| ` / `?? ` after the name property), not a copy elsewhere.
       expect(text.split(source).length - 1, `${type}: ${file} occurrences of ${source}`).toBe(1);

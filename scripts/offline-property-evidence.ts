@@ -24,13 +24,14 @@
  * survives a reader skimming for "the SDK check".
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript-v6';
 
 import { collectSdkInterfaces, lowerFirst } from './gen-nested-key-coverage.ts';
 import type { SdkMemberType } from './gen-nested-key-coverage.ts';
+import { companionFiles } from './provider-companion-files.ts';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -221,31 +222,36 @@ export function providerWiresProperty(
   const abs = join(repoRoot, providerRelPath);
   if (!existsSync(abs)) return undefined;
 
-  const source = ts.createSourceFile(
-    abs,
-    readFileSync(abs, 'utf8'),
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ true,
-    ts.ScriptKind.TS
-  );
-
   const sites = new Set<string>();
-  const record = (node: ts.Node): void => {
-    const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
-    sites.add(`${providerRelPath}:${line + 1}`);
-  };
+  // The provider's companion files (scripts/provider-companion-files.ts) hold
+  // the bodies split out of it, so their reads are the provider's reads too.
+  for (const file of [abs, ...companionFiles(abs)]) {
+    const relPath = file === abs ? providerRelPath : relative(repoRoot, file).split(sep).join('/');
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(file, 'utf8'),
+      ts.ScriptTarget.Latest,
+      /* setParentNodes */ true,
+      ts.ScriptKind.TS
+    );
 
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isElementAccessExpression(node) &&
-      ts.isStringLiteralLike(node.argumentExpression) &&
-      node.argumentExpression.text === property
-    ) {
-      record(node);
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+    const record = (node: ts.Node): void => {
+      const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
+      sites.add(`${relPath}:${line + 1}`);
+    };
+
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isElementAccessExpression(node) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        node.argumentExpression.text === property
+      ) {
+        record(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
 
   if (sites.size === 0) return undefined;
   return { sites: [...sites].sort() };

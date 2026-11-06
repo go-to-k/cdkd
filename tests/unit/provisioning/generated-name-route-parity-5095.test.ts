@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import {
   applyDefaultNameForFallback,
@@ -14,6 +14,7 @@ import {
   withoutGeneratedFallbackName,
   type ResourceNameOptions,
 } from '../../../src/provisioning/resource-name.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 import { reverseReplacementRewrittenNameTypes } from '../../../src/deployment/replacement-name-holder.js';
 
 /**
@@ -471,7 +472,11 @@ describe("a Glue connection's nested name on the Cloud Control route (#5095)", (
 
 describe('every SDK provider names an un-named resource through the rule (#5095)', () => {
   const dir = join(process.cwd(), 'src/provisioning/providers');
-  const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
+  // A provider's companion files (scripts/provider-companion-files.ts) hold
+  // code split out of it, so they are scanned as the provider's own.
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.ts'))
+    .flatMap((f) => [f, ...companionFiles(join(dir, f)).map((c) => relative(dir, c))]);
   const text = files.map((f) => readFileSync(join(dir, f), 'utf-8')).join('\n');
 
   it('no provider generates a logical-id name of its own', () => {

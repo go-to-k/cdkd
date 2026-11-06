@@ -32,13 +32,23 @@ import {
   destroyRemoveProtectionHelp,
   stateDestroyRemoveProtectionHelp,
 } from './remove-protection-help.js';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const providerClasses = await loadProviderClasses();
 
 const PROVIDERS_DIR = join(import.meta.dirname, '../../../src/provisioning/providers');
 
 const files = readdirSync(PROVIDERS_DIR).filter((f) => f.endsWith('.ts'));
-const source = new Map(files.map((f) => [f, readFileSync(join(PROVIDERS_DIR, f), 'utf8')]));
+// A provider file's text includes its companion files
+// (scripts/provider-companion-files.ts), which hold the code split out of it.
+const source = new Map(
+  files.map((f) => [
+    f,
+    [join(PROVIDERS_DIR, f), ...companionFiles(join(PROVIDERS_DIR, f))]
+      .map((path) => readFileSync(path, 'utf8'))
+      .join('\n'),
+  ])
+);
 
 /** Provider class name -> the file declaring it. */
 function fileOfClass(className: string): string | undefined {

@@ -198,10 +198,12 @@
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript-v6';
+
+import { companionFiles } from './provider-companion-files.ts';
 
 const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, '..');
@@ -615,8 +617,17 @@ export function buildReport(providersDir: string): Report {
   // The scan is deliberately NOT recursive, so a provider added under a
   // subdirectory would be invisible and the run would exit 0 (found in review).
   // Refusing the subdirectory makes that fail CLOSED: either flatten the file
-  // back, or teach this checker to walk.
+  // back, or teach this checker to walk. A provider's COMPANION directory
+  // (`<stem>/` beside `<stem>-provider.ts`, scripts/provider-companion-files.ts)
+  // is walked instead: its files are scanned like any other.
+  const companions = new Set<string>();
+  for (const file of files) {
+    for (const companion of companionFiles(join(providersDir, file))) {
+      companions.add(relative(providersDir, companion).split(sep).join('/'));
+    }
+  }
   for (const entry of entries.filter((e) => e.isDirectory())) {
+    if ([...companions].some((c) => c.startsWith(`${entry.name}/`))) continue;
     refusals.push({
       file: `${entry.name}/`,
       name: '<directory>',
@@ -624,6 +635,7 @@ export function buildReport(providersDir: string): Report {
         'the provider scan is not recursive, so every provider under this subdirectory would be invisible',
     });
   }
+  files.push(...companions);
   for (const file of files) {
     const filePath = join(providersDir, file);
     const text = readFileSync(filePath, 'utf8');

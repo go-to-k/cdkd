@@ -128,6 +128,7 @@ import ts from 'typescript-v6';
 // Same-directory `.ts` import: Node 24 native type-stripping resolves imports
 // literally when run via `node scripts/gen-sdk-attr-coverage.ts`.
 import { parseProviderSource } from './gen-property-coverage.ts';
+import { companionFiles } from './provider-companion-files.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -617,6 +618,13 @@ function loadReport(): SdkAttrCoverageReport {
     const parsed = parseProviderSource(src, file);
     if (parsed.handled.size === 0) continue;
     const keys = collectStoredAttributeKeys(src, file);
+    // The provider's companion files (scripts/provider-companion-files.ts) hold
+    // the bodies split out of it, so their keys are the provider's keys too.
+    for (const companion of companionFiles(join(PROVIDERS_DIR, file))) {
+      for (const k of collectStoredAttributeKeys(readFileSync(companion, 'utf8'), companion)) {
+        keys.add(k);
+      }
+    }
     for (const type of parsed.handled.keys()) {
       sdkBackedTypes.add(type);
       const target = cachedKeysByType.get(type) ?? new Set<string>();

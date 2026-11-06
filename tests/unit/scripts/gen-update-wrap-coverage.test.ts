@@ -8,6 +8,7 @@ import {
   classifySource,
   findGaps,
 } from '../../../scripts/gen-update-wrap-coverage.ts';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 const PROVIDERS_DIR = resolve(process.cwd(), 'src/provisioning/providers');
 
@@ -17,6 +18,55 @@ function providerSource(body: string, className = 'FakeProvider'): string {
 }
 
 describe('gen-update-wrap-coverage classifier', () => {
+  describe('companion-file delegation (a provider split into <stem>/)', () => {
+    const delegating = providerSource(`
+      update(logicalId, physicalId, resourceType, props, prev, context) {
+        return update.call(this, logicalId, physicalId, resourceType, props, prev, context);
+      }
+      sendIt(...args) {
+        return sendIt.call(this, ...args);
+      }
+    `);
+    const companion = `
+      export async function update(this: FakeProvider, logicalId, physicalId, resourceType) {
+        try {
+          return await updatePhase.call(this, { logicalId });
+        } catch (error) {
+          throw new ProvisioningError('Failed to update', resourceType, logicalId);
+        }
+      }
+      export async function updatePhase(this: FakeProvider, scope) {
+        await this.sendIt();
+        return { physicalId: 'p', wasReplaced: false, attributes: {} };
+      }
+      export async function sendIt(this: FakeProvider) {
+        await this.client.send(new UpdateThingCommand({}));
+      }
+    `;
+
+    it('follows a `return fn.call(this, ...)` method and a `fn.call(this, ...)` phase into the companion bodies', () => {
+      const [c] = classifySource(delegating, 'fake-provider.ts', new Map(), [companion]);
+      expect(c?.bucket).toBe('wrapped');
+      expect(c?.unresolvedCallees).toEqual([]);
+    });
+
+    it('sees the unwrapped send behind the delegation when the companion does not wrap', () => {
+      const unwrapped = companion.replace(
+        /try {\n(.*)\n\s*} catch \(error\) {\n.*\n\s*}/,
+        '$1'
+      );
+      expect(unwrapped).not.toContain('catch');
+      const [c] = classifySource(delegating, 'fake-provider.ts', new Map(), [unwrapped]);
+      expect(c?.bucket).toBe('gap');
+      expect(c?.unwrappedSendMethods).toEqual(['sendIt']);
+    });
+
+    it('reads no-aws without the companion sources, which is why the generator passes them', () => {
+      const [c] = classifySource(delegating, 'fake-provider.ts', new Map());
+      expect(c?.bucket).toBe('no-aws');
+    });
+  });
+
   it('flags an update() whose send escapes unwrapped', () => {
     const src = providerSource(`
       async update(logicalId, physicalId, resourceType, props, prev) {
@@ -781,7 +831,14 @@ describe('real-repo coverage floors', () => {
   const classes = [
     ...readdirSync(PROVIDERS_DIR)
       .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
-      .flatMap((f) => classifySource(readFileSync(resolve(PROVIDERS_DIR, f), 'utf8'), f)),
+      .flatMap((f) =>
+        classifySource(
+          readFileSync(resolve(PROVIDERS_DIR, f), 'utf8'),
+          f,
+          UPDATE_WRAP_ALLOW_LIST,
+          companionFiles(resolve(PROVIDERS_DIR, f)).map((c) => readFileSync(c, 'utf8'))
+        )
+      ),
     ...classifySource(
       readFileSync(resolve(process.cwd(), 'src/provisioning/cloud-control-provider.ts'), 'utf8'),
       'src/provisioning/cloud-control-provider.ts'
