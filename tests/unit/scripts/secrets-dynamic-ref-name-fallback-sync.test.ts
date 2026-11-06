@@ -3,12 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
+import { readScrubSource } from '../cli/_scrub-source.js';
 
 /**
  * `tests/integration/secrets-dynamic-ref/verify.sh` Guard 7b (issue #2531)
  * asserts the ABSENCE of `cdkd scrub`'s two name-fallback warnings in the
  * command's output. An absence grep of the producer's own wording has no
- * sentinel: reword the warn in `src/cli/commands/scrub.ts` and the grep goes
+ * sentinel: reword the warn in `src/cli/commands/scrub/` and the grep goes
  * silently green, with the run still exiting 0 (.claude/rules/testing.md,
  * "A fixture that greps cdkd's OWN output must fail loudly when the format
  * drifts"). The unit cases in `scrub-export-name-collision.test.ts` pin the
@@ -53,7 +54,8 @@ const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
 }).trim();
 
 const FIXTURE = 'tests/integration/secrets-dynamic-ref/verify.sh';
-const SOURCE = 'src/cli/commands/scrub.ts';
+// `cdkd scrub` is `scrub.ts` plus every module under `scrub/`, read recursively.
+const SOURCE = 'src/cli/commands/scrub{,/**}.ts';
 
 /**
  * The quoted strings of the fixture's `for NAME_FALLBACK in "..." "..."; do`
@@ -175,7 +177,7 @@ describe('secrets-dynamic-ref Guard 7b greps the scrub name-fallback warnings th
     }
   };
   const script = readSubject(FIXTURE);
-  const source = readSubject(SOURCE);
+  const source = readScrubSource();
   const strings = fixtureFallbackStrings(script);
   const nameWarns = exportNameWarnRuns(source);
 

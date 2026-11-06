@@ -2,15 +2,30 @@
 description: cdkd scrub - the permanent state secret-hygiene command (clean + audit)
 paths:
   - 'src/cli/commands/scrub.ts'
+  - 'src/cli/commands/scrub/**'
 ---
 
-# `cdkd scrub` — src/cli/commands/scrub.ts
+# `cdkd scrub` — src/cli/commands/scrub.ts + scrub/**
 
 The redaction machinery this command drives:
 [layout-deployment-secrets.md](layout-deployment-secrets.md). Exit codes live in
 [docs/cli-scrub.md](../../docs/cli-scrub.md) and every exit-1 arm in
 [docs/cli-scrub-findings.md](../../docs/cli-scrub-findings.md), each the ONE
 copy — do not restate them here.
+
+**Module layout.** `scrub.ts` holds `createScrubCommand` and re-exports every
+public symbol, so callers and tests import from it alone; the code lives in
+`scrub/*.ts`: `command.ts` (`scrubCommand`: synthesis, target selection) →
+`command-loop.ts` (the per-stack loop and its counters) → `command-report.ts`
+(the summary and the exit-deciding throws); `stack.ts` (`scrubStack`: lock,
+record load, container guards, resolver context, `catch` masking boundary) →
+`stack-resolve.ts` (the three resolve loops under ONE drain budget) →
+`stack-rewrite.ts` (rewrite, save, result); and the helpers `errors.ts`,
+`export-index.ts`, `save-state.ts`, `nested.ts`, `outputs.ts`, `cross-region.ts`,
+`cross-stack-refusals.ts`, `producer-expression.ts`, `cross-stack-findings.ts`,
+`abandoned-scan.ts`, `shared-entries-secrets.ts`, `cross-stack-pre-pass.ts`,
+`stack-result.ts`, `noecho.ts`. Source fences read the whole set through
+`tests/unit/cli/_scrub-source.ts`.
 
 `cdkd scrub [STACK...]` is the permanent state secret-hygiene command (clean +
 audit), not incident-only tooling. It rewrites persisted state so a resolved

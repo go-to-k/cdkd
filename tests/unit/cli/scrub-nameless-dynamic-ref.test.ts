@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
 import { readResolverFamily } from '../_resolver-family.js';
+import { readScrubSource } from './_scrub-source.js';
 
 /**
  * `cdkd scrub` must not report a run CLEAN when the resolver refused a
@@ -52,8 +50,6 @@ import { readResolverFamily } from '../_resolver-family.js';
  *
  * Retire this file, and the marker with it, when the throws become typed.
  */
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const SCRUB = join(repoRoot, 'src', 'cli', 'commands', 'scrub.ts');
 
 /** The literal scrub keys on, spelled here a THIRD time on purpose. */
 const MARKERS = ['PARAMETER_NAME is required', 'SECRET_ID is required'] as const;
@@ -192,7 +188,8 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
     // Asserted as an IMPORT from the resolver, not a bare mention: a local
     // re-declaration under the same name would satisfy a substring check while
     // re-creating exactly the two-copies drift the move removed.
-    const scrub = readFileSync(SCRUB, 'utf8');
+    // Every `cdkd scrub` module (`scrub.ts` and `scrub/**`), read recursively.
+    const scrub = readScrubSource();
     const importsFromResolver = /import \{[^}]*\bisNamelessDynamicReferenceError\b[^}]*\} from '[^']*intrinsic-function-resolver\.js';/s.test(
       scrub
     );
@@ -225,7 +222,8 @@ describe('scrub keys on the resolver nameless-dynamic-reference messages', () =>
   it('scrub applies the predicate at EVERY best-effort re-raise, not just one', () => {
     // The issue named one call site; the same swallow shape occurs four times.
     // A per-site fix leaves the other three reporting CLEAN.
-    const scrub = readFileSync(SCRUB, 'utf8');
+    // Every `cdkd scrub` module (`scrub.ts` and `scrub/**`), read recursively.
+    const scrub = readScrubSource();
     // BOTH sides count bare occurrences of the predicate name, which is what
     // this case has always done and what it should keep doing.
     //

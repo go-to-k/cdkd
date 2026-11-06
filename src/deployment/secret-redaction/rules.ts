@@ -13,7 +13,7 @@ import { SAFE_MSG_ALTERED_CHAR, safeMsg } from '../../utils/display-safe.js';
  * (the no-source arm below matches a whole value at ANY length, which is right
  * for a POSITION-SCOPED bag). `cdkd scrub`'s cross-resource union has no
  * position source at all, so it filters itself here before scanning — see
- * `allRecordedSecrets` in `src/cli/commands/scrub.ts`. Read-only: no behavior
+ * `allRecordedSecrets` in `src/cli/commands/scrub/outputs.ts`. Read-only: no behavior
  * in this module changes with the export.
  */
 export const MIN_NEEDLE_LENGTH = 4;

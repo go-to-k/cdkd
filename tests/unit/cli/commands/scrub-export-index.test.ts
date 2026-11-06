@@ -842,6 +842,82 @@ describe('cdkd scrub converges the exports index after state.json (issue #2667)'
     expect(logLines()).toContain('nothing would be written for it');
   });
 
+  it('hands the run account flags to every stack it scrubs (go-to-k/cdkd#4159)', async () => {
+    // `scrubCommand` builds the recovery context and its per-stack loop hands
+    // it to `scrubStack` (go-to-k/cdkd#5835): a malformed record's pasteable
+    // command names the RESOLVED bucket and the run's prefix.
+    synthStacks.push(makeStackInfo('MyStack'));
+    commandStateBackend.getState.mockResolvedValue({
+      state: { ...makeState('MyStack', 'us-east-1', false), outputs: 'abc' as never },
+      etag: 'etag-1',
+    });
+    indexFake.regions.set('us-east-1', slot());
+
+    await scrubCommand([], commandOptions({ dryRun: true, statePrefix: 'team-a' })).catch(
+      () => undefined
+    );
+
+    expect(logLines()).toContain(
+      'cdkd state show MyStack --stack-region us-east-1 --json --state-bucket cdkd-state-bucket --state-prefix team-a'
+    );
+  });
+
+  it('reads a region-less consumer ref in the RUN region and builds the index on the RESOLVED bucket', async () => {
+    // Two values `scrubCommand` hands its per-stack loop (go-to-k/cdkd#5835):
+    // the run region, which a dropped key's reader check falls back to for a
+    // listing ref with no region, and the resolved state bucket, which the
+    // exports index store is built on.
+    synthStacks.push(makeStackInfo('MyStack'));
+    const producer = makeState('MyStack', 'us-east-1', false);
+    // An unnamed key no pass rewrites: dropped, so its readers are checked.
+    producer.outputs = { ...producer.outputs, Retired: 'a-public-value' };
+    commandStateBackend.getState.mockImplementation((name: string, stateRegion: string) =>
+      Promise.resolve(
+        name === 'MyStack'
+          ? { state: producer, etag: 'etag-1' }
+          : name === 'Consumer'
+            ? {
+                state: {
+                  version: 9,
+                  region: stateRegion,
+                  stackName: 'Consumer',
+                  resources: {},
+                  outputs: {},
+                  lastModified: 0,
+                },
+                etag: 'etag-c',
+              }
+            : null
+      )
+    );
+    commandStateBackend.listStacks.mockResolvedValue([{ stackName: 'Consumer' }]);
+    // An owned entry the record holds no key for: counted ABSENT by the loop
+    // and summarised by the closing report, a third hand-off.
+    indexFake.regions.set(
+      'us-east-1',
+      slot({ entries: new Map([['Ghost', entry('a-public-value', 'MyStack', 'us-east-1')]]) })
+    );
+    try {
+      await scrubCommand([], commandOptions());
+    } finally {
+      commandStateBackend.listStacks.mockResolvedValue([]);
+    }
+
+    const producerRegion = commandStateBackend.getState.mock.calls.find(
+      (c: unknown[]) => c[0] === 'MyStack'
+    )?.[1];
+    expect(producerRegion).toBe('us-east-1');
+    expect(
+      commandStateBackend.getState.mock.calls
+        .filter((c: unknown[]) => c[0] === 'Consumer')
+        .map((c: unknown[]) => c[1])
+    ).toEqual([producerRegion]);
+    expect(indexFake.ctorArgs.map((args) => args[1])).toEqual(['cdkd-state-bucket']);
+    expect(logLines()).toContain(
+      '1 exports index entry is published by a scrubbed stack under a name its state.outputs does not carry'
+    );
+  });
+
   describe('names the stack and the export inside their own boundaries (go-to-k/cdkd#3638)', () => {
     // The stack name comes from the assembly and the export name is an
     // outputs-bag key: both are chosen by whoever wrote the app, and both used

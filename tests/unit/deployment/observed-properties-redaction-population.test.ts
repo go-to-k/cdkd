@@ -191,12 +191,16 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
       'ternary picking the revert baseline, which the pattern cannot tell from a ' +
       'key and which is listed rather than excused by a cleverer regex.',
   },
-  'src/cli/commands/scrub.ts': {
-    sites: 2,
+  'src/cli/commands/scrub/noecho.ts': {
+    sites: 1,
     why:
       '`applyScrubNoEcho` (go-to-k/cdkd#4043 Phase C) masks the `NoEcho` positions of ' +
       'a bag `scrubResourceRecord` already redacted, as the deploy\'s ' +
-      '`applyNoEchoPersist` does. And, ' +
+      '`applyNoEchoPersist` does.',
+  },
+  'src/cli/commands/scrub/stack-resolve.ts': {
+    sites: 1,
+    why:
       'NOT a write: the READ that feeds a rollback-orphan record\'s third bag into ' +
       "the needle-learning resolve (issue go-to-k/cdkd#2943). `scrubResourceRecord` " +
       'scrubs `observedProperties` as well as `properties` and `attributes`, so a ' +
@@ -308,10 +312,11 @@ describe('observedProperties write population (issue #2828)', () => {
     // 12 across 8; go-to-k/cdkd#4043 added the NoEcho mask over the scrubbed
     // record, for 13 across 9; its Phase C added scrub's twin of it, for 14.
     // Splitting `drift.ts` into `drift/*.ts` moved its 3 into two files: 14
-    // across 10.
+    // across 10. Splitting `scrub.ts` into `scrub/*.ts` moved its 2 into two
+    // files: 14 across 11.
     const actual = scanPopulation();
     expect(Object.values(actual).reduce((a, b) => a + b, 0)).toBe(14);
-    expect(Object.keys(EXPECTED)).toHaveLength(10);
+    expect(Object.keys(EXPECTED)).toHaveLength(11);
   });
 
   it('every ASSIGNMENT-form site redacts at the call site, or is allow-listed', () => {

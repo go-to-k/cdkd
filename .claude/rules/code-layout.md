@@ -17,7 +17,7 @@ Per-area detail lives in the satellite files below. Each one is loaded only when
 | `src/cli/commands/drift.ts` + `drift/**`, `src/analyzer/drift-*.ts`, `src/utils/ip-protocol.ts` | [layout-drift.md](layout-drift.md) | `cdkd drift` and every normalizer it compares through |
 | `src/deployment/**` | [layout-deployment.md](layout-deployment.md) | DeployEngine, WorkGraph, DAG executor, retry, rollback executor |
 | `src/deployment/secret-redaction.ts` and siblings | [layout-deployment-secrets.md](layout-deployment-secrets.md) | dynamic-reference secret redaction, masking retry loggers, the mask-only channel |
-| `src/cli/commands/scrub.ts` | [layout-scrub.md](layout-scrub.md) | `cdkd scrub` — the state secret-hygiene command |
+| `src/cli/commands/scrub.ts` + `scrub/**` | [layout-scrub.md](layout-scrub.md) | `cdkd scrub` — the state secret-hygiene command |
 | `src/provisioning/**` | [layout-provisioning.md](layout-provisioning.md) | provider registry, shared provider helpers, pre-flight rejection tables |
 | `src/local/**` | [layout-local.md](layout-local.md) | `cdkd local invoke` / `start-api` / `run-task` / `start-service` |
 | `src/utils/**` | [layout-utils.md](layout-utils.md) | logger, colors, `displaySafe`, shared helpers |

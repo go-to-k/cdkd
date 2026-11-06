@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
 import { importSourceFiles } from '../cli/_import-source.js';
+import { scrubSourcePaths } from '../cli/_scrub-source.js';
 import { SHELL_ACTIVE_WHY, shellQuote } from '../../../src/utils/pasteable-command.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -134,13 +135,59 @@ function code(relPath: string): string {
   // guards' place above the hand-off is pinned separately (the
   // "guards a malformed record before it hands off" fence).
   if (relPath === IMPORT_COMMAND) return importSourceFiles().map(strippedFile).join('\n');
-  return strippedFile(relPath);
+  // `cdkd scrub` reads every module, in the order {@link subjectFiles} gives.
+  return subjectFiles(relPath).map(strippedFile).join('\n');
 }
 
 function strippedFile(relPath: string): string {
   return readFileSync(join(repoRoot, relPath), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/**
+ * `cdkd scrub` is `scrub.ts` plus every module under `scrub/` (go-to-k/cdkd#5835).
+ * The fences in this file key it as ONE subject, {@link SCRUB}: a path `git grep`
+ * lists under `scrub/` folds onto it ({@link subjectOf}), and reading it reads
+ * every module ({@link subjectFiles}).
+ */
+const SCRUB = 'src/cli/commands/scrub.ts';
+
+/**
+ * `scrubStack` and the two passes it calls, in CALL order. `scrub/stack.ts`
+ * holds every container guard, at the head of `scrubStack`, and the passes run
+ * only below them (pinned in "the scrubStack passes run only below its
+ * guards"). Read LAST and in this order, so a guard-above-anchor check reads
+ * the order the code runs in, and a module that reads a container from
+ * anywhere else sorts ABOVE the guards and so must carry its own.
+ */
+const SCRUB_STACK_FAMILY = [
+  'src/cli/commands/scrub/stack.ts',
+  'src/cli/commands/scrub/stack-resolve.ts',
+  'src/cli/commands/scrub/stack-rewrite.ts',
+] as const;
+
+/** The repo-relative files a fence subject reads: every scrub module for {@link SCRUB}. */
+function subjectFiles(relPath: string): string[] {
+  if (relPath !== SCRUB) return [relPath];
+  const all = scrubSourcePaths();
+  for (const file of SCRUB_STACK_FAMILY) {
+    if (!all.includes(file)) throw new Error(`${file} is gone; update SCRUB_STACK_FAMILY`);
+  }
+  const family: readonly string[] = SCRUB_STACK_FAMILY;
+  return [...all.filter((file) => !family.includes(file)), ...family];
+}
+
+/** The fence subject a `git grep` path belongs to: every scrub module is {@link SCRUB}. */
+function subjectOf(file: string): string {
+  return file.startsWith('src/cli/commands/scrub/') ? SCRUB : file;
+}
+
+/** A subject's raw text (comments kept), every module joined for {@link SCRUB}. */
+function rawSource(relPath: string): string {
+  return subjectFiles(relPath)
+    .map((file) => readFileSync(join(repoRoot, file), 'utf8'))
+    .join('\n');
 }
 
 /** The key the fences below use for the whole `cdkd import` family. */
@@ -2970,7 +3017,11 @@ describe('the user-facing text', () => {
     // `[\s\S]*?` span ran past an arm's closing brace and swallowed the next
     // one, which made this fence red for the wrong reason while looking right.
     // `unverifiableReads` appears exactly once per ScrubStackResult literal.
-    const src = code('src/cli/commands/scrub.ts');
+    // `scrubStack`'s head (the repair, the pass calls, the masking boundary)
+    // is `scrub/stack.ts`; every literal it returns AFTER the repair is built
+    // by the two passes it calls between them (go-to-k/cdkd#5835), so their
+    // modules are read whole and the calls are pinned inside the span.
+    const src = code('src/cli/commands/scrub/stack.ts');
     const repairAt = src.indexOf('repairMalformedResourcesForReadOnly(state)');
     expect(repairAt, 'scrub no longer repairs under --dry-run').toBeGreaterThan(-1);
     // A CODE anchor, and specifically the CALL in scrubStack's masking-boundary
@@ -2984,7 +3035,19 @@ describe('the user-facing text', () => {
     expect(endAt, "scrubStack's masking boundary moved; this fence's end anchor is gone").
       toBeGreaterThan(repairAt);
 
-    const body = src.slice(repairAt, endAt);
+    const head = src.slice(repairAt, endAt);
+    for (const pass of ['scrubStackResolvePass(', 'scrubStackRewritePass(']) {
+      expect(
+        head.split(pass).length - 1,
+        `scrubStack no longer calls ${pass} exactly once between the repair and its masking ` +
+          'boundary, so the literals that pass returns are not the ones this fence reads'
+      ).toBe(1);
+    }
+    const body = [
+      head,
+      code('src/cli/commands/scrub/stack-resolve.ts'),
+      code('src/cli/commands/scrub/stack-rewrite.ts'),
+    ].join('\n');
 
     // PER LITERAL, not a union total. B1 was a DISTRIBUTION defect — one arm
     // carried the spread twice and the other zero — so `2 spreads across 2
@@ -3184,12 +3247,17 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // name `StackState.orphans` in prose only, and `orphan-rewriter.ts` holds
     // an unrelated `this.orphans` field — so a prose mention cannot add a file
     // and, more importantly, cannot excuse one.
-    const listed = spawnSync('git', ['grep', '-l', 'orphans', '--', 'src'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    })
-      .stdout.split('\n')
-      .filter(Boolean);
+    const listed = [
+      ...new Set(
+        spawnSync('git', ['grep', '-l', 'orphans', '--', 'src'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+        })
+          .stdout.split('\n')
+          .filter(Boolean)
+          .map(subjectOf)
+      ),
+    ];
     expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(5);
     const readers = listed.filter((file) => {
       if (isMalformedBagSourceFile(file) || file === 'src/types/state.ts') return false;
@@ -3221,6 +3289,70 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
     // ...and the shared population is that same set, so the ROW fence under
     // this one inherits this tree-derived check instead of re-deriving it.
     expect(Object.keys(ANCHORS).sort()).toEqual([...ORPHAN_READER_FILES].sort());
+  });
+
+  it('the scrubStack passes run only below its guards', () => {
+    // `code(SCRUB)` reads `scrubStack`'s two passes AFTER `scrub/stack.ts`, as
+    // though their container reads ran below that file's guards. That holds
+    // only while each pass is called exactly once in the whole scrub source,
+    // from `scrub/stack.ts`, below every container guard (go-to-k/cdkd#5835).
+    const all = code(SCRUB);
+    const head = code('src/cli/commands/scrub/stack.ts');
+    const guards = [
+      'repairMalformedResourcesForReadOnly(',
+      'hasReadableResources(',
+      'repairMalformedResourceEntriesForReadOnly(',
+      'repairMalformedOutputsForReadOnly(',
+      'hasReadableOutputs(',
+      'repairMalformedOrphansForReadOnly(',
+      'repairMalformedOrphanRecordsForReadOnly(',
+      'hasReadableOrphans(',
+      'unreadableOrphanRecords(',
+    ];
+    for (const pass of ['scrubStackResolvePass', 'scrubStackRewritePass']) {
+      const calls = all.split(`${pass}(`).length - 1 - (all.split(`function ${pass}(`).length - 1);
+      expect(calls, `${pass} must be called exactly once in the scrub source`).toBe(1);
+      const callAt = head.indexOf(`${pass}(`);
+      expect(callAt, `scrub/stack.ts no longer calls ${pass}`).toBeGreaterThan(-1);
+      for (const guard of guards) {
+        const guardAt = head.indexOf(guard);
+        expect(guardAt, `scrub/stack.ts no longer calls ${guard}`).toBeGreaterThan(-1);
+        expect(guardAt, `scrub/stack.ts calls ${pass} above ${guard}`).toBeLessThan(callAt);
+      }
+    }
+    // ...and `scrubStack`'s own head reads no container above that container's
+    // guards. The dominance loops below take each spelling's FIRST occurrence
+    // in the whole subject, and `scrub/nested.ts`'s `hasReadableResources(`
+    // sorts above `scrub/stack.ts`, so those loops cannot see a read inserted
+    // in `scrub/stack.ts` above its own guard. Checked here, in that file alone.
+    const containerGuards: Record<string, readonly string[]> = {
+      resources: [
+        'repairMalformedResourcesForReadOnly(',
+        'hasReadableResources(',
+        'repairMalformedResourceEntriesForReadOnly(',
+      ],
+      outputs: ['repairMalformedOutputsForReadOnly(', 'hasReadableOutputs('],
+      orphans: [
+        'repairMalformedOrphansForReadOnly(',
+        'repairMalformedOrphanRecordsForReadOnly(',
+        'hasReadableOrphans(',
+        'unreadableOrphanRecords(',
+      ],
+    };
+    const firstRead = (container: string): number =>
+      head.search(new RegExp(`[A-Za-z]*[Ss]tate\\??\\.${container}\\b`));
+    // Non-vacuity: the head does read the resources bag, below its guards.
+    expect(firstRead('resources'), 'scrub/stack.ts no longer reads state.resources').toBeGreaterThan(-1);
+    for (const [container, spellings] of Object.entries(containerGuards)) {
+      const readAt = firstRead(container);
+      if (readAt < 0) continue;
+      for (const guard of spellings) {
+        expect(
+          head.indexOf(guard),
+          `scrub/stack.ts reads state.${container} above ${guard}`
+        ).toBeLessThan(readAt);
+      }
+    }
   });
 
   it('pins the two exclusions the derivation above makes', () => {
@@ -4966,7 +5098,7 @@ describe('every repair the module exports is classified and has its read-only ca
    * `state/resources.ts` and `state/show-containers.ts` (`state resources` and
    * `state show`'s text modes) and
    * `s3-local-state-provider.ts` write no `state.json`; `drift/detect.ts` repairs only
-   * outside `--accept` / `--revert`; `scrub.ts` only under `--dry-run`, which
+   * outside `--accept` / `--revert`; `scrub/stack.ts` only under `--dry-run`, which
    * the REFUSE loop above pins. A file joining a list is a new caller whose
    * write path has to be checked before it is added here.
    */
@@ -4974,23 +5106,23 @@ describe('every repair the module exports is classified and has its read-only ca
     repairMalformedResourcesForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
       'src/cli/commands/drift/detect.ts',
-      'src/cli/commands/scrub.ts',
+      'src/cli/commands/scrub/stack.ts',
       'src/cli/commands/state/resources.ts',
       'src/cli/commands/state/show-containers.ts',
       'src/local/s3-local-state-provider.ts',
     ],
     repairMalformedOutputsForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
-      'src/cli/commands/scrub.ts',
+      'src/cli/commands/scrub/stack.ts',
       'src/local/s3-local-state-provider.ts',
     ],
     repairMalformedOrphansForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
-      'src/cli/commands/scrub.ts',
+      'src/cli/commands/scrub/stack.ts',
     ],
     // `cdkd diff` does not call it: it keeps the survivors itself through the
     // narrower `isPreviewableOrphanRecord`.
-    repairMalformedOrphanRecordsForReadOnly: ['src/cli/commands/scrub.ts'],
+    repairMalformedOrphanRecordsForReadOnly: ['src/cli/commands/scrub/stack.ts'],
     repairMalformedResourcePropertiesForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
       'src/cli/commands/drift/detect.ts',
@@ -4998,7 +5130,7 @@ describe('every repair the module exports is classified and has its read-only ca
     repairMalformedResourceEntriesForReadOnly: [
       'src/cli/commands/diff-recursive.ts',
       'src/cli/commands/drift/detect.ts',
-      'src/cli/commands/scrub.ts',
+      'src/cli/commands/scrub/stack.ts',
       'src/local/s3-local-state-provider.ts',
     ],
   };
@@ -5063,7 +5195,7 @@ describe('every repair the module exports is classified and has its read-only ca
     expect(repairUses('src/state/malformed-resources-bag.ts').mentions.size).toBeGreaterThan(0);
     // Non-vacuity: the same walk DOES see a use when one exists — a caller
     // file's, read by the identical function.
-    expect(repairUses('src/cli/commands/scrub.ts').calls.has('repairMalformedOrphanRecordsForReadOnly')).toBe(
+    expect(repairUses('src/cli/commands/scrub/stack.ts').calls.has('repairMalformedOrphanRecordsForReadOnly')).toBe(
       true
     );
   });
@@ -7387,7 +7519,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // comparing them by eye is what the first round relied on.
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     for (const [rel, expected] of RECORD_KEY_SITES) {
-      const src = readFileSync(join(root, rel), 'utf-8');
+      const src = rawSource(rel);
       // BOTH exported wrappers count. They are two names over one private
       // encoding, so a site is covered whichever it uses, and counting only
       // one of them would have read `scrub.ts` as 2-of-5 covered.
@@ -7423,7 +7555,7 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
     // own; the other two are how a TypeScript source spells one.
     const nulSpellings = [String.fromCharCode(0), String.raw`\u0000`, String.raw`\0`];
     for (const [rel] of RECORD_KEY_SITES) {
-      const src = readFileSync(join(root, rel), 'utf-8');
+      const src = rawSource(rel);
       for (const nul of nulSpellings) {
         // `}<NUL>${` — the tail of one interpolation, the separator, the head
         // of the next. Identifier-agnostic, so renaming `stackName` does not
@@ -7554,11 +7686,11 @@ describe('producerRecordKey is injective over (stack, region) — go-to-k/cdkd#3
         // outcome for one needle of six, not a failure of the sweep.
         continue;
       }
-      for (const f of out.split('\n').filter(Boolean)) listed.add(f);
+      for (const f of out.split('\n').filter(Boolean)) listed.add(subjectOf(f));
     }
     const counts = new Map<string, number>();
     for (const rel of listed) {
-      const src = readFileSync(join(root, rel), 'utf-8');
+      const src = rawSource(rel);
       let n = 0;
       for (const needle of needles) n += src.split(needle).length - 1;
       counts.set(rel, n);

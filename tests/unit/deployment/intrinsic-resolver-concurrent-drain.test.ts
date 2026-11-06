@@ -146,6 +146,7 @@ import type { ResourceChange, StackState } from '../../../src/types/state.js';
 import { RESOLVER_FAMILY } from '../_resolver-family.js';
 import { exportSourceFiles } from '../cli/_export-source.js';
 import { importSourceFiles } from '../cli/_import-source.js';
+import { readScrubSource, scrubSourceFiles } from '../cli/_scrub-source.js';
 
 /** A promise the test body opens by hand. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -1866,7 +1867,8 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
     // the whole set is scanned.
     ['src/cli/commands/import{,/**}.ts', 'resolveImportedProperties', 2],
     ['src/cli/commands/export{,/**}.ts', 'buildResolvedParametersPerStack', 1],
-    ['src/cli/commands/scrub.ts', 'resolveCrossStackReads', 3],
+    // `cdkd scrub` is `scrub.ts` plus `scrub/**/*.ts`; the whole set is scanned.
+    ['src/cli/commands/scrub{,/**}.ts', 'resolveCrossStackReads', 3],
   ])('every %s call to %s is inside a shared drain budget', (file, callee, atLeast) => {
     // The wraps are this round's whole deliverable and nothing held them:
     // deleting either engine one left `tests/unit/deployment` and then the
@@ -1913,7 +1915,9 @@ describe('the callers that must wrap a resolve LOOP do (issue #2563)', () => {
       ? exportSourceFiles()
       : file.startsWith('src/cli/commands/import{')
         ? importSourceFiles().map((rel) => join(import.meta.dirname, '../../..', rel))
-        : [join(import.meta.dirname, '../../..', file)];
+        : file.startsWith('src/cli/commands/scrub{')
+          ? scrubSourceFiles()
+          : [join(import.meta.dirname, '../../..', file)];
 
     const calls: { line: string; wrapped: boolean }[] = [];
     for (const abs of files) {
@@ -2131,7 +2135,7 @@ function analyseSharedBudget(
 }
 
 describe('an INLINE budget is fenced by its OWNER, not by a callee (issue #2563)', () => {
-  it('every `resolver.resolve` inside `scrubStack` is under a shared drain budget', () => {
+  it('every `resolver.resolve` inside the `scrubStack` family is under ONE shared drain budget', () => {
     // `cdkd scrub` hoists ONE budget over its three resolve loops rather than
     // wrapping a callee, so the table above cannot key on it. Keying on the
     // ENCLOSING FUNCTION can, and this is the case that would have caught
@@ -2144,40 +2148,82 @@ describe('an INLINE budget is fenced by its OWNER, not by a callee (issue #2563)
     // called it, which is not a lexical property and not this walk's
     // business. Its CALL SITES are held by the callee-keyed table above
     // instead (issue go-to-k/cdkd#2895).
-    const file = join(import.meta.dirname, '../../../src/cli/commands/scrub.ts');
-    const OWNER = 'scrubStack';
-    const found = analyseSharedBudget(readFileSync(file, 'utf8'), OWNER);
+    //
+    // `scrubStack` is cut into THREE functions (go-to-k/cdkd#5835):
+    // `scrubStack` itself, `scrubStackResolvePass` (the three resolve loops
+    // and their budget) and `scrubStackRewritePass`. Every one of them is
+    // walked, across every `cdkd scrub` module, and the budget count is taken
+    // over the WHOLE family: a second wrapper in any of the three is a second
+    // cap.
+    const source = readScrubSource();
+    const OWNERS = ['scrubStack', 'scrubStackResolvePass', 'scrubStackRewritePass'] as const;
+    const family = OWNERS.map((owner) => ({ owner, found: analyseSharedBudget(source, owner) }));
 
-    expect(found.ownerFound, `${OWNER} not found — this case is asserting nothing`).toBe(true);
+    for (const { owner, found } of family) {
+      expect(found.ownerFound, `${owner} not found — this case is asserting nothing`).toBe(true);
+      expect(
+        found.unwrappedLines,
+        `a \`.resolve(\` call in ${owner} outside withSharedDrainBudget — that loop then spends ` +
+          'one cap per iteration with the scrub lock held and `saveState` downstream. This walk ' +
+          'matches ANY receiver by design, so an unrelated `.resolve(` in this function — a plain ' +
+          '`Promise.resolve()`, say — reds here too: a loud false positive chosen over a silent ' +
+          'hole, not a claim that the line is a resolver call (issue go-to-k/cdkd#2894)',
+      ).toEqual([]);
+      expect(
+        found.perCallBarriers,
+        `a loop or a function boundary sits between the shared budget and ${owner}, so how ` +
+          'many times the budget is opened is no longer readable from the syntax — a loop ' +
+          'spelling opens one per iteration, and a helper called once does not, but this fence ' +
+          'refuses both rather than guessing',
+      ).toEqual([]);
+    }
+    const resolveCount = family.reduce((sum, { found }) => sum + found.resolveCount, 0);
     expect(
-      found.resolveCount,
-      `fewer than three resolve calls found in ${OWNER} — the walk is matching nothing`,
+      resolveCount,
+      'fewer than three resolve calls found in the scrubStack family — the walk is matching nothing',
     ).toBeGreaterThanOrEqual(3);
-    expect(
-      found.unwrappedLines,
-      `a \`.resolve(\` call in ${OWNER} outside withSharedDrainBudget — that loop then spends ` +
-        'one cap per iteration with the scrub lock held and `saveState` downstream. This walk ' +
-        'matches ANY receiver by design, so an unrelated `.resolve(` in this function — a plain ' +
-        '`Promise.resolve()`, say — reds here too: a loud false positive chosen over a silent ' +
-        'hole, not a claim that the line is a resolver call (issue go-to-k/cdkd#2894)',
-    ).toEqual([]);
-
     // "Each call wrapped" is NOT the property: wrapping every `resolve`
-    // individually passes the assertion above and restores exactly the
+    // individually passes the assertions above and restores exactly the
     // per-iteration budget the hoist removed (measured). What must hold is
     // ONE wrapper shared by all of them, with no loop or callback between it
-    // and the owner.
+    // and its owner.
     expect(
-      found.distinctWrappers,
+      family.reduce((sum, { found }) => sum + found.distinctWrappers, 0),
       'the resolve calls sit under DIFFERENT budgets — one wrapper each is one cap each',
     ).toBe(1);
+
+    // ...and the pass that opens it is entered ONCE per `scrubStack` call:
+    // one call site, directly in `scrubStack`, with no loop or function
+    // boundary between the two. A call inside a loop opens one budget per
+    // iteration again, from one level up.
+    const sf = ts.createSourceFile('scrub-family.ts', source, ts.ScriptTarget.Latest, true);
+    const passCalls: string[][] = [];
+    const walk = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'scrubStackResolvePass'
+      ) {
+        const barriers: string[] = [];
+        let owner = '';
+        for (let n: ts.Node | undefined = node.parent; n; n = n.parent) {
+          if (ts.isFunctionDeclaration(n) && n.name !== undefined) {
+            owner = n.name.text;
+            break;
+          }
+          if (ts.isIterationStatement(n, false) || ts.isFunctionLike(n)) {
+            barriers.push(ts.SyntaxKind[n.kind]);
+          }
+        }
+        passCalls.push([owner, ...barriers]);
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(sf);
     expect(
-      found.perCallBarriers,
-      'a loop or a function boundary sits between the shared budget and the owner, so how ' +
-        'many times the budget is opened is no longer readable from the syntax — a loop ' +
-        'spelling opens one per iteration, and a helper called once does not, but this fence ' +
-        'refuses both rather than guessing',
-    ).toEqual([]);
+      passCalls,
+      '`scrubStackResolvePass` must be called exactly once, directly in `scrubStack`',
+    ).toEqual([['scrubStack']]);
   });
 
   // The cases below pin the CLAUSES the case above cannot: the real tree has

@@ -133,6 +133,36 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     expect(record.properties['Name']).toBe('/app/p');
   });
 
+  it('an Fn::If leaf whose evaluated condition selects the PLAIN branch is not a NoEcho position', async () => {
+    // The condition verdicts `scrubStack` evaluated reach the NoEcho plan in
+    // its rewrite pass (go-to-k/cdkd#5835). Without them every branch could be
+    // the deployed one, and the leaf would be masked.
+    const info = stackInfo('cdkd-scrub-noecho-unselected');
+    info.template.Conditions = { Always: { 'Fn::Equals': ['a', 'a'] } } as never;
+    (info.template.Resources['Param']!.Properties as Record<string, unknown>)['Value'] = {
+      'Fn::If': ['Always', 'plain-branch-value', { Ref: 'Token' }],
+    };
+
+    const { saved, changed } = await scrub(legacyState('plain-branch-value'), info);
+
+    // Nothing to position, so nothing is written.
+    expect(changed).toBe(0);
+    expect(saved).toBeUndefined();
+
+    // CONTROL, same record shape: with the branches swapped the selected one
+    // reads the NoEcho parameter, so the run does position and write the leaf.
+    // Without it, a run that never reached the plan would pass the lines above.
+    (info.template.Resources['Param']!.Properties as Record<string, unknown>)['Value'] = {
+      'Fn::If': ['Always', { Ref: 'Token' }, 'plain-branch-value'],
+    };
+    const control = await scrub(legacyState('cdkd-scrub-noecho-unselected'), info);
+    expect(control.saved).toBeDefined();
+    const record = control.saved!.resources['Param'];
+    expect(record).toBeDefined();
+    expect(record!.properties['Value']).toBe('***');
+    expect(record!.noEchoLeaves).toEqual([['Value']]);
+  });
+
   it('--dry-run counts the record as a finding and writes nothing', async () => {
     const { saved, changed } = await scrub(legacyState('q7z'), stackInfo('q7z'), true);
     expect(changed).toBeGreaterThan(0);
@@ -176,6 +206,49 @@ describe('cdkd scrub - the NoEcho positional arm and migration rule (go-to-k/cdk
     });
   }
   const ALIAS_TOKEN = 'cdkd-scrub-alias-token-4043';
+
+  it('an Export.Name reading a parameter the PARENT fills from a NoEcho source is refused by that source', async () => {
+    // The child's own template does not mark the parameter NoEcho, so no value
+    // seed names it: only the NoEcho parameter set `scrubStack` hands its
+    // resolve pass (go-to-k/cdkd#5835) refuses the alias, which is what keeps
+    // the unnamed key from being a possible live alias.
+    const childTemplate = {
+      Parameters: { ListIn: { Type: 'String' } },
+      Resources: {
+        Param: { Type: SSM, Properties: { Name: '/app/p', Type: 'String', Value: { Ref: 'ListIn' } } },
+      },
+      Outputs: { Probe: { Value: 'probe-value', Export: { Name: { Ref: 'ListIn' } } } },
+    } as unknown as CloudFormationTemplate;
+    // The record still holds the parameter's value at the NoEcho position, so
+    // the run has a finding and reaches the output-key plan.
+    const state = legacyState('cdkd-parent-noecho-name');
+    state.outputs = { Probe: 'probe-value', Unnamed: 'x' };
+    delete state.exportNames;
+    stateBackend['getState']!.mockResolvedValue({ state, etag: 'etag-1' });
+
+    const res = await scrubStack(
+      { stackName: 'NoEchoScrubStack~Child', template: childTemplate } as never,
+      'us-east-1',
+      stateBackend as never,
+      lockManager as never,
+      {
+        dryRun: true,
+        logger: logger as never,
+        nestedChild: {
+          logicalId: 'Child',
+          stackName: 'NoEchoScrubStack~Child',
+          input: {
+            parameters: { ListIn: 'cdkd-parent-noecho-name' },
+            inheritedSecrets: new Map(),
+            noEchoParameters: ['ListIn'],
+          },
+        },
+      } as never
+    );
+
+    expect(res.keptAliasOutputKeys).toBe(0);
+    expect(res.droppedOutputKeys).toBe(1);
+  });
 
   it('a LITERAL Export.Name spelling the NoEcho value (the seed arm) is refused the same way', async () => {
     const res = await aliasScrub({ Probe: 'probe-value', Unnamed: 'x' }, undefined, `pre-${ALIAS_TOKEN}`);

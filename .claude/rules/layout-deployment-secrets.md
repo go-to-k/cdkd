@@ -8,6 +8,7 @@ paths:
   - 'src/deployment/masking-retry-logger.ts'
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'
+  - 'src/cli/commands/scrub/**'
   - 'src/provisioning/masked-retry-logger.ts'
 ---
 
@@ -48,7 +49,7 @@ Deployment layer: [layout-deployment.md](layout-deployment.md).
 
 - **src/deployment/masking-retry-logger.ts** - The masking `RetryLogger` for a `withRetry` caller with a RESOLVED bag (`retry.ts` logs the AWS message VERBATIM). `DeployEngine.maskingRetryLogger` is a LAZY one for bagless sites. A resolver SDK call sending a template-derived name takes `namedRequestMasks`, masked by position (#3171).
 
-- **src/cli/commands/scrub.ts** - [layout-scrub.md](layout-scrub.md). **secret-redaction/reference-provenance.ts**: [state-schema.md](state-schema.md).
+- **src/cli/commands/scrub.ts** + `scrub/**` - [layout-scrub.md](layout-scrub.md). **secret-redaction/reference-provenance.ts**: [state-schema.md](state-schema.md).
 
 - **src/deployment/secret-region-classification.ts** - Which region answers a `{{resolve:...}}` (resolver, scrub, drift, replay). `classifyReplaySecretRegion`: `local`, `named-region` (an `arn:` of another region) or `ambiguous` (name form + a foreign producer region: refuse). `classifyRecordedSecretRegion`: v12 recorded region first (#4847). `producerRegionsFromState` reads `imports` / `outputReads`.
   - A consumer supplying the evidence owes TWO things: pass `ResolverContext.producerRegions`, AND let the refusal survive its error handling — scrub's best-effort `catch` re-raises `DynamicReferenceRegionAmbiguousError` by cause-chain walk. A resolution of KNOWN origin must NOT inherit it (`withoutProducerRegions`). Deploy passes none; `secretRegionEvidence` (THIS engine's, never the parent-bound ALS) only gates re-resolving a recorded reference (#4805).

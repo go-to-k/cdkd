@@ -6,6 +6,7 @@ paths:
   - 'src/utils/error-handler.ts'
   - 'src/deployment/secret-region-classification.ts'
   - 'src/cli/commands/scrub.ts'
+  - 'src/cli/commands/scrub/**'
   - 'src/cli/commands/drift.ts'
   - 'src/cli/commands/drift/**'
 ---
