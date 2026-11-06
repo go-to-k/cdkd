@@ -57,6 +57,12 @@ export const CALL_ROOTS: Record<string, CallRoots> = {
       PutNotificationConfigurationCommand: PER_ITEM('NotificationConfigurations', 'TopicARN'),
     },
   },
+  'AWS::EC2::Instance': {
+    repeated: {
+      // go-to-k/cdkd#5630.
+      AttachVolumeCommand: PER_ITEM('Volumes', 'VolumeId'),
+    },
+  },
   'AWS::DynamoDB::Table': {
     roots: {
       PutResourcePolicyCommand: tableOrStream,

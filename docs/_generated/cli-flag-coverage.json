@@ -2565,6 +2565,8 @@
     "--key",
     "--key-id",
     "--key-schema",
+    "--launch-template-id",
+    "--launch-template-ids",
     "--launch-template-name",
     "--launch-template-names",
     "--layer-name",

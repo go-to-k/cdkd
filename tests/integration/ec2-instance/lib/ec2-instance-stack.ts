@@ -63,6 +63,10 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  * the VPC, the subnet its first /64) with Ipv6AddressCount and with a fixed
  * Ipv6Addresses entry (`<the /64>::77`), both create-only RunInstances inputs.
  *
+ * Issue #5630 (fourth slice): a fifth instance launches from a launch
+ * template with an attached `Volumes` entry, which Phase 1h swaps for another
+ * volume at another device in place.
+ *
  * REMOVAL phases (issue #1160; CloudFormation A/B in go-to-k/cdkd#1160
  * issuecomment-6281778130). CDKD_TEST_REMOVAL=true drops MetadataOptions /
  * Monitoring / CreditSpecification: CloudFormation turns a removed Monitoring
@@ -383,6 +387,63 @@ export class Ec2InstanceStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'Ipv6AddressExpected', {
       value: ipv6Address,
       description: 'The address Ipv6AddressInstance5630 must hold (issue #5630)',
+    });
+
+    // Issue #5630 (fourth slice): an instance launched from a launch template
+    // (no ImageId / InstanceType of its own; the template's instance tag
+    // proves RunInstances took it), with an attached `Volumes` entry. Phase 1h
+    // swaps the entry: volume A at /dev/sdf -> volume B at /dev/sdg, which
+    // CloudFormation applies to the SAME instance (measured: a DetachVolume
+    // and an AttachVolume). Volume A stays declared so it is not deleted.
+    const launchTemplate = new ec2.CfnLaunchTemplate(this, 'LaunchTemplate5630', {
+      launchTemplateData: {
+        imageId: ami,
+        instanceType: 't3.nano',
+        tagSpecifications: [
+          {
+            resourceType: 'instance',
+            tags: [{ key: 'Cdkd5630Lt', value: 'from-template' }],
+          },
+        ],
+      },
+    });
+    const volumeA = new ec2.CfnVolume(this, 'LtVolumeA5630', {
+      availabilityZone: vpc.publicSubnets[0].availabilityZone,
+      size: 1,
+      volumeType: 'gp3',
+    });
+    const volumeB = new ec2.CfnVolume(this, 'LtVolumeB5630', {
+      availabilityZone: vpc.publicSubnets[0].availabilityZone,
+      size: 1,
+      volumeType: 'gp3',
+    });
+    const ltInstance = new ec2.CfnInstance(this, 'LtInstance5630', {
+      launchTemplate: {
+        launchTemplateId: launchTemplate.ref,
+        version: launchTemplate.attrLatestVersionNumber,
+      },
+      subnetId: vpc.publicSubnets[0].subnetId,
+      volumes: isUpdate5446
+        ? [{ device: '/dev/sdg', volumeId: volumeB.ref }]
+        : [{ device: '/dev/sdf', volumeId: volumeA.ref }],
+    });
+    // Destroyed after the instance: a volume still attached refuses DeleteVolume.
+    ltInstance.addDependency(volumeA);
+    new cdk.CfnOutput(this, 'LtInstanceId', {
+      value: ltInstance.ref,
+      description: 'The instance launched from LaunchTemplate5630 (issue #5630)',
+    });
+    new cdk.CfnOutput(this, 'LaunchTemplateId', {
+      value: launchTemplate.ref,
+      description: 'The launch template LtInstance5630 launches from (issue #5630)',
+    });
+    new cdk.CfnOutput(this, 'LtVolumeAId', {
+      value: volumeA.ref,
+      description: 'Attached at /dev/sdf before Phase 1h, detached by it (issue #5630)',
+    });
+    new cdk.CfnOutput(this, 'LtVolumeBId', {
+      value: volumeB.ref,
+      description: 'Attached at /dev/sdg by Phase 1h (issue #5630)',
     });
 
     new cdk.CfnOutput(this, 'EbsKeyArn', {

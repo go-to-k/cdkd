@@ -278,6 +278,8 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       MetadataOptions: ['ModifyInstanceMetadataOptionsCommand'],
       // go-to-k/cdkd#5630: the update's members sit at the command's top level.
       PrivateDnsNameOptions: ['ModifyPrivateDnsNameOptionsCommand'],
+      // go-to-k/cdkd#5630: one AttachVolume per entry, its members at the top level.
+      Volumes: ['AttachVolumeCommand'],
     },
     transformed: {
       Monitoring:
