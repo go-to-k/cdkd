@@ -995,7 +995,7 @@ export const CHECK_GUIDANCE = {
     '```',
     '',
     'Add the attribute to that type\'s `case` in',
-    '`src/provisioning/cloud-control-provider.ts`, or allow-list it with a',
+    '`src/provisioning/cloud-control/enrich.ts`, or allow-list it with a',
     'rationale if AWS does not return it.',
   ],
   'sdk-wire-coverage': [

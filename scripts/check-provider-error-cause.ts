@@ -375,14 +375,15 @@ export const EXEMPTIONS: readonly CauseExemption[] = [
  * transitively extends {@link ERROR_ROOT}, with its `cause` parameter position
  * read off its own constructor (or inherited from its base when it declares
  * none). Provider-LOCAL classes are added per-file by {@link analyzeFile}, which
- * is what covers the route53 case.
+ * is what covers the route53 case; for a split provider, per FAMILY, since the
+ * class may be declared in one file of it and constructed in another.
  *
  * Note the positional index itself does not need fencing: adding a parameter
  * before `cause` makes every site of that class read `dropped`, which is loud.
  * It is the class SET that fails quietly, and that is what this derives.
  */
 function collectErrorClasses(
-  source: ts.SourceFile,
+  sources: readonly ts.SourceFile[],
   known: Map<string, number>
 ): Map<string, number> {
   const declarations: { name: string; base: string; causeIndex?: number }[] = [];
@@ -406,9 +407,10 @@ function collectErrorClasses(
     }
     ts.forEachChild(node, visit);
   };
-  visit(source);
+  for (const source of sources) visit(source);
 
-  // Resolve to a fixpoint: a subclass may be declared before its base.
+  // Resolve to a fixpoint: a subclass may be declared before its base, or in
+  // another file of the family.
   const table = new Map(known);
   const rooted = new Set<string>([ERROR_ROOT, ...known.keys()]);
   let changed = true;
@@ -431,7 +433,7 @@ function collectErrorClasses(
 export function buildErrorClassTable(errorHandlerPath = ERROR_HANDLER_PATH): ErrorClassTable {
   const text = readFileSync(errorHandlerPath, 'utf8');
   const source = parseSource(errorHandlerPath, text);
-  return collectErrorClasses(source, new Map());
+  return collectErrorClasses([source], new Map());
 }
 
 // ---------------------------------------------------------------------------
@@ -878,15 +880,17 @@ export function analyzeFile(
   familyTexts: readonly string[] = []
 ): CauseSite[] {
   const source = parseSource(fileName, sourceText);
-  // Provider-LOCAL error classes (route53's HostedZoneNameNotFoundError) are
-  // declared in the same file they are constructed in.
-  const classes = collectErrorClasses(source, new Map(table));
   // A split provider's files (`provider-companion-files.ts`) are ONE family: a
   // catch in one file can hand its caught value to a helper in another.
   const family = [
     source,
     ...familyTexts.map((text, index) => parseSource(`${fileName}#family${index}`, text)),
   ];
+  // Provider-LOCAL error classes (route53's HostedZoneNameNotFoundError) are
+  // declared in the same file they are constructed in, or, in a split provider,
+  // in another file of its family (`CloudControlOperationFailedError`, declared
+  // in `cloud-control/shared.ts` and constructed in `cloud-control/wait.ts`).
+  const classes = collectErrorClasses(family, new Map(table));
   const functions = collectFunctions(family);
   const context: ThreadingContext = { composers: importedComposers(source, moduleId) };
   const helperTargets = resolveHelperBindings(family, functions, context);

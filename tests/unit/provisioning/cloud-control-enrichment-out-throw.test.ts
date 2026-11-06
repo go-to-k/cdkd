@@ -26,7 +26,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vite-plus/test';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
+import { companionFiles } from '../../../scripts/provider-companion-files.ts';
 
 // `vi.hoisted` because `vi.mock` factories are hoisted above ordinary
 // top-level consts; the sibling suites in this directory use the same shape.
@@ -81,10 +82,21 @@ import {
   CloudControlProvider,
 } from '../../../src/provisioning/cloud-control-provider.js';
 
-const SOURCE = readFileSync(
-  join(process.cwd(), 'src/provisioning/cloud-control-provider.ts'),
-  'utf-8'
-);
+const PROVIDER_FILE = join(process.cwd(), 'src/provisioning/cloud-control-provider.ts');
+
+/**
+ * The provider file AND its companion files (`src/provisioning/cloud-control/`,
+ * recursively, #5835): the catch blocks live in the companions now, so reading
+ * the provider file alone would see none of them. Read per FILE, never
+ * concatenated, so a match's line is the line in its own file.
+ */
+const FAMILY: readonly { readonly file: string; readonly source: string }[] = [
+  PROVIDER_FILE,
+  ...companionFiles(PROVIDER_FILE),
+].map((file) => ({
+  file: relative(process.cwd(), file).split(sep).join('/'),
+  source: readFileSync(file, 'utf-8'),
+}));
 
 /**
  * The expression this issue is about, in every identifier spelling AND every
@@ -193,20 +205,31 @@ describe('cloud-control-provider bare String() out-throw (#3309)', () => {
     );
   });
 
+  it('reads the whole provider family, companion files included', () => {
+    // Non-vacuity for the fence below: the files that hold the catch blocks
+    // and the two replacements must be in the scan, not just the class file.
+    const files = FAMILY.map((f) => f.file);
+    expect(files).toContain('src/provisioning/cloud-control-provider.ts');
+    expect(files).toContain('src/provisioning/cloud-control/enrich.ts');
+    expect(files).toContain('src/provisioning/cloud-control/create.ts');
+    expect(files).toContain('src/provisioning/cloud-control/wait.ts');
+  });
+
   it('leaves exactly the one documented exception, and no sixteenth site', () => {
-    const matches = [...SOURCE.matchAll(BARE_STRINGIFY)];
-    const withContext = matches.map((m) => {
-      const before = SOURCE.slice(0, m.index ?? 0);
-      const line = before.split('\n').length;
-      const lineText = SOURCE.split('\n')[line - 1] ?? '';
-      // `//` and the ` * ` of a block comment, because this file documents the
-      // banned form in BOTH. Missing a comment shape is fail-LOUD (the mention
-      // counts as live and reds the fence rather than hiding a site), but a
-      // false red on an ordinary doc edit is still a false red.
-      const trimmed = lineText.trim();
-      const isComment = trimmed.startsWith('//') || trimmed.startsWith('*');
-      return { line, isComment };
-    });
+    const withContext = FAMILY.flatMap(({ file, source }) =>
+      [...source.matchAll(BARE_STRINGIFY)].map((m) => {
+        const before = source.slice(0, m.index ?? 0);
+        const line = before.split('\n').length;
+        const lineText = source.split('\n')[line - 1] ?? '';
+        // `//` and the ` * ` of a block comment, because this file documents the
+        // banned form in BOTH. Missing a comment shape is fail-LOUD (the mention
+        // counts as live and reds the fence rather than hiding a site), but a
+        // false red on an ordinary doc edit is still a false red.
+        const trimmed = lineText.trim();
+        const isComment = trimmed.startsWith('//') || trimmed.startsWith('*');
+        return { file, line, isComment };
+      })
+    );
 
     // ONE is inside a comment: the paragraph in the re-poll warn explaining why
     // the bare form is wrong there, written by go-to-k/cdkd#3236. It is prose
@@ -225,7 +248,14 @@ describe('cloud-control-provider bare String() out-throw (#3309)', () => {
     // check above already implies a non-zero match count, so a bare
     // `toBeGreaterThan(0)` would be dead. What a silently-stopped regex CANNOT
     // fake is the replacement's presence.
-    expect(SOURCE).toContain('describeAwsFailure(error).detail');
-    expect(SOURCE).toContain('describeAwsFailure(cleanupError).detail');
+    // Per file, so each replacement is pinned where its catch lives.
+    const sourceOf = (file: string): string =>
+      FAMILY.find((f) => f.file === file)?.source ?? '';
+    expect(sourceOf('src/provisioning/cloud-control/enrich.ts')).toContain(
+      'describeAwsFailure(error).detail'
+    );
+    expect(sourceOf('src/provisioning/cloud-control/create.ts')).toContain(
+      'describeAwsFailure(cleanupError).detail'
+    );
   });
 });

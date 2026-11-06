@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vite-plus/test';
 import {
   parseEnrichmentSwitch,
+  readEnrichmentSwitch,
+  loadEnrichmentSwitch,
+  latentGapMessage,
   classifyType,
   buildReport,
   findLatentGaps,
@@ -115,6 +118,67 @@ describe('parseEnrichmentSwitch', () => {
     expect(map.get('AWS::OpenSearchService::Domain')).toEqual(
       new Set(['DomainEndpoint', 'Arn'])
     );
+  });
+});
+
+describe('readEnrichmentSwitch (a split provider: delegator + companion function)', () => {
+  const delegatorFile = `
+    class CloudControlProvider {
+      enrichResourceAttributes(resourceType: string): Promise<Record<string, unknown>> {
+        return enrichResourceAttributes.call(this, resourceType);
+      }
+    }
+  `;
+  const companionFile = `
+    export async function enrichResourceAttributes(
+      this: CloudControlProvider,
+      resourceType: string
+    ): Promise<Record<string, unknown>> {
+      const enriched: Record<string, unknown> = {};
+      switch (resourceType) {
+        case 'AWS::X::Y':
+          enriched['Arn'] = 'arn';
+          break;
+      }
+      return enriched;
+    }
+  `;
+
+  it('reads the switch from the companion FUNCTION, passing over the delegator', () => {
+    const { file, byType } = readEnrichmentSwitch([
+      { path: 'p.ts', source: delegatorFile },
+      { path: 'c/enrich.ts', source: companionFile },
+    ]);
+    expect(file).toBe('c/enrich.ts');
+    expect(byType.get('AWS::X::Y')).toEqual(new Set(['Arn']));
+  });
+
+  it('throws when no file of the family holds the switch', () => {
+    expect(() => readEnrichmentSwitch([{ path: 'p.ts', source: delegatorFile }])).toThrow(
+      /expected exactly one enrichResourceAttributes switch.*found 0/
+    );
+  });
+
+  it('throws when two files hold one', () => {
+    expect(() =>
+      readEnrichmentSwitch([
+        { path: 'a.ts', source: companionFile },
+        { path: 'b.ts', source: companionFile },
+      ])
+    ).toThrow(/found 2/);
+  });
+
+  it('finds the real switch in src/provisioning/cloud-control/enrich.ts', () => {
+    const { file, byType } = loadEnrichmentSwitch();
+    expect(file).toBe('src/provisioning/cloud-control/enrich.ts');
+    // 25 case labels today; a floor, not the count.
+    expect(byType.size).toBeGreaterThanOrEqual(20);
+  });
+
+  it("names the switch's file in the critic's FAIL message", () => {
+    const message = latentGapMessage(loadEnrichmentSwitch().file);
+    expect(message).toContain('in src/provisioning/cloud-control/enrich.ts, OR');
+    expect(message).not.toContain('cloud-control-provider.ts');
   });
 });
 

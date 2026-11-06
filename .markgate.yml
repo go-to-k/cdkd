@@ -112,6 +112,9 @@ gates:
       # The CC provider's delete()/remnant-cleanup is deletion logic too —
       # it was missing from this scope until issue #1252 touched it.
       - "src/provisioning/cloud-control-provider.ts"
+      # Its method bodies, split out of it (#5835); moving code must not take
+      # it out of scope.
+      - "src/provisioning/cloud-control/**"
       # `region-check.ts` and `destroy-runner.ts` ACTIVATED the merge gate
       # (integ-destroy-gate.sh's provider_pattern / filtered_delete) while
       # sitting outside this list, which is a FAIL-OPEN, not a missing entry:
