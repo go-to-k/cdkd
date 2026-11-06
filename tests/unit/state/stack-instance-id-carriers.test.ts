@@ -30,7 +30,7 @@ const CARRIER = 'stackInstanceIdCarriedFrom(';
 /** Literals that build a record no state write ever persists. */
 const EXEMPT: ReadonlyArray<{ file: string; marker: string; reason: string }> = [
   {
-    file: 'src/cli/commands/local-start-api.ts',
+    file: 'src/cli/commands/local-start-api/state.ts',
     marker: 'const syntheticState: StackState = {',
     reason: 'an in-memory view for env-var substitution; never saved',
   },

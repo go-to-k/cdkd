@@ -204,7 +204,7 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
   }, ANALYZE_TIMEOUT_MS);
 
   // The live importer whose `ecr-puller.js` import the two probes below rewrite.
-  const PULLER_IMPORT = "import { parseEcrUri, pullEcrImage } from '../../local/ecr-puller.js';";
+  const PULLER_IMPORT = "import { parseEcrUri, pullEcrImage } from '../../../local/ecr-puller.js';";
 
   it('does not resurrect a symbol through a TYPE-only import binding', () => {
     // The `refs` set holds NAMES, not resolved bindings, so a value-position
@@ -212,9 +212,9 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     // runtime edge and mark the target live. Here that would silently un-orphan
     // `__resetStsCachesForTesting` and turn its annotation into a false "stale".
     const mutated = withMutation(
-      'src/cli/commands/local-start-api.ts',
+      'src/cli/commands/local-start-api/container-spec.ts',
       PULLER_IMPORT,
-      "import {\n  type __resetStsCachesForTesting,\n  parseEcrUri,\n  pullEcrImage,\n} from '../../local/ecr-puller.js';\nvoid __resetStsCachesForTesting;"
+      "import {\n  type __resetStsCachesForTesting,\n  parseEcrUri,\n  pullEcrImage,\n} from '../../../local/ecr-puller.js';\nvoid __resetStsCachesForTesting;"
     );
     expect(analyze(mutated).findings).toEqual([]);
   }, ANALYZE_TIMEOUT_MS);
@@ -223,9 +223,9 @@ describe('local reachability critic — must NOT fire on legitimate shims', () =
     // The twin of the probe above: without it, a green there could mean the
     // fixture cannot discriminate rather than that the type-only rule works.
     const mutated = withMutation(
-      'src/cli/commands/local-start-api.ts',
+      'src/cli/commands/local-start-api/container-spec.ts',
       PULLER_IMPORT,
-      "import {\n  __resetStsCachesForTesting,\n  parseEcrUri,\n  pullEcrImage,\n} from '../../local/ecr-puller.js';\nvoid __resetStsCachesForTesting;"
+      "import {\n  __resetStsCachesForTesting,\n  parseEcrUri,\n  pullEcrImage,\n} from '../../../local/ecr-puller.js';\nvoid __resetStsCachesForTesting;"
     );
     const stale = analyze(mutated).findings.filter((f) => f.kind === 'stale-annotation');
     expect(stale.map((f) => f.symbol)).toEqual(['__resetStsCachesForTesting']);
@@ -321,7 +321,7 @@ describe('local reachability critic — RED probes against real code', () => {
     // The quietest way to orphan a module: the file still imports it, the
     // import still resolves, and nothing at runtime calls it any more.
     const mutated = withMutation(
-      'src/cli/commands/local-start-api.ts',
+      'src/cli/commands/local-start-api/servers.ts',
       'import { warnSsrfRiskyUri }',
       'import { type warnSsrfRiskyUri as _WarnSsrfRiskyUri }'
     );

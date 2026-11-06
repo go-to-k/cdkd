@@ -30,6 +30,14 @@ const commandFamily = (file: string): string[] => {
   ];
 };
 
+/**
+ * The call that issues a command's first AWS request. The `cdkd local *`
+ * handlers publish `--role-arn` through `applyRoleArnForLocal` instead
+ * (`.claude/rules/local-engine-role-leak.md`).
+ */
+const firstAwsCall = (file: string): string =>
+  file.startsWith('local-') ? 'await applyRoleArnForLocal(' : 'await applyRoleArnIfSet(';
+
 /** A command's source: its {@link commandFamily}, joined in that order. */
 const commandSource = (file: string): string =>
   commandFamily(file)
@@ -42,14 +50,16 @@ describe('a split command is read with its directory', () => {
     .filter((f) => commandFamily(f).length > 1);
 
   it('finds the split commands — floor, so a derivation that matched nothing cannot pass', () => {
-    expect(families).toEqual(expect.arrayContaining(['drift.ts', 'export.ts', 'import.ts', 'state.ts']));
+    expect(families).toEqual(
+      expect.arrayContaining(['drift.ts', 'export.ts', 'import.ts', 'local-start-api.ts', 'state.ts'])
+    );
   });
 
   it.each(families)('%s: the family read holds its fold and its first AWS call', (file) => {
     // Per command: a family read that lost its directory would hold neither.
     const source = commandSource(file);
     expect(source).toContain('foldRegionOption(options)');
-    expect(source).toContain('await applyRoleArnIfSet(');
+    expect(source).toContain(firstAwsCall(file));
   });
 });
 
@@ -478,14 +488,14 @@ describe('the raw capture, the fold and the first AWS call stay in order', () =>
         const source = stripComments(readFileSync(member, 'utf8'));
         const name = member.slice(COMMANDS_DIR.length + 1);
         const folds = offsets(source, 'foldRegionOption(options)');
-        const roleArns = offsets(source, 'await applyRoleArnIfSet(');
+        const roleArns = offsets(source, firstAwsCall(file));
         // Each `applyRoleArnIfSet` must have a fold before it. Handlers with two
         // of each (`state.ts`, `events.ts`) are the reason this pairs them off
         // rather than comparing first-to-first.
         for (const [i, at] of roleArns.entries()) {
           expect(
             folds.filter((f) => f < at).length,
-            `${name}: applyRoleArnIfSet #${i + 1} has no fold above it in the same file`
+            `${name}: ${firstAwsCall(file)} #${i + 1} has no fold above it in the same file`
           ).toBeGreaterThanOrEqual(i + 1);
         }
       }
@@ -534,7 +544,8 @@ describe('every `cdkd local *` command folds the region it forwards (#2522)', ()
   });
 
   it.each(commandFiles)('%s folds --region somewhere', (file) => {
-    const code = stripComments(readFileSync(join(COMMANDS_DIR, file), 'utf8'));
+    // The whole family: a split command's handler lives under `<cmd>/`.
+    const code = stripComments(commandSource(file));
     const foldsInHandler =
       /\bfoldRegionOption\(options\)/.test(code) ||
       /\b(?:options|opts|args)\.region\s*=\s*canonicalizeRegion\(/.test(code);
@@ -555,7 +566,7 @@ describe('every `cdkd local *` command folds the region it forwards (#2522)', ()
     const handlerFolders: string[] = [];
     const wrapperFolders: string[] = [];
     for (const file of commandFiles) {
-      const code = stripComments(readFileSync(join(COMMANDS_DIR, file), 'utf8'));
+      const code = stripComments(commandSource(file));
       if (
         /\bfoldRegionOption\(options\)/.test(code) ||
         /\b(?:options|opts|args)\.region\s*=\s*canonicalizeRegion\(/.test(code)

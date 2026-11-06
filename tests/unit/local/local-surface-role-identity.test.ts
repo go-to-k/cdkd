@@ -232,6 +232,9 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
     // subdirectory would have left the population silently — and the ECS
     // service emulator shim is workload-facing with no `local-` prefix.
     expect(isInSurface('src/cli/commands/local/foo.ts')).toBe(true);
+    // A split command's directory: `local start-api`'s handler lives there.
+    expect(isInSurface('src/cli/commands/local-start-api/command.ts')).toBe(true);
+    expect(isInSurface('src/cli/commands/local-start-api/nested/deep.ts')).toBe(true);
     expect(isInSurface('src/cli/commands/local-invoke.ts')).toBe(true);
     expect(isInSurface('src/cli/commands/ecs-service-emulator.ts')).toBe(true);
     expect(isInSurface('src/local/nested/deep/thing.ts')).toBe(true);

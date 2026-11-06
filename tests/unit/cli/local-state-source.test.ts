@@ -516,6 +516,8 @@ describe('the local --from-cfn-stack surface names the API that actually runs (#
     'src/cli/commands/local-invoke.ts',
     'src/cli/commands/local-run-task.ts',
     'src/cli/commands/local-start-api.ts',
+    // The `fromCfnStack` option's JSDoc, since the start-api split (go-to-k/cdkd#5835).
+    'src/cli/commands/local-start-api/types.ts',
     'src/cli/commands/local-state-source.ts',
     'src/local/local-state-provider.ts',
   ];

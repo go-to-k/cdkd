@@ -5,6 +5,7 @@ import type { DiscoveredRoute, ResolvedStage } from 'cdk-local/internal';
 import { attachStageContext, buildHttpApiV2Event, buildStageMap } from 'cdk-local/internal';
 import { describe, expect, it } from 'vite-plus/test';
 import { createLocalStartApiCommand } from '../../../src/cli/commands/local-start-api.js';
+import { readLocalStartApiSource } from './_local-start-api-source.js';
 
 /**
  * Two `cdkd local` strings that asserted something the code contradicts.
@@ -231,7 +232,7 @@ describe('local start-api ECR fallback log names the real constraint (#2536)', (
    *
    * Widening the claim regex made it fire on four lines that are not about the
    * ECR pull at all: the cross-stack "same-region filter" in
-   * `local-run-task.ts`, "across same-region stacks" in `local-start-api.ts`,
+   * `local-run-task.ts`, "across same-region stacks" in `local-start-api/command.ts`,
    * and the two `NOT same-region-only` sentences this PR wrote as the FIX. So a
    * line offends only when it makes the claim, sits in ECR context, and is not
    * negating it.
@@ -351,8 +352,10 @@ describe('local start-api ECR fallback log names the real constraint (#2536)', (
     'src/cli/commands/local-invoke.ts': 1,
     // The cross-stack index scan's `same-region filter` — unrelated to ECR.
     'src/cli/commands/local-run-task.ts': 1,
-    // `across same-region stacks` (unrelated) + the fix's `NOT same-region-only`.
-    'src/cli/commands/local-start-api.ts': 2,
+    // The fix's `NOT same-region-only`. Since the start-api split
+    // (go-to-k/cdkd#5835) the unrelated `across same-region stacks` sits in
+    // `local-start-api/command.ts`, which names no ECR pull, so it left the population.
+    'src/cli/commands/local-start-api/container-spec.ts': 1,
     // The true fast-path description exempted by TRUE_STATEMENTS.
     'src/local/ecr-puller.ts': 1,
   };
@@ -443,10 +446,8 @@ describe('local start-api ECR fallback log names the real constraint (#2536)', (
   it("start-api's fallback log points at the constraint that IS real here", () => {
     // start-api is the one command in the family with no `--ecr-role-arn`, so
     // its message must say so rather than blaming the region.
-    const source = readFileSync(
-      join(SRC_DIR, 'cli', 'commands', 'local-start-api.ts'),
-      'utf8'
-    );
+    // The whole command: the log line sits in a module under `local-start-api/`.
+    const source = readLocalStartApiSource();
     const line = source
       .split('\n')
       .find((l) => l.includes('falling back to ECR pull'));

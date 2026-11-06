@@ -152,7 +152,7 @@ Index of every area: [code-layout.md](code-layout.md).
   answer for any value cdkd renders into a command it tells an operator to RUN,
   not just a state-key segment: `--state-bucket=attacker` is plain-identifier
   clean and still an option when pasted. Its second consumer is
-  `resolveProfileCredentials` in `local-start-api.ts`, gating an
+  `resolveProfileCredentials` in `cli/commands/local-start-api/credentials.ts`, gating an
   `aws sso login --profile <name>` hint, so tightening either half must ask what
   it costs that caller (go-to-k/cdkd#3377).
 - **src/cli/commands/synth.ts** - `resolveVerboseTemplatePath` is the ONE place

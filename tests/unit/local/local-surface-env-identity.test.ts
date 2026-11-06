@@ -408,6 +408,9 @@ describe('every identity reaching an emulated workload through process env or a 
     // watch ONE definition -- but they stay duplicated deliberately, so this
     // fence reds on its own terms rather than only through its sibling.
     expect(isInSurface('src/cli/commands/local/foo.ts')).toBe(true);
+    // A split command's directory: `local start-api`'s handler lives there.
+    expect(isInSurface('src/cli/commands/local-start-api/command.ts')).toBe(true);
+    expect(isInSurface('src/cli/commands/local-start-api/nested/deep.ts')).toBe(true);
     expect(isInSurface('src/cli/commands/local-invoke.ts')).toBe(true);
     expect(isInSurface('src/cli/commands/local-profile-credentials-file.ts')).toBe(true);
     expect(isInSurface('src/cli/commands/ecs-service-emulator.ts')).toBe(true);

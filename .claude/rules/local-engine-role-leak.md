@@ -3,6 +3,7 @@ description: Which identity a `cdkd local` workload resolves as under `--role-ar
 paths:
   - 'src/cli/commands/local-state-source.ts'
   - 'src/cli/commands/local-start-*.ts'
+  - 'src/cli/commands/local-start-api/**'
   - 'src/cli/commands/local-run-task.ts'
   - 'src/local/local-role-arn.ts'
 ---
