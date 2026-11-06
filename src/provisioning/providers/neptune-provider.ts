@@ -587,7 +587,8 @@ const CLUSTER_UNMEASURED_ON_REMOVAL = ['NetworkType', 'ServerlessScalingConfigur
  *      to `available`.
  *
  * Neptune's API shapes mirror the RDS API exactly (the AWS team copied
- * them across); see `rds-provider.ts` for the structural template.
+ * them across); see `rds-provider.ts` and its `rds/` directory for the
+ * structural template.
  */
 export class NeptuneProvider implements ResourceProvider {
   private neptuneClient?: NeptuneClient;

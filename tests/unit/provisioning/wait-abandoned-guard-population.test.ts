@@ -97,7 +97,8 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   { file: 'provisioning/providers/elasticache-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/elbv2-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/neptune-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
-  { file: 'provisioning/providers/rds-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  // RDSProvider's `isNotFoundError`, in its companion directory (`rds/`).
+  { file: 'provisioning/providers/rds/calls.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/s3-vectors-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
 ];
 
