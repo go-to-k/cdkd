@@ -70,7 +70,6 @@ src/provisioning/providers/eventbridge-rule-provider.ts
 src/provisioning/providers/fsx-filesystem-provider.ts
 src/provisioning/providers/iam-managed-policy-provider.ts
 src/provisioning/providers/iam-policy-provider.ts
-src/provisioning/providers/iam-role-provider.ts
 src/provisioning/providers/kinesis-provider.ts
 src/provisioning/providers/kms-provider.ts
 src/provisioning/providers/logs-loggroup-provider.ts

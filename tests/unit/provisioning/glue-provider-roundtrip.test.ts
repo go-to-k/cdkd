@@ -178,7 +178,7 @@ describe('GlueProvider read-update round-trip', () => {
     expect(input.TableInput.Parameters).toEqual({});
     expect(input.TableInput.PartitionKeys).toEqual([]);
     // Description: '' must reach the API (truthy-gate guard — see
-    // iam-role-provider.ts:270-276 for the canonical pattern).
+    // iam-role/update.ts, `descriptionInput`, for the canonical pattern).
     expect(input.TableInput.Description).toBe('');
     // ViewOriginalText / ViewExpandedText / StorageDescriptor were not
     // in the snapshot (Class 1 — only emitted by readCurrentState when
