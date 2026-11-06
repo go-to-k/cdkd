@@ -16,6 +16,7 @@ import {
   wrapMaskedAwsError,
 } from '../../../deployment/retryable-errors.js';
 import type { AppSyncProvider } from '../appsync-provider.js';
+import { displayAppSyncPhysicalId } from './shared.js';
 
 /**
  * Apply a Tags diff to a GraphqlApi via TagResource / UntagResource.
@@ -130,7 +131,9 @@ export function wrapUpdateError(
  * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
  * pointer (go-to-k/cdkd#2319), as in {@link withheldAwsFailure}. A
  * cdkd-authored or transport error, or a non-`Error` throw, keeps its text
- * unchanged, as before; the thrown message is masked by the deploy engine.
+ * masked by `mask`, stamped exactly when the mask changed it, as
+ * {@link wrapUpdateError} does: the deploy engine masks a thrown message only
+ * with the needles it holds, and an ApiKey id is not one (go-to-k/cdkd#5860).
  * Every delete checks {@link isNotFoundError} before it wraps, and stamps a
  * wrap naming another `NotFound` class `markNotGone`: the class itself would
  * otherwise read as "already deleted".
@@ -145,7 +148,7 @@ export function wrapCaughtError(
   build: (text: string) => ProvisioningError
 ): ProvisioningError {
   const failure = describeAwsFailure(error);
-  if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
+  if (!(error instanceof Error) || !failure.redacted) return wrapMaskedAwsError(mask, error, build);
   return this.withheldAwsFailure(
     mask,
     failure.detail,
@@ -218,7 +221,9 @@ export function getAttribute(
   resourceType: string,
   attributeName: string
 ): Promise<unknown> {
-  this.logger.debug(`getAttribute for ${resourceType} ${physicalId}: ${attributeName}`);
+  this.logger.debug(
+    `getAttribute for ${resourceType} ${displayAppSyncPhysicalId(resourceType, physicalId)}: ${attributeName}`
+  );
   return Promise.resolve(undefined);
 }
 

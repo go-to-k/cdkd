@@ -600,11 +600,13 @@ describe('AWS::AppSync::* composite id guard', () => {
   it('guards createApiKey, whose apiKeyId only exists after CreateApiKey', async () => {
     // The post-call site. Both segments are AWS-generated, so the refusal is
     // driven by an AWS response carrying a separator rather than by a template.
+    // The key IS the credential, so the refusal quotes only its last four
+    // characters (go-to-k/cdkd#5860).
     mockAppSyncSend.mockResolvedValueOnce({ apiKey: { id: 'da2|xyz' } });
     const provider = new AppSyncProvider();
     await expect(
       provider.create('Key', 'AWS::AppSync::ApiKey', { ApiId: 'api1' })
-    ).rejects.toThrow(/apiKeyId 'da2\|xyz'/);
+    ).rejects.toThrow(/apiKeyId '\*\*\*\*\|xyz'/);
   });
 
   it('reports the createApiKey refusal AS a refusal, not as a creation failure', async () => {
