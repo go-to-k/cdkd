@@ -36,13 +36,37 @@ const commandSource = (file: string): string =>
     .map((f) => readFileSync(f, 'utf8'))
     .join('\n');
 
+/**
+ * Does `<cmd>.ts` define a command? Derived from the FACTORY, as the
+ * `cdkd local *` population below is: a file with a sibling directory is not
+ * necessarily a command. `diff-recursive.ts` is the helper module `diff.ts`
+ * walks nested stacks through, split into `diff-recursive/`, and it takes no
+ * `--region` of its own.
+ */
+const definesCommand = (file: string): boolean =>
+  /export function create\w*Command\s*\(/.test(readFileSync(join(COMMANDS_DIR, file), 'utf8'));
+
 describe('a split command is read with its directory', () => {
-  const families = readdirSync(COMMANDS_DIR)
+  const splitModules = readdirSync(COMMANDS_DIR)
     .filter((f) => f.endsWith('.ts'))
     .filter((f) => commandFamily(f).length > 1);
+  const families = splitModules.filter(definesCommand);
+  const helpers = splitModules.filter((f) => !definesCommand(f));
 
   it('finds the split commands — floor, so a derivation that matched nothing cannot pass', () => {
     expect(families).toEqual(expect.arrayContaining(['drift.ts', 'export.ts', 'import.ts', 'state.ts']));
+  });
+
+  it('finds the split helper modules — floor, so the factory predicate is load-bearing', () => {
+    expect(helpers).toEqual(expect.arrayContaining(['diff-recursive.ts']));
+  });
+
+  it.each(helpers)('%s: a split module with no command factory resolves no region of its own', (file) => {
+    // The exclusion above is safe only while this holds: a helper that started
+    // folding or assuming a role would be a command in all but its factory.
+    const source = stripComments(commandSource(file));
+    expect(source).not.toContain('foldRegionOption(');
+    expect(source).not.toContain('applyRoleArnIfSet(');
   });
 
   it.each(families)('%s: the family read holds its fold and its first AWS call', (file) => {
