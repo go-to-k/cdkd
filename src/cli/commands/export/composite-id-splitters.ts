@@ -115,7 +115,7 @@ export type CompositeIdSplitter = (
 ) => CompositeIdResult;
 
 export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
-  // cdkd stores `restApiId|resourceId|httpMethod` (apigateway-provider.ts);
+  // cdkd stores `restApiId|resourceId|httpMethod` (apigateway/method.ts);
   // CFn primary identifier is [RestApiId, ResourceId, HttpMethod] — same
   // order, and all three are writable Properties of AWS::ApiGateway::Method.
   'AWS::ApiGateway::Method': (id) => {
@@ -412,7 +412,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
       propertiesOverlay: {},
     };
   },
-  // cdkd's SDK provider stores the BARE `deploymentId` (apigateway-provider.ts's
+  // cdkd's SDK provider stores the BARE `deploymentId` (apigateway/resource-deployment.ts's
   // `createDeployment`); the Cloud Control path stores `deploymentId|restApiId`.
   // CFn primary identifier is [DeploymentId, RestApiId] with `DeploymentId`
   // read-only, so the overlay narrows to `RestApiId` (issue #1692).
@@ -422,7 +422,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     childFirstInCompositeId: true,
     narrowOverlayToRestApiId: true,
   }),
-  // cdkd's SDK provider stores the BARE `stageName` (apigateway-provider.ts's
+  // cdkd's SDK provider stores the BARE `stageName` (apigateway/stage.ts's
   // `createStage`); the Cloud Control path stores `restApiId|stageName`.
   // CFn primary identifier is [RestApiId, StageName] and the type has NO
   // read-only properties (live `DescribeType`, us-east-1, 2026-08-12), so the
@@ -434,7 +434,7 @@ export const COMPOSITE_ID_SPLITTERS: Record<string, CompositeIdSplitter> = {
     childFirstInCompositeId: false,
     narrowOverlayToRestApiId: false,
   }),
-  // cdkd's SDK provider stores the BARE `authorizerId` (apigateway-provider.ts's
+  // cdkd's SDK provider stores the BARE `authorizerId` (apigateway/authorizer.ts's
   // `createAuthorizer`); the Cloud Control path stores `restApiId|authorizerId`.
   // CFn primary identifier is [RestApiId, AuthorizerId] with `AuthorizerId`
   // read-only, so the overlay narrows to `RestApiId` (issue #1692).
