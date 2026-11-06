@@ -92,7 +92,7 @@ export const MUTUALLY_EXCLUSIVE_PROPERTIES: ReadonlyMap<string, readonly Mutuall
       [
         {
           // Hand-duplicated from `ROUTE_DESTINATION_KEYS` in
-          // `src/provisioning/providers/ec2-provider.ts` (module-private
+          // `src/provisioning/providers/ec2/network-support.ts` (module-private
           // there). Exporting it would remove the duplication AND the two
           // fence tests below, but would make this pre-flight module — loaded
           // on every deploy before any provider is chosen — import a 5k-line
