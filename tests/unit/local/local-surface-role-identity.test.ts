@@ -3,10 +3,14 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vite-plus/test';
 
 import {
+  CLIENT_CONSTRUCTION,
   clientSiteKind,
+  constructionStatement,
+  CREDENTIAL_OVERRIDE,
   EXTRA_SURFACE_FILES,
   hasAnnotationAbove,
   isAnnotationCommentLine,
+  isClientChannelLine,
   isCommentLine,
   isInSurface,
   stripComments,
@@ -40,10 +44,24 @@ import {
  * THREE SHAPES REACH `awsClientDefaults`, and counting only the first made this
  * file's headline claim false for the others. `clientSiteKind` in
  * `_local-surface-scope.ts` owns that distinction and why a `new AwsClients`
- * bag and a spread of the credential helper take only the annotation.
+ * bag and a spread of the credential helper take only the annotation. A FOURTH
+ * shape reaches no helper at all: a direct `new STSClient({ region })` builds on
+ * the SDK default chain, which under `--role-arn` is the role's env triple
+ * (issue #5866). Every direct `new <Name>Client(` is therefore scanned to its
+ * closing paren, and one spreading no helper is a `bareClient` site.
  *
- * WHAT THIS FENCE STILL CANNOT SEE, recorded rather than implied away: a client
- * CONSTRUCTED ELSEWHERE and injected. `resolveEcsSecrets` accepts
+ * A construction choosing its own credentials (`credentials:`, `fromEnv()`),
+ * or spreading an OPAQUE value (`...overrides`, which may carry them), is a
+ * `credentialOverride` site even beside a helper, which it overrides.
+ *
+ * WHAT THIS FENCE STILL CANNOT SEE, recorded rather than implied away: a
+ * constructor bound under another name (`const { STSClient: S } = ...; new
+ * S(...)`, or `const C = STSClient; new C({})`), a v3 aggregated client
+ * (`new STS(...)`, no `Client` suffix), and a client CONSTRUCTED ELSEWHERE and
+ * injected. One thing it sees but cannot re-ask: an override added later to a
+ * construction whose reason was written for its helper is governed by that
+ * same reason — the annotation is per construction, not per spread.
+ * `resolveEcsSecrets` accepts
  * `secretsManagerClient` / `ssmClient` for tests, and an injected client's
  * identity was decided at its own construction site — outside this surface, or
  * outside `src/**` entirely. That seam is documented at the option itself as
@@ -58,55 +76,202 @@ import {
  */
 const ANNOTATION = 'cdkd-local-role-identity:';
 
+/**
+ * Two construction shapes (issue #5866), each annotation-only:
+ *
+ *   - `bareClient` — a direct `new <Name>Client(` spreading none of the
+ *     helpers. It runs on the SDK default chain, i.e. the role's env triple
+ *     under `--role-arn`; adopting `awsClientDefaults` is the other way out.
+ *   - `credentialOverride` — a construction choosing its credentials
+ *     explicitly (`CREDENTIAL_OVERRIDE`), helper or not. The explicit choice
+ *     replaces whatever the helper resolved, so the helper's opt-out says
+ *     nothing about it; the reason has to.
+ */
+type SiteKind = ClientSiteKind | 'bareClient' | 'credentialOverride';
+type ConstructionKind = 'covered' | 'bareClient' | 'credentialOverride';
+
 interface Site {
   file: string;
   line: number;
   text: string;
-  kind: ClientSiteKind;
+  kind: SiteKind;
   optsOut: boolean;
   annotated: boolean;
 }
 
-function collectSites(): Site[] {
+/**
+ * Classify a direct client construction: `covered` when its statement spreads
+ * a helper and picks no credentials (the helper's line is the site), else one
+ * of the two construction sites. `lines` is how many lines the statement spans
+ * (`undefined` when unbalanced within the cap, which fails closed to a site).
+ */
+function constructionAt(
+  lines: string[],
+  index: number
+): { kind: ConstructionKind; span: number } | undefined {
+  const code = stripComments(lines[index] ?? '');
+  if (isCommentLine(lines[index] ?? '') || !CLIENT_CONSTRUCTION.test(code)) return undefined;
+  const statement = constructionStatement(lines, index);
+  if (statement === undefined) return { kind: 'bareClient', span: 1 };
+  const span = statement.split('\n').length;
+  if (
+    CREDENTIAL_OVERRIDE.test(statement) ||
+    OPAQUE_SPREAD.test(statement) ||
+    OPAQUE_KEYS.test(statement) ||
+    hasOpaqueParenSpread(statement)
+  ) {
+    return { kind: 'credentialOverride', span };
+  }
+  if (clientSiteKind(statement) !== undefined) return { kind: 'covered', span };
+  return { kind: 'bareClient', span };
+}
+
+/**
+ * A spread of anything but a helper call or an inline literal: `...credOpts`,
+ * `...this.config`, `...makeOptions()`. Its contents are not on the line, so
+ * it may carry `credentials` the override check cannot see — and, spread after
+ * a helper, replace what the helper resolved. An inline `...(x && { region })`
+ * or `...{ region }` is spelled out and judged by `CREDENTIAL_OVERRIDE`.
+ */
+const OPAQUE_SPREAD =
+  /\.\.\.\s*(?!(?:awsClientDefaults|ambientClientDefaults|clientDefaultsFor)\s*\()[A-Za-z_$]/;
+
+/**
+ * Keys the line does not spell: `Object.assign(...)` merging a value into the
+ * config, and a COMPUTED property (`{ [credKey]: v }`), either of which can be
+ * `credentials`. An index inside a ternary (`a ? x[0] : y`) is not one — the
+ * bracket must open a property, after `{` or `,`.
+ */
+const OPAQUE_KEYS = /\bObject\s*\.\s*assign\s*\(|[{,]\s*\[[^\]]+\]\s*:/;
+
+/**
+ * Does a parenthesised spread hide a value? `...(x && { region })` and
+ * `...(x ? { a } : {})` spell their objects out and are judged on what they
+ * say; `...(cond && opts)` or `...(useRole ? roleOpts : {})` spread a value
+ * whose keys are not on the line, exactly as `...opts` does. The object
+ * literals are blanked to `{}` (balanced) before the shape is tested.
+ */
+function hasOpaqueParenSpread(statement: string): boolean {
+  for (const m of statement.matchAll(/\.\.\.\s*\(/g)) {
+    let depth = 0;
+    let content: string | undefined;
+    for (let i = (m.index ?? 0) + m[0].length - 1; i < statement.length; i++) {
+      const ch = statement[i];
+      if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) {
+        content = statement.slice((m.index ?? 0) + m[0].length, i);
+        break;
+      }
+    }
+    if (content === undefined) return true;
+    let blanked = content;
+    for (let prev = ''; prev !== blanked; ) {
+      prev = blanked;
+      blanked = blanked.replace(/\{[^{}]*\}/g, '{}');
+    }
+    const inline =
+      /&&\s*\{\}\s*$/.test(blanked) || /\?\s*\{\}\s*:\s*\{\}\s*$/.test(blanked);
+    if (!inline) return true;
+  }
+  return false;
+}
+
+/**
+ * Is a construction decided by an annotation ABOVE it, or by one INSIDE its own
+ * statement? The existing sites write the reason inside the braces, directly
+ * over the spread it explains, and that reason is about this construction.
+ */
+function constructionAnnotated(lines: string[], index: number, span: number): boolean {
+  if (hasAnnotationAbove(lines, index, ANNOTATION)) return true;
+  for (let i = index + 1; i < index + span && i < lines.length; i++) {
+    if (isAnnotationCommentLine(lines[i] ?? '', ANNOTATION)) return true;
+  }
+  return false;
+}
+
+type SiteVerdict = Pick<Site, 'kind' | 'optsOut' | 'annotated'>;
+
+/**
+ * The ONE per-line decision `collectSites` makes, so a case driving it drives
+ * the walk's own wiring: the site on this line, if any, and whether it starts a
+ * construction that spreads a helper (the construction scan's floor).
+ */
+function classifyLine(lines: string[], index: number): { site?: SiteVerdict; covered: boolean } {
+  // Skip a line that is ENTIRELY prose before stripping. `stripComments`
+  // does not touch a JSDoc ` * ` continuation, so a doc paragraph spelling
+  // `awsClientDefaults()` classified as a SITE and demanded a verdict — the
+  // one place this fence still disagreed with its sibling about "is this
+  // line code or prose", which is exactly what `_local-surface-scope.ts`
+  // exists to make impossible.
+  if (isCommentLine(lines[index] ?? '')) return { covered: false };
+  const code = stripComments(lines[index] ?? '');
+  const construction = constructionAt(lines, index);
+  if (construction !== undefined && construction.kind !== 'covered') {
+    // Precedence over a helper on the SAME line: a single-line override's
+    // `ignoreAssumedRole` opts out of nothing the client will use.
+    return {
+      site: {
+        kind: construction.kind,
+        optsOut: false,
+        annotated: constructionAnnotated(lines, index, construction.span),
+      },
+      covered: false,
+    };
+  }
+  const covered = construction?.kind === 'covered';
+  const kind = clientSiteKind(code);
+  if (kind === undefined) return { covered };
+  const site: SiteVerdict = {
+    kind,
+    // Only a direct `awsClientDefaults(...)` spread can take the option; the
+    // other two shapes never accept it, so the text there opts out of nothing.
+    optsOut: kind === 'awsClientDefaults' && code.includes('ignoreAssumedRole: true'),
+    // Issue #3250 item 6: a fixed 4-line window, which FOUR of the sites
+    // below sat exactly on. `hasAnnotationAbove` walks the enclosing
+    // statement instead, so a rewrapped word cannot drop a decided site to
+    // undecided — see its doc for why that is not simply "a wider window".
+    annotated: hasAnnotationAbove(lines, index, ANNOTATION),
+  };
+  return { site, covered };
+}
+
+/**
+ * The sites, plus how many direct constructions spread a helper — the
+ * construction scan's own floor, since no construction site exists to count.
+ */
+function collectSites(): { sites: Site[]; coveredConstructions: number } {
   const sites: Site[] = [];
+  let coveredConstructions = 0;
   for (const file of surfaceFiles()) {
     if (!isInSurface(file)) continue;
     const lines = readFileSync(file, 'utf8').split('\n');
     lines.forEach((text, i) => {
-      // Skip a line that is ENTIRELY prose before stripping. `stripComments`
-      // does not touch a JSDoc ` * ` continuation, so a doc paragraph spelling
-      // `awsClientDefaults()` classified as a SITE and demanded a verdict — the
-      // one place this fence still disagreed with its sibling about "is this
-      // line code or prose", which is exactly what `_local-surface-scope.ts`
-      // exists to make impossible. No such line exists today; it is a loud
-      // failure rather than a silent one, hence a fix and not a blocker.
-      if (isCommentLine(text)) return;
-      const code = stripComments(text);
-      const kind = clientSiteKind(code);
-      if (kind === undefined) return;
-      sites.push({
-        file,
-        line: i + 1,
-        text: text.trim(),
-        kind,
-        // Only a direct `awsClientDefaults(...)` spread can take the option; the
-        // other two shapes never accept it, so the text there opts out of nothing.
-        optsOut: kind === 'awsClientDefaults' && code.includes('ignoreAssumedRole: true'),
-        // Issue #3250 item 6: a fixed 4-line window, which FOUR of the sites
-        // below sat exactly on. `hasAnnotationAbove` walks the enclosing
-        // statement instead, so a rewrapped word cannot drop a decided site to
-        // undecided — see its doc for why that is not simply "a wider window".
-        annotated: hasAnnotationAbove(lines, i, ANNOTATION),
-      });
+      const { site, covered } = classifyLine(lines, i);
+      if (covered) coveredConstructions++;
+      if (site !== undefined) sites.push({ file, line: i + 1, text: text.trim(), ...site });
     });
   }
-  return sites;
+  return { sites, coveredConstructions };
 }
 
 describe('every AWS client on the `cdkd local` surface declares whose identity it uses', () => {
-  const sites = collectSites();
+  const { sites, coveredConstructions } = collectSites();
 
   it('sees the population it claims to guard', () => {
+    // The construction scan (issue #5866) finds no `bareClient` today, so its
+    // liveness is this count: every direct `new <Name>Client(` that spreads a
+    // helper and picks no credentials. Measured 2026-11-07: 21, plus one
+    // `credentialOverride` (`ecr-puller.ts`'s ECR client, whose
+    // `--ecr-role-arn` credentials replace the helper's), floored below. A
+    // scan that stopped matching or stopped balancing parens would drop them,
+    // not pass silently.
+    expect(
+      sites.filter((s) => s.kind === 'credentialOverride').length,
+      '`credentialOverride` sites'
+    ).toBeGreaterThanOrEqual(1);
+    expect(coveredConstructions, 'direct client constructions spreading a helper').toBeGreaterThanOrEqual(
+      18
+    );
     // Floors, so a broken walk or a renamed helper reports a failure rather
     // than a vacuous pass. The floors sit below the measured population so
     // ordinary deletions do not trip them, and each SHAPE carries its own:
@@ -139,7 +304,11 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
         '`--from-cfn-stack` it opts out, under `--from-state` / no source it is the DEPLOY ' +
         'account, runs as the role and takes the comment. If it is genuinely cdkd calling AWS as itself, write a ' +
         '`cdkd-local-role-identity: <reason>` comment above it. A `new AwsClients({...})` ' +
-        'bag has no opt-out to pass and therefore takes the comment.'
+        'bag has no opt-out to pass and therefore takes the comment. A `new <Name>Client(...)` ' +
+        'spreading no helper runs on the SDK default chain — the role, under `--role-arn` — so ' +
+        'spread `awsClientDefaults({ ignoreAssumedRole: true })` into it or write the comment. ' +
+        'A construction that picks its own `credentials` overrides any helper, so it takes the ' +
+        'comment (above the construction or inside its braces).'
     ).toEqual([]);
   });
 
@@ -171,6 +340,98 @@ describe('every AWS client on the `cdkd local` surface declares whose identity i
       'ambientClientDefaults'
     );
     expect(clientSiteKind(stripComments('  x(); // ...ambientClientDefaults(),'))).toBeUndefined();
+  });
+
+  it('classifies a direct client construction by whether it spreads a helper (#5866)', () => {
+    // Through `classifyLine`, the walk's own per-line decision, so dropping a
+    // construction arm from the WIRING reds here, not only from a helper.
+    const at = (lines: string[]) => {
+      const { site, covered } = classifyLine(lines, 0);
+      return covered ? 'covered' : site?.kind;
+    };
+    expect(at(['  const sts = new STSClient({ region });'])).toBe('bareClient');
+    expect(at(['  const sts = new sts.STSClient({ region });'])).toBe('bareClient');
+    expect(at(['  const sts = new STSClient();'])).toBe('bareClient');
+    expect(at(['  const ecr = new ECRClient({', '    region,', '  });'])).toBe('bareClient');
+    // Each helper, across lines, with a comment in between.
+    expect(
+      at([
+        '  const sts = new STSClient({',
+        '    // a comment naming nothing',
+        '    ...awsClientDefaults({ ignoreAssumedRole: true }),',
+        '  });',
+      ])
+    ).toBe('covered');
+    expect(at(['  new ECRClient({ ...clientDefaultsFor(c), region })'])).toBe('covered');
+    expect(at(['  new ECRClient({ ...ambientClientDefaults() })'])).toBe('covered');
+    // The helper must be INSIDE this construction, not in the next statement.
+    expect(
+      at(['  const sts = new STSClient({ region });', '  const x = awsClientDefaults();'])
+    ).toBe('bareClient');
+    // A helper only named in a trailing comment is not spread.
+    expect(at(['  new STSClient({ region }); // ...awsClientDefaults()'])).toBe('bareClient');
+    // Unbalanced within the cap: fails closed to a site.
+    expect(at(['  new STSClient({', ...Array.from({ length: 70 }, () => '    a,')])).toBe(
+      'bareClient'
+    );
+    // Not a construction: the bag (its own shape), a type position, a comment.
+    expect(at(['  const c = new AwsClients({ region });'])).toBe('AwsClients');
+    expect(at(['  let sts: InstanceType<typeof STSClient>;'])).toBeUndefined();
+    expect(at(['  // new STSClient({ region })'])).toBeUndefined();
+
+    // A bare construction is undecided until annotated — above it or inside it.
+    expect(classifyLine(['  new STSClient({ region });'], 0).site?.annotated).toBe(false);
+    expect(
+      classifyLine(['  // cdkd-local-role-identity: cdkd itself', '  new STSClient({ region });'], 1)
+        .site?.annotated
+    ).toBe(true);
+
+    // The disjointness case's comparand counts a construction as client-channel.
+    expect(isClientChannelLine('  const sts = new STSClient({ region });')).toBe(true);
+    expect(isClientChannelLine('  const x = 1;')).toBe(false);
+  });
+
+  it('makes a construction that picks its own credentials a site, helper or not (#5866)', () => {
+    const override = [
+      '  const sts = new STSClient({',
+      '    ...awsClientDefaults({ ignoreAssumedRole: true }),',
+      '    credentials: fromEnv(),',
+      '  });',
+    ];
+    const first = classifyLine(override, 0);
+    expect(first.covered).toBe(false);
+    expect(first.site).toEqual({ kind: 'credentialOverride', optsOut: false, annotated: false });
+    // A reason written inside the braces governs the construction it sits in.
+    const decided = [override[0]!, '    // cdkd-local-role-identity: why', ...override.slice(1)];
+    expect(classifyLine(decided, 0).site?.annotated).toBe(true);
+    // Shorthand, a provider call, and a single line all count.
+    for (const statement of [
+      '  new ECRClient({ ...clientDefaultsFor(c), credentials });',
+      '  new ECRClient({ ...clientDefaultsFor(c), ...(assumed && { credentials: assumed }) });',
+      '  new STSClient({ credentials: fromNodeProviderChain() });',
+      '  new STSClient({ credentialDefaultProvider: defaultProvider() });',
+      // An opaque spread may carry `credentials` the line never spells.
+      '  new STSClient({ ...awsClientDefaults({ ignoreAssumedRole: true }), ...credOpts });',
+      '  new STSClient({ ...awsClientDefaults(), ...this.config });',
+      '  new STSClient({ ...awsClientDefaults(), ...makeOptions() });',
+      '  new STSClient({ ...awsClientDefaults(), ...(useRole ? roleOpts : {}) });',
+      '  new STSClient({ ...awsClientDefaults(), ...(cond && opts) });',
+      '  new STSClient(Object.assign({ ...awsClientDefaults() }, extra));',
+      '  new STSClient({ ...awsClientDefaults(), [credKey]: v });',
+    ]) {
+      expect(classifyLine([statement], 0).site?.kind, statement).toBe('credentialOverride');
+    }
+    // An inline spread is spelled out on the line and judged on what it says.
+    for (const statement of [
+      '  new STSClient({ ...awsClientDefaults(), ...(x ? { region } : {}) });',
+      '  new STSClient({ ...awsClientDefaults(), ...(r && { region: canon(r) }) });',
+      '  new STSClient({ ...awsClientDefaults(), ...(region && { region }) });',
+      '  new STSClient({ ...clientDefaultsFor(c), ...{ region } });',
+      '  new STSClient({ ...awsClientDefaults(), region: useA ? regions[0] : r });',
+    ]) {
+      expect(classifyLine([statement], 0).covered, statement).toBe(true);
+    }
+    expect(CREDENTIAL_OVERRIDE.test('...clientDefaultsFor(credentialConfig)')).toBe(false);
   });
 
   it('refuses a trailing comment as a verdict, and an empty reason as an annotation', () => {

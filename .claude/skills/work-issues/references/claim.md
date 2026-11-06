@@ -62,6 +62,8 @@ Claiming to avoid collision with parallel agents."
 A lane's `Agent` call goes in
 a LATER message, after the read-back below: sent beside a refused post, two
 lanes launched briefed "claim posted" (#5637).
+A tests- or scripts-only fix runs every grep below too: #5889 and #5890 missed
+a suite and two `.claude/rules` files their fixes made false.
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
 that list**: beside the fix, its unit test and (user-visible) its
 `changelog.d/entries/` file, each EXISTING suite whose

@@ -24,9 +24,9 @@ takes the inner directory and its uncommitted work with it.
 **The PARENT computes which case applies BEFORE stage 0**: read
 `references/launch-mode.md` and run the probe it holds (the ONLY copy).
 
-- Before stage 0, because §2's collision scan consumes the answer: IN-PLACE its
-  relative `.claude/worktrees/<w>` paths resolve to nothing and the scan reports
-  an empty board, reading as "no competing agents".
+- Before stage 0, because §4's claim naming and §5's worktree placement consume
+  the answer, and the stages before them run where it cannot be computed (next
+  bullet).
 - In the PARENT, because stages 0–3 go to a read-only subagent whose return
   payload carries no git state, so an answer computed there never reaches the
   party running `git worktree add`.

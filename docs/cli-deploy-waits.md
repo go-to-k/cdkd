@@ -41,9 +41,11 @@ cause rather than answered with the gateway's ID: the gateway stayed
 
 cdkd normally checks that the instance's `IamInstanceProfile` was attached.
 Under `--no-wait` it skips that check and prints a warning that names the
-instance. An instance that declares `Volumes` is the exception: attaching a
-volume needs a `running` instance, so it waits for `running` and gets the
-check too.
+instance. An instance that declares `Volumes` or `SsmAssociations` is the
+exception: attaching a volume needs a `running` instance, and an SSM
+association needs the instance profile this check confirms, so it waits for
+`running` and gets the check too. The association itself is not waited on:
+the deploy returns while it is still `Pending`, as CloudFormation does.
 
 The check exists because `RunInstances` attaches an instance profile
 asynchronously, and can finish with none attached when the profile was created

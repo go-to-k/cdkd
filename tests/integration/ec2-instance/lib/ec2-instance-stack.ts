@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 /**
  * EC2 Instance example stack
@@ -66,6 +67,12 @@ import * as kms from 'aws-cdk-lib/aws-kms';
  * Issue #5630 (fourth slice): a fifth instance launches from a launch
  * template with an attached `Volumes` entry, which Phase 1h swaps for another
  * volume at another device in place.
+ *
+ * Issue #5630 (fifth slice): a sixth instance launches with
+ * LicenseSpecifications and an SsmAssociations entry (with the role and
+ * instance profile the association needs); Phases 1l-1o change the
+ * association in place, remove it, add it back, and drop the license (a
+ * replacement).
  *
  * REMOVAL phases (issue #1160; CloudFormation A/B in go-to-k/cdkd#1160
  * issuecomment-6281778130). CDKD_TEST_REMOVAL=true drops MetadataOptions /
@@ -462,6 +469,62 @@ export class Ec2InstanceStack extends cdk.Stack {
         description: 'Attached at /dev/sdg by Phase 1h (issue #5630)',
       });
     }
+
+    // Issue #5630 (fifth slice): an instance with LicenseSpecifications and an
+    // SsmAssociations entry. The license configuration is a PERMANENT
+    // account-level one verify.sh looks up by name (creating it only when
+    // absent) and passes in CDKD_TEST_LICENSE_ARN: License Manager keeps
+    // counting a terminated instance for an hour or more, so a per-run one
+    // could not be deleted. The association needs an instance profile (Systems
+    // Manager refuses an instance with no IAM role); its document is the
+    // Amazon-owned AWS-RunShellScript, a schema 1.2 document the instance-id
+    // CreateAssociation takes (2.2 documents are refused by it). Nothing waits
+    // for the association to execute (CloudFormation does not either), so the
+    // instance needs no SSM agent connectivity. Phases 1l-1o
+    // (CDKD_TEST_SSM_5630) change the parameter in place (`params`), remove
+    // the association (`removed`), add one back (`readded`) and drop the
+    // license, which replaces the instance (`unlicensed`).
+    const licenseArn = process.env.CDKD_TEST_LICENSE_ARN;
+    if (!licenseArn) {
+      throw new Error('CDKD_TEST_LICENSE_ARN is required (verify.sh sets it; issue #5630)');
+    }
+    const ssmMode = process.env.CDKD_TEST_SSM_5630;
+    const ssmRole = new iam.Role(this, 'SsmRole5630', {
+      assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
+      description: 'cdkd ec2-instance integ (issue #5630): the SsmAssociations instance role',
+    });
+    const ssmProfile = new iam.CfnInstanceProfile(this, 'SsmProfile5630', {
+      roles: [ssmRole.roleName],
+    });
+    const ssmCommand =
+      ssmMode === undefined
+        ? 'echo cdkd-5630-a'
+        : ssmMode === 'params'
+          ? 'echo cdkd-5630-b'
+          : 'echo cdkd-5630-c';
+    const ssmInstance = new ec2.CfnInstance(this, 'SsmInstance5630', {
+      imageId: ami,
+      instanceType: 't3.nano',
+      subnetId: vpc.publicSubnets[0].subnetId,
+      iamInstanceProfile: ssmProfile.ref,
+      ...(ssmMode === 'unlicensed'
+        ? {}
+        : { licenseSpecifications: [{ licenseConfigurationArn: licenseArn }] }),
+      ...(ssmMode === 'removed'
+        ? {}
+        : {
+            ssmAssociations: [
+              {
+                documentName: 'AWS-RunShellScript',
+                associationParameters: [{ key: 'commands', value: [ssmCommand] }],
+              },
+            ],
+          }),
+    });
+    new cdk.CfnOutput(this, 'SsmInstanceId', {
+      value: ssmInstance.ref,
+      description: 'The instance with LicenseSpecifications and SsmAssociations (issue #5630)',
+    });
 
     new cdk.CfnOutput(this, 'EbsKeyArn', {
       value: ebsKey.keyArn,
