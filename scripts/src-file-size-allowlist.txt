@@ -62,7 +62,6 @@ src/provisioning/providers/budgets-budget-provider.ts
 src/provisioning/providers/cloudtrail-provider.ts
 src/provisioning/providers/codecommit-repository-provider.ts
 src/provisioning/providers/deletion-protection-compensation.ts
-src/provisioning/providers/efs-provider.ts
 src/provisioning/providers/elasticache-provider.ts
 src/provisioning/providers/emr-instance-fleet-config-provider.ts
 src/provisioning/providers/eventbridge-rule-provider.ts
