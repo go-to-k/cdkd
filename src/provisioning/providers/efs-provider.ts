@@ -1936,7 +1936,7 @@ export class EFSProvider implements ResourceProvider {
       // A decline from `createOrAdoptAccessPoint` is ALREADY the diagnosis, and
       // re-wrapping it names the logical id twice while burying the remediation
       // command. Same guard as `route53-provider.ts` and
-      // `fsx-filesystem-provider.ts`.
+      // `fsx-filesystem/create.ts`.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
       throw this.wrapMaskedError(
