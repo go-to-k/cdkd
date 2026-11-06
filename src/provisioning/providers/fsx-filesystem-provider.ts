@@ -1,32 +1,18 @@
 import {
   FSxClient,
-  CreateFileSystemCommand,
-  CreateFileSystemFromBackupCommand,
-  UpdateFileSystemCommand,
-  DeleteFileSystemCommand,
-  DescribeFileSystemsCommand,
   AssociateFileSystemAliasesCommand,
   DisassociateFileSystemAliasesCommand,
-  DescribeFileSystemAliasesCommand,
   type Alias,
-  TagResourceCommand,
-  UntagResourceCommand,
-  FileSystemNotFound,
   type CreateFileSystemLustreConfiguration,
-  type UpdateFileSystemLustreConfiguration,
   type CreateFileSystemWindowsConfiguration,
-  type UpdateFileSystemWindowsConfiguration,
   type CreateFileSystemOntapConfiguration,
-  type UpdateFileSystemOntapConfiguration,
   type CreateFileSystemOpenZFSConfiguration,
-  type UpdateFileSystemOpenZFSConfiguration,
   type SelfManagedActiveDirectoryConfiguration,
   type SelfManagedActiveDirectoryConfigurationUpdates,
   type DiskIopsConfiguration,
   type WindowsAuditLogCreateConfiguration,
   type WindowsFsrmConfiguration,
   type OpenZFSCreateRootVolumeConfiguration,
-  type OpenZFSUserOrGroupQuota,
   type OpenZFSReadCacheConfiguration,
   type LustreFileSystemConfiguration,
   type DeleteFileSystemOpenZFSOption,
@@ -35,32 +21,12 @@ import {
   type OntapFileSystemConfiguration,
   type OpenZFSFileSystemConfiguration,
   type FileSystem,
-  type FileSystemType,
-  type StorageType,
-  type NetworkType,
-  type LustreReadCacheSizingMode,
-  type Tag,
 } from '@aws-sdk/client-fsx';
-import { describeAwsFailure, describeAwsStatusReason } from '../../utils/aws-failure-text.js';
-import { safeMsg } from '../../utils/display-safe.js';
-import { getLogger } from '../../utils/logger.js';
-import { ProvisioningError, ResourceUpdateNotSupportedError } from '../../utils/error-handler.js';
-import { assertRegionMatch, type DeleteContext } from '../region-check.js';
-import { normalizeAwsTagsToCfn } from '../import-helpers.js';
-import { planTagDiff, tagPlanWarning, refuseMalformedDesiredTags } from '../tag-list.js';
-import { earliestDefined, reserveStackCreateToken } from './create-token-ledger.js';
-import {
-  markNonRetryable,
-  markRedactedCause,
-  relayedNameCollision,
-} from '../../deployment/retryable-errors.js';
-import { maskerOrIdentity, type MaskerFn } from '../masked-retry-logger.js';
-import { markNotGone } from '../not-gone.js';
-import { markCreatedBeforeFailure } from '../auxiliary-failure.js';
-import { reportCreatedResource, retractCreatedResource } from '../created-resource-sink.js';
-import { earliestOwnCreationTime, serverClockReading, withServerClock } from './server-clock.js';
-import { withPasteableAwsProfile } from '../../utils/pasteable-aws-profile.js';
-import { RESOURCE_NOT_FOUND, type ResourceNotFound } from '../../types/resource.js';
+import { getLogger, type ConsoleLogger } from '../../utils/logger.js';
+import { ProvisioningError } from '../../utils/error-handler.js';
+import type { DeleteContext } from '../region-check.js';
+import type { MaskerFn } from '../masked-retry-logger.js';
+import type { ResourceNotFound } from '../../types/resource.js';
 import type {
   ResourceProvider,
   ResourceCreateResult,
@@ -71,533 +37,81 @@ import type {
   CreateContext,
   UpdateContext,
 } from '../../types/resource.js';
-import { ambientClientDefaults } from '../../utils/ambient-client-defaults.js';
 import { ambientRegion } from '../../utils/stack-aws-scope.js';
-
-/**
- * Default polling budget for FSx lifecycle transitions. Lustre SCRATCH
- * creates typically finish in 5-10 minutes, but PERSISTENT creates,
- * storage-capacity growth and deletes can take substantially longer —
- * mirror the Custom Resource provider's 1-hour ceiling.
- */
-const DEFAULT_MAX_WAIT_MS = 60 * 60 * 1000;
-const DEFAULT_POLL_INTERVAL_MS = 15_000;
-
-/**
- * go-to-k/cdkd#4606: the physical id every path of this provider records — the
- * `FileSystemId` FSx generates (`fs-` and hex), for every variant and for a
- * create from a backup alike.
- */
-const FILE_SYSTEM_ID_PATTERN = /^fs-[0-9a-f]+$/;
-
-/** Lifecycles in which a file system is on its way out, not the record's live one. */
-const FILE_SYSTEM_NOT_LIVE_LIFECYCLES: ReadonlySet<string> = new Set(['DELETING', 'FAILED']);
-
-/**
- * Lustre sub-properties that `UpdateFileSystem` accepts (the mutable
- * subset of the CFn `LustreConfiguration` block). Everything else in the
- * block is fixed at creation — FSx has no API to change it in place.
- */
-const LUSTRE_MUTABLE_SUBPROPS = new Set<string>([
-  'WeeklyMaintenanceStartTime',
-  'DailyAutomaticBackupStartTime',
-  'AutomaticBackupRetentionDays',
-  'AutoImportPolicy',
-  'DataCompressionType',
-  'PerUnitStorageThroughput',
-  'MetadataConfiguration',
-  'ThroughputCapacity',
-  'DataReadCacheConfiguration',
-  // CFn "Update requires: No interruption"; UpdateFileSystemLustreConfiguration
-  // carries it (go-to-k/cdkd#5430). Its removal is left in place like the
-  // others (issue #1160); what CloudFormation does there is unmeasured, so it
-  // is not in CFN_KEEPS_ON_REMOVAL.
-  'LogConfiguration',
-]);
-
-/**
- * `WindowsConfiguration` sub-properties `UpdateFileSystem` accepts (the
- * mutable subset — mirrors `UpdateFileSystemWindowsConfiguration`).
- * `Aliases` is mutable too but not through `UpdateFileSystem`: its change is
- * an Associate/Disassociate delta (go-to-k/cdkd#5469,
- * {@link FSxFileSystemProvider.applyAliasDelta}), so it is handled before this
- * set is consulted. Everything else in the CFn block (ActiveDirectoryId,
- * DeploymentType, PreferredSubnetId, ...) is fixed at creation, so a change on
- * one is rejected by update() with a `--replace` pointer. The CFn template
- * reference documents ActiveDirectoryId and PreferredSubnetId as "No
- * interruption", but no FSx API changes either one (neither is in
- * `UpdateFileSystemWindowsConfiguration`), so cdkd cannot apply them in place.
- */
-const WINDOWS_MUTABLE_SUBPROPS = new Set<string>([
-  'WeeklyMaintenanceStartTime',
-  'DailyAutomaticBackupStartTime',
-  'AutomaticBackupRetentionDays',
-  'ThroughputCapacity',
-  'SelfManagedActiveDirectoryConfiguration',
-  'AuditLogConfiguration',
-  'DiskIopsConfiguration',
-  'FsrmConfiguration',
-]);
-
-/**
- * `OntapConfiguration` sub-properties `UpdateFileSystem` accepts (mirrors
- * `UpdateFileSystemOntapConfiguration`). `RouteTableIds` is mutable but the
- * API expresses the change as Add/Remove deltas, computed in
- * {@link FSxFileSystemProvider.applyOntapUpdateField}.
- */
-const ONTAP_MUTABLE_SUBPROPS = new Set<string>([
-  'AutomaticBackupRetentionDays',
-  'DailyAutomaticBackupStartTime',
-  'FsxAdminPassword',
-  'WeeklyMaintenanceStartTime',
-  'DiskIopsConfiguration',
-  'ThroughputCapacity',
-  'ThroughputCapacityPerHAPair',
-  'HAPairs',
-  'RouteTableIds',
-  'EndpointIpv6AddressRange',
-]);
-
-/**
- * `OpenZFSConfiguration` sub-properties `UpdateFileSystem` accepts (mirrors
- * `UpdateFileSystemOpenZFSConfiguration`). `RouteTableIds` is mutable via
- * Add/Remove deltas (see {@link FSxFileSystemProvider.applyOpenZFSUpdateField}).
- * `RootVolumeConfiguration` is NOT here — its fields change through the root
- * volume's own `UpdateVolume` API, which `UpdateFileSystem` cannot express,
- * so a change is rejected with a `--replace` pointer.
- */
-const OPENZFS_MUTABLE_SUBPROPS = new Set<string>([
-  'AutomaticBackupRetentionDays',
-  'CopyTagsToBackups',
-  'CopyTagsToVolumes',
-  'DailyAutomaticBackupStartTime',
-  'ThroughputCapacity',
-  'WeeklyMaintenanceStartTime',
-  'DiskIopsConfiguration',
-  'RouteTableIds',
-  'ReadCacheConfiguration',
-  'EndpointIpv6AddressRange',
-]);
-
-/**
- * The four `FileSystemType` values → their CFn variant-config property name.
- * Each `CreateFileSystem`/`UpdateFileSystem` call carries at most one of
- * these blocks (the one matching the file system's type).
- */
-const VARIANT_CONFIG_KEY: Record<string, string> = {
-  LUSTRE: 'LustreConfiguration',
-  WINDOWS: 'WindowsConfiguration',
-  ONTAP: 'OntapConfiguration',
-  OPENZFS: 'OpenZFSConfiguration',
-};
-
-/**
- * Identity of the resource + variant block an `apply*UpdateField` call is
- * mapping, carried so the unreachable-`default:` guard can name the exact
- * missing mapping (see {@link FSxFileSystemProvider.unmappedMutableSubprop}).
- */
-interface VariantFieldContext {
-  resourceType: string;
-  logicalId: string;
-  configKey: string;
-}
-
-/**
- * Exported so a unit test can assert every declared-mutable sub-property has
- * a matching `apply*UpdateField` case — the invariant the unreachable
- * `default:` guard enforces at runtime.
- */
-export const VARIANT_MUTABLE_SUBPROPS: Record<string, ReadonlySet<string>> = {
-  LustreConfiguration: LUSTRE_MUTABLE_SUBPROPS,
-  WindowsConfiguration: WINDOWS_MUTABLE_SUBPROPS,
-  OntapConfiguration: ONTAP_MUTABLE_SUBPROPS,
-  OpenZFSConfiguration: OPENZFS_MUTABLE_SUBPROPS,
-};
-
-/**
- * Copy `value` into `target[key]` only when AWS actually returned it, so the
- * snapshot carries no `undefined`-valued keys.
- *
- * The drift comparator walks the BASELINE's keys (`observedProperties`, or
- * `properties` when a resource predates observed-capture), not the AWS side —
- * so an omitted key here is not itself phantom drift. It matters because this
- * snapshot BECOMES the next baseline: `deploy-engine` stores it as
- * `observedProperties`, and an explicit `Foo: undefined` would then be walked
- * as a real key on every later comparison. Omitting is also what keeps the
- * emitted shape a faithful subset of the CFn input shape.
- */
-const putIfDefined = (target: Record<string, unknown>, key: string, value: unknown): void => {
-  if (value !== undefined) target[key] = value;
-};
-
-/**
- * Compute the Add/Remove route-table-id deltas an ONTAP / OpenZFS
- * `UpdateFileSystem` needs from the previous vs. next `RouteTableIds` list.
- * Route table membership is an unordered set, so a pure reorder yields no
- * delta.
- */
-const routeTableDelta = (next: unknown, prev: unknown): { add?: string[]; remove?: string[] } => {
-  const nextIds = new Set((next as string[] | undefined) ?? []);
-  const prevIds = new Set((prev as string[] | undefined) ?? []);
-  const add = [...nextIds].filter((id) => !prevIds.has(id));
-  const remove = [...prevIds].filter((id) => !nextIds.has(id));
-  return {
-    ...(add.length > 0 && { add }),
-    ...(remove.length > 0 && { remove }),
-  };
-};
-
-/**
- * go-to-k/cdkd#5469: consecutive CREATE_FAILED / DELETE_FAILED reads of an
- * alias never seen in transition before they count as its outcome rather than
- * a stale read from before the action this wait follows.
- */
-const STALE_FAILED_READS = 3;
-
-/**
- * go-to-k/cdkd#5469: the administrative actions an alias change waits for:
- * any PENDING / IN_PROGRESS one except a storage or IOPS optimization, which
- * can run for hours after the update it follows (that update then reads
- * UPDATED_OPTIMIZING, which is not waited for either).
- */
-const ALIAS_NON_BLOCKING_ACTIONS: ReadonlySet<string> = new Set([
-  'STORAGE_OPTIMIZATION',
-  'IOPS_OPTIMIZATION',
-]);
-const runningAliasBlockingActions = (fs: FileSystem): string[] =>
-  (fs.AdministrativeActions ?? [])
-    .filter(
-      (a) =>
-        (a.Status === 'PENDING' || a.Status === 'IN_PROGRESS') &&
-        !ALIAS_NON_BLOCKING_ACTIONS.has(a.AdministrativeActionType ?? '')
-    )
-    .map((a) => a.AdministrativeActionType ?? 'unknown');
-
-/**
- * A BadRequest refusing an alias call because an administrative action is in
- * progress (go-to-k/cdkd#5469): re-sent until the deadline.
- */
-const isAdministrativeActionInProgress = (error: unknown): error is Error =>
-  error instanceof Error &&
-  error.name === 'BadRequest' &&
-  /in progress/i.test(describeAwsFailure(error).detail);
-
-/**
- * A poll error worth another poll (throttle, server-side, network). The
- * message test reads `.detail`, never `.summary`: it matches AWS's OWN wording.
- */
-const isTransientFsxError = (error: unknown): boolean => {
-  const name = error instanceof Error ? error.name : '';
-  return (
-    name === 'ThrottlingException' ||
-    name === 'ServiceLimitExceeded' ||
-    name === 'InternalServerError' ||
-    name === 'TimeoutError' ||
-    /rate exceeded|too many requests|timed? ?out|ECONNRESET|EPIPE|socket hang up/i.test(
-      describeAwsFailure(error).detail
-    )
-  );
-};
-
-/**
- * go-to-k/cdkd#5469: the Associate/Disassociate deltas a Windows `Aliases`
- * change needs. FSx stores an alias name lowercased whatever spelling it was
- * given, so names compare (and are sent) lowercased and a case-only edit or a
- * reorder yields no delta. A removed property means "no aliases": every
- * previous name is disassociated, as a removed `RouteTableIds` is.
- */
-export const aliasDelta = (next: unknown, prev: unknown): { add: string[]; remove: string[] } => {
-  const names = (value: unknown): Set<string> =>
-    new Set(
-      (Array.isArray(value) ? value : [])
-        .filter((v): v is string => typeof v === 'string')
-        .map((v) => v.toLowerCase())
-    );
-  const nextNames = names(next);
-  const prevNames = names(prev);
-  return {
-    add: [...nextNames].filter((n) => !prevNames.has(n)),
-    remove: [...prevNames].filter((n) => !nextNames.has(n)),
-  };
-};
-
-/**
- * Top-level properties that are create-only per the CFn registry schema
- * (`createOnlyProperties`). A change on any of these is routed through
- * DELETE+CREATE by the replacement-detection layer; if a diff somehow
- * reaches update() with one of them changed, refuse loudly instead of
- * silently applying a partial update.
- */
-const TOP_LEVEL_IMMUTABLE_PROPS = [
-  'FileSystemType',
-  'SubnetIds',
-  'SecurityGroupIds',
-  'KmsKeyId',
-  'BackupId',
-] as const;
-
-/**
- * Top-level mutable properties whose removal cdkd leaves in place (issue
- * #1160): `UpdateFileSystem` keeps a field it is not sent, and none has a safe
- * constant reset — a capacity cannot shrink, a Lustre version cannot
- * downgrade (its default depends on `DeploymentType`), and the storage-type
- * and network-type defaults are migrations, not clears. `update()` names a
- * removal in its own warning rather than the shared caller's, whose line
- * claims a CloudFormation reset — false wherever it is measured, since
- * CloudFormation keeps each removed value there
- * ({@link CFN_KEEPS_TOP_LEVEL_ON_REMOVAL}), and unmeasured elsewhere.
- */
-const TOP_LEVEL_LEFT_IN_PLACE_PROPS = [
-  'StorageCapacity',
-  'StorageType',
-  'FileSystemTypeVersion',
-  'NetworkType',
-] as const;
-
-/**
- * The left-in-place removals CloudFormation is MEASURED to keep too, in the
- * warning's spelling (issue #1160). CFn A/B us-east-1 2026-10-22: a Lustre
- * SCRATCH_2 file system and an OpenZFS SINGLE_AZ_1 one, each property set and
- * then removed, every update `UPDATE_COMPLETE` with the live value unchanged
- * and no FSx administrative action started. CFn A/B us-east-1 2026-10-23,
- * each removal its own update, every one `UPDATE_COMPLETE` with the same
- * FileSystemId, the live value unchanged and no administrative action: an
- * OpenZFS SINGLE_AZ_1 file system kept `NetworkType` DUAL (the non-default),
- * `StorageCapacity` 64 and `StorageType` SSD; a Lustre PERSISTENT_1 one kept
- * `StorageType` HDD (the non-default) and `StorageCapacity` 6000. CFn A/B
- * us-east-1 2026-10-25, each removal its own update, every one
- * `UPDATE_COMPLETE` with the same FileSystemId, the value read back unchanged
- * and no administrative action: a Lustre PERSISTENT_2 SSD file system kept
- * `DailyAutomaticBackupStartTime` 05:00, `AutomaticBackupRetentionDays` 3,
- * `PerUnitStorageThroughput` 125 and `MetadataConfiguration` USER_PROVISIONED
- * 3000 IOPS, and a second one kept all four removed in ONE update; a Lustre
- * PERSISTENT_1 HDD file system kept `PerUnitStorageThroughput` 12,
- * `DailyAutomaticBackupStartTime` and `AutomaticBackupRetentionDays`. (The
- * PERSISTENT_2 `CopyTagsToBackups` removal REPLACED the file system;
- * `update()` refuses that change with a `--replace` pointer.) A top-level
- * name counts as measured only for the `FileSystemType` it was measured on
- * ({@link CFN_KEEPS_TOP_LEVEL_ON_REMOVAL}); Windows / ONTAP, and their
- * sub-properties, are unmeasured, so a warning naming one of them keeps the
- * line that claims nothing about CloudFormation. The claim is generalised from
- * the measured shapes (Lustre SCRATCH_2, PERSISTENT_1 HDD and PERSISTENT_2
- * SSD; OpenZFS SINGLE_AZ_1 SSD, NetworkType DUAL) to the rest of that type's
- * SSD / HDD
- * deployments; an `INTELLIGENT_TIERING` file system is a different storage
- * class none of these names was measured on, so a name here never gets the
- * claim there ({@link cfnKeepsOnRemoval}).
- * The sub-properties measured on one narrower shape only are not here
- * ({@link CFN_KEEPS_ON_REMOVAL_FOR_SHAPE}).
- */
-const CFN_KEEPS_ON_REMOVAL: ReadonlySet<string> = new Set([
-  'LustreConfiguration.AutoImportPolicy',
-  'LustreConfiguration.AutomaticBackupRetentionDays',
-  'LustreConfiguration.DailyAutomaticBackupStartTime',
-  'LustreConfiguration.DataCompressionType',
-  'LustreConfiguration.MetadataConfiguration',
-  'LustreConfiguration.PerUnitStorageThroughput',
-  'LustreConfiguration.WeeklyMaintenanceStartTime',
-  'OpenZFSConfiguration.AutomaticBackupRetentionDays',
-  'OpenZFSConfiguration.CopyTagsToBackups',
-  'OpenZFSConfiguration.CopyTagsToVolumes',
-  'OpenZFSConfiguration.DailyAutomaticBackupStartTime',
-  'OpenZFSConfiguration.DiskIopsConfiguration',
-  'OpenZFSConfiguration.WeeklyMaintenanceStartTime',
-]);
-
-/**
- * The top-level half of {@link CFN_KEEPS_ON_REMOVAL}, per measured
- * `FileSystemType`. A Map, not an object literal: the key is template-borne, and
- * a `constructor` / `__proto__` key must miss rather than reach a prototype.
- */
-const CFN_KEEPS_TOP_LEVEL_ON_REMOVAL: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['LUSTRE', new Set(['FileSystemTypeVersion', 'StorageCapacity', 'StorageType'])],
-  ['OPENZFS', new Set(['NetworkType', 'StorageCapacity', 'StorageType'])],
-]);
-
-/** The file system shape a removal claim is judged against. */
-interface RemovalClaimShape {
-  /** `FileSystemType` (create-only, so the same on both sides). */
-  fileSystemType: unknown;
-  /** The previous AND desired `StorageType` (a migration has two). */
-  storageTypes: readonly unknown[];
-  /** The previous AND desired `<Variant>Configuration.DeploymentType`. */
-  deploymentTypes: readonly unknown[];
-  /** The desired `NetworkType`. */
-  desiredNetworkType: unknown;
-  /** The desired `OpenZFSConfiguration.EndpointIpv6AddressRange`. */
-  desiredEndpointIpv6AddressRange: unknown;
-}
-
-/** Every side of the shape is an OpenZFS `MULTI_AZ_1` file system. */
-const isOpenZfsMultiAz1 = (shape: RemovalClaimShape): boolean =>
-  shape.fileSystemType === 'OPENZFS' &&
-  shape.deploymentTypes.every((deploymentType) => deploymentType === 'MULTI_AZ_1');
-
-/** The same deploy does not migrate `StorageType`. */
-const keepsStorageType = (shape: RemovalClaimShape): boolean =>
-  JSON.stringify(shape.storageTypes[0]) === JSON.stringify(shape.storageTypes[1]);
-
-/**
- * The measured Lustre INTELLIGENT_TIERING shape: PERSISTENT_2 with
- * INTELLIGENT_TIERING on both sides, the property the deploy's only removal.
- */
-const isLustreIntelligentTieringSoleRemoval = (
-  shape: RemovalClaimShape,
-  removed: readonly string[]
-): boolean =>
-  removed.length === 1 &&
-  shape.fileSystemType === 'LUSTRE' &&
-  shape.deploymentTypes.every((deploymentType) => deploymentType === 'PERSISTENT_2') &&
-  shape.storageTypes.every((storageType) => storageType === 'INTELLIGENT_TIERING');
-
-/**
- * Removals CloudFormation is measured to keep on ONE narrower shape only, each
- * judged by its own predicate instead of {@link CFN_KEEPS_ON_REMOVAL}'s rule
- * (issue #1160). CFn A/B us-east-1 2026-10-24, every removal `UPDATE_COMPLETE`
- * with the same FileSystemId, the value read back unchanged and no
- * administrative action. While the template still declared `NetworkType`
- * `DUAL`, EVERY CloudFormation update failed (`Network type is already DUAL`),
- * so each row below was measured with `NetworkType` no longer `DUAL`:
- * - `ThroughputCapacity`: kept on OpenZFS MULTI_AZ_1 with SSD (320) and with
- *   INTELLIGENT_TIERING (160), the deploy's only removal. SINGLE_AZ_1,
- *   SINGLE_AZ_2 and SINGLE_AZ_HA_* are unmeasured, and so is a removal beside
- *   another one.
- * - `ReadCacheConfiguration`: kept on OpenZFS MULTI_AZ_1 INTELLIGENT_TIERING
- *   (USER_PROVISIONED, 128 GiB), the deploy's only removal, so both sides must
- *   declare INTELLIGENT_TIERING.
- * - `EndpointIpv6AddressRange`: kept on OpenZFS MULTI_AZ_1 SSD dual-stack, in
- *   the SAME update that removed `NetworkType` (removing `NetworkType` alone
- *   with the range still set failed), so the claim is made only when this
- *   deploy removes `NetworkType` as well.
- *
- * CFn A/B us-east-1 2026-10-25, same outcome per row: a Lustre PERSISTENT_2
- * INTELLIGENT_TIERING file system kept `DataReadCacheConfiguration`
- * (USER_PROVISIONED, 32 GiB) and `ThroughputCapacity` (4000), each the
- * deploy's only removal. Both exist only on INTELLIGENT_TIERING, so both sides
- * must declare it.
- */
-const CFN_KEEPS_ON_REMOVAL_FOR_SHAPE: ReadonlyMap<
-  string,
-  (shape: RemovalClaimShape, removed: readonly string[]) => boolean
-> = new Map([
-  [
-    'OpenZFSConfiguration.ThroughputCapacity',
-    (shape: RemovalClaimShape, removed: readonly string[]) =>
-      removed.length === 1 &&
-      isOpenZfsMultiAz1(shape) &&
-      keepsStorageType(shape) &&
-      shape.desiredNetworkType !== 'DUAL',
-  ],
-  [
-    'OpenZFSConfiguration.ReadCacheConfiguration',
-    // The single-removal test is implied today: on INTELLIGENT_TIERING no other
-    // name can claim beside it (ThroughputCapacity needs a single removal too,
-    // and every other claim excludes INTELLIGENT_TIERING). It stays so this
-    // claim keeps to its measured shape if one of those is ever widened.
-    (shape: RemovalClaimShape, removed: readonly string[]) =>
-      removed.length === 1 &&
-      isOpenZfsMultiAz1(shape) &&
-      shape.storageTypes.every((storageType) => storageType === 'INTELLIGENT_TIERING') &&
-      shape.desiredNetworkType !== 'DUAL',
-  ],
-  [
-    'OpenZFSConfiguration.EndpointIpv6AddressRange',
-    // The INTELLIGENT_TIERING test is implied today by the co-removed
-    // NetworkType's own claim, which excludes it; it stays so this claim keeps
-    // to its measured SSD shape if that one is ever widened.
-    (shape: RemovalClaimShape, removed: readonly string[]) =>
-      isOpenZfsMultiAz1(shape) &&
-      keepsStorageType(shape) &&
-      !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
-      removed.includes('NetworkType'),
-  ],
-  ['LustreConfiguration.DataReadCacheConfiguration', isLustreIntelligentTieringSoleRemoval],
-  ['LustreConfiguration.ThroughputCapacity', isLustreIntelligentTieringSoleRemoval],
-]);
-
-/**
- * A removal CloudFormation is measured to REFUSE, so the generic claim must
- * not cover it: on OpenZFS MULTI_AZ_1, removing `NetworkType` while
- * `EndpointIpv6AddressRange` stays declared failed (`The
- * EndpointIpv6AddressRange option is only supported on Multi-AZ file system
- * when updating network type to DUAL`; CFn A/B us-east-1 2026-10-24).
- */
-const cfnRefusesRemoval = (name: string, shape: RemovalClaimShape): boolean =>
-  name === 'NetworkType' &&
-  isOpenZfsMultiAz1(shape) &&
-  shape.desiredEndpointIpv6AddressRange !== undefined;
-
-/**
- * Whether CloudFormation is measured to keep `name` on removal for this shape,
- * `removed` being every name this deploy leaves in place. A name in
- * {@link CFN_KEEPS_ON_REMOVAL_FOR_SHAPE} is judged by its own predicate only.
- * Any other name: never on a shape CloudFormation refuses
- * ({@link cfnRefusesRemoval}), and never when either side's `StorageType` is
- * `INTELLIGENT_TIERING`, since no measured shape had it.
- */
-const cfnKeepsOnRemoval = (
-  name: string,
-  shape: RemovalClaimShape,
-  removed: readonly string[]
-): boolean => {
-  const narrow = CFN_KEEPS_ON_REMOVAL_FOR_SHAPE.get(name);
-  if (narrow) return narrow(shape, removed);
-  return (
-    !cfnRefusesRemoval(name, shape) &&
-    !shape.storageTypes.includes('INTELLIGENT_TIERING') &&
-    (CFN_KEEPS_ON_REMOVAL.has(name) ||
-      (typeof shape.fileSystemType === 'string' &&
-        CFN_KEEPS_TOP_LEVEL_ON_REMOVAL.get(shape.fileSystemType)?.has(name) === true))
-  );
-};
-
-/**
- * The ONE warning line for properties whose removal cdkd leaves in place
- * (issue #1160): top-level names as-is, variant sub-properties as
- * `<Variant>Configuration.<key>`. Names are template-borne, so they go through
- * `safeMsg`. The deploy line says CloudFormation keeps the value too only when
- * EVERY name is measured for this file system's shape
- * ({@link cfnKeepsOnRemoval}); otherwise it claims nothing about
- * CloudFormation. A rollback revert restores an earlier state record, so
- * there the property is one the failed deploy ADDED, and the line says that
- * instead (the shared `removalWarning`'s `'rollback'` arm).
- */
-const leftInPlaceWarning = (
-  logicalId: string,
-  names: readonly string[],
-  caller: 'deploy' | 'rollback',
-  shape: RemovalClaimShape
-): string => {
-  const one = names.length === 1;
-  const subject = one ? 'property' : 'properties';
-  const verb = one ? 'is' : 'are';
-  if (caller === 'rollback') {
-    return safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} absent from the state being restored; UpdateFileSystem keeps a setting it is not sent, so the rollback leaves the value the failed deploy applied in place.`;
-  }
-  return names.every((name) => cfnKeepsOnRemoval(name, shape, names))
-    ? safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared and ${one ? 'keeps its' : 'keep their'} current AWS value, as CloudFormation leaves ${one ? 'it' : 'them'}; UpdateFileSystem keeps a setting it is not sent. Declare the intended value explicitly to change it.`
-    : safeMsg`${logicalId} (AWS::FSx::FileSystem): ${subject} ${names.join(', ')} ${verb} no longer declared; UpdateFileSystem keeps a setting it is not sent and cdkd sends no reset, so the current AWS value stays in place. Declare the intended value explicitly to change it.`;
-};
-
-/**
- * The log-group ARN a Lustre `LogConfiguration.Destination` names. FSx reads
- * the destination back as the LOG-STREAM ARN it writes to
- * (`...:log-group:/aws/fsx/x:log-stream:datarepo_fs-...`, measured us-east-1
- * on go-to-k/cdkd#5430), never the declared log-group ARN, and a declaration
- * may carry the log group `Arn` attribute's `:*` suffix. Reading it back
- * as-is would report drift on every file system with logging, so both forms
- * fold to the log-group ARN a template declares.
- */
-const toLogGroupArn = (destination: string | undefined): string | undefined =>
-  destination?.replace(/:log-stream:.*$/, '').replace(/:\*$/, '');
-
-const toNumber = (v: unknown): number | undefined => (v === undefined ? undefined : Number(v));
-
-const toBoolean = (v: unknown): boolean | undefined => {
-  if (v === undefined) return undefined;
-  if (typeof v === 'string') return v === 'true';
-  return Boolean(v);
-};
+import {
+  DEFAULT_MAX_WAIT_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  VARIANT_CONFIG_KEY,
+  type VariantFieldContext,
+  TOP_LEVEL_IMMUTABLE_PROPS,
+  TOP_LEVEL_LEFT_IN_PLACE_PROPS,
+} from './fsx-filesystem/shared.js';
+import {
+  wrapStatusReasonError,
+  wrapCaughtError,
+  cleanupFailureText,
+  getClient,
+} from './fsx-filesystem/core.js';
+import {
+  create,
+  toCreateLustreConfiguration,
+  toLustreLogConfiguration,
+  toCreateWindowsConfiguration,
+  toCreateOntapConfiguration,
+  toCreateOpenZFSConfiguration,
+} from './fsx-filesystem/create.js';
+import {
+  toDiskIopsConfiguration,
+  toSelfManagedAdConfiguration,
+  toSelfManagedAdConfigurationUpdates,
+  toWindowsAuditLogConfiguration,
+  toWindowsFsrmConfiguration,
+  toOpenZFSRootVolumeConfiguration,
+  toOpenZFSReadCacheConfiguration,
+} from './fsx-filesystem/mappers.js';
+import { update } from './fsx-filesystem/update.js';
+import {
+  detectVariantConfigKey,
+  computeVariantConfigDiff,
+  unmappedMutableSubprop,
+  applyLustreUpdateField,
+  applyWindowsUpdateField,
+  applyOntapUpdateField,
+  applyOpenZFSUpdateField,
+} from './fsx-filesystem/variant-diff.js';
+import {
+  applyAliasDelta,
+  describeAliases,
+  waitForNoAdministrativeAction,
+  sendAliasCall,
+  waitForAliases,
+  applyTagDiff,
+} from './fsx-filesystem/aliases.js';
+import { deleteImpl, toDeleteOpenZFSOptions } from './fsx-filesystem/delete.js';
+import {
+  isSameResource,
+  readFileSystemForIdentity,
+  describeForPoll,
+  waitForFileSystemAvailable,
+  waitForUpdateActionComplete,
+  waitForFileSystemDeleted,
+} from './fsx-filesystem/lifecycle.js';
+import {
+  buildAttributes,
+  getAttribute,
+  readLustreConfiguration,
+  readWindowsConfiguration,
+  readOntapConfiguration,
+  readOpenZFSConfiguration,
+  readDiskIopsConfiguration,
+  canonicalizeDriftProperties,
+  canonicalizeWindowsAliases,
+  getDriftUnknownPaths,
+  getDriftUnorderedPaths,
+  readCurrentState,
+  importImpl,
+} from './fsx-filesystem/read-state.js';
+export { VARIANT_MUTABLE_SUBPROPS, aliasDelta } from './fsx-filesystem/shared.js';
 
 /**
  * SDK Provider for `AWS::FSx::FileSystem`.
@@ -640,9 +154,9 @@ export class FSxFileSystemProvider implements ResourceProvider {
    */
   readonly disableCcApiFallback = true;
 
-  private client: FSxClient | undefined;
-  private readonly providerRegion = ambientRegion();
-  private logger = getLogger().child('FSxFileSystemProvider');
+  client: FSxClient | undefined;
+  readonly providerRegion = ambientRegion();
+  logger: ConsoleLogger = getLogger().child('FSxFileSystemProvider');
   /**
    * When THIS process first sent each ClientRequestToken whose create has not
    * yet returned (go-to-k/cdkd#4428). FSx answers a repeated token with the
@@ -653,86 +167,34 @@ export class FSxFileSystemProvider implements ResourceProvider {
    * process's, else the ledger's, judged on AWS's clock as measured now), and
    * refuses any other.
    */
-  private readonly createTokenFirstSentAt = new Map<string, number>();
+  readonly createTokenFirstSentAt = new Map<string, number>();
 
-  private readonly pollIntervalMs: number;
-  private readonly maxWaitMs: number;
+  readonly pollIntervalMs: number;
+  readonly maxWaitMs: number;
 
   constructor(options?: { pollIntervalMs?: number; maxWaitMs?: number }) {
     this.pollIntervalMs = options?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
   }
 
-  /**
-   * The failure wrap every create / update / delete catch builds.
-   *
-   * An AWS-authored failure reaches `build` as its CLASS plus the `--verbose`
-   * pointer (go-to-k/cdkd#2319): a thrown message is persisted to
-   * `deployments/{runId}.jsonl`, and an `AccessDeniedException` names the
-   * caller's assumed-role ARN. AWS's own text goes to `debug` through the
-   * operation's `maskSecrets` (`mask`), and the wrap is stamped
-   * `markRedactedCause`, so the retry classifiers read the withheld text on the
-   * `cause` chain. An "already exists" is restated
-   * ({@link relayedNameCollision}). A cdkd-authored or transport error, or a
-   * non-`Error` throw, keeps its text; the deploy engine masks a thrown
-   * message. The delete checks `FileSystemNotFound` by type before it wraps,
-   * so no "already deleted" reading depends on AWS's wording.
-   *
-   * `build` must thread `error` as `cause`, and runs twice, so it must stay a
-   * side-effect-free constructor call.
-   */
-  /**
-   * The error a FAILED lifecycle or administrative action read off a
-   * successful Describe throws (go-to-k/cdkd#2319). AWS's reason
-   * (`FailureDetails.Message`) reaches the same persisted sink as a caught
-   * failure and can name the account, so the message carries the `--verbose`
-   * pointer instead ({@link describeAwsStatusReason}; FSx reports no reason
-   * code). The reason goes to `debug` through the operation's masker, and
-   * becomes the `cause` the wrap is stamped `markRedactedCause` over, so the
-   * retry classifiers still read it as they read the message before. No reason
-   * keeps cdkd's fallback text.
-   *
-   * `build` runs twice, so it must stay a side-effect-free constructor call
-   * threading `cause`.
-   */
-  private wrapStatusReasonError(
+  wrapStatusReasonError(
     mask: MaskerFn | undefined,
     message: string | undefined,
     build: (text: string, cause: Error | undefined) => ProvisioningError
   ): ProvisioningError {
-    const text = describeAwsStatusReason({ message }, 'no failure details reported');
-    if (!text.redacted) return build(text.detail, undefined);
-    const m = maskerOrIdentity(mask);
-    const cause = new Error(text.detail);
-    this.logger.debug(m(build(m(text.detail), cause).message));
-    return markRedactedCause(build(m(text.summary), cause));
+    return wrapStatusReasonError.call(this, mask, message, build);
   }
 
-  private wrapCaughtError(
+  wrapCaughtError(
     mask: MaskerFn | undefined,
     error: unknown,
     build: (text: string) => ProvisioningError
   ): ProvisioningError {
-    const failure = describeAwsFailure(error);
-    if (!(error instanceof Error) || !failure.redacted) return build(failure.detail);
-    const m = maskerOrIdentity(mask);
-    this.logger.debug(m(build(m(failure.detail)).message));
-    return markRedactedCause(build(`${m(failure.summary)}${relayedNameCollision(failure.detail)}`));
+    return wrapCaughtError.call(this, mask, error, build);
   }
 
-  /**
-   * The cleanup-failure text a best-effort `warn` quotes after `head`
-   * (go-to-k/cdkd#2319). An AWS-authored failure is named by its CLASS at
-   * warn, since a denied call names the caller's assumed-role ARN; AWS's own
-   * text goes to `debug` under the same `head`, masked. A cdkd-authored or
-   * transport error keeps its text, masked.
-   */
-  private cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
-    const m = maskerOrIdentity(mask);
-    const failure = describeAwsFailure(error);
-    if (!failure.redacted) return m(failure.detail);
-    this.logger.debug(m(`${head}${m(failure.detail)}`));
-    return m(failure.summary);
+  cleanupFailureText(head: string, error: unknown, mask: MaskerFn | undefined): string {
+    return cleanupFailureText.call(this, head, error, mask);
   }
 
   handledProperties = new Map<string, ReadonlySet<string>>([
@@ -782,14 +244,8 @@ export class FSxFileSystemProvider implements ResourceProvider {
     ],
   ]);
 
-  private getClient(): FSxClient {
-    if (!this.client) {
-      this.client = new FSxClient({
-        ...ambientClientDefaults(),
-        ...(this.providerRegion ? { region: this.providerRegion } : {}),
-      });
-    }
-    return this.client;
+  getClient(): FSxClient {
+    return getClient.call(this);
   }
 
   /**
@@ -804,529 +260,92 @@ export class FSxFileSystemProvider implements ResourceProvider {
 
   // ─── CREATE ────────────────────────────────────────────────────────
 
-  async create(
+  create(
     logicalId: string,
     resourceType: string,
     properties: Record<string, unknown>,
     context?: CreateContext
   ): Promise<ResourceCreateResult> {
-    // go-to-k/cdkd#3994: a malformed Tags is refused before any call.
-    const tags = refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId);
-    if (resourceType !== 'AWS::FSx::FileSystem') {
-      throw new ProvisioningError(
-        `Unsupported resource type: ${resourceType}`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    const backupId = properties['BackupId'] as string | undefined;
-    const fileSystemType = properties['FileSystemType'] as string | undefined;
-
-    // Defensive: refuse clearly if a create reaches us with a
-    // FileSystemType cdkd does not implement (e.g. a future AWS variant, or
-    // a typo routed past the pre-flight). BackupId creates derive the type
-    // from the backup, so they skip this check. `Object.hasOwn`, not `in`
-    // (issue #3515): a type named after an `Object.prototype` member
-    // (`constructor`, `toString`) answered `in` and passed the guard.
-    if (
-      backupId === undefined &&
-      !(fileSystemType !== undefined && Object.hasOwn(VARIANT_CONFIG_KEY, fileSystemType))
-    ) {
-      throw new ProvisioningError(
-        `AWS::FSx::FileSystem: FileSystemType '${fileSystemType ?? '(unset)'}' is not supported by cdkd — expected one of ${Object.keys(VARIANT_CONFIG_KEY).join(' / ')}.`,
-        resourceType,
-        logicalId
-      );
-    }
-
-    this.logger.debug(`Creating FSx FileSystem ${logicalId}`);
-
-    // ClientRequestToken is FSx's idempotency key: a Create with a token
-    // whose file system still exists and whose parameters match is answered
-    // with THAT file system instead of a new one (load-bearing for a
-    // lost-response retry under the deploy engine's outer withRetry). It must
-    // be STABLE across retries of THIS create, DIFFER between the old and new
-    // file system during a property-driven REPLACEMENT (so hash ONLY the
-    // immutable, createOnly inputs), and be SCOPED to this stack — a token
-    // shared with another stack's copy of this logical id is handed that
-    // stack's file system (go-to-k/cdkd#4428). `stackScopedCreateToken` owns
-    // all three; `reserveStackCreateToken` adds the stack's create-token ledger
-    // (go-to-k/cdkd#4438): a nonce replaced whenever cdkd lets go of resources
-    // it made, so a file system a destroy kept no longer holds the token, and
-    // a marker persisted before the create, so a re-run after an interruption
-    // sends the same token and is handed the file system it made.
-    // EFSProvider's CreationToken takes the same derivation.
-    //
-    // NOTE the hash deliberately covers only the REGISTRY-createOnly
-    // top-level properties, not the provider-classified immutable Lustre
-    // sub-properties (DeploymentType / ImportPath / ...). Those changes are
-    // rejected by update() with a --replace pointer, and the deploy
-    // engine's --replace replacement is DELETE → wait-for-gone → CREATE,
-    // so the old file system (and its token) no longer exists when the new
-    // create runs — no token collision is possible on that path.
-    //
-    // FSx ClientRequestToken max length is 63 chars.
-    const reservation = await reserveStackCreateToken({
-      logicalId,
-      immutableInputs: [
-        properties['FileSystemType'],
-        properties['SubnetIds'],
-        properties['SecurityGroupIds'],
-        properties['KmsKeyId'],
-        properties['BackupId'],
-      ],
-      maxLength: 63,
-    });
-    const clientRequestToken = reservation.value;
-
-    const common = {
-      ClientRequestToken: clientRequestToken,
-      SubnetIds: properties['SubnetIds'] as string[],
-      SecurityGroupIds: properties['SecurityGroupIds'] as string[] | undefined,
-      KmsKeyId: properties['KmsKeyId'] as string | undefined,
-      StorageType: properties['StorageType'] as StorageType | undefined,
-      StorageCapacity: toNumber(properties['StorageCapacity']),
-      FileSystemTypeVersion: properties['FileSystemTypeVersion'] as string | undefined,
-      NetworkType: properties['NetworkType'] as NetworkType | undefined,
-      // Exactly one variant block is non-undefined for any given file system
-      // (the one matching FileSystemType); the SDK ignores the undefined rest.
-      LustreConfiguration: this.toCreateLustreConfiguration(
-        properties['LustreConfiguration'] as Record<string, unknown> | undefined
-      ),
-      WindowsConfiguration: this.toCreateWindowsConfiguration(
-        properties['WindowsConfiguration'] as Record<string, unknown> | undefined
-      ),
-      OntapConfiguration: this.toCreateOntapConfiguration(
-        properties['OntapConfiguration'] as Record<string, unknown> | undefined
-      ),
-      OpenZFSConfiguration: this.toCreateOpenZFSConfiguration(
-        properties['OpenZFSConfiguration'] as Record<string, unknown> | undefined
-      ),
-      Tags:
-        properties['Tags'] !== undefined && properties['Tags'] !== null
-          ? tags.map((t) => ({ Key: t.Key, Value: t.Value }))
-          : undefined,
-    };
-
-    let fileSystemId: string | undefined;
-    // This create's first send: the earliest of this process's earlier attempt
-    // and the one the ledger recorded (this run's, or an earlier, interrupted
-    // run's), else now.
-    const firstSentAt =
-      earliestDefined(
-        this.createTokenFirstSentAt.get(clientRequestToken),
-        reservation.earlierFirstSentAt
-      ) ?? Date.now();
-    this.createTokenFirstSentAt.set(clientRequestToken, firstSentAt);
-
-    try {
-      let created: FileSystem | undefined;
-      // Recorded per command: AWS's `Date` for the answered attempt, so the
-      // creation-time gate below runs on AWS's clock, not this host's.
-      let createCommand: object;
-      if (backupId !== undefined) {
-        // BackupId routes to a DIFFERENT API — CreateFileSystemFromBackup
-        // (FileSystemType is derived from the backup and not a valid param).
-        const command = withServerClock(
-          new CreateFileSystemFromBackupCommand({ ...common, BackupId: backupId })
-        );
-        createCommand = command;
-        const response = await this.getClient().send(command);
-        created = response.FileSystem;
-      } else {
-        const command = withServerClock(
-          new CreateFileSystemCommand({
-            ...common,
-            FileSystemType: fileSystemType as FileSystemType,
-          })
-        );
-        createCommand = command;
-        const response = await this.getClient().send(command);
-        created = response.FileSystem;
-      }
-
-      const returnedId = created?.FileSystemId;
-      if (!returnedId) {
-        throw new ProvisioningError(
-          `FSx CreateFileSystem for ${logicalId} returned no FileSystemId`,
-          resourceType,
-          logicalId
-        );
-      }
-      // FSx answers a token that still names a file system with THAT file
-      // system. Besides this create's own earlier attempt, the token can be
-      // held by one made outside the stack's create-token ledger: under an
-      // earlier cdkd, or kept by a destroy while the ledger could not be
-      // updated (#4438).
-      // Recording such a file system as CREATED would hand it to every delete
-      // path a create owns -- the cleanup below, a rollback of this deploy --
-      // so only one created after this create's FIRST send is taken; anything
-      // older, or carrying no creation time, is refused and left untouched.
-      // The comparison is on AWS's clock (`earliestOwnCreationTime`): a host
-      // clock running fast must not refuse an ordinary create.
-      const createdAt = created?.CreationTime?.getTime();
-      if (
-        createdAt === undefined ||
-        createdAt < earliestOwnCreationTime(firstSentAt, serverClockReading(createCommand))
-      ) {
-        const inspect = withPasteableAwsProfile('aws fsx describe-file-systems');
-        throw markNonRetryable(
-          new ProvisioningError(
-            safeMsg`FSx answered the create of ${logicalId} with file system ${returnedId}, which ${
-              createdAt === undefined ? 'carries no creation time' : 'predates this create'
-            }: the create token cdkd derives for this stack's file system is held by it, and it is NOT recorded in cdkd state. It is not one this deploy, or an interrupted earlier deploy of this stack, made: it was created under this token by an earlier cdkd version, or a completed deploy recorded it and cdkd later let go of it, and it may hold data, so cdkd neither records nor deletes it. Inspect it with: ${inspect} --file-system-ids ${returnedId} -- then import it into this stack, or delete it once you are sure its data is not needed, and deploy again.`,
-            resourceType,
-            logicalId
-          )
-        );
-      }
-      fileSystemId = returnedId;
-      reportCreatedResource(logicalId, resourceType, returnedId); // go-to-k/cdkd#5511
-
-      // FSx creation is async (typically 5-10 min for Lustre SCRATCH,
-      // longer for PERSISTENT) — poll until AVAILABLE.
-      const fs = await this.waitForFileSystemAvailable(
-        fileSystemId,
-        logicalId,
-        resourceType,
-        context?.maskSecrets
-      );
-
-      this.logger.debug(`Successfully created FSx FileSystem ${logicalId}: ${fileSystemId}`);
-      this.createTokenFirstSentAt.delete(clientRequestToken);
-
-      return {
-        physicalId: fileSystemId,
-        attributes: this.buildAttributes(fs),
-      };
-    } catch (error) {
-      // Atomicity: if the create call succeeded but polling failed (the
-      // file system went FAILED, or the wait timed out), create() is about
-      // to throw without returning a physicalId — the deploy engine cannot
-      // roll it back, and an orphaned FSx file system bills per hour.
-      // Best-effort delete it here. `fileSystemId` is set only once the
-      // returned file system passed the creation-time check above, so this
-      // never deletes one FSx handed back from before this create.
-      // go-to-k/cdkd#4583: the id of a file system this create made and could
-      // not delete, named for the failed-CREATE journal.
-      let survivorId: string | undefined;
-      if (fileSystemId !== undefined) {
-        try {
-          await this.getClient().send(new DeleteFileSystemCommand({ FileSystemId: fileSystemId }));
-          retractCreatedResource(logicalId, resourceType, fileSystemId);
-          this.createTokenFirstSentAt.delete(clientRequestToken);
-          this.logger.warn(`Rolled back partially-created FSx FileSystem ${fileSystemId}`);
-        } catch (cleanupError) {
-          survivorId = fileSystemId;
-          const cleanupHead = `Failed to roll back partially-created FSx FileSystem ${fileSystemId}: `;
-          this.logger.warn(
-            `${cleanupHead}${this.cleanupFailureText(cleanupHead, cleanupError, context?.maskSecrets)} — outside a rollback's re-create, the failed deploy's rollback journal records it for \`cdkd rollback --revert-failed\`; otherwise delete it yourself to stop billing`
-          );
-        }
-      }
-      if (error instanceof ProvisioningError) {
-        if (survivorId !== undefined) {
-          markCreatedBeforeFailure(error, logicalId, resourceType, survivorId);
-        }
-        throw error;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        context?.maskSecrets,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to create FSx FileSystem ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            undefined,
-            cause
-          )
-      );
-      if (survivorId !== undefined) {
-        markCreatedBeforeFailure(thrown, logicalId, resourceType, survivorId);
-      }
-      throw thrown;
-    }
+    return create.call(this, logicalId, resourceType, properties, context);
   }
 
-  /**
-   * Map the CFn `LustreConfiguration` block to the SDK create shape. The
-   * field names are identical (both PascalCase); numeric / boolean fields
-   * are coerced defensively because template values can arrive as strings.
-   */
-  private toCreateLustreConfiguration(
+  toCreateLustreConfiguration(
     config: Record<string, unknown> | undefined
   ): CreateFileSystemLustreConfiguration | undefined {
-    if (!config) return undefined;
-    const metadata = config['MetadataConfiguration'] as Record<string, unknown> | undefined;
-    const readCache = config['DataReadCacheConfiguration'] as Record<string, unknown> | undefined;
-    const out: CreateFileSystemLustreConfiguration = {
-      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
-      ImportPath: config['ImportPath'] as string | undefined,
-      ExportPath: config['ExportPath'] as string | undefined,
-      ImportedFileChunkSize: toNumber(config['ImportedFileChunkSize']),
-      DeploymentType: config[
-        'DeploymentType'
-      ] as CreateFileSystemLustreConfiguration['DeploymentType'],
-      AutoImportPolicy: config[
-        'AutoImportPolicy'
-      ] as CreateFileSystemLustreConfiguration['AutoImportPolicy'],
-      PerUnitStorageThroughput: toNumber(config['PerUnitStorageThroughput']),
-      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
-      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
-      CopyTagsToBackups: toBoolean(config['CopyTagsToBackups']),
-      DriveCacheType: config[
-        'DriveCacheType'
-      ] as CreateFileSystemLustreConfiguration['DriveCacheType'],
-      DataCompressionType: config[
-        'DataCompressionType'
-      ] as CreateFileSystemLustreConfiguration['DataCompressionType'],
-      EfaEnabled: toBoolean(config['EfaEnabled']),
-      ThroughputCapacity: toNumber(config['ThroughputCapacity']),
-      MetadataConfiguration: metadata
-        ? {
-            Mode: metadata['Mode'] as 'AUTOMATIC' | 'USER_PROVISIONED' | undefined,
-            Iops: toNumber(metadata['Iops']),
-          }
-        : undefined,
-      DataReadCacheConfiguration: readCache
-        ? {
-            SizingMode: readCache['SizingMode'] as LustreReadCacheSizingMode,
-            SizeGiB: toNumber(readCache['SizeGiB']),
-          }
-        : undefined,
-      LogConfiguration: this.toLustreLogConfiguration(
-        config['LogConfiguration'] as Record<string, unknown> | undefined
-      ),
-    };
-    return out;
+    return toCreateLustreConfiguration.call(this, config);
   }
 
-  /**
-   * Map the CFn `LustreConfiguration.LogConfiguration` block to the SDK shape
-   * `CreateFileSystem` and `UpdateFileSystem` both take (go-to-k/cdkd#5430).
-   */
-  private toLustreLogConfiguration(
+  toLustreLogConfiguration(
     config: Record<string, unknown> | undefined
   ): LustreLogCreateConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      Level: config['Level'] as LustreLogCreateConfiguration['Level'],
-      Destination: config['Destination'] as string | undefined,
-    };
+    return toLustreLogConfiguration.call(this, config);
   }
 
-  /** Map the CFn `WindowsConfiguration` block to the SDK create shape. */
-  private toCreateWindowsConfiguration(
+  toCreateWindowsConfiguration(
     config: Record<string, unknown> | undefined
   ): CreateFileSystemWindowsConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      ActiveDirectoryId: config['ActiveDirectoryId'] as string | undefined,
-      SelfManagedActiveDirectoryConfiguration: this.toSelfManagedAdConfiguration(
-        config['SelfManagedActiveDirectoryConfiguration'] as Record<string, unknown> | undefined
-      ),
-      DeploymentType: config[
-        'DeploymentType'
-      ] as CreateFileSystemWindowsConfiguration['DeploymentType'],
-      PreferredSubnetId: config['PreferredSubnetId'] as string | undefined,
-      // ThroughputCapacity is required by the SDK type (number | undefined);
-      // a Windows template always carries it, but coerce defensively.
-      ThroughputCapacity: toNumber(config['ThroughputCapacity']) as number,
-      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
-      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
-      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
-      CopyTagsToBackups: toBoolean(config['CopyTagsToBackups']),
-      Aliases: config['Aliases'] as string[] | undefined,
-      AuditLogConfiguration: this.toWindowsAuditLogConfiguration(
-        config['AuditLogConfiguration'] as Record<string, unknown> | undefined
-      ),
-      DiskIopsConfiguration: this.toDiskIopsConfiguration(
-        config['DiskIopsConfiguration'] as Record<string, unknown> | undefined
-      ),
-      FsrmConfiguration: this.toWindowsFsrmConfiguration(
-        config['FsrmConfiguration'] as Record<string, unknown> | undefined
-      ),
-    };
+    return toCreateWindowsConfiguration.call(this, config);
   }
 
-  /** Map the CFn `OntapConfiguration` block to the SDK create shape. */
-  private toCreateOntapConfiguration(
+  toCreateOntapConfiguration(
     config: Record<string, unknown> | undefined
   ): CreateFileSystemOntapConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
-      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
-      DeploymentType: config[
-        'DeploymentType'
-      ] as CreateFileSystemOntapConfiguration['DeploymentType'],
-      EndpointIpAddressRange: config['EndpointIpAddressRange'] as string | undefined,
-      FsxAdminPassword: config['FsxAdminPassword'] as string | undefined,
-      DiskIopsConfiguration: this.toDiskIopsConfiguration(
-        config['DiskIopsConfiguration'] as Record<string, unknown> | undefined
-      ),
-      PreferredSubnetId: config['PreferredSubnetId'] as string | undefined,
-      RouteTableIds: config['RouteTableIds'] as string[] | undefined,
-      ThroughputCapacity: toNumber(config['ThroughputCapacity']),
-      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
-      HAPairs: toNumber(config['HAPairs']),
-      ThroughputCapacityPerHAPair: toNumber(config['ThroughputCapacityPerHAPair']),
-      EndpointIpv6AddressRange: config['EndpointIpv6AddressRange'] as string | undefined,
-    };
+    return toCreateOntapConfiguration.call(this, config);
   }
 
-  /** Map the CFn `OpenZFSConfiguration` block to the SDK create shape. */
-  private toCreateOpenZFSConfiguration(
+  toCreateOpenZFSConfiguration(
     config: Record<string, unknown> | undefined
   ): CreateFileSystemOpenZFSConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      AutomaticBackupRetentionDays: toNumber(config['AutomaticBackupRetentionDays']),
-      CopyTagsToBackups: toBoolean(config['CopyTagsToBackups']),
-      CopyTagsToVolumes: toBoolean(config['CopyTagsToVolumes']),
-      DailyAutomaticBackupStartTime: config['DailyAutomaticBackupStartTime'] as string | undefined,
-      DeploymentType: config[
-        'DeploymentType'
-      ] as CreateFileSystemOpenZFSConfiguration['DeploymentType'],
-      // ThroughputCapacity is required by the SDK type; coerce defensively.
-      ThroughputCapacity: toNumber(config['ThroughputCapacity']) as number,
-      WeeklyMaintenanceStartTime: config['WeeklyMaintenanceStartTime'] as string | undefined,
-      DiskIopsConfiguration: this.toDiskIopsConfiguration(
-        config['DiskIopsConfiguration'] as Record<string, unknown> | undefined
-      ),
-      RootVolumeConfiguration: this.toOpenZFSRootVolumeConfiguration(
-        config['RootVolumeConfiguration'] as Record<string, unknown> | undefined
-      ),
-      PreferredSubnetId: config['PreferredSubnetId'] as string | undefined,
-      EndpointIpAddressRange: config['EndpointIpAddressRange'] as string | undefined,
-      EndpointIpv6AddressRange: config['EndpointIpv6AddressRange'] as string | undefined,
-      RouteTableIds: config['RouteTableIds'] as string[] | undefined,
-      ReadCacheConfiguration: this.toOpenZFSReadCacheConfiguration(
-        config['ReadCacheConfiguration'] as Record<string, unknown> | undefined
-      ),
-    };
+    return toCreateOpenZFSConfiguration.call(this, config);
   }
 
   // ─── Nested sub-block mappers (shared by create + update) ───────────
 
-  private toDiskIopsConfiguration(
+  toDiskIopsConfiguration(
     config: Record<string, unknown> | undefined
   ): DiskIopsConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      Mode: config['Mode'] as DiskIopsConfiguration['Mode'],
-      Iops: toNumber(config['Iops']),
-    };
+    return toDiskIopsConfiguration.call(this, config);
   }
 
-  private toSelfManagedAdConfiguration(
+  toSelfManagedAdConfiguration(
     config: Record<string, unknown> | undefined
   ): SelfManagedActiveDirectoryConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      DomainName: config['DomainName'] as string,
-      OrganizationalUnitDistinguishedName: config['OrganizationalUnitDistinguishedName'] as
-        | string
-        | undefined,
-      FileSystemAdministratorsGroup: config['FileSystemAdministratorsGroup'] as string | undefined,
-      UserName: config['UserName'] as string | undefined,
-      Password: config['Password'] as string | undefined,
-      DnsIps: config['DnsIps'] as string[],
-      DomainJoinServiceAccountSecret: config['DomainJoinServiceAccountSecret'] as
-        | string
-        | undefined,
-    };
+    return toSelfManagedAdConfiguration.call(this, config);
   }
 
-  private toSelfManagedAdConfigurationUpdates(
+  toSelfManagedAdConfigurationUpdates(
     config: Record<string, unknown> | undefined
   ): SelfManagedActiveDirectoryConfigurationUpdates | undefined {
-    if (!config) return undefined;
-    return {
-      UserName: config['UserName'] as string | undefined,
-      Password: config['Password'] as string | undefined,
-      DnsIps: config['DnsIps'] as string[] | undefined,
-      DomainName: config['DomainName'] as string | undefined,
-      OrganizationalUnitDistinguishedName: config['OrganizationalUnitDistinguishedName'] as
-        | string
-        | undefined,
-      FileSystemAdministratorsGroup: config['FileSystemAdministratorsGroup'] as string | undefined,
-      DomainJoinServiceAccountSecret: config['DomainJoinServiceAccountSecret'] as
-        | string
-        | undefined,
-    };
+    return toSelfManagedAdConfigurationUpdates.call(this, config);
   }
 
-  private toWindowsAuditLogConfiguration(
+  toWindowsAuditLogConfiguration(
     config: Record<string, unknown> | undefined
   ): WindowsAuditLogCreateConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      FileAccessAuditLogLevel: config[
-        'FileAccessAuditLogLevel'
-      ] as WindowsAuditLogCreateConfiguration['FileAccessAuditLogLevel'],
-      FileShareAccessAuditLogLevel: config[
-        'FileShareAccessAuditLogLevel'
-      ] as WindowsAuditLogCreateConfiguration['FileShareAccessAuditLogLevel'],
-      AuditLogDestination: config['AuditLogDestination'] as string | undefined,
-    };
+    return toWindowsAuditLogConfiguration.call(this, config);
   }
 
-  private toWindowsFsrmConfiguration(
+  toWindowsFsrmConfiguration(
     config: Record<string, unknown> | undefined
   ): WindowsFsrmConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      FsrmServiceEnabled: toBoolean(config['FsrmServiceEnabled']) as boolean,
-      EventLogDestination: config['EventLogDestination'] as string | undefined,
-    };
+    return toWindowsFsrmConfiguration.call(this, config);
   }
 
-  private toOpenZFSRootVolumeConfiguration(
+  toOpenZFSRootVolumeConfiguration(
     config: Record<string, unknown> | undefined
   ): OpenZFSCreateRootVolumeConfiguration | undefined {
-    if (!config) return undefined;
-    const nfsExports = config['NfsExports'] as Array<Record<string, unknown>> | undefined;
-    const quotas = config['UserAndGroupQuotas'] as Array<Record<string, unknown>> | undefined;
-    return {
-      RecordSizeKiB: toNumber(config['RecordSizeKiB']),
-      DataCompressionType: config[
-        'DataCompressionType'
-      ] as OpenZFSCreateRootVolumeConfiguration['DataCompressionType'],
-      NfsExports: nfsExports?.map((exp) => ({
-        ClientConfigurations: (
-          (exp['ClientConfigurations'] as Array<Record<string, unknown>> | undefined) ?? []
-        ).map((cc) => ({
-          Clients: cc['Clients'] as string,
-          Options: cc['Options'] as string[],
-        })),
-      })),
-      UserAndGroupQuotas: quotas?.map((q) => ({
-        Type: q['Type'] as OpenZFSUserOrGroupQuota['Type'],
-        Id: toNumber(q['Id']) as number,
-        StorageCapacityQuotaGiB: toNumber(q['StorageCapacityQuotaGiB']) as number,
-      })),
-      CopyTagsToSnapshots: toBoolean(config['CopyTagsToSnapshots']),
-      ReadOnly: toBoolean(config['ReadOnly']),
-    };
+    return toOpenZFSRootVolumeConfiguration.call(this, config);
   }
 
-  private toOpenZFSReadCacheConfiguration(
+  toOpenZFSReadCacheConfiguration(
     config: Record<string, unknown> | undefined
   ): OpenZFSReadCacheConfiguration | undefined {
-    if (!config) return undefined;
-    return {
-      SizingMode: config['SizingMode'] as OpenZFSReadCacheConfiguration['SizingMode'],
-      SizeGiB: toNumber(config['SizeGiB']),
-    };
+    return toOpenZFSReadCacheConfiguration.call(this, config);
   }
 
   // ─── UPDATE ────────────────────────────────────────────────────────
 
-  async update(
+  update(
     logicalId: string,
     physicalId: string,
     resourceType: string,
@@ -1334,321 +353,27 @@ export class FSxFileSystemProvider implements ResourceProvider {
     previousProperties: Record<string, unknown>,
     context?: UpdateContext
   ): Promise<ResourceUpdateResult> {
-    // go-to-k/cdkd#3994: a malformed desired Tags is refused before any call.
-    refuseMalformedDesiredTags(properties['Tags'], resourceType, logicalId, physicalId);
-    const changed = (key: string): boolean =>
-      JSON.stringify(properties[key]) !== JSON.stringify(previousProperties[key]);
-
-    // Defensive guard: registry-createOnly top-level changes should have
-    // been routed through DELETE+CREATE by the replacement-detection layer.
-    // An undefined→defined transition (property ADDED post-create) is a
-    // change too — do not require both sides to be present.
-    for (const key of TOP_LEVEL_IMMUTABLE_PROPS) {
-      const next = properties[key];
-      const prev = previousProperties[key];
-      if (JSON.stringify(next ?? null) !== JSON.stringify(prev ?? null)) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `AWS FSx FileSystem ${key} is immutable on AWS — UpdateFileSystem does not accept ${key}; the property is fixed at creation. Re-deploy with cdkd deploy --replace --force-stateful-recreation (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
-        );
-      }
-    }
-
-    // Variant sub-property immutability: the CFn registry schema does NOT
-    // mark the <Variant>Configuration blocks (or their sub-fields) createOnly,
-    // so the schema-based replacement fallback never fires for them — the
-    // provider classifies each itself, mapping the UpdateFileSystem-mutable
-    // subset and rejecting every other changed sub-field with a --replace
-    // pointer. At most ONE variant block is present per file system.
-    const variantConfigKey = this.detectVariantConfigKey(properties, previousProperties);
-    const {
-      diff: variantDiff,
-      hasMutableDiff: variantHasMutableDiff,
-      leftInPlace,
-      aliases,
-    } = variantConfigKey
-      ? this.computeVariantConfigDiff(
-          resourceType,
-          logicalId,
-          variantConfigKey,
-          (properties[variantConfigKey] ?? {}) as Record<string, unknown>,
-          (previousProperties[variantConfigKey] ?? {}) as Record<string, unknown>
-        )
-      : { diff: {}, hasMutableDiff: false, leftInPlace: [], aliases: { add: [], remove: [] } };
-    const aliasesChanged = aliases.add.length > 0 || aliases.remove.length > 0;
-    // Issue #1160: named once, and only after the update SUCCEEDED (the
-    // shared caller's own warning has the same timing) — a retried attempt
-    // would repeat it, and a failure falling back to replacement would make
-    // "stays in place" false. Not on `drift --revert`: its previous side is
-    // an AWS readback, so a key the baseline lacks was never removed from a
-    // template, and the revert sent nothing for it before either.
-    const leftInPlaceNames = [
-      ...TOP_LEVEL_LEFT_IN_PLACE_PROPS.filter(
-        (key) => properties[key] === undefined && previousProperties[key] !== undefined
-      ),
-      ...leftInPlace.map((key) => `${variantConfigKey}.${key}`),
-    ];
-    const warnLeftInPlace = (): void => {
-      if (leftInPlaceNames.length === 0 || context?.desiredFromAwsReadback) return;
-      this.logger.warn(
-        leftInPlaceWarning(
-          logicalId,
-          leftInPlaceNames,
-          context?.replayingState ? 'rollback' : 'deploy',
-          {
-            fileSystemType: properties['FileSystemType'] ?? previousProperties['FileSystemType'],
-            storageTypes: [previousProperties['StorageType'], properties['StorageType']],
-            deploymentTypes: [previousProperties, properties].map((side) =>
-              variantConfigKey
-                ? (side[variantConfigKey] as Record<string, unknown> | undefined)?.[
-                    'DeploymentType'
-                  ]
-                : undefined
-            ),
-            desiredNetworkType: properties['NetworkType'],
-            desiredEndpointIpv6AddressRange:
-              variantConfigKey === 'OpenZFSConfiguration'
-                ? (properties[variantConfigKey] as Record<string, unknown> | undefined)?.[
-                    'EndpointIpv6AddressRange'
-                  ]
-                : undefined,
-          }
-        )
-      );
-    };
-
-    // §3b Class 2 wire-layer sanitize. `readCurrentState` emits
-    // `StorageCapacity ?? 0` as its always-emit placeholder, and the 0 is
-    // REACHABLE on a real AWS shape: FSx Lustre Intelligent-Tiering
-    // (`DataReadCacheConfiguration`) does not provision capacity, so
-    // `DescribeFileSystems` returns no `StorageCapacity` for it —
-    // `StorageCapacity` is neither createOnly nor required in the registry
-    // schema for exactly that reason. If such a placeholder ever reaches
-    // here as a "change" (an undefined-at-capture / defined-later
-    // transition), shipping `StorageCapacity: 0` would earn an opaque AWS
-    // rejection. Suppress the field instead of sending it: 0 is never a
-    // legal desired capacity, so there is nothing to express — and
-    // suppressing rather than throwing keeps an otherwise-valid update (a
-    // variant-config diff in the same call) working, instead of failing it
-    // over a synthetic value the user never wrote. Folded into the
-    // `changed()` flag so the no-op early-return below also sees it: when
-    // the placeholder is the ONLY diff, the update is correctly a no-op
-    // rather than an empty UpdateFileSystem call.
-    const resolvedStorageCapacity = toNumber(properties['StorageCapacity']);
-    const storageCapacityIsPlaceholder =
-      resolvedStorageCapacity !== undefined && resolvedStorageCapacity <= 0;
-    if (storageCapacityIsPlaceholder && changed('StorageCapacity')) {
-      this.logger.debug(
-        `Suppressing non-positive StorageCapacity (${resolvedStorageCapacity}) for FSx FileSystem ${logicalId}: this is the readCurrentState placeholder for a capacity-less file system (Lustre Intelligent-Tiering), not a desired value.`
-      );
-    }
-    // Issue #1160: a top-level property REMOVED from the desired side has
-    // nothing to send — `UpdateFileSystem` keeps a field it is not sent, and
-    // cdkd sends no reset for these (`TOP_LEVEL_LEFT_IN_PLACE_PROPS`; the
-    // removal is named in `warnLeftInPlace`). Counting it as a change would
-    // only issue an `UpdateFileSystem` carrying no update field.
-    const sendsChange = (key: string): boolean => changed(key) && properties[key] !== undefined;
-    const storageCapacityChanged = sendsChange('StorageCapacity') && !storageCapacityIsPlaceholder;
-    const storageTypeChanged = sendsChange('StorageType');
-    const typeVersionChanged = sendsChange('FileSystemTypeVersion');
-    const networkTypeChanged = sendsChange('NetworkType');
-    const tagsChanged = changed('Tags');
-
-    if (
-      !variantHasMutableDiff &&
-      !storageCapacityChanged &&
-      !storageTypeChanged &&
-      !typeVersionChanged &&
-      !networkTypeChanged &&
-      !aliasesChanged &&
-      !tagsChanged
-    ) {
-      this.logger.debug(`No mutable diff for FSx FileSystem ${logicalId}, skipping update`);
-      warnLeftInPlace();
-      return { physicalId, wasReplaced: false };
-    }
-
-    this.logger.debug(`Updating FSx FileSystem ${logicalId}: ${physicalId}`);
-
-    try {
-      // One deadline for every wait this update runs: the FILE_SYSTEM_UPDATE
-      // action, then the alias changes (go-to-k/cdkd#5469).
-      const deadline = Date.now() + this.maxWaitMs;
-      const needsUpdateCall =
-        variantHasMutableDiff ||
-        storageCapacityChanged ||
-        storageTypeChanged ||
-        typeVersionChanged ||
-        networkTypeChanged;
-
-      let updatedFs: FileSystem | undefined;
-
-      if (needsUpdateCall) {
-        const callTimeMs = Date.now();
-        const updateResponse = await this.getClient().send(
-          new UpdateFileSystemCommand({
-            FileSystemId: physicalId,
-            ...(storageCapacityChanged && {
-              StorageCapacity: toNumber(properties['StorageCapacity']),
-            }),
-            ...(storageTypeChanged && {
-              StorageType: properties['StorageType'] as StorageType | undefined,
-            }),
-            ...(typeVersionChanged && {
-              FileSystemTypeVersion: properties['FileSystemTypeVersion'] as string | undefined,
-            }),
-            ...(networkTypeChanged && {
-              NetworkType: properties['NetworkType'] as NetworkType | undefined,
-            }),
-            ...(variantHasMutableDiff && variantConfigKey
-              ? { [variantConfigKey]: variantDiff }
-              : {}),
-          })
-        );
-
-        // UpdateFileSystem applies the change via an ASYNC administrative
-        // action (`AdministrativeActions[].Type: FILE_SYSTEM_UPDATE`) — the
-        // Lifecycle can report AVAILABLE while the config change has not
-        // propagated to the Describe view yet (observed live: a
-        // DataCompressionType NONE -> LZ4 change still read NONE seconds
-        // after UpdateFileSystem returned). Wait until THIS update's action
-        // completes so the next read (drift compare, verify scripts) sees
-        // the final values — CloudFormation waits the same way.
-        //
-        // The wait must scope to actions from THIS update: FSx keeps
-        // completed/FAILED actions in the AdministrativeActions history, so
-        // an unscoped wait would (a) mistake a PAST failed update for this
-        // one, permanently failing every retry, and (b) return early when
-        // the just-created action is not visible in Describe yet. The
-        // UpdateFileSystem response carries the newly-created action —
-        // derive the tracking threshold from its RequestTime, falling back
-        // to the local call time minus a clock-skew margin.
-        const respPendingActions = (updateResponse.FileSystem?.AdministrativeActions ?? []).filter(
-          (a) =>
-            a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE' &&
-            (a.Status === 'PENDING' || a.Status === 'IN_PROGRESS')
-        );
-        const requestTimes = respPendingActions
-          .map((a) => a.RequestTime?.getTime())
-          .filter((t): t is number => t !== undefined);
-        const actionThresholdMs =
-          requestTimes.length > 0 ? Math.min(...requestTimes) : callTimeMs - 60_000;
-
-        updatedFs = await this.waitForUpdateActionComplete(
-          physicalId,
-          logicalId,
-          resourceType,
-          actionThresholdMs,
-          // When the update response CONFIRMED a newly-created action, the
-          // wait must actually observe an in-threshold action at least once
-          // before returning — a lagging Describe read replica could
-          // otherwise yield an empty filtered list (inProgress=false) and
-          // return prematurely with the pre-update config.
-          respPendingActions.length > 0,
-          deadline,
-          context?.maskSecrets
-        );
-      }
-
-      // go-to-k/cdkd#5469: after the UpdateFileSystem action settled, so the
-      // alias actions never overlap it.
-      if (aliasesChanged) {
-        await this.applyAliasDelta(physicalId, logicalId, resourceType, aliases, deadline);
-      }
-
-      if (tagsChanged) {
-        await this.applyTagDiff(
-          physicalId,
-          resourceType,
-          logicalId,
-          properties['Tags'],
-          previousProperties['Tags']
-        );
-      }
-
-      // Re-derive the attribute set so the deploy engine's state write keeps
-      // GetAtt-served attributes (DNSName / LustreMountName / ResourceARN)
-      // fresh across updates — an update result without attributes would
-      // otherwise degrade Fn::GetAtt to the physical-id fallback. Best-effort:
-      // the real update already succeeded at this point, so a transient
-      // Describe failure must NOT fail (and roll back) the whole update —
-      // returning without attributes lets the deploy engine carry the
-      // previously-stored attributes forward, which is exactly the intended
-      // degradation.
-      if (!updatedFs) {
-        try {
-          const resp = await this.getClient().send(
-            new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
-          );
-          updatedFs = resp.FileSystems?.[0];
-        } catch (describeError) {
-          this.logger.debug(
-            `Post-update attribute refresh for ${physicalId} failed (returning without attributes): ${
-              describeAwsFailure(describeError).detail
-            }`
-          );
-        }
-      }
-
-      this.logger.debug(`Successfully updated FSx FileSystem ${logicalId}`);
-      warnLeftInPlace();
-
-      return {
-        physicalId,
-        wasReplaced: false,
-        ...(updatedFs && { attributes: this.buildAttributes(updatedFs) }),
-      };
-    } catch (error) {
-      if (error instanceof ProvisioningError) throw error;
-      const cause = error instanceof Error ? error : undefined;
-      throw this.wrapCaughtError(
-        context?.maskSecrets,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to update FSx FileSystem ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-    }
+    return update.call(
+      this,
+      logicalId,
+      physicalId,
+      resourceType,
+      properties,
+      previousProperties,
+      context
+    );
   }
 
   // ─── Variant UPDATE diff ────────────────────────────────────────────
 
-  /**
-   * Which `<Variant>Configuration` block (if any) is present on either side
-   * of the update. At most one is expected — the file system's type never
-   * changes (FileSystemType is registry-createOnly, guarded above).
-   */
-  private detectVariantConfigKey(
+  detectVariantConfigKey(
     properties: Record<string, unknown>,
     previousProperties: Record<string, unknown>
   ): string | undefined {
-    for (const key of Object.values(VARIANT_CONFIG_KEY)) {
-      if (properties[key] !== undefined || previousProperties[key] !== undefined) return key;
-    }
-    return undefined;
+    return detectVariantConfigKey.call(this, properties, previousProperties);
   }
 
-  /**
-   * Diff a variant config block's sub-properties into the SDK
-   * `UpdateFileSystem<Variant>Configuration` shape. A changed sub-field that
-   * is NOT in the variant's mutable set is rejected with a `--replace`
-   * pointer (UpdateFileSystem cannot express it).
-   *
-   * A mutable sub-property REMOVED from the desired block (issue #1160) is
-   * returned in `leftInPlace` instead of being mapped: `UpdateFileSystem`
-   * keeps a field it is not sent, and cdkd sends no reset, so mapping it to
-   * `undefined` silently dropped the removal (and issued an
-   * `UpdateFileSystem` with an empty variant block when it was the only
-   * change). `RouteTableIds` is the exception — its removal IS expressible,
-   * as a `RemoveRouteTableIds` delta.
-   */
-  private computeVariantConfigDiff(
+  computeVariantConfigDiff(
     resourceType: string,
     logicalId: string,
     configKey: string,
@@ -1660,440 +385,85 @@ export class FSxFileSystemProvider implements ResourceProvider {
     leftInPlace: string[];
     aliases: { add: string[]; remove: string[] };
   } {
-    const mutable = VARIANT_MUTABLE_SUBPROPS[configKey] ?? new Set<string>();
-    const keys = new Set([...Object.keys(next), ...Object.keys(prev)]);
-    const diff: Record<string, unknown> = {};
-    const leftInPlace: string[] = [];
-    let aliases: { add: string[]; remove: string[] } = { add: [], remove: [] };
-    let hasMutableDiff = false;
-    for (const key of keys) {
-      const nextVal = next[key];
-      const prevVal = prev[key];
-      if (JSON.stringify(nextVal) === JSON.stringify(prevVal)) continue;
-      // go-to-k/cdkd#5431: OpenZFS `Options` is a DeleteFileSystem option
-      // (CFn "Update requires: No interruption"): nothing on AWS to update,
-      // so a change or removal only lands in the record delete() reads.
-      if (configKey === 'OpenZFSConfiguration' && key === 'Options') continue;
-      // go-to-k/cdkd#5469: Windows `Aliases` (CFn "Update requires: No
-      // interruption", not createOnly in the registry schema) changes through
-      // Associate/DisassociateFileSystemAliases, never UpdateFileSystem.
-      if (configKey === 'WindowsConfiguration' && key === 'Aliases') {
-        aliases = aliasDelta(nextVal, prevVal);
-        continue;
-      }
-      if (!mutable.has(key)) {
-        throw new ResourceUpdateNotSupportedError(
-          resourceType,
-          logicalId,
-          `AWS FSx FileSystem ${configKey}.${key} is immutable on AWS — UpdateFileSystem cannot change it after creation. Re-deploy with cdkd deploy --replace --force-stateful-recreation (the type is in cdkd's stateful-recreate guard set, so a bare --replace is refused a second time with STATEFUL_REPLACE_BLOCKED), or destroy + redeploy the stack.`
-        );
-      }
-      if (nextVal === undefined && key !== 'RouteTableIds') {
-        leftInPlace.push(key);
-        continue;
-      }
-      const ctx: VariantFieldContext = { resourceType, logicalId, configKey };
-      const applied =
-        configKey === 'LustreConfiguration'
-          ? this.applyLustreUpdateField(ctx, key, nextVal, diff)
-          : configKey === 'WindowsConfiguration'
-            ? this.applyWindowsUpdateField(ctx, key, nextVal, diff)
-            : configKey === 'OntapConfiguration'
-              ? this.applyOntapUpdateField(ctx, key, nextVal, prevVal, diff)
-              : this.applyOpenZFSUpdateField(ctx, key, nextVal, prevVal, diff);
-      // A pure RouteTableIds reorder yields no Add/Remove delta — do not
-      // trigger a no-op UpdateFileSystem call for it.
-      if (applied) hasMutableDiff = true;
-    }
-    return { diff, hasMutableDiff, leftInPlace, aliases };
+    return computeVariantConfigDiff.call(this, resourceType, logicalId, configKey, next, prev);
   }
 
-  /**
-   * A sub-property listed in a `*_MUTABLE_SUBPROPS` set with no matching
-   * `apply*UpdateField` case. Reaching here is a cdkd bug, not user error:
-   * `computeVariantConfigDiff` already accepted the key as mutable, so
-   * falling through would issue a no-op `UpdateFileSystem` (`hasMutableDiff`
-   * true, empty diff) and silently drop the user's change. Fail loudly
-   * instead so the missing mapping surfaces the moment it is added.
-   */
-  private unmappedMutableSubprop(ctx: VariantFieldContext, key: string): never {
-    throw new ProvisioningError(
-      `AWS FSx FileSystem ${ctx.configKey}.${key} is declared mutable but has no UpdateFileSystem mapping in cdkd. This is a cdkd bug — please report it at https://github.com/go-to-k/cdkd/issues`,
-      ctx.resourceType,
-      ctx.logicalId
-    );
+  unmappedMutableSubprop(ctx: VariantFieldContext, key: string): never {
+    return unmappedMutableSubprop.call(this, ctx, key);
   }
 
-  private applyLustreUpdateField(
+  applyLustreUpdateField(
     ctx: VariantFieldContext,
     key: string,
     next: unknown,
     diff: Record<string, unknown>
   ): boolean {
-    const out = diff as UpdateFileSystemLustreConfiguration;
-    switch (key) {
-      case 'WeeklyMaintenanceStartTime':
-      case 'DailyAutomaticBackupStartTime':
-        (diff as Record<string, unknown>)[key] = next as string | undefined;
-        break;
-      case 'AutomaticBackupRetentionDays':
-      case 'PerUnitStorageThroughput':
-      case 'ThroughputCapacity':
-        (diff as Record<string, unknown>)[key] = toNumber(next);
-        break;
-      case 'AutoImportPolicy':
-      case 'DataCompressionType':
-        (diff as Record<string, unknown>)[key] = next;
-        break;
-      case 'MetadataConfiguration': {
-        const metadata = next as Record<string, unknown> | undefined;
-        out.MetadataConfiguration = metadata
-          ? {
-              Mode: metadata['Mode'] as 'AUTOMATIC' | 'USER_PROVISIONED' | undefined,
-              Iops: toNumber(metadata['Iops']),
-            }
-          : undefined;
-        break;
-      }
-      case 'DataReadCacheConfiguration': {
-        const readCache = next as Record<string, unknown> | undefined;
-        out.DataReadCacheConfiguration = readCache
-          ? {
-              SizingMode: readCache['SizingMode'] as LustreReadCacheSizingMode,
-              SizeGiB: toNumber(readCache['SizeGiB']),
-            }
-          : undefined;
-        break;
-      }
-      case 'LogConfiguration':
-        out.LogConfiguration = this.toLustreLogConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      default:
-        this.unmappedMutableSubprop(ctx, key);
-    }
-    return true;
+    return applyLustreUpdateField.call(this, ctx, key, next, diff);
   }
 
-  private applyWindowsUpdateField(
+  applyWindowsUpdateField(
     ctx: VariantFieldContext,
     key: string,
     next: unknown,
     diff: Record<string, unknown>
   ): boolean {
-    const out = diff as UpdateFileSystemWindowsConfiguration;
-    switch (key) {
-      case 'WeeklyMaintenanceStartTime':
-      case 'DailyAutomaticBackupStartTime':
-        (diff as Record<string, unknown>)[key] = next as string | undefined;
-        break;
-      case 'AutomaticBackupRetentionDays':
-      case 'ThroughputCapacity':
-        (diff as Record<string, unknown>)[key] = toNumber(next);
-        break;
-      case 'SelfManagedActiveDirectoryConfiguration':
-        out.SelfManagedActiveDirectoryConfiguration = this.toSelfManagedAdConfigurationUpdates(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      case 'AuditLogConfiguration':
-        out.AuditLogConfiguration = this.toWindowsAuditLogConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      case 'DiskIopsConfiguration':
-        out.DiskIopsConfiguration = this.toDiskIopsConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      case 'FsrmConfiguration':
-        out.FsrmConfiguration = this.toWindowsFsrmConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      default:
-        this.unmappedMutableSubprop(ctx, key);
-    }
-    return true;
+    return applyWindowsUpdateField.call(this, ctx, key, next, diff);
   }
 
-  private applyOntapUpdateField(
+  applyOntapUpdateField(
     ctx: VariantFieldContext,
     key: string,
     next: unknown,
     prev: unknown,
     diff: Record<string, unknown>
   ): boolean {
-    const out = diff as UpdateFileSystemOntapConfiguration;
-    switch (key) {
-      case 'DailyAutomaticBackupStartTime':
-      case 'WeeklyMaintenanceStartTime':
-      case 'FsxAdminPassword':
-      case 'EndpointIpv6AddressRange':
-        (diff as Record<string, unknown>)[key] = next as string | undefined;
-        break;
-      case 'AutomaticBackupRetentionDays':
-      case 'ThroughputCapacity':
-      case 'ThroughputCapacityPerHAPair':
-      case 'HAPairs':
-        (diff as Record<string, unknown>)[key] = toNumber(next);
-        break;
-      case 'DiskIopsConfiguration':
-        out.DiskIopsConfiguration = this.toDiskIopsConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      case 'RouteTableIds': {
-        const { add, remove } = routeTableDelta(next, prev);
-        if (add) out.AddRouteTableIds = add;
-        if (remove) out.RemoveRouteTableIds = remove;
-        return add !== undefined || remove !== undefined;
-      }
-      default:
-        this.unmappedMutableSubprop(ctx, key);
-    }
-    return true;
+    return applyOntapUpdateField.call(this, ctx, key, next, prev, diff);
   }
 
-  private applyOpenZFSUpdateField(
+  applyOpenZFSUpdateField(
     ctx: VariantFieldContext,
     key: string,
     next: unknown,
     prev: unknown,
     diff: Record<string, unknown>
   ): boolean {
-    const out = diff as UpdateFileSystemOpenZFSConfiguration;
-    switch (key) {
-      case 'DailyAutomaticBackupStartTime':
-      case 'WeeklyMaintenanceStartTime':
-      case 'EndpointIpv6AddressRange':
-        (diff as Record<string, unknown>)[key] = next as string | undefined;
-        break;
-      case 'CopyTagsToBackups':
-      case 'CopyTagsToVolumes':
-        (diff as Record<string, unknown>)[key] = toBoolean(next);
-        break;
-      case 'AutomaticBackupRetentionDays':
-      case 'ThroughputCapacity':
-        (diff as Record<string, unknown>)[key] = toNumber(next);
-        break;
-      case 'DiskIopsConfiguration':
-        out.DiskIopsConfiguration = this.toDiskIopsConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      case 'ReadCacheConfiguration':
-        out.ReadCacheConfiguration = this.toOpenZFSReadCacheConfiguration(
-          next as Record<string, unknown> | undefined
-        );
-        break;
-      case 'RouteTableIds': {
-        const { add, remove } = routeTableDelta(next, prev);
-        if (add) out.AddRouteTableIds = add;
-        if (remove) out.RemoveRouteTableIds = remove;
-        return add !== undefined || remove !== undefined;
-      }
-      default:
-        this.unmappedMutableSubprop(ctx, key);
-    }
-    return true;
+    return applyOpenZFSUpdateField.call(this, ctx, key, next, prev, diff);
   }
 
-  /**
-   * go-to-k/cdkd#5469: apply a Windows `Aliases` change. Disassociate first
-   * (it frees room under the 50-alias limit) and wait until the removed names
-   * are gone, then associate and wait until the added ones are AVAILABLE —
-   * each call starts an async administrative action, so the two are not run
-   * concurrently, and the deploy returns only once the aliases read back as
-   * the template declares.
-   *
-   * The delta is reconciled against ONE read of the live aliases first, so a
-   * retry after a partial failure converges instead of failing for ever:
-   * `DisassociateFileSystemAliases` answers 400 for a name that is not
-   * associated, so only a listed name that is not already DELETING is sent;
-   * `AssociateFileSystemAliases` is a no-op for a name already there, which
-   * would leave a CREATE_FAILED one failed (and a DELETING / DELETE_FAILED
-   * one never AVAILABLE), so that one is cleared first — disassociated unless
-   * already DELETING, then waited out — and associated afresh; an AVAILABLE /
-   * CREATING one is not re-sent.
-   *
-   * Before any of it, wait until no OTHER administrative action is PENDING /
-   * IN_PROGRESS. A storage or IOPS optimization (which can run for hours
-   * after a capacity or throughput increase) is not waited for: FSx documents
-   * nothing refusing an alias action beside one. If FSx does refuse a call
-   * with a BadRequest naming an administrative action in progress, the call
-   * is re-sent until `deadline`, the one deadline `update()` gives every
-   * wait.
-   */
-  private async applyAliasDelta(
+  applyAliasDelta(
     physicalId: string,
     logicalId: string,
     resourceType: string,
     delta: { add: string[]; remove: string[] },
     deadline: number
   ): Promise<void> {
-    await this.waitForNoAdministrativeAction(physicalId, logicalId, resourceType, deadline);
-    const live = new Map(
-      (await this.describeAliases(physicalId)).map((a) => [a.Name?.toLowerCase(), a.Lifecycle])
-    );
-    // An added name stuck mid-removal (DELETING / DELETE_FAILED, e.g. after an
-    // interrupted earlier attempt) or CREATE_FAILED is still associated, so an
-    // Associate would be a no-op that never reaches AVAILABLE: clear it first.
-    const retryAdd = delta.add.filter((n) => {
-      const lifecycle = live.get(n);
-      return (
-        lifecycle === 'CREATE_FAILED' || lifecycle === 'DELETING' || lifecycle === 'DELETE_FAILED'
-      );
-    });
-    const awaitGone = [...delta.remove, ...retryAdd];
-    const sendRemove = awaitGone.filter((n) => live.has(n) && live.get(n) !== 'DELETING');
-    const sendAdd = delta.add.filter(
-      (n) => live.get(n) !== 'AVAILABLE' && live.get(n) !== 'CREATING'
-    );
-    if (sendRemove.length > 0) {
-      await this.sendAliasCall(
-        physicalId,
-        logicalId,
-        resourceType,
-        () =>
-          new DisassociateFileSystemAliasesCommand({
-            FileSystemId: physicalId,
-            Aliases: sendRemove,
-          }),
-        deadline
-      );
-    }
-    if (awaitGone.length > 0) {
-      await this.waitForAliases(physicalId, logicalId, resourceType, awaitGone, 'gone', deadline);
-    }
-    if (sendAdd.length > 0) {
-      await this.sendAliasCall(
-        physicalId,
-        logicalId,
-        resourceType,
-        () => new AssociateFileSystemAliasesCommand({ FileSystemId: physicalId, Aliases: sendAdd }),
-        deadline
-      );
-    }
-    if (delta.add.length > 0) {
-      await this.waitForAliases(
-        physicalId,
-        logicalId,
-        resourceType,
-        delta.add,
-        'AVAILABLE',
-        deadline
-      );
-    }
+    return applyAliasDelta.call(this, physicalId, logicalId, resourceType, delta, deadline);
   }
 
-  /** Every alias of the file system, all pages. */
-  private async describeAliases(physicalId: string): Promise<Alias[]> {
-    const aliases: Alias[] = [];
-    let nextToken: string | undefined;
-    do {
-      const resp = await this.getClient().send(
-        new DescribeFileSystemAliasesCommand({ FileSystemId: physicalId, NextToken: nextToken })
-      );
-      aliases.push(...(resp.Aliases ?? []));
-      nextToken = resp.NextToken;
-    } while (nextToken);
-    return aliases;
+  describeAliases(physicalId: string): Promise<Alias[]> {
+    return describeAliases.call(this, physicalId);
   }
 
-  /**
-   * Wait until no `AdministrativeActions` entry other than a storage / IOPS
-   * optimization is PENDING or IN_PROGRESS (go-to-k/cdkd#5469), so an alias
-   * action never overlaps another update. An optimization (and the
-   * UPDATED_OPTIMIZING status of the update it follows) is not waited for: it
-   * can run for hours. Bounded by the caller's `deadline`.
-   */
-  private async waitForNoAdministrativeAction(
+  waitForNoAdministrativeAction(
     physicalId: string,
     logicalId: string,
     resourceType: string,
     deadline: number
   ): Promise<void> {
-    const transientState = { count: 0 };
-    let running: string[] = [];
-    while (Date.now() < deadline) {
-      const fs = await this.describeForPoll(physicalId, transientState);
-      if (fs) {
-        running = runningAliasBlockingActions(fs);
-        if (running.length === 0) return;
-        this.logger.debug(
-          safeMsg`FSx FileSystem ${physicalId}: waiting for ${running.join(', ')} to finish before changing DNS aliases...`
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-    throw new ProvisioningError(
-      safeMsg`Timed out waiting for FSx FileSystem ${physicalId} administrative actions (${running.join(', ') || 'unknown'}) to finish before changing its DNS aliases (${Math.round(this.maxWaitMs / 60000)} min). Re-deploy once they complete.`,
-      resourceType,
-      logicalId,
-      physicalId
-    );
+    return waitForNoAdministrativeAction.call(this, physicalId, logicalId, resourceType, deadline);
   }
 
-  /**
-   * Send an Associate / Disassociate call, re-sending it while FSx refuses it
-   * with a BadRequest naming an administrative action in progress
-   * (go-to-k/cdkd#5469), until `deadline`; any other error propagates. On the
-   * deadline the error names the actions still running.
-   */
-  private async sendAliasCall(
+  sendAliasCall(
     physicalId: string,
     logicalId: string,
     resourceType: string,
     command: () => AssociateFileSystemAliasesCommand | DisassociateFileSystemAliasesCommand,
     deadline: number
   ): Promise<void> {
-    for (;;) {
-      try {
-        const call = command();
-        if (call instanceof AssociateFileSystemAliasesCommand) await this.getClient().send(call);
-        else await this.getClient().send(call);
-        return;
-      } catch (error) {
-        if (!isAdministrativeActionInProgress(error)) throw error;
-        if (Date.now() >= deadline) {
-          let running: string[] = [];
-          try {
-            const fs = await this.describeForPoll(physicalId, { count: 0 });
-            running = (fs?.AdministrativeActions ?? [])
-              .filter((a) => a.Status === 'PENDING' || a.Status === 'IN_PROGRESS')
-              .map((a) => a.AdministrativeActionType ?? 'unknown');
-          } catch {
-            // The refusal is the error to report; the names are best-effort.
-          }
-          throw new ProvisioningError(
-            safeMsg`Timed out changing FSx FileSystem ${physicalId} DNS aliases: FSx kept refusing the call while an administrative action (${running.join(', ') || 'unknown'}) is in progress (${Math.round(this.maxWaitMs / 60000)} min). Re-deploy once it completes.`,
-            resourceType,
-            logicalId,
-            physicalId,
-            error
-          );
-        }
-        this.logger.debug(
-          safeMsg`FSx FileSystem ${physicalId}: DNS alias call refused while an administrative action is in progress, re-sending...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-      }
-    }
+    return sendAliasCall.call(this, physicalId, logicalId, resourceType, command, deadline);
   }
 
-  /**
-   * Poll `DescribeFileSystemAliases` until each of `names` is AVAILABLE
-   * (`target: 'AVAILABLE'`) or absent (`target: 'gone'`), up to `deadline`.
-   * A name read as CREATE_FAILED / DELETE_FAILED fails the update, FSx will
-   * not get there on its own, but only once that name was read in transition
-   * (CREATING / DELETING) during this wait or read failed
-   * {@link STALE_FAILED_READS} times in a row: a fresh Disassociate of a
-   * DELETE_FAILED name (the retry arm of `applyAliasDelta`) can read the old
-   * DELETE_FAILED before FSx flips it to DELETING.
-   */
-  private async waitForAliases(
+  waitForAliases(
     physicalId: string,
     logicalId: string,
     resourceType: string,
@@ -2101,369 +471,74 @@ export class FSxFileSystemProvider implements ResourceProvider {
     target: 'AVAILABLE' | 'gone',
     deadline: number
   ): Promise<void> {
-    const failedLifecycle = target === 'AVAILABLE' ? 'CREATE_FAILED' : 'DELETE_FAILED';
-    const transitionLifecycle = target === 'AVAILABLE' ? 'CREATING' : 'DELETING';
-    const seenTransition = new Set<string>();
-    const failedReads = new Map<string, number>();
-    let transient = 0;
-    while (Date.now() < deadline) {
-      let aliases: Alias[];
-      try {
-        aliases = await this.describeAliases(physicalId);
-        transient = 0;
-      } catch (error) {
-        // Tolerated like the file-system polls' (describeForPoll): one
-        // throttle must not fail an update whose alias action already ran.
-        if (!isTransientFsxError(error) || transient >= 5) throw error;
-        transient += 1;
-        await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-        continue;
-      }
-      const byName = new Map(aliases.map((a) => [a.Name?.toLowerCase(), a.Lifecycle]));
-      for (const n of names) {
-        const lifecycle = byName.get(n);
-        if (lifecycle === transitionLifecycle) seenTransition.add(n);
-        failedReads.set(n, lifecycle === failedLifecycle ? (failedReads.get(n) ?? 0) + 1 : 0);
-      }
-      const failed = names.filter(
-        (n) =>
-          byName.get(n) === failedLifecycle &&
-          (seenTransition.has(n) || (failedReads.get(n) ?? 0) >= STALE_FAILED_READS)
-      );
-      if (failed.length > 0) {
-        throw new ProvisioningError(
-          safeMsg`FSx FileSystem ${physicalId}: DNS alias ${failed.join(', ')} entered ${failedLifecycle}. Check the alias name and the file system's Active Directory, then re-deploy.`,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-      }
-      const settled = names.every((n) =>
-        target === 'AVAILABLE' ? byName.get(n) === 'AVAILABLE' : !byName.has(n)
-      );
-      if (settled) return;
-      this.logger.debug(
-        safeMsg`FSx FileSystem ${physicalId}: waiting for DNS aliases ${names.join(', ')} to be ${target}...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-    throw new ProvisioningError(
-      safeMsg`Timed out waiting for FSx FileSystem ${physicalId} DNS aliases ${names.join(', ')} to be ${target} (${Math.round(this.maxWaitMs / 60000)} min)`,
-      resourceType,
-      logicalId,
-      physicalId
-    );
+    return waitForAliases.call(this, physicalId, logicalId, resourceType, names, target, deadline);
   }
 
-  /**
-   * Apply a `Tags` diff via `TagResource` / `UntagResource` (the FSx
-   * `UpdateFileSystem` API does not accept tags). Needs the ARN — resolve
-   * it from `DescribeFileSystems`. Both sides are read through `planTagDiff`
-   * (go-to-k/cdkd#3994): an unreadable record untags nothing.
-   */
-  private async applyTagDiff(
+  applyTagDiff(
     physicalId: string,
     resourceType: string,
     logicalId: string,
     nextTags: unknown,
     prevTags: unknown
   ): Promise<void> {
-    const plan = planTagDiff(prevTags, nextTags);
-    const resp = await this.getClient().send(
-      new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
-    );
-    const arn = resp.FileSystems?.[0]?.ResourceARN;
-    if (!arn) {
-      throw new Error(`could not resolve ResourceARN for FSx FileSystem ${physicalId}`);
-    }
-
-    const tagWarning = tagPlanWarning(plan, resourceType, logicalId);
-    if (tagWarning !== undefined) {
-      this.logger.warn(tagWarning);
-    }
-    const toSet: Tag[] = [...plan.set].map(([Key, Value]) => ({ Key, Value }));
-    const toRemove = plan.remove;
-
-    if (toSet.length > 0) {
-      await this.getClient().send(new TagResourceCommand({ ResourceARN: arn, Tags: toSet }));
-    }
-    if (toRemove.length > 0) {
-      await this.getClient().send(
-        new UntagResourceCommand({ ResourceARN: arn, TagKeys: toRemove })
-      );
-    }
+    return applyTagDiff.call(this, physicalId, resourceType, logicalId, nextTags, prevTags);
   }
 
   // ─── DELETE ────────────────────────────────────────────────────────
 
-  async delete(
+  delete(
     logicalId: string,
     physicalId: string,
     resourceType: string,
     properties?: Record<string, unknown>,
     context?: DeleteContext
   ): Promise<void> {
-    this.logger.debug(`Deleting FSx FileSystem ${logicalId}: ${physicalId}`);
-
-    try {
-      // The final backup keeps the API defaults, as CloudFormation does
-      // (SCRATCH Lustre deployments have no final backup; PERSISTENT
-      // deployments take the API-default one): the CFn schema has no
-      // SkipFinalBackup / FinalBackupTags property. The one delete-time
-      // property it has is OpenZFSConfiguration.Options, which CFn documents
-      // as the way to delete a file system with child volumes
-      // (DELETE_CHILD_VOLUMES_AND_SNAPSHOTS; go-to-k/cdkd#5431).
-      const openZfsOptions = this.toDeleteOpenZFSOptions(properties);
-      await this.getClient().send(
-        new DeleteFileSystemCommand({
-          FileSystemId: physicalId,
-          ...(openZfsOptions && { OpenZFSConfiguration: { Options: openZfsOptions } }),
-        })
-      );
-    } catch (error) {
-      if (error instanceof FileSystemNotFound) {
-        const clientRegion = await this.getClient().config.region();
-        assertRegionMatch(
-          clientRegion,
-          context?.expectedRegion,
-          resourceType,
-          logicalId,
-          physicalId
-        );
-        if (context?.failedCreateOrphan === true) {
-          // go-to-k/cdkd#4606: a journaled orphan already gone settles with
-          // exit 0, so say so once. Masked by the caller's printing bag.
-          this.logger.info(
-            safeMsg`  FSx file system ${physicalId} (${logicalId}), which a failed deploy created, is already gone; nothing to delete`
-          );
-        } else {
-          this.logger.debug(`FSx FileSystem ${physicalId} does not exist, skipping deletion`);
-        }
-        return;
-      }
-      const cause = error instanceof Error ? error : undefined;
-      const thrown = this.wrapCaughtError(
-        context?.maskSecrets,
-        error,
-        (text) =>
-          new ProvisioningError(
-            `Failed to delete FSx FileSystem ${logicalId}: ${text}`,
-            resourceType,
-            logicalId,
-            physicalId,
-            cause
-          )
-      );
-      // The wrap names an AWS failure by its CLASS, and the delete classifiers
-      // read `NotFound` in a message as "already deleted": only the typed
-      // `FileSystemNotFound` above means this file system is gone (go-to-k/cdkd#2319).
-      throw error instanceof Error && error.name.includes('NotFound')
-        ? markNotGone(thrown)
-        : thrown;
-    }
-
-    // Deletion is async — poll until the file system is GONE. A timeout is
-    // a hard error (never warn-and-continue): a half-deleted FSx file
-    // system keeps billing and the destroy must not report success.
-    await this.waitForFileSystemDeleted(physicalId, logicalId, resourceType, context?.maskSecrets);
-
-    this.logger.debug(`Successfully deleted FSx FileSystem ${logicalId}`);
+    return deleteImpl.call(this, logicalId, physicalId, resourceType, properties, context);
   }
 
-  /**
-   * The recorded `OpenZFSConfiguration.Options` to send on DeleteFileSystem
-   * (go-to-k/cdkd#5431), or undefined when none is declared. A record from
-   * before the option existed, or a non-OpenZFS file system, sends none.
-   */
-  private toDeleteOpenZFSOptions(
+  toDeleteOpenZFSOptions(
     properties: Record<string, unknown> | undefined
   ): DeleteFileSystemOpenZFSOption[] | undefined {
-    if (properties?.['FileSystemType'] !== 'OPENZFS') return undefined;
-    const config = properties['OpenZFSConfiguration'];
-    if (typeof config !== 'object' || config === null || Array.isArray(config)) return undefined;
-    const options = (config as Record<string, unknown>)['Options'];
-    if (!Array.isArray(options) || options.length === 0) return undefined;
-    return options.map((o) => String(o)) as DeleteFileSystemOpenZFSOption[];
+    return toDeleteOpenZFSOptions.call(this, properties);
   }
 
   // ─── Identity (go-to-k/cdkd#4606) ──────────────────────────────────
 
-  /**
-   * go-to-k/cdkd#4606: whether the file system a failed CREATE journaled (one
-   * whose wait failed and whose cleanup delete failed too) is the one the
-   * record under the same logical id holds (a fix-forward that created a new
-   * one there).
-   *
-   * The identity is the `FileSystemId` FSx generates: the physical id the
-   * create, the import and every variant (Lustre / Windows / ONTAP / OpenZFS,
-   * from a backup or not) record, unique per account and region and never
-   * reassigned, so two distinct ids in the stack's region name two distinct
-   * file systems. Any other form is `'unknown'`. Equal ids are `'same'`
-   * without a read. After the region check, the record's file system must
-   * read back under its own id short of `DELETING` / `FAILED`, else
-   * `'unknown'`; the journaled one is then `'different'` whether it reads
-   * back under its own id (in any lifecycle) or FSx reports it gone.
-   *
-   * The type is never Cloud Control-routed (`disableCcApiFallback`), so every
-   * journaled file system reaches this method.
-   */
-  async isSameResource(
+  isSameResource(
     journaledPhysicalId: string,
     record: { physicalId: string },
     resourceType: string,
     context: { expectedRegion: string }
   ): Promise<ResourceIdentityVerdict> {
-    if (resourceType !== 'AWS::FSx::FileSystem') return 'unknown';
-    if (
-      !FILE_SYSTEM_ID_PATTERN.test(journaledPhysicalId) ||
-      !FILE_SYSTEM_ID_PATTERN.test(record.physicalId)
-    ) {
-      return 'unknown';
-    }
-    if (journaledPhysicalId === record.physicalId) return 'same';
-    const clientRegion = await this.getClient().config.region();
-    if (clientRegion !== context.expectedRegion) return 'unknown';
-    const recordRead = await this.readFileSystemForIdentity(record.physicalId);
-    if (
-      recordRead === undefined ||
-      recordRead.id !== record.physicalId ||
-      FILE_SYSTEM_NOT_LIVE_LIFECYCLES.has(recordRead.lifecycle ?? '')
-    ) {
-      return 'unknown';
-    }
-    const journaledRead = await this.readFileSystemForIdentity(journaledPhysicalId);
-    return journaledRead?.id === record.physicalId ? 'same' : 'different';
+    return isSameResource.call(this, journaledPhysicalId, record, resourceType, context);
   }
 
-  /**
-   * The id and lifecycle `DescribeFileSystems` reports for `fileSystemId`, or
-   * `undefined` when FSx reports it gone (`FileSystemNotFound`). Any other
-   * failure, and a response naming no file system, throws: "could not read"
-   * never reads as "gone".
-   */
-  private async readFileSystemForIdentity(
+  readFileSystemForIdentity(
     fileSystemId: string
   ): Promise<{ id: string; lifecycle: string | undefined } | undefined> {
-    let response;
-    try {
-      response = await this.getClient().send(
-        new DescribeFileSystemsCommand({ FileSystemIds: [fileSystemId] })
-      );
-    } catch (error) {
-      if (error instanceof FileSystemNotFound) return undefined;
-      throw error;
-    }
-    const fileSystems = response.FileSystems ?? [];
-    if (fileSystems.length !== 1 || typeof fileSystems[0]?.FileSystemId !== 'string') {
-      throw new Error('DescribeFileSystems did not return exactly the file system asked for');
-    }
-    return { id: fileSystems[0].FileSystemId, lifecycle: fileSystems[0].Lifecycle };
+    return readFileSystemForIdentity.call(this, fileSystemId);
   }
 
   // ─── Lifecycle polling ─────────────────────────────────────────────
 
-  /**
-   * Issue the polling `DescribeFileSystems` with bounded tolerance for
-   * TRANSIENT errors (throttling / 5xx / connection resets): up to
-   * `maxConsecutiveTransient` consecutive failures are absorbed (with the
-   * normal poll delay) before the error propagates. A 5-10 minute create
-   * poll at 15s intervals would otherwise turn a single throttle into a
-   * spurious failure + best-effort rollback cycle. Non-transient errors
-   * (incl. FileSystemNotFound) propagate immediately.
-   */
-  private async describeForPoll(
+  describeForPoll(
     fileSystemId: string,
     transientState: { count: number },
     maxConsecutiveTransient = 5
   ): Promise<FileSystem | undefined> {
-    try {
-      const response = await this.getClient().send(
-        new DescribeFileSystemsCommand({ FileSystemIds: [fileSystemId] })
-      );
-      transientState.count = 0;
-      return response.FileSystems?.[0];
-    } catch (error) {
-      const msg = describeAwsFailure(error).detail;
-      if (isTransientFsxError(error) && transientState.count < maxConsecutiveTransient) {
-        transientState.count += 1;
-        this.logger.debug(
-          `Transient DescribeFileSystems error while polling ${fileSystemId} (${transientState.count}/${maxConsecutiveTransient}): ${msg} — retrying`
-        );
-        // Signal "no data this round" — the caller's loop delay applies.
-        return undefined;
-      }
-      throw error;
-    }
+    return describeForPoll.call(this, fileSystemId, transientState, maxConsecutiveTransient);
   }
 
-  private async waitForFileSystemAvailable(
+  waitForFileSystemAvailable(
     fileSystemId: string,
     logicalId: string,
     resourceType: string,
     mask?: MaskerFn
   ): Promise<FileSystem> {
-    const startTime = Date.now();
-    const transientState = { count: 0 };
-
-    while (Date.now() - startTime < this.maxWaitMs) {
-      const fs = await this.describeForPoll(fileSystemId, transientState);
-      const lifecycle = fs?.Lifecycle;
-
-      if (fs && lifecycle === 'AVAILABLE') return fs;
-
-      if (lifecycle === 'FAILED' || lifecycle === 'MISCONFIGURED') {
-        throw this.wrapStatusReasonError(
-          mask,
-          fs?.FailureDetails?.Message,
-          (text, cause) =>
-            new ProvisioningError(
-              `FSx FileSystem ${fileSystemId} entered lifecycle state ${lifecycle}: ${text}`,
-              resourceType,
-              logicalId,
-              fileSystemId,
-              cause
-            )
-        );
-      }
-
-      this.logger.debug(
-        `FSx FileSystem ${fileSystemId} state: ${lifecycle ?? 'unknown'}, waiting...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-
-    throw new ProvisioningError(
-      `Timed out waiting for FSx FileSystem ${fileSystemId} to become AVAILABLE (${Math.round(this.maxWaitMs / 60000)} min)`,
-      resourceType,
-      logicalId,
-      fileSystemId
-    );
+    return waitForFileSystemAvailable.call(this, fileSystemId, logicalId, resourceType, mask);
   }
 
-  /**
-   * Wait until the async `FILE_SYSTEM_UPDATE` administrative action kicked
-   * off by `UpdateFileSystem` completes (and the Lifecycle is AVAILABLE).
-   * `STORAGE_OPTIMIZATION` actions are intentionally ignored — they can run
-   * for hours after a capacity grow, and CloudFormation does not wait for
-   * them either (`UPDATED_OPTIMIZING` counts as done). A FAILED update
-   * action is a hard error carrying the action's failure message.
-   *
-   * `actionThresholdMs` scopes the wait to THIS update's actions: FSx keeps
-   * terminal (COMPLETED / FAILED) actions in the history, so only actions
-   * whose `RequestTime` is at or after the threshold are considered — a
-   * PAST failed update must not fail this one's retry. An action without a
-   * `RequestTime` is conservatively tracked.
-   *
-   * `requireActionObservation` guards the eventual-consistency race: when
-   * the UpdateFileSystem response confirmed a newly-created action, the
-   * wait refuses to return until an in-threshold action has been observed
-   * in at least one Describe response — a lagging read replica could
-   * otherwise briefly show none and cause a premature return with the
-   * pre-update config. Terminal actions stay in the history, so the
-   * observation is guaranteed to eventually succeed (bounded by
-   * `maxWaitMs`).
-   */
-  private async waitForUpdateActionComplete(
+  waitForUpdateActionComplete(
     fileSystemId: string,
     logicalId: string,
     resourceType: string,
@@ -2472,172 +547,35 @@ export class FSxFileSystemProvider implements ResourceProvider {
     deadline: number,
     mask?: MaskerFn
   ): Promise<FileSystem> {
-    const transientState = { count: 0 };
-    let seenTrackedAction = false;
-
-    while (Date.now() < deadline) {
-      const fs = await this.describeForPoll(fileSystemId, transientState);
-
-      if (fs) {
-        const updateActions = (fs.AdministrativeActions ?? []).filter(
-          (a) =>
-            a.AdministrativeActionType === 'FILE_SYSTEM_UPDATE' &&
-            (a.RequestTime === undefined || a.RequestTime.getTime() >= actionThresholdMs)
-        );
-        if (updateActions.length > 0) seenTrackedAction = true;
-        const failed = updateActions.find((a) => a.Status === 'FAILED');
-        if (failed) {
-          throw this.wrapStatusReasonError(
-            mask,
-            failed.FailureDetails?.Message,
-            (text, cause) =>
-              new ProvisioningError(
-                `FSx FileSystem ${fileSystemId} update failed (FILE_SYSTEM_UPDATE administrative action): ${text}`,
-                resourceType,
-                logicalId,
-                fileSystemId,
-                cause
-              )
-          );
-        }
-        const inProgress = updateActions.some(
-          (a) => a.Status === 'PENDING' || a.Status === 'IN_PROGRESS'
-        );
-        const observationSatisfied = !requireActionObservation || seenTrackedAction;
-        if (!inProgress && observationSatisfied && fs.Lifecycle === 'AVAILABLE') return fs;
-
-        this.logger.debug(
-          `FSx FileSystem ${fileSystemId} update in progress (lifecycle: ${fs.Lifecycle ?? 'unknown'}), waiting...`
-        );
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-
-    throw new ProvisioningError(
-      `Timed out waiting for FSx FileSystem ${fileSystemId} update to complete (${Math.round(this.maxWaitMs / 60000)} min)`,
-      resourceType,
+    return waitForUpdateActionComplete.call(
+      this,
+      fileSystemId,
       logicalId,
-      fileSystemId
+      resourceType,
+      actionThresholdMs,
+      requireActionObservation,
+      deadline,
+      mask
     );
   }
 
-  private async waitForFileSystemDeleted(
+  waitForFileSystemDeleted(
     fileSystemId: string,
     logicalId: string,
     resourceType: string,
     mask?: MaskerFn
   ): Promise<void> {
-    const startTime = Date.now();
-    const transientState = { count: 0 };
-
-    while (Date.now() - startTime < this.maxWaitMs) {
-      let fs: FileSystem | undefined;
-      let sawResponse = true;
-      try {
-        fs = await this.describeForPoll(fileSystemId, transientState);
-        if (fs === undefined && transientState.count > 0) {
-          // Transient error absorbed — not a "gone" signal.
-          sawResponse = false;
-        }
-      } catch (error) {
-        if (error instanceof FileSystemNotFound) return;
-        const cause = error instanceof Error ? error : undefined;
-        const thrown = this.wrapCaughtError(
-          mask,
-          error,
-          (text) =>
-            new ProvisioningError(
-              `Failed to poll FSx FileSystem ${fileSystemId} deletion: ${text}`,
-              resourceType,
-              logicalId,
-              fileSystemId,
-              cause
-            )
-        );
-        // As in `delete()`: only the typed not-found above is gone.
-        throw error instanceof Error && error.name.includes('NotFound')
-          ? markNotGone(thrown)
-          : thrown;
-      }
-
-      if (!fs && sawResponse) return;
-      if (!fs) {
-        await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-        continue;
-      }
-
-      if (fs.Lifecycle === 'FAILED') {
-        throw this.wrapStatusReasonError(
-          mask,
-          fs.FailureDetails?.Message,
-          (text, cause) =>
-            new ProvisioningError(
-              `FSx FileSystem ${fileSystemId} entered lifecycle state FAILED during deletion: ${text}`,
-              resourceType,
-              logicalId,
-              fileSystemId,
-              cause
-            )
-        );
-      }
-
-      this.logger.debug(
-        `FSx FileSystem ${fileSystemId} state: ${fs.Lifecycle ?? 'unknown'}, waiting for deletion...`
-      );
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-
-    throw new ProvisioningError(
-      `Timed out waiting for FSx FileSystem ${fileSystemId} deletion (${Math.round(this.maxWaitMs / 60000)} min) — verify and delete it manually to stop billing`,
-      resourceType,
-      logicalId,
-      fileSystemId
-    );
+    return waitForFileSystemDeleted.call(this, fileSystemId, logicalId, resourceType, mask);
   }
 
   // ─── Attributes / drift / import ───────────────────────────────────
 
-  private buildAttributes(fs: FileSystem): Record<string, unknown> {
-    const attributes: Record<string, unknown> = {};
-    if (fs.ResourceARN !== undefined) attributes['ResourceARN'] = fs.ResourceARN;
-    if (fs.DNSName !== undefined) attributes['DNSName'] = fs.DNSName;
-    if (fs.LustreConfiguration?.MountName !== undefined) {
-      attributes['LustreMountName'] = fs.LustreConfiguration.MountName;
-    }
-    if (fs.OpenZFSConfiguration?.RootVolumeId !== undefined) {
-      attributes['RootVolumeId'] = fs.OpenZFSConfiguration.RootVolumeId;
-    }
-    if (fs.FileSystemId !== undefined) attributes['FileSystemId'] = fs.FileSystemId;
-    return attributes;
+  buildAttributes(fs: FileSystem): Record<string, unknown> {
+    return buildAttributes.call(this, fs);
   }
 
-  async getAttribute(
-    physicalId: string,
-    _resourceType: string,
-    attributeName: string
-  ): Promise<unknown> {
-    if (attributeName === 'Id' || attributeName === 'FileSystemId') return physicalId;
-
-    const response = await this.getClient().send(
-      new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
-    );
-    const fs = response.FileSystems?.[0];
-    if (!fs) return undefined;
-
-    switch (attributeName) {
-      case 'ResourceARN':
-        return fs.ResourceARN;
-      case 'DNSName':
-        return fs.DNSName;
-      case 'LustreMountName':
-        return fs.LustreConfiguration?.MountName;
-      case 'RootVolumeId':
-        // OpenZFS-only attribute; undefined for Lustre file systems.
-        return fs.OpenZFSConfiguration?.RootVolumeId;
-      default:
-        return undefined;
-    }
+  getAttribute(physicalId: string, _resourceType: string, attributeName: string): Promise<unknown> {
+    return getAttribute.call(this, physicalId, _resourceType, attributeName);
   }
 
   // ─── readCurrentState variant reverse-mappers ──────────────────────
@@ -2650,461 +588,56 @@ export class FSxFileSystemProvider implements ResourceProvider {
   // them would add AWS-only keys the state baseline can never match. Inputs
   // AWS does not return at all stay in `getDriftUnknownPaths`.
 
-  /** Map the read-side `LustreConfiguration` back to CFn input shape. */
-  private readLustreConfiguration(lustre: LustreFileSystemConfiguration): Record<string, unknown> {
-    const config: Record<string, unknown> = {};
-    putIfDefined(config, 'WeeklyMaintenanceStartTime', lustre.WeeklyMaintenanceStartTime);
-    putIfDefined(config, 'DeploymentType', lustre.DeploymentType);
-    putIfDefined(config, 'PerUnitStorageThroughput', lustre.PerUnitStorageThroughput);
-    putIfDefined(config, 'DailyAutomaticBackupStartTime', lustre.DailyAutomaticBackupStartTime);
-    putIfDefined(config, 'AutomaticBackupRetentionDays', lustre.AutomaticBackupRetentionDays);
-    putIfDefined(config, 'CopyTagsToBackups', lustre.CopyTagsToBackups);
-    putIfDefined(config, 'DriveCacheType', lustre.DriveCacheType);
-    putIfDefined(config, 'DataCompressionType', lustre.DataCompressionType);
-    putIfDefined(config, 'EfaEnabled', lustre.EfaEnabled);
-    putIfDefined(config, 'ThroughputCapacity', lustre.ThroughputCapacity);
-
-    if (lustre.MetadataConfiguration) {
-      const metadata: Record<string, unknown> = {};
-      putIfDefined(metadata, 'Mode', lustre.MetadataConfiguration.Mode);
-      putIfDefined(metadata, 'Iops', lustre.MetadataConfiguration.Iops);
-      if (Object.keys(metadata).length > 0) config['MetadataConfiguration'] = metadata;
-    }
-    if (lustre.DataReadCacheConfiguration) {
-      const readCache: Record<string, unknown> = {};
-      putIfDefined(readCache, 'SizingMode', lustre.DataReadCacheConfiguration.SizingMode);
-      putIfDefined(readCache, 'SizeGiB', lustre.DataReadCacheConfiguration.SizeGiB);
-      if (Object.keys(readCache).length > 0) config['DataReadCacheConfiguration'] = readCache;
-    }
-    if (lustre.LogConfiguration) {
-      const log: Record<string, unknown> = {};
-      putIfDefined(log, 'Level', lustre.LogConfiguration.Level);
-      putIfDefined(log, 'Destination', toLogGroupArn(lustre.LogConfiguration.Destination));
-      if (Object.keys(log).length > 0) config['LogConfiguration'] = log;
-    }
-    // Data-repository fields live under DataRepositoryConfiguration on the
-    // read side but are flat LustreConfiguration inputs in CFn.
-    const dataRepo = lustre.DataRepositoryConfiguration;
-    if (dataRepo) {
-      putIfDefined(config, 'ImportPath', dataRepo.ImportPath);
-      putIfDefined(config, 'ExportPath', dataRepo.ExportPath);
-      putIfDefined(config, 'AutoImportPolicy', dataRepo.AutoImportPolicy);
-      putIfDefined(config, 'ImportedFileChunkSize', dataRepo.ImportedFileChunkSize);
-    }
-    return config;
+  readLustreConfiguration(lustre: LustreFileSystemConfiguration): Record<string, unknown> {
+    return readLustreConfiguration.call(this, lustre);
   }
 
-  /** Map the read-side `WindowsConfiguration` back to CFn input shape. */
-  private readWindowsConfiguration(
-    windows: WindowsFileSystemConfiguration
-  ): Record<string, unknown> {
-    const config: Record<string, unknown> = {};
-    putIfDefined(config, 'ActiveDirectoryId', windows.ActiveDirectoryId);
-    putIfDefined(config, 'DeploymentType', windows.DeploymentType);
-    putIfDefined(config, 'PreferredSubnetId', windows.PreferredSubnetId);
-    putIfDefined(config, 'ThroughputCapacity', windows.ThroughputCapacity);
-    putIfDefined(config, 'WeeklyMaintenanceStartTime', windows.WeeklyMaintenanceStartTime);
-    putIfDefined(config, 'DailyAutomaticBackupStartTime', windows.DailyAutomaticBackupStartTime);
-    putIfDefined(config, 'AutomaticBackupRetentionDays', windows.AutomaticBackupRetentionDays);
-    putIfDefined(config, 'CopyTagsToBackups', windows.CopyTagsToBackups);
-
-    // CFn takes Aliases as a plain name list; the API returns objects
-    // carrying a per-alias lifecycle state.
-    if (windows.Aliases !== undefined) {
-      config['Aliases'] = windows.Aliases.map((alias) => alias.Name).filter(
-        (name): name is string => name !== undefined
-      );
-    }
-
-    if (windows.SelfManagedActiveDirectoryConfiguration) {
-      const ad = windows.SelfManagedActiveDirectoryConfiguration;
-      const adConfig: Record<string, unknown> = {};
-      putIfDefined(adConfig, 'DomainName', ad.DomainName);
-      putIfDefined(
-        adConfig,
-        'OrganizationalUnitDistinguishedName',
-        ad.OrganizationalUnitDistinguishedName
-      );
-      putIfDefined(adConfig, 'FileSystemAdministratorsGroup', ad.FileSystemAdministratorsGroup);
-      putIfDefined(adConfig, 'UserName', ad.UserName);
-      putIfDefined(adConfig, 'DnsIps', ad.DnsIps ? [...ad.DnsIps] : undefined);
-      putIfDefined(adConfig, 'DomainJoinServiceAccountSecret', ad.DomainJoinServiceAccountSecret);
-      // `Password` is write-only — never returned (see getDriftUnknownPaths).
-      if (Object.keys(adConfig).length > 0) {
-        config['SelfManagedActiveDirectoryConfiguration'] = adConfig;
-      }
-    }
-
-    if (windows.AuditLogConfiguration) {
-      const audit: Record<string, unknown> = {};
-      putIfDefined(
-        audit,
-        'FileAccessAuditLogLevel',
-        windows.AuditLogConfiguration.FileAccessAuditLogLevel
-      );
-      putIfDefined(
-        audit,
-        'FileShareAccessAuditLogLevel',
-        windows.AuditLogConfiguration.FileShareAccessAuditLogLevel
-      );
-      putIfDefined(audit, 'AuditLogDestination', windows.AuditLogConfiguration.AuditLogDestination);
-      if (Object.keys(audit).length > 0) config['AuditLogConfiguration'] = audit;
-    }
-
-    const diskIops = this.readDiskIopsConfiguration(windows.DiskIopsConfiguration);
-    if (diskIops) config['DiskIopsConfiguration'] = diskIops;
-
-    if (windows.FsrmConfiguration) {
-      const fsrm: Record<string, unknown> = {};
-      putIfDefined(fsrm, 'FsrmServiceEnabled', windows.FsrmConfiguration.FsrmServiceEnabled);
-      putIfDefined(fsrm, 'EventLogDestination', windows.FsrmConfiguration.EventLogDestination);
-      if (Object.keys(fsrm).length > 0) config['FsrmConfiguration'] = fsrm;
-    }
-
-    return config;
+  readWindowsConfiguration(windows: WindowsFileSystemConfiguration): Record<string, unknown> {
+    return readWindowsConfiguration.call(this, windows);
   }
 
-  /** Map the read-side `OntapConfiguration` back to CFn input shape. */
-  private readOntapConfiguration(ontap: OntapFileSystemConfiguration): Record<string, unknown> {
-    const config: Record<string, unknown> = {};
-    putIfDefined(config, 'DeploymentType', ontap.DeploymentType);
-    putIfDefined(config, 'AutomaticBackupRetentionDays', ontap.AutomaticBackupRetentionDays);
-    putIfDefined(config, 'DailyAutomaticBackupStartTime', ontap.DailyAutomaticBackupStartTime);
-    putIfDefined(config, 'WeeklyMaintenanceStartTime', ontap.WeeklyMaintenanceStartTime);
-    putIfDefined(config, 'EndpointIpAddressRange', ontap.EndpointIpAddressRange);
-    putIfDefined(config, 'PreferredSubnetId', ontap.PreferredSubnetId);
-    putIfDefined(config, 'ThroughputCapacity', ontap.ThroughputCapacity);
-    putIfDefined(config, 'ThroughputCapacityPerHAPair', ontap.ThroughputCapacityPerHAPair);
-    putIfDefined(config, 'HAPairs', ontap.HAPairs);
-    putIfDefined(
-      config,
-      'RouteTableIds',
-      ontap.RouteTableIds ? [...ontap.RouteTableIds] : undefined
-    );
-    putIfDefined(config, 'EndpointIpv6AddressRange', ontap.EndpointIpv6AddressRange);
-    // `FsxAdminPassword` is write-only — the API never echoes it back (see
-    // getDriftUnknownPaths).
-
-    const diskIops = this.readDiskIopsConfiguration(ontap.DiskIopsConfiguration);
-    if (diskIops) config['DiskIopsConfiguration'] = diskIops;
-
-    return config;
+  readOntapConfiguration(ontap: OntapFileSystemConfiguration): Record<string, unknown> {
+    return readOntapConfiguration.call(this, ontap);
   }
 
-  /** Map the read-side `OpenZFSConfiguration` back to CFn input shape. */
-  private readOpenZFSConfiguration(
-    openzfs: OpenZFSFileSystemConfiguration
-  ): Record<string, unknown> {
-    const config: Record<string, unknown> = {};
-    putIfDefined(config, 'DeploymentType', openzfs.DeploymentType);
-    putIfDefined(config, 'AutomaticBackupRetentionDays', openzfs.AutomaticBackupRetentionDays);
-    putIfDefined(config, 'CopyTagsToBackups', openzfs.CopyTagsToBackups);
-    putIfDefined(config, 'CopyTagsToVolumes', openzfs.CopyTagsToVolumes);
-    putIfDefined(config, 'DailyAutomaticBackupStartTime', openzfs.DailyAutomaticBackupStartTime);
-    putIfDefined(config, 'WeeklyMaintenanceStartTime', openzfs.WeeklyMaintenanceStartTime);
-    putIfDefined(config, 'ThroughputCapacity', openzfs.ThroughputCapacity);
-    putIfDefined(config, 'PreferredSubnetId', openzfs.PreferredSubnetId);
-    putIfDefined(config, 'EndpointIpAddressRange', openzfs.EndpointIpAddressRange);
-    putIfDefined(
-      config,
-      'RouteTableIds',
-      openzfs.RouteTableIds ? [...openzfs.RouteTableIds] : undefined
-    );
-    putIfDefined(config, 'EndpointIpv6AddressRange', openzfs.EndpointIpv6AddressRange);
-    // RootVolumeConfiguration lives on the root VOLUME (DescribeFileSystems
-    // returns only its id) — it stays in getDriftUnknownPaths.
-
-    const diskIops = this.readDiskIopsConfiguration(openzfs.DiskIopsConfiguration);
-    if (diskIops) config['DiskIopsConfiguration'] = diskIops;
-
-    if (openzfs.ReadCacheConfiguration) {
-      const readCache: Record<string, unknown> = {};
-      putIfDefined(readCache, 'SizingMode', openzfs.ReadCacheConfiguration.SizingMode);
-      putIfDefined(readCache, 'SizeGiB', openzfs.ReadCacheConfiguration.SizeGiB);
-      if (Object.keys(readCache).length > 0) config['ReadCacheConfiguration'] = readCache;
-    }
-
-    return config;
+  readOpenZFSConfiguration(openzfs: OpenZFSFileSystemConfiguration): Record<string, unknown> {
+    return readOpenZFSConfiguration.call(this, openzfs);
   }
 
-  /** Shared `DiskIopsConfiguration` reverse-mapper (Windows / ONTAP / OpenZFS). */
-  private readDiskIopsConfiguration(
+  readDiskIopsConfiguration(
     diskIops: DiskIopsConfiguration | undefined
   ): Record<string, unknown> | undefined {
-    if (!diskIops) return undefined;
-    const out: Record<string, unknown> = {};
-    putIfDefined(out, 'Mode', diskIops.Mode);
-    putIfDefined(out, 'Iops', diskIops.Iops);
-    return Object.keys(out).length > 0 ? out : undefined;
+    return readDiskIopsConfiguration.call(this, diskIops);
   }
 
-  /**
-   * Drop a logging-off `LustreConfiguration.LogConfiguration` (`Level`
-   * `DISABLED`, no `Destination`) from each drift comparison side
-   * (go-to-k/cdkd#5430). AWS reports that block on a Lustre file system that
-   * never enabled logging, and `readLustreConfiguration` started reading it
-   * back in #5430, so an `observedProperties` baseline captured by an earlier
-   * binary lacks the key while the readback carries it: `drift.ts` walks the
-   * key union on that baseline, and every existing Lustre file system would
-   * report `LogConfiguration` as drift until a `drift --accept`. Logging off
-   * and the key absent mean the same here, so both sides drop it; logging
-   * turned ON or OFF against the baseline still differs and is still reported.
-   *
-   * Also lowercase each `WindowsConfiguration.Aliases` name on both sides
-   * (go-to-k/cdkd#5469): FSx stores an alias lowercased whatever spelling it
-   * was given, and `update()` compares names case-insensitively, so a
-   * mixed-case template (`Keep.corp.example.com`) against the readback is no
-   * difference.
-   */
   canonicalizeDriftProperties(
     resourceType: string,
     properties: Record<string, unknown>
   ): Record<string, unknown> {
-    if (resourceType !== 'AWS::FSx::FileSystem') return properties;
-    const lustre = properties['LustreConfiguration'];
-    if (typeof lustre !== 'object' || lustre === null || Array.isArray(lustre)) {
-      return this.canonicalizeWindowsAliases(properties);
-    }
-    const log = (lustre as Record<string, unknown>)['LogConfiguration'];
-    if (
-      typeof log !== 'object' ||
-      log === null ||
-      Array.isArray(log) ||
-      JSON.stringify(log) !== JSON.stringify({ Level: 'DISABLED' })
-    ) {
-      return this.canonicalizeWindowsAliases(properties);
-    }
-    const { LogConfiguration: _disabled, ...rest } = lustre as Record<string, unknown>;
-    return this.canonicalizeWindowsAliases({ ...properties, LustreConfiguration: rest });
+    return canonicalizeDriftProperties.call(this, resourceType, properties);
   }
 
-  private canonicalizeWindowsAliases(properties: Record<string, unknown>): Record<string, unknown> {
-    const windows = properties['WindowsConfiguration'];
-    if (typeof windows !== 'object' || windows === null || Array.isArray(windows))
-      return properties;
-    const aliases = (windows as Record<string, unknown>)['Aliases'];
-    if (
-      !Array.isArray(aliases) ||
-      aliases.every((a) => typeof a !== 'string' || a === a.toLowerCase())
-    ) {
-      return properties;
-    }
-    return {
-      ...properties,
-      WindowsConfiguration: {
-        ...(windows as Record<string, unknown>),
-        Aliases: aliases.map((a) => (typeof a === 'string' ? a.toLowerCase() : a)),
-      },
-    };
+  canonicalizeWindowsAliases(properties: Record<string, unknown>): Record<string, unknown> {
+    return canonicalizeWindowsAliases.call(this, properties);
   }
 
-  /**
-   * State property paths this provider cannot read back from AWS:
-   *  - `SecurityGroupIds` — `DescribeFileSystems` returns network
-   *    interface ids, never the original security group list.
-   *  - `BackupId` — creation-source input, not surfaced on the deployed
-   *    file system.
-   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password`
-   *    / `OntapConfiguration.FsxAdminPassword` — write-only credentials; the
-   *    API never echoes them back.
-   *  - `OpenZFSConfiguration.RootVolumeConfiguration` — configured on the
-   *    root VOLUME, not the file system; `DescribeFileSystems` returns only
-   *    `RootVolumeId`, so reading it back would need a separate
-   *    `DescribeVolumes` call (out of scope here).
-   *  - `OpenZFSConfiguration.Options` — a `DeleteFileSystem` option
-   *    (go-to-k/cdkd#5431), never stored on the file system.
-   *
-   * The whole-block `WindowsConfiguration` / `OntapConfiguration` /
-   * `OpenZFSConfiguration` entries are gone as of the variant reverse-mappers
-   * — only the individually-unreadable leaves above stay unknown.
-   */
   getDriftUnknownPaths(resourceType: string): string[] {
-    if (resourceType !== 'AWS::FSx::FileSystem') return [];
-    return [
-      'SecurityGroupIds',
-      'BackupId',
-      'WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.Password',
-      'OntapConfiguration.FsxAdminPassword',
-      'OpenZFSConfiguration.RootVolumeConfiguration',
-      'OpenZFSConfiguration.Options',
-    ];
+    return getDriftUnknownPaths.call(this, resourceType);
   }
 
-  /**
-   * Plain-string arrays FSx returns as unordered sets.
-   *
-   *  - `WindowsConfiguration.Aliases` — DNS alias names (`files.example.com`).
-   *    Alternate names the file system answers to; the API documents no
-   *    ordering semantics and no name is privileged over another, so a
-   *    `DescribeFileSystems` reorder carries no meaning.
-   *
-   * This does not match the shared normalizer's AWS-id / ARN heuristic, so
-   * without the declaration a reorder would surface as phantom drift. Declared
-   * here rather than sorted in `readWindowsConfiguration` so the sort applies
-   * to BOTH comparison sides — see
-   * {@link ResourceProvider.getDriftUnorderedPaths}.
-   *
-   * Deliberately NOT declared:
-   *
-   *  - `WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps` —
-   *    the API reference describes it only as "A list of IP addresses of DNS
-   *    servers or domain controllers in the self-managed AD directory"
-   *    (https://docs.aws.amazon.com/fsx/latest/APIReference/API_SelfManagedActiveDirectoryConfiguration.html),
-   *    with no statement that order is insignificant. DNS resolver lists are
-   *    conventionally preference-ordered (primary first), and if FSx honors
-   *    that when joining the domain, sorting would HIDE a real reorder. A
-   *    false positive is visible and correctable; silently hiding drift is
-   *    not. Same reasoning excludes ElastiCache `PreferredAvailabilityZones`.
-   *  - `OntapConfiguration.RouteTableIds` / `OpenZFSConfiguration.RouteTableIds`
-   *    — their `rtb-` elements already match the shared id heuristic.
-   */
   getDriftUnorderedPaths(resourceType: string): string[] {
-    if (resourceType !== 'AWS::FSx::FileSystem') return [];
-    return ['WindowsConfiguration.Aliases'];
+    return getDriftUnorderedPaths.call(this, resourceType);
   }
 
-  /**
-   * Read the AWS-current file system configuration in CFn-property shape
-   * via `DescribeFileSystems`. Lustre data-repository fields (`ImportPath`
-   * / `ExportPath` / `AutoImportPolicy` / `ImportedFileChunkSize`) are
-   * mapped back from the nested `DataRepositoryConfiguration` the API
-   * returns. The Windows / ONTAP / OpenZFS variant blocks are reverse-mapped
-   * by their respective `read*Configuration` helpers; the few inputs AWS
-   * never returns stay listed in {@link getDriftUnknownPaths}.
-   *
-   * Emission follows `docs/provider-rules.md#readcurrentstate-for-drift-detection`: every top-level
-   * property `update()` can mutate is emitted unconditionally with a
-   * placeholder, registry-createOnly properties keep their guard, and the
-   * `<Variant>Configuration` blocks take the Class 1 type-discriminator
-   * carve-out — exactly the ONE block matching `FileSystemType` is emitted
-   * (at most one is ever legal on AWS), never the other three.
-   * Returns `RESOURCE_NOT_FOUND` when the file system is gone.
-   */
-  async readCurrentState(
+  readCurrentState(
     physicalId: string,
     _logicalId: string,
     resourceType: string
   ): Promise<Record<string, unknown> | ResourceNotFound | undefined> {
-    if (resourceType !== 'AWS::FSx::FileSystem') return undefined;
-
-    let fs: FileSystem | undefined;
-    let listed: readonly FileSystem[] | undefined;
-    try {
-      const resp = await this.getClient().send(
-        new DescribeFileSystemsCommand({ FileSystemIds: [physicalId] })
-      );
-      listed = resp.FileSystems;
-      fs = resp.FileSystems?.[0];
-    } catch (err) {
-      if (err instanceof FileSystemNotFound) return RESOURCE_NOT_FOUND;
-      throw err;
-    }
-    // An empty list for the requested id is AWS saying it is gone; an absent
-    // list (empty body) keeps `undefined`.
-    if (!fs) return listed?.length === 0 ? RESOURCE_NOT_FOUND : undefined;
-
-    const result: Record<string, unknown> = {};
-
-    // Guarded (conditional) emits — every one is registry-createOnly, so
-    // `update()` rejects any change and a console user cannot ADD the
-    // property post-create. This is §3b's "immutable on create" carve-out:
-    // AWS returning the field as undefined is a wire-layer artifact, and a
-    // placeholder would only risk tripping the TOP_LEVEL_IMMUTABLE_PROPS
-    // guard on a later deploy.
-    putIfDefined(result, 'FileSystemType', fs.FileSystemType);
-    putIfDefined(result, 'SubnetIds', fs.SubnetIds ? [...fs.SubnetIds] : undefined);
-    putIfDefined(result, 'KmsKeyId', fs.KmsKeyId);
-    // `SecurityGroupIds` / `BackupId` are createOnly AND never returned by
-    // DescribeFileSystems — they stay declared in getDriftUnknownPaths().
-
-    // Always-emit placeholders — exactly the top-level properties
-    // `update()` can mutate (StorageCapacity / StorageType /
-    // FileSystemTypeVersion / NetworkType / Tags). Without the placeholder,
-    // a file system deployed WITHOUT the property never carries the key in
-    // `observedProperties`, and the comparator's state-keys-only walk would
-    // skip a console-side ADD forever (§3b).
-    result['StorageCapacity'] = fs.StorageCapacity ?? 0;
-    result['StorageType'] = fs.StorageType ?? 'SSD'; // AWS-documented default
-    result['FileSystemTypeVersion'] = fs.FileSystemTypeVersion ?? '';
-    result['NetworkType'] = fs.NetworkType ?? 'IPV4'; // AWS-documented default
-    result['Tags'] = normalizeAwsTagsToCfn(fs.Tags);
-
-    // Variant block: §3b Class 1 type-discriminator carve-out. At most ONE
-    // of the four `<Variant>Configuration` blocks may legally be present for
-    // a given `FileSystemType`, so emitting all four as `{}` would make
-    // `drift --revert` push an AWS-invalid shape. Emit EXACTLY the block the
-    // discriminator selects — unconditionally, so the always-emit contract
-    // still holds for the one legal block — and never the other three.
-    // Drift detection is not lost: a foreign variant block cannot legally
-    // exist on AWS, so a console-side ADD of one is impossible.
-    const variantKey = fs.FileSystemType ? VARIANT_CONFIG_KEY[fs.FileSystemType] : undefined;
-    switch (variantKey) {
-      case 'LustreConfiguration':
-        result[variantKey] = this.readLustreConfiguration(fs.LustreConfiguration ?? {});
-        break;
-      case 'WindowsConfiguration':
-        result[variantKey] = this.readWindowsConfiguration(fs.WindowsConfiguration ?? {});
-        break;
-      case 'OntapConfiguration':
-        result[variantKey] = this.readOntapConfiguration(fs.OntapConfiguration ?? {});
-        break;
-      case 'OpenZFSConfiguration':
-        result[variantKey] = this.readOpenZFSConfiguration(fs.OpenZFSConfiguration ?? {});
-        break;
-      default:
-        // Unknown / absent FileSystemType: emit no variant block rather than
-        // guessing one. cdkd's create() rejects such a type up front, so this
-        // is only reachable for a file system created outside cdkd on a type
-        // cdkd does not support yet (a future 5th variant).
-        //
-        // WARN, not silence: this branch is a real behavior regression risk.
-        // Before the discriminator carve-out, whatever config block AWS
-        // returned was emitted regardless of type, so an unrecognized variant
-        // still produced a (partial) snapshot. Now it produces NONE — which
-        // reads downstream as "no drift" on a resource whose configuration
-        // cdkd never actually looked at. Guessing a block is not better than
-        // omitting one, so the behavior stays; it just must not be quiet.
-        this.logger.warn(
-          `FSx FileSystem ${physicalId} has FileSystemType '${fs.FileSystemType ?? '(unset)'}', which cdkd does not recognize (expected one of ${Object.keys(
-            VARIANT_CONFIG_KEY
-          ).join(
-            ' / '
-          )}). Its variant configuration is NOT included in the drift snapshot, so drift in that block cannot be detected. Please report this at https://github.com/go-to-k/cdkd/issues`
-        );
-        break;
-    }
-
-    return result;
+    return readCurrentState.call(this, physicalId, _logicalId, resourceType);
   }
 
-  /**
-   * Adopt an existing FSx file system into cdkd state. Explicit physical
-   * id is verified via `DescribeFileSystems`; without an override the
-   * resource is reported as not-found.
-   */
-  async import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
-    if (input.resourceType !== 'AWS::FSx::FileSystem') return null;
-
-    if (input.knownPhysicalId) {
-      try {
-        const resp = await this.getClient().send(
-          new DescribeFileSystemsCommand({ FileSystemIds: [input.knownPhysicalId] })
-        );
-        const fs = resp.FileSystems?.[0];
-        return fs?.FileSystemId
-          ? { physicalId: fs.FileSystemId, attributes: this.buildAttributes(fs) }
-          : null;
-      } catch (err) {
-        if (err instanceof FileSystemNotFound) return null;
-        throw err;
-      }
-    }
-
-    // No `aws:cdk:path` tag walk: AWS rejects `aws:`-prefixed tag writes, so
-    // that tag never exists on a real resource and the walk could not match
-    // (issue #1134). Auto-mode import resolves ids from CloudFormation's
-    // `DescribeStackResources` or the template's physical-name property; a
-    // file system reaching here needs an explicit `--resource` override.
-    return null;
+  import(input: ResourceImportInput): Promise<ResourceImportResult | null> {
+    return importImpl.call(this, input);
   }
 }
