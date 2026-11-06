@@ -263,6 +263,38 @@
  *          dataflow this counter does not have — following a binding to the
  *          `throw` that consumes it.
  *
+ *  (6) The population is `${JSON.stringify(...)}` ONLY. A bare `${x}` — a
+ *      value interpolated without stringifying — is NOT a site, by decision
+ *      (issue #5845), not by oversight. Pre-stringify masking exists because
+ *      of ESCAPING, and a bare value is not escaped: it occurs verbatim in the
+ *      finished line, so the SINK masks it — `currentLogLineMasker()`
+ *      (`src/utils/logger.ts`) on every line emitted inside
+ *      `withCurrentResourceSecrets`, `DeployEngine` on a thrown message, and
+ *      a provider's own `warn = (m) => this.logger.warn(maskSecrets(m))`.
+ *      A per-value wrap still buys two things over the sink, stated in
+ *      `.claude/rules/provider-masking.md`: a secret shorter than
+ *      `BASE_MASKER_SUBSTRING_FLOOR` (4), and a line emitted with no bag
+ *      bound. Neither is fenced HERE; a site whose wrap matters is pinned by
+ *      a RUNTIME twin instead — `dynamodb-table/update-billing.ts`'s
+ *      `${unspecified.map((n) => maskSecrets(n)).join(', ')}` by
+ *      `tests/unit/provisioning/dynamodb-table-provider-masked-warn.test.ts`
+ *      (a 3-character index name; deleting that `maskSecrets(n)` reds it and
+ *      nothing here).
+ *
+ *      MEASURED before deciding (2026-11-06, `src/provisioning/providers/**`
+ *      plus `composite-id.ts`, 147 files): 8719 template spans, 5088 in a
+ *      message sink (a `warn` / `debug` / `info` / `error` / `log` / `trace`
+ *      call, a `*Error` / `wrap*` call, or a `throw`). A syntactic taint
+ *      rooted at `properties`-named parameters marks 591 of those as
+ *      properties-derived: 37 reach a masker this critic recognises, 554 do
+ *      not. Of the 554: 147 go through `createMaskedLogSinks`' `log.value`
+ *      (destructured `v(...)`) or `this.shown(...)` — masked at runtime, but
+ *      not a derived masker here; 33 are counts / lengths; 131 are physical
+ *      names / ids / regions; 243 are pre-built refusal strings and similar.
+ *      Fencing that population would demand ~400 wraps the sink already
+ *      supplies, and would STILL miss the issue's own site: `unspecified` is
+ *      filled from the DescribeTable READBACK, not from `properties`.
+ *
  * USAGE
  *   node --experimental-strip-types scripts/check-provider-secret-mask.ts
  *   node --experimental-strip-types scripts/check-provider-secret-mask.ts --json
