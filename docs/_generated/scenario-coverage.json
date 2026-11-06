@@ -467,6 +467,11 @@
       "scenarios": []
     },
     {
+      "name": "appconfig-environment-delete-protection",
+      "annotated": false,
+      "scenarios": []
+    },
+    {
       "name": "appsync",
       "annotated": true,
       "scenarios": []
@@ -3598,6 +3603,7 @@
     "apigw-vpclink-integration-target",
     "app-autoscaling-recreate",
     "appconfig",
+    "appconfig-environment-delete-protection",
     "aws-custom-resource",
     "backup",
     "bootstrap-free-region",

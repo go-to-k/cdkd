@@ -1,7 +1,7 @@
 {
   "summary": {
-    "classifiedCount": 91,
-    "wrapped": 84,
+    "classifiedCount": 92,
+    "wrapped": 85,
     "noAws": 7,
     "gap": 0,
     "unguardedWrap": 0,
@@ -60,6 +60,14 @@
     {
       "file": "apigatewayv2-provider.ts",
       "className": "ApiGatewayV2Provider",
+      "bucket": "wrapped",
+      "unwrappedSendMethods": [],
+      "unguardedWrapMethods": [],
+      "unresolvedCallees": []
+    },
+    {
+      "file": "appconfig-environment-provider.ts",
+      "className": "AppConfigEnvironmentProvider",
       "bucket": "wrapped",
       "unwrappedSendMethods": [],
       "unguardedWrapMethods": [],

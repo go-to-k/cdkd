@@ -481,6 +481,7 @@ with no `--resource`, or with `--auto`.
 | --- | --- |
 | ACM | `AWS::CertificateManager::Certificate` |
 | API Gateway v2 | `AWS::ApiGatewayV2::Api` |
+| AppConfig | `AWS::AppConfig::Environment` (explicit `--resource <id>=<ApplicationId>\|<EnvironmentId>` only) |
 | AppSync | `AWS::AppSync::GraphQLApi` |
 | Bedrock AgentCore | `AWS::BedrockAgentCore::Browser`, `AWS::BedrockAgentCore::CodeInterpreter` |
 | Budgets | `AWS::Budgets::Budget` |

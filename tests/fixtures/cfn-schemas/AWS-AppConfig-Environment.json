@@ -1,0 +1,117 @@
+{
+  "resourceType": "AWS::AppConfig::Environment",
+  "generatedAt": "2026-11-06",
+  "properties": [
+    "ApplicationId",
+    "DeletionProtectionCheck",
+    "Description",
+    "EnvironmentId",
+    "Monitors",
+    "Name",
+    "Tags"
+  ],
+  "readOnlyProperties": [
+    "EnvironmentId"
+  ],
+  "createOnlyProperties": [
+    "ApplicationId"
+  ],
+  "createOnlyPropertyPaths": [
+    [
+      "ApplicationId"
+    ]
+  ],
+  "primaryIdentifier": [
+    "ApplicationId",
+    "EnvironmentId"
+  ],
+  "nestedProperties": {
+    "Monitors": [
+      "AlarmArn",
+      "AlarmRoleArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedPropertyPaths": {
+    "Monitors": [
+      "AlarmArn",
+      "AlarmRoleArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "definitionShapes": {
+    "#top": {
+      "EnvironmentId": "scalar",
+      "Description": "scalar",
+      "Monitors": "array",
+      "DeletionProtectionCheck": "scalar",
+      "ApplicationId": "scalar",
+      "Tags": "array",
+      "Name": "scalar"
+    },
+    "Monitor": {
+      "AlarmArn": "scalar",
+      "AlarmRoleArn": "scalar"
+    },
+    "Tag": {
+      "Value": "scalar",
+      "Key": "scalar"
+    }
+  },
+  "definitionRequired": {
+    "#top": [
+      "ApplicationId",
+      "Name"
+    ],
+    "Monitor": [
+      "AlarmArn"
+    ],
+    "Tag": [
+      "Key",
+      "Value"
+    ]
+  },
+  "nestedRequired": {
+    "Monitors": [
+      "AlarmArn"
+    ],
+    "Tags": [
+      "Key",
+      "Value"
+    ]
+  },
+  "propertyShapes": {
+    "Monitors": "array",
+    "Monitors[]": "object",
+    "Tags": "array",
+    "Tags[]": "object"
+  },
+  "propertyTypes": {
+    "ApplicationId": "string",
+    "DeletionProtectionCheck": "string",
+    "Description": "string",
+    "EnvironmentId": "string",
+    "Monitors": "array",
+    "Monitors[]": "object",
+    "Monitors[].AlarmArn": "string",
+    "Monitors[].AlarmRoleArn": "string",
+    "Name": "string",
+    "Tags": "array",
+    "Tags[]": "object",
+    "Tags[].Key": "string",
+    "Tags[].Value": "string"
+  },
+  "propertyEnums": {
+    "DeletionProtectionCheck": [
+      "ACCOUNT_DEFAULT",
+      "APPLY",
+      "BYPASS"
+    ]
+  }
+}

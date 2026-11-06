@@ -217,6 +217,7 @@ describe('provider UpdateContext fence — the real tree', () => {
       'AgentCoreRuntimeProvider',
       'ApiGatewayProvider',
       'ApiGatewayV2Provider',
+      'AppConfigEnvironmentProvider',
       'AppSyncProvider',
       'BudgetsBudgetProvider',
       'CloudFrontDistributionProvider',

@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "summary": {
-    "classifiedCount": 138,
-    "enriched": 47,
+    "classifiedCount": 139,
+    "enriched": 48,
     "noComputedAttr": 18,
     "unenrichedGap": 0,
     "sdkFallbackGap": 73,
-    "allowListedTypes": 86
+    "allowListedTypes": 87
   },
   "types": [
     {
@@ -183,6 +183,23 @@
       "readOnlyProperties": [],
       "enrichedKeys": [],
       "attributes": [],
+      "gaps": []
+    },
+    {
+      "resourceType": "AWS::AppConfig::Environment",
+      "bucket": "enriched",
+      "sdkBacked": false,
+      "readOnlyProperties": [
+        "EnvironmentId"
+      ],
+      "enrichedKeys": [],
+      "attributes": [
+        {
+          "name": "EnvironmentId",
+          "status": "allow-listed",
+          "rationale": "primaryIdentifier == physicalId; resolves via the resolver physicalId fallback"
+        }
+      ],
       "gaps": []
     },
     {

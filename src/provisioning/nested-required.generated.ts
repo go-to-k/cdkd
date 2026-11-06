@@ -31,6 +31,13 @@ export const NESTED_REQUIRED: ReadonlyMap<string, ReadonlyMap<string, readonly s
     new Map<string, readonly string[]>([['RequestParameters', ['Required']]]),
   ],
   [
+    'AWS::AppConfig::Environment',
+    new Map<string, readonly string[]>([
+      ['Monitors', ['AlarmArn']],
+      ['Tags', ['Key', 'Value']],
+    ]),
+  ],
+  [
     'AWS::AppSync::DataSource',
     new Map<string, readonly string[]>([
       ['DynamoDBConfig', ['AwsRegion', 'TableName']],

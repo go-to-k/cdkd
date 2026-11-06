@@ -144,6 +144,7 @@ These integ fixtures have no `.scenarios.json` sidecar. They may or may not exer
 - [`apigw-vpclink-integration-target`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/apigw-vpclink-integration-target/)
 - [`app-autoscaling-recreate`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/app-autoscaling-recreate/)
 - [`appconfig`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appconfig/)
+- [`appconfig-environment-delete-protection`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/appconfig-environment-delete-protection/)
 - [`aws-custom-resource`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/aws-custom-resource/)
 - [`backup`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/backup/)
 - [`bootstrap-free-region`](https://github.com/go-to-k/cdkd/tree/main/tests/integration/bootstrap-free-region/)
