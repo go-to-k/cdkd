@@ -104,7 +104,7 @@
  *    DIRECTLY and so is not covered by the first),
  *    `deletion-protection-compensation.ts`'s `isTerminalDeleteFailure` (on the
  *    chain since go-to-k/cdkd#4318),
- *    `apigateway-provider.ts`'s `isIamPropagationError` (top-level message,
+ *    `apigateway/account.ts`'s `isIamPropagationError` (top-level message,
  *    matches `not authorized` -- exactly the substring this helper withholds),
  *    `EC2Provider`'s `isDependencyViolationError` (`ec2/tags-errors.ts`), and
  *    `custom-resource-provider.ts`'s `isTransientAuthzThrow`.

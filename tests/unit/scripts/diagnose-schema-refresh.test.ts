@@ -439,6 +439,19 @@ describe('findDeclarationCandidates', () => {
     }
   });
 
+  it("reads a split provider's companion files, named by their own path", () => {
+    // `StageName` is read only in `apigateway/stage.ts` once the bodies moved.
+    const hits = findDeclarationCandidates(
+      'StageName',
+      'src/provisioning/providers/apigateway-provider.ts',
+      undefined,
+      REPO_ROOT
+    );
+    expect(hits.some((h) => h.startsWith('src/provisioning/providers/apigateway/stage.ts:'))).toBe(
+      true
+    );
+  });
+
   it('returns nothing rather than guessing when the owning provider is unknown', () => {
     expect(findDeclarationCandidates('Whatever', undefined, undefined, REPO_ROOT)).toEqual([]);
   });
@@ -458,8 +471,11 @@ describe('findDeclarationCandidates', () => {
     // `Name`.)
     const type = 'AWS::Glue::Connection';
     const file = 'src/provisioning/providers/glue-provider.ts';
-    const scoped = findDeclarationCandidates('Tags', file, type, REPO_ROOT);
-    const unscoped = findDeclarationCandidates('Tags', file, undefined, REPO_ROOT);
+    // The window is a per-file bound: only the provider file's own hits are
+    // measured here (its companion files are scanned too, each windowed alone).
+    const own = (hits: string[]): string[] => hits.filter((h) => h.startsWith(`${file}:`));
+    const scoped = own(findDeclarationCandidates('Tags', file, type, REPO_ROOT));
+    const unscoped = own(findDeclarationCandidates('Tags', file, undefined, REPO_ROOT));
     expect(scoped.length, 'the type block yielded nothing — scoping window is wrong').toBeGreaterThan(0);
     // Strictly wider, not merely no narrower: an equal count means the property
     // is confined to the block and the case cannot see a missing bound at all.
@@ -1653,6 +1669,51 @@ describe('sdkClientVersions', () => {
 
   it('returns nothing rather than guessing when the provider is unknown', () => {
     expect(sdkClientVersions(undefined, REPO_ROOT)).toEqual([]);
+  });
+
+  it('counts a client only a COMPANION file imports (a split provider, #5835)', () => {
+    // `@aws-sdk/client-s3-control` is imported only from
+    // `providers/s3-bucket/apply-core.ts`. Read from the provider file alone,
+    // that client dropped out of both the version rows and the member scan,
+    // and the member scan then leaned toward "no longer modelled" -- the
+    // unsafe direction its own doc names.
+    const dir = mkdtempSync(join(tmpdir(), 'cdkd-sdk-companion-'));
+    try {
+      const providers = join(dir, 'src/provisioning/providers');
+      mkdirSync(join(providers, 'split'), { recursive: true });
+      writeFileSync(
+        join(providers, 'split-provider.ts'),
+        "import { AlphaClient } from '@aws-sdk/client-alpha';\nexport const x = AlphaClient;\n"
+      );
+      writeFileSync(
+        join(providers, 'split/moved.ts'),
+        "import { BetaClient } from '@aws-sdk/client-beta';\nexport const y = BetaClient;\n"
+      );
+      for (const [name, member] of [
+        ['alpha', 'AlphaOnlyMember'],
+        ['beta', 'BetaOnlyMember'],
+      ] as const) {
+        const pkg = join(dir, 'node_modules/@aws-sdk', `client-${name}`);
+        mkdirSync(join(pkg, 'dist-types/models'), { recursive: true });
+        writeFileSync(
+          join(pkg, 'package.json'),
+          JSON.stringify({ name: `@aws-sdk/client-${name}`, version: '3.1.0' })
+        );
+        writeFileSync(
+          join(pkg, 'dist-types/models/models_0.d.ts'),
+          `export interface X { ${member}?: string; }\n`
+        );
+      }
+      const rel = 'src/provisioning/providers/split-provider.ts';
+      expect(sdkClientVersions(rel, dir).map((r) => r.client)).toEqual([
+        '@aws-sdk/client-alpha',
+        '@aws-sdk/client-beta',
+      ]);
+      const evidence = sdkModelsMember('BetaOnlyMember', rel, dir);
+      expect(evidence).toMatchObject({ client: '@aws-sdk/client-beta', modelled: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -4552,6 +4613,9 @@ describe('writeAutoTolerated', () => {
       for (const rel of [ROUTE53_PROVIDER, APIGW_PROVIDER, NESTED_STACK_PROVIDER, ASG_PROVIDER]) {
         cpSync(join(REPO_ROOT, rel), join(root, rel));
       }
+      // A split provider's evidence is read from its companion directory too.
+      const APIGW_COMPANIONS = 'src/provisioning/providers/apigateway';
+      cpSync(join(REPO_ROOT, APIGW_COMPANIONS), join(root, APIGW_COMPANIONS), { recursive: true });
       const backfill = join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
       writeFileSync(backfill, `${JSON.stringify(seed, null, 2)}\n`);
       run(root, backfill);
