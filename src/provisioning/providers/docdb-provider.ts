@@ -387,7 +387,7 @@ class GlobalClusterDetachError extends Error {
  * without a healthy primary instance", measured on an instance-less cluster in
  * a global cluster, us-east-1, 2026-11-02), so re-sending an unchanged one
  * failed every update of such a cluster. CloudFormation's RDS handler sends it
- * only on a change too (`clusterEngineVersionChanged` in `rds-provider.ts`),
+ * only on a change too (`clusterEngineVersionChanged` in `rds/cluster-members.ts`),
  * and a rollback replay never: AWS refuses an engine downgrade.
  */
 function docdbEngineVersionToSend(
@@ -690,7 +690,8 @@ function docdbRestoreFollowUp(
  *      `available`.
  *
  * DocDB's API shapes mirror the RDS API exactly (the AWS team copied them
- * across); see `rds-provider.ts` for the structural template.
+ * across); see `rds-provider.ts` and its `rds/` directory for the structural
+ * template.
  */
 export class DocDBProvider implements ResourceProvider {
   private docdbClient?: DocDBClient;

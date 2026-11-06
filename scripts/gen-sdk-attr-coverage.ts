@@ -206,7 +206,7 @@ export const SDK_ATTR_ALLOW_LIST: ReadonlyMap<string, AllowListEntry> = new Map<
   // update / import literals in each provider is enough to keep its type
   // classified `cached`. Measured on the real tree: neutralizing BOTH the create
   // and update spreads leaves the critic green — the `import()` occurrences alone
-  // (`rds-provider.ts` / `ssm-parameter-provider.ts`) carry the classification —
+  // (`rds/` / `ssm-parameter-provider.ts`) carry the classification —
   // and it flips to `gap` only when all three literals go. So PER-PATH binding
   // comes from the provider suite
   // (`tests/unit/provisioning/uncached-arn-attributes-issue-1824.test.ts`, which

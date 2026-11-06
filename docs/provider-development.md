@@ -270,7 +270,8 @@ Five things in this method apply to every provider:
   puts the error's class and a `--verbose` pointer in the message, and sends
   AWS's text, masked, to the debug log. The body is a few lines; here
   `wrapDocDBFailure` in `docdb-shared.ts` holds it, and `wrapCaughtError` in
-  `rds-provider.ts` is the same body inline:
+  `rds/calls.ts` (the body `RDSProvider.wrapCaughtError` delegates to) is the
+  same body inline:
 
   ```ts
   private wrapCaughtError(

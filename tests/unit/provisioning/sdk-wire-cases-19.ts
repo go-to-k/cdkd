@@ -18,7 +18,8 @@ import { ReplacementRulesRegistry } from '../../../src/analyzer/replacement-rule
  * (`AWS::RDS::DBSubnetGroup`, `AWS::RDS::DBCluster`, `AWS::RDS::DBInstance`).
  */
 
-const SRC = 'rds-provider.ts';
+// The provider file and its companion directory (`rds/`), which holds the bodies.
+const SRC = 'rds-provider.ts + rds/';
 const ALL_DIRECTIONS = ['create', 'update-add', 'update-remove'];
 
 /**
@@ -113,11 +114,11 @@ function roleCallOverrides(
 }
 
 /** A Modify* call that only sends what `next` declares: a removal sends nothing. */
-const KEPT = (key: string, where: string): string =>
-  `left in place on removal: Modify* treats an absent member as "no change", and real CloudFormation A/Bs (#5004, #1160) measured a removed ${key} KEPT (${SRC}:${where})`;
+const KEPT = (key: string): string =>
+  `left in place on removal: Modify* treats an absent member as "no change", and real CloudFormation A/Bs (#5004, #1160) measured a removed ${key} KEPT (${SRC})`;
 
 /** A removed password is never sent: RDS keeps the live password when none is supplied. */
-const PASSWORD_REMOVED = `a removed MasterUserPassword sends nothing, and any supplied one would reset the credentials (go-to-k/cdkd#5153; ${SRC}:125-140)`;
+const PASSWORD_REMOVED = `a removed MasterUserPassword sends nothing, and any supplied one would reset the credentials (go-to-k/cdkd#5153; ${SRC})`;
 
 /**
  * Every `Engine` update probe here has one side without an `Engine`: the
@@ -128,8 +129,8 @@ const PASSWORD_REMOVED = `a removed MasterUserPassword sends nothing, and any su
  * `update()`, which sends no `Engine` for them. A change with BOTH sides
  * declared is pinned in `describeRdsExtras`.
  */
-const CLUSTER_ENGINE = `ModifyDBCluster has no Engine member; a change declared on both sides replaces unless it is aurora to aurora-mysql (go-to-k/cdkd#5467), and one with a side absent, as every update probe here has, is in place and sends nothing (${SRC}:1188-1234; describeRdsExtras pins both-sides changes)`;
-const INSTANCE_ENGINE = `update() sends Engine only for a change CloudFormation's handler applies in place with BOTH sides declared (go-to-k/cdkd#5467, ${SRC}:1788-1799); a side absent, as every update probe here has, is never a replacement nor an Engine send, the deliberate difference replacement-rules.ts names (the handler would compare the LIVE engine, which a template diff cannot see; describeRdsExtras pins both-sides changes)`;
+const CLUSTER_ENGINE = `ModifyDBCluster has no Engine member; a change declared on both sides replaces unless it is aurora to aurora-mysql (go-to-k/cdkd#5467), and one with a side absent, as every update probe here has, is in place and sends nothing (${SRC}; describeRdsExtras pins both-sides changes)`;
+const INSTANCE_ENGINE = `update() sends Engine only for a change CloudFormation's handler applies in place with BOTH sides declared (go-to-k/cdkd#5467, ${SRC}); a side absent, as every update probe here has, is never a replacement nor an Engine send, the deliberate difference replacement-rules.ts names (the handler would compare the LIVE engine, which a template diff cannot see; describeRdsExtras pins both-sides changes)`;
 
 // --- AWS::RDS::DBSubnetGroup ---------------------------------------------------
 
@@ -172,13 +173,13 @@ const SUBNET_GROUP_CASE: TypeCase = {
         ...Object.fromEntries(
           ['DBSubnetGroupDescription', 'SubnetIds'].map((key) => [
             `update-remove:${key}`,
-            `${key} is required by the registry schema (top-level \`required\`), so no deployable template removes it; update() sends only a declared value (${SRC}:750-759)`,
+            `${key} is required by the registry schema (top-level \`required\`), so no deployable template removes it; update() sends only a declared value (${SRC})`,
           ])
         ),
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:SubnetIds.${i}`,
-            `ModifyDBSubnetGroup sends the WHOLE desired list from next, never reading prev, so an element removal is delivered by next alone (update-add observes it; ${SRC}:750-759)`,
+            `ModifyDBSubnetGroup sends the WHOLE desired list from next, never reading prev, so an element removal is delivered by next alone (update-add observes it; ${SRC})`,
           ])
         ),
       },
@@ -277,7 +278,7 @@ function armCluster(_physicalId: string, bag: Bag): void {
 }
 
 /** `MasterUserSecret.SecretArn` is the secret RDS creates, never a write input. */
-const SECRET_ARN_READ_ONLY = `read-only in the registry schema (/properties/MasterUserSecret/SecretArn): the secret RDS creates. Create and modify take only MasterUserSecretKmsKeyId, so neither reads it (${SRC}:909-912, 1154-1156, 1574-1576, 1743-1745)`;
+const SECRET_ARN_READ_ONLY = `read-only in the registry schema (/properties/MasterUserSecret/SecretArn): the secret RDS creates. Create and modify take only MasterUserSecretKmsKeyId, so neither reads it (${SRC})`;
 
 const CLUSTER_ENGINE_SILENT = Object.fromEntries(
   ['update-add', 'update-remove', 'update-vary'].map((d) => [`${d}:Engine`, CLUSTER_ENGINE])
@@ -287,7 +288,7 @@ const CLUSTER_ENGINE_SILENT = Object.fromEntries(
 const CLUSTER_MASTER_USERNAME_SILENT = Object.fromEntries(
   ['update-add', 'update-remove', 'update-vary'].map((d) => [
     `${d}:MasterUsername`,
-    `ModifyDBCluster has no MasterUsername member, and CloudFormation completes a changed one in place keeping the live user (measured us-east-1, 2026-10-28, go-to-k/cdkd#5467; ${SRC}:1183-1185)`,
+    `ModifyDBCluster has no MasterUsername member, and CloudFormation completes a changed one in place keeping the live user (measured us-east-1, 2026-10-28, go-to-k/cdkd#5467; ${SRC})`,
   ])
 );
 
@@ -398,28 +399,22 @@ const CLUSTER_CASE: TypeCase = {
         ...CLUSTER_SCALARS_KEPT,
         ...CLUSTER_MASTER_USERNAME_SILENT,
         'update-remove:MasterUserPassword': PASSWORD_REMOVED,
-        'update-remove:DeletionProtection': KEPT('DeletionProtection', '1192-1193'),
-        'update-remove:EnableIAMDatabaseAuthentication': KEPT(
-          'EnableIAMDatabaseAuthentication',
-          '1226-1229'
-        ),
-        'update-remove:EngineVersion': KEPT('EngineVersion', '1173-1175, 1191'),
-        'update-remove:MonitoringInterval': KEPT('MonitoringInterval', '1221-1225'),
-        'update-remove:MonitoringRoleArn': KEPT('MonitoringRoleArn', '1173-1175, 1218-1220'),
-        'update-remove:ServerlessV2ScalingConfiguration': KEPT(
-          'ServerlessV2ScalingConfiguration',
-          '1148-1152, 1173-1175'
-        ),
+        'update-remove:DeletionProtection': KEPT('DeletionProtection'),
+        'update-remove:EnableIAMDatabaseAuthentication': KEPT('EnableIAMDatabaseAuthentication'),
+        'update-remove:EngineVersion': KEPT('EngineVersion'),
+        'update-remove:MonitoringInterval': KEPT('MonitoringInterval'),
+        'update-remove:MonitoringRoleArn': KEPT('MonitoringRoleArn'),
+        'update-remove:ServerlessV2ScalingConfiguration': KEPT('ServerlessV2ScalingConfiguration'),
         ...Object.fromEntries(
           ['MinCapacity', 'MaxCapacity', 'SecondsUntilAutoPause'].map((key) => [
             `update-remove:ServerlessV2ScalingConfiguration.${key}`,
-            `ModifyDBCluster sends the WHOLE declared block from next, never reading prev (${SRC}:1230-1232, 236-247), so a member removal is delivered by next alone (update-add observes it); a block without SecondsUntilAutoPause resets the live delay to AWS's 300-second default, as CloudFormation measured (go-to-k/cdkd#5466)`,
+            `ModifyDBCluster sends the WHOLE declared block from next, never reading prev (${SRC}), so a member removal is delivered by next alone (update-add observes it); a block without SecondsUntilAutoPause resets the live delay to AWS's 300-second default, as CloudFormation measured (go-to-k/cdkd#5466)`,
           ])
         ),
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VpcSecurityGroupIds.${i}`,
-            `ModifyDBCluster sends the WHOLE desired list from next (${SRC}:2341-2342), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, :2333-2412)`,
+            `ModifyDBCluster sends the WHOLE desired list from next (${SRC}), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group)`,
           ])
         ),
       },
@@ -573,7 +568,7 @@ const INSTANCE_ENGINE_SILENT = Object.fromEntries(
  * CloudFormation's ModifyDBInstance carries no class, and the live class stays.
  * The registry schema has no top-level `required` for AWS::RDS::DBInstance.
  */
-const INSTANCE_CLASS_REMOVED = `update() sends only a declared DBInstanceClass (${SRC}:1777), and ModifyDBInstance keeps the live class when none is sent, as CloudFormation does (A/B on go-to-k/cdkd#1160; ${SRC}:1766-1768)`;
+const INSTANCE_CLASS_REMOVED = `update() sends only a declared DBInstanceClass (${SRC}), and ModifyDBInstance keeps the live class when none is sent, as CloudFormation does (A/B on go-to-k/cdkd#1160; ${SRC})`;
 
 /**
  * go-to-k/cdkd#2762: CloudFormation's DBInstance handler sends each of these as
@@ -637,21 +632,18 @@ const INSTANCE_CASE: TypeCase = {
         ...INSTANCE_ENGINE_SILENT,
         'update-remove:DBInstanceClass': INSTANCE_CLASS_REMOVED,
         'update-remove:MasterUserPassword': PASSWORD_REMOVED,
-        'update-remove:AllocatedStorage': KEPT('AllocatedStorage', '1757-1760, 1783-1785'),
-        'update-remove:DeletionProtection': KEPT('DeletionProtection', '1786-1787'),
-        'update-remove:EnableIAMDatabaseAuthentication': KEPT(
-          'EnableIAMDatabaseAuthentication',
-          '1833-1836'
-        ),
-        'update-remove:EngineVersion': KEPT('EngineVersion', '1757-1760, 1800-1803'),
-        'update-remove:MonitoringInterval': KEPT('MonitoringInterval', '1829-1832'),
-        'update-remove:MonitoringRoleArn': KEPT('MonitoringRoleArn', '1757-1760, 1826-1828'),
-        'update-remove:Port': KEPT('Port', '1757-1760, 1804-1806'),
-        'update-remove:PubliclyAccessible': KEPT('PubliclyAccessible', '1757-1760, 1778'),
+        'update-remove:AllocatedStorage': KEPT('AllocatedStorage'),
+        'update-remove:DeletionProtection': KEPT('DeletionProtection'),
+        'update-remove:EnableIAMDatabaseAuthentication': KEPT('EnableIAMDatabaseAuthentication'),
+        'update-remove:EngineVersion': KEPT('EngineVersion'),
+        'update-remove:MonitoringInterval': KEPT('MonitoringInterval'),
+        'update-remove:MonitoringRoleArn': KEPT('MonitoringRoleArn'),
+        'update-remove:Port': KEPT('Port'),
+        'update-remove:PubliclyAccessible': KEPT('PubliclyAccessible'),
         ...Object.fromEntries(
           [0, 1].map((i) => [
             `update-remove:VPCSecurityGroups.${i}`,
-            `ModifyDBInstance sends the WHOLE desired list from next (${SRC}:1829, 2366), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, go-to-k/cdkd#5542, :2354-2445)`,
+            `ModifyDBInstance sends the WHOLE desired list from next (${SRC}), so an element removal is delivered by next alone (update-add observes it); only a whole-list removal reads prev (the VPC default group, go-to-k/cdkd#5542)`,
           ])
         ),
       },

@@ -220,7 +220,7 @@ describe('issue #1824 — uncached ARN attributes resolve through Fn::GetAtt', (
 
     // The "omit the key, never write `undefined`" arm was covered for CREATE
     // only, and a probe showed why that is not enough: making the write
-    // UNCONDITIONAL at the update site (`rds-provider.ts`'s
+    // UNCONDITIONAL at the update site (`rds/subnet-group.ts`'s
     // `DBSubnetGroupArn: arn`) left every test in this file passing. The two
     // shapes below are the two ways `DescribeDBSubnetGroups` can fail to report
     // an ARN, and each asserts the REGRESSION shape (a present key holding
