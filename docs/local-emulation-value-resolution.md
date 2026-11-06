@@ -65,11 +65,13 @@ What you write as the top-level key depends on the command:
 | `local invoke-agentcore`, `local start-agentcore` | The runtime's logical ID, or its CDK display path |
 | `local start-web-function` | The revision's logical ID |
 | `local start-microvm` | The MicroVM image's logical ID, or its CDK display path |
+| `local start-cloudfront` | A Function URL origin's function, or a Web Function origin's revision: its logical ID or CDK display path |
 
 For a Lambda, one file can use both key forms. When both set the same
 variable, the entry that comes later in the file wins.
 
-`local start-cloudfront` does not accept `--env-vars`.
+`local start-cloudfront` does not apply `--env-vars` to Lambda@Edge functions,
+which cannot carry environment variables in AWS.
 
 ## `--from-state` and `--from-cfn-stack`: resolving deployed values
 

@@ -74,11 +74,25 @@ requirements.
 | --- | --- | --- |
 | `[targets...]` | picker | The load balancers to serve. |
 | `--lb-port <listenerPort=hostPort...>` | same port | Bind one listener on another host port. Repeatable. |
+| `--assume-host <[listenerPort=]host>` | request `Host` | Treat every request as if it carried this `Host`, for routing and for the target. Repeatable. |
 | `--tls` | off | Serve HTTPS listeners over HTTPS. |
 | `--tls-cert <path>` | — | PEM server certificate. Requires `--tls-key`. |
 | `--tls-key <path>` | — | PEM private key. Requires `--tls-cert`. |
 | `--bearer-token <jwt>` | — | Token added to a request that has no `Authorization` header. |
 | `--no-verify-auth` | off | Treat every request as authenticated. |
+
+`--assume-host` lets a browser that sends `Host: localhost:8443` reach a
+listener rule that matches only a production host name
+(`host-header: api.example.com`). Host-header conditions see the assumed host,
+and the ECS replica or Lambda target receives it as `Host`, as it would behind
+the deployed load balancer. `<listenerPort>=<host>` (for example
+`443=api.example.com`) applies to one listener and wins over a bare `<host>`.
+Other rule conditions are unaffected, and a redirect action keeps the request's
+own `Host` so the browser stays on the local front door.
+
+```bash
+cdkd local start-alb MyStack/MyAlb --lb-port 443=8443 --assume-host api.example.com
+```
 
 `--tls-cert` and `--tls-key` each imply `--tls`. The TLS flags are explained
 under [TLS termination](#tls-termination) and the last two under

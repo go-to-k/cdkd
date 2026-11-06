@@ -35,6 +35,7 @@ describe('createLocalStartAlbCommand', () => {
   it('inherits the ALB-specific options from addAlbSpecificOptions', () => {
     const longs = cmd.options.map((o) => o.long);
     expect(longs).toContain('--lb-port');
+    expect(longs).toContain('--assume-host');
     expect(longs).toContain('--tls');
     expect(longs).toContain('--tls-cert');
     expect(longs).toContain('--tls-key');

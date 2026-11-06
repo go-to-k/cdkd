@@ -91,6 +91,7 @@ cdkd local start-cloudfront MyStack/MyDistribution --from-cfn-stack --watch
 | `--cache-origin` | off | Keep objects read from a deployed S3 origin in memory. |
 | `--assume-role [arn]` | off | Run a Lambda origin under its deployed execution role. |
 | `--no-assume-role` | — | Explicitly decline the role assumption. |
+| `--env-vars <file>` | — | Override the environment of Function URL and Web Function origins. |
 | `--watch` | off | Reload the distribution when the source changes. |
 | `--no-pull` | off | Skip `docker pull` for a Lambda's base image. |
 
@@ -105,10 +106,15 @@ line each:
   certificate, and each implies `--tls`.
 - Without `--assume-role`, a Lambda container gets your own credentials.
 - `--no-pull` has no effect on a distribution without a Lambda function.
+- `--env-vars` takes the same JSON file as the other `cdkd local` commands:
+  `{"Parameters": {...}}` for every origin, or
+  `{"<LogicalId or construct path>": {"KEY": "VALUE"}}` for one (the backing
+  function, or the Web Function revision an endpoint serves). A `null` value
+  removes the variable. Lambda@Edge functions are not affected, because they
+  cannot carry environment variables in AWS.
 
 The command also accepts the common flags listed in
-[Local Execution](local-emulation.md), with these differences: it does not
-accept `--env-vars` or `--container-host`. The flags that read cdkd's own
+[Local Execution](local-emulation.md), except `--container-host`. The flags that read cdkd's own
 state work as [State sources](#state-sources) describes.
 
 > [!NOTE]

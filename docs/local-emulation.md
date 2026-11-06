@@ -213,7 +213,8 @@ only the flags of its own.
 | `-y`, `--yes` | off | Answer interactive prompts with the recommended response. |
 | `--verbose` | off | Verbose logging. |
 
-Every command except `local start-cloudfront` also accepts:
+Every command also accepts `--env-vars`, and every command except
+`local start-cloudfront` accepts `--container-host`:
 
 | Flag | Default | Description |
 | --- | --- | --- |
