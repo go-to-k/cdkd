@@ -169,8 +169,9 @@ const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: 
 const FOLDED_FILES: readonly string[] = [
   'src/cli/commands/rollback.ts',
   'src/cli/commands/orphan.ts',
-  'src/cli/commands/import.ts',
-  // `cdkd export`'s prompt moved with its split into `export/*.ts`.
+  // `cdkd import`'s and `cdkd export`'s prompts moved with their splits into
+  // `import/*.ts` and `export/*.ts`.
+  'src/cli/commands/import/import-one.ts',
   'src/cli/commands/export/command-helpers.ts',
   'src/cli/commands/drift/plan.ts',
   'src/cli/commands/retire-cfn-stack.ts',
@@ -261,15 +262,12 @@ describe('readline interface population (issue #2275)', () => {
       'src/cli/commands/state/refresh-observed.ts',
     ]) {
       const text = readFileSync(join(REPO_ROOT, path), 'utf-8');
-      // `drift/plan.ts`, `export/command-helpers.ts` and the two `state/`
-      // modules sit one directory below their siblings, so they reach the
-      // helper as `../`.
-      const spec =
-        path.startsWith('src/cli/commands/drift/') ||
-        path.startsWith('src/cli/commands/export/') ||
-        path.startsWith('src/cli/commands/state/')
-          ? '../confirm-prompt.js'
-          : './confirm-prompt.js';
+      // `drift/plan.ts`, `export/command-helpers.ts`, `import/import-one.ts`
+      // and the two `state/` modules sit one directory below their siblings,
+      // so they reach the helper as `../`.
+      const spec = /^src\/cli\/commands\/(drift|export|import|state)\//.test(path)
+        ? '../confirm-prompt.js'
+        : './confirm-prompt.js';
       expect(text, `${path} no longer routes through confirmOrRefuse`).toContain(
         `import { confirmOrRefuse } from '${spec}';`
       );

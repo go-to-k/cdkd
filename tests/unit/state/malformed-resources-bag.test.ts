@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { PASTE_PAYLOADS, spansThatRun, withPasteDir } from '../utils/paste-harness.js';
+import { importSourceFiles } from '../cli/_import-source.js';
 import { SHELL_ACTIVE_WHY, shellQuote } from '../../../src/utils/pasteable-command.js';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -128,10 +129,22 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
  * not that the code DOES anything.
  */
 function code(relPath: string): string {
+  // `cdkd import` is `import.ts` plus its `import/**/*.ts` modules, so its key
+  // reads the whole set, in FILE order. That is not execution order, so the
+  // guards' place above the hand-off is pinned separately (the
+  // "guards a malformed record before it hands off" fence).
+  if (relPath === IMPORT_COMMAND) return importSourceFiles().map(strippedFile).join('\n');
+  return strippedFile(relPath);
+}
+
+function strippedFile(relPath: string): string {
   return readFileSync(join(repoRoot, relPath), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
+
+/** The key the fences below use for the whole `cdkd import` family. */
+const IMPORT_COMMAND = 'src/cli/commands/import.ts';
 
 /**
  * {@link code} for every file of the module's family — the re-exporting
@@ -3201,7 +3214,10 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       if (file === 'src/state/logical-id-rename.ts') return false;
       return /[A-Za-z]*[Ss]tate\??\.orphans\b|orphansCarriedFrom\(|orphansAfterRollback\(/.test(code(file));
     });
-    expect([...readers].sort()).toEqual(Object.keys(ANCHORS).sort());
+    // A reader inside the `cdkd import` family is anchored under the family's key.
+    const importFamily = new Set(importSourceFiles());
+    const readerKeys = new Set(readers.map((file) => (importFamily.has(file) ? IMPORT_COMMAND : file)));
+    expect([...readerKeys].sort()).toEqual(Object.keys(ANCHORS).sort());
     // ...and the shared population is that same set, so the ROW fence under
     // this one inherits this tree-derived check instead of re-deriving it.
     expect(Object.keys(ANCHORS).sort()).toEqual([...ORPHAN_READER_FILES].sort());
@@ -3729,6 +3745,44 @@ describe('the rendered-container warning (issue go-to-k/cdkd#3187)', () => {
  * read-only one repairs — and these cases pin each site to the right side of
  * it.
  */
+/**
+ * `cdkd import` refuses a malformed record in `importCommand`
+ * (`import/command.ts`), then hands off to `runLockedImport`, which reads the
+ * bags and saves. The dominance fences in this file read the import family as
+ * one text in FILE order, which is not execution order, so this pins the
+ * order that matters: every guard call sits in `import/command.ts` above the
+ * hand-off, and in no other module of the family.
+ */
+describe('cdkd import guards a malformed record before it hands off (#5835 split)', () => {
+  const COMMAND = 'src/cli/commands/import/command.ts';
+  const GUARDS = [
+    'refuseMalformedState(',
+    'refuseMalformedResourceEntriesForImport(',
+    'refuseMalformedOutputs(',
+    'refuseMalformedOrphans(',
+    'refuseMalformedOrphanRecords(',
+  ];
+  const offsets = (src: string, needle: string): number[] => {
+    const out: number[] = [];
+    for (let i = src.indexOf(needle); i !== -1; i = src.indexOf(needle, i + 1)) out.push(i);
+    return out;
+  };
+
+  it.each(GUARDS)('%s runs in importCommand, above runLockedImport(', (guard) => {
+    const src = strippedFile(COMMAND);
+    const handoff = offsets(src, 'runLockedImport(');
+    expect(handoff, 'import/command.ts no longer hands off through runLockedImport(').toHaveLength(1);
+    const calls = offsets(src, guard);
+    expect(calls.length, `${guard} is no longer called in ${COMMAND}`).toBeGreaterThan(0);
+    for (const at of calls) {
+      expect(at, `${guard} sits below the runLockedImport hand-off`).toBeLessThan(handoff[0]!);
+    }
+    for (const file of importSourceFiles().filter((f) => f !== COMMAND)) {
+      expect(strippedFile(file).includes(guard), `${guard} is called in ${file}`).toBe(false);
+    }
+  });
+});
+
 describe('write-capable commands refuse; read-only ones repair', () => {
   const REFUSE = [
     'src/cli/commands/scrub.ts',

@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript-v6';
+import { importSourceFiles } from './_import-source.js';
 
 /**
  * Issue [#3361](https://github.com/go-to-k/cdkd/issues/3361), the CLI
@@ -203,7 +204,6 @@ describe('no handler in the slice stringifies its caught value with String() (#3
   /** File -> the floor of handlers the scan must see, so a parse that saw nothing cannot pass. */
   const FILES: Readonly<Record<string, number>> = {
     'src/cli/commands/local-start-api.ts': 10,
-    'src/cli/commands/import.ts': 5,
     'src/analyzer/orphan-rewriter.ts': 1,
     'src/assets/docker-asset-publisher.ts': 1,
     'src/cli/config-loader.ts': 1,
@@ -310,5 +310,23 @@ describe('no handler in the slice stringifies its caught value with String() (#3
     expect(EXPORT_FILES.length).toBeGreaterThanOrEqual(19);
     const handlers = EXPORT_FILES.reduce((sum, file) => sum + scan(file).handlers, 0);
     expect(handlers).toBeGreaterThanOrEqual(20);
+  });
+
+  /**
+   * `cdkd import` likewise: `import.ts` plus its `import/*.ts` modules, every
+   * one scanned, their handlers together keeping the floor of 5 the single
+   * file had.
+   */
+  const IMPORT_FILES = importSourceFiles();
+
+  it.each(IMPORT_FILES)('%s', (file) => {
+    expect(scan(file).offenders).toEqual([]);
+  });
+
+  it('the cdkd import modules together hold at least 5 handlers', () => {
+    // import.ts plus the 12 modules it was split into.
+    expect(IMPORT_FILES.length).toBeGreaterThanOrEqual(13);
+    const handlers = IMPORT_FILES.reduce((sum, file) => sum + scan(file).handlers, 0);
+    expect(handlers).toBeGreaterThanOrEqual(5);
   });
 });

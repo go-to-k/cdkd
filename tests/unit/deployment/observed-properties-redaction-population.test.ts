@@ -153,7 +153,7 @@ const OBSERVED_ASSIGNMENT = /(?<![\w$])observedProperties[ \t]*(?:\?\?|\|\||&&)?
 
 /** `path -> { sites, why }`. The COUNT is part of the contract, not just the file. */
 const EXPECTED: Readonly<Record<string, { readonly sites: number; readonly why: string }>> = {
-  'src/cli/commands/import.ts': {
+  'src/cli/commands/import/observed-capture.ts': {
     sites: 1,
     why:
       "`captureObservedForImportedResources` — the issue #2828 site. Serves BOTH " +
