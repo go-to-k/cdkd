@@ -114,7 +114,6 @@ src/provisioning/providers/stepfunctions-provider.ts
 src/provisioning/providers/wafv2-provider.ts
 src/provisioning/resource-name.ts
 src/state/lock-manager.ts
-src/state/malformed-resources-bag.ts
 src/state/s3-state-backend.ts
 src/types/resource.ts
 src/types/state.ts

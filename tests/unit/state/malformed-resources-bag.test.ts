@@ -63,6 +63,7 @@ import {
   refuseMalformedOrphans,
   refuseMalformedOrphanRecords,
   refuseMalformedOrphanRecordsForDestroy,
+  refuseDivergentRecordRegionForDestroy,
   refuseMalformedOrphansForDestroy,
   refuseMalformedOrphansForOrphan,
   refuseMalformedOutputs,
@@ -114,6 +115,7 @@ import { isMarkedNonRetryable } from '../../../src/deployment/retryable-errors.j
 import ts from 'typescript-v6';
 import { CdkdError } from '../../../src/utils/error-handler.js';
 import type { StackState } from '../../../src/types/state.js';
+import { isMalformedBagSourceFile, malformedBagSourceFiles } from './_malformed-resources-bag-source.js';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -129,6 +131,31 @@ function code(relPath: string): string {
   return readFileSync(join(repoRoot, relPath), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/**
+ * {@link code} for every file of the module's family — the re-exporting
+ * `malformed-resources-bag.ts` and its `malformed-resources-bag/` directory —
+ * joined in {@link malformedBagSourceFiles} order. A whole-module scan (a
+ * census, a count) reads this, so a function in any companion file counts.
+ */
+function familyCode(): string {
+  return malformedBagSourceFiles().map(code).join('\n');
+}
+
+/**
+ * {@link code} of the ONE family file that declares `decl`, so a fence slicing
+ * a function's body never runs past the end of its file into a sibling's.
+ * Throws when no file, or more than one, holds it.
+ */
+function familyCodeDeclaring(decl: string): string {
+  const holders = malformedBagSourceFiles()
+    .map(code)
+    .filter((src) => src.includes(decl));
+  if (holders.length !== 1) {
+    throw new Error(`${holders.length} malformed-resources-bag files declare \`${decl}\`; expected exactly 1`);
+  }
+  return holders[0]!;
 }
 
 /**
@@ -331,7 +358,7 @@ describe('unreadableResourceEntries', () => {
     // `typeof bag !== 'boolean' && !hasReadableResources(state)` is caught by
     // nothing at all. Read from comment-stripped source, so the prose above the
     // guard cannot satisfy it.
-    const module = code('src/state/malformed-resources-bag.ts');
+    const module = familyCodeDeclaring('export function unreadableResourceEntries(');
     const fn = module.slice(module.indexOf('export function unreadableResourceEntries'));
     const body = fn.slice(0, fn.indexOf('\n}\n'));
     // UNCONDITIONAL, and that is the part a presence-and-position check misses:
@@ -3152,7 +3179,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       .filter(Boolean);
     expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(5);
     const readers = listed.filter((file) => {
-      if (file === 'src/state/malformed-resources-bag.ts' || file === 'src/types/state.ts') return false;
+      if (isMalformedBagSourceFile(file) || file === 'src/types/state.ts') return false;
       // `diff.ts` receives the already-repaired state from `loadStateOrEmpty`
       // rather than loading one, so its read is dominated by that file's guard.
       if (file === 'src/cli/commands/diff.ts') return false;
@@ -3735,8 +3762,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * Every helper in this module that REFUSES on the `resources` container.
    *
    * Derived by grep rather than by recall:
-   *   grep -n "^export function refuseMalformed" \
-   *     src/state/malformed-resources-bag.ts
+   *   grep -rn "^export function refuseMalformed" \
+   *     src/state/malformed-resources-bag/
    * then subtracting the `Outputs`, `ResourceProperties` and `ResourceEntries`
    * families, which the partition case below re-derives so another cannot be
    * added unnoticed.
@@ -3762,7 +3789,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * silently escaping every dominance loop in this file.
    */
   it('every refusal the module exports is classified into exactly one class', () => {
-    const moduleSrc = code('src/state/malformed-resources-bag.ts');
+    const moduleSrc = familyCode();
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
@@ -4182,8 +4209,8 @@ describe('write-capable commands refuse; read-only ones repair', () => {
    * `hasReadableOutputs`, so the VERDICT stays singular.
    *
    * Derived by grep rather than by recall:
-   *   grep -n "^export function refuseMalformed.*Outputs" \
-   *     src/state/malformed-resources-bag.ts
+   *   grep -rn "^export function refuseMalformed.*Outputs" \
+   *     src/state/malformed-resources-bag/
    */
   const REFUSAL_SPELLINGS = [
     'refuseMalformedOutputs(',
@@ -4194,7 +4221,7 @@ describe('write-capable commands refuse; read-only ones repair', () => {
   it('REFUSAL_SPELLINGS names every outputs refusal the module exports', () => {
     // A fence listing spellings goes inert the moment a sixth is added and not
     // listed — the population is derived from the MODULE, never from this list.
-    const moduleSrc = code('src/state/malformed-resources-bag.ts');
+    const moduleSrc = familyCode();
     const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*Outputs\w*)\(/g)]
       .map((m) => `${m[1]!}(`)
       .sort();
@@ -4625,6 +4652,10 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
     // one unusable row, which is the shape the container arm above cannot reach.
     ['orphan rows', () => refuseMalformedOrphanRecords({ orphans: [5] as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
     ['destroy orphan rows', () => refuseMalformedOrphanRecordsForDestroy({ orphans: [5] as unknown as StackState['orphans'] }, 'S', 'us-east-1')],
+    // Not a container refusal, but a refusal all the same: a destroy over a
+    // resource-bearing record whose body region diverged from its key. Same
+    // persisted-record verdict, so the same marker.
+    ['divergent record region', () => refuseDivergentRecordRegionForDestroy(state({ A: { physicalId: 'p', resourceType: 'T' } }), 'S', 'us-east-1', 'eu-west-1')],
   ] as const;
 
   /**
@@ -4689,19 +4720,27 @@ describe('the retried refusals are marked non-retryable (issue #3207)', () => {
   };
 
   it('every refusal the module exports is either marked or a NAMED exception', () => {
-    const moduleSrc = code('src/state/malformed-resources-bag.ts');
-    const exported = [...moduleSrc.matchAll(/export function (refuseMalformed\w*)\(/g)].map(
+    const moduleSrc = familyCode();
+    // Every `refuse*` export, not only `refuseMalformed*`: the marker is owed by
+    // every refusal the module raises, and `refuseDivergentRecordRegionForDestroy`
+    // is one whose name the narrower pattern misses.
+    const exported = [...moduleSrc.matchAll(/export function (refuse[A-Z]\w*)\(/g)].map(
       (m) => `${m[1]!}(`
     );
-    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(24);
+    expect(exported.length, 'the grep stopped matching; this fence is reading nothing').toBe(25);
+    expect(exported).toContain('refuseDivergentRecordRegionForDestroy(');
     // A refusal is MARKED when its body reaches `markNonRetryable`. Read from
     // the body rather than from the RETRIED table, so the two instruments stay
     // independent — the table proves the marker is SET at runtime, this proves
     // no export was left out of the table by omission.
     const marked = exported.filter((name) => {
-      const at = moduleSrc.indexOf(`export function ${name.slice(0, -1)}(`);
-      const end = moduleSrc.indexOf('\nexport function ', at + 1);
-      const body = moduleSrc.slice(at, end === -1 ? undefined : end);
+      // The body is sliced from the ONE file declaring it, so the last export
+      // of a companion file cannot borrow the next file's code.
+      const decl = `export function ${name.slice(0, -1)}(`;
+      const fileSrc = familyCodeDeclaring(decl);
+      const at = fileSrc.indexOf(decl);
+      const end = fileSrc.indexOf('\nexport function ', at + 1);
+      const body = fileSrc.slice(at, end === -1 ? undefined : end);
       return body.includes('markNonRetryable(');
     });
     const unmarked = exported.filter((n) => !marked.includes(n));
@@ -4750,7 +4789,15 @@ describe('every repair the module exports is classified and has its read-only ca
    * `mentions` every use, an import specifier included. A file the parser
    * reports a diagnostic on REFUSES rather than contributing nothing.
    */
-  function repairUses(relPath: string): { calls: Set<string>; mentions: Set<string> } {
+  function repairUses(
+    relPath: string,
+    // For the re-exporting `malformed-resources-bag.ts` ONLY: a same-name
+    // `export { repairMalformedX } from './malformed-resources-bag/….js'` is
+    // the module's public surface, not a use. An ALIASED re-export
+    // (`repairMalformedX as y`) is still counted, because its callers would
+    // call `y` and escape REPAIR_CALLERS.
+    { skipSameNameReexports = false }: { skipSameNameReexports?: boolean } = {}
+  ): { calls: Set<string>; mentions: Set<string> } {
     const sf = ts.createSourceFile(
       relPath,
       readFileSync(join(repoRoot, relPath), 'utf8'),
@@ -4778,7 +4825,15 @@ describe('every repair the module exports is classified and has its read-only ca
         const isDeclarationName =
           (ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)) &&
           parent.name === node;
-        if (!isDeclarationName) {
+        const isSameNameReexport =
+          skipSameNameReexports &&
+          ts.isExportSpecifier(parent) &&
+          parent.propertyName === undefined &&
+          ts.isExportDeclaration(parent.parent.parent) &&
+          parent.parent.parent.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(parent.parent.parent.moduleSpecifier) &&
+          parent.parent.parent.moduleSpecifier.text.startsWith('./malformed-resources-bag/');
+        if (!isDeclarationName && !isSameNameReexport) {
           mentions.add(node.text);
           // `name(…)` and `ns.name(…)` alike: the callee, or the name it ends in.
           const callee =
@@ -4936,12 +4991,22 @@ describe('every repair the module exports is classified and has its read-only ca
     // Callers are read OUTSIDE the module, so an internal use — a call, or a
     // reference called through a local — would let a non-repair export carry a
     // repair to a write path this fence never sees.
-    const uses = repairUses('src/state/malformed-resources-bag.ts');
-    expect(
-      [...uses.mentions].sort(),
-      'the module now uses a repair internally; its callers are no longer only the files ' +
-        'REPAIR_CALLERS names.'
-    ).toEqual([]);
+    // EVERY file of the family: the re-exporting module and each companion.
+    const files = malformedBagSourceFiles();
+    expect(files.length, 'the family listing lost its companion directory').toBeGreaterThanOrEqual(12);
+    for (const file of files) {
+      const uses = repairUses(file, {
+        skipSameNameReexports: file === 'src/state/malformed-resources-bag.ts',
+      });
+      expect(
+        [...uses.mentions].sort(),
+        `${file} now uses a repair internally; its callers are no longer only the files ` +
+          'REPAIR_CALLERS names.'
+      ).toEqual([]);
+    }
+    // Non-vacuity of the re-export exemption: without it the same walk DOES see
+    // the barrel's re-exports, so the exemption is what clears them.
+    expect(repairUses('src/state/malformed-resources-bag.ts').mentions.size).toBeGreaterThan(0);
     // Non-vacuity: the same walk DOES see a use when one exists — a caller
     // file's, read by the identical function.
     expect(repairUses('src/cli/commands/scrub.ts').calls.has('repairMalformedOrphanRecordsForReadOnly')).toBe(
@@ -6452,10 +6517,10 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // rendered message can observe it; kept so a later direct caller inherits
       // it (the reason `dropRecordCommand` records, m5 of go-to-k/cdkd#3363's
       // review). A source fence is the only thing that can hold it in place.
-      const src = code('src/state/malformed-resources-bag.ts');
       // `withheldVerdict` is `identityWithheld` renamed when it began returning
       // the verdict (o2 of go-to-k/cdkd#3973's review); the floors are the same.
       for (const fn of ['function dropRecordCommand(', 'function withheldVerdict(']) {
+        const src = familyCodeDeclaring(fn);
         const at = src.indexOf(fn);
         expect(at, `${fn} was renamed; this fence reads nothing`).toBeGreaterThan(-1);
         const body = src.slice(at, src.indexOf('\n}\n', at));
@@ -6481,6 +6546,7 @@ describe('the cdkd orphan properties refusal (issue go-to-k/cdkd#3318)', () => {
       // against `origin/main`, where all 24 empty/undefined-stack arms render
       // byte-identically — so it reads as covering the guard while covering
       // nothing. That is this PR's own subject, reproduced inside it.
+      const src = familyCodeDeclaring('function orphanInspectClause(');
       const clause = src.slice(
         src.indexOf('function orphanInspectClause('),
         src.indexOf('\n}\n', src.indexOf('function orphanInspectClause('))
@@ -8276,15 +8342,24 @@ describe("an empty identifier is ABSENT, not <unrenderable> (go-to-k/cdkd#3520)"
     );
   });
 
-  it('the enumeration above is every exported builder that takes an identifier', () => {
+  it('the enumeration above is every exported builder that takes an identifier', async () => {
     // Derived from the source so a builder added later joins it or fails here.
     // Matches on the PARAMETER NAME rather than on its type, because the type
     // is what let two of them hide: `string`, `string | undefined` and
     // `region?: string` all accept `''` identically.
-    const src = readFileSync(join(repoRoot, 'src/state/malformed-resources-bag.ts'), 'utf8');
+    //
+    // Every file of the family is read, but only the MODULE's exports count:
+    // a companion file exports its helpers to its siblings
+    // (`stackClause`, `inspectClause`, ...), and those are not builders the
+    // module offers.
+    const src = malformedBagSourceFiles()
+      .map((file) => readFileSync(join(repoRoot, file), 'utf8'))
+      .join('\n');
+    const publicNames = new Set(Object.keys(await import('../../../src/state/malformed-resources-bag.js')));
     const taking = [...src.matchAll(/export function (\w+)\(([^)]*)\)/gs)]
       .filter(([, , params]) => /(raw)?\w*([Ss]tackName|[Rr]egion)\??:/.test(params!))
-      .map(([, name]) => name!);
+      .map(([, name]) => name!)
+      .filter((name) => publicNames.has(name));
     expect(taking.length, 'the derivation matched nothing').toBeGreaterThan(0);
     // These RENDER NOTHING — they pass their identifiers to a builder above
     // and throw. Named rather than pattern-matched: a `refuseMalformed` prefix
@@ -8455,12 +8530,15 @@ describe('the inspect command explains a withheld value before its label (go-to-
     // DERIVED per CALL from the comment-stripped module, so a new call fails
     // here until the clause with the SAME arguments sits right before it — a
     // count would pass one call without it beside a stray spelling.
-    const src = readFileSync(
-      new URL('../../../src/state/malformed-resources-bag.ts', import.meta.url),
-      'utf8'
-    )
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^\s*\/\/.*$/gm, '');
+    // Every file of the family, each stripped on its own, so a call in any
+    // companion module is derived.
+    const src = malformedBagSourceFiles()
+      .map((file) =>
+        readFileSync(join(repoRoot, file), 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/^\s*\/\/.*$/gm, '')
+      )
+      .join('\n');
     // Every CALL EXPRESSION in the module, whatever declares it (a function,
     // an arrow const, a branch): the definition itself is the only
     // `inspectCommand(` that is not a call.
