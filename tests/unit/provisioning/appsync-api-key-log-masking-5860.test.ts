@@ -183,6 +183,17 @@ describe('AppSync ApiKey id is masked in every log line and message (go-to-k/cdk
       expect(thrown).not.toContain(PIPED);
       for (const { text } of logged) expect(text).not.toContain(PIPED);
     });
+
+    it('a composite-id refusal downgraded to a warn on a state replay masks the key segment', async () => {
+      const PIPED = 'da2-abcdefghij|klmnopqrstuvwxyz';
+      mockSend.mockResolvedValueOnce({ apiKey: { id: PIPED } });
+
+      const result = await provider.create('Key', TYPE, { ApiId: API }, { replayingState: true });
+
+      expect(result.physicalId).toBe(`${API}|${PIPED}`);
+      expect(lineWith('warn', 'Continuing with the ambiguous id')).toContain(MASKED);
+      for (const { text } of logged) expect(text).not.toContain(PIPED);
+    });
   });
 
   describe('update', () => {
@@ -260,6 +271,15 @@ describe('AppSync ApiKey id is masked in every log line and message (go-to-k/cdk
 
       expect(lineWith('warn', 'Invalid physicalId format')).toContain(`got "${MASKED}"`);
       expectKeyNowhere();
+    });
+
+    it('a cdkd- or Node-authored failure quoting the key is masked in the throw', async () => {
+      mockSend.mockRejectedValueOnce(new TypeError(`socket closed while deleting ${KEY}`));
+
+      const thrown = await thrownBy(() => provider.delete('Key', PID, TYPE));
+
+      expect(thrown).toContain(`socket closed while deleting ${MASKED}`);
+      expectKeyNowhere(thrown);
     });
 
     it("AWS's own failure text quoting the key is masked in the debug line and the throw", async () => {
