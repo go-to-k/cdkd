@@ -10,10 +10,10 @@
 import { spawnSync } from 'node:child_process';
 import {
   cpSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -57,20 +57,15 @@ function scratch(prefix: string): string {
 
 /**
  * A throwaway COPY of the real providers tree plus its `composite-id.ts` and
- * Cloud Control family siblings, laid out the way `buildReport` resolves them.
- * The family is copied in whichever layout the tree has (single file and / or
- * the `cloud-control/` split directory).
+ * Cloud Control family siblings (the class file AND its `cloud-control/`
+ * directory, both required), laid out the way `buildReport` resolves them.
  */
 function copyTree(): string {
   const root = join(scratch('cdkd-mask-probe-'), 'provisioning');
   cpSync(PROVIDERS_DIR, join(root, 'providers'), { recursive: true });
   cpSync(COMPOSITE_ID, join(root, 'composite-id.ts'));
-  if (existsSync(CLOUD_CONTROL_FILE)) {
-    cpSync(CLOUD_CONTROL_FILE, join(root, 'cloud-control-provider.ts'));
-  }
-  if (existsSync(CLOUD_CONTROL_DIR)) {
-    cpSync(CLOUD_CONTROL_DIR, join(root, 'cloud-control'), { recursive: true });
-  }
+  cpSync(CLOUD_CONTROL_FILE, join(root, 'cloud-control-provider.ts'));
+  cpSync(CLOUD_CONTROL_DIR, join(root, 'cloud-control'), { recursive: true });
   return join(root, 'providers');
 }
 
@@ -79,9 +74,11 @@ function emptyTree(padFiles: number): string {
   const root = join(scratch('cdkd-mask-empty-'), 'provisioning');
   const providers = join(root, 'providers');
   cpSync(COMPOSITE_ID, join(root, 'composite-id.ts'));
-  // A site-free Cloud Control stand-in: the family's ABSENCE is a scan
-  // failure that returns before any floor is evaluated.
+  // A site-free Cloud Control stand-in, both halves: either one ABSENT is a
+  // scan failure that returns before any floor is evaluated.
   writeFileSync(join(root, 'cloud-control-provider.ts'), 'export const cc = 0;\n');
+  mkdirSync(join(root, 'cloud-control'));
+  writeFileSync(join(root, 'cloud-control', 'stand-in.ts'), 'export const ccDir = 0;\n');
   writeFileSync(join(root, '.keep'), '');
   rmSync(join(root, '.keep'));
   // `providers/` has to exist before anything is written into it.
@@ -720,9 +717,9 @@ describe('provider secret-mask critic — the real tree', () => {
   it('scans the Cloud Control provider family (issue #5880)', () => {
     // The family sits outside `providers/**`, so the walk alone never reached
     // it. Dropping it from the input list zeroes both counts. Measured 2 sites:
-    // the CREATE keys-only and UPDATE op/path-only debug lines, both EXEMPT as
-    // value-free projections.
-    expect(report.cloudControlFiles).toBeGreaterThanOrEqual(1);
+    // the CREATE keys and UPDATE op/path debug lines, both routed through the
+    // caller's masker before the stringify (issue #5894).
+    expect(report.cloudControlFiles).toBeGreaterThanOrEqual(2);
     expect(report.cloudControlSites).toBeGreaterThanOrEqual(2);
     const ccSites = report.siteList.filter(
       (site) =>
@@ -730,7 +727,15 @@ describe('provider secret-mask critic — the real tree', () => {
         site.file.startsWith('src/provisioning/cloud-control/')
     );
     expect(ccSites.length).toBe(report.cloudControlSites);
-    expect(ccSites.filter((site) => site.verdict === 'raw')).toEqual([]);
+    expect(ccSites.filter((site) => site.verdict !== 'masked')).toEqual([]);
+    const debugLines = ccSites.filter(
+      (site) =>
+        (site.file === 'src/provisioning/cloud-control/create.ts' &&
+          site.expression === 'maskDeep(Object.keys(ccProperties), mask)') ||
+        (site.file === 'src/provisioning/cloud-control/update.ts' &&
+          /^maskDeep\( ?patch\.map\(/.test(site.expression))
+    );
+    expect(debugLines.map((site) => site.verdict)).toEqual(['masked', 'masked']);
   });
 
   it('keeps the two known FALSE POSITIVES of the naive rule masked', () => {
@@ -757,24 +762,15 @@ describe('provider secret-mask critic — the real tree', () => {
   it('counts every exemption as exempt rather than as clean', () => {
     // The distinction is load-bearing: an exemption that stops being counted is
     // an exemption nobody re-reads.
-    expect(report.exempt).toBe(6);
+    expect(report.exempt).toBe(4);
   });
 
   it('pins the exempt set by NAME so it cannot quietly grow', () => {
     const exempt = report.siteList
       .filter((site) => site.verdict === 'exempt')
-      // The Cloud Control family is named by FAMILY, so the pin holds in both
-      // layouts (single file, or the `cloud-control/**` split; issue #5880).
-      .map((site) =>
-        /^src\/provisioning\/cloud-control(-provider\.ts|\/)/.test(site.file)
-          ? `cloud-control family ${site.expression}`
-          : `${site.file.replace('src/provisioning/providers/', '')} ${site.expression}`
-      )
+      .map((site) => `${site.file.replace('src/provisioning/providers/', '')} ${site.expression}`)
       .sort();
     expect(exempt).toEqual([
-      // Value-free projections: property KEYS / patch op+path, never a value.
-      'cloud-control family Object.keys(ccProperties)',
-      'cloud-control family patch.map((op) => { const anyOp = op as { op?: unknown; path?: unknown }; return { op: anyOp.op, path: anyOp.path }; })',
       // Delete path: the arm for a direct caller passing no
       // `DeleteContext.maskSecrets` (go-to-k/cdkd#2007).
       'custom-resource/lambda-payload.ts parsed',
@@ -1123,14 +1119,26 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     expect(stderr).toContain('composite-id.ts is missing');
   }, SPAWN_TIMEOUT_MS);
 
-  it('FAILS when the Cloud Control family is missing in BOTH layouts (issue #5880)', () => {
+  // Each half is REQUIRED (issue #5894): with either one renamed away the other
+  // still clears every floor, so only the scan failure turns the run red.
+  it('FAILS when the Cloud Control class file is renamed away (issue #5894)', () => {
     const dir = copyTree();
-    rmSync(join(dir, '..', 'cloud-control-provider.ts'), { force: true });
-    rmSync(join(dir, '..', 'cloud-control'), { recursive: true, force: true });
+    const root = join(dir, '..');
+    renameSync(join(root, 'cloud-control-provider.ts'), join(root, 'cc-provider-renamed.ts'));
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain('Cloud Control provider family');
-    expect(stderr).toContain('is missing');
+    expect(stderr).toContain(
+      "Cloud Control provider family's class file cloud-control-provider.ts is missing"
+    );
+  }, SPAWN_TIMEOUT_MS);
+
+  it('FAILS when the Cloud Control directory is renamed away (issue #5894)', () => {
+    const dir = copyTree();
+    const root = join(dir, '..');
+    renameSync(join(root, 'cloud-control'), join(root, 'cc-renamed'));
+    const { status, stderr } = runCheck(dir);
+    expect(status).toBe(1);
+    expect(stderr).toContain("Cloud Control provider family's directory cloud-control/ is missing");
   }, SPAWN_TIMEOUT_MS);
 
   it('FAILS on a Cloud Control stat error other than ENOENT rather than skipping that half', () => {
@@ -1148,12 +1156,7 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     // Real-code probe: the site must be found AND classified raw, naming the
     // file — the shape an unmasked properties-derived message would take.
     const dir = copyTree();
-    // Whichever layout the tree has: the single file before the split, the
-    // CREATE module after it.
-    const single = join(dir, '..', 'cloud-control-provider.ts');
-    const cc = existsSync(join(dir, '..', 'cloud-control', 'create.ts'))
-      ? join(dir, '..', 'cloud-control', 'create.ts')
-      : single;
+    const cc = join(dir, '..', 'cloud-control', 'create.ts');
     writeFileSync(
       cc,
       `${readFileSync(cc, 'utf8')}\nexport function probeRaw5880(properties: unknown, logger: { warn(m: string): void }) {\n` +
@@ -1161,19 +1164,13 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     );
     const { status, stderr } = runCheck(dir);
     expect(status).toBe(1);
-    expect(stderr).toContain(
-      cc === single
-        ? 'src/provisioning/cloud-control-provider.ts:'
-        : 'src/provisioning/cloud-control/create.ts:'
-    );
+    expect(stderr).toContain('src/provisioning/cloud-control/create.ts:');
     expect(stderr).toContain('`JSON.stringify(properties)` is interpolated');
   }, SPAWN_TIMEOUT_MS);
 
-  it('scans the SPLIT layout: a raw site under cloud-control/** with no single file (issue #5880)', () => {
+  it('scans a NEW module under cloud-control/** (issue #5880)', () => {
     const dir = copyTree();
     const root = join(dir, '..');
-    rmSync(join(root, 'cloud-control-provider.ts'), { force: true });
-    mkdirSync(join(root, 'cloud-control'), { recursive: true });
     writeFileSync(
       join(root, 'cloud-control', 'probe-5880.ts'),
       'export function probeRaw5880(properties: unknown, logger: { warn(m: string): void }) {\n' +
@@ -1183,29 +1180,6 @@ describe('provider secret-mask critic — failure probes on REAL code', () => {
     expect(status).toBe(1);
     expect(stderr).not.toContain('Cloud Control provider family');
     expect(stderr).toContain('src/provisioning/cloud-control/probe-5880.ts:');
-  }, SPAWN_TIMEOUT_MS);
-
-  it('keeps a split-layout exemption EXACT across both files (issue #5880)', () => {
-    // An entry carrying `splitFile` matches the site in either layout; a
-    // same-spelled sibling in the OTHER file is a second site, not a covered one.
-    const dir = copyTree();
-    const root = join(dir, '..');
-    const single = join(root, 'cloud-control-provider.ts');
-    const split = join(root, 'cloud-control', 'create.ts');
-    const needle = 'JSON.stringify(Object.keys(ccProperties))';
-    const holder = existsSync(single) && readFileSync(single, 'utf8').includes(needle) ? single : split;
-    expect(readFileSync(holder, 'utf8')).toContain(needle);
-    const other = holder === single ? split : single;
-    mkdirSync(join(root, 'cloud-control'), { recursive: true });
-    writeFileSync(
-      other,
-      `${existsSync(other) ? readFileSync(other, 'utf8') : ''}\n` +
-        'export function sibling5880(ccProperties: Record<string, unknown>, logger: { debug(m: string): void }) {\n' +
-        '  logger.debug(`keys=${JSON.stringify(Object.keys(ccProperties))}`);\n}\n'
-    );
-    const { status, stderr } = runCheck(dir);
-    expect(status).toBe(1);
-    expect(stderr).toContain('`Object.keys(ccProperties)` matches 2 unmasked site(s)');
   }, SPAWN_TIMEOUT_MS);
 });
 
