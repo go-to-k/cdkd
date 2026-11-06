@@ -1032,6 +1032,33 @@ describe('DynamoDB GlobalTable replica settings (go-to-k/cdkd#5355)', () => {
         expect(keysCall()).toBeUndefined();
       });
 
+      // Only the LOCAL key changes, so the throw-or-skip choice rests on
+      // `deferredSseFromTemplate` alone: step 3 holds the key back (the table
+      // has a cross-region replica) and the replica-diff phase receives the
+      // flag from the phase that set it.
+      const NEW_LOCAL_KEY = 'arn:aws:kms:us-east-1:123456789012:key/new-local';
+
+      it('fails the update when the keys cannot be read for a template-side LOCAL key change', async () => {
+        mockSend.mockImplementation(async () => liveBoth());
+        failKeyRead();
+        await expect(
+          update(
+            { ...base(remote(NEW_LOCAL_KEY), remote(REMOTE_KEY)), SSESpecification: sse },
+            { ...base(remote(LOCAL_KEY), remote(REMOTE_KEY)), SSESpecification: sse }
+          )
+        ).rejects.toThrow(/read denied/);
+        expect(flatUpdate()).toBeUndefined();
+      });
+
+      it('skips the pass, without failing, when the keys cannot be read for a LOCAL key AWS alone disagrees with', async () => {
+        mockSend.mockImplementation(async () => liveBoth());
+        failKeyRead();
+        const props = { ...base(remote(NEW_LOCAL_KEY), remote(REMOTE_KEY)), SSESpecification: sse };
+        await expect(update({ ...props, TableClass: undefined }, props)).resolves.toBeDefined();
+        expect(flatUpdate()).toBeUndefined();
+        expect(keysCall()).toBeUndefined();
+      });
+
       it('does not re-send the key of a replica the update adds', async () => {
         mockSend.mockImplementation(async () => liveBoth());
         await update(
