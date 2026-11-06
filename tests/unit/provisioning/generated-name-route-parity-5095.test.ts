@@ -499,7 +499,7 @@ describe('every SDK provider names an un-named resource through the rule (#5095)
     // pinned to its exact read and fallback below instead.
     const VIA_VARIABLE: Record<string, { file: string; read: RegExp; fallback: RegExp }> = {
       'AWS::CloudTrail::Trail': {
-        file: 'cloudtrail-provider.ts',
+        file: 'cloudtrail/core.ts',
         read: /const trailName = properties\['TrailName'\] as string \| undefined;/,
         fallback: /Name: trailName \?\? generatedNameFor\('AWS::CloudTrail::Trail', logicalId\)/,
       },
