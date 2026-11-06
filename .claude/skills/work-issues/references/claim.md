@@ -63,7 +63,8 @@ A lane's `Agent` call goes in
 a LATER message, after the read-back below: sent beside a refused post, two
 lanes launched briefed "claim posted" (#5637).
 **`<files>` is every file the lane will EDIT, and the lane is dispatched with
-that list**: beside the fix, its unit test and (user-visible) its
+that list** — a tests- or scripts-only fix runs every grep below too (#5889 and
+#5890 each missed a suite or `.claude/rules` file it falsified): beside the fix, its unit test and (user-visible) its
 `changelog.d/entries/` file, each EXISTING suite whose
 assertions the fix changes (`grep -rl '<[dir/]basename, no
 extension>' tests/unit` hits; suites need not mirror `src/`; a new drift-unknown

@@ -229,5 +229,7 @@ adds "does a record LACKING the key replace?" — #5572's guard covers schema
 create-only drops only, #5730), to read by explicit sha after
 `git fetch origin +refs/pull/<N>/head:refs/review/pr-<N>`: `FETCH_HEAD` is
 shared across worktrees, `fetch.prune` DELETES a ref fetched from the short
-`pull/<N>/head`, and without `+` a force-push is rejected. A later fix round goes to the same reviewer with the delta. **The reviewer set is
+`pull/<N>/head`, and without `+` a force-push is rejected. A later fix round goes with the delta to the reviewer whose finding it fixes —
+a security finding's fix to the SECURITY reviewer: #5890's fence fix widened
+an annotation's reach, passed a code-only delta, and opened a new silence path. **The reviewer set is
 `/review-pr`'s**, which sizes `src/**` only: count the FIXTURE into it too.
