@@ -490,7 +490,7 @@ async function resolveLocalBuildPlan(
   // BASE from the manifest, BOUND from the app outdir (go-to-k/cdkd#3489).
   const { manifestDir: cdkOutDir, assetOutdir } = assetPathDirs(lambda.stack);
   const loader = new AssetManifestLoader();
-  const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+  const manifest = await loader.loadStackManifest(lambda.stack, cdkOutDir);
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);
   if (!entry) return undefined;

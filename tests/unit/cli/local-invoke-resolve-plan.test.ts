@@ -34,7 +34,7 @@ vi.mock('../../../src/local/ecr-puller.js', () => ({
 }));
 vi.mock('../../../src/assets/asset-manifest-loader.js', () => ({
   AssetManifestLoader: vi.fn().mockImplementation(() => ({
-    loadManifest: mocks.loadManifestMock,
+    loadStackManifest: mocks.loadManifestMock,
   })),
   getDockerImageBySourceHash: mocks.getDockerImageBySourceHashMock,
 }));

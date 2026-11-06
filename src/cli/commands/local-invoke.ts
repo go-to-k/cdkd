@@ -1412,7 +1412,7 @@ async function resolveLocalBuildPlan(lambda: ResolvedImageLambda): Promise<
   const { manifestDir: cdkOutDir, assetOutdir } = assetPathDirs(lambda.stack);
 
   const loader = new AssetManifestLoader();
-  const manifest = await loader.loadManifest(cdkOutDir, lambda.stack.stackName);
+  const manifest = await loader.loadStackManifest(lambda.stack, cdkOutDir);
   if (!manifest) return undefined;
 
   const entry = getDockerImageBySourceHash(manifest, lambda.imageUri);

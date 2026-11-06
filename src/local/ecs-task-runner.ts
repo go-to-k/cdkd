@@ -1231,7 +1231,7 @@ async function prepareOneImage(
         );
       }
       const loader = new AssetManifestLoader();
-      const manifest = await loader.loadManifest(cdkOutDir, task.stack.stackName);
+      const manifest = await loader.loadStackManifest(task.stack, cdkOutDir);
       if (!manifest) {
         throw new EcsTaskRunnerError(
           `No asset manifest at ${cdkOutDir} for stack ${task.stack.stackName}.`

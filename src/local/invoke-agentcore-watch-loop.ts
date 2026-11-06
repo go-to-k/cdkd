@@ -434,7 +434,10 @@ export async function loadAgentCoreAssetContext(args: {
   const assetOutdir = cdkdRecord?.assetOutdir ?? manifestDir;
   if (resolved.codeArtifact) {
     if (resolved.codeArtifact.s3Source) return undefined;
-    const manifest = await assetLoader.loadManifest(manifestDir, newCandidate.stackName);
+    const manifest = await assetLoader.loadStackManifest(
+      { stackName: newCandidate.stackName, assetManifestPath: cdkdRecord?.assetManifestPath },
+      manifestDir
+    );
     if (!manifest) return undefined;
     const fileAssets = assetLoader.getFileAssets(manifest);
     const asset = fileAssets.get(resolved.codeArtifact.codeAssetHash);
@@ -463,7 +466,10 @@ export async function loadAgentCoreAssetContext(args: {
     };
   }
   if (resolved.containerUri === undefined) return undefined;
-  const manifest = await assetLoader.loadManifest(manifestDir, newCandidate.stackName);
+  const manifest = await assetLoader.loadStackManifest(
+    { stackName: newCandidate.stackName, assetManifestPath: cdkdRecord?.assetManifestPath },
+    manifestDir
+  );
   if (!manifest) return undefined;
   const dockerImageEntry = getDockerImageBySourceHash(manifest, resolved.containerUri);
   if (!dockerImageEntry) return undefined;
@@ -524,7 +530,10 @@ export async function deriveOldAssetHash(args: {
   // pair on the old lookup is how the twins drift apart.
   const manifestFile = stacks.find((s) => s.stackName === candidate.stackName)?.assetManifestPath;
   const manifestDir = manifestFile !== undefined ? dirname(manifestFile) : cdkOutDir;
-  const manifest = await assetLoader.loadManifest(manifestDir, candidate.stackName);
+  const manifest = await assetLoader.loadStackManifest(
+    { stackName: candidate.stackName, assetManifestPath: manifestFile },
+    manifestDir
+  );
   if (!manifest) return undefined;
   const entry = getDockerImageBySourceHash(manifest, resolved.containerUri);
   return entry?.hash;

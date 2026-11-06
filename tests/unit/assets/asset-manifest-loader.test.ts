@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vite-plus/test';
 import {
   AssetManifestLoader,
   getDockerImageBySourceHash,
@@ -126,5 +129,58 @@ describe('getFileAssets', () => {
     expect(new Set(result.keys())).toEqual(new Set(['asl', 'lambda']));
     expect(result.has('tmpl')).toBe(false);
     expect(result.has('nested')).toBe(false);
+  });
+});
+
+describe('AssetManifestLoader.loadStackManifest (cdkd#5872)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  // The layout `cdk synth` writes for a stack inside a `cdk.Stage`: the
+  // manifest sits in the nested assembly and is named after the ARTIFACT id
+  // (`devlocalApi6B226F7F`), not the stack name (`dev-local-Api`).
+  function stageAssembly(): { manifestPath: string; nestedDir: string } {
+    const outdir = mkdtempSync(join(tmpdir(), 'cdkd-5872-'));
+    dirs.push(outdir);
+    const nestedDir = join(outdir, 'assembly-dev-local');
+    mkdirSync(nestedDir);
+    const manifestPath = join(nestedDir, 'devlocalApi6B226F7F.assets.json');
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: '55.0.0',
+        files: {},
+        dockerImages: { abc123: { source: { directory: '../asset.abc123' }, destinations: {} } },
+      })
+    );
+    return { manifestPath, nestedDir };
+  }
+
+  it('reads a Stage manifest from the file the stack record names', async () => {
+    const { manifestPath, nestedDir } = stageAssembly();
+    const manifest = await new AssetManifestLoader().loadStackManifest(
+      { stackName: 'dev-local-Api', assetManifestPath: manifestPath },
+      nestedDir
+    );
+    expect(Object.keys(manifest?.dockerImages ?? {})).toEqual(['abc123']);
+    // The stack-name spelling finds nothing there: the lookup this replaces.
+    await expect(
+      new AssetManifestLoader().loadManifest(nestedDir, 'dev-local-Api')
+    ).resolves.toBeNull();
+  });
+
+  it('falls back to <fallbackDir>/<stackName>.assets.json without a manifest path', async () => {
+    const { nestedDir } = stageAssembly();
+    writeFileSync(
+      join(nestedDir, 'Top.assets.json'),
+      JSON.stringify({ version: '55.0.0', files: {}, dockerImages: {} })
+    );
+    const loader = new AssetManifestLoader();
+    await expect(loader.loadStackManifest({ stackName: 'Top' }, nestedDir)).resolves.not.toBeNull();
+    await expect(
+      loader.loadStackManifest({ stackName: 'Absent' }, nestedDir)
+    ).resolves.toBeNull();
   });
 });
