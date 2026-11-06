@@ -122,6 +122,65 @@ import { isMalformedBagSourceFile, malformedBagSourceFiles } from './_malformed-
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /**
+ * `cdkd diff`'s recursive walk is one barrel plus the modules split out of it
+ * under `diff-recursive/`. Every fence below keyed on the barrel's path reads
+ * the WHOLE family (the directory read recursively), concatenated in the order
+ * the declarations had in the one file before the split, which is the order
+ * the dominance fences measure: the load's repairs in `load-state.ts` precede
+ * the reads in `orphan-splice.ts` and `compute-stack-diff.ts`. A module not in
+ * {@link DIFF_RECURSIVE_ORDER} is read after the listed ones, never skipped.
+ */
+const DIFF_RECURSIVE = 'src/cli/commands/diff-recursive.ts';
+const DIFF_RECURSIVE_DIR = 'src/cli/commands/diff-recursive/';
+const DIFF_RECURSIVE_ORDER = [
+  'logger.ts',
+  'types.ts',
+  'refusals.ts',
+  'nested-template.ts',
+  'load-state.ts',
+  'printing.ts',
+  'parameters-conditions.ts',
+  'orphan-splice.ts',
+  'outputs-failure.ts',
+  'compute-stack-diff.ts',
+  'trust.ts',
+  'child-parameters.ts',
+  'build-tree.ts',
+  'routes.ts',
+  'tree.ts',
+  'json.ts',
+  'render.ts',
+];
+/** The modules under `diff-recursive/`, the directory read recursively. */
+function diffRecursiveModules(): string[] {
+  return readdirSync(join(repoRoot, DIFF_RECURSIVE_DIR), { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => name.split('\\').join('/'));
+}
+function diffRecursiveFamily(): string[] {
+  const rank = (name: string): number => {
+    const at = DIFF_RECURSIVE_ORDER.indexOf(name);
+    return at === -1 ? DIFF_RECURSIVE_ORDER.length : at;
+  };
+  return [
+    DIFF_RECURSIVE,
+    ...diffRecursiveModules()
+      .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+      .map((name) => `${DIFF_RECURSIVE_DIR}${name}`),
+  ];
+}
+
+describe("the diff-recursive family's read order (go-to-k/cdkd#5835)", () => {
+  it('names exactly the modules on disk, so a renamed or added module fails here by name', () => {
+    expect(diffRecursiveModules().sort()).toEqual([...DIFF_RECURSIVE_ORDER].sort());
+  });
+});
+/** A file of that family stands for the barrel's path, under which it is fenced. */
+function asFencedPath(file: string): string {
+  return file.startsWith(DIFF_RECURSIVE_DIR) ? DIFF_RECURSIVE : file;
+}
+
+/**
  * Source with comments removed. Every source-shape assertion below reads THIS,
  * because one of them was already satisfied by prose: a
  * `toContain('!opts.dryRun')` matched a doc comment quoting the gate it meant
@@ -135,6 +194,8 @@ function code(relPath: string): string {
   // guards' place above the hand-off is pinned separately (the
   // "guards a malformed record before it hands off" fence).
   if (relPath === IMPORT_COMMAND) return importSourceFiles().map(strippedFile).join('\n');
+  // `cdkd diff`'s walk reads the barrel and every module, in {@link diffRecursiveFamily} order.
+  if (relPath === DIFF_RECURSIVE) return diffRecursiveFamily().map(strippedFile).join('\n');
   // `cdkd scrub` reads every module, in the order {@link subjectFiles} gives.
   return subjectFiles(relPath).map(strippedFile).join('\n');
 }
@@ -3259,7 +3320,7 @@ describe('the orphans container guard DOMINATES each reader (go-to-k/cdkd#3379)'
       ),
     ];
     expect(listed.length, 'the grep stopped matching; this fence is reading nothing').toBeGreaterThan(5);
-    const readers = listed.filter((file) => {
+    const readers = [...new Set(listed.map(asFencedPath))].filter((file) => {
       if (isMalformedBagSourceFile(file) || file === 'src/types/state.ts') return false;
       // `diff.ts` receives the already-repaired state from `loadStateOrEmpty`
       // rather than loading one, so its read is dominated by that file's guard.
@@ -5094,7 +5155,8 @@ describe('every repair the module exports is classified and has its read-only ca
 
   /**
    * The files calling each repair, derived from the tree's AST. Every
-   * one of them is READ-ONLY on the path that calls it: `diff-recursive.ts`,
+   * one of them is READ-ONLY on the path that calls it: `diff-recursive/load-state.ts`
+   * and `diff-recursive/orphan-splice.ts`,
    * `state/resources.ts` and `state/show-containers.ts` (`state resources` and
    * `state show`'s text modes) and
    * `s3-local-state-provider.ts` write no `state.json`; `drift/detect.ts` repairs only
@@ -5104,7 +5166,7 @@ describe('every repair the module exports is classified and has its read-only ca
    */
   const REPAIR_CALLERS: Record<string, readonly string[]> = {
     repairMalformedResourcesForReadOnly: [
-      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/diff-recursive/load-state.ts',
       'src/cli/commands/drift/detect.ts',
       'src/cli/commands/scrub/stack.ts',
       'src/cli/commands/state/resources.ts',
@@ -5112,23 +5174,24 @@ describe('every repair the module exports is classified and has its read-only ca
       'src/local/s3-local-state-provider.ts',
     ],
     repairMalformedOutputsForReadOnly: [
-      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/diff-recursive/load-state.ts',
       'src/cli/commands/scrub/stack.ts',
       'src/local/s3-local-state-provider.ts',
     ],
     repairMalformedOrphansForReadOnly: [
-      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/diff-recursive/load-state.ts',
       'src/cli/commands/scrub/stack.ts',
     ],
     // `cdkd diff` does not call it: it keeps the survivors itself through the
     // narrower `isPreviewableOrphanRecord`.
     repairMalformedOrphanRecordsForReadOnly: ['src/cli/commands/scrub/stack.ts'],
     repairMalformedResourcePropertiesForReadOnly: [
-      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/diff-recursive/load-state.ts',
+      'src/cli/commands/diff-recursive/orphan-splice.ts',
       'src/cli/commands/drift/detect.ts',
     ],
     repairMalformedResourceEntriesForReadOnly: [
-      'src/cli/commands/diff-recursive.ts',
+      'src/cli/commands/diff-recursive/load-state.ts',
       'src/cli/commands/drift/detect.ts',
       'src/cli/commands/scrub/stack.ts',
       'src/local/s3-local-state-provider.ts',

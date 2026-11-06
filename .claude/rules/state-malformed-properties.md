@@ -3,6 +3,7 @@ description: REFUSE vs REPAIR over an unreadable resource properties map
 paths:
   - 'src/analyzer/diff-calculator.ts'
   - 'src/cli/commands/diff-recursive.ts'
+  - 'src/cli/commands/diff-recursive/**'
   - 'src/cli/commands/drift.ts'
   - 'src/cli/commands/drift/**'
 ---
