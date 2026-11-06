@@ -87,7 +87,7 @@ const EXEMPT: { file: string; sites: number; reason: string }[] = [
   // `if (`-only version could not see. They are the repo's DOMINANT spelling —
   // a `private isNotFoundError() { return a || b }` helper — which is exactly
   // why the scan had to stop matching syntax and start parsing.
-  { file: 'provisioning/providers/appsync-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
+  { file: 'provisioning/providers/appsync/api-key.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   { file: 'provisioning/providers/asg-provider.ts', sites: 1, reason: SDK_PROVIDER_REASON },
   // The helper both DocDB providers share (issue #3866 split the subnet group
   // out of docdb-provider.ts); it classifies only their own SDK rejections.
