@@ -436,7 +436,12 @@ describe('findDeclarationCandidates', () => {
     );
     expect(hits.length).toBeGreaterThan(0);
     for (const hit of hits) {
-      expect(hit.startsWith('src/provisioning/providers/route53-provider.ts:')).toBe(true);
+      // The provider file or one of its companion files (`route53/`).
+      expect(
+        hit.startsWith('src/provisioning/providers/route53-provider.ts:') ||
+          hit.startsWith('src/provisioning/providers/route53/'),
+        hit
+      ).toBe(true);
     }
   });
 
@@ -4271,7 +4276,7 @@ describe('classifyRemovedProperty', () => {
     // carry both facts and where each was read — not a template sentence.
     expect(rationale).toContain('@aws-sdk/client-route-53');
     expect(rationale).toContain('ResourceRecordSet');
-    expect(rationale).toMatch(/wires it at src\/provisioning\/providers\/route53-provider\.ts:\d+/);
+    expect(rationale).toMatch(/wires it at src\/provisioning\/providers\/route53\/record-set\.ts:\d+/);
     expect(rationale).toContain('Written automatically by the schema refresh job');
     // PascalCase here, so the camelCase note must NOT appear — it is a claim
     // about the service's modelling convention, wrong on this one.
@@ -4617,6 +4622,10 @@ describe('writeAutoTolerated', () => {
       // A split provider's evidence is read from its companion directory too.
       const APIGW_COMPANIONS = 'src/provisioning/providers/apigateway';
       cpSync(join(REPO_ROOT, APIGW_COMPANIONS), join(root, APIGW_COMPANIONS), { recursive: true });
+      const ROUTE53_COMPANIONS = 'src/provisioning/providers/route53';
+      cpSync(join(REPO_ROOT, ROUTE53_COMPANIONS), join(root, ROUTE53_COMPANIONS), {
+        recursive: true,
+      });
       const backfill = join(root, 'tests/fixtures/cfn-schemas/_todo-backfill.json');
       writeFileSync(backfill, `${JSON.stringify(seed, null, 2)}\n`);
       run(root, backfill);

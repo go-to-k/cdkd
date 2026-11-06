@@ -726,7 +726,7 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  * A REVIEW ROUND ASKED FOR THE UPDATE-PATH DOWNGRADE HERE AND IT IS WRONG,
  * which is worth recording because the general rule points the other way.
  * SEVERAL `readConfigString` UPDATE sites pass no `onUnusable` and therefore
- * now throw on an intrinsic — `route53-provider.ts` (`HostedZoneConfig`),
+ * now throw on an intrinsic — `route53/hosted-zone.ts` (`HostedZoneConfig`),
  * `cloudfront-oai-provider.ts` (`CloudFrontOriginAccessIdentityConfig`),
  * `kinesis-provider.ts` (`StreamModeDetails`), `ecs-provider.ts`
  * (`DeploymentController`) and `codebuild-provider.ts` (reached from `update()`
@@ -768,7 +768,7 @@ const NAMEABLE_INTRINSIC_KEYS: ReadonlySet<string> = new Set([
  *
  * KEPT LOCAL, deliberately, and the rule is `.claude/rules/`'s own. SEVERAL
  * near-copies of this shape exist across the tree — `create-only-properties.ts`,
- * `mutually-exclusive-properties.ts`, `route53-provider.ts` and
+ * `mutually-exclusive-properties.ts`, `route53/shared.ts` and
  * `dynamodb-globaltable-provider.ts` under `src/provisioning/`, plus more in
  * `cli/commands/drift.ts`, `cli/commands/import.ts` and
  * `deployment/intrinsic-resolver/{support,string-functions}.ts`. Deliberately NOT stated as a

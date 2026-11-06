@@ -176,7 +176,7 @@ export interface WiringEvidence {
  *
  * **The object is not checked, and that bounds what this excludes.** A read-back
  * indexing its own result — `result['GeoProximityLocation']` in
- * `route53-provider.ts` — is reported too, so the drift direction is only half
+ * `route53/read-state.ts` — is reported too, so the drift direction is only half
  * excluded here; what IS excluded is the `.X` property access, which is how a
  * read-back walks a typed SDK response and was the sole evidence for fifteen
  * `AWS::Glue::Job` properties. Scoping to the template bag would need the bag's

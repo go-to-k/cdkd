@@ -267,7 +267,6 @@ const ACCESS_POINT_CASE: TypeCase = {
 // Route53Provider
 // =============================================================================
 
-const R53_SRC = 'route53-provider.ts';
 const ZONE_ID = 'Z0123456789ABCDEFGHIJ';
 const LOG_GROUP_ARN = `arn:aws:logs:us-east-1:${ACCOUNT}:log-group:/aws/route53/example.com`;
 
@@ -352,7 +351,7 @@ const PRIVATE_ZONE_BAG: Bag = {
 
 const NO_ZONE_NAME: Record<string, Throw> = {
   'create:Name': {
-    why: `create() refuses a hosted zone with no Name before any call (${R53_SRC}, createHostedZone)`,
+    why: `create() refuses a hosted zone with no Name before any call (route53/hosted-zone.ts, createHostedZone)`,
     says: /Name is required for hosted zone/,
   },
 };
@@ -363,13 +362,13 @@ const NO_ZONE_NAME: Record<string, Throw> = {
  * possibly unresolved intrinsic (issues #1471 / #1493). The reduced next is
  * that list on both sides, so neither sends a tagging call.
  */
-const LOSSY_TAGS_KEPT = `a HostedZoneTags entry without its Key or Value makes the desired list unusable, and the live tags are left untouched (${R53_SRC}, updateHostedZone; issues #1471 / #1493)`;
+const LOSSY_TAGS_KEPT = `a HostedZoneTags entry without its Key or Value makes the desired list unusable, and the live tags are left untouched (route53/hosted-zone.ts, updateHostedZone; issues #1471 / #1493)`;
 
-const COMMENT_FROM_NEXT = `UpdateHostedZoneComment is sent on every update with the desired Comment ('' when absent; ${R53_SRC}, updateHostedZone), so the removal reaches the wire through next, which update-add observes; prev is never read for it`;
+const COMMENT_FROM_NEXT = `UpdateHostedZoneComment is sent on every update with the desired Comment ('' when absent; route53/hosted-zone.ts, updateHostedZone), so the removal reaches the wire through next, which update-add observes; prev is never read for it`;
 
-const VPC_REGION_REQUIRED = `VPCRegion is required on every VPCs entry by the CloudFormation schema, so no template drops it; an association is keyed by VPCId alone (${R53_SRC}, syncVPCAssociations), and one VPC id names one VPC in one region`;
+const VPC_REGION_REQUIRED = `VPCRegion is required on every VPCs entry by the CloudFormation schema, so no template drops it; an association is keyed by VPCId alone (route53/zone-config.ts, syncVPCAssociations), and one VPC id names one VPC in one region`;
 
-const VPCS_KEPT = `a VPCs removed whole changes nothing, as in CloudFormation, and a warning names it (${R53_SRC}, VPCS_KEPT_ON_REMOVAL_NOTE; issue #1160)`;
+const VPCS_KEPT = `a VPCs removed whole changes nothing, as in CloudFormation, and a warning names it (route53/shared.ts, VPCS_KEPT_ON_REMOVAL_NOTE; issue #1160)`;
 
 const HOSTED_ZONE_CASE: TypeCase = {
   resourceType: 'AWS::Route53::HostedZone',
@@ -451,12 +450,12 @@ const armRecordSet = (_physicalId: string, bag: Bag): void => {
   });
 };
 
-const NAME_TYPE_REQUIRED = `Name and Type are required by the CloudFormation schema, so no template drops them; update() writes the record from the desired bag alone (${R53_SRC}, updateRecordSet)`;
+const NAME_TYPE_REQUIRED = `Name and Type are required by the CloudFormation schema, so no template drops them; update() writes the record from the desired bag alone (route53/record-set.ts, updateRecordSet)`;
 
 const NO_ZONE_NEEDLE = /Either HostedZoneId or HostedZoneName is required/;
 const NO_ZONE: Record<string, Throw> = {
   'create:HostedZoneId': {
-    why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (${R53_SRC}, createRecordSet)`,
+    why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (route53/record-set.ts, createRecordSet)`,
     says: NO_ZONE_NEEDLE,
   },
 };
@@ -467,7 +466,7 @@ const NO_ZONE: Record<string, Throw> = {
  * hosted-zone-id normalizer throws on it before any request is serialized.
  */
 const ALIAS_ZONE_REQUIRED: Throw = {
-  why: `AliasTarget.HostedZoneId is required by the CloudFormation schema; an absent one reaches the Route 53 client's id normalizer as undefined (${R53_SRC}, buildResourceRecordSet), which throws before any request is sent; the needle is that SDK-internal TypeError, so an SDK update may reword it`,
+  why: `AliasTarget.HostedZoneId is required by the CloudFormation schema; an absent one reaches the Route 53 client's id normalizer as undefined (route53/record-set.ts, buildResourceRecordSet), which throws before any request is sent; the needle is that SDK-internal TypeError, so an SDK update may reword it`,
   says: /Cannot read properties of undefined \(reading 'replace'\)/,
 };
 
@@ -496,7 +495,7 @@ const RECORD_BAGS: { name: string; bag: Bag; throws?: Record<string, Throw> }[] 
     },
     throws: {
       'create:HostedZoneName': {
-        why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (${R53_SRC}, createRecordSet)`,
+        why: `create() refuses a record with neither HostedZoneId nor HostedZoneName before any write (route53/record-set.ts, createRecordSet)`,
         says: NO_ZONE_NEEDLE,
       },
     },
@@ -620,7 +619,7 @@ const RECORD_SET_CASE: TypeCase = {
   // so update() deletes the live old record in the same batch: prev IS read.
   wholeFromNext: {
     keys: (key) => key !== 'SetIdentifier',
-    reason: `update() UPSERTs the record built from the desired bag alone (${R53_SRC}, updateRecordSet), so a removal reaches the wire through next, which update-add observes; prev is read only for the record's identity (Name / Type / SetIdentifier)`,
+    reason: `update() UPSERTs the record built from the desired bag alone (route53/record-set.ts, updateRecordSet), so a removal reaches the wire through next, which update-add observes; prev is read only for the record's identity (Name / Type / SetIdentifier)`,
   },
   exempt: {},
   // UPSERT writes the whole record built from next; no per-key call.

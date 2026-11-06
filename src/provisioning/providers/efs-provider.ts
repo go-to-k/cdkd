@@ -1935,7 +1935,7 @@ export class EFSProvider implements ResourceProvider {
     } catch (error) {
       // A decline from `createOrAdoptAccessPoint` is ALREADY the diagnosis, and
       // re-wrapping it names the logical id twice while burying the remediation
-      // command. Same guard as `route53-provider.ts` and
+      // command. Same guard as `route53/hosted-zone.ts` and
       // `fsx-filesystem-provider.ts`.
       if (error instanceof ProvisioningError) throw error;
       const cause = error instanceof Error ? error : undefined;
@@ -1966,7 +1966,7 @@ export class EFSProvider implements ResourceProvider {
    * response. A REPLAY of the first response was never observed, but nothing
    * documents that it cannot happen (see the DERIVATION note in
    * `createAccessPoint`); if it does, this method returns it like any other
-   * success. `route53-provider.ts`'s `createOrAdoptHostedZone` is the same
+   * success. `route53/hosted-zone.ts`'s `createOrAdoptHostedZone` is the same
    * pattern for the same issue family.
    *
    * Adoption is CONFIRMED rather than assumed, on four axes: the token (cdkd
