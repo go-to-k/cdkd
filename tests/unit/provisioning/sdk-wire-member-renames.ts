@@ -319,6 +319,22 @@ export const MEMBER_RENAMES: Record<string, TypeRenames> = {
       SourceSecurityGroupOwnerId: ['UserId'],
     },
   },
+  'AWS::EC2::Subnet': {
+    // go-to-k/cdkd#5632: ModifySubnetAttribute names each member with an
+    // `OnLaunch` suffix, at its top level.
+    members: {
+      'PrivateDnsNameOptionsOnLaunch.HostnameType': ['PrivateDnsHostnameTypeOnLaunch'],
+      'PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsARecord': [
+        'EnableResourceNameDnsARecordOnLaunch',
+      ],
+      'PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord': [
+        'EnableResourceNameDnsAAAARecordOnLaunch',
+      ],
+    },
+    containers: {
+      PrivateDnsNameOptionsOnLaunch: ['ModifySubnetAttributeCommand'],
+    },
+  },
   'AWS::EC2::SubnetNetworkAclAssociation': {
     members: {
       // The subnet's current association is read, then replaced by its id.

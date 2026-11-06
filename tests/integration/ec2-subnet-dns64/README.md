@@ -14,6 +14,17 @@ values and compressed EC2 readback compare equally. After initial creation and D
 fixture also runs `cdkd drift --json` and requires the Subnet to be fully compared
 and clean.
 
+Two more subnets cover the rest of the Subnet SDK backfill (#5632). `DnsSubnet`
+changes `AssignIpv6AddressOnCreation` and the `PrivateDnsNameOptionsOnLaunch`
+members across phases, and `verify.sh` reads each value back. The removal phase
+drops both properties after they hold non-default values, and asserts the live
+values stay. A `move-dns-block` phase moves `DnsSubnet`'s IPv6 block while
+`AssignIpv6AddressOnCreation` stays true, with the AAAA record and DNS64 also
+on; EC2 only allows the detach with all three turned off, and the phase asserts
+the new block and the three values are live. `NativeSubnet` is an IPv6-only subnet (`Ipv6Native`, no IPv4
+block) that must keep its ID through every phase. Every subnet must stay on the
+SDK route and be drift-clean.
+
 Build the repository first. CIDR comparisons require `python3` and its standard
 library `ipaddress` module. The maintainer runs this fixture via `/run-integ
 ec2-subnet-dns64`, with `STATE_BUCKET` and `AWS_REGION` set. It deploys real AWS

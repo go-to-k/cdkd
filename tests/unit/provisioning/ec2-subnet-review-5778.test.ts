@@ -188,7 +188,13 @@ describe('Subnet maintainer review (#5778)', () => {
   it('sends a genuinely changed expanded CIDR exactly as declared (M4)', async () => {
     const changed = '2001:db8:1234:2:0:0:0:0/64';
     await provider.update('Subnet', 'subnet-test', type, { ...props, Ipv6CidrBlock: changed }, { ...props, Ipv6CidrBlock: first });
-    expect(writes().map(command => command.input)).toEqual([{ AssociationId: 'assoc-old' }, { SubnetId: 'subnet-test', Ipv6CidrBlock: changed }]);
+    // Live DNS64 is on, which EC2 refuses a detach under: off first, back on after (#5632).
+    expect(writes().map(command => command.input)).toEqual([
+      { SubnetId: 'subnet-test', EnableDns64: { Value: false } },
+      { AssociationId: 'assoc-old' },
+      { SubnetId: 'subnet-test', Ipv6CidrBlock: changed },
+      { SubnetId: 'subnet-test', EnableDns64: { Value: true } },
+    ]);
   });
 
   it('keeps an unchanged expanded Cloud Control record a no-op (M4)', async () => {

@@ -509,12 +509,12 @@ describe('unrecognized keys and the narrowings (issue #3713)', () => {
  * go-to-k/cdkd#2790. `AWS::EC2::Subnet` is the pair
  * `tests/integration/sdk-to-cc-autoroute/` deploys: `AvailabilityZoneId` is a
  * CREATE-ONLY SDK-unwired property. The unit cases pair it with the still-unwired
- * `AssignIpv6AddressOnCreation` as a plain property.
+ * `EnableLniAtDeviceIndex` as a plain property.
  */
 describe('the record COMPARISON side and its create-only drops (#2790)', () => {
   const TYPE = 'AWS::EC2::Subnet';
   const CREATE_ONLY = 'AvailabilityZoneId';
-  const PLAIN = 'AssignIpv6AddressOnCreation';
+  const PLAIN = 'EnableLniAtDeviceIndex';
   const ALLOW = new Set([`${TYPE}:${CREATE_ONLY}`]);
   const NONE = new Set<string>();
   const WRITTEN = { VpcId: 'vpc-1', CidrBlock: '10.0.0.0/24' };
@@ -546,12 +546,12 @@ describe('the record COMPARISON side and its create-only drops (#2790)', () => {
     });
 
     it('removes it when a SIBLING drop is un-allowed, since the resource then routes', () => {
-      const desired = { ...RECORD, [PLAIN]: true };
+      const desired = { ...RECORD, [PLAIN]: 1 };
       expect(withoutUnwrittenSdkUnwiredProperties(TYPE, RECORD, desired, ALLOW, EVIDENCE)).toEqual(WRITTEN);
     });
 
     it('removes a plain drop even while it is allowed', () => {
-      const record = { ...WRITTEN, [PLAIN]: true };
+      const record = { ...WRITTEN, [PLAIN]: 1 };
       const allow = new Set([`${TYPE}:${PLAIN}`]);
       expect(withoutUnwrittenSdkUnwiredProperties(TYPE, record, record, allow, EVIDENCE)).toEqual(WRITTEN);
     });
@@ -605,12 +605,12 @@ describe('the record COMPARISON side and its create-only drops (#2790)', () => {
     });
 
     it('never names a PLAIN drop: applying one needs no replacement', () => {
-      const record = { ...WRITTEN, [PLAIN]: true };
+      const record = { ...WRITTEN, [PLAIN]: 1 };
       expect(findUnwrittenCreateOnlyDrops(TYPE, record, record, NONE, EVIDENCE)).toEqual([]);
     });
 
     it('names it when the allow set covers it but a sibling drop routes the resource', () => {
-      const desired = { ...RECORD, [PLAIN]: true };
+      const desired = { ...RECORD, [PLAIN]: 1 };
       expect(findUnwrittenCreateOnlyDrops(TYPE, RECORD, desired, ALLOW, EVIDENCE)).toEqual([CREATE_ONLY]);
     });
 

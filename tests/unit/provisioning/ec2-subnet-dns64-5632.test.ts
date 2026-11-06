@@ -84,6 +84,18 @@ describe('subnet EnableDns64 SDK coverage (#5632)', () => {
     [true, false],
   ])('updates an explicit DNS64 value from %s to %s', async (previous, desired) => {
     liveDns64 = previous;
+    // DNS64 needs an IPv6 block on the subnet (measured); this one has it from
+    // outside the template (an AWS::EC2::SubnetCidrBlock), #5632.
+    const inner = mockSend.getMockImplementation()!;
+    mockSend.mockImplementation(async (command: unknown) => {
+      const out = await inner(command);
+      if (command instanceof DescribeSubnetsCommand) {
+        out.Subnets[0].Ipv6CidrBlockAssociationSet = [
+          { AssociationId: 'assoc-x', Ipv6CidrBlock: '2001:db8::/64', Ipv6CidrBlockState: { State: 'associated' } },
+        ];
+      }
+      return out;
+    });
     await provider.update(
       'Subnet',
       'subnet-test',
@@ -149,12 +161,15 @@ describe('subnet Ipv6CidrBlock SDK coverage (#5632)', () => {
     mockSend.mockReset();
     associations = [active(first)];
     failure = undefined;
+    // Live DNS64, driven by the writes received: a block change turns it off
+    // for the detach and back on after (#5632).
+    let liveDns64 = true;
     mockSend.mockImplementation(async (command: unknown) => {
       if (command instanceof CreateSubnetCommand) {
         return { Subnet: { SubnetId: 'subnet-test', AvailabilityZone: 'ap-southeast-1a', Ipv6CidrBlockAssociationSet: associations } };
       }
       if (command instanceof DescribeSubnetsCommand) {
-        return { Subnets: [{ SubnetId: 'subnet-test', Ipv6CidrBlockAssociationSet: associations, EnableDns64: true }] };
+        return { Subnets: [{ SubnetId: 'subnet-test', Ipv6CidrBlockAssociationSet: associations, EnableDns64: liveDns64 }] };
       }
       if (command instanceof DisassociateSubnetCidrBlockCommand) {
         if (failure === 'disassociate') throw new Error('CIDR in use');
@@ -170,6 +185,9 @@ describe('subnet Ipv6CidrBlock SDK coverage (#5632)', () => {
       }
       if (command instanceof ModifySubnetAttributeCommand && failure === 'dns64') {
         throw new Error('DNS64 refused');
+      }
+      if (command instanceof ModifySubnetAttributeCommand && command.input.EnableDns64) {
+        liveDns64 = command.input.EnableDns64.Value!;
       }
       return {};
     });

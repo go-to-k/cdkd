@@ -117,8 +117,9 @@ a fast iteration loop, or a pipeline that runs its own health check.
 ### The waits `--no-wait` never skips
 
 An `AWS::EC2::Subnet` with `Ipv6CidrBlock` waits in every mode. On create,
-cdkd waits for the returned IPv6 association to be `associated` before DNS64
-wiring and observed-state capture. In-place CIDR changes wait for both
+cdkd waits for the returned IPv6 association to be `associated` before the
+`ModifySubnetAttribute` wiring (DNS64, `AssignIpv6AddressOnCreation`,
+`PrivateDnsNameOptionsOnLaunch`) and observed-state capture. In-place CIDR changes wait for both
 disassociation and association. Each wait polls at most 30 times and honors
 interrupts and resource deadlines. A failed create wait enters the cleanup for
 the newly created subnet.
