@@ -108,20 +108,38 @@ const DESTRUCTURE_FROM_PROCESS_ENV = /\}\s*(?::[^=]*)?=\s*process\.env\b(?!\s*(?
 /**
  * The WHOLE environment, taken as a value rather than one key read out of it:
  * a spread (`{ ...process.env }`), an alias (`const e = process.env`), an
- * argument (`Object.entries(process.env)`, `env: process.env`), and any
- * `process['env']`. Every one carries the triple — the role's under
- * `--role-arn` — to wherever the value goes, so it is a site: `restores` when
- * the enclosing function corrects the copy, else the annotation. None exists on
- * the surface today, so it has unit cases and no floor.
+ * argument (`Object.entries(process.env)`, `env: process.env`), any
+ * `process['env']` or `require('process').env`, and the `env` binding taken
+ * off the module itself — `const { env } = process` or
+ * `import { env } from 'node:process'` (`processEnvBinding`). Every one
+ * carries the triple — the role's under `--role-arn` — to wherever the value
+ * goes, so it is a site. It is `restores` only when it binds a COPY
+ * (`const c = { ...process.env }` / `structuredClone(process.env)`) and the
+ * enclosing function restores THAT name; anything else — the live object
+ * passed on, a copy restored under another name — takes the annotation. None
+ * exists on the surface today, so it has unit cases and no floor.
  *
  * What remains unseeable in this line model (no AST: the repo's `typescript`
- * ships no JS parser API, and both fences share one line model): a member
- * access split across lines (`process.env\n  .X`, which Prettier does not
- * emit), and a computed key — `process.env[key]` over `AWS_CREDENTIAL_ENV_KEYS`
- * is the constant's shape, above.
+ * ships no JS parser API, and both fences share one line model): an `env`
+ * binding read back under its new name (`penv.X` — the BINDING is the site,
+ * its uses are not), and a computed key — `process.env[key]` over
+ * `AWS_CREDENTIAL_ENV_KEYS` is the constant's shape, above.
  */
-const PROCESS_ENV_WHOLE =
-  /\bprocess\.env\b(?!\s*(?:\?\.|\.|\[))|\bprocess\s*(?:\?\.\s*)?\[\s*['"\x60]env['"\x60]\s*\]/;
+const PROCESS_ENV_WHOLE = new RegExp(
+  [
+    String.raw`\bprocess\.env\b(?!\s*(?:\?\.|\.|\[))`,
+    String.raw`\bprocess\s*(?:\?\.\s*)?\[\s*['"\x60]env['"\x60]\s*\]`,
+    String.raw`\brequire\s*\(\s*['"](?:node:)?process['"]\s*\)\s*(?:\?\.|\.)\s*env\b`,
+  ].join('|')
+);
+/** A destructuring whose right-hand side is the `process` module itself. */
+const DESTRUCTURE_FROM_PROCESS =
+  /\}\s*(?::[^=]*)?=\s*(?:process|require\s*\(\s*['"](?:node:)?process['"]\s*\))\s*(?:[;,)]|$)/;
+/** The closing line of an import from the `process` module. */
+const IMPORT_FROM_PROCESS = /\bfrom\s*['"](?:node:)?process['"]/;
+/** A whole-env site that binds a COPY, capturing the binding's name. */
+const PROCESS_ENV_COPY_BINDING =
+  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:\{\s*\.\.\.\s*process\.env\b|structuredClone\s*\(\s*process\.env\s*\))/;
 /**
  * The INI channel. The KEY is the lowercase shared-credentials-file spelling —
  * a different string from the env one, which is precisely why neither fence saw
@@ -186,10 +204,16 @@ interface Site {
  * mark every credential write above it in the same function as restoring —
  * the exact opposite of what such a comment says (issue #3250 item 2).
  */
-function enclosingBlockRestores(lines: string[], index: number): boolean {
+function enclosingBlockRestores(lines: string[], index: number, target?: string): boolean {
+  // `target` narrows the restore to one binding: a whole-env copy is restored
+  // only by a call on ITS name (see `PROCESS_ENV_WHOLE`).
+  const restore =
+    target === undefined
+      ? RESTORE_CALL
+      : new RegExp(String.raw`\bapplyCallerIdentityCredentials\s*\(\s*${target.replace(/\$/g, '\\$')}\s*[,)]`);
   for (let i = index; i < lines.length; i++) {
     const raw = lines[i] ?? '';
-    if (!isCommentLine(raw) && RESTORE_CALL.test(stripComments(raw))) return true;
+    if (!isCommentLine(raw) && restore.test(stripComments(raw))) return true;
     if (i > index && /^\}/.test(raw)) return false;
   }
   return false;
@@ -248,18 +272,50 @@ function importLines(lines: string[]): Set<number> {
  * becomes a site a human decides, never a silent miss.
  */
 function destructuresCredentialFromProcessEnv(lines: string[], index: number): boolean {
+  const pattern = destructuringPattern(lines, index, DESTRUCTURE_FROM_PROCESS_ENV);
+  if (pattern === undefined) return false;
+  return pattern === UNBALANCED || CREDENTIAL_ENV_NAME_TOKEN.test(pattern) || pattern.includes('...');
+}
+
+const UNBALANCED = '\u0000unbalanced';
+
+/**
+ * The `{ ... }` pattern of a destructuring whose closing line is `index` and
+ * whose right-hand side `closingRe` matches, walked UP until the braces
+ * balance; `UNBALANCED` past the cap (callers fail closed to a site), and
+ * `undefined` when the line is not such a destructuring.
+ */
+function destructuringPattern(lines: string[], index: number, closingRe: RegExp): string | undefined {
   const closing = stripComments(lines[index] ?? '');
-  const match = DESTRUCTURE_FROM_PROCESS_ENV.exec(closing);
-  if (match === null) return false;
+  const match = closingRe.exec(closing);
+  if (match === null) return undefined;
   let pattern = closing.slice(0, match.index + 1);
   const balance = (text: string): number =>
     (text.match(/\}/g)?.length ?? 0) - (text.match(/\{/g)?.length ?? 0);
   for (let i = index - 1; balance(pattern) > 0; i--) {
-    if (i < 0 || index - i > 60) return true;
+    if (i < 0 || index - i > 60) return UNBALANCED;
     const raw = lines[i] ?? '';
     pattern = `${isCommentLine(raw) ? '' : stripComments(raw)}\n${pattern}`;
   }
-  return CREDENTIAL_ENV_NAME_TOKEN.test(pattern) || pattern.includes('...');
+  return pattern;
+}
+
+/**
+ * Does the line at `index` bind the `env` export of the `process` module —
+ * `const { env } = process`, `const { env: e } = require('node:process')`, or
+ * the closing line of `import { env as e } from 'node:process'`? `imports` is
+ * the file's import-line set, so a multi-line import is joined to its opener.
+ */
+function processEnvBinding(lines: string[], index: number, imports: Set<number>): boolean {
+  const code = stripComments(lines[index] ?? '');
+  const pattern = destructuringPattern(lines, index, DESTRUCTURE_FROM_PROCESS);
+  if (pattern !== undefined) return pattern === UNBALANCED || /\benv\b/.test(pattern);
+  if (!imports.has(index) || !IMPORT_FROM_PROCESS.test(code)) return false;
+  let statement = code;
+  for (let i = index - 1; i >= 0 && imports.has(i) && !/;\s*$/.test(stripComments(lines[i] ?? '')); i--) {
+    statement = `${stripComments(lines[i] ?? '')}\n${statement}`;
+  }
+  return /\benv\b/.test(statement.replace(IMPORT_FROM_PROCESS, ''));
 }
 
 /** The credential keys a line reads out of `process.env`. */
@@ -296,15 +352,12 @@ function annotationGovernsRead(lines: string[], index: number): boolean {
   return hasAnnotationAbove(lines, top, ANNOTATION);
 }
 
-/**
- * The shape of one code line (comments already stripped). `wholeEnv: false` is
- * for a destructuring's right-hand side, which `shapeAt` has already judged.
- */
-function shapeOf(code: string, { wholeEnv = true } = {}): Shape | undefined {
+/** The shape of one code line (comments already stripped). */
+function shapeOf(code: string): Shape | undefined {
   if (CALLER_READ_SITE.test(code)) return 'caller-read';
   if (PROCESS_ENV_CREDENTIAL_READ.test(code)) return 'process-env-read';
   if (CREDENTIAL_KEY_SITE.test(code)) return 'env-keys';
-  if (wholeEnv && PROCESS_ENV_WHOLE.test(code)) return 'process-env-whole';
+  if (PROCESS_ENV_WHOLE.test(code)) return 'process-env-whole';
   if (INI_CREDENTIAL_KEY_SITE.test(code)) return 'ini-key';
   if (INI_WRITER_CALL_SITE.test(code) && !INI_WRITER_DECLARATION.test(code)) {
     return 'ini-writer-call';
@@ -318,11 +371,19 @@ function shapeOf(code: string, { wholeEnv = true } = {}): Shape | undefined {
  * `process.env` is judged on its pattern: one taking a credential is a read,
  * one naming only other keys is not a whole-env copy either.
  */
-function shapeAt(lines: string[], index: number): Shape | undefined {
+function shapeAt(
+  lines: string[],
+  index: number,
+  imports: Set<number> = new Set()
+): Shape | undefined {
   const code = stripComments(lines[index] ?? '');
+  if (processEnvBinding(lines, index, imports)) return 'process-env-whole';
+  if (imports.has(index)) return undefined;
   if (DESTRUCTURE_FROM_PROCESS_ENV.test(code)) {
     if (destructuresCredentialFromProcessEnv(lines, index)) return 'process-env-read';
-    return shapeOf(code, { wholeEnv: false });
+    // Only THIS destructuring's right-hand side is judged; the rest of the
+    // line is still classified as usual.
+    return shapeOf(code.replace(DESTRUCTURE_FROM_PROCESS_ENV, '} = DESTRUCTURED'));
   }
   return shapeOf(code);
 }
@@ -334,9 +395,11 @@ function collectSites(): Site[] {
     const lines = readFileSync(file, 'utf8').split('\n');
     const imports = importLines(lines);
     lines.forEach((text, i) => {
-      if (isCommentLine(text) || imports.has(i)) return;
+      // Import lines are not skipped here: `shapeAt` takes the one import that
+      // is a site (the `env` export of `process`) and drops every other.
+      if (isCommentLine(text)) return;
       const code = stripComments(text);
-      const site = siteAt(lines, i);
+      const site = siteAt(lines, i, imports);
       if (site === undefined) return;
       sites.push({ file, line: i + 1, text: text.trim(), code, ...site });
     });
@@ -345,12 +408,20 @@ function collectSites(): Site[] {
 }
 
 /** Shape and verdict of the line at `index`: the walk's per-line decision. */
-function siteAt(lines: string[], index: number): { shape: Shape; verdict: Verdict } | undefined {
+function siteAt(
+  lines: string[],
+  index: number,
+  imports: Set<number> = importLines(lines)
+): { shape: Shape; verdict: Verdict } | undefined {
   if (isCommentLine(lines[index] ?? '')) return undefined;
-  const shape = shapeAt(lines, index);
+  const shape = shapeAt(lines, index, imports);
   if (shape === undefined) return undefined;
   if (shape === 'caller-read') return { shape, verdict: 'reads-caller' };
-  if ((shape === 'env-keys' || shape === 'process-env-whole') && enclosingBlockRestores(lines, index)) {
+  if (shape === 'env-keys' && enclosingBlockRestores(lines, index)) {
+    return { shape, verdict: 'restores' };
+  }
+  const copy = PROCESS_ENV_COPY_BINDING.exec(stripComments(lines[index] ?? ''))?.[1];
+  if (shape === 'process-env-whole' && copy !== undefined && enclosingBlockRestores(lines, index, copy)) {
     return { shape, verdict: 'restores' };
   }
   const annotated =
@@ -619,6 +690,38 @@ describe('every identity reaching an emulated workload through process env or a 
     ];
     expect(siteAt(restored, 0)).toEqual({ shape: 'process-env-whole', verdict: 'restores' });
     expect(siteAt(restored, 1)).toEqual({ shape: 'process-env-read', verdict: 'undeclared' });
+    // A restore of ANOTHER object does not correct this one: the live object
+    // passed on, and a copy restored under a different name, stay undecided.
+    const unrelated = [
+      '  spawn(cmd, args, { env: process.env });',
+      '  const copy = { ...process.env };',
+      '  applyCallerIdentityCredentials(env);',
+      '}',
+    ];
+    expect(siteAt(unrelated, 0)?.verdict).toBe('undeclared');
+    expect(siteAt(unrelated, 1)?.verdict).toBe('undeclared');
+    // A non-credential destructuring on the line does not hide a copy beside it.
+    expect(one('  const { HOME } = process.env, env2 = { ...process.env };')).toBe(
+      'process-env-whole'
+    );
+  });
+
+  it('classifies the `env` export of `process` bound under any name (#5866)', () => {
+    const at = (lines: string[], i = 0) => siteAt(lines, i)?.shape;
+    expect(at(['  const { env } = process;'])).toBe('process-env-whole');
+    expect(at(['  const { env: penv } = process;'])).toBe('process-env-whole');
+    expect(at(["  const { env: penv } = require('node:process');"])).toBe('process-env-whole');
+    expect(at(["  const penv = require('process').env;"])).toBe('process-env-whole');
+    expect(at(["import { env as penv } from 'node:process';"])).toBe('process-env-whole');
+    expect(at(['import {', '  argv,', '  env as penv,', "} from 'node:process';"], 3)).toBe(
+      'process-env-whole'
+    );
+    // Other exports of `process`, and `env` from another module, are not.
+    expect(at(['  const { argv, platform } = process;'])).toBeUndefined();
+    expect(at(["import { argv } from 'node:process';"])).toBeUndefined();
+    expect(at(["import { env } from './config.js';"])).toBeUndefined();
+    // An ordinary import naming the shared constant stays excluded.
+    expect(at(["import { AWS_CREDENTIAL_ENV_KEYS } from '../../utils/caller-credentials.js';"])).toBeUndefined();
   });
 
   it('lets a contiguous run of `process.env` reads share one annotation, and no further', () => {

@@ -55,8 +55,12 @@ import {
  *
  * WHAT THIS FENCE STILL CANNOT SEE, recorded rather than implied away: a
  * constructor bound under another name (`const { STSClient: S } = ...; new
- * S(...)`), a v3 aggregated client (`new STS(...)`, no `Client` suffix), and a
- * client CONSTRUCTED ELSEWHERE and injected. `resolveEcsSecrets` accepts
+ * S(...)`), a v3 aggregated client (`new STS(...)`, no `Client` suffix), a
+ * spread of an arbitrary object after the helper (`...overrides`, which may
+ * carry `credentials`), and a client CONSTRUCTED ELSEWHERE and injected. One
+ * thing it sees but cannot re-ask: an override added later to a construction
+ * whose reason was written for its helper is governed by that same reason —
+ * the annotation is per construction, not per spread. `resolveEcsSecrets` accepts
  * `secretsManagerClient` / `ssmClient` for tests, and an injected client's
  * identity was decided at its own construction site — outside this surface, or
  * outside `src/**` entirely. That seam is documented at the option itself as
